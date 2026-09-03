@@ -49,13 +49,23 @@ class PiAgentCore:
             else:
                 outcome = await self.mock_handler(messages)
 
-            # Re-check steering after cognition
-            steering = mailbox.check_steering()
-            if steering and steering.steering_type == SteeringType.CANCEL:
+            if mailbox.is_cancelled():
                 return EpisodeOutcome(
                     disposition=FinalDisposition.SILENCE,
-                    thought=f"Aborted by steering after mock cognition: {steering.reason}"
+                    thought=f"Aborted by steering after mock cognition: {mailbox.cancellation_reason()}"
                 )
+            if mailbox.has_follow_up():
+                follow_ups = mailbox.consume_follow_ups()
+                updated_messages = list(messages)
+                for fu in follow_ups:
+                    updated_messages.append({
+                        "role": "user",
+                        "content": f"【INTERIM FOLLOW-UP from {fu.actor_id}】: {fu.raw_text}"
+                    })
+                if len(sig.parameters) >= 2:
+                    outcome = await self.mock_handler(updated_messages, toolkit)
+                else:
+                    outcome = await self.mock_handler(updated_messages)
             return outcome
 
         # 3. Live LLM Call via AsyncOpenAI Structured Output + ReAct Tool Loop
@@ -74,17 +84,20 @@ class PiAgentCore:
 
             # ReAct Step Loop
             for step in range(max_steps):
-                steering = mailbox.check_steering()
-                if steering:
-                    if steering.steering_type == SteeringType.CANCEL:
-                        return EpisodeOutcome(
-                            disposition=FinalDisposition.SILENCE,
-                            thought=f"Aborted by steering at step {step}: {steering.reason}"
-                        )
-                    elif steering.steering_type == SteeringType.FOLLOW_UP:
-                        follow_up_content = f"【INTERIM FOLLOW-UP from {steering.source_event.actor_id}】: {steering.source_event.raw_text}"
-                        working_messages.append({"role": "user", "content": follow_up_content})
-                        logger.info("Injected follow-up into reasoning trajectory at step %d: %s", step, steering.source_event.raw_text)
+                if mailbox.is_cancelled():
+                    return EpisodeOutcome(
+                        disposition=FinalDisposition.SILENCE,
+                        thought=f"Aborted by steering at step {step}: {mailbox.cancellation_reason()}"
+                    )
+
+                if mailbox.has_follow_up():
+                    follow_ups = mailbox.consume_follow_ups()
+                    for fu in follow_ups:
+                        working_messages.append({
+                            "role": "user",
+                            "content": f"【INTERIM FOLLOW-UP from {fu.actor_id}】: {fu.raw_text}"
+                        })
+                        logger.info("Injected follow-up into reasoning trajectory at step %d: %s", step, fu.raw_text)
 
                 active_model = router.get_model_for_tier(current_tier)
 
@@ -118,17 +131,34 @@ class PiAgentCore:
                             current_tier = CognitiveTier.DELIBERATE
                     continue
 
-                # Single-pass structured output: parse final EpisodeOutcome directly
-                raw_content = msg.content or ""
-                outcome = self._parse_outcome(raw_content)
-
-                # Check steering post-outcome
-                steering = mailbox.check_steering()
-                if steering and steering.steering_type == SteeringType.CANCEL:
+                # Check if cancellation arrived during this step's LLM generation
+                if mailbox.is_cancelled():
                     return EpisodeOutcome(
                         disposition=FinalDisposition.SILENCE,
-                        thought=f"Aborted by steering post-inference: {steering.reason}"
+                        thought=f"Aborted by steering post-inference: {mailbox.cancellation_reason()}"
                     )
+
+                # Check if follow-up arrived during this step's LLM generation
+                if mailbox.has_follow_up():
+                    follow_ups = mailbox.consume_follow_ups()
+                    if step < max_steps - 1:
+                        for fu in follow_ups:
+                            working_messages.append({
+                                "role": "user",
+                                "content": f"【INTERIM FOLLOW-UP from {fu.actor_id}】: {fu.raw_text}"
+                            })
+                            logger.info("Injected late follow-up into reasoning trajectory at step %d: %s", step, fu.raw_text)
+                        continue
+                    else:
+                        logger.warning("Follow-up arrived at max steps; discarding partial outcome to avoid answering stale context")
+                        return EpisodeOutcome(
+                            disposition=FinalDisposition.SILENCE,
+                            thought="Follow-up arrived at max steps; discarded to prevent answering stale context"
+                        )
+
+                # No pending follow-ups: parse and return final structured outcome
+                raw_content = msg.content or ""
+                outcome = self._parse_outcome(raw_content)
                 return outcome
 
             return EpisodeOutcome(

@@ -464,71 +464,75 @@ class EventStore:
             raise RuntimeError("Database not initialized")
 
         async with self._write_lock:
-            payload_str = json.dumps(event.payload, ensure_ascii=False)
-            metadata_str = json.dumps(event.metadata, ensure_ascii=False)
+            try:
+                payload_str = json.dumps(event.payload, ensure_ascii=False)
+                metadata_str = json.dumps(event.metadata, ensure_ascii=False)
 
-            # 1. Insert Event
-            await self._db.execute(
-                """
-                INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
-                """,
-                (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
-            )
-
-            # 2. Insert FTS5
-            text = event.raw_text
-            if text:
+                # 1. Insert Event
                 await self._db.execute(
                     """
-                    INSERT INTO events_fts (event_id, scene_id, actor_id, content)
-                    VALUES (?, ?, ?, ?);
+                    INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (event.id, event.scene_id, event.actor_id, text)
+                    (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
                 )
 
-            # 3. If event triggers a task, update task status atomically in the same transaction
-            if task_id_to_trigger:
-                await self._db.execute(
-                    "UPDATE tasks SET status = ? WHERE id = ?;",
-                    ("triggered", task_id_to_trigger)
-                )
-
-            # 4. Item 3: If message sent event has associated open loop, activate it atomically in the same transaction!
-            if associated_open_loop:
-                await self._db.execute(
-                    """
-                    INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET status = excluded.status;
-                    """,
-                    (
-                        associated_open_loop["id"],
-                        associated_open_loop["scene_id"],
-                        associated_open_loop["target_actor_id"],
-                        associated_open_loop["intent"],
-                        event.id,
-                        associated_open_loop["status"],
-                        associated_open_loop["created_at"],
-                        associated_open_loop["expires_at"]
+                # 2. Insert FTS5
+                text = event.raw_text
+                if text:
+                    await self._db.execute(
+                        """
+                        INSERT INTO events_fts (event_id, scene_id, actor_id, content)
+                        VALUES (?, ?, ?, ?);
+                        """,
+                        (event.id, event.scene_id, event.actor_id, text)
                     )
+
+                # 3. If event triggers a task, update task status atomically in the same transaction
+                if task_id_to_trigger:
+                    await self._db.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?;",
+                        ("triggered", task_id_to_trigger)
+                    )
+
+                # 4. Item 3: If message sent event has associated open loop, activate it atomically in the same transaction!
+                if associated_open_loop:
+                    await self._db.execute(
+                        """
+                        INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET status = excluded.status;
+                        """,
+                        (
+                            associated_open_loop["id"],
+                            associated_open_loop["scene_id"],
+                            associated_open_loop["target_actor_id"],
+                            associated_open_loop["intent"],
+                            event.id,
+                            associated_open_loop["status"],
+                            associated_open_loop["created_at"],
+                            associated_open_loop["expires_at"]
+                        )
+                    )
+
+                # 5. Upsert SceneState
+                version = scene_state_data.get("version", 0)
+                await self._db.execute(
+                    """
+                    INSERT INTO scene_states (scene_id, version, state_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(scene_id) DO UPDATE SET
+                        version = excluded.version,
+                        state_json = excluded.state_json,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (event.scene_id, version, json.dumps(scene_state_data, ensure_ascii=False), time.time())
                 )
 
-            # 5. Upsert SceneState
-            version = scene_state_data.get("version", 0)
-            await self._db.execute(
-                """
-                INSERT INTO scene_states (scene_id, version, state_json, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    version = excluded.version,
-                    state_json = excluded.state_json,
-                    updated_at = excluded.updated_at;
-                """,
-                (event.scene_id, version, json.dumps(scene_state_data, ensure_ascii=False), time.time())
-            )
-
-            await self._db.commit()
+                await self._db.commit()
+            except Exception:
+                await self._db.rollback()
+                raise
 
     async def get_active_open_loops(self, scene_id: str) -> list[dict[str, Any]]:
         if not self._db:

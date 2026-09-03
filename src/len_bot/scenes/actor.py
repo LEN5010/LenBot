@@ -80,8 +80,8 @@ class SceneActor:
         while self._running:
             try:
                 event = await self._queue.get()
-                # 1. Single-writer state reduction (synchronous & zero locks)
-                self.state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
+                # 1. Pure functional state reduction to candidate state (never mutates self.state)
+                candidate_state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
 
                 # 2. Check if TASK_DUE event with a task_id
                 task_id_to_trigger = None
@@ -90,19 +90,23 @@ class SceneActor:
 
                 associated_open_loop = event.metadata.get("associated_open_loop")
 
-                # 3. P0.1, P0.4 & Item 3: Atomically persist Event, FTS, Task triggered status, OpenLoop, and SceneState
+                # 3. P0-1: Atomically persist Event, FTS, Task triggered status, OpenLoop, and SceneState
+                # Persist first!
                 await self.event_store.commit_scene_event(
                     event=event,
-                    scene_state_data=self.state.model_dump(),
+                    scene_state_data=candidate_state.model_dump(),
                     task_id_to_trigger=task_id_to_trigger,
                     associated_open_loop=associated_open_loop
                 )
 
-                # 4. Route to active Episode Mailbox if present (Steering / Interim tracking)
+                # 4. Publish state ONLY after database commit succeeds!
+                self.state = candidate_state
+
+                # 5. Route to active Episode Mailbox if present (Steering / Interim tracking)
                 if self._active_mailbox:
                     self._active_mailbox.post(event)
 
-                # 5. Notify downstream (StimulusBuilder)
+                # 6. Notify downstream (StimulusBuilder)
                 if self.on_state_updated:
                     await self.on_state_updated(self.state, event)
 
@@ -110,4 +114,5 @@ class SceneActor:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception("Error processing event in SceneActor %s: %s", self.scene_id, e)
+                logger.exception("Error processing event in SceneActor %s (in-memory state rolled back/untouched): %s", self.scene_id, e)
+                self._queue.task_done()
