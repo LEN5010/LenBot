@@ -414,7 +414,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
         )
 
     core = PiAgentCore(config, mock_handler=mock_cognition)
-    outcome = await core.execute_episode(
+    outcome, _trace = await core.execute_episode(
         messages=[{"role": "user", "content": "帮我查直播"}],
         mailbox=mailbox
     )

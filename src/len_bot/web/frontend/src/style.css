@@ -1,0 +1,56 @@
+:root {
+  --bg: #0f1216;
+  --panel: #171c23;
+  --panel-2: #1e252e;
+  --border: #2a3340;
+  --text: #d7dee8;
+  --muted: #8b97a7;
+  --accent: #4da3ff;
+  --ok: #3fce7a;
+  --warn: #e6b455;
+  --bad: #e06c6c;
+  font-size: 14px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace;
+}
+a { color: var(--accent); text-decoration: none; }
+h1 { font-size: 1.3rem; margin: 0 0 16px; }
+h2 { font-size: 1.05rem; margin: 18px 0 10px; color: var(--muted); font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+code, pre { background: var(--panel-2); border-radius: 4px; }
+code { padding: 1px 5px; }
+pre { padding: 10px; overflow-x: auto; font-size: 0.85rem; }
+input, select, textarea, button {
+  font: inherit; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px;
+}
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 700; }
+button.danger { border-color: var(--bad); color: var(--bad); }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.78rem; border: 1px solid var(--border); }
+.tag.ok { color: var(--ok); border-color: var(--ok); }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+.tag.bad { color: var(--bad); border-color: var(--bad); }
+.muted { color: var(--muted); }
+.grid { display: grid; gap: 12px; }
+.cards { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px;
+}
+.card h3 { margin: 0 0 8px; font-size: 0.95rem; }
+.kv { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 0.88rem; }
+.kv .k { color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; overflow-x: auto; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.toolbar input, .toolbar select { min-width: 130px; }

@@ -46,22 +46,75 @@ def test_speaking_budget_anti_chatterbox():
     assert th_monologue == 1.0
 
 def test_cognition_router_escalation():
-    config = RuntimeConfig(default_model="model-chat", deliberate_model="model-reasoner")
-    router = CognitionRouter(config)
+    router = CognitionRouter()
 
-    assert router.get_model_for_tier(CognitiveTier.NORMAL) == "model-chat"
-    assert router.get_model_for_tier(CognitiveTier.DELIBERATE) == "model-reasoner"
+    # Short tool result: no escalation (reason None)
+    assert router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result="简单结果") is None
 
-    # Short tool result: no escalation
-    assert router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result="简单结果") is False
-
-    # Heavy payload (>1200 chars): triggers escalation!
+    # Heavy payload (>1200 chars): triggers escalation with a reason
     heavy_payload = "复杂直播切片数据分析 " * 150
-    assert router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result=heavy_payload) is True
+    reason = router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result=heavy_payload)
+    assert reason and "tool_payload_length" in reason
 
     # Explicit complexity tag: triggers escalation!
     complex_flag_payload = "[COMPLEXITY: HIGH] 双方产生严重事实分歧，需要深入比对历史证据"
-    assert router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result=complex_flag_payload) is True
+    reason2 = router.should_escalate(CognitiveTier.NORMAL, step_count=1, latest_tool_result=complex_flag_payload)
+    assert reason2 == "tool_complexity_marker"
+
+def test_provider_registry_resolves_tiers():
+    """ADR-0020: registry is the single authority for tier → provider + model."""
+    import asyncio
+    from len_bot.cognition.providers import ProviderConfig, ProviderRegistry, RouteTarget, RoutingConfig
+
+    async def scenario():
+        registry = ProviderRegistry()
+        await registry.apply_update(
+            [
+                ProviderConfig(id="cheap", base_url="https://a.example/v1", api_key="k1"),
+                ProviderConfig(id="heavy", base_url="https://b.example/v1", api_key="k2"),
+            ],
+            RoutingConfig(
+                normal=RouteTarget(provider_id="cheap", model="model-chat"),
+                deliberate=RouteTarget(provider_id="heavy", model="model-reasoner"),
+            ),
+        )
+        normal = registry.resolve(CognitiveTier.NORMAL)
+        deliberate = registry.resolve(CognitiveTier.DELIBERATE)
+        assert normal.model == "model-chat" and normal.provider_id == "cheap"
+        assert deliberate.model == "model-reasoner" and deliberate.provider_id == "heavy"
+
+        # Hot-swap: routing change applies on next resolve
+        await registry.apply_update(
+            [ProviderConfig(id="cheap", base_url="https://a.example/v1", api_key="k1")],
+            RoutingConfig(
+                normal=RouteTarget(provider_id="cheap", model="model-chat-2"),
+                deliberate=RouteTarget(provider_id="cheap", model="model-reasoner-2"),
+            ),
+        )
+        assert registry.resolve(CognitiveTier.NORMAL).model == "model-chat-2"
+
+        # Unknown route target rejected
+        with pytest.raises(ValueError):
+            await registry.apply_update(
+                [ProviderConfig(id="cheap", base_url="https://a.example/v1")],
+                RoutingConfig(
+                    normal=RouteTarget(provider_id="ghost", model="x"),
+                    deliberate=RouteTarget(provider_id="cheap", model="x"),
+                ),
+            )
+
+        # Disabled provider unresolvable
+        await registry.apply_update(
+            [ProviderConfig(id="cheap", base_url="https://a.example/v1", enabled=False)],
+            RoutingConfig(
+                normal=RouteTarget(provider_id="cheap", model="m"),
+                deliberate=RouteTarget(provider_id="cheap", model="m"),
+            ),
+        )
+        with pytest.raises(LookupError):
+            registry.resolve(CognitiveTier.NORMAL)
+
+    asyncio.run(scenario())
 
 @pytest.mark.asyncio
 async def test_agency_initiative_and_anti_spam_flow(tmp_path):

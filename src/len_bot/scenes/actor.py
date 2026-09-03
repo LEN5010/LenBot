@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import time
 from typing import Optional, Callable, Awaitable, Any, Union
-from len_bot.events.models import Event
+from len_bot.events.models import Event, EventType
 from len_bot.scenes.models import SceneState
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.events.store import EventStore
 from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.runtime.gate import ProposalCommit
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,13 @@ class ProposalCommitCommand:
         mailbox: EpisodeMailbox,
         runtime_gate: Any,
     ):
+        self.proposal_commit = ProposalCommit(
+            episode_id=episode_id,
+            scene_id=scene_id,
+            base_scene_version=base_scene_version,
+            outcome=outcome,
+            mailbox=mailbox,
+        )
         self.episode_id = episode_id
         self.scene_id = scene_id
         self.base_scene_version = base_scene_version
@@ -122,8 +131,25 @@ class SceneActor:
                         decision = await item.runtime_gate.evaluate_and_commit(
                             outcome=item.outcome,
                             mailbox=item.mailbox,
-                            current_scene_state=self.state
+                            current_scene_state=self.state,
+                            proposal_commit=item.proposal_commit,
                         )
+                        # Invariant A: If outcome proposed state_annotations, reduce via STATE_ANNOTATION event
+                        if getattr(item.outcome, "state_annotations", None) and not item.mailbox.is_cancelled():
+                            anno_event = Event(
+                                event_type=EventType.STATE_ANNOTATION,
+                                scene_id=self.scene_id,
+                                actor_id="system:cognition",
+                                timestamp=time.time(),
+                                metadata={"soft_annotation": item.outcome.state_annotations}
+                            )
+                            candidate_state = SceneReducer.reduce(self.state, anno_event, self.bot_actor_id)
+                            await self.event_store.commit_scene_event(
+                                event=anno_event,
+                                scene_state_data=candidate_state.model_dump()
+                            )
+                            self.state = candidate_state
+
                         if not item.future.done():
                             item.future.set_result(decision)
                     except Exception as e:

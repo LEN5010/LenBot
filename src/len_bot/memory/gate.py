@@ -1,5 +1,6 @@
 import logging
 import time
+import uuid
 from typing import Optional, Tuple
 from len_bot.events.store import EventStore
 from len_bot.memory.models import MemoryProposal, MemoryItem, MemoryStatus
@@ -60,6 +61,7 @@ class MemoryGate:
             scope=proposal.scope
         )
 
+        new_item_id = f"mem_{uuid.uuid4().hex[:10]}"
         if existing:
             if existing.value == proposal.value:
                 # Value unchanged: confirm and update timestamp
@@ -69,13 +71,14 @@ class MemoryGate:
                 logger.info("Confirmed existing memory %s (%s)", existing.id, existing.human_readable_assertion)
                 return MemoryGateResult(True, "Confirmed existing memory value", existing)
             else:
-                # Value conflict! Supersede old memory (§57)
-                await self.memory_store.update_memory_status(existing.id, MemoryStatus.SUPERSEDED)
-                logger.info("Memory conflict: superseded old memory %s (was '%s', new is '%s')",
-                            existing.id, existing.value, proposal.value)
+                # Value conflict! Supersede old memory and point to new memory ID (§57 & ADR-0011)
+                await self.memory_store.update_memory_status(existing.id, MemoryStatus.SUPERSEDED, superseded_by=new_item_id)
+                logger.info("Memory conflict: superseded old memory %s (was '%s', superseded_by='%s')",
+                            existing.id, existing.value, new_item_id)
 
         # 4. Insert new active memory
         new_item = MemoryItem(
+            id=new_item_id,
             subject=proposal.subject,
             kind=proposal.kind,
             key=proposal.key,

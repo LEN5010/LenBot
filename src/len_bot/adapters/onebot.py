@@ -128,6 +128,15 @@ class OneBotAdapter:
             "[CQ:reply" in raw_text and f"qq={self.config.bot_qq}" in raw_text
         )
 
+        # Person Context (ADR-0019 §十一): keep a sender snapshot for the person card.
+        # Not a permanent profile copy — display identity + current group role only.
+        sender_raw = data.get("sender") or {}
+        sender_snapshot = {
+            "nickname": sender_raw.get("nickname"),
+            "card": sender_raw.get("card") or None,
+            "role": sender_raw.get("role")
+        }
+
         return Event(
             event_type=etype,
             scene_id=scene_id,
@@ -137,6 +146,7 @@ class OneBotAdapter:
                 "message_id": data.get("message_id"),
                 "raw_text": raw_text,
                 "at_bot": at_bot,
-                "reply_bot": reply_bot
+                "reply_bot": reply_bot,
+                "sender": sender_snapshot
             }
         )

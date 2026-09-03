@@ -31,6 +31,10 @@ async def update_persona_settings(req: PersonaSettingsRequest, request: Request,
     runtime.config.identity_persona = req.identity_persona.strip()
     runtime.config.bot_qq = req.bot_qq
     runtime.bot_actor_id = f"user:{req.bot_qq}"
+    runtime.action_queue.bot_actor_id = runtime.bot_actor_id
+    runtime.scene_manager.bot_actor_id = runtime.bot_actor_id
+    for actor in runtime.scene_manager._actors.values():
+        actor.bot_actor_id = runtime.bot_actor_id
 
     await runtime.event_store.save_dynamic_config("persona_config", {
         "identity_name": runtime.config.identity_name,

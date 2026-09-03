@@ -15,8 +15,26 @@ class MessageProposal(BaseModel):
 
 class TaskProposal(BaseModel):
     description: str = Field(description="Goal or purpose of the scheduled future task")
-    delay_seconds: float = Field(description="Seconds from now until task is due")
+    delay_seconds: Optional[float] = Field(
+        default=None,
+        description="Seconds from now until task is due. Omit for condition-bound tasks."
+    )
+    # ADR-0018: condition-bound obligation. When set, the task fires when a committed
+    # event of this type arrives in the scene (e.g. LIVE_STARTED), or at its deadline.
+    wake_event_type: Optional[str] = Field(default=None)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+# Deadline cap for condition-bound tasks that never see their wake event (ADR-0018).
+CONDITION_TASK_DEFAULT_DEADLINE_SECONDS = 604800.0
+
+
+class RetainedItemProposal(BaseModel):
+    """Optional cognition proposal to retain a short-lived ambient item (ADR-0018, Goal 7)."""
+    topic: str = Field(description="Short topical label used for future lexical matching")
+    summary: str = Field(description="What the agent saw / learned, in one or two sentences")
+    salience: float = Field(default=0.5, description="Estimated usefulness if a related topic appears [0,1]")
+    source_event_id: Optional[str] = Field(default=None, description="Optional evidence event id from recent raw chat")
 
 from len_bot.memory.models import MemoryProposal
 
@@ -31,3 +49,4 @@ class EpisodeOutcome(BaseModel):
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
     state_annotations: dict[str, Any] = Field(default_factory=dict)
+    retained_item_proposals: list[RetainedItemProposal] = Field(default_factory=list)

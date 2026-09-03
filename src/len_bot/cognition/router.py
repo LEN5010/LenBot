@@ -1,7 +1,6 @@
 import logging
 from enum import StrEnum
 from typing import Optional
-from len_bot.config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -10,37 +9,41 @@ class CognitiveTier(StrEnum):
     DELIBERATE = "deliberate"
 
 class CognitionRouter:
-    """Manages cognitive model tier and dynamic escalation during an Episode (§70-76)."""
+    """Dynamic Normal→Deliberate escalation during an Episode (§70-76, ADR-0020).
 
-    def __init__(self, config: RuntimeConfig):
-        self.config = config
+    Model selection moved to the ProviderRegistry; the router only decides WHEN
+    to escalate and returns the reason (recorded as a routing metric).
+    """
 
-    def get_model_for_tier(self, tier: CognitiveTier) -> str:
-        if tier == CognitiveTier.DELIBERATE:
-            return self.config.deliberate_model
-        return self.config.default_model
+    COMPLEXITY_MARKER = "[COMPLEXITY: HIGH]"
+    LARGE_TOOL_RESULT_CHARS = 1200
+    MULTI_STEP_TRIGGER = 3
 
     def should_escalate(
         self,
         current_tier: CognitiveTier,
         step_count: int,
         latest_tool_result: Optional[str] = None
-    ) -> bool:
+    ) -> Optional[str]:
+        """Returns the escalation reason, or None when the tier should stay."""
         if current_tier == CognitiveTier.DELIBERATE:
-            return False  # Already at highest tier
+            return None  # Already at highest tier
 
         # 1. Complexity trigger: large unstructured payload or explicit complexity marker (§75)
         if latest_tool_result:
-            if len(latest_tool_result) > 1200:
+            if len(latest_tool_result) > self.LARGE_TOOL_RESULT_CHARS:
+                reason = f"tool_payload_length:{len(latest_tool_result)}chars"
                 logger.info("CognitionRouter: Escalating to DELIBERATE due to tool payload length (%d chars)", len(latest_tool_result))
-                return True
-            if "[COMPLEXITY: HIGH]" in latest_tool_result or "争议" in latest_tool_result:
+                return reason
+            if self.COMPLEXITY_MARKER in latest_tool_result or "争议" in latest_tool_result:
+                reason = "tool_complexity_marker"
                 logger.info("CognitionRouter: Escalating to DELIBERATE due to complexity flag in tool output")
-                return True
+                return reason
 
         # 2. Multi-step reasoning trigger: investigation taking multiple steps
-        if step_count >= 3:
+        if step_count >= self.MULTI_STEP_TRIGGER:
+            reason = f"multi_step_trajectory:{step_count}"
             logger.info("CognitionRouter: Escalating to DELIBERATE due to deep multi-step ReAct trajectory (step %d)", step_count)
-            return True
+            return reason
 
-        return False
+        return None

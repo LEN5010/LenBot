@@ -44,34 +44,50 @@ src/len_bot/
 │   ├── assembler.py     # ContextAssembler (Situation Package generator)
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
 │   ├── manager.py       # EpisodeManager (ephemeral episode lifecycle)
-│   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal
+│   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, RetainedItemProposal
 │   ├── pi_core.py       # PiAgentCore (ReAct loop with step-boundary steering)
+│   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing)
 │   └── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
 ├── events/              # Immutable event bus & raw storage
 │   ├── builder.py       # StimulusBuilder (burst coalescing & debounce)
 │   ├── models.py        # Event, EventType, Stimulus, StimulusType
-│   └── store.py         # EventStore (SQLite WAL + native trigram FTS5)
+│   └── store.py         # EventStore (SQLite WAL + native trigram FTS5 + traces)
 ├── memory/              # Epistemic beliefs & reflection
 │   ├── gate.py          # MemoryGate (provenance check & slot superseding)
-│   ├── models.py        # EpisodeRecord (L1), MemoryItem (L2), MemoryCertainty
-│   ├── reflection.py    # ReflectionEngine (micro-reflection & episode archival)
-│   └── store.py         # MemoryStore (episodes & memories tables)
+│   ├── models.py        # EpisodeRecord (L1), MemoryItem (L2), MemoryKind, MemoryCertainty
+│   ├── reflector.py     # LLMReflector (event range -> EpisodeRecord + MemoryProposals)
+│   ├── reflection.py    # ReflectionEngine (quiet-window micro-reflection & episode archival)
+│   └── store.py         # MemoryStore (episodes, memories, reflection cursors)
 ├── runtime/             # Core persistent runtime
 │   ├── agent_runtime.py # AgentRuntime coordinator
-│   └── gate.py          # RuntimeGate (staleness gate, two-phase commit)
+│   ├── gate.py          # RuntimeGate (staleness gate, two-phase commit)
+│   └── metrics.py       # RuntimeMetrics (routing + social behavior counters)
 ├── scenes/              # Scene state management
 │   ├── actor.py         # SceneActor (single-writer asynchronous worker)
 │   ├── manager.py       # SceneManager (actor registry)
-│   ├── models.py        # SceneState, ParticipantStats
+│   ├── models.py        # SceneState, ParticipationThread
 │   └── reducer.py       # SceneReducer (pure functional state transition)
 ├── scheduler/           # Deterministic time execution
-│   ├── engine.py        # TaskScheduler (min-heap + asyncio.Event + sync)
-│   └── models.py        # TaskItem, TaskStatus
+│   ├── engine.py        # TaskScheduler (min-heap + condition-bound wake + sync)
+│   └── models.py        # TaskItem (due_at, wake_event_type), TaskStatus
 ├── state/               # Social and operational state
+│   ├── ambient.py       # AmbientStore (short-lived retained soft state, in-memory)
 │   ├── interest.py      # InterestModel (topic weights & scoring)
 │   └── open_loops.py    # OpenLoopManager (TTL sweeper & decay)
 ├── testing/             # Deterministic test utilities
+│   ├── replay.py        # ReplayLab (deterministic offline attention/cognition replay)
 │   └── scenario_runner.py # ScenarioRunner for offline behavioral replay
+├── plugins/             # Plugin runtime (ADR-0016/0021)
+│   ├── builtin/         # Real plugins: bilibili_live sensor, web_search tool
+│   ├── base.py          # BasePlugin, PluginContext (permission-guarded)
+│   ├── host.py          # PluginHost (sandbox, lifecycle health, enable/disable)
+│   └── models.py        # PluginManifest (config_schema, emitted_events, ...)
+├── web/                 # Control Plane (ADR-0017/0022)
+│   ├── frontend/        # Vue 3 + Vite source (builds to web/static/dist)
+│   ├── routes/          # auth, overview, cockpit, models, plugins, replay, ...
+│   ├── query_service.py # RuntimeQueryService — the ONLY read facade for routes
+│   ├── log_ring.py      # In-memory operational log ring
+│   └── app.py           # FastAPI app factory (SPA + API)
 └── tools/               # Agentic retrieval tools
     └── retrieval.py     # RetrievalToolkit (search_messages, read_context, etc.)
 ```
@@ -104,6 +120,70 @@ All retrieval tools (`search_messages`, `read_context`, `query_timeline`, `query
 - SQL queries unconditionally enforce `WHERE scene_id IN ({placeholders})`.
 - The LLM cannot access private conversations or other groups, regardless of prompt injections.
 
+### Atomic All-or-Nothing Proposal Commit (ADR-0013)
+When an episode finishes with multiple proposals (`tasks`, `resolve_open_loop_ids`, `memory_proposals`):
+- `RuntimeGate` delegates to `EventStore.commit_proposal_transaction`.
+- All durable internal state mutations and evidence integrity checks are executed inside a single SQLite transaction under `_write_lock`.
+- If any mutation or validation fails, everything is rolled back: zero partial writes leak into SQLite.
+- External side-effects (`TaskScheduler` heap registration and `ActionQueue` enqueue) only execute after database transaction commits successfully.
+
+### Social Behavior Core & Interim Context (ADR-0014)
+Conversational continuity in multi-user groups is governed by `ParticipationThread`:
+- Natural continuation without `@` is permitted when an active thread matches topic and participants, bounded by speaking budget and conversational adjacency.
+- When topic drifts, cognition emits `state_annotations={"close_thread": True}`, materialized via `STATE_ANNOTATION` event to step the bot out cleanly.
+- `EpisodeMailbox` tracks unread interim events; `PiAgentCore` injects contemporary scene chatter at ReAct step boundaries so that cognition detects semantic staleness (e.g. peer answered) and outputs `SILENCE`.
+
+### Semantic Memory & Scope Guard (ADR-0015)
+Epistemic beliefs follow strict evidence-based provenance and semantic slot superseding:
+- L2 beliefs store evidence event IDs; slot conflicts (`subject`, `kind`, `key`, `scope`) update previous records to `SUPERSEDED` pointing to `superseded_by` rather than erasing history.
+- Privacy boundaries (`ExecutionScope`) are rigidly enforced at SQL layer (`WHERE (scope IN (...) OR visibility = 'global')`); private chat secrets can never be retrieved or leaked into public groups.
+- Exponential temporal decay sweeper discounts stale unreinforced tentative beliefs while access frequency reinforces enduring knowledge.
+
+### Plugin Runtime Isolation & Sensory Decoupling (ADR-0016)
+Plugin capabilities are managed via `PluginHost` sandboxing:
+- Plugins operate as sensory inputs emitting events into the runtime event bus; they never directly prompt LLMs or send outbound messages (Goal 6, Invariant B).
+- Plugin tools are executed with timeout protection (`asyncio.wait_for`) and comprehensive exception trapping; crashing or hanging plugins cannot stall the runtime or leak uncaught exceptions to `PiAgentCore` (Goal 7).
+- Outbound action interceptors in `ActionQueue` enable pre-flight content safety sanitization and action blocking.
+
+### Operational Cockpit & Zero-Downtime Hot Reload (ADR-0017)
+Real-time administrative control is centralized in the Cockpit API (`/api/cockpit/`):
+- Observability exposes scene participant statistics, active participation threads, scheduled tasks, open loops, and epistemic memories.
+- Safe human intervention (event injection, task cancellation/trigger, loop resolution, memory refutation) strictly honors the `Event -> Runtime State` invariant without bypass.
+- Dynamic configuration updates (models, persona identity, speaking budget) hot-reload in-memory across all runtime components and persist in SQLite `configs` table across restarts (Goal 8 & 9).
+
+### Condition-Bound Obligations & Ambient Items (ADR-0018)
+Cross-time social continuity for promises and retained interests:
+- `TaskItem.wake_event_type` turns a TaskProposal into a condition-bound obligation: it fires via the standard `TASK_DUE` authority path when a matching event commits in its scene, or at its deadline — whichever comes first. "开播叫我" + `LIVE_STARTED` → WAKE → fulfil.
+- Plugin fact events (`LIVE_STARTED/LIVE_ENDED` → `PLUGIN_FACT` stimulus) are explicitly OBSERVE-only in `AttentionEngine`: a bare fact never wakes cognition and never creates a task (Invariant F & H).
+- `AmbientStore` (in-memory, TTL ~hours) keeps short-lived retained soft state. Cognition may retain via `EpisodeOutcome.retained_item_proposals` (written post-transaction, never inside it); relevant items enter the Situation Package as 【RELEVANT AMBIENT ITEMS】 and cognition decides to use them or SILENCE.
+- `OpenLoopManager.resolve_loop` only transitions ACTIVE loops and preserves target/intent/source for traceability.
+
+### Quiet-Window Reflection & Typed Social Memory (ADR-0019)
+- Reflection fires after a scene stays quiet for `reflection_quiet_window_seconds` (debounce timer per scene) — the old message-count trigger is gone. While `bot_engagement == "active"` the window postpones.
+- A per-scene `reflection_cursors` row (last event rowid) bounds each reflection to the unreflected range (`EventStore.get_events_since`); the cursor advances only after the episode record persists — the same events are never summarized twice.
+- The LLM reflector (`memory/reflector.py`) is wired in production; it only PROPOSES `EpisodeRecord + MemoryProposal[]`, with evidence citing the reflected range (Invariant E). Deterministic fallback remains only for explicit mock/test modes.
+- `MemoryKind` is a canonical enum (preference/habit/relationship/fact/group_norm/topic_interest/recurring_role/social_pattern); legacy `pattern` rows migrate once at startup. Sender snapshots flow into a 【CURRENT ACTOR】 person card (display name, group role, subject-scoped memories). `decay_memories` runs in the maintenance heartbeat.
+
+### Provider Registry & Routing Metrics (ADR-0020)
+- `ProviderRegistry` is the single authority for tier → (provider, model, client): multi-provider OpenAI-compatible configs, hot `apply_update`, lazily cached clients, persisted in `provider_config` (one-time migration from legacy `model_config`).
+- `RuntimeMetrics` records every live LLM call per (tier, provider, model): calls, errors, prompt/completion tokens, latency p50/p95, escalation reasons — plus social counters (human_messages, observe/track/wake, wake_silence, visible_messages, visible_speech_ratio, would_send, cancellations_honored).
+- `PiAgentCore` resolves per step, so tier switches and hot config updates apply at the next ReAct step; escalation (`should_escalate`) returns a reason that lands in metrics. Retrieval tools with large evidence sets append the `[COMPLEXITY: HIGH]` marker — the escalation signal has real producers.
+
+### Plugin Discovery, Lifecycle Health & Real Plugins (ADR-0021)
+- `PluginManifest` declaratively exposes `config_schema/default_config/emitted_events/registered_tools`; `PluginHost` tracks per-plugin health (state, last_error, error_count, last_event_at, last_run_at) and `on_enable/on_disable` hooks are actually invoked.
+- Discovery is an explicit builtin registry (`plugins/builtin/`); `AgentRuntime.start()` loads builtin plugins with persisted config + enabled flags (`plugins_state`), `stop()` unloads. `save_plugin_state()` is the persistence authority.
+- Real plugins: `BilibiliLiveSensor` (polls the public live API, emits `LIVE_STARTED/LIVE_ENDED` facts, inert when unconfigured, never notifies directly) and `WebSearchToolPlugin` (`web_search` + `read_page` tools over DuckDuckGo, sandboxed, failures return error strings). The mock `RESERVED_PLUGINS` registry was deleted — the Control Plane shows the real registry only.
+
+### Control Plane Query Service, Trace & Replay Lab (ADR-0022)
+- `RuntimeQueryService` is the only read facade for web routes — no route touches `runtime.*._db`, `_actors` or `_plugins`; interventions keep their authority paths (loop resolve goes through `OpenLoopManager`).
+- `traces` table stores per-stimulus attention rows and per-episode chain rows (Stimulus → Attention → per-step cognition → Outcome → Gate → durable effects → actions): the "why did the bot speak/stay silent" question is answerable from the Trace view.
+- Metrics/social endpoints, filtered event queries, and an in-memory log ring (`GET /api/logs`) complete observability. `ReplayLab` deterministically replays a recorded window through the pure reducer + real AttentionEngine with policy override sets (Replay Lab, Policy A vs B).
+- The Vue 3 + Vite frontend (`web/frontend/`, builds to `web/static/dist/`) implements the ten-view information architecture; CORS wildcard+credentials was removed.
+
+### Shadow Mode (ADR-0023)
+- `AgentRuntime.set_shadow_mode()` hot-toggles (persisted in `shadow_config`). While enabled, `ActionQueue` still runs safety interceptors but skips physical sends and emits NO `MESSAGE_SENT` — zero social facts, no OpenLoop activation — while recording would-send entries (`shadow_would_send_log`, `metrics.would_send`).
+- Use for the Shadow Testing phase on real groups: observe false-positive speaking, stale responses and awkward participation before enabling real delivery.
+
 ---
 
 ## 4. Development & Testing Workflow
@@ -115,12 +195,24 @@ This project uses `uv` for lightning-fast Python package and environment managem
 # Run the entire test suite
 uv run pytest
 
+# Run the V2 Scenario Benchmark (Goals 1-12, named A-L)
+uv run pytest tests/test_v2_scenarios_a_to_l.py -v
+
 # Run specific test modules with verbose output
 uv run pytest tests/test_v1a_reactive_core.py -v
 uv run pytest tests/test_v1b_persistent_execution.py -v
 uv run pytest tests/test_v1c_agentic_history.py -v
 uv run pytest tests/test_v1d_memory.py -v
 uv run pytest tests/test_v1e_agency.py -v
+```
+
+### Control Plane Frontend
+```bash
+# The Vue 3 control plane builds into web/static/dist (served by FastAPI)
+cd src/len_bot/web/frontend && npm install && npm run build
+
+# Dev mode: vite dev server proxies /api to the running control plane
+cd src/len_bot/web/frontend && npm run dev
 ```
 
 ### Adding New Architectural Decisions (ADR)

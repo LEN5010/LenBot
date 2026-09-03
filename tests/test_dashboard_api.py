@@ -2,6 +2,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
+from len_bot.cognition.router import CognitiveTier
 from len_bot.web.app import create_app
 
 @pytest.mark.asyncio
@@ -58,20 +59,53 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert ws_res.status_code == 200
         assert ws_res.json()["port"] == config.ws_port
 
-        # 7. Model Config GET & POST
-        models_get = await client.get("/api/models/config", headers=headers)
-        assert models_get.status_code == 200
-        assert models_get.json()["default_model"] == "deepseek-chat"
+        # 7. Provider & Routing management (ADR-0020)
+        providers_get = await client.get("/api/models/providers", headers=headers)
+        assert providers_get.status_code == 200
+        providers_data = providers_get.json()
+        # Startup seeded the default provider from config (no legacy model_config existed)
+        assert any(p["id"] == "default" for p in providers_data["providers"])
+        assert providers_data["routing"]["normal"]["model"] == "deepseek-chat"
 
-        models_post = await client.post("/api/models/config", headers=headers, json={
-            "openai_base_url": "https://api.openai.com/v1",
-            "openai_api_key": "sk-test1234567890",
-            "default_model": "gpt-4o-mini",
+        provider_post = await client.post("/api/models/providers", headers=headers, json={
+            "id": "openai-main",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test1234567890",
+            "enabled": True
+        })
+        assert provider_post.status_code == 200
+
+        routing_post = await client.post("/api/models/routing", headers=headers, json={
+            "normal_provider_id": "openai-main",
+            "normal_model": "gpt-4o-mini",
+            "deliberate_provider_id": "openai-main",
             "deliberate_model": "gpt-4o"
         })
-        assert models_post.status_code == 200
-        assert runtime.config.default_model == "gpt-4o-mini"
-        assert runtime.config.deliberate_model == "gpt-4o"
+        assert routing_post.status_code == 200
+
+        # Hot-applied: registry resolves the new routing immediately
+        normal_res = runtime.provider_registry.resolve(CognitiveTier.NORMAL)
+        assert normal_res.model == "gpt-4o-mini"
+        assert normal_res.provider_id == "openai-main"
+
+        # API key never echoed back
+        providers_after = (await client.get("/api/models/providers", headers=headers)).json()
+        for p in providers_after["providers"]:
+            assert "api_key" not in p
+            assert "api_key_masked" in p
+
+        # Persisted: survives a fresh runtime on the same DB
+        runtime2 = AgentRuntime(config=config)
+        await runtime2.start()
+        normal2 = runtime2.provider_registry.resolve(CognitiveTier.NORMAL)
+        assert normal2.model == "gpt-4o-mini" and normal2.provider_id == "openai-main"
+        assert normal2.client.base_url.host == "api.openai.com"
+        await runtime2.stop()
+
+        # Routing metrics endpoint exists
+        metrics_res = await client.get("/api/models/metrics", headers=headers)
+        assert metrics_res.status_code == 200
+        assert "social" in metrics_res.json()
 
         # 8. Persona & Social Settings
         persona_post = await client.post("/api/settings/persona", headers=headers, json={
@@ -93,11 +127,11 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert runtime.attention_engine.speaking_budget.base_threshold == 0.75
         assert runtime.attention_engine.interest_model.topics["gaming"] == 0.95
 
-        # 9. Plugins Subsystem (Reserved)
+        # 9. Plugins Subsystem (real registry only, ADR-0021)
         plugins_get = await client.get("/api/plugins/list", headers=headers)
         assert plugins_get.status_code == 200
         plugins_list = plugins_get.json()
-        assert len(plugins_list) >= 3
+        assert {p["id"] for p in plugins_list} == {"bilibili_live_sensor", "web_search_tool"}
         first_plugin_id = plugins_list[0]["id"]
 
         plugin_toggle = await client.post("/api/plugins/toggle", headers=headers, json={

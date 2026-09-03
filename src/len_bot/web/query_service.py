@@ -1,0 +1,306 @@
+"""RuntimeQueryService (ADR-0022): the single read facade over the runtime.
+
+Control Plane routes NEVER reach into runtime internals (`event_store._db`,
+`scene_manager._actors`, `plugin_host._plugins`) — every read goes through
+here, so the Dashboard is decoupled from Runtime implementation details.
+Mutating interventions stay on their existing authority paths (scheduler,
+OpenLoopManager, MemoryStore, receive_event).
+"""
+
+import json
+import time
+from typing import Optional
+
+
+class RuntimeQueryService:
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    # ---------- Overview ----------
+
+    async def overview(self) -> dict:
+        rt = self.runtime
+        stats = await rt.event_store.get_stats()
+
+        memory_count = 0
+        if rt.memory_store:
+            cursor = await rt.memory_store._db.execute("SELECT COUNT(*) FROM memories WHERE status = 'active';")
+            (memory_count,) = await cursor.fetchone()
+
+        scenes = self.loaded_scene_summaries()
+        routing = rt.provider_registry.snapshot()
+        social = rt.metrics.snapshot()["social"]
+
+        return {
+            "stats": {
+                **stats,
+                "active_scenes": sum(1 for s in scenes if s["activity"] in ("active", "hot")),
+                "memory_beliefs_count": memory_count,
+                "websocket_connected": self.websocket_connected(),
+                "speaking_budget_threshold": rt.attention_engine.speaking_budget.base_threshold,
+                "normal_model": routing["routing"]["normal"]["model"] if routing["routing"] else None,
+                "deliberate_model": routing["routing"]["deliberate"]["model"] if routing["routing"] else None,
+                "identity_name": rt.config.identity_name,
+                "bot_qq": rt.config.bot_qq,
+                "uptime_seconds": time.time() - getattr(rt, "_started_at", time.time()),
+                "shadow_mode": rt.shadow_mode,
+            },
+            "scenes": scenes,
+            "social_metrics": social,
+        }
+
+    def websocket_connected(self) -> bool:
+        adapter = getattr(self.runtime, "_onebot_adapter", None)
+        return bool(adapter and getattr(adapter, "_active_ws", None) is not None)
+
+    # ---------- Scenes ----------
+
+    def loaded_scene_summaries(self) -> list[dict]:
+        summaries = []
+        for scene_id, actor in self.runtime.scene_manager._actors.items():
+            state = actor.state
+            summaries.append({
+                "scene_id": scene_id,
+                "version": state.version if state else 0,
+                "activity": state.activity_level if state else "idle",
+                "active_topic": state.active_topic or "None",
+                "bot_engagement": state.bot_engagement if state else "idle",
+                "consecutive_bot_messages": state.consecutive_bot_messages if state else 0,
+            })
+        return summaries
+
+    async def list_scenes(self) -> list[dict]:
+        scenes = []
+        for scene_id, actor in self.runtime.scene_manager._actors.items():
+            state = actor.state
+            thread_info = None
+            if state and state.current_thread:
+                thread_info = {
+                    "topic": state.current_thread.topic,
+                    "status": state.current_thread.status.value,
+                    "participants": state.current_thread.participants,
+                    "bot_consecutive_messages": state.current_thread.bot_consecutive_messages,
+                    "intervening_messages": state.current_thread.intervening_messages,
+                }
+            scenes.append({
+                "scene_id": scene_id,
+                "version": state.version if state else 0,
+                "activity_level": state.activity_level if state else "idle",
+                "active_topic": state.active_topic if state else None,
+                "participant_count": len(state.participants) if state else 0,
+                "current_thread": thread_info,
+                "is_in_memory": True,
+            })
+
+        cursor = await self.runtime.event_store._db.execute("SELECT DISTINCT scene_id FROM events;")
+        rows = await cursor.fetchall()
+        existing_ids = {s["scene_id"] for s in scenes}
+        for r in rows:
+            if r[0] and r[0] not in existing_ids:
+                scenes.append({
+                    "scene_id": r[0], "version": 0, "activity_level": "idle",
+                    "active_topic": None, "participant_count": 0,
+                    "current_thread": None, "is_in_memory": False,
+                })
+        return scenes
+
+    async def scene_detail(self, scene_id: str) -> Optional[dict]:
+        state = self.runtime.scene_manager.get_scene_state(scene_id)
+        if state is None:
+            actor = await self.runtime.scene_manager.get_or_create_actor(scene_id)
+            state = actor.state
+        thread_info = None
+        if state.current_thread:
+            thread_info = {
+                "topic": state.current_thread.topic,
+                "status": state.current_thread.status.value,
+                "participants": state.current_thread.participants,
+                "bot_consecutive_messages": state.current_thread.bot_consecutive_messages,
+                "intervening_messages": state.current_thread.intervening_messages,
+                "last_relevant_at": state.current_thread.last_relevant_at,
+            }
+        return {
+            "scene_id": scene_id,
+            "version": state.version,
+            "activity_level": state.activity_level,
+            "active_topic": state.active_topic,
+            "bot_engagement": state.bot_engagement,
+            "consecutive_bot_messages": state.consecutive_bot_messages,
+            "participants": state.participants,
+            "current_thread": thread_info,
+        }
+
+    # ---------- Events / Tasks / Loops / Memories ----------
+
+    async def query_events(
+        self,
+        scene_id: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        sql = "SELECT id, event_type, scene_id, actor_id, timestamp, payload FROM events WHERE 1=1"
+        params: list = []
+        if scene_id:
+            sql += " AND scene_id = ?"
+            params.append(scene_id)
+        if actor_id:
+            sql += " AND actor_id = ?"
+            params.append(actor_id)
+        if event_type:
+            sql += " AND event_type = ?"
+            params.append(event_type)
+        if since is not None:
+            sql += " AND timestamp >= ?"
+            params.append(since)
+        if until is not None:
+            sql += " AND timestamp <= ?"
+            params.append(until)
+        sql += " ORDER BY timestamp DESC LIMIT ?;"
+        params.append(limit)
+        cursor = await self.runtime.event_store._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3],
+             "timestamp": r[4], "payload": json.loads(r[5]) if r[5] else {}}
+            for r in rows
+        ]
+
+    async def list_tasks(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
+        sql = "SELECT id, scene_id, description, due_at, status, payload, created_at, wake_event_type FROM tasks"
+        params: list = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY due_at ASC LIMIT ?;"
+        params.append(limit)
+        cursor = await self.runtime.event_store._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "scene_id": r[1], "description": r[2], "due_at": r[3], "status": r[4],
+             "payload": json.loads(r[5]) if r[5] else {}, "created_at": r[6], "wake_event_type": r[7]}
+            for r in rows
+        ]
+
+    async def list_open_loops(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
+        sql = "SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at FROM open_loops"
+        params: list = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ?;"
+        params.append(limit)
+        cursor = await self.runtime.event_store._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "scene_id": r[1], "target_actor_id": r[2], "intent": r[3],
+             "source_event_id": r[4], "status": r[5], "created_at": r[6], "expires_at": r[7]}
+            for r in rows
+        ]
+
+    async def list_memories(
+        self,
+        status: Optional[str] = None,
+        scope: Optional[str] = None,
+        subject: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        sql = """
+            SELECT id, subject, kind, key, value, certainty, scope, visibility, status,
+                   superseded_by, evidence, human_readable_assertion, created_at, last_confirmed_at
+            FROM memories WHERE 1=1
+        """
+        params: list = []
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        if scope:
+            sql += " AND scope = ?"
+            params.append(scope)
+        if subject:
+            sql += " AND subject = ?"
+            params.append(subject)
+        sql += " ORDER BY last_confirmed_at DESC LIMIT ?;"
+        params.append(limit)
+        cursor = await self.runtime.memory_store._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "subject": r[1], "kind": r[2], "key": r[3], "value": r[4],
+             "certainty": r[5], "scope": r[6], "visibility": r[7], "status": r[8],
+             "superseded_by": r[9], "evidence": json.loads(r[10]) if r[10] else [],
+             "human_readable_assertion": r[11], "created_at": r[12], "last_confirmed_at": r[13]}
+            for r in rows
+        ]
+
+    async def memory_chain(self, memory_id: str) -> list[dict]:
+        """Superseded-chain traversal: walk back to the root ancestor, then follow
+        superseded_by forward — the full belief evolution, oldest first."""
+        store = self.runtime.memory_store
+        columns = ("id, subject, kind, key, value, certainty, scope, visibility, status, "
+                   "superseded_by, evidence, human_readable_assertion, created_at")
+
+        async def fetch(mem_id: str) -> Optional[dict]:
+            cursor = await store._db.execute(
+                f"SELECT {columns} FROM memories WHERE id = ?;", (mem_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0], "subject": row[1], "kind": row[2], "key": row[3], "value": row[4],
+                "certainty": row[5], "scope": row[6], "visibility": row[7], "status": row[8],
+                "superseded_by": row[9], "evidence": json.loads(row[10]) if row[10] else [],
+                "human_readable_assertion": row[11], "created_at": row[12],
+            }
+
+        # 1. Walk backward (who did this memory supersede?) to find the root
+        current = await fetch(memory_id)
+        if not current:
+            return []
+        while True:
+            cursor = await store._db.execute(
+                "SELECT id FROM memories WHERE superseded_by = ? ORDER BY created_at ASC LIMIT 1;",
+                (current["id"],)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                break
+            ancestor = await fetch(row[0])
+            if not ancestor:
+                break
+            current = ancestor
+
+        # 2. Walk forward via superseded_by from the root
+        chain = []
+        seen = set()
+        node = current
+        while node and node["id"] not in seen:
+            seen.add(node["id"])
+            chain.append(node)
+            node = await fetch(node["superseded_by"]) if node["superseded_by"] else None
+        return chain
+
+    # ---------- Trace / Metrics / Plugins / Shadow ----------
+
+    async def query_traces(
+        self,
+        scene_id: Optional[str] = None,
+        kind: Optional[str] = None,
+        ref_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        return await self.runtime.event_store.query_traces(scene_id=scene_id, kind=kind, ref_id=ref_id, limit=limit)
+
+    def metrics(self) -> dict:
+        return self.runtime.metrics.snapshot()
+
+    def plugins(self) -> list[dict]:
+        return self.runtime.plugin_host.status_snapshot()
+
+    def providers(self) -> dict:
+        return self.runtime.provider_registry.snapshot()
+
+    def shadow_would_send(self, limit: int = 100) -> list[dict]:
+        return list(self.runtime.shadow_would_send_log)[-limit:][::-1]

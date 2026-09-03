@@ -28,15 +28,26 @@ class AttentionEngine:
         self,
         stimulus: Stimulus,
         scene_state: Optional[SceneState],
-        active_open_loops: list[dict[str, Any]]
+        active_open_loops: list[dict[str, Any]],
+        now: Optional[float] = None
     ) -> AttentionResult:
-        now = time.time()
+        if now is None:
+            now = time.time()
 
         # --- Layer 1: Hard Attention (Deterministic) ---
         if stimulus.stimulus_type == StimulusType.PROACTIVE_TASK:
             return AttentionResult(
                 disposition=AttentionDisposition.WAKE,
                 reason="proactive_task_due"
+            )
+
+        # Plugin facts (ADR-0018) never wake cognition by themselves — an unclaimed
+        # fact has no social reason to speak (Goal 7 / Invariant F & H). Only a
+        # condition-bound obligation (TASK_DUE → PROACTIVE_TASK above) may wake.
+        if stimulus.stimulus_type == StimulusType.PLUGIN_FACT:
+            return AttentionResult(
+                disposition=AttentionDisposition.OBSERVE,
+                reason="plugin_fact_observed"
             )
 
         if stimulus.scene_id.startswith("private:"):
@@ -65,13 +76,42 @@ class AttentionEngine:
                     reason=f"active_open_loop_response:{loop.get('intent', 'unknown')}"
                 )
 
-        # --- Layer 2: Heuristic Attention (State-Dependent) ---
+        # --- Layer 2: Social Continuation (ParticipationThread & Heuristics) ---
         text = stimulus.combined_text
         activity = scene_state.activity_level if scene_state else "quiet"
         last_bot_at = scene_state.recent_bot_message_at if scene_state else None
+        time_since_bot = (now - last_bot_at) if last_bot_at else 999999.0
 
-        # Check Active Engagement continuation (§34 & §106 & P1)
-        if scene_state and scene_state.bot_engagement == "active" and activity != "hot":
+        thread = getattr(scene_state, "current_thread", None) if scene_state else None
+
+        # Check Active Participation Thread continuation (Goal 2 & Goal 3)
+        if thread and thread.status.value == "active" and activity != "hot":
+            if scene_state.consecutive_bot_messages < 2:
+                time_since_rel = now - thread.last_relevant_at
+                # Time distance window: [1.0s, 180.0s] since bot, and <= 120s since relevant
+                if 1.0 <= time_since_bot <= 180.0 and time_since_rel <= 120.0:
+                    is_participant = stimulus.actor_id in thread.participants
+                    topic_words = [w for w in thread.topic.split() if len(w) > 1]
+                    has_topic_match = any(w in text for w in topic_words) if topic_words else False
+                    # Immediate conversational adjacency: 1st message right after bot in active thread
+                    is_immediate_adjacency = (time_since_bot <= 60.0 and thread.intervening_messages <= 1)
+
+                    # If participant is talking, topic matches, or immediate adjacent turn:
+                    if is_participant or has_topic_match or is_immediate_adjacency:
+                        if thread.intervening_messages <= 3:
+                            return AttentionResult(
+                                disposition=AttentionDisposition.WAKE,
+                                reason="active_thread_continuation"
+                            )
+                    else:
+                        # Speaker is not in thread AND no topic overlap -> Topic drift
+                        return AttentionResult(
+                            disposition=AttentionDisposition.OBSERVE,
+                            reason="topic_drift_or_unrelated_speaker"
+                        )
+
+        # Fallback to legacy bot_engagement continuation if thread not initialized yet (§34 & P1)
+        elif scene_state and scene_state.bot_engagement == "active" and activity != "hot":
             if last_bot_at and (now - last_bot_at) > 1.0:
                 if scene_state.consecutive_bot_messages < 2 and getattr(scene_state, "intervening_messages_since_bot", 0) <= 4:
                     return AttentionResult(
