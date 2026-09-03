@@ -138,11 +138,23 @@ uv sync
 
 ### 3. 运行自动化测试套件
 ```bash
-# 运行全部 18 项端到端架构集成测试
+# 运行全部 19 项端到端架构与控制台 API 集成测试
 uv run pytest -v
 ```
 
-### 4. 接入真实 QQ 机器人（OneBot v11）
+### 4. 启动轻量玻璃拟态 SaaS 管理控制台 (Web Dashboard)
+运行时默认集成了轻量玻璃拟态 + Bento Grid 风格的 Web 管理后台：
+* **访问入口**：`http://127.0.0.1:11307`
+* **默认初始账密**：`admin` / `lenbot123`
+* **支持功能**：
+  * **Bento 全局概览**：实时 Uptime、事件总数、活跃场景、未决 Open Loops、记忆信念数。
+  * **WebSocket 管理**：OneBot 反向连接状态监控、远端客户端 IP、延迟检测与强制断连。
+  * **模型提供商配置**：Base URL、API Key（脱敏）、Normal 与 Deliberate 阶层模型切换、1-token 延迟测速 (Ping)。
+  * **人格与社交参数**：Bot QQ 与称呼修改、系统人格 Prompt 实时保存、敏感关键词、发言冷却、基础发言预算与兴趣主题权重滑块。
+  * **插件中心（预留框架）**：支持扩展感官插件启停切换与参数抽屉预览。
+  * **安全设置**：PBKDF2-HMAC-SHA256 加盐密码安全修改。
+
+### 5. 接入真实 QQ 机器人（OneBot v11）
 本系统内置反向 WebSocket 服务端，兼容 Lagrange.Core、NapCat、LLOneBot 等主流 OneBot 实现：
 
 1. **配置环境变量**（或在 `RuntimeConfig` 中指定）：

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Optional, Callable, Awaitable
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType, Stimulus
@@ -78,6 +79,10 @@ class AgentRuntime:
         self._cognition_semaphore = asyncio.Semaphore(2)  # Max 2 concurrent episodes (§93)
         self._last_attention_result: Optional[AttentionResult] = None
         self._last_gate_decision: Optional[GateDecision] = None
+        self._started_at = time.time()
+        self._dashboard_server = None
+        self._dashboard_task: Optional[asyncio.Task] = None
+        self._onebot_adapter = None
 
     async def start(self) -> None:
         await self.event_store.initialize()
@@ -88,10 +93,52 @@ class AgentRuntime:
         self.runtime_gate.memory_gate = self.memory_gate
         self.episode_manager.memory_store = self.memory_store
 
+        # Load dynamic configurations from database if present
+        saved_persona = await self.event_store.get_dynamic_config("persona_config")
+        if saved_persona:
+            self.config.identity_name = saved_persona.get("identity_name", self.config.identity_name)
+            self.config.identity_persona = saved_persona.get("identity_persona", self.config.identity_persona)
+            self.config.bot_qq = saved_persona.get("bot_qq", self.config.bot_qq)
+            self.bot_actor_id = f"user:{self.config.bot_qq}"
+
+        saved_model = await self.event_store.get_dynamic_config("model_config")
+        if saved_model:
+            self.config.openai_base_url = saved_model.get("openai_base_url", self.config.openai_base_url)
+            self.config.default_model = saved_model.get("default_model", self.config.default_model)
+            self.config.deliberate_model = saved_model.get("deliberate_model", self.config.deliberate_model)
+
+        saved_social = await self.event_store.get_dynamic_config("social_config")
+        if saved_social:
+            self.config.monitored_keywords = saved_social.get("monitored_keywords", self.config.monitored_keywords)
+            self.config.bot_cooldown_seconds = saved_social.get("bot_cooldown_seconds", self.config.bot_cooldown_seconds)
+            if "speaking_budget_base_threshold" in saved_social:
+                self.attention_engine.speaking_budget.base_threshold = saved_social["speaking_budget_base_threshold"]
+            if "interest_topics" in saved_social:
+                self.attention_engine.interest_model.topics = saved_social["interest_topics"]
+
         await self.action_queue.start()
         await self.scheduler.start()
 
+        # Start Dashboard Web Server if enabled
+        if self.config.dashboard_enabled:
+            import uvicorn
+            from len_bot.web.app import create_app
+            app = create_app(self)
+            uvi_config = uvicorn.Config(
+                app=app,
+                host=self.config.dashboard_host,
+                port=self.config.dashboard_port,
+                log_level="warning"
+            )
+            self._dashboard_server = uvicorn.Server(uvi_config)
+            self._dashboard_task = asyncio.create_task(self._dashboard_server.serve())
+            logger.info("Len Bot Dashboard running at http://%s:%d", self.config.dashboard_host, self.config.dashboard_port)
+
     async def stop(self) -> None:
+        if self._dashboard_server:
+            self._dashboard_server.should_exit = True
+            if self._dashboard_task:
+                await self._dashboard_task
         await self.scheduler.stop()
         await self.scene_manager.stop()
         await self.action_queue.stop()

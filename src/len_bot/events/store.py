@@ -88,7 +88,112 @@ class EventStore:
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_at);")
 
+        # 4. Dashboard Users & Dynamic Configurations
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS dashboard_users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                last_login_at REAL
+            );
+        """)
+
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS runtime_dynamic_configs (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+        """)
+
         await self._db.commit()
+
+    async def get_dashboard_user(self, username: str) -> Optional[dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            "SELECT username, password_hash, created_at, last_login_at FROM dashboard_users WHERE username = ?;",
+            (username,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "username": row[0],
+            "password_hash": row[1],
+            "created_at": row[2],
+            "last_login_at": row[3],
+        }
+
+    async def create_dashboard_user(self, username: str, password_hash: str) -> None:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        now = time.time()
+        await self._db.execute(
+            "INSERT OR IGNORE INTO dashboard_users (username, password_hash, created_at) VALUES (?, ?, ?);",
+            (username, password_hash, now)
+        )
+        await self._db.commit()
+
+    async def update_dashboard_user_password(self, username: str, password_hash: str) -> None:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        await self._db.execute(
+            "UPDATE dashboard_users SET password_hash = ? WHERE username = ?;",
+            (password_hash, username)
+        )
+        await self._db.commit()
+
+    async def update_dashboard_user_login(self, username: str) -> None:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        await self._db.execute(
+            "UPDATE dashboard_users SET last_login_at = ? WHERE username = ?;",
+            (time.time(), username)
+        )
+        await self._db.commit()
+
+    async def get_dynamic_config(self, key: str) -> Optional[dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            "SELECT value_json FROM runtime_dynamic_configs WHERE key = ?;",
+            (key,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return json.loads(row[0])
+
+    async def save_dynamic_config(self, key: str, value: dict[str, Any]) -> None:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        now = time.time()
+        val_str = json.dumps(value, ensure_ascii=False)
+        await self._db.execute("""
+            INSERT INTO runtime_dynamic_configs (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
+        """, (key, val_str, now))
+        await self._db.commit()
+
+    async def get_stats(self) -> dict[str, int]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        c1 = await self._db.execute("SELECT COUNT(*) FROM events;")
+        (event_count,) = await c1.fetchone()
+        c2 = await self._db.execute("SELECT COUNT(*) FROM tasks WHERE status = 'pending';")
+        (task_count,) = await c2.fetchone()
+        c3 = await self._db.execute("SELECT COUNT(*) FROM open_loops WHERE status = 'active';")
+        (loop_count,) = await c3.fetchone()
+        c4 = await self._db.execute("SELECT COUNT(*) FROM scene_states;")
+        (scene_count,) = await c4.fetchone()
+        return {
+            "total_events": event_count,
+            "pending_tasks": task_count,
+            "active_open_loops": loop_count,
+            "total_scenes": scene_count,
+        }
 
     async def close(self) -> None:
         if self._db:
