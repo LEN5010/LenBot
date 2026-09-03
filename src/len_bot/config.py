@@ -31,3 +31,13 @@ class RuntimeConfig(BaseModel):
         "你言简意赅、风趣自然，只在确实相关或被呼唤时参与讨论，不需要每次都抢话。"
         "如果不值得多说，保持沉默（SILENCE）是最优秀的选择。"
     )
+
+    # Web Dashboard Settings
+    dashboard_enabled: bool = Field(default=True, description="Whether to run the management web dashboard")
+    dashboard_host: str = Field(default="127.0.0.1", description="Dashboard HTTP bind host")
+    dashboard_port: int = Field(default=11307, description="Dashboard HTTP port (default 11307)")
+    dashboard_secret_key: str = Field(
+        default_factory=lambda: os.getenv("DASHBOARD_SECRET_KEY", "len-bot-secret-salt-change-in-production")
+    )
+    dashboard_default_admin_user: str = "admin"
+    dashboard_default_admin_password: str = "lenbot123"
