@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, Any
 from openai import AsyncOpenAI
 from len_bot.config import RuntimeConfig
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
@@ -26,7 +26,9 @@ class PiAgentCore:
     async def execute_episode(
         self,
         messages: list[dict[str, str]],
-        mailbox: EpisodeMailbox
+        mailbox: EpisodeMailbox,
+        toolkit: Optional[Any] = None,
+        max_steps: int = 5
     ) -> EpisodeOutcome:
         # 1. Step-boundary Steering Check (ADR-0002)
         steering = mailbox.check_steering()
@@ -39,7 +41,13 @@ class PiAgentCore:
 
         # 2. Mock handler for offline testing & benchmark scenarios
         if self.mock_handler is not None:
-            outcome = await self.mock_handler(messages)
+            import inspect
+            sig = inspect.signature(self.mock_handler)
+            if len(sig.parameters) >= 2:
+                outcome = await self.mock_handler(messages, toolkit)
+            else:
+                outcome = await self.mock_handler(messages)
+
             # Re-check steering after cognition
             steering = mailbox.check_steering()
             if steering and steering.steering_type == SteeringType.CANCEL:
@@ -49,7 +57,7 @@ class PiAgentCore:
                 )
             return outcome
 
-        # 3. Live LLM Call via AsyncOpenAI Structured Output
+        # 3. Live LLM Call via AsyncOpenAI Structured Output + ReAct Tool Loop
         if not self._client:
             logger.warning("No OpenAI API key provided. Falling back to default SILENCE.")
             return EpisodeOutcome(
@@ -58,25 +66,64 @@ class PiAgentCore:
             )
 
         try:
-            # Use structured outputs parsing EpisodeOutcome
-            completion = await self._client.beta.chat.completions.parse(
-                model=self.config.default_model,
-                messages=messages,
-                response_format=EpisodeOutcome,
-                temperature=0.6,
-            )
-            outcome = completion.choices[0].message.parsed
-            if outcome is None:
-                raise ValueError("Model failed to produce parsed EpisodeOutcome")
+            working_messages = list(messages)
+            tools = toolkit.get_tool_definitions() if toolkit else None
 
-            # Check steering at step boundary
-            steering = mailbox.check_steering()
-            if steering and steering.steering_type == SteeringType.CANCEL:
-                return EpisodeOutcome(
-                    disposition=FinalDisposition.SILENCE,
-                    thought=f"Aborted by steering post-inference: {steering.reason}"
+            # ReAct Step Loop
+            for step in range(max_steps):
+                steering = mailbox.check_steering()
+                if steering and steering.steering_type == SteeringType.CANCEL:
+                    return EpisodeOutcome(
+                        disposition=FinalDisposition.SILENCE,
+                        thought=f"Aborted by steering at step {step}: {steering.reason}"
+                    )
+
+                if tools:
+                    resp = await self._client.chat.completions.create(
+                        model=self.config.default_model,
+                        messages=working_messages,
+                        tools=tools,
+                        temperature=0.6
+                    )
+                    choice = resp.choices[0]
+                    msg = choice.message
+                    if msg.tool_calls:
+                        working_messages.append(msg.model_dump())
+                        for tc in msg.tool_calls:
+                            fn_name = tc.function.name
+                            fn_args = json.loads(tc.function.arguments)
+                            tool_result = await toolkit.execute(fn_name, fn_args)
+                            working_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": tool_result
+                            })
+                        continue
+
+                # No tool calls needed or tools completed: parse final structured EpisodeOutcome
+                completion = await self._client.beta.chat.completions.parse(
+                    model=self.config.default_model,
+                    messages=working_messages,
+                    response_format=EpisodeOutcome,
+                    temperature=0.6,
                 )
-            return outcome
+                outcome = completion.choices[0].message.parsed
+                if outcome is None:
+                    raise ValueError("Model failed to produce parsed EpisodeOutcome")
+
+                # Check steering post-outcome
+                steering = mailbox.check_steering()
+                if steering and steering.steering_type == SteeringType.CANCEL:
+                    return EpisodeOutcome(
+                        disposition=FinalDisposition.SILENCE,
+                        thought=f"Aborted by steering post-inference: {steering.reason}"
+                    )
+                return outcome
+
+            return EpisodeOutcome(
+                disposition=FinalDisposition.SILENCE,
+                thought="ReAct loop reached max steps without conclusion"
+            )
         except Exception as e:
             logger.exception("PiAgentCore execution error: %s", e)
             return EpisodeOutcome(
