@@ -269,3 +269,56 @@ class EventStore:
             )
         )
         await self._db.commit()
+
+    async def get_pending_tasks(self, max_due_at: Optional[float] = None) -> list[dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        sql = "SELECT id, scene_id, description, due_at, status, source_event_id, payload, created_at FROM tasks WHERE status = 'pending'"
+        params: list[Any] = []
+        if max_due_at is not None:
+            sql += " AND due_at <= ?"
+            params.append(max_due_at)
+        sql += " ORDER BY due_at ASC;"
+        
+        cursor = await self._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "scene_id": r[1],
+                "description": r[2],
+                "due_at": r[3],
+                "status": r[4],
+                "source_event_id": r[5],
+                "payload": json.loads(r[6]) if isinstance(r[6], str) and r[6].startswith("{") else r[6],
+                "created_at": r[7]
+            }
+            for r in rows
+        ]
+
+    async def mark_task_status(self, task_id: str, status: str) -> None:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        await self._db.execute(
+            "UPDATE tasks SET status = ? WHERE id = ?;",
+            (status, task_id)
+        )
+        await self._db.commit()
+
+    async def expire_open_loops(self, now: float) -> list[str]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            "SELECT id FROM open_loops WHERE status = 'active' AND expires_at <= ?;",
+            (now,)
+        )
+        rows = await cursor.fetchall()
+        expired_ids = [r[0] for r in rows]
+        if expired_ids:
+            placeholders = ",".join("?" for _ in expired_ids)
+            await self._db.execute(
+                f"UPDATE open_loops SET status = 'expired' WHERE id IN ({placeholders});",
+                expired_ids
+            )
+            await self._db.commit()
+        return expired_ids

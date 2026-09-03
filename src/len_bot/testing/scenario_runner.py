@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional, Callable, Awaitable
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
@@ -39,11 +40,12 @@ class ScenarioRunner:
         reply_bot: bool = False,
         timestamp: Optional[float] = None
     ) -> Event:
+        timestamp_val = timestamp if timestamp is not None else time.time()
         event = Event(
             event_type=EventType.GROUP_MESSAGE_RECEIVED,
             scene_id=scene_id,
             actor_id=f"user:{user_id}",
-            timestamp=timestamp if timestamp is not None else asyncio.get_event_loop().time(),
+            timestamp=timestamp_val,
             payload={
                 "raw_text": text,
                 "at_bot": at_bot,

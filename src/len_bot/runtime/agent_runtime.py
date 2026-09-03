@@ -14,6 +14,8 @@ from len_bot.cognition.manager import EpisodeManager
 from len_bot.actions.models import ActionItem
 from len_bot.actions.queue import ActionQueue
 from len_bot.runtime.gate import RuntimeGate, GateDecision
+from len_bot.scheduler.engine import TaskScheduler
+from len_bot.state.open_loops import OpenLoopManager
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,17 @@ class AgentRuntime:
             send_adapter=send_adapter,
             on_action_event=self._on_action_event
         )
-        self.runtime_gate = RuntimeGate(self.event_store, self.action_queue)
+        self.scheduler = TaskScheduler(
+            event_store=self.event_store,
+            emit_event=self.receive_event,
+            sweep_interval=5.0
+        )
+        self.open_loop_manager = OpenLoopManager(self.event_store)
+        self.runtime_gate = RuntimeGate(
+            event_store=self.event_store,
+            action_queue=self.action_queue,
+            scheduler=self.scheduler
+        )
         
         self.scene_manager = SceneManager(
             bot_actor_id=self.bot_actor_id,
@@ -61,8 +73,10 @@ class AgentRuntime:
     async def start(self) -> None:
         await self.event_store.initialize()
         await self.action_queue.start()
+        await self.scheduler.start()
 
     async def stop(self) -> None:
+        await self.scheduler.stop()
         await self.scene_manager.stop()
         await self.action_queue.stop()
         await self.event_store.close()
