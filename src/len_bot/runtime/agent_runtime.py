@@ -63,7 +63,8 @@ class AgentRuntime:
         self.episode_manager = EpisodeManager(
             scene_manager=self.scene_manager,
             context_assembler=self.context_assembler,
-            pi_core=self.pi_core
+            pi_core=self.pi_core,
+            event_store=self.event_store
         )
 
         self._cognition_semaphore = asyncio.Semaphore(2)  # Max 2 concurrent episodes (§93)

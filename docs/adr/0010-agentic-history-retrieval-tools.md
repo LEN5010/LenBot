@@ -1,0 +1,3 @@
+# Agentic History Retrieval via On-Demand SQLite Tools
+
+Injecting large chunks of chat history or using automatic vector RAG on every turn creates token bloat, introduces hallucination, and blurs privacy boundaries. We decided that the prompt contains only a tight elastic window of recent raw messages, while past history must be actively queried by the agent using deterministic retrieval tools (`search_messages`, `read_context`, `query_timeline`, `query_person_history`). These tools enforce the ambient `ExecutionScope` at the SQL layer, ensuring the agent retrieves historical facts only when necessary and strictly within permitted boundaries.

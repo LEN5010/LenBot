@@ -9,6 +9,8 @@ from len_bot.cognition.assembler import ContextAssembler
 from len_bot.cognition.pi_core import PiAgentCore
 from len_bot.cognition.models import EpisodeOutcome
 
+from len_bot.tools.retrieval import RetrievalToolkit
+
 logger = logging.getLogger(__name__)
 
 class EpisodeManager:
@@ -16,11 +18,13 @@ class EpisodeManager:
         self,
         scene_manager: SceneManager,
         context_assembler: ContextAssembler,
-        pi_core: PiAgentCore
+        pi_core: PiAgentCore,
+        event_store: Optional[Any] = None
     ):
         self.scene_manager = scene_manager
         self.context_assembler = context_assembler
         self.pi_core = pi_core
+        self.event_store = event_store
 
     async def run_episode(
         self,
@@ -48,8 +52,17 @@ class EpisodeManager:
                 allowed_scopes=allowed_scopes
             )
 
-            # 3. Execute Pi Agent Core
-            outcome = await self.pi_core.execute_episode(messages, mailbox)
+            # 3. Instantiate ambient RetrievalToolkit (ADR-0006 & ADR-0010)
+            toolkit = None
+            if self.event_store:
+                toolkit = RetrievalToolkit(
+                    event_store=self.event_store,
+                    allowed_scopes=allowed_scopes,
+                    default_scene_id=stimulus.scene_id
+                )
+
+            # 4. Execute Pi Agent Core with tools
+            outcome = await self.pi_core.execute_episode(messages, mailbox, toolkit=toolkit)
             return outcome, mailbox
         finally:
             # 4. Detach mailbox

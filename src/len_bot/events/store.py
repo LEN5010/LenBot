@@ -191,6 +191,124 @@ class EventStore:
             for r in rows
         ]
 
+    async def read_context(
+        self,
+        event_id: str,
+        before: int = 3,
+        after: int = 3,
+        allowed_scopes: Optional[list[str]] = None
+    ) -> list[dict[str, Any]]:
+        """Reads surrounding events around a specific event, respecting allowed scopes."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        if not allowed_scopes:
+            return []
+
+        placeholders = ",".join("?" for _ in allowed_scopes)
+        # 1. Fetch target event
+        target_sql = f"""
+            SELECT id, event_type, scene_id, actor_id, timestamp, payload
+            FROM events
+            WHERE id = ? AND scene_id IN ({placeholders});
+        """
+        cursor = await self._db.execute(target_sql, [event_id, *allowed_scopes])
+        target_row = await cursor.fetchone()
+        if not target_row:
+            return []
+
+        t_id, t_etype, t_scene, t_actor, t_time, t_payload = target_row
+        target_dict = {
+            "id": t_id, "event_type": t_etype, "scene_id": t_scene,
+            "actor_id": t_actor, "timestamp": t_time, "payload": json.loads(t_payload)
+        }
+
+        # 2. Fetch before events
+        before_sql = f"""
+            SELECT id, event_type, scene_id, actor_id, timestamp, payload
+            FROM events
+            WHERE scene_id = ? AND timestamp < ?
+            ORDER BY timestamp DESC
+            LIMIT ?;
+        """
+        b_cursor = await self._db.execute(before_sql, [t_scene, t_time, before])
+        b_rows = await b_cursor.fetchall()
+        before_list = [
+            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
+            for r in reversed(b_rows)
+        ]
+
+        # 3. Fetch after events
+        after_sql = f"""
+            SELECT id, event_type, scene_id, actor_id, timestamp, payload
+            FROM events
+            WHERE scene_id = ? AND timestamp > ?
+            ORDER BY timestamp ASC
+            LIMIT ?;
+        """
+        a_cursor = await self._db.execute(after_sql, [t_scene, t_time, after])
+        a_rows = await a_cursor.fetchall()
+        after_list = [
+            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
+            for r in a_rows
+        ]
+
+        return before_list + [target_dict] + after_list
+
+    async def query_timeline(
+        self,
+        scene_id: str,
+        start_time: float,
+        end_time: float,
+        allowed_scopes: Optional[list[str]] = None,
+        limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Queries events in a time window for a scene, guarded by execution scope."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        if not allowed_scopes or scene_id not in allowed_scopes:
+            return []
+
+        sql = """
+            SELECT id, event_type, scene_id, actor_id, timestamp, payload
+            FROM events
+            WHERE scene_id = ? AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+            LIMIT ?;
+        """
+        cursor = await self._db.execute(sql, [scene_id, start_time, end_time, limit])
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
+            for r in rows
+        ]
+
+    async def query_person_history(
+        self,
+        actor_id: str,
+        allowed_scopes: Optional[list[str]] = None,
+        limit: int = 15
+    ) -> list[dict[str, Any]]:
+        """Queries events by a specific actor across permitted scenes."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        if not allowed_scopes:
+            return []
+
+        placeholders = ",".join("?" for _ in allowed_scopes)
+        sql = f"""
+            SELECT id, event_type, scene_id, actor_id, timestamp, payload
+            FROM events
+            WHERE actor_id = ? AND scene_id IN ({placeholders})
+            ORDER BY timestamp DESC
+            LIMIT ?;
+        """
+        cursor = await self._db.execute(sql, [actor_id, *allowed_scopes, limit])
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
+            for r in rows
+        ]
+
     async def load_scene_state(self, scene_id: str) -> Optional[dict[str, Any]]:
         if not self._db:
             raise RuntimeError("Database not initialized")
