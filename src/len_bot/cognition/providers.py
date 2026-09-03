@@ -100,6 +100,17 @@ class ProviderRegistry:
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
         return RouteResolution(provider_id=provider.id, model=target.model, client=client)
 
+    def has_live_provider(self) -> bool:
+        """Returns True if normal routing has an enabled provider with a valid API key (not keyless)."""
+        if self._routing is None:
+            return False
+        target_id = self._routing.normal.provider_id
+        provider = self._providers.get(target_id)
+        if provider is None or not provider.enabled:
+            return False
+        api_key = (provider.api_key or "").strip()
+        return bool(api_key) and api_key != "missing"
+
     def export(self) -> dict:
         """Full state for persistence (including api_key — DB is the secret store)."""
         return {

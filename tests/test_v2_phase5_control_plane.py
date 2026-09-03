@@ -43,7 +43,8 @@ async def test_cockpit_scene_inspection_and_injection(tmp_path):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Auth login
         login_res = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        headers = {"Authorization": f"Bearer {login_res.json()['token']}"}
+        assert "session_token" in login_res.cookies
+        headers = {}
 
         # 1. List Scenes
         scenes_res = await client.get("/api/cockpit/scenes", headers=headers)
@@ -93,7 +94,8 @@ async def test_cockpit_task_loop_memory_interventions(tmp_path):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         login_res = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        headers = {"Authorization": f"Bearer {login_res.json()['token']}"}
+        assert "session_token" in login_res.cookies
+        headers = {}
 
         # --- PART 1: Tasks ---
         # Seed Task 1 (to cancel) and Task 2 (to trigger now)
@@ -214,7 +216,8 @@ async def test_goal9_dynamic_config_hot_reload_and_persistence(tmp_path):
     transport1 = ASGITransport(app=app1)
     async with AsyncClient(transport=transport1, base_url="http://test") as client:
         login_res = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        headers = {"Authorization": f"Bearer {login_res.json()['token']}"}
+        assert "session_token" in login_res.cookies
+        headers = {}
 
         # 1. Update Provider & Routing (ADR-0020 replaces legacy /api/models/config)
         provider_post = await client.post("/api/models/providers", headers=headers, json={
@@ -254,7 +257,6 @@ async def test_goal9_dynamic_config_hot_reload_and_persistence(tmp_path):
         # 3. Update Social & Attention Config
         social_post = await client.post("/api/settings/social", headers=headers, json={
             "monitored_keywords": ["直播", "开奖", "热榜"],
-            "bot_cooldown_seconds": 180,
             "speaking_budget_base_threshold": 0.88,
             "interest_topics": {"robotics": 0.99, "ai": 0.95}
         })

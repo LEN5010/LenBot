@@ -42,7 +42,7 @@ async def test_scenario_e_promise_fulfilled_on_live_start(tmp_path):
         if "开播了叫我" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="Promise registered: wake me when the stream starts",
+                decision_reason="Promise registered: wake me when the stream starts",
                 task_proposals=[
                     TaskProposal(
                         description="A 要求开播时提醒他看直播",
@@ -54,10 +54,10 @@ async def test_scenario_e_promise_fulfilled_on_live_start(tmp_path):
         if "提醒他看直播" in stimulus_text or "主播开播了" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Fulfilling the promise: the stream just started",
+                decision_reason="Fulfilling the promise: the stream just started",
                 message_proposals=[MessageProposal(content="开了")]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="Silence")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="Silence")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -127,7 +127,7 @@ async def test_unclaimed_plugin_fact_never_wakes(tmp_path):
     llm_calls = []
     async def mock_pi(messages):
         llm_calls.append(messages)
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="unused")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="unused")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -174,10 +174,10 @@ async def test_scenario_f_silent_cognition_with_timer_task(tmp_path):
         if "好像八点开" in full_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="Stream starts at 20:00; schedule a check at 19:55 and stay silent",
+                decision_reason="Stream starts at 20:00; schedule a check at 19:55 and stay silent",
                 task_proposals=[TaskProposal(description="19:55 检查直播是否开播", delay_seconds=300)]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="Silence")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="Silence")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -229,10 +229,10 @@ async def test_scenario_g_ambient_recall_scope_and_ttl(tmp_path):
         if "主播切片" in user_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="The group is discussing the exact clip I saw earlier",
+                decision_reason="The group is discussing the exact clip I saw earlier",
                 message_proposals=[MessageProposal(content="草，我刚才还真刷到他那个切片了")]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="Not my business")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="Not my business")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -311,7 +311,7 @@ async def test_gate_retained_item_proposal_enters_ambient_store(tmp_path):
 
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.SILENCE,
-        thought="Interesting fact seen in chat; retain for later",
+        decision_reason="Interesting fact seen in chat; retain for later",
         retained_item_proposals=[
             RetainedItemProposal(
                 topic="新版本 补丁",

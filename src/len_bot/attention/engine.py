@@ -17,12 +17,22 @@ class AttentionEngine:
         speaking_budget: Optional[SpeakingBudget] = None
     ):
         self.config = config
+        self.monitored_keywords: list[str] = list(self.config.monitored_keywords) if self.config.monitored_keywords else []
         self.interest_model = interest_model or InterestModel()
-        if self.config.monitored_keywords:
-            self.interest_model.topic_keywords["monitored"] = list(self.config.monitored_keywords)
+        if self.monitored_keywords:
+            self.interest_model.topic_keywords["monitored"] = list(self.monitored_keywords)
             self.interest_model.topics["monitored"] = 0.90
         self.speaking_budget = speaking_budget or SpeakingBudget(base_threshold=0.60)
         self.initiative_engine = InitiativeEngine(self.interest_model, self.speaking_budget)
+
+    def update_monitored_keywords(self, keywords: list[str]) -> None:
+        """ADR-0031, §23.1: Live hot-reload of monitored keywords in AttentionEngine."""
+        self.monitored_keywords = [k.strip() for k in keywords if k.strip()]
+        self.interest_model.topic_keywords["monitored"] = list(self.monitored_keywords)
+        if self.monitored_keywords:
+            self.interest_model.topics["monitored"] = 0.90
+        elif "monitored" in self.interest_model.topics:
+            self.interest_model.topics.pop("monitored", None)
 
     def evaluate(
         self,
@@ -96,13 +106,19 @@ class AttentionEngine:
                     # Immediate conversational adjacency: 1st message right after bot in active thread
                     is_immediate_adjacency = (time_since_bot <= 60.0 and thread.intervening_messages <= 1)
 
-                    # If participant is talking, topic matches, or immediate adjacent turn:
-                    if is_participant or has_topic_match or is_immediate_adjacency:
+                    # ADR-0027 (§9.2/9.3): continuation WAKE requires topic_match OR immediate_adjacency.
+                    # Participant membership alone is supporting evidence, not independent proof.
+                    if has_topic_match or is_immediate_adjacency:
                         if thread.intervening_messages <= 3:
                             return AttentionResult(
                                 disposition=AttentionDisposition.WAKE,
                                 reason="active_thread_continuation"
                             )
+                    elif is_participant:
+                        return AttentionResult(
+                            disposition=AttentionDisposition.OBSERVE,
+                            reason="participant_off_topic"
+                        )
                     else:
                         # Speaker is not in thread AND no topic overlap -> Topic drift
                         return AttentionResult(

@@ -55,7 +55,7 @@ class PiAgentCore:
             logger.info("Episode %s aborted early by steering: %s", mailbox.episode_id, reason)
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought=f"Aborted early by steering: {reason}"
+                decision_reason=f"Aborted early by steering: {reason}"
             ), trace
 
         # 2. Mock handler for offline testing & benchmark scenarios
@@ -72,7 +72,7 @@ class PiAgentCore:
             if mailbox.is_cancelled():
                 return EpisodeOutcome(
                     disposition=FinalDisposition.SILENCE,
-                    thought=f"Aborted by steering after mock cognition: {mailbox.cancellation_reason()}"
+                    decision_reason=f"Aborted by steering after mock cognition: {mailbox.cancellation_reason()}"
                 ), trace
 
             # Check for follow-ups or interim events arrived during cognition
@@ -118,7 +118,7 @@ class PiAgentCore:
                 if mailbox.is_cancelled():
                     return EpisodeOutcome(
                         disposition=FinalDisposition.SILENCE,
-                        thought=f"Aborted by steering at step {step}: {mailbox.cancellation_reason()}"
+                        decision_reason=f"Aborted by steering at step {step}: {mailbox.cancellation_reason()}"
                     ), trace
 
                 # ADR-0020: resolve client+model per step from the registry — tier
@@ -129,7 +129,7 @@ class PiAgentCore:
                     logger.warning("No provider resolvable for tier %s: %s", current_tier, e)
                     return EpisodeOutcome(
                         disposition=FinalDisposition.SILENCE,
-                        thought=f"No LLM provider configured: {e}"
+                        decision_reason=f"No LLM provider configured: {e}"
                     ), trace
 
                 if mailbox.has_follow_up():
@@ -229,13 +229,15 @@ class PiAgentCore:
                 if mailbox.is_cancelled():
                     return EpisodeOutcome(
                         disposition=FinalDisposition.SILENCE,
-                        thought=f"Aborted by steering post-inference: {mailbox.cancellation_reason()}"
+                        decision_reason=f"Aborted by steering post-inference: {mailbox.cancellation_reason()}"
                     ), trace
 
                 # Check if follow-up arrived during this step's LLM generation
                 if mailbox.has_follow_up():
                     follow_ups = mailbox.consume_follow_ups()
                     trace["follow_ups"] += len(follow_ups)
+                    if self.metrics:
+                        self.metrics.inc_social("followups_incorporated", len(follow_ups))
                     if step < max_steps - 1:
                         for fu in follow_ups:
                             working_messages.append({
@@ -248,23 +250,31 @@ class PiAgentCore:
                         logger.warning("Follow-up arrived at max steps; discarding partial outcome to avoid answering stale context")
                         return EpisodeOutcome(
                             disposition=FinalDisposition.SILENCE,
-                            thought="Follow-up arrived at max steps; discarded to prevent answering stale context"
+                            decision_reason="Follow-up arrived at max steps; discarded to prevent answering stale context"
                         ), trace
 
-                # Check if new interim events arrived during this step's generation
-                late_unseen = mailbox.fetch_unseen_interim_events()
-                late_interim = [
-                    f"[{e.actor_id}]: {e.raw_text}"
-                    for e in late_unseen if e.raw_text and not e.is_mention_bot and not e.is_reply_bot
-                ]
-                if late_interim and step < max_steps - 1:
-                    trace["interim_injections"] += 1
-                    working_messages.append({
-                        "role": "user",
-                        "content": "【INTERIM SCENE ACTIVITY】\n" + "\n".join(late_interim) + "\n(Note: If the conversation indicates the query was answered or resolved by others, choose FinalDisposition.SILENCE)"
-                    })
-                    logger.info("Injected late interim context into reasoning trajectory at step %d (%d events)", step, len(late_interim))
-                    continue
+                # Check if new interim events arrived during this step's generation (ADR-0026, §8.1)
+                if mailbox.has_unseen_interim():
+                    if step < max_steps - 1:
+                        late_unseen = mailbox.fetch_unseen_interim_events()
+                        late_interim = [
+                            f"[{e.actor_id}]: {e.raw_text}"
+                            for e in late_unseen if e.raw_text and not e.is_mention_bot and not e.is_reply_bot
+                        ]
+                        if late_interim:
+                            trace["interim_injections"] += 1
+                            working_messages.append({
+                                "role": "user",
+                                "content": "【INTERIM SCENE ACTIVITY】\n" + "\n".join(late_interim) + "\n(Note: If the conversation indicates the query was answered or resolved by others, choose FinalDisposition.SILENCE)"
+                            })
+                            logger.info("Injected late interim context into reasoning trajectory at step %d (%d events)", step, len(late_interim))
+                            continue
+                    else:
+                        logger.warning("Interim events arrived at max steps; failing closed to SILENCE to avoid stale response")
+                        return EpisodeOutcome(
+                            disposition=FinalDisposition.SILENCE,
+                            decision_reason="Interim events arrived at max steps; discarded to prevent answering stale context"
+                        ), trace
 
                 # No pending follow-ups: parse and return final structured outcome
                 raw_content = msg.content or ""
@@ -273,13 +283,13 @@ class PiAgentCore:
 
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="ReAct loop reached max steps without conclusion"
+                decision_reason="ReAct loop reached max steps without conclusion"
             ), trace
         except Exception as e:
             logger.exception("PiAgentCore execution error: %s", e)
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought=f"Error in LLM inference: {e}"
+                decision_reason=f"Error in LLM inference: {e}"
             ), trace
 
     def _parse_outcome(self, text: str) -> EpisodeOutcome:
@@ -299,5 +309,5 @@ class PiAgentCore:
         logger.warning("Rejecting invalid non-structured model output (contract violation): %s", text[:200])
         return EpisodeOutcome(
             disposition=FinalDisposition.SILENCE,
-            thought=f"Model output violated structured contract (not valid EpisodeOutcome JSON): {text[:100]}"
+            decision_reason=f"Model output violated structured contract (not valid EpisodeOutcome JSON): {text[:100]}"
         )

@@ -184,6 +184,48 @@ Cross-time social continuity for promises and retained interests:
 - `AgentRuntime.set_shadow_mode()` hot-toggles (persisted in `shadow_config`). While enabled, `ActionQueue` still runs safety interceptors but skips physical sends and emits NO `MESSAGE_SENT` — zero social facts, no OpenLoop activation — while recording would-send entries (`shadow_would_send_log`, `metrics.would_send`).
 - Use for the Shadow Testing phase on real groups: observe false-positive speaking, stale responses and awkward participation before enabling real delivery.
 
+### Strict Scope Isolation and Safe Promotion (ADR-0024)
+- `MemoryItem.visibility` is completely removed; `scope` is the sole boundary authority.
+- Cognition and reflection only read and write to the current `scene_id`.
+- Only human operators via the Control Plane can promote an active memory to `global-safe` (`POST /api/cockpit/memories/{id}/promote`), creating an immutable new record without erasing the original.
+- The cognitive proposal model replaced `thought` with typed `decision_reason`.
+
+### Proposal Contract and Social State Authority (ADR-0025)
+- Added `ThreadTransition(KEEP, FADE, CLOSE)` and `SocialStateProposal(topic, thread_transition)`.
+- `GateDecision` has explicit `accepted: bool`; `STATE_ANNOTATION` events are only emitted when `decision.accepted is True`.
+- `validate_memory_proposal` enforces strict evidence validation, non-empty keys, and canonical `MemoryKind` enums.
+- Open loops resolve under atomic `WHERE id=? AND scene_id=? AND status='active'` guarantees.
+
+### Semantic Staleness Gate & Interim Filtering (ADR-0026)
+- `EpisodeMailbox` only accepts human chat events (`GROUP_MESSAGE_RECEIVED`, `PRIVATE_MESSAGE_RECEIVED`), filtering out internal state and sensor facts.
+- Multi-step cognition checks `mailbox.has_unseen_interim()` at step boundaries; if interim chatter arrives during the final step, the outcome fails closed to `SILENCE`.
+- `RuntimeGate` rejects stale outcomes where interim human events were not incorporated, tracking `stale_outcomes_rejected`.
+
+### Participation Lifecycle & Attention Continuation (ADR-0027)
+- `ParticipationThread` implements a 2-minute fade (`THREAD_FADE_AFTER = 120.0s`) and 5-minute close (`THREAD_CLOSE_AFTER = 300.0s`).
+- `last_relevant_at` only updates on relevant mentions, replies, or active topic continuations; intervening chatter increments message counter without prolonging the decay clock.
+- Attention continuation requires topic match or immediate adjacency; off-topic participant chatter evaluates to `OBSERVE` with reason `participant_off_topic`.
+
+### Quiet-Window Reflection & Atomic Batch Commit (ADR-0028)
+- Unreflected events are fetched via `get_unreflected_events(after_rowid, limit=30)` without skipping older events.
+- `commit_reflection_batch` executes episode insertion, proposal validation, and cursor advance in a single atomic SQLite transaction; cursor never advances on failure.
+- Keyless mode defaults to deterministic heuristic reflection without crashing when live LLM provider is unconfigured.
+
+### Condition-Bound Wake Match & Durable Task Claim (ADR-0029)
+- `TaskProposal` supports `wake_match` exact key-value evaluation and origin tracking (`origin_episode_id`, `origin_stimulus_id`).
+- Task scheduling and event-driven wake claim use `UPDATE tasks SET status='claimed', trigger_event_id=? WHERE id=? AND status='pending'` ensuring exactly-once execution.
+- Added `promote_task` API to release event conditions and allow immediate scheduled execution.
+
+### Plugin Lifecycle, Tool Namespace & SSRF Policy (ADR-0030)
+- `RESERVED_CORE_TOOLS` prevents plugins from registering tools that shadow built-in retrieval capabilities.
+- Dynamic plugin lifecycle correctly starts and cancels background polling tasks on `on_enable` and `on_disable`.
+- Centralized SSRF network policy blocks loopback, RFC 1918, RFC 3927 cloud metadata (`169.254.169.254`), and internal domains without breaking macOS/Linux transparent proxy tunnels.
+
+### Social Hot Reload, Shadow Annotations & OneBot Hardening (ADR-0031)
+- `POST /api/cockpit/social` immediately synchronizes `AttentionEngine.monitored_keywords` in memory.
+- `shadow_annotations` table and endpoints (`POST /api/cockpit/shadow-annotations`, `GET /api/cockpit/shadow-annotations`) track TP/FP/TN/FN human evaluation feedback and accuracy metrics.
+- OneBot v11 adapter drops bot's own self-sent echo messages, parses `reply_to_message_id` into a 1000-item ring buffer, and formats quote replies with `[CQ:reply,id=...]`.
+
 ---
 
 ## 4. Development & Testing Workflow

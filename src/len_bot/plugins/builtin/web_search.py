@@ -16,6 +16,7 @@ import httpx
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.tools.retrieval import RetrievalToolkit
+from len_bot.plugins.net_policy import validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +124,19 @@ class WebSearchToolPlugin(BasePlugin):
         url = str(args.get("url", "")).strip()
         if not url.startswith(("http://", "https://")):
             return "Error: read_page requires an absolute http(s) URL."
-        resp = await self._client.get(url)
-        resp.raise_for_status()
-        text = _strip_tags(resp.text)
-        if not text:
-            return "页面无可提取文本。"
-        return text[:3000]
+
+        # SSRF Guard (ADR-0030, §21.4)
+        allowed, reason = validate_url(url)
+        if not allowed:
+            logger.warning("SSRF blocked read_page attempt for %s: %s", url, reason)
+            return f"[安全拦截: 目标地址受限 - {reason}]"
+
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+            text = _strip_tags(resp.text)
+            if not text:
+                return "页面无可提取文本。"
+            return text[:3000]
+        except Exception as e:
+            return f"读取页面失败: {e}"

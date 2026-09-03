@@ -36,7 +36,7 @@ _REFLECT_SYSTEM_PROMPT = (
     '{"title": "...", "summary": "...", "tags": ["..."], '
     '"memory_proposals": [{"subject": "user:123", "kind": "preference", "key": "...", '
     '"value": "...", "certainty": "tentative|likely|strong|explicit", '
-    '"visibility": "scene|global", "human_readable_assertion": "..."}]}'
+    '"human_readable_assertion": "..."}]}'
 )
 
 
@@ -98,7 +98,6 @@ class LLMReflector:
                     key=str(mp["key"]),
                     value=str(mp["value"]),
                     certainty=MemoryCertainty(mp.get("certainty", "tentative")),
-                    visibility=str(mp.get("visibility", "scene")),
                     evidence=list(event_ids),
                     human_readable_assertion=str(mp.get("human_readable_assertion") or mp["value"]),
                 ))

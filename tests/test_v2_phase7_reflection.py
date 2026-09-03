@@ -117,7 +117,7 @@ async def test_llm_reflector_produces_evidence_gated_memories(tmp_path):
         '{"title": "开黑讨论", "summary": "A 说想玩新游戏但嫌累", "tags": ["游戏"], '
         '"memory_proposals": [{"subject": "user:A", "kind": "topic_interest", '
         '"key": "gaming", "value": "对某新游戏兴趣高但嫌开黑累", '
-        '"certainty": "likely", "visibility": "scene", '
+        '"certainty": "likely", '
         '"human_readable_assertion": "A 对某新游戏兴趣高但嫌开黑累"}]}'
     )
 
@@ -162,10 +162,10 @@ async def test_memory_kind_legacy_pattern_migration(tmp_path):
     now = time.time()
     await runtime.memory_store._db.execute(
         """
-        INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility,
+        INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope,
                               evidence, status, human_readable_assertion, created_at, last_confirmed_at)
         VALUES ('mem_legacy', 'user:X', 'pattern', 'activity', '晚上活跃', 'persistent',
-                'likely', ?, 'scene', '[]', 'active', 'group:X 晚上活跃', ?, ?);
+                'likely', ?, '[]', 'active', 'group:X 晚上活跃', ?, ?);
         """,
         (scene_id, now, now)
     )
@@ -194,7 +194,7 @@ async def test_person_card_in_situation_package(tmp_path):
 
     async def mock_pi(messages):
         prompts_seen.append(messages)
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="ok")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="ok")
 
     config = RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "person.db"))
     runtime = AgentRuntime(config, mock_pi_handler=mock_pi)
@@ -301,7 +301,7 @@ async def test_scenario_j_natural_memory_recall(tmp_path):
         prompts_seen.append(messages)
         return EpisodeOutcome(
             disposition=FinalDisposition.ACTION,
-            thought="I remember A said he was too lazy to play",
+            decision_reason="I remember A said he was too lazy to play",
             message_proposals=[MessageProposal(content="你前几天不是还说懒得开黑么")]
         )
 

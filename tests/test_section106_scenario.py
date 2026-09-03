@@ -24,7 +24,7 @@ async def test_section106_livestream_benchmark_scenario(tmp_path):
         if "你是不是也看那个" in current_stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Directly asked by A if I watch it; respond enthusiastically",
+                decision_reason="Directly asked by A if I watch it; respond enthusiastically",
                 message_proposals=[
                     MessageProposal(content="看啊，今天不是说有新东西么")
                 ]
@@ -33,14 +33,14 @@ async def test_section106_livestream_benchmark_scenario(tmp_path):
             # At 18:47, Bot hears "好像八点" and chooses SILENCE while scheduling future task!
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="B provided temporal fact (20:00). I should stay silent now and check at 19:55",
+                decision_reason="B provided temporal fact (20:00). I should stay silent now and check at 19:55",
                 task_proposals=[
                     TaskProposal(description="19:55 检查 XX 直播状态", delay_seconds=480)
                 ]
             )
         return EpisodeOutcome(
             disposition=FinalDisposition.SILENCE,
-            thought="No need to speak"
+            decision_reason="No need to speak"
         )
 
     runner = ScenarioRunner(config=config, mock_pi_handler=mock_pi_cognition)

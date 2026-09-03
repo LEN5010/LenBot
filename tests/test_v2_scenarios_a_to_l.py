@@ -28,6 +28,7 @@ from len_bot.events.models import Event, EventType
 from len_bot.attention.models import AttentionDisposition
 from len_bot.cognition.models import (
     EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal, RetainedItemProposal,
+    SocialStateProposal, ThreadTransition,
 )
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.pi_core import PiAgentCore
@@ -63,7 +64,7 @@ def _msg(scene_id, actor_id, text, t, **extra):
 async def test_scenario_a_idle_group_default_silence(tmp_path):
     """Goal 1: 30 条普通闲聊 → 0 条可见发言(可见沉默是 Goal 1 的验收口径)."""
     async def mock_pi(messages):
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "a")
     await runtime.start()
     t0 = time.time()
@@ -81,13 +82,13 @@ async def test_scenario_b_active_participation_without_at(tmp_path):
     async def mock_pi(messages):
         stimulus = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
         if "你今晚看比赛吗" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="direct question",
+            return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="direct question",
                                   message_proposals=[MessageProposal(content="看啊")],
-                                  state_annotations={"topic": "比赛"})
+                                  social_state_proposal=SocialStateProposal(topic="比赛"))
         if "几点来着" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="continuation",
+            return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="continuation",
                                   message_proposals=[MessageProposal(content="十一点吧")])
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "b")
     await runtime.start()
     scene_id = "group:b"
@@ -110,9 +111,9 @@ async def test_scenario_c_topic_drift_exit(tmp_path):
     async def mock_pi(messages):
         stimulus = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
         if "作业写完没" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="drifted",
-                                  state_annotations={"close_thread": True})
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="drifted",
+                                  social_state_proposal=SocialStateProposal(thread_transition=ThreadTransition.CLOSE))
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "c")
     await runtime.start()
     scene_id = "group:c"
@@ -140,16 +141,16 @@ async def test_scenario_d_openloop_cross_time_resolution(tmp_path):
     async def mock_pi(messages):
         stimulus = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
         if "你大概几点回来" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="asking",
+            return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="asking",
                                   message_proposals=[MessageProposal(
                                       content="你大概几点回来？", expect_reply=True,
                                       reply_target="user:A", reply_intent="回家时间")])
         if "七点左右吧" in stimulus:
             import re
             loop_id_match = re.search(r"\[ID: (loop_[0-9a-f]+)\]", messages[-1]["content"])
-            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="answered; no reply needed",
+            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="answered; no reply needed",
                                   resolve_open_loop_ids=[loop_id_match.group(1)] if loop_id_match else [])
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "d")
     await runtime.start()
     scene_id = "group:d"
@@ -178,13 +179,13 @@ async def test_scenario_e_promise_fulfilled_on_live_start(tmp_path):
     async def mock_pi(messages):
         stimulus = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
         if "开播了叫我" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="promise",
+            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="promise",
                                   task_proposals=[TaskProposal(description="提醒A看直播",
                                                                wake_event_type="LIVE_STARTED")])
         if "提醒A看直播" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="fulfil",
+            return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="fulfil",
                                   message_proposals=[MessageProposal(content="开了")])
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "e")
     await runtime.start()
     scene_id = "group:e"
@@ -206,9 +207,9 @@ async def test_scenario_f_silent_cognition(tmp_path):
     async def mock_pi(messages):
         stimulus = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
         if "好像八点开" in stimulus:
-            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="schedule check",
+            return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="schedule check",
                                   task_proposals=[TaskProposal(description="19:55 检查开播", delay_seconds=300)])
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "f")
     await runtime.start()
     await runtime.receive_event(_msg("group:f", "user:B", "@Bot 好像八点开", time.time(), at_bot=True))
@@ -224,7 +225,7 @@ async def test_scenario_g_ambient_recall(tmp_path):
     prompts = []
     async def mock_pi(messages):
         prompts.append(messages[-1]["content"])
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="s")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="s")
     runtime, sent = _runtime(tmp_path, mock_pi, "g")
     await runtime.start()
     scene_id = "group:g"
@@ -253,7 +254,7 @@ async def test_scenario_h_explicit_cancel_zero_stale_response(tmp_path):
     mailbox = EpisodeMailbox("ep_h", scene_id, base_scene_version=1)
     # 认知运行期间用户明确取消
     mailbox.post(_msg(scene_id, "user:A", "算了，不去了", t0 + 1))
-    outcome = EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="found it",
+    outcome = EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="found it",
                              message_proposals=[MessageProposal(content="查到了，是……")])
     decision = await runtime.runtime_gate.evaluate_and_commit(outcome, mailbox, actor.state)
     assert decision.disposition == FinalDisposition.SILENCE
@@ -269,8 +270,8 @@ async def test_scenario_i_semantic_resolution_silence(tmp_path):
         full = " ".join(m["content"] for m in messages)
         if "测试工具" in full and "哦懂了" in full:
             return EpisodeOutcome(disposition=FinalDisposition.SILENCE,
-                                  thought="already answered by others; stale")
-        return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="answering",
+                                  decision_reason="already answered by others; stale")
+        return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="answering",
                               message_proposals=[MessageProposal(content="这是……")])
     runtime, sent = _runtime(tmp_path, mock_pi, "i")
     await runtime.start()
@@ -296,7 +297,7 @@ async def test_scenario_j_natural_memory_recall(tmp_path):
     prompts = []
     async def mock_pi(messages):
         prompts.append(messages)
-        return EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="remember naturally",
+        return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="remember naturally",
                               message_proposals=[MessageProposal(content="你前几天不是还说懒得开黑么")])
     runtime, sent = _runtime(tmp_path, mock_pi, "j")
     await runtime.start()
@@ -326,7 +327,7 @@ async def test_scenario_k_model_escalation_persona_continuity(tmp_path):
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=None)
 
     def _final_response():
-        outcome = EpisodeOutcome(disposition=FinalDisposition.ACTION, thought="deep dig done",
+        outcome = EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason="deep dig done",
                                  message_proposals=[MessageProposal(content="大概搞明白了")])
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
             tool_calls=None, content=outcome.model_dump_json()))],
@@ -372,7 +373,7 @@ async def test_scenario_l_privacy_cross_scope_leak_zero(tmp_path):
     """Goal 12: private:A 的秘密永远无法进入 group:X 的检索结果."""
     async def mock_pi(messages):
         # 私聊消息会硬唤醒 cognition; mock 保持全链路离线
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="offline")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="offline")
     runtime, sent = _runtime(tmp_path, mock_pi, "l")
     await runtime.start()
     private_scene = "private:1001"
@@ -382,7 +383,7 @@ async def test_scenario_l_privacy_cross_scope_leak_zero(tmp_path):
     await asyncio.sleep(0.2)
     await runtime.memory_store.save_memory(MemoryItem(
         subject="user:1001", kind=MemoryKind.FACT, key="job_intent",
-        value="明天可能辞职", scope=private_scene, visibility="scene",
+        value="明天可能辞职", scope=private_scene,
         evidence=["seed"], human_readable_assertion="A 明天可能辞职"))
     t0 = time.time()
     await runtime.receive_event(_msg(group_scene, "user:1001", "今天聊点啥", t0))

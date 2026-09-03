@@ -17,7 +17,6 @@ from len_bot.scenes.reducer import SceneReducer
 from len_bot.scenes.models import SceneState
 
 _APPLIABLE_OVERRIDES = {
-    "bot_cooldown_seconds",
     "monitored_keywords",
 }
 

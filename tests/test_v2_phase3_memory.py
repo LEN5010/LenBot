@@ -11,9 +11,9 @@ from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessagePr
 @pytest.mark.asyncio
 async def test_scenario_d_cross_scene_preference_and_privacy_boundary(tmp_path):
     """
-    Scenario D (Goal 4 & Invariant G):
-    - Public preference in Group 1 (visibility='global') is retrieved and reflected in Group 2.
-    - Private chat secret (visibility='scene') is strictly blocked by SQL scope when queried in Group 2.
+    Scenario D (Goal 4 & Invariant G, ADR-0024):
+    - Public preference in Group 1 is promoted to global-safe scope and retrieved in Group 2.
+    - Private chat secret is strictly blocked by SQL scope when queried in Group 2.
     """
     db_file = str(tmp_path / "scenario_d.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
@@ -25,7 +25,7 @@ async def test_scenario_d_cross_scene_preference_and_privacy_boundary(tmp_path):
     group_2 = "group:system_programming"
     private_chat = f"private:{actor_a}"
 
-    # 1. In Group 1: Seed real message and global memory about Rust
+    # 1. In Group 1: Seed real message and memory about Rust
     ev_rust = Event(
         event_type=EventType.GROUP_MESSAGE_RECEIVED,
         scene_id=group_1,
@@ -42,14 +42,17 @@ async def test_scenario_d_cross_scene_preference_and_privacy_boundary(tmp_path):
         value="rust",
         certainty=MemoryCertainty.STRONG,
         scope=group_1,
-        visibility="global",  # Global cross-scene visibility
         evidence=[ev_rust.id],
         status=MemoryStatus.ACTIVE,
         human_readable_assertion="User 1001 正在学习 Rust 编程语言并研究系统底层"
     )
     await runtime.memory_store.save_memory(mem_rust)
+    promoted = await runtime.memory_store.promote_memory(mem_rust.id)
+    assert promoted is not None
+    assert promoted.scope == "global-safe"
+    assert f"promoted_from:{mem_rust.id}:" in promoted.human_readable_assertion
 
-    # 2. In Private Chat: Seed confidential secret (visibility='scene')
+    # 2. In Private Chat: Seed confidential secret (strictly scoped to private chat)
     ev_secret = Event(
         event_type=EventType.PRIVATE_MESSAGE_RECEIVED,
         scene_id=private_chat,
@@ -66,17 +69,16 @@ async def test_scenario_d_cross_scene_preference_and_privacy_boundary(tmp_path):
         value="987654",
         certainty=MemoryCertainty.EXPLICIT,
         scope=private_chat,
-        visibility="scene",  # Strictly local to private chat!
         evidence=[ev_secret.id],
         status=MemoryStatus.ACTIVE,
         human_readable_assertion="User 1001 的银行卡秘密密码是 987654"
     )
     await runtime.memory_store.save_memory(mem_secret)
 
-    # 3. Two weeks later in Group 2: Agent operates under allowed_scopes=[group_2]
+    # 3. Two weeks later in Group 2: Agent operates under allowed_scopes=[group_2, "global-safe"]
     toolkit = RetrievalToolkit(
         event_store=runtime.event_store,
-        allowed_scopes=[group_2],
+        allowed_scopes=[group_2, "global-safe"],
         default_scene_id=group_2,
         memory_store=runtime.memory_store
     )

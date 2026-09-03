@@ -8,85 +8,259 @@ const message = ref('')
 
 onMounted(load)
 async function load() {
-  try { plugins.value = await api('/api/plugins/list') } catch (e) { error.value = e.message }
+  try {
+    plugins.value = await api('/api/plugins/list')
+  } catch (e) {
+    error.value = e.message
+  }
 }
 
 async function toggle(p) {
-  error.value = ''; message.value = ''
+  error.value = ''
+  message.value = ''
   try {
-    await api('/api/plugins/toggle', { method: 'POST', body: JSON.stringify({ plugin_id: p.id, enabled: !p.enabled }) })
+    await api('/api/plugins/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ plugin_id: p.id, enabled: !p.enabled })
+    })
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+  }
 }
 
 async function saveConfig(p) {
-  error.value = ''; message.value = ''
+  error.value = ''
+  message.value = ''
   try {
-    const res = await api('/api/plugins/config', { method: 'POST', body: JSON.stringify({ plugin_id: p.id, config: p.config }) })
-    message.value = `${p.id} 配置已保存`
+    const res = await api('/api/plugins/config', {
+      method: 'POST',
+      body: JSON.stringify({ plugin_id: p.id, config: p.config })
+    })
+    message.value = `插件 ${p.name} (${p.id}) 配置已成功保存`
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+  }
 }
 
-// Render a primitive value for schema-driven fields
 function schemaFields(p) {
   const props = p.config_schema?.properties || {}
   return Object.entries(props).map(([key, schema]) => ({ key, schema }))
 }
+
 function fieldValue(p, key) {
   if (p.config && key in p.config) return p.config[key]
   return p.default_config?.[key]
 }
+
 function setFieldValue(p, key, value) {
   if (!p.config) p.config = {}
   p.config[key] = value
 }
+
 function parseList(raw) {
   return raw.split(/[,\s]+/).filter(Boolean)
 }
 </script>
 
 <template>
-  <div>
-    <h1>Plugins</h1>
-    <p class="muted">真实 PluginHost 注册表（无 mock）。Sensor 只发事件；Tool 供 cognition 主动调用。</p>
-    <p v-if="message" class="tag ok">{{ message }}</p>
-    <p v-if="error" class="tag bad">{{ error }}</p>
-
-    <div v-for="p in plugins" :key="p.id" class="panel">
-      <div class="toolbar">
-        <h3 style="margin:0; flex:1">{{ p.name }} <code>{{ p.id }}</code> v{{ p.version }}</h3>
-        <span class="tag" :class="p.state === 'enabled' ? 'ok' : (p.state === 'error' ? 'bad' : '')">{{ p.state }}</span>
-        <button @click="toggle(p)">{{ p.enabled ? '禁用' : '启用' }}</button>
+  <div class="plugins-view">
+    <div class="toolbar">
+      <div class="page-title">
+        <h1>扩展插件生态 (Plugins)</h1>
+        <p class="muted">真实 PluginHost 宿主隔离环境：感官插件仅广播事实事件，工具插件供认知决策主动调用</p>
       </div>
-      <p class="muted" style="margin-top:0">{{ p.description }}</p>
-      <div class="kv"><span class="k">类型 / 权限</span><span>{{ p.plugin_type }} · {{ p.permissions.join(', ') }}</span></div>
-      <div class="kv" v-if="p.emitted_events?.length"><span class="k">发出事件</span><span>{{ p.emitted_events.join(', ') }}</span></div>
-      <div class="kv" v-if="p.registered_tools?.length"><span class="k">注册工具</span><span>{{ p.registered_tools.join(', ') }}</span></div>
-      <div class="kv"><span class="k">健康</span>
-        <span>错误 {{ p.error_count }} · 最近事件 {{ p.last_event_at ? fmtAgo(p.last_event_at) : '—' }} · 最近执行 {{ p.last_run_at ? fmtAgo(p.last_run_at) : '—' }}</span></div>
-      <p v-if="p.last_error" class="tag bad">{{ p.last_error }}</p>
+      <button class="primary" @click="load">
+        <span>⟳ 刷新插件</span>
+      </button>
+    </div>
 
-      <div v-if="schemaFields(p).length" style="margin-top:10px">
-        <h4 class="muted" style="margin:0 0 6px">配置 (config_schema 驱动)</h4>
-        <div class="toolbar" v-for="f in schemaFields(p)" :key="f.key">
-          <span class="k" style="min-width:160px">{{ f.schema.title || f.key }}</span>
-          <template v-if="f.schema.type === 'array'">
-            <input :value="(fieldValue(p, f.key) || []).join(', ')"
-                   :placeholder="f.schema.items?.type === 'integer' ? '如 12345, 67890' : '逗号分隔'"
-                   @input="setFieldValue(p, f.key, parseList($event.target.value).map(v => f.schema.items?.type === 'integer' ? Number(v) : v))" />
-          </template>
-          <template v-else-if="f.schema.type === 'number'">
-            <input type="number" :value="fieldValue(p, f.key)" @input="setFieldValue(p, f.key, Number($event.target.value))" />
-          </template>
-          <template v-else>
-            <input :value="fieldValue(p, f.key)" @input="setFieldValue(p, f.key, $event.target.value)" />
-          </template>
+    <p v-if="message" class="tag ok" style="margin-bottom: 16px;">✓ {{ message }}</p>
+    <p v-if="error" class="tag bad" style="margin-bottom: 16px;">✕ {{ error }}</p>
+
+    <!-- Plugin Bento Cards List -->
+    <div class="plugin-list">
+      <div v-for="p in plugins" :key="p.id" class="panel plugin-card">
+        <div class="plugin-header">
+          <div class="plugin-title-group">
+            <span class="plugin-type-badge">
+              {{ p.plugin_type === 'sensor' ? '📡 感官监控 (Sensor)' : '🛠️ 认知工具 (Tool)' }}
+            </span>
+            <h3>{{ p.name }} <code>{{ p.id }}</code> <span class="tag">v{{ p.version }}</span></h3>
+            <p class="muted plugin-desc">{{ p.description }}</p>
+          </div>
+          <div class="plugin-action-group">
+            <span class="tag" :class="p.state === 'enabled' ? 'ok' : (p.state === 'error' ? 'bad' : '')">
+              {{ p.state === 'enabled' ? '运行中' : p.state === 'disabled' ? '已禁用' : p.state }}
+            </span>
+            <button :class="p.enabled ? 'danger' : 'primary'" @click="toggle(p)">
+              {{ p.enabled ? '停用插件' : '启用插件' }}
+            </button>
+          </div>
         </div>
-        <button class="primary" @click="saveConfig(p)">保存配置</button>
+
+        <div class="bento-grid" style="margin: 16px 0;">
+          <div class="bento-card bento-col-4">
+            <div class="bento-badge">🛡️ 安全权限边界</div>
+            <div class="kv">
+              <span class="k">授予权限</span>
+              <span class="v">{{ p.permissions.join(', ') || '无特殊权限' }}</span>
+            </div>
+            <div class="kv" v-if="p.emitted_events?.length">
+              <span class="k">发射事实事件</span>
+              <span class="v code-text">{{ p.emitted_events.join(', ') }}</span>
+            </div>
+            <div class="kv" v-if="p.registered_tools?.length">
+              <span class="k">注册智能体工具</span>
+              <span class="v code-text">{{ p.registered_tools.join(', ') }}</span>
+            </div>
+          </div>
+
+          <div class="bento-card bento-col-8">
+            <div class="bento-badge">📈 运行健康监控</div>
+            <div class="kv">
+              <span class="k">异常错误计数</span>
+              <span class="v" :class="p.error_count > 0 ? 'bad-text' : 'ok-text'">{{ p.error_count }} 次</span>
+            </div>
+            <div class="kv">
+              <span class="k">最近事件广播</span>
+              <span class="v">{{ p.last_event_at ? fmtAgo(p.last_event_at) : '—' }}</span>
+            </div>
+            <div class="kv">
+              <span class="k">最近执行时间</span>
+              <span class="v">{{ p.last_run_at ? fmtAgo(p.last_run_at) : '—' }}</span>
+            </div>
+            <p v-if="p.last_error" class="tag bad" style="margin-top: 8px;">错误报告: {{ p.last_error }}</p>
+          </div>
+        </div>
+
+        <!-- Dynamic Configuration Form (schema-driven) -->
+        <div v-if="schemaFields(p).length" class="config-box">
+          <h4 style="margin: 0 0 12px; color: #cbd5e1;">参数配置 (Config Schema 驱动)</h4>
+          <div class="config-fields-grid">
+            <div class="field-item" v-for="f in schemaFields(p)" :key="f.key">
+              <label>{{ f.schema.title || f.key }}</label>
+              <template v-if="f.schema.type === 'array'">
+                <input
+                  :value="(fieldValue(p, f.key) || []).join(', ')"
+                  :placeholder="f.schema.items?.type === 'integer' ? '例如 12345, 67890' : '使用逗号分隔多个值'"
+                  @input="setFieldValue(p, f.key, parseList($event.target.value).map(v => f.schema.items?.type === 'integer' ? Number(v) : v))"
+                />
+              </template>
+              <template v-else-if="f.schema.type === 'number'">
+                <input type="number" :value="fieldValue(p, f.key)" @input="setFieldValue(p, f.key, Number($event.target.value))" />
+              </template>
+              <template v-else>
+                <input :value="fieldValue(p, f.key)" @input="setFieldValue(p, f.key, $event.target.value)" />
+              </template>
+            </div>
+          </div>
+          <button class="primary" style="margin-top: 14px;" @click="saveConfig(p)">保存插件配置</button>
+        </div>
       </div>
     </div>
 
-    <p v-if="!plugins.length" class="muted">无已装载插件</p>
+    <p v-if="!plugins.length" class="muted" style="text-align: center; padding: 36px;">当前系统暂无已装载插件</p>
   </div>
 </template>
+
+<style scoped>
+.page-title h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+.page-title p {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+}
+
+.plugin-card {
+  margin-bottom: 24px;
+}
+
+.plugin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 14px;
+}
+
+.plugin-type-badge {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #60a5fa;
+  margin-bottom: 4px;
+  display: inline-block;
+}
+
+.plugin-title-group h3 {
+  margin: 2px 0 6px;
+  font-size: 1.1rem;
+}
+
+.plugin-desc {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.plugin-action-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bento-col-4 {
+  grid-column: span 4;
+}
+.bento-col-8 {
+  grid-column: span 8;
+}
+
+@media (max-width: 960px) {
+  .bento-col-4, .bento-col-8 {
+    grid-column: span 12;
+  }
+}
+
+.code-text {
+  font-family: monospace;
+  font-size: 0.84rem;
+}
+
+.ok-text {
+  color: #34d399;
+  font-weight: 600;
+}
+.bad-text {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.config-box {
+  background: rgba(14, 20, 32, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin-top: 14px;
+}
+
+.config-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.field-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-item label {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+</style>

@@ -43,8 +43,13 @@ class RuntimeMetrics:
             "wake_silence": 0,
             "gate_action": 0,
             "visible_messages": 0,
+            "unsolicited_visible_messages": 0,
             "would_send": 0,
             "cancellations_honored": 0,
+            "stale_outcomes_rejected": 0,
+            "followups_incorporated": 0,
+            "openloops_resolved": 0,
+            "obligations_fulfilled": 0,
         }
 
     def _route(self, tier: str, provider_id: str, model: str) -> RouteStats:

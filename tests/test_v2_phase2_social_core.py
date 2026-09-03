@@ -7,7 +7,9 @@ from len_bot.testing.scenario_runner import ScenarioRunner
 from len_bot.events.models import Event, EventType
 from len_bot.scenes.models import SceneState, ThreadStatus, ParticipationThread
 from len_bot.attention.models import AttentionDisposition
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
+from len_bot.cognition.models import (
+    EpisodeOutcome, FinalDisposition, MessageProposal, SocialStateProposal, ThreadTransition
+)
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.pi_core import PiAgentCore
 
@@ -108,23 +110,23 @@ async def test_scenario_b_natural_continuation_without_at(tmp_path):
         if "几点来着" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Inquiring about match time in active thread",
+                decision_reason="Inquiring about match time in active thread",
                 message_proposals=[MessageProposal(content="十一点吧")]
             )
         elif "那还挺晚" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Agreeing on late match time in active thread",
+                decision_reason="Agreeing on late match time in active thread",
                 message_proposals=[MessageProposal(content="确实，打完估计都后半夜了")]
             )
         elif "你今晚看比赛吗" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Direct question about match",
+                decision_reason="Direct question about match",
                 message_proposals=[MessageProposal(content="看啊，不出意外应该看")],
-                state_annotations={"topic": "比赛"}
+                social_state_proposal=SocialStateProposal(topic="比赛")
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="No need to speak")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="No need to speak")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -214,10 +216,10 @@ async def test_scenario_c_active_exit_on_topic_drift(tmp_path):
             # Cognition decides: Topic has drifted to homework, not my business. Close thread!
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="Topic drifted from match to homework; stepping out of conversation.",
-                state_annotations={"close_thread": True, "topic_drift": "homework"}
+                decision_reason="Topic drifted from match to homework; stepping out of conversation.",
+                social_state_proposal=SocialStateProposal(topic="homework", thread_transition=ThreadTransition.CLOSE)
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="Silence")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="Silence")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -319,12 +321,12 @@ async def test_scenario_h_semantic_staleness_and_interim_resolution(tmp_path):
         if "测试工具" in full_text and "哦懂了" in full_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="User B already answered and User A understood. Old response is stale; choosing SILENCE."
+                decision_reason="User B already answered and User A understood. Old response is stale; choosing SILENCE."
             )
         # Initial pass without interim context
         return EpisodeOutcome(
             disposition=FinalDisposition.ACTION,
-            thought="Found the answer",
+            decision_reason="Found the answer",
             message_proposals=[MessageProposal(content="这是一款自动化测试工具。")]
         )
 
@@ -365,7 +367,7 @@ async def test_scenario_h_semantic_staleness_and_interim_resolution(tmp_path):
 
     # INVARIANT: Model inspected interim context and chose SILENCE!
     assert outcome.disposition == FinalDisposition.SILENCE
-    assert "stale" in outcome.thought.lower() or "silence" in outcome.thought.lower()
+    assert "stale" in outcome.decision_reason.lower() or "silence" in outcome.decision_reason.lower()
 
     # 4. Gate validates and commits SILENCE
     decision = await runtime.runtime_gate.evaluate_and_commit(outcome, mailbox, actor.state)

@@ -36,7 +36,7 @@ async def test_v1c_agentic_history_recall(tmp_path):
 
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought=f"Retrieved historical message: {search_result}. Formulating answer.",
+                decision_reason=f"Retrieved historical message: {search_result}. Formulating answer.",
                 message_proposals=[
                     MessageProposal(content="之前推荐的那家叫蜀九香！")
                 ]
@@ -50,13 +50,13 @@ async def test_v1c_agentic_history_recall(tmp_path):
             assert "xyz123" not in search_result
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="No password found in current permitted scope.",
+                decision_reason="No password found in current permitted scope.",
                 message_proposals=[
                     MessageProposal(content="抱歉，在当前群历史中没有找到密码记录。")
                 ]
             )
 
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="No action")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="No action")
 
     runner = ScenarioRunner(config=config, mock_pi_handler=mock_pi_with_tools)
     await runner.setup()

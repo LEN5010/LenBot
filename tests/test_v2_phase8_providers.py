@@ -85,7 +85,7 @@ def _tool_call_response():
 def _final_response():
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.SILENCE,
-        thought="done after heavy evidence"
+        decision_reason="done after heavy evidence"
     )
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(tool_calls=None, content=outcome.model_dump_json()))],

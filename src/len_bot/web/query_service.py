@@ -10,6 +10,7 @@ OpenLoopManager, MemoryStore, receive_event).
 import json
 import time
 from typing import Optional
+from len_bot.scenes.models import SceneState
 
 
 class RuntimeQueryService:
@@ -79,7 +80,6 @@ class RuntimeQueryService:
                     "topic": state.current_thread.topic,
                     "status": state.current_thread.status.value,
                     "participants": state.current_thread.participants,
-                    "bot_consecutive_messages": state.current_thread.bot_consecutive_messages,
                     "intervening_messages": state.current_thread.intervening_messages,
                 }
             scenes.append({
@@ -105,17 +105,20 @@ class RuntimeQueryService:
         return scenes
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:
+        """ADR-0027 (§22): Read-only scene detail without mutating actor registry."""
         state = self.runtime.scene_manager.get_scene_state(scene_id)
         if state is None:
-            actor = await self.runtime.scene_manager.get_or_create_actor(scene_id)
-            state = actor.state
+            raw_state = await self.runtime.event_store.load_scene_state(scene_id)
+            if not raw_state:
+                return None
+            state = SceneState.model_validate(raw_state)
+
         thread_info = None
         if state.current_thread:
             thread_info = {
                 "topic": state.current_thread.topic,
                 "status": state.current_thread.status.value,
                 "participants": state.current_thread.participants,
-                "bot_consecutive_messages": state.current_thread.bot_consecutive_messages,
                 "intervening_messages": state.current_thread.intervening_messages,
                 "last_relevant_at": state.current_thread.last_relevant_at,
             }
@@ -208,7 +211,7 @@ class RuntimeQueryService:
         limit: int = 50,
     ) -> list[dict]:
         sql = """
-            SELECT id, subject, kind, key, value, certainty, scope, visibility, status,
+            SELECT id, subject, kind, key, value, certainty, scope, status,
                    superseded_by, evidence, human_readable_assertion, created_at, last_confirmed_at
             FROM memories WHERE 1=1
         """
@@ -228,9 +231,9 @@ class RuntimeQueryService:
         rows = await cursor.fetchall()
         return [
             {"id": r[0], "subject": r[1], "kind": r[2], "key": r[3], "value": r[4],
-             "certainty": r[5], "scope": r[6], "visibility": r[7], "status": r[8],
-             "superseded_by": r[9], "evidence": json.loads(r[10]) if r[10] else [],
-             "human_readable_assertion": r[11], "created_at": r[12], "last_confirmed_at": r[13]}
+             "certainty": r[5], "scope": r[6], "status": r[7],
+             "superseded_by": r[8], "evidence": json.loads(r[9]) if r[9] else [],
+             "human_readable_assertion": r[10], "created_at": r[11], "last_confirmed_at": r[12]}
             for r in rows
         ]
 
@@ -238,7 +241,7 @@ class RuntimeQueryService:
         """Superseded-chain traversal: walk back to the root ancestor, then follow
         superseded_by forward — the full belief evolution, oldest first."""
         store = self.runtime.memory_store
-        columns = ("id, subject, kind, key, value, certainty, scope, visibility, status, "
+        columns = ("id, subject, kind, key, value, certainty, scope, status, "
                    "superseded_by, evidence, human_readable_assertion, created_at")
 
         async def fetch(mem_id: str) -> Optional[dict]:
@@ -250,9 +253,9 @@ class RuntimeQueryService:
                 return None
             return {
                 "id": row[0], "subject": row[1], "kind": row[2], "key": row[3], "value": row[4],
-                "certainty": row[5], "scope": row[6], "visibility": row[7], "status": row[8],
-                "superseded_by": row[9], "evidence": json.loads(row[10]) if row[10] else [],
-                "human_readable_assertion": row[11], "created_at": row[12],
+                "certainty": row[5], "scope": row[6], "status": row[7],
+                "superseded_by": row[8], "evidence": json.loads(row[9]) if row[9] else [],
+                "human_readable_assertion": row[10], "created_at": row[11],
             }
 
         # 1. Walk backward (who did this memory supersede?) to find the root
@@ -304,3 +307,6 @@ class RuntimeQueryService:
 
     def shadow_would_send(self, limit: int = 100) -> list[dict]:
         return list(self.runtime.shadow_would_send_log)[-limit:][::-1]
+
+    async def list_shadow_annotations(self, scene_id: Optional[str] = None, limit: int = 100) -> list[dict]:
+        return await self.runtime.event_store.get_shadow_annotations(scene_id=scene_id, limit=limit)

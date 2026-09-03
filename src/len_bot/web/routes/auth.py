@@ -39,6 +39,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         value=token,
         httponly=True,
         samesite="lax",
+        secure=runtime.config.dashboard_cookie_secure,
         max_age=7 * 86400
     )
 
@@ -46,13 +47,12 @@ async def login(req: LoginRequest, request: Request, response: Response):
     return {
         "success": True,
         "username": req.username,
-        "token": token,
         "is_default_password": is_default_password
     }
 
 @router.post("/logout")
 async def logout(request: Request, response: Response, current_user: str = Depends(get_current_user)):
-    token = request.cookies.get("session_token") or (request.headers.get("Authorization") or "")[7:].strip()
+    token = request.cookies.get("session_token")
     if token:
         revoke_session(token)
     response.delete_cookie("session_token")

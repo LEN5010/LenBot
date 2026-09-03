@@ -97,7 +97,7 @@ def test_p1_pi_core_outcome_parser():
     fenced_json = """```json
     {
         "disposition": "ACTION",
-        "thought": "Direct response",
+        "decision_reason": "Direct response",
         "message_proposals": [{"content": "测试回复"}]
     }
     ```"""
@@ -107,7 +107,7 @@ def test_p1_pi_core_outcome_parser():
     assert outcome1.message_proposals[0].content == "测试回复"
 
     # 2. Plain JSON
-    plain_json = '{"disposition": "SILENCE", "thought": "No need to talk"}'
+    plain_json = '{"disposition": "SILENCE", "decision_reason": "No need to talk"}'
     outcome2 = core._parse_outcome(plain_json)
     assert outcome2.disposition == FinalDisposition.SILENCE
 

@@ -50,7 +50,6 @@ class MemoryItem(BaseModel):
     temporal: str = "recent"  # recent, persistent, historical
     certainty: MemoryCertainty = MemoryCertainty.LIKELY
     scope: str
-    visibility: str = "scene"  # scene, global
     evidence: list[str] = Field(default_factory=list)
     status: MemoryStatus = MemoryStatus.ACTIVE
     superseded_by: Optional[str] = None
@@ -69,6 +68,5 @@ class MemoryProposal(BaseModel):
     temporal: str = "recent"
     certainty: MemoryCertainty = MemoryCertainty.LIKELY
     scope: str = Field(default="", description="Scope injected authoritatively by runtime")
-    visibility: str = "scene"
     evidence: list[str]
     human_readable_assertion: str

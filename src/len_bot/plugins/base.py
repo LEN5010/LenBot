@@ -51,25 +51,6 @@ class PluginContext:
             raise PermissionError(f"Plugin '{self.manifest.id}' lacks 'intercept_action' permission.")
         self._host.register_action_interceptor(self.manifest.id, interceptor)
 
-    async def schedule_task(self, task_proposal: TaskProposal, scene_id: str) -> str:
-        """Scheduled Job: schedules a future task execution via TaskScheduler."""
-        if not self.has_permission(PluginPermission.SCHEDULE_TASK):
-            raise PermissionError(f"Plugin '{self.manifest.id}' lacks 'schedule_task' permission.")
-        now = time.time()
-        tid = f"task_{uuid.uuid4().hex[:8]}"
-        titem = TaskItem(
-            id=tid,
-            scene_id=scene_id,
-            description=f"[{self.manifest.id}] {task_proposal.description}",
-            due_at=now + task_proposal.delay_seconds,
-            status=TaskStatus.PENDING,
-            payload=task_proposal.payload,
-            source_event_id=f"plugin:{self.manifest.id}",
-            created_at=now
-        )
-        await self._runtime.scheduler.schedule_task(titem)
-        return tid
-
 class BasePlugin:
     manifest: PluginManifest
 

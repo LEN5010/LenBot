@@ -39,13 +39,8 @@ def revoke_session(token: str) -> None:
     _ACTIVE_SESSIONS.pop(token, None)
 
 async def get_current_user(request: Request) -> str:
-    """FastAPI dependency to extract and validate the authenticated session."""
-    auth_header = request.headers.get("Authorization")
-    token = None
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-    elif "session_token" in request.cookies:
-        token = request.cookies["session_token"]
+    """FastAPI dependency to extract and validate the authenticated session (Cookie-only, ADR-0031)."""
+    token = request.cookies.get("session_token")
 
     if not token:
         raise HTTPException(

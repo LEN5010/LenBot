@@ -68,7 +68,7 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
         await episode_1_can_finish.wait()
         return EpisodeOutcome(
             disposition=FinalDisposition.ACTION,
-            thought="Finished slow thinking",
+            decision_reason="Finished slow thinking",
             message_proposals=[MessageProposal(content="Slow response")]
         )
 
@@ -156,7 +156,7 @@ async def test_p0_3_memory_scope_enforcement_and_evidence_isolation(tmp_path):
     # Model proposes memory with scope="global-safe" in EpisodeOutcome
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="Try to declare global memory",
+        decision_reason="Try to declare global memory",
         message_proposals=[MessageProposal(content="ok")],
         memory_proposals=[
             MemoryProposal(
@@ -206,7 +206,7 @@ async def test_p0_4_scheduler_atomic_trigger_and_payload_roundtrip(tmp_path):
 
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.SILENCE,
-        thought="Schedule complex payload task",
+        decision_reason="Schedule complex payload task",
         task_proposals=[
             TaskProposal(
                 description="检查直播间状态",

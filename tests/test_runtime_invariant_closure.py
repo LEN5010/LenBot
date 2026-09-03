@@ -54,7 +54,6 @@ async def test_item1_unified_write_authority_and_no_commit_bypass(tmp_path):
             temporal="stable",
             certainty=MemoryCertainty.STRONG,
             scope="group:1",
-            visibility="internal",
             evidence=["ev_1"],
             status=MemoryStatus.ACTIVE,
             human_readable_assertion="likes spicy food",
@@ -120,7 +119,7 @@ async def test_item2_gate_freshness_silence_check_and_toctou(tmp_path):
     # 2. Episode outcome was SILENCE + TaskProposal
     outcome_silence_with_task = EpisodeOutcome(
         disposition=FinalDisposition.SILENCE,
-        thought="I will be silent now and check later",
+        decision_reason="I will be silent now and check later",
         task_proposals=[TaskProposal(description="Future check", delay_seconds=600)]
     )
 
@@ -395,7 +394,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
         if "顺便看看嘉宾" in full_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Answered original question + follow-up!",
+                decision_reason="Answered original question + follow-up!",
                 message_proposals=[MessageProposal(content="直播8点开始，今天的嘉宾是小明！")]
             )
         # On first pass without follow-up, simulate user sending follow-up before cognition returns
@@ -409,7 +408,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
         mailbox.post(fu_event)
         return EpisodeOutcome(
             disposition=FinalDisposition.ACTION,
-            thought="Stale answer without guest info",
+            decision_reason="Stale answer without guest info",
             message_proposals=[MessageProposal(content="直播8点开始")]
         )
 
@@ -427,7 +426,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     # If a follow-up arrives right when Gate evaluates, Gate MUST NOT send the stale action
     stale_outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="Old single question answer",
+        decision_reason="Old single question answer",
         message_proposals=[MessageProposal(content="旧回答")]
     )
     race_mailbox = EpisodeMailbox(episode_id="ep_race_2", scene_id=scene_id, base_scene_version=1)
@@ -483,7 +482,7 @@ async def test_p0_2_scene_actor_serialization_and_zero_scheduler_leak_on_cancell
     # 3. Cognition finishes proposing a task
     outcome_with_task = EpisodeOutcome(
         disposition=FinalDisposition.SILENCE,
-        thought="I will check live status in 5 minutes",
+        decision_reason="I will check live status in 5 minutes",
         task_proposals=[TaskProposal(description="Delayed check", delay_seconds=300)]
     )
 

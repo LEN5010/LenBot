@@ -134,21 +134,28 @@ class SceneActor:
                             current_scene_state=self.state,
                             proposal_commit=item.proposal_commit,
                         )
-                        # Invariant A: If outcome proposed state_annotations, reduce via STATE_ANNOTATION event
-                        if getattr(item.outcome, "state_annotations", None) and not item.mailbox.is_cancelled():
-                            anno_event = Event(
-                                event_type=EventType.STATE_ANNOTATION,
-                                scene_id=self.scene_id,
-                                actor_id="system:cognition",
-                                timestamp=time.time(),
-                                metadata={"soft_annotation": item.outcome.state_annotations}
-                            )
-                            candidate_state = SceneReducer.reduce(self.state, anno_event, self.bot_actor_id)
-                            await self.event_store.commit_scene_event(
-                                event=anno_event,
-                                scene_state_data=candidate_state.model_dump()
-                            )
-                            self.state = candidate_state
+                        # Invariant A: If outcome proposed social_state_proposal and gate accepted, reduce via STATE_ANNOTATION event
+                        if decision.accepted and getattr(item.outcome, "social_state_proposal", None):
+                            ssp = item.outcome.social_state_proposal
+                            metadata_payload = {}
+                            if ssp.topic is not None:
+                                metadata_payload["topic"] = ssp.topic
+                            if ssp.thread_transition is not None:
+                                metadata_payload["thread_transition"] = ssp.thread_transition.value if hasattr(ssp.thread_transition, "value") else str(ssp.thread_transition)
+                            if metadata_payload:
+                                anno_event = Event(
+                                    event_type=EventType.STATE_ANNOTATION,
+                                    scene_id=self.scene_id,
+                                    actor_id="system:cognition",
+                                    timestamp=time.time(),
+                                    metadata={"social_state": metadata_payload}
+                                )
+                                candidate_state = SceneReducer.reduce(self.state, anno_event, self.bot_actor_id)
+                                await self.event_store.commit_scene_event(
+                                    event=anno_event,
+                                    scene_state_data=candidate_state.model_dump()
+                                )
+                                self.state = candidate_state
 
                         if not item.future.done():
                             item.future.set_result(decision)

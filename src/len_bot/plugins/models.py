@@ -6,7 +6,6 @@ import time
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"
     REGISTER_TOOL = "register_tool"
-    SCHEDULE_TASK = "schedule_task"
     INTERCEPT_ACTION = "intercept_action"
 
 class PluginType(StrEnum):

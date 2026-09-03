@@ -120,12 +120,12 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
         last_msg = messages[-1]["content"] if messages else ""
         if "抽奖" in last_msg:
             return EpisodeOutcome(
-                thought="有人发起了抽奖，我需要用自然的口吻开心地回应并预告开奖时间",
+                decision_reason="有人发起了抽奖，我需要用自然的口吻开心地回应并预告开奖时间",
                 disposition=FinalDisposition.ACTION,
                 message_proposals=[MessageProposal(content="好耶！开抽开抽，两小时后见分晓~")]
             )
         return EpisodeOutcome(
-            thought="无须发言",
+            decision_reason="无须发言",
             disposition=FinalDisposition.SILENCE
         )
 

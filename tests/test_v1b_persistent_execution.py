@@ -34,7 +34,7 @@ async def test_v1b_cross_time_and_open_loop_execution(tmp_path):
         if "查一下今晚有啥安排" in current_stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="Answer A and ask when they will arrive; also schedule a proactive check in 0.3s",
+                decision_reason="Answer A and ask when they will arrive; also schedule a proactive check in 0.3s",
                 message_proposals=[
                     MessageProposal(
                         content="安排在直播，你大概几点能来？",
@@ -56,7 +56,7 @@ async def test_v1b_cross_time_and_open_loop_execution(tmp_path):
             task_executed = True
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought="Proactive check completed: stream is ready. Keeping silence."
+                decision_reason="Proactive check completed: stream is ready. Keeping silence."
             )
 
         # 3. User A replies: "我七点到"
@@ -73,7 +73,7 @@ async def test_v1b_cross_time_and_open_loop_execution(tmp_path):
 
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="User A answered the arrival time. Resolving open loop and confirming.",
+                decision_reason="User A answered the arrival time. Resolving open loop and confirming.",
                 message_proposals=[
                     MessageProposal(content="好的收到，七点见！")
                 ],
@@ -82,7 +82,7 @@ async def test_v1b_cross_time_and_open_loop_execution(tmp_path):
 
         return EpisodeOutcome(
             disposition=FinalDisposition.SILENCE,
-            thought="No need to speak"
+            decision_reason="No need to speak"
         )
 
     runner = ScenarioRunner(config=config, mock_pi_handler=mock_pi_cognition)

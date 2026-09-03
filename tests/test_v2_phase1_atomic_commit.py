@@ -71,7 +71,7 @@ async def test_atomic_proposal_commit_all_or_nothing_on_evidence_failure(tmp_pat
     # - MessageProposal
     outcome_with_invalid_evidence = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="I should answer, schedule task, resolve loop, and save memory",
+        decision_reason="I should answer, schedule task, resolve loop, and save memory",
         message_proposals=[MessageProposal(content="我来回答你")],
         task_proposals=[TaskProposal(description="Should rollback task", delay_seconds=300)],
         resolve_open_loop_ids=[loop_id],
@@ -165,7 +165,7 @@ async def test_atomic_proposal_commit_all_or_nothing_on_database_error(tmp_path)
 
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="Attempting commit with simulated DB error",
+        decision_reason="Attempting commit with simulated DB error",
         message_proposals=[MessageProposal(content="不会被发送的消息")],
         task_proposals=[TaskProposal(description="Task that must rollback", delay_seconds=600)],
         resolve_open_loop_ids=[loop_id]
@@ -248,7 +248,7 @@ async def test_atomic_proposal_commit_success_and_external_distribution(tmp_path
     # 3. Outcome with all 4 mutations
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="Valid atomic commit with task, memory, open loop resolution, and message",
+        decision_reason="Valid atomic commit with task, memory, open loop resolution, and message",
         message_proposals=[
             MessageProposal(
                 content="火锅确实香，今晚几点去？",

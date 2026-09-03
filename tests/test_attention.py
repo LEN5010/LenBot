@@ -21,7 +21,7 @@ def test_hard_attention_mention():
     assert "mention" in res.reason
 
 def test_heuristic_attention_keywords_and_cooldown():
-    config = RuntimeConfig(bot_cooldown_seconds=100, monitored_keywords=["直播"])
+    config = RuntimeConfig(monitored_keywords=["直播"])
     engine = AttentionEngine(config)
     
     # 1. User says "今晚直播有人看吗", Bot never spoke -> WAKE

@@ -31,7 +31,7 @@ async def test_gate_two_phase_commit_and_open_loop(tmp_path):
     # Pi outputs an action asking A for arrival time, plus a future task
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="Ask A arrival time and set checking task",
+        decision_reason="Ask A arrival time and set checking task",
         message_proposals=[
             MessageProposal(
                 content="你几点来？",
@@ -87,7 +87,7 @@ async def test_gate_staleness_cancellation(tmp_path):
 
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
-        thought="I found the live stream",
+        decision_reason="I found the live stream",
         message_proposals=[MessageProposal(content="八点开播")]
     )
 

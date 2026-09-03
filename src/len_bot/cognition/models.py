@@ -22,7 +22,10 @@ class TaskProposal(BaseModel):
     # ADR-0018: condition-bound obligation. When set, the task fires when a committed
     # event of this type arrives in the scene (e.g. LIVE_STARTED), or at its deadline.
     wake_event_type: Optional[str] = Field(default=None)
+    wake_match: Optional[dict[str, Any]] = Field(default=None, description="Exact dict match against event payload (ADR-0029, §16)")
     payload: dict[str, Any] = Field(default_factory=dict)
+    origin_episode_id: Optional[str] = Field(default=None)
+    origin_stimulus_id: Optional[str] = Field(default=None)
 
 
 # Deadline cap for condition-bound tasks that never see their wake event (ADR-0018).
@@ -36,6 +39,18 @@ class RetainedItemProposal(BaseModel):
     salience: float = Field(default=0.5, description="Estimated usefulness if a related topic appears [0,1]")
     source_event_id: Optional[str] = Field(default=None, description="Optional evidence event id from recent raw chat")
 
+class ThreadTransition(StrEnum):
+    KEEP = "keep"
+    FADE = "fade"
+    CLOSE = "close"
+
+class SocialStateProposal(BaseModel):
+    topic: Optional[str] = Field(default=None, description="Current conversational topic if updated")
+    thread_transition: Optional[ThreadTransition] = Field(
+        default=None,
+        description="Optional transition for participation thread: keep, fade, or close"
+    )
+
 from len_bot.memory.models import MemoryProposal
 
 class EpisodeOutcome(BaseModel):
@@ -43,10 +58,10 @@ class EpisodeOutcome(BaseModel):
         default=FinalDisposition.SILENCE,
         description="Must be SILENCE if no message should be sent, or ACTION if sending message(s)"
     )
-    thought: str = Field(description="Brief structured chain of thought explaining the decision")
+    decision_reason: str = Field(description="Brief structured reason explaining the decision (e.g. peer already answered)")
     message_proposals: list[MessageProposal] = Field(default_factory=list)
     task_proposals: list[TaskProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
-    state_annotations: dict[str, Any] = Field(default_factory=dict)
+    social_state_proposal: Optional[SocialStateProposal] = Field(default=None)
     retained_item_proposals: list[RetainedItemProposal] = Field(default_factory=list)

@@ -37,12 +37,14 @@ class GateDecision:
         disposition: FinalDisposition,
         reason: str,
         actions_enqueued: int = 0,
-        committed_proposal: Optional[CommittedProposal] = None
+        committed_proposal: Optional[CommittedProposal] = None,
+        accepted: bool = True
     ):
         self.disposition = disposition
         self.reason = reason
         self.actions_enqueued = actions_enqueued
         self.committed_proposal = committed_proposal
+        self.accepted = accepted
 
 class RuntimeGate:
     def __init__(
@@ -83,11 +85,11 @@ class RuntimeGate:
             logger.info("Gate rejected response due to cancellation: %s", reason)
             if self.metrics:
                 self.metrics.inc_social("cancellations_honored")
-            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}")
+            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
 
         if mailbox.has_follow_up():
             logger.info("Gate rejected response due to pending follow-up superseding this outcome")
-            return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome")
+            return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome", accepted=False)
 
         interim_events = mailbox.get_interim_events()
         cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了", "取消", "停"]
@@ -96,7 +98,18 @@ class RuntimeGate:
                 logger.info("Gate rejected response due to interim cancellation: %s", ie.raw_text)
                 if self.metrics:
                     self.metrics.inc_social("cancellations_honored")
-                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
+                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}", accepted=False)
+
+        # ADR-0026 / §8.2: Gate last window check: if unread interim events arrived, reject as stale
+        if mailbox.has_unseen_interim():
+            logger.info("Gate rejected response due to unread interim events (semantic staleness)")
+            if self.metrics:
+                self.metrics.inc_social("stale_outcomes_rejected")
+            return GateDecision(
+                FinalDisposition.SILENCE,
+                "Gate rejected stale response: unread interim events arrived during deliberation",
+                accepted=False
+            )
 
         # 2. Authoritative Database Commit (Tasks, Open Loops, Memories) - All-or-Nothing Atomic Transaction
         try:
@@ -107,6 +120,8 @@ class RuntimeGate:
                 resolve_open_loop_ids=proposal_commit.outcome.resolve_open_loop_ids,
                 memory_proposals=proposal_commit.outcome.memory_proposals
             )
+            if resolved_loops and self.metrics:
+                self.metrics.inc_social("openloops_resolved", len(resolved_loops))
             committed_proposal = CommittedProposal(
                 episode_id=proposal_commit.episode_id,
                 scene_id=proposal_commit.scene_id,
@@ -122,7 +137,8 @@ class RuntimeGate:
             )
             return GateDecision(
                 FinalDisposition.SILENCE,
-                f"Gate rejected due to transaction rollback: {e}"
+                f"Gate rejected due to transaction rollback: {e}",
+                accepted=False
             )
 
         # 3. External Side-Effect Distribution (Scheduler): only register in heap after DB commit succeeds!
@@ -148,7 +164,7 @@ class RuntimeGate:
         if outcome.disposition == FinalDisposition.SILENCE:
             return GateDecision(
                 FinalDisposition.SILENCE,
-                f"Model selected SILENCE: {outcome.thought}",
+                f"Model selected SILENCE: {outcome.decision_reason}",
                 committed_proposal=committed_proposal
             )
 

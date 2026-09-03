@@ -136,10 +136,10 @@ async def test_agency_initiative_and_anti_spam_flow(tmp_path):
         if "Major 决赛" in user_prompt:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="High interest in CS2 Major; voluntarily join discussion",
+                decision_reason="High interest in CS2 Major; voluntarily join discussion",
                 message_proposals=[MessageProposal(content="今晚 Major 决赛我也在看，感觉这把很悬！")]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="Stay quiet")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="Stay quiet")
 
     runner = ScenarioRunner(config=config, mock_pi_handler=mock_pi)
     await runner.setup()

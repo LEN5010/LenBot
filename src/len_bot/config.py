@@ -19,7 +19,6 @@ class RuntimeConfig(BaseModel):
     max_ingest_lag_seconds: int = Field(default=60, description="Events older than this skip stimulus")
     
     # Heuristic Attention
-    bot_cooldown_seconds: int = Field(default=300, description="Minimum silence interval before proactive wake")
     monitored_keywords: list[str] = Field(
         default_factory=lambda: ["直播", "开播", "几点", "有人看吗", "bot", "Bot"]
     )
@@ -43,7 +42,10 @@ class RuntimeConfig(BaseModel):
     )
 
     # Web Dashboard Settings
-    dashboard_enabled: bool = Field(default=False, description="Whether to run the management web dashboard")
+    dashboard_enabled: bool = Field(
+        default_factory=lambda: os.getenv("DASHBOARD_ENABLED", "true").lower() in ("true", "1", "yes"),
+        description="Whether to run the management web dashboard"
+    )
     dashboard_host: str = Field(default="127.0.0.1", description="Dashboard HTTP bind host")
     dashboard_port: int = Field(default=11307, description="Dashboard HTTP port (default 11307)")
     dashboard_secret_key: str = Field(
@@ -51,3 +53,4 @@ class RuntimeConfig(BaseModel):
     )
     dashboard_default_admin_user: str = "admin"
     dashboard_default_admin_password: str = "lenbot123"
+    dashboard_cookie_secure: bool = Field(default=False, description="Whether session cookie requires HTTPS")

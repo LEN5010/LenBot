@@ -46,17 +46,30 @@ class BilibiliLiveSensor(BasePlugin):
         self._live_state: dict[int, bool] = {}
         self._client = httpx.AsyncClient(timeout=10.0)
 
-    async def on_load(self, context: PluginContext) -> None:
-        self._context = context
-        self._poll_task = asyncio.create_task(self._poll_loop())
+    async def on_enable(self) -> None:
+        """ADR-0030, §21.3: start background polling loop when plugin is enabled."""
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            logger.info("BilibiliLiveSensor started polling task")
 
-    async def on_unload(self) -> None:
-        if self._poll_task:
+    async def on_disable(self) -> None:
+        """ADR-0030, §21.3: cancel background polling loop when plugin is disabled."""
+        if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+            self._poll_task = None
+            logger.info("BilibiliLiveSensor cancelled polling task")
+
+    async def on_load(self, context: PluginContext) -> None:
+        self._context = context
+        if self.manifest.enabled:
+            await self.on_enable()
+
+    async def on_unload(self) -> None:
+        await self.on_disable()
         await self._client.aclose()
 
     async def _poll_loop(self) -> None:
