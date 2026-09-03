@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from len_bot.config import RuntimeConfig
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
+from len_bot.cognition.router import CognitionRouter, CognitiveTier
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ class PiAgentCore:
         try:
             working_messages = list(messages)
             tools = toolkit.get_tool_definitions() if toolkit else None
+            router = CognitionRouter(self.config)
+            current_tier = CognitiveTier.NORMAL
 
             # ReAct Step Loop
             for step in range(max_steps):
@@ -78,9 +81,11 @@ class PiAgentCore:
                         thought=f"Aborted by steering at step {step}: {steering.reason}"
                     )
 
+                active_model = router.get_model_for_tier(current_tier)
+
                 if tools:
                     resp = await self._client.chat.completions.create(
-                        model=self.config.default_model,
+                        model=active_model,
                         messages=working_messages,
                         tools=tools,
                         temperature=0.6
@@ -98,11 +103,15 @@ class PiAgentCore:
                                 "tool_call_id": tc.id,
                                 "content": tool_result
                             })
+                            # Check dynamic escalation (§75 & ADR-0012)
+                            if router.should_escalate(current_tier, step, tool_result):
+                                current_tier = CognitiveTier.DELIBERATE
                         continue
 
                 # No tool calls needed or tools completed: parse final structured EpisodeOutcome
+                active_model = router.get_model_for_tier(current_tier)
                 completion = await self._client.beta.chat.completions.parse(
-                    model=self.config.default_model,
+                    model=active_model,
                     messages=working_messages,
                     response_format=EpisodeOutcome,
                     temperature=0.6,

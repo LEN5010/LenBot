@@ -5,9 +5,21 @@ from len_bot.scenes.models import SceneState
 from len_bot.attention.models import AttentionResult, AttentionDisposition
 from len_bot.config import RuntimeConfig
 
+from len_bot.state.interest import InterestModel
+from len_bot.attention.budget import SpeakingBudget
+from len_bot.attention.initiative import InitiativeEngine, InitiativeDisposition
+
 class AttentionEngine:
-    def __init__(self, config: RuntimeConfig):
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        interest_model: Optional[InterestModel] = None,
+        speaking_budget: Optional[SpeakingBudget] = None
+    ):
         self.config = config
+        self.interest_model = interest_model or InterestModel()
+        self.speaking_budget = speaking_budget or SpeakingBudget(base_threshold=0.60)
+        self.initiative_engine = InitiativeEngine(self.interest_model, self.speaking_budget)
 
     def evaluate(
         self,
@@ -52,44 +64,29 @@ class AttentionEngine:
 
         # --- Layer 2: Heuristic Attention (State-Dependent) ---
         text = stimulus.combined_text
-        matched_keywords = [k for k in self.config.monitored_keywords if k in text]
-
         activity = scene_state.activity_level if scene_state else "quiet"
         last_bot_at = scene_state.recent_bot_message_at if scene_state else None
 
         # Check Active Engagement continuation (§34 & §106)
-        # If Bot is already an active participant in this scene's conversation:
         if scene_state and scene_state.bot_engagement == "active" and activity != "hot":
-            # Avoid waking immediately on Bot's own sent echo
             if last_bot_at and (now - last_bot_at) > 1.0:
                 return AttentionResult(
                     disposition=AttentionDisposition.WAKE,
                     reason="active_conversation_engagement"
                 )
 
-        if matched_keywords:
-            # Check scene activity & backpressure
-            if activity == "hot":
-                # High-traffic group: apply backpressure, do not wake
-                return AttentionResult(
-                    disposition=AttentionDisposition.OBSERVE,
-                    reason="backpressure_scene_hot",
-                    soft_annotation={"topic_hint": matched_keywords[0]}
-                )
-
-            # Check Bot speaking cooldown
-            if last_bot_at and (now - last_bot_at) < self.config.bot_cooldown_seconds:
-                # Cooldown active: annotate soft topic but don't wake
-                return AttentionResult(
-                    disposition=AttentionDisposition.TRACK,
-                    reason="cooldown_active_track_only",
-                    soft_annotation={"topic_hint": matched_keywords[0]}
-                )
-
-            # Passed cooldown and keyword probe: WAKE
+        # Check Initiative Engine (§83-86 & ADR-0012)
+        init_disp, init_reason, init_score = self.initiative_engine.evaluate(text, scene_state, now)
+        if init_disp == InitiativeDisposition.WAKE_FOR_INITIATIVE:
             return AttentionResult(
                 disposition=AttentionDisposition.WAKE,
-                reason=f"keyword_probe_matched:{','.join(matched_keywords)}"
+                reason=init_reason
+            )
+        elif init_disp == InitiativeDisposition.RETAIN_FOR_LATER:
+            return AttentionResult(
+                disposition=AttentionDisposition.TRACK,
+                reason=init_reason,
+                soft_annotation={"initiative_interest": init_score}
             )
 
         # Default fallback: OBSERVE

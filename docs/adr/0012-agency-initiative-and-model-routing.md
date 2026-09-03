@@ -1,0 +1,3 @@
+# Proactive Agency via Speaking Budget, Interest Scoring, and Model Escalation
+
+Autonomous bot initiative without strict boundaries inevitably degrades into conversational spam and annoying monologues. We decided that proactive behavior is governed by a strict Speaking Budget (which raises initiative cost with consecutive bot messages and recent frequency) combined with an explicit Interest Model. Waking for initiative enters the exact same Cognitive Episode and Runtime Gate pipeline as reactive replies. Furthermore, we implemented dynamic model escalation (switching from Normal to Deliberate models while preserving trajectory) triggered objectively by tool result complexity.
