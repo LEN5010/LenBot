@@ -1,0 +1,28 @@
+[project]
+name = "len-bot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "LEN5010", email = "1649211052@qq.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "openai>=3.7.0",
+    "pydantic>=2.13.5",
+    "websockets>=17.1",
+]
+
+[project.scripts]
+len-bot = "len_bot:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

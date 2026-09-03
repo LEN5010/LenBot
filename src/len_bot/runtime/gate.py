@@ -1,0 +1,136 @@
+import logging
+import uuid
+import time
+from typing import Optional
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
+from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.scenes.models import SceneState
+from len_bot.actions.models import ActionItem, ActionType
+from len_bot.actions.queue import ActionQueue
+from len_bot.events.store import EventStore
+
+logger = logging.getLogger(__name__)
+
+class GateDecision:
+    def __init__(self, disposition: FinalDisposition, reason: str, actions_enqueued: int = 0):
+        self.disposition = disposition
+        self.reason = reason
+        self.actions_enqueued = actions_enqueued
+
+class RuntimeGate:
+    def __init__(self, event_store: EventStore, action_queue: ActionQueue):
+        self.event_store = event_store
+        self.action_queue = action_queue
+
+    async def evaluate_and_commit(
+        self,
+        outcome: EpisodeOutcome,
+        mailbox: EpisodeMailbox,
+        current_scene_state: SceneState
+    ) -> GateDecision:
+        # 1. Check if model explicitly chose SILENCE
+        if outcome.disposition == FinalDisposition.SILENCE:
+            await self._commit_independent_state(outcome, current_scene_state.scene_id)
+            return GateDecision(FinalDisposition.SILENCE, f"Model selected SILENCE: {outcome.thought}")
+
+        # 2. Response Staleness Check (ADR-0002)
+        steering = mailbox.check_steering()
+        if steering:
+            await self._commit_independent_state(outcome, current_scene_state.scene_id)
+            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {steering.reason}")
+
+        interim_events = mailbox.get_interim_events()
+        # Scan interim events for cancellation or someone else answering
+        cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了"]
+        for ie in interim_events:
+            if any(ck in ie.raw_text for ck in cancel_keywords):
+                await self._commit_independent_state(outcome, current_scene_state.scene_id)
+                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
+
+        # 3. Two-Phase Commit (ADR-0003)
+        # Phase 1: Commit independent internal states (tasks, loop resolutions, annotations)
+        await self._commit_independent_state(outcome, current_scene_state.scene_id)
+
+        # Phase 2: Enqueue message actions with dependent Open Loops
+        actions_count = 0
+        now = time.time()
+        for msg in outcome.message_proposals:
+            associated_loop = None
+            if msg.expect_reply and msg.reply_target:
+                associated_loop = {
+                    "id": f"loop_{uuid.uuid4().hex[:10]}",
+                    "scene_id": current_scene_state.scene_id,
+                    "target_actor_id": msg.reply_target,
+                    "intent": msg.reply_intent or "general_response",
+                    "source_event_id": "", # Will be filled by ActionQueue on MESSAGE_SENT
+                    "status": "active",
+                    "created_at": now,
+                    "expires_at": now + 86400.0 # 24h TTL
+                }
+
+            action_type = (
+                ActionType.SEND_PRIVATE_MESSAGE
+                if current_scene_state.scene_id.startswith("private:")
+                else ActionType.SEND_GROUP_MESSAGE
+            )
+            action = ActionItem(
+                action_type=action_type,
+                scene_id=current_scene_state.scene_id,
+                content=msg.content,
+                reply_to=msg.reply_to,
+                associated_open_loop=associated_loop
+            )
+            self.action_queue.enqueue(action)
+            actions_count += 1
+
+        return GateDecision(
+            FinalDisposition.ACTION,
+            f"Approved {actions_count} message proposals",
+            actions_enqueued=actions_count
+        )
+
+    async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> None:
+        now = time.time()
+        # 1. Commit independent tasks
+        for tp in outcome.task_proposals:
+            task_data = {
+                "id": f"task_{uuid.uuid4().hex[:10]}",
+                "scene_id": scene_id,
+                "description": tp.description,
+                "due_at": now + tp.delay_seconds,
+                "status": "pending",
+                "source_event_id": "episode",
+                "payload": tp.payload,
+                "created_at": now
+            }
+            # Save task to tasks table
+            cursor = await self.event_store._db.execute(
+                """
+                INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    task_data["id"],
+                    task_data["scene_id"],
+                    task_data["description"],
+                    task_data["due_at"],
+                    task_data["status"],
+                    task_data["source_event_id"],
+                    str(task_data["payload"]),
+                    task_data["created_at"]
+                )
+            )
+            await self.event_store._db.commit()
+
+        # 2. Resolve open loops if specified
+        for loop_id in outcome.resolve_open_loop_ids:
+            await self.event_store.save_open_loop({
+                "id": loop_id,
+                "scene_id": scene_id,
+                "target_actor_id": "",
+                "intent": "",
+                "source_event_id": "",
+                "status": "resolved",
+                "created_at": now,
+                "expires_at": now
+            })
