@@ -46,6 +46,7 @@ class StimulusBuilder:
                 source_event_ids=[event.id],
                 actor_id=event.actor_id,
                 combined_text=event.raw_text,
+                origin_mode=event.payload.get("origin_mode", "live"),
                 timestamp=event.timestamp
             )
             await self.on_stimulus(stimulus)

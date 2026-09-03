@@ -134,10 +134,12 @@ class TaskScheduler:
                 "task_id": task.id,
                 "raw_text": task.description,
                 "description": task.description,
-                "payload": task.payload
+                "payload": task.payload,
+                "origin_mode": getattr(task, "origin_mode", "live"),
             }
         )
-        logger.info("Task due! Triggering task %s (%s) for scene %s", task.id, task.description, task.scene_id)
+        logger.info("Task due! Triggering task %s (%s) for scene %s (origin=%s)",
+                    task.id, task.description, task.scene_id, getattr(task, "origin_mode", "live"))
         await self.emit_event(event)
 
     async def on_event(self, event: Event) -> list[str]:
@@ -231,7 +233,8 @@ class TaskScheduler:
                 "task_id": target_task.id,
                 "raw_text": target_task.description,
                 "description": target_task.description,
-                "payload": target_task.payload
+                "payload": target_task.payload,
+                "origin_mode": getattr(target_task, "origin_mode", "live"),
             }
         )
         logger.info("Task %s triggered manually now", task_id)
@@ -239,7 +242,7 @@ class TaskScheduler:
         return True
 
     async def promote_task(self, task_id: str) -> Optional[dict]:
-        """ADR-0029, §23.4: Promotes/duplicates task as a renewed template task."""
+        """ADR-0029, §23.4: Promotes/duplicates task as a renewed template task with live origin."""
         if not self.event_store._db:
             return None
         cursor = await self.event_store._db.execute("SELECT * FROM tasks WHERE id = ?;", (task_id,))
@@ -264,6 +267,7 @@ class TaskScheduler:
             wake_match=wake_match_data,
             origin_episode_id=row[10] if len(row) > 10 else None,
             origin_stimulus_id=row[11] if len(row) > 11 else None,
+            origin_mode="live",
         )
         await self.event_store.save_task(new_task)
         self.schedule_task(new_task)

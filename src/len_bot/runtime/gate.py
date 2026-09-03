@@ -2,7 +2,7 @@ import logging
 import uuid
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
 from len_bot.scenes.models import SceneState
@@ -54,7 +54,8 @@ class RuntimeGate:
         scheduler: Optional[Any] = None,
         memory_gate: Optional[Any] = None,
         ambient_store: Optional[Any] = None,
-        metrics: Optional[Any] = None
+        metrics: Optional[Any] = None,
+        origin_mode_provider: Optional[Callable[[], str]] = None
     ):
         self.event_store = event_store
         self.action_queue = action_queue
@@ -62,6 +63,7 @@ class RuntimeGate:
         self.memory_gate = memory_gate
         self.ambient_store = ambient_store
         self.metrics = metrics
+        self.origin_mode_provider = origin_mode_provider
 
     async def evaluate_and_commit(
         self,
@@ -110,6 +112,12 @@ class RuntimeGate:
                 "Gate rejected stale response: unread interim events arrived during deliberation",
                 accepted=False
             )
+
+        # ADR-0021 & ADR-0029: Origin Mode Tracking (live vs shadow)
+        curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
+        if curr_origin == "shadow":
+            for tp in proposal_commit.outcome.task_proposals:
+                tp.origin_mode = "shadow"
 
         # 2. Authoritative Database Commit (Tasks, Open Loops, Memories) - All-or-Nothing Atomic Transaction
         try:
@@ -190,12 +198,14 @@ class RuntimeGate:
                 if current_scene_state.scene_id.startswith("private:")
                 else ActionType.SEND_GROUP_MESSAGE
             )
+            action_origin = "shadow" if (curr_origin == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
             action = ActionItem(
                 action_type=action_type,
                 scene_id=current_scene_state.scene_id,
                 content=msg.content,
                 reply_to=msg.reply_to,
-                associated_open_loop=associated_loop
+                associated_open_loop=associated_loop,
+                origin_mode=action_origin
             )
             self.action_queue.enqueue(action)
             actions_count += 1

@@ -8,8 +8,10 @@ Discovery = this explicit registry: V2 ships exactly two real plugins
 from len_bot.plugins.base import BasePlugin
 from len_bot.plugins.builtin.bilibili_live import BilibiliLiveSensor
 from len_bot.plugins.builtin.web_search import WebSearchToolPlugin
+from len_bot.plugins.builtin.bilibili_content import BilibiliContentPlugin
 
 BUILTIN_PLUGINS: dict[str, type[BasePlugin]] = {
     "bilibili_live_sensor": BilibiliLiveSensor,
     "web_search_tool": WebSearchToolPlugin,
+    "bilibili_content": BilibiliContentPlugin,
 }

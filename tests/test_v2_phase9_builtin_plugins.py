@@ -21,7 +21,7 @@ async def test_builtin_plugins_loaded_with_manifest_and_persisted_toggle(tmp_pat
     await runtime.start()
 
     plugins = {p["id"]: p for p in runtime.plugin_host.status_snapshot()}
-    assert set(plugins) == {"bilibili_live_sensor", "web_search_tool"}
+    assert set(plugins) == {"bilibili_live_sensor", "web_search_tool", "bilibili_content"}
 
     sensor = plugins["bilibili_live_sensor"]
     assert "LIVE_STARTED" in sensor["emitted_events"]

@@ -129,7 +129,7 @@ async def test_dashboard_auth_and_management(tmp_path):
         plugins_get = await client.get("/api/plugins/list", headers=headers)
         assert plugins_get.status_code == 200
         plugins_list = plugins_get.json()
-        assert {p["id"] for p in plugins_list} == {"bilibili_live_sensor", "web_search_tool"}
+        assert {p["id"] for p in plugins_list} == {"bilibili_live_sensor", "web_search_tool", "bilibili_content"}
         first_plugin_id = plugins_list[0]["id"]
 
         plugin_toggle = await client.post("/api/plugins/toggle", headers=headers, json={

@@ -25,6 +25,7 @@ class TaskItem(BaseModel):
     origin_episode_id: Optional[str] = None
     origin_stimulus_id: Optional[str] = None
     trigger_event_id: Optional[str] = None
+    origin_mode: str = "live"
 
     def __lt__(self, other: "TaskItem") -> bool:
         return self.due_at < other.due_at

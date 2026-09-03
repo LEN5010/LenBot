@@ -14,3 +14,4 @@ class ActionItem(BaseModel):
     content: str
     reply_to: Optional[str] = None
     associated_open_loop: Optional[dict[str, Any]] = None
+    origin_mode: str = "live"
