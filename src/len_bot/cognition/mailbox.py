@@ -55,23 +55,5 @@ class EpisodeMailbox:
         self._unconsumed_follow_ups.clear()
         return consumed
 
-    def check_steering(self) -> Optional[SteeringSignal]:
-        """Checked by Pi at ReAct step boundaries."""
-        if self._cancelled:
-            last_event = self._interim_events[-1] if self._interim_events else None
-            return SteeringSignal(
-                steering_type=SteeringType.CANCEL,
-                source_event=last_event,
-                reason=self._cancellation_reason or "Episode cancelled by steering"
-            )
-        if self._unconsumed_follow_ups:
-            ev = self._unconsumed_follow_ups.pop(0)
-            return SteeringSignal(
-                steering_type=SteeringType.FOLLOW_UP,
-                source_event=ev,
-                reason=f"User follow-up message: {ev.raw_text}"
-            )
-        return None
-
     def get_interim_events(self) -> list[Event]:
         return list(self._interim_events)
