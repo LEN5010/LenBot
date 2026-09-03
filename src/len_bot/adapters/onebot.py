@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import re
 import time
+from collections import deque
 from typing import Optional, Callable, Awaitable
 import websockets
 from len_bot.config import RuntimeConfig
@@ -18,6 +20,7 @@ class OneBotAdapter:
         self._active_ws: Optional[websockets.WebSocketServerProtocol] = None
         self._echo_counter = 0
         self._pending_requests: dict[str, asyncio.Future[dict]] = {}
+        self._reply_cache: deque[tuple[str, str]] = deque(maxlen=1000)
 
     async def start(self) -> None:
         self._server = await websockets.serve(
@@ -99,8 +102,15 @@ class OneBotAdapter:
         if post_type != "message":
             return None
 
-        msg_type = data.get("message_type")
         user_id = data.get("user_id")
+        # ADR-0031, §17: drop bot's self-sent echo messages
+        if user_id and str(user_id) == str(self.config.bot_qq):
+            logger.debug("Dropped self-echo OneBot message from bot_qq %s", user_id)
+            return None
+        if data.get("sub_type") == "self":
+            return None
+
+        msg_type = data.get("message_type")
         raw_text = data.get("raw_message", "")
         msg_time = float(data.get("time", time.time()))
 
@@ -128,8 +138,22 @@ class OneBotAdapter:
             "[CQ:reply" in raw_text and f"qq={self.config.bot_qq}" in raw_text
         )
 
+        # ADR-0031, §17: Extract reply_to_message_id and maintain ring buffer
+        reply_to_id = None
+        reply_match = re.search(r"\[CQ:reply,id=(-?\d+)\]", raw_text)
+        if reply_match:
+            reply_to_id = reply_match.group(1)
+        elif isinstance(data.get("message"), list):
+            for seg in data["message"]:
+                if isinstance(seg, dict) and seg.get("type") == "reply":
+                    reply_to_id = str(seg.get("data", {}).get("id", ""))
+                    break
+
+        msg_id = data.get("message_id")
+        if reply_to_id and msg_id:
+            self._reply_cache.append((str(msg_id), str(reply_to_id)))
+
         # Person Context (ADR-0019 §十一): keep a sender snapshot for the person card.
-        # Not a permanent profile copy — display identity + current group role only.
         sender_raw = data.get("sender") or {}
         sender_snapshot = {
             "nickname": sender_raw.get("nickname"),
@@ -143,7 +167,8 @@ class OneBotAdapter:
             actor_id=f"user:{user_id}",
             timestamp=msg_time,
             payload={
-                "message_id": data.get("message_id"),
+                "message_id": msg_id,
+                "reply_to_message_id": reply_to_id,
                 "raw_text": raw_text,
                 "at_bot": at_bot,
                 "reply_bot": reply_bot,

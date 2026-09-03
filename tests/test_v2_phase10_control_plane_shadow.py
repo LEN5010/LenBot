@@ -17,7 +17,8 @@ async def _make_runtime_and_client(config):
     transport = ASGITransport(app=app)
     client = AsyncClient(transport=transport, base_url="http://test")
     login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-    headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    assert "session_token" in login.cookies
+    headers = {}
     return runtime, client, headers
 
 
@@ -39,10 +40,10 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         if "帮我看看" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="User asked directly",
+                decision_reason="User asked directly",
                 message_proposals=[MessageProposal(content="看了一下，没问题")]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="silence")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="silence")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()
@@ -50,7 +51,8 @@ async def test_trace_captures_full_causal_chain(tmp_path):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        assert "session_token" in login.cookies
+        headers = {}
 
         scene_id = "group:trace"
         t0 = time.time()
@@ -87,7 +89,7 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
     """ADR-0022: QueryService exposes superseded chains & filtered event queries."""
     # Mock cognition keeps any incidental wake fully offline
     async def mock_pi(messages):
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="offline")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="offline")
 
     runtime = AgentRuntime(
         RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "chain.db")),
@@ -98,7 +100,8 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
     transport = ASGITransport(app=app)
     client = AsyncClient(transport=transport, base_url="http://test")
     login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-    headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    assert "session_token" in login.cookies
+    headers = {}
 
     scene_id = "group:chain"
     from len_bot.memory.models import MemoryItem, MemoryKind, MemoryStatus
@@ -110,10 +113,10 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
     )
     await runtime.memory_store.save_memory(old)
     await runtime.memory_store._db.execute(
-        """INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility,
+        """INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope,
                                  evidence, status, human_readable_assertion, created_at, last_confirmed_at)
            VALUES ('mem_new', 'user:A', 'preference', 'food', '不吃辣', 'recent', 'likely', ?,
-                   'scene', '[]', 'active', 'A 现在完全不吃了', ?, ?);""",
+                   '[]', 'active', 'A 现在完全不吃了', ?, ?);""",
         (scene_id, time.time(), time.time())
     )
     await runtime.memory_store._db.commit()
@@ -154,7 +157,7 @@ async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
     """
     # Mock cognition keeps the ingestion path fully offline (no LLM, no network)
     async def mock_pi(messages):
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="offline replay")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="offline replay")
 
     runtime = AgentRuntime(
         RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "replay.db")),
@@ -165,7 +168,8 @@ async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
     transport = ASGITransport(app=app)
     client = AsyncClient(transport=transport, base_url="http://test")
     login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-    headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    assert "session_token" in login.cookies
+    headers = {}
     try:
         scene_id = "group:replay"
         t0 = time.time()
@@ -232,10 +236,10 @@ async def test_shadow_mode_records_without_sending(tmp_path):
         if "你好" in stimulus_text:
             return EpisodeOutcome(
                 disposition=FinalDisposition.ACTION,
-                thought="greeting",
+                decision_reason="greeting",
                 message_proposals=[MessageProposal(content="你好呀", expect_reply=True, reply_target="user:A")]
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, thought="silence")
+        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="silence")
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
     await runtime.start()

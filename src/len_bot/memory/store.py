@@ -3,6 +3,7 @@ import aiosqlite
 import json
 import logging
 import time
+import uuid
 from typing import Optional, Any
 from len_bot.memory.models import EpisodeRecord, MemoryItem, MemoryStatus, MemoryCertainty
 
@@ -41,7 +42,6 @@ class MemoryStore:
                     temporal TEXT NOT NULL,
                     certainty TEXT NOT NULL,
                     scope TEXT NOT NULL,
-                    visibility TEXT NOT NULL,
                     evidence TEXT NOT NULL,
                     status TEXT NOT NULL,
                     superseded_by TEXT,
@@ -58,6 +58,11 @@ class MemoryStore:
             )
 
             # Migrations for existing DB schemas
+            try:
+                await self._db.execute("ALTER TABLE memories DROP COLUMN visibility;")
+            except Exception:
+                pass
+
             for col, col_type in [
                 ("superseded_by", "TEXT"),
                 ("access_count", "INTEGER DEFAULT 0"),
@@ -137,7 +142,7 @@ class MemoryStore:
 
     async def find_active_memory(self, subject: str, kind: str, key: str, scope: str) -> Optional[MemoryItem]:
         cursor = await self._db.execute("""
-            SELECT id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status,
+            SELECT id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
                    superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at
             FROM memories
             WHERE subject = ? AND kind = ? AND key = ? AND scope = ? AND status = 'active'
@@ -149,30 +154,32 @@ class MemoryStore:
         return MemoryItem(
             id=row[0], subject=row[1], kind=row[2], key=row[3], value=row[4],
             temporal=row[5], certainty=MemoryCertainty(row[6]), scope=row[7],
-            visibility=row[8], evidence=json.loads(row[9]), status=MemoryStatus(row[10]),
-            superseded_by=row[11], access_count=row[12] or 0, last_accessed_at=row[13],
-            decay_score=row[14] if row[14] is not None else 1.0,
-            human_readable_assertion=row[15], created_at=row[16], last_confirmed_at=row[17]
+            evidence=json.loads(row[8]), status=MemoryStatus(row[9]),
+            superseded_by=row[10], access_count=row[11] or 0, last_accessed_at=row[12],
+            decay_score=row[13] if row[13] is not None else 1.0,
+            human_readable_assertion=row[14], created_at=row[15], last_confirmed_at=row[16]
         )
 
     async def save_memory(self, item: MemoryItem) -> None:
         async with self.write_lock:
             await self._db.execute("""
-                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status,
+                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
                                       superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
                     value = excluded.value,
                     certainty = excluded.certainty,
                     superseded_by = excluded.superseded_by,
+                    evidence = excluded.evidence,
                     access_count = excluded.access_count,
                     last_accessed_at = excluded.last_accessed_at,
                     decay_score = excluded.decay_score,
+                    human_readable_assertion = excluded.human_readable_assertion,
                     last_confirmed_at = excluded.last_confirmed_at;
             """, (
                 item.id, item.subject, item.kind, item.key, item.value, item.temporal,
-                item.certainty.value, item.scope, item.visibility,
+                item.certainty.value, item.scope,
                 json.dumps(item.evidence, ensure_ascii=False), item.status.value,
                 item.superseded_by, item.access_count, item.last_accessed_at, item.decay_score,
                 item.human_readable_assertion, item.created_at, item.last_confirmed_at
@@ -208,13 +215,13 @@ class MemoryStore:
         now = time.time()
         placeholders = ",".join("?" for _ in allowed_scopes)
 
-        # Invariant G: Strict SQL boundary with visibility='global' support (Goal 4 & ADR-0006)
+        # Strict SQL boundary: scope IN ({placeholders}) only (ADR-0024 & ADR-0006)
         status_clause = "status IN ('active', 'superseded')" if include_superseded else "status = 'active'"
         sql = f"""
-            SELECT id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status,
+            SELECT id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
                    superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at
             FROM memories
-            WHERE {status_clause} AND (scope IN ({placeholders}) OR visibility = 'global')
+            WHERE {status_clause} AND scope IN ({placeholders})
         """
         params: list[Any] = list(allowed_scopes)
 
@@ -240,10 +247,10 @@ class MemoryStore:
             MemoryItem(
                 id=r[0], subject=r[1], kind=r[2], key=r[3], value=r[4],
                 temporal=r[5], certainty=MemoryCertainty(r[6]), scope=r[7],
-                visibility=r[8], evidence=json.loads(r[9]), status=MemoryStatus(r[10]),
-                superseded_by=r[11], access_count=r[12] or 0, last_accessed_at=r[13],
-                decay_score=r[14] if r[14] is not None else 1.0,
-                human_readable_assertion=r[15], created_at=r[16], last_confirmed_at=r[17]
+                evidence=json.loads(r[8]), status=MemoryStatus(r[9]),
+                superseded_by=r[10], access_count=r[11] or 0, last_accessed_at=r[12],
+                decay_score=r[13] if r[13] is not None else 1.0,
+                human_readable_assertion=r[14], created_at=r[15], last_confirmed_at=r[16]
             )
             for r in rows
         ]
@@ -319,3 +326,67 @@ class MemoryStore:
                 updated_count += 1
             await self._db.commit()
             return updated_count
+
+    async def promote_memory(self, memory_id: str) -> Optional[MemoryItem]:
+        """Promote a memory to global-safe scope (ADR-0024, §3.3).
+
+        Creates a NEW record with scope='global-safe' and human_readable_assertion
+        prefixed with 'promoted_from:<id>:'. The original record is preserved untouched.
+        Neither cognition nor reflection has the authority to invoke this;
+        only human operator intervention via the cockpit route can promote.
+        """
+        async with self.write_lock:
+            cursor = await self._db.execute("""
+                SELECT id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
+                       superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at
+                FROM memories
+                WHERE id = ?;
+            """, (memory_id,))
+            row = await cursor.fetchone()
+            if not row:
+                return None
+
+            orig_status = MemoryStatus(row[9])
+            if orig_status != MemoryStatus.ACTIVE:
+                return None
+
+            now = time.time()
+            new_id = f"mem_{uuid.uuid4().hex[:10]}"
+            evidence = json.loads(row[8])
+            orig_assertion = row[14]
+            new_assertion = f"promoted_from:{memory_id}:{orig_assertion}"
+
+            new_item = MemoryItem(
+                id=new_id,
+                subject=row[1],
+                kind=row[2],
+                key=row[3],
+                value=row[4],
+                temporal=row[5],
+                certainty=MemoryCertainty(row[6]),
+                scope="global-safe",
+                evidence=evidence,
+                status=MemoryStatus.ACTIVE,
+                superseded_by=None,
+                access_count=0,
+                last_accessed_at=None,
+                decay_score=1.0,
+                human_readable_assertion=new_assertion,
+                created_at=now,
+                last_confirmed_at=now,
+            )
+
+            await self._db.execute("""
+                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
+                                      superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """, (
+                new_item.id, new_item.subject, new_item.kind, new_item.key, new_item.value, new_item.temporal,
+                new_item.certainty.value, new_item.scope,
+                json.dumps(new_item.evidence, ensure_ascii=False), new_item.status.value,
+                new_item.superseded_by, new_item.access_count, new_item.last_accessed_at, new_item.decay_score,
+                new_item.human_readable_assertion, new_item.created_at, new_item.last_confirmed_at
+            ))
+            await self._db.commit()
+            return new_item
+

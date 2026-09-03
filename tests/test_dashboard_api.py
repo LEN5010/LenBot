@@ -38,9 +38,8 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert data["success"] is True
         assert data["username"] == "admin"
         assert data["is_default_password"] is True
-        token = data["token"]
-
-        headers = {"Authorization": f"Bearer {token}"}
+        assert "session_token" in login_res.cookies
+        headers = {}
 
         # 4. Check /api/auth/me
         me_res = await client.get("/api/auth/me", headers=headers)
@@ -119,7 +118,6 @@ async def test_dashboard_auth_and_management(tmp_path):
 
         social_post = await client.post("/api/settings/social", headers=headers, json={
             "monitored_keywords": ["测试", "直播"],
-            "bot_cooldown_seconds": 120,
             "speaking_budget_base_threshold": 0.75,
             "interest_topics": {"gaming": 0.95, "tech": 0.8}
         })

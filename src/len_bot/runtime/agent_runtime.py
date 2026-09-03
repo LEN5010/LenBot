@@ -21,6 +21,7 @@ from len_bot.actions.queue import ActionQueue
 from len_bot.runtime.gate import RuntimeGate, GateDecision
 from len_bot.scheduler.engine import TaskScheduler
 from len_bot.state.open_loops import OpenLoopManager
+from len_bot.scenes.models import ThreadStatus
 
 from len_bot.memory.store import MemoryStore
 from len_bot.memory.gate import MemoryGate
@@ -62,14 +63,15 @@ class AgentRuntime:
             shadow_probe=lambda: self.shadow_mode,
             shadow_recorder=self._record_shadow_action
         )
+        self.metrics = RuntimeMetrics()
         self.scheduler = TaskScheduler(
             event_store=self.event_store,
             emit_event=self.receive_event,
-            sweep_interval=5.0
+            sweep_interval=5.0,
+            metrics=self.metrics
         )
         self.open_loop_manager = OpenLoopManager(self.event_store)
         self.ambient_store = AmbientStore()
-        self.metrics = RuntimeMetrics()
         self.runtime_gate = RuntimeGate(
             event_store=self.event_store,
             action_queue=self.action_queue,
@@ -115,6 +117,7 @@ class AgentRuntime:
         self._maintenance_task: Optional[asyncio.Task] = None
         self._background_tasks: set[asyncio.Task] = set()
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
+        self._reflection_postpone_counts: dict[str, int] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -127,24 +130,6 @@ class AgentRuntime:
         self.memory_store = MemoryStore(self.event_store._db, write_lock=self.event_store._write_lock)
         await self.memory_store.initialize()
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
-        try:
-            self.provider_registry.resolve(CognitiveTier.NORMAL)
-            has_live_provider = True
-        except LookupError:
-            has_live_provider = False
-        if self.mock_pi_handler is None and has_live_provider:
-            # Production with a real provider: wire the LLM reflector (ADR-0019 §10.5).
-            # Deterministic fallback remains only for explicit mock/test or keyless modes.
-            from len_bot.memory.reflector import LLMReflector
-
-            def _resolve_reflection_route():
-                res = self.provider_registry.resolve(CognitiveTier.NORMAL)
-                return res.client, res.model
-
-            reflector = LLMReflector(resolver=_resolve_reflection_route)
-            self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate, llm_reflector=reflector)
-        else:
-            self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate)
         self.runtime_gate.memory_gate = self.memory_gate
         self.episode_manager.memory_store = self.memory_store
 
@@ -182,10 +167,23 @@ class AgentRuntime:
             await self.event_store.save_dynamic_config("provider_config", self.provider_registry.export())
             logger.info("Migrated legacy model_config into provider_config (one-time, ADR-0020)")
 
+        # ADR-0028 §11: Wire LLMReflector AFTER provider_registry has loaded providers and routing
+        has_live_provider = self.provider_registry.has_live_provider()
+        if self.mock_pi_handler is None and has_live_provider:
+            from len_bot.memory.reflector import LLMReflector
+
+            def _resolve_reflection_route():
+                res = self.provider_registry.resolve(CognitiveTier.NORMAL)
+                return res.client, res.model
+
+            reflector = LLMReflector(resolver=_resolve_reflection_route)
+            self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate, llm_reflector=reflector, event_store=self.event_store)
+        else:
+            self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate, event_store=self.event_store)
+
         saved_social = await self.event_store.get_dynamic_config("social_config")
         if saved_social:
             self.config.monitored_keywords = saved_social.get("monitored_keywords", self.config.monitored_keywords)
-            self.config.bot_cooldown_seconds = saved_social.get("bot_cooldown_seconds", self.config.bot_cooldown_seconds)
             if "speaking_budget_base_threshold" in saved_social:
                 self.attention_engine.speaking_budget.base_threshold = saved_social["speaking_budget_base_threshold"]
             if "interest_topics" in saved_social:
@@ -276,10 +274,18 @@ class AgentRuntime:
                 # 1. Sweep expired Open Loops past absolute TTL
                 await self.open_loop_manager.sweep_ttl_expiration()
 
-                # 2. Check scene-level decay for all active scene actors
+                # 2. Check scene-level decay for all active scene actors and ParticipationThread decay (ADR-0027)
+                now = time.time()
                 for actor in list(self.scene_manager._actors.values()):
                     if actor.state:
                         await self.open_loop_manager.check_scene_decay(actor.state)
+                        th = actor.state.current_thread
+                        if th and th.status != ThreadStatus.CLOSED:
+                            elapsed = now - th.last_relevant_at
+                            if elapsed > 300.0:
+                                th.status = ThreadStatus.CLOSED
+                            elif elapsed > 120.0 and th.status == ThreadStatus.ACTIVE:
+                                th.status = ThreadStatus.FADING
 
                 # 3. Expire ambient retained items past TTL (ADR-0018)
                 self.ambient_store.sweep()
@@ -299,6 +305,9 @@ class AgentRuntime:
 
     async def _on_scene_event_committed(self, state, event: Event) -> None:
         """Invoked by SceneActor AFTER Event and SceneState are atomically committed in SQLite."""
+        if event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED) and event.actor_id != self.bot_actor_id:
+            self.metrics.inc_social("human_messages")
+
         await self.stimulus_builder.ingest(event)
 
         # Condition-bound obligations (ADR-0018): fire tasks whose wake_event_type
@@ -329,22 +338,47 @@ class AgentRuntime:
         try:
             if not (self.reflection_engine and self.memory_store and self.event_store):
                 return
+            if self.scene_manager.has_active_episode(scene_id):
+                # In-flight episode running in scene; postpone reflection (ADR-0028, §12)
+                state = self.scene_manager.get_scene_state(scene_id)
+                if state:
+                    self._schedule_quiet_window_reflection(state)
+                return
+
             state = self.scene_manager.get_scene_state(scene_id)
-            if state and state.bot_engagement == "active":
-                # Bot is mid-conversation; the block isn't complete. Postpone one window.
+            postpone_count = self._reflection_postpone_counts.get(scene_id, 0)
+            if state and state.bot_engagement == "active" and postpone_count < 1:
+                # Bot is mid-conversation; postpone once, but next time force reflection (ADR-0028, §12)
+                self._reflection_postpone_counts[scene_id] = postpone_count + 1
                 self._schedule_quiet_window_reflection(state)
                 return
 
+            self._reflection_postpone_counts[scene_id] = 0
+
             cursor_rowid = await self.memory_store.get_reflection_cursor(scene_id)
-            events = await self.event_store.get_events_since(scene_id, after_rowid=cursor_rowid)
+            # ADR-0028, §10.1: Batch size 30 unreflected events
+            events = await self.event_store.get_unreflected_events(scene_id, after_rowid=cursor_rowid, limit=30)
             if not events:
                 return
 
-            record = await self.reflection_engine.run_micro_reflection(scene_id, events)
-            if record is not None:
-                max_rowid = max(int(e.metadata.get("_rowid", 0)) for e in events)
-                await self.memory_store.set_reflection_cursor(scene_id, max_rowid)
-                logger.info("Reflection cursor on scene %s advanced to rowid %s", scene_id, max_rowid)
+            new_cursor_rowid = max(int(e.metadata.get("_rowid", 0)) for e in events)
+
+            episode_record, proposals = await self.reflection_engine.reflect_on_events(scene_id, events)
+            if episode_record is not None:
+                # ADR-0028, §10.2: Atomic Reflection Batch Commit
+                await self.event_store.commit_reflection_batch(
+                    scene_id=scene_id,
+                    episode_record=episode_record,
+                    proposals=proposals,
+                    new_cursor_rowid=new_cursor_rowid
+                )
+                logger.info("Reflection batch committed on scene %s: cursor -> %s (%d events)",
+                            scene_id, new_cursor_rowid, len(events))
+
+                # If there are more unreflected events, reflect on the next batch immediately
+                remaining = await self.event_store.get_unreflected_events(scene_id, after_rowid=new_cursor_rowid, limit=1)
+                if remaining:
+                    self._spawn_background_task(self._quiet_window_reflect(scene_id))
         except Exception as e:
             logger.warning("Quiet-window reflection failed on scene %s: %s", scene_id, e)
 
@@ -358,9 +392,6 @@ class AgentRuntime:
         """Callback invoked when StimulusBuilder produces a Stimulus."""
         scene_state = self.scene_manager.get_scene_state(stimulus.scene_id)
         open_loops = await self.event_store.get_active_open_loops(stimulus.scene_id)
-
-        if stimulus.stimulus_type in (StimulusType.SINGLE_MESSAGE, StimulusType.SOCIAL_MESSAGE_BURST):
-            self.metrics.inc_social("human_messages")
 
         # 1. Attention Engine Evaluation
         att_res = self.attention_engine.evaluate(stimulus, scene_state, open_loops, now=stimulus.timestamp)
@@ -450,7 +481,7 @@ class AgentRuntime:
             },
             "outcome": {
                 "disposition": outcome.disposition.value,
-                "thought": outcome.thought[:300],
+                "decision_reason": outcome.decision_reason[:300],
                 "messages": len(outcome.message_proposals),
                 "tasks": len(outcome.task_proposals),
                 "memories": len(outcome.memory_proposals),
@@ -534,8 +565,8 @@ class AgentRuntime:
                 self.metrics.inc_social("wake_silence")
             else:
                 self.metrics.inc_social("gate_action")
-            if gate_decision.disposition == FinalDisposition.SILENCE and mailbox.is_cancelled():
-                self.metrics.inc_social("cancellations_honored")
+                if not stimulus.has_mention_bot and not stimulus.has_reply_bot:
+                    self.metrics.inc_social("unsolicited_visible_messages", gate_decision.actions_enqueued)
             logger.info("Gate decision on Scene %s: %s (%s)", stimulus.scene_id, gate_decision.disposition, gate_decision.reason)
 
             # ADR-0022: persist the full behavior chain for the Control Plane Trace view

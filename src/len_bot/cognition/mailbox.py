@@ -2,7 +2,7 @@ import asyncio
 from enum import StrEnum
 from typing import Optional
 from pydantic import BaseModel, Field
-from len_bot.events.models import Event
+from len_bot.events.models import Event, EventType
 
 class SteeringType(StrEnum):
     CANCEL = "CANCEL"
@@ -26,7 +26,14 @@ class EpisodeMailbox:
         self._cursor: int = 0
 
     def post(self, event: Event) -> None:
-        """Called by SceneActor worker when a new event arrives for this scene."""
+        """Called by SceneActor worker when a new event arrives for this scene.
+        ADR-0026: Only accepts conversational messages (GROUP_MESSAGE_RECEIVED / PRIVATE_MESSAGE_RECEIVED).
+        Internal, state, task, and sensor fact events are discarded.
+        """
+        allowed = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
+        if event.event_type not in allowed:
+            return
+
         self._interim_events.append(event)
         
         # Check for urgent cancellation/steering keywords
@@ -34,10 +41,15 @@ class EpisodeMailbox:
         if any(k in event.raw_text for k in urgent_cancel_keywords):
             self._cancelled = True
             self._cancellation_reason = f"User '{event.actor_id}' requested cancellation: {event.raw_text}"
-        elif event.is_mention_bot or event.is_reply_bot or event.event_type.value == "PRIVATE_MESSAGE_RECEIVED":
+        elif event.is_mention_bot or event.is_reply_bot or event.event_type == EventType.PRIVATE_MESSAGE_RECEIVED:
             self._unconsumed_follow_ups.append(event)
         
         self._queue.put_nowait(event)
+
+    def cancel(self, reason: str = "Explicitly cancelled") -> None:
+        """Explicitly cancels this episode."""
+        self._cancelled = True
+        self._cancellation_reason = reason
 
     def is_cancelled(self) -> bool:
         """Non-destructive query: returns True if episode has been cancelled."""
@@ -55,6 +67,10 @@ class EpisodeMailbox:
         consumed = list(self._unconsumed_follow_ups)
         self._unconsumed_follow_ups.clear()
         return consumed
+
+    def has_unseen_interim(self) -> bool:
+        """Non-destructive query (ADR-0026, §6): returns True if unread interim events exist."""
+        return len(self._interim_events) > self._cursor
 
     def fetch_unseen_interim_events(self) -> list[Event]:
         """Non-destructive query advancing read cursor: returns events arrived since last check."""

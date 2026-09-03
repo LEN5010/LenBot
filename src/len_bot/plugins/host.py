@@ -20,10 +20,22 @@ class PluginRuntimeStatus:
     last_run_at: float = 0.0
 
 
+RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
+    "search_messages",
+    "read_context",
+    "query_timeline",
+    "query_person_history",
+    "query_memory",
+    "query_open_loops",
+    "query_tasks",
+    "query_retention",
+})
+
+
 class PluginHost:
     """Manages plugin lifecycle, sandboxed tool execution, and action interception (ADR-0016)."""
 
-    def __init__(self, runtime: Any):
+    def __init__(self, runtime: Any = None):
         self.runtime = runtime
         self._plugins: dict[str, BasePlugin] = {}
         self._plugin_contexts: dict[str, PluginContext] = {}
@@ -40,6 +52,10 @@ class PluginHost:
         handler: Callable[[dict[str, Any]], Awaitable[str]],
         timeout_seconds: float = 5.0
     ) -> None:
+        if name in RESERVED_CORE_TOOLS:
+            raise ValueError(
+                f"Cannot register tool '{name}': tool name is reserved for core agent retrieval (ADR-0030, §21.2)."
+            )
         self._tools[name] = PluginToolDefinition(
             plugin_id=plugin_id,
             name=name,
