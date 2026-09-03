@@ -1,7 +1,7 @@
 import logging
 import uuid
 import time
-from typing import Optional
+from typing import Optional, Any
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.scenes.models import SceneState
@@ -18,9 +18,10 @@ class GateDecision:
         self.actions_enqueued = actions_enqueued
 
 class RuntimeGate:
-    def __init__(self, event_store: EventStore, action_queue: ActionQueue):
+    def __init__(self, event_store: EventStore, action_queue: ActionQueue, scheduler: Optional[Any] = None):
         self.event_store = event_store
         self.action_queue = action_queue
+        self.scheduler = scheduler
 
     async def evaluate_and_commit(
         self,
@@ -121,6 +122,20 @@ class RuntimeGate:
                 )
             )
             await self.event_store._db.commit()
+
+            if self.scheduler:
+                from len_bot.scheduler.models import TaskItem, TaskStatus
+                item = TaskItem(
+                    id=task_data["id"],
+                    scene_id=task_data["scene_id"],
+                    description=task_data["description"],
+                    due_at=task_data["due_at"],
+                    status=TaskStatus.PENDING,
+                    payload=task_data["payload"],
+                    source_event_id=task_data["source_event_id"],
+                    created_at=task_data["created_at"]
+                )
+                self.scheduler.schedule_task(item)
 
         # 2. Resolve open loops if specified
         for loop_id in outcome.resolve_open_loop_ids:
