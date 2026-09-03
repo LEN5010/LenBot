@@ -51,6 +51,20 @@ class StimulusBuilder:
             await self.on_stimulus(stimulus)
             return
 
+        # 2b. Plugin fact events (ADR-0018): flush immediately, never debounced.
+        # Attention treats PLUGIN_FACT as plain OBSERVE — facts alone never wake cognition.
+        if event.event_type in (EventType.LIVE_STARTED, EventType.LIVE_ENDED):
+            stimulus = Stimulus(
+                scene_id=event.scene_id,
+                stimulus_type=StimulusType.PLUGIN_FACT,
+                source_event_ids=[event.id],
+                actor_id=event.actor_id,
+                combined_text=event.raw_text,
+                timestamp=event.timestamp
+            )
+            await self.on_stimulus(stimulus)
+            return
+
         if event.event_type not in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED):
             return
 

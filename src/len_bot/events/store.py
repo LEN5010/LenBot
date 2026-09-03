@@ -85,9 +85,15 @@ class EventStore:
                 status TEXT NOT NULL,
                 source_event_id TEXT NOT NULL,
                 payload TEXT NOT NULL,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                wake_event_type TEXT
             );
         """)
+        # Migration for databases created before ADR-0018
+        try:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN wake_event_type TEXT;")
+        except Exception:
+            pass  # Column already exists
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_at);")
 
         # 4. Dashboard Users & Dynamic Configurations
@@ -107,6 +113,20 @@ class EventStore:
                 updated_at REAL NOT NULL
             );
         """)
+
+        # ADR-0022: behavior trace store — attention evaluations & full episode chains
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS traces (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                scene_id TEXT NOT NULL,
+                ref_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+        """)
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_scene ON traces(scene_id, created_at);")
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_kind ON traces(kind, created_at);")
 
         await self._db.commit()
 
@@ -182,6 +202,49 @@ class EventStore:
                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
             """, (key, val_str, now))
             await self._db.commit()
+
+    async def save_trace(self, kind: str, scene_id: str, ref_id: str, payload: dict[str, Any]) -> str:
+        """ADR-0022: append a behavior trace row (attention evaluation or episode chain)."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        import uuid
+        trace_id = f"trc_{uuid.uuid4().hex[:12]}"
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO traces (id, kind, scene_id, ref_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?);",
+                (trace_id, kind, scene_id, ref_id, json.dumps(payload, ensure_ascii=False, default=str), time.time())
+            )
+            await self._db.commit()
+        return trace_id
+
+    async def query_traces(
+        self,
+        scene_id: Optional[str] = None,
+        kind: Optional[str] = None,
+        ref_id: Optional[str] = None,
+        limit: int = 50
+    ) -> list[dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        sql = "SELECT id, kind, scene_id, ref_id, payload, created_at FROM traces WHERE 1=1"
+        params: list[Any] = []
+        if scene_id:
+            sql += " AND scene_id = ?"
+            params.append(scene_id)
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        if ref_id:
+            sql += " AND ref_id = ?"
+            params.append(ref_id)
+        sql += " ORDER BY created_at DESC LIMIT ?;"
+        params.append(limit)
+        cursor = await self._db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "kind": r[1], "scene_id": r[2], "ref_id": r[3], "payload": json.loads(r[4]), "created_at": r[5]}
+            for r in rows
+        ]
 
     async def get_stats(self) -> dict[str, int]:
         if not self._db:
@@ -260,6 +323,37 @@ class EventStore:
                 timestamp=r[4],
                 payload=json.loads(r[5]),
                 metadata=json.loads(r[6])
+            ))
+        return events
+
+    async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200) -> list[Event]:
+        """ADR-0019 §10.4: events after a reflection cursor, in immutable write order.
+        Each event's metadata carries its `_rowid` so callers can advance the cursor."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            """
+            SELECT rowid, id, event_type, scene_id, actor_id, timestamp, payload, metadata
+            FROM events
+            WHERE scene_id = ? AND rowid > ?
+            ORDER BY rowid ASC
+            LIMIT ?;
+            """,
+            (scene_id, after_rowid, limit)
+        )
+        rows = await cursor.fetchall()
+        events = []
+        for r in rows:
+            metadata = json.loads(r[7])
+            metadata["_rowid"] = r[0]
+            events.append(Event(
+                id=r[1],
+                event_type=EventType(r[2]),
+                scene_id=r[3],
+                actor_id=r[4],
+                timestamp=r[5],
+                payload=json.loads(r[6]),
+                metadata=metadata
             ))
         return events
 
@@ -591,8 +685,8 @@ class EventStore:
         async with self._write_lock:
             await self._db.execute(
                 """
-                INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at, wake_event_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     task_data["id"],
@@ -602,15 +696,31 @@ class EventStore:
                     task_data["status"],
                     task_data["source_event_id"],
                     json.dumps(task_data.get("payload", {}), ensure_ascii=False) if not isinstance(task_data.get("payload"), str) else task_data.get("payload"),
-                    task_data["created_at"]
+                    task_data["created_at"],
+                    task_data.get("wake_event_type")
                 )
             )
             await self._db.commit()
 
+    async def save_task(self, task: Any) -> None:
+        """Saves a TaskItem directly into tasks table."""
+        status_val = task.status.value if hasattr(task.status, "value") else str(task.status)
+        await self.create_task({
+            "id": task.id,
+            "scene_id": task.scene_id,
+            "description": task.description,
+            "due_at": task.due_at,
+            "status": status_val,
+            "source_event_id": getattr(task, "source_event_id", "manual"),
+            "payload": getattr(task, "payload", {}),
+            "created_at": getattr(task, "created_at", time.time()),
+            "wake_event_type": getattr(task, "wake_event_type", None)
+        })
+
     async def get_pending_tasks(self, max_due_at: Optional[float] = None) -> list[dict[str, Any]]:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        sql = "SELECT id, scene_id, description, due_at, status, source_event_id, payload, created_at FROM tasks WHERE status = 'pending'"
+        sql = "SELECT id, scene_id, description, due_at, status, source_event_id, payload, created_at, wake_event_type FROM tasks WHERE status = 'pending'"
         params: list[Any] = []
         if max_due_at is not None:
             sql += " AND due_at <= ?"
@@ -639,7 +749,8 @@ class EventStore:
                 "status": r[4],
                 "source_event_id": r[5],
                 "payload": _parse_payload(r[6]),
-                "created_at": r[7]
+                "created_at": r[7],
+                "wake_event_type": r[8]
             }
             for r in rows
         ]
@@ -672,3 +783,182 @@ class EventStore:
                 )
                 await self._db.commit()
             return expired_ids
+
+    async def commit_proposal_transaction(
+        self,
+        episode_id: str,
+        scene_id: str,
+        task_proposals: list[Any],
+        resolve_open_loop_ids: list[str],
+        memory_proposals: list[Any],
+    ) -> tuple[list[Any], list[str], list[Any]]:
+        """
+        V2 Atomic Proposal Commit (ADR-0003 & ADR-0011 Closure):
+        Executes an all-or-nothing atomic durable commit for an EpisodeOutcome
+        within a single SQLite transaction under write_lock.
+        If any mutation fails, the entire transaction is rolled back.
+        Returns: (committed_tasks, resolved_loop_ids, committed_memories)
+        """
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+
+        import uuid
+        from len_bot.scheduler.models import TaskItem, TaskStatus
+        from len_bot.memory.models import MemoryItem, MemoryCertainty, MemoryStatus
+        from len_bot.cognition.models import CONDITION_TASK_DEFAULT_DEADLINE_SECONDS
+
+        now = time.time()
+        committed_tasks: list[TaskItem] = []
+        resolved_loop_ids: list[str] = []
+        committed_memories: list[MemoryItem] = []
+
+        async with self._write_lock:
+            try:
+                # 1. Validate evidence integrity for all memory proposals upfront
+                for mp in memory_proposals:
+                    mp.scope = scene_id
+                    if not mp.evidence:
+                        raise ValueError(f"Memory proposal '{mp.key}' lacks evidence references")
+
+                    placeholders = ",".join("?" for _ in mp.evidence)
+                    cursor = await self._db.execute(
+                        f"SELECT COUNT(*) FROM events WHERE id IN ({placeholders}) AND scene_id = ?;",
+                        [*mp.evidence, scene_id]
+                    )
+                    (ev_count,) = await cursor.fetchone()
+
+                    ep_cursor = await self._db.execute(
+                        f"SELECT COUNT(*) FROM episodes WHERE id IN ({placeholders}) AND scene_id = ?;",
+                        [*mp.evidence, scene_id]
+                    )
+                    (ep_count,) = await ep_cursor.fetchone()
+
+                    required_evidence_count = len(set(mp.evidence))
+                    if (ev_count + ep_count) < required_evidence_count:
+                        raise ValueError(
+                            f"Evidence integrity check failed for memory '{mp.key}'. "
+                            f"Expected {required_evidence_count} evidence items in scope '{scene_id}', found {ev_count + ep_count}"
+                        )
+
+                # 2. Insert Tasks
+                for tp in task_proposals:
+                    task_id = f"task_{uuid.uuid4().hex[:10]}"
+                    payload_json = json.dumps(tp.payload, ensure_ascii=False)
+                    # ADR-0018: condition-bound tasks fire on wake_event_type or deadline, whichever first.
+                    delay = tp.delay_seconds if tp.delay_seconds is not None else CONDITION_TASK_DEFAULT_DEADLINE_SECONDS
+                    await self._db.execute(
+                        """
+                        INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at, wake_event_type)
+                        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?);
+                        """,
+                        (task_id, scene_id, tp.description, now + delay, episode_id, payload_json, now, tp.wake_event_type)
+                    )
+                    task_item = TaskItem(
+                        id=task_id,
+                        scene_id=scene_id,
+                        description=tp.description,
+                        due_at=now + delay,
+                        status=TaskStatus.PENDING,
+                        payload=tp.payload,
+                        source_event_id=episode_id,
+                        created_at=now,
+                        wake_event_type=tp.wake_event_type
+                    )
+                    committed_tasks.append(task_item)
+
+                # 3. Resolve Open Loops
+                for loop_id in resolve_open_loop_ids:
+                    cursor = await self._db.execute(
+                        "UPDATE open_loops SET status = 'resolved' WHERE id = ? AND scene_id = ?;",
+                        (loop_id, scene_id)
+                    )
+                    if cursor.rowcount == 0:
+                        await self._db.execute(
+                            "UPDATE open_loops SET status = 'resolved' WHERE id = ?;",
+                            (loop_id,)
+                        )
+                    resolved_loop_ids.append(loop_id)
+
+                # 4. Commit Memory Proposals with Semantic Slot Conflict Resolution
+                for mp in memory_proposals:
+                    cursor = await self._db.execute(
+                        """
+                        SELECT id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status, human_readable_assertion, created_at, last_confirmed_at
+                        FROM memories
+                        WHERE subject = ? AND kind = ? AND key = ? AND scope = ? AND status = 'active'
+                        ORDER BY created_at DESC LIMIT 1;
+                        """,
+                        (mp.subject, mp.kind, mp.key, mp.scope)
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        old_id, old_subj, old_kind, old_key, old_val, old_temp, old_cert, old_scope, old_vis, old_ev_json, old_stat, old_assert, old_cat, old_lcat = row
+                        old_evidence = json.loads(old_ev_json)
+                        if old_val == mp.value:
+                            merged_evidence = list(set(old_evidence + mp.evidence))
+                            await self._db.execute(
+                                """
+                                UPDATE memories SET last_confirmed_at = ?, evidence = ? WHERE id = ?;
+                                """,
+                                (now, json.dumps(merged_evidence, ensure_ascii=False), old_id)
+                            )
+                            mem_item = MemoryItem(
+                                id=old_id, subject=old_subj, kind=old_kind, key=old_key, value=old_val,
+                                temporal=old_temp, certainty=MemoryCertainty(old_cert), scope=old_scope,
+                                visibility=old_vis, evidence=merged_evidence, status=MemoryStatus.ACTIVE,
+                                human_readable_assertion=old_assert, created_at=old_cat, last_confirmed_at=now
+                            )
+                            committed_memories.append(mem_item)
+                        else:
+                            new_mem_id = f"mem_{uuid.uuid4().hex[:10]}"
+                            await self._db.execute(
+                                "UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?;",
+                                (new_mem_id, old_id)
+                            )
+                            evidence_json = json.dumps(mp.evidence, ensure_ascii=False)
+                            await self._db.execute(
+                                """
+                                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?);
+                                """,
+                                (
+                                    new_mem_id, mp.subject, mp.kind, mp.key, mp.value, mp.temporal,
+                                    mp.certainty.value, mp.scope, mp.visibility, evidence_json,
+                                    mp.human_readable_assertion, now, now
+                                )
+                            )
+                            mem_item = MemoryItem(
+                                id=new_mem_id, subject=mp.subject, kind=mp.kind, key=mp.key, value=mp.value,
+                                temporal=mp.temporal, certainty=mp.certainty, scope=mp.scope,
+                                visibility=mp.visibility, evidence=mp.evidence, status=MemoryStatus.ACTIVE,
+                                human_readable_assertion=mp.human_readable_assertion, created_at=now, last_confirmed_at=now
+                            )
+                            committed_memories.append(mem_item)
+                    else:
+                        new_mem_id = f"mem_{uuid.uuid4().hex[:10]}"
+                        evidence_json = json.dumps(mp.evidence, ensure_ascii=False)
+                        await self._db.execute(
+                            """
+                            INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?);
+                            """,
+                            (
+                                new_mem_id, mp.subject, mp.kind, mp.key, mp.value, mp.temporal,
+                                mp.certainty.value, mp.scope, mp.visibility, evidence_json,
+                                mp.human_readable_assertion, now, now
+                            )
+                        )
+                        mem_item = MemoryItem(
+                            id=new_mem_id, subject=mp.subject, kind=mp.kind, key=mp.key, value=mp.value,
+                            temporal=mp.temporal, certainty=mp.certainty, scope=mp.scope,
+                            visibility=mp.visibility, evidence=mp.evidence, status=MemoryStatus.ACTIVE,
+                            human_readable_assertion=mp.human_readable_assertion, created_at=now, last_confirmed_at=now
+                        )
+                        committed_memories.append(mem_item)
+
+                # 5. Commit all mutations atomically in one transaction!
+                await self._db.commit()
+                return committed_tasks, resolved_loop_ids, committed_memories
+            except Exception:
+                await self._db.rollback()
+                raise

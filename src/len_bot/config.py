@@ -23,6 +23,16 @@ class RuntimeConfig(BaseModel):
     monitored_keywords: list[str] = Field(
         default_factory=lambda: ["直播", "开播", "几点", "有人看吗", "bot", "Bot"]
     )
+
+    # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
+    reflection_quiet_window_seconds: float = Field(
+        default=150.0,
+        description="Scene quiet time before micro-reflection fires on unreflected events"
+    )
+    maintenance_interval_seconds: float = Field(
+        default=60.0,
+        description="Background heartbeat: open-loop GC, ambient sweep, memory decay"
+    )
     
     # Identity
     identity_name: str = "Len"

@@ -59,7 +59,8 @@ class TaskScheduler:
                 status=TaskStatus(p["status"]),
                 payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {},
                 source_event_id=p.get("source_event_id", "episode"),
-                created_at=p.get("created_at", now)
+                created_at=p.get("created_at", now),
+                wake_event_type=p.get("wake_event_type")
             )
             if task.id not in self._known_task_ids:
                 self._known_task_ids.add(task.id)
@@ -89,23 +90,7 @@ class TaskScheduler:
                 if earliest.due_at <= now:
                     task = heapq.heappop(self._heap)
                     self._known_task_ids.discard(task.id)
-
-                    # Emit immutable TASK_DUE Event (ADR-0009)
-                    # SceneActor will atomically commit the event AND mark task triggered in SQLite in one transaction!
-                    event = Event(
-                        event_type=EventType.TASK_DUE,
-                        scene_id=task.scene_id,
-                        actor_id="system:scheduler",
-                        timestamp=now,
-                        payload={
-                            "task_id": task.id,
-                            "raw_text": task.description,
-                            "description": task.description,
-                            "payload": task.payload
-                        }
-                    )
-                    logger.info("Task due! Triggering task %s (%s) for scene %s", task.id, task.description, task.scene_id)
-                    await self.emit_event(event)
+                    await self._emit_task_due(task, now)
                 else:
                     sleep_time = max(0.05, min(earliest.due_at - now, self.sweep_interval))
                     try:
@@ -118,3 +103,98 @@ class TaskScheduler:
             except Exception as e:
                 logger.exception("Error in scheduler loop: %s", e)
                 await asyncio.sleep(1.0)
+
+    async def _emit_task_due(self, task: TaskItem, now: float) -> None:
+        """Emit immutable TASK_DUE Event (ADR-0009 & ADR-0018).
+        SceneActor will atomically commit the event AND mark task triggered in SQLite in one transaction!"""
+        event = Event(
+            event_type=EventType.TASK_DUE,
+            scene_id=task.scene_id,
+            actor_id="system:scheduler",
+            timestamp=now,
+            payload={
+                "task_id": task.id,
+                "raw_text": task.description,
+                "description": task.description,
+                "payload": task.payload
+            }
+        )
+        logger.info("Task due! Triggering task %s (%s) for scene %s", task.id, task.description, task.scene_id)
+        await self.emit_event(event)
+
+    async def on_event(self, event: Event) -> list[str]:
+        """ADR-0018: fire condition-bound obligations matching a committed event.
+
+        Called by AgentRuntime AFTER the SceneActor atomically committed the event.
+        A condition task fires when its wake_event_type arrives in its scene, or at
+        its due_at deadline — whichever comes first. Firing always takes the same
+        TASK_DUE authority path as timer tasks.
+        """
+        wake_type = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+        matched = [
+            t for t in self._heap
+            if t.wake_event_type == wake_type and t.scene_id == event.scene_id and t.id in self._known_task_ids
+        ]
+        fired_ids: list[str] = []
+        for task in matched:
+            self._known_task_ids.discard(task.id)
+            self._heap = [t for t in self._heap if t.id != task.id]
+            heapq.heapify(self._heap)
+            fired_ids.append(task.id)
+            await self._emit_task_due(task, time.time())
+        return fired_ids
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancels a scheduled task in heap and database."""
+        self._known_task_ids.discard(task_id)
+        self._heap = [t for t in self._heap if t.id != task_id]
+        heapq.heapify(self._heap)
+        await self.event_store.mark_task_status(task_id, TaskStatus.CANCELLED.value)
+        logger.info("Task %s cancelled manually", task_id)
+        return True
+
+    async def trigger_task_now(self, task_id: str) -> bool:
+        """Immediately triggers a pending task."""
+        target_task = None
+        for t in self._heap:
+            if t.id == task_id:
+                target_task = t
+                break
+
+        if not target_task:
+            tasks = await self.event_store.get_pending_tasks()
+            for p in tasks:
+                if p["id"] == task_id:
+                    target_task = TaskItem(
+                        id=p["id"],
+                        scene_id=p["scene_id"],
+                        description=p["description"],
+                        due_at=time.time(),
+                        status=TaskStatus.PENDING,
+                        payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {}
+                    )
+                    break
+
+        if not target_task:
+            return False
+
+        self._known_task_ids.discard(task_id)
+        self._heap = [t for t in self._heap if t.id != task_id]
+        heapq.heapify(self._heap)
+
+        now = time.time()
+        event = Event(
+            event_type=EventType.TASK_DUE,
+            scene_id=target_task.scene_id,
+            actor_id="system:scheduler",
+            timestamp=now,
+            payload={
+                "task_id": target_task.id,
+                "raw_text": target_task.description,
+                "description": target_task.description,
+                "payload": target_task.payload
+            }
+        )
+        logger.info("Task %s triggered manually now", task_id)
+        await self.emit_event(event)
+        return True

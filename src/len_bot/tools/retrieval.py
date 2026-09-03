@@ -14,15 +14,17 @@ class RetrievalToolkit:
         event_store: EventStore,
         allowed_scopes: list[str],
         default_scene_id: str,
-        memory_store: Optional[MemoryStore] = None
+        memory_store: Optional[MemoryStore] = None,
+        plugin_host: Optional[Any] = None
     ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
         self.default_scene_id = default_scene_id
         self.memory_store = memory_store
+        self.plugin_host = plugin_host
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
-        return [
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -119,7 +121,7 @@ class RetrievalToolkit:
                 "type": "function",
                 "function": {
                     "name": "query_memory",
-                    "description": "查询当前合法范围内对特定人物、群体或话题已形成的认识记忆（L2 认知信念）。",
+                    "description": "查询当前合法范围内对特定人物、群体或话题已形成的认识记忆（L2 认知信念），支持全局跨场景偏好检索与演进历史追溯。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -129,7 +131,19 @@ class RetrievalToolkit:
                             },
                             "kind": {
                                 "type": "string",
-                                "description": "记忆种类：preference（偏好）、relationship（关系）、fact（事实）、pattern（规律）。"
+                                "description": "记忆种类：preference（偏好）、habit（习惯）、relationship（关系）、fact（事实）、group_norm（群体规范）、topic_interest（话题兴趣）、recurring_role（常扮演角色）、social_pattern（社交模式）。"
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "特定槽位键，例如'food'、'programming_language'、'sleep_schedule'等。"
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "模糊检索断言内容的子串或关键词，例如'Rust'、'火锅'等。"
+                            },
+                            "include_history": {
+                                "type": "boolean",
+                                "description": "是否包含已被新记忆覆盖（superseded）的过往历史信念，默认 false。"
                             }
                         }
                     }
@@ -153,9 +167,26 @@ class RetrievalToolkit:
                 }
             }
         ]
+        if self.plugin_host:
+            tools.extend(self.plugin_host.get_tool_definitions())
+        return tools
+
+    @staticmethod
+    def _with_complexity_signal(formatted: list[str], high_hit_count: int = 8) -> str:
+        """ADR-0020: real producer for the [COMPLEXITY: HIGH] escalation signal —
+        a large evidence set implies deep comparison work for cognition."""
+        if not formatted:
+            return "未找到匹配的历史消息。"
+        body = "\n".join(formatted)
+        if len(formatted) >= high_hit_count:
+            body += "\n[COMPLEXITY: HIGH]"
+        return body
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
         try:
+            if self.plugin_host and self.plugin_host.has_tool(tool_name):
+                return await self.plugin_host.execute_tool(tool_name, arguments)
+
             if tool_name == "search_messages":
                 query = arguments.get("query", "")
                 limit = int(arguments.get("limit", 10))
@@ -168,7 +199,7 @@ class RetrievalToolkit:
                     f"[{r['id']}] {r['actor_id']} (at {r['timestamp']}): {r['payload'].get('raw_text', '')}"
                     for r in rows
                 ]
-                return "\n".join(formatted) if formatted else "未找到匹配的历史消息。"
+                return self._with_complexity_signal(formatted)
 
             elif tool_name == "read_context":
                 event_id = arguments.get("event_id", "")
@@ -222,15 +253,25 @@ class RetrievalToolkit:
                     return "未配置记忆库。"
                 subject = arguments.get("subject")
                 kind = arguments.get("kind")
+                key = arguments.get("key")
+                query = arguments.get("query")
+                include_history = bool(arguments.get("include_history", False))
                 memories = await self.memory_store.query_memories(
                     allowed_scopes=self.allowed_scopes,
                     subject=subject,
-                    kind=kind
+                    kind=kind,
+                    key=key,
+                    query=query,
+                    include_superseded=include_history
                 )
-                formatted = [
-                    f"[{m.id}] [{m.kind.upper()}] {m.subject} -> {m.key}: {m.value} (certainty: {m.certainty.value}, assertion: {m.human_readable_assertion})"
-                    for m in memories
-                ]
+                formatted = []
+                for m in memories:
+                    status_tag = f"[{m.status.value.upper()}]"
+                    history_tag = f" (已被覆盖 superseded_by: {m.superseded_by})" if m.status.value == "superseded" else ""
+                    formatted.append(
+                        f"[{m.id}] {status_tag} [{m.kind.upper()}] {m.subject} -> {m.key}: {m.value} "
+                        f"(certainty: {m.certainty.value}, assertion: {m.human_readable_assertion}{history_tag})"
+                    )
                 return "\n".join(formatted) if formatted else "未找到匹配的认识信念记忆。"
 
             elif tool_name == "inspect_episode":

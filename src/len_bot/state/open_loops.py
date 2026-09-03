@@ -13,19 +13,17 @@ class OpenLoopManager:
     async def get_active_loops(self, scene_id: str) -> list[dict[str, Any]]:
         return await self.event_store.get_active_open_loops(scene_id)
 
-    async def resolve_loop(self, loop_id: str, scene_id: str) -> None:
-        now = time.time()
-        await self.event_store.save_open_loop({
-            "id": loop_id,
-            "scene_id": scene_id,
-            "target_actor_id": "",
-            "intent": "",
-            "source_event_id": "",
-            "status": "resolved",
-            "created_at": now,
-            "expires_at": now
-        })
+    async def resolve_loop(self, loop_id: str, scene_id: str) -> bool:
+        """ADR-0018: resolve an ACTIVE loop in place, preserving target/intent/source for traceability."""
+        loops = await self.event_store.get_active_open_loops(scene_id)
+        target = next((l for l in loops if l["id"] == loop_id), None)
+        if not target:
+            logger.info("OpenLoop %s not found (or not active) in scene %s; nothing to resolve", loop_id, scene_id)
+            return False
+        target["status"] = "resolved"
+        await self.event_store.save_open_loop(target)
         logger.info("OpenLoop %s resolved", loop_id)
+        return True
 
     async def sweep_ttl_expiration(self) -> list[str]:
         """Dual-track GC: Absolute TTL cleanup."""

@@ -14,12 +14,19 @@ class ActionQueue:
         event_store: EventStore,
         send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
         on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None,
-        bot_actor_id: str = "system:action_queue"
+        bot_actor_id: str = "system:action_queue",
+        action_interceptor: Optional[Callable[[ActionItem], Awaitable[Optional[ActionItem]]]] = None,
+        shadow_probe: Optional[Callable[[], bool]] = None,
+        shadow_recorder: Optional[Callable[[ActionItem], Awaitable[None]]] = None
     ):
         self.event_store = event_store
         self.send_adapter = send_adapter
         self.on_action_event = on_action_event
         self.bot_actor_id = bot_actor_id
+        self.action_interceptor = action_interceptor
+        # ADR-0023 Shadow Mode: shadow_probe() True → record instead of send.
+        self.shadow_probe = shadow_probe
+        self.shadow_recorder = shadow_recorder
         self._queue: asyncio.Queue[ActionItem] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
@@ -44,6 +51,28 @@ class ActionQueue:
         while self._running:
             try:
                 action = await self._queue.get()
+                if self.action_interceptor:
+                    try:
+                        action = await self.action_interceptor(action)
+                    except Exception as e:
+                        logger.error("Error in action_interceptor: %s", e)
+                    if action is None:
+                        logger.info("Action blocked/dropped by action interceptor.")
+                        continue
+
+                # ADR-0023: Shadow Mode — safety interceptors still run, but the
+                # action is RECORDED instead of sent. No MESSAGE_SENT event is
+                # emitted, so no OpenLoop activates and no social fact is produced.
+                if self.shadow_probe and self.shadow_probe():
+                    if self.shadow_recorder:
+                        try:
+                            await self.shadow_recorder(action)
+                        except Exception as rec_err:
+                            logger.error("Shadow recorder failed: %s", rec_err)
+                    logger.info("[SHADOW] Would send on scene %s: %s", action.scene_id, action.content[:80])
+                    self._queue.task_done()
+                    continue
+
                 success = True
                 if self.send_adapter:
                     try:

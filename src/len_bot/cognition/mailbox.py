@@ -23,6 +23,7 @@ class EpisodeMailbox:
         self._unconsumed_follow_ups: list[Event] = []
         self._cancelled: bool = False
         self._cancellation_reason: Optional[str] = None
+        self._cursor: int = 0
 
     def post(self, event: Event) -> None:
         """Called by SceneActor worker when a new event arrives for this scene."""
@@ -54,6 +55,12 @@ class EpisodeMailbox:
         consumed = list(self._unconsumed_follow_ups)
         self._unconsumed_follow_ups.clear()
         return consumed
+
+    def fetch_unseen_interim_events(self) -> list[Event]:
+        """Non-destructive query advancing read cursor: returns events arrived since last check."""
+        unseen = self._interim_events[self._cursor:]
+        self._cursor = len(self._interim_events)
+        return unseen
 
     def get_interim_events(self) -> list[Event]:
         return list(self._interim_events)

@@ -14,6 +14,8 @@ class EventType(StrEnum):
     USER_JOINED = "USER_JOINED"
     HISTORICAL_IMPORT = "HISTORICAL_IMPORT"
     STATE_ANNOTATION = "STATE_ANNOTATION"
+    LIVE_STARTED = "LIVE_STARTED"
+    LIVE_ENDED = "LIVE_ENDED"
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -40,6 +42,7 @@ class StimulusType(StrEnum):
     SINGLE_MESSAGE = "SINGLE_MESSAGE"
     SOCIAL_MESSAGE_BURST = "SOCIAL_MESSAGE_BURST"
     PROACTIVE_TASK = "PROACTIVE_TASK"
+    PLUGIN_FACT = "PLUGIN_FACT"
 
 class Stimulus(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
