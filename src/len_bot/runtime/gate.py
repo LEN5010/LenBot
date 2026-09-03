@@ -36,12 +36,16 @@ class RuntimeGate:
         mailbox: EpisodeMailbox,
         current_scene_state: SceneState
     ) -> GateDecision:
-        # 1. Response Staleness & Steering Check (ADR-0002 & Item 2)
-        # Check steering FIRST before ANY state or proposal is committed (even SILENCE!)
-        steering = mailbox.check_steering()
-        if steering and steering.steering_type == SteeringType.CANCEL:
-            logger.info("Gate rejected response due to steering: %s", steering.reason)
-            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {steering.reason}")
+        # 1. Response Staleness & Steering Check (ADR-0002 & P0-2)
+        # Check cancellation and pending follow-ups non-destructively before ANY state is committed
+        if mailbox.is_cancelled():
+            reason = mailbox.cancellation_reason() or "Episode cancelled by steering"
+            logger.info("Gate rejected response due to cancellation: %s", reason)
+            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}")
+
+        if mailbox.has_follow_up():
+            logger.info("Gate rejected response due to pending follow-up superseding this outcome")
+            return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome")
 
         interim_events = mailbox.get_interim_events()
         cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了", "取消", "停"]
@@ -57,13 +61,16 @@ class RuntimeGate:
 
         # 3. Two-Phase Commit (ADR-0003)
         # Phase 1: Commit independent internal states (tasks, loop resolutions, memories)
-        await self._commit_independent_state(outcome, current_scene_state.scene_id)
+        created_task_ids = await self._commit_independent_state(outcome, current_scene_state.scene_id)
 
         # TOCTOU Guard: Re-check freshness after async commit before physical network enqueue
-        post_commit_steering = mailbox.check_steering()
-        if post_commit_steering and post_commit_steering.steering_type == SteeringType.CANCEL:
-            logger.info("Gate aborted action enqueue due to post-commit cancellation: %s", post_commit_steering.reason)
-            return GateDecision(FinalDisposition.SILENCE, f"Gate aborted action enqueue: {post_commit_steering.reason}")
+        if mailbox.is_cancelled() or mailbox.has_follow_up():
+            # Abort action enqueue AND cancel any tasks created during this stale episode!
+            for tid in created_task_ids:
+                await self.event_store.mark_task_status(tid, "cancelled")
+            reason = mailbox.cancellation_reason() or "stale response superseded by follow-up or cancellation"
+            logger.info("Gate aborted action enqueue and cancelled created tasks due to post-commit freshness loss: %s", reason)
+            return GateDecision(FinalDisposition.SILENCE, f"Gate aborted action enqueue: {reason}")
 
         # Phase 2: Enqueue message actions with dependent Open Loops
         actions_count = 0
@@ -103,12 +110,14 @@ class RuntimeGate:
             actions_enqueued=actions_count
         )
 
-    async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> None:
+    async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> list[str]:
         now = time.time()
+        created_task_ids: list[str] = []
         # 1. Commit independent tasks via unified event_store write authority
         for tp in outcome.task_proposals:
+            task_id = f"task_{uuid.uuid4().hex[:10]}"
             task_data = {
-                "id": f"task_{uuid.uuid4().hex[:10]}",
+                "id": task_id,
                 "scene_id": scene_id,
                 "description": tp.description,
                 "due_at": now + tp.delay_seconds,
@@ -118,6 +127,7 @@ class RuntimeGate:
                 "created_at": now
             }
             await self.event_store.create_task(task_data)
+            created_task_ids.append(task_id)
 
             if self.scheduler:
                 from len_bot.scheduler.models import TaskItem, TaskStatus

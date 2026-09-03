@@ -11,6 +11,7 @@ from len_bot.actions.models import ActionItem, ActionType
 from len_bot.actions.queue import ActionQueue
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
+from len_bot.cognition.pi_core import PiAgentCore
 from len_bot.memory.models import MemoryProposal, MemoryCertainty, MemoryStatus
 from len_bot.memory.store import MemoryStore
 from len_bot.memory.gate import MemoryGate
@@ -290,3 +291,156 @@ async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_pat
     assert gate_res_good.success is True
 
     await runtime.stop()
+
+@pytest.mark.asyncio
+async def test_p0_1_transaction_failure_rollback_preserves_state(tmp_path):
+    """
+    P0-1 Failure Test:
+    Simulates a database failure mid-way through commit_scene_event.
+    Verifies that:
+    1. DB transaction rolls back cleanly.
+    2. SceneActor.state in memory remains untouched (does NOT increment version or alter state).
+    3. Subsequent valid events advance state cleanly from the uncommitted base.
+    """
+    db_file = str(tmp_path / "rollback_test.db")
+    config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
+    runtime = AgentRuntime(config)
+    await runtime.start()
+
+    scene_id = "group:p0_rollback"
+    actor = await runtime.scene_manager.get_or_create_actor(scene_id)
+    actor.state = SceneState(scene_id=scene_id, version=1, active_topic="initial_topic")
+
+    # Step 1: Cause an error during commit_scene_event (e.g. inject an error on execute)
+    orig_execute = runtime.event_store._db.execute
+    fail_on_fts = True
+
+    async def hooked_execute(sql, *args, **kwargs):
+        if fail_on_fts and "INSERT INTO events_fts" in sql:
+            raise RuntimeError("Simulated disk I/O / SQLite crash on FTS insert!")
+        return await orig_execute(sql, *args, **kwargs)
+
+    runtime.event_store._db.execute = hooked_execute
+
+    # Post event that will fail during FTS insertion
+    failed_event = Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:bad",
+        timestamp=time.time(),
+        payload={"raw_text": "这条消息会触发模拟的写入失败"}
+    )
+    actor.post_event(failed_event)
+    await asyncio.sleep(0.1)
+
+    # In-memory state MUST be preserved at version 1 with initial_topic!
+    assert actor.state.version == 1
+    assert actor.state.active_topic == "initial_topic"
+
+    # Database MUST NOT contain the failed event
+    events = await runtime.event_store.get_recent_events(scene_id)
+    assert len(events) == 0
+
+    # Step 2: Now restore database execute and post a valid second event
+    fail_on_fts = False
+    good_event = Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:good",
+        timestamp=time.time(),
+        payload={"raw_text": "第二条正常消息"}
+    )
+    actor.post_event(good_event)
+    await asyncio.sleep(0.1)
+
+    # In-memory state MUST now be version 2 (advancing from 1, not 3!)
+    assert actor.state.version == 2
+
+    # Database must contain exactly 1 event (good_event)
+    events_after = await runtime.event_store.get_recent_events(scene_id)
+    assert len(events_after) == 1
+    assert events_after[0].actor_id == "user:good"
+
+    await runtime.stop()
+
+@pytest.mark.asyncio
+async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
+    """
+    P0-2 Failure Test:
+    Proves that when a follow-up arrives while cognition is in flight:
+    1. PiAgentCore incorporates the follow-up instead of dropping it.
+    2. If a follow-up arrives right at final completion before Gate, Gate detects
+       mailbox.has_follow_up() and rejects the stale outcome (SILENCE) rather than
+       sending the superseded answer.
+    """
+    db_file = str(tmp_path / "follow_up_race.db")
+    config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
+    runtime = AgentRuntime(config)
+    await runtime.start()
+
+    scene_id = "group:follow_up_race"
+    actor = await runtime.scene_manager.get_or_create_actor(scene_id)
+
+    # 1. Test PiAgentCore mock with follow-up arriving during execution
+    mailbox = EpisodeMailbox(episode_id="ep_race", scene_id=scene_id, base_scene_version=1)
+
+    async def mock_cognition(messages: list[dict[str, str]]) -> EpisodeOutcome:
+        # Check if follow-up was incorporated
+        full_text = " ".join(m.get("content", "") for m in messages)
+        if "顺便看看嘉宾" in full_text:
+            return EpisodeOutcome(
+                disposition=FinalDisposition.ACTION,
+                thought="Answered original question + follow-up!",
+                message_proposals=[MessageProposal(content="直播8点开始，今天的嘉宾是小明！")]
+            )
+        # On first pass without follow-up, simulate user sending follow-up before cognition returns
+        fu_event = Event(
+            event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=scene_id,
+            actor_id="user:follower",
+            timestamp=time.time(),
+            payload={"raw_text": "@Bot 顺便看看嘉宾是谁", "at_bot": True}
+        )
+        mailbox.post(fu_event)
+        return EpisodeOutcome(
+            disposition=FinalDisposition.ACTION,
+            thought="Stale answer without guest info",
+            message_proposals=[MessageProposal(content="直播8点开始")]
+        )
+
+    core = PiAgentCore(config, mock_handler=mock_cognition)
+    outcome = await core.execute_episode(
+        messages=[{"role": "user", "content": "帮我查直播"}],
+        mailbox=mailbox
+    )
+
+    # Verify that PiAgentCore detected mailbox.has_follow_up() and re-executed to answer BOTH!
+    assert outcome.disposition == FinalDisposition.ACTION
+    assert "小明" in outcome.message_proposals[0].content
+
+    # 2. Test Gate staleness check:
+    # If a follow-up arrives right when Gate evaluates, Gate MUST NOT send the stale action
+    stale_outcome = EpisodeOutcome(
+        disposition=FinalDisposition.ACTION,
+        thought="Old single question answer",
+        message_proposals=[MessageProposal(content="旧回答")]
+    )
+    race_mailbox = EpisodeMailbox(episode_id="ep_race_2", scene_id=scene_id, base_scene_version=1)
+    # User posts follow-up right as Gate runs
+    race_mailbox.post(Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:late",
+        timestamp=time.time(),
+        payload={"raw_text": "@Bot 补充一个问题", "at_bot": True}
+    ))
+
+    gate_decision = await runtime.runtime_gate.evaluate_and_commit(stale_outcome, race_mailbox, actor.state)
+    # Must reject stale outcome with SILENCE!
+    assert gate_decision.disposition == FinalDisposition.SILENCE
+    assert "pending follow-up" in gate_decision.reason.lower() or "supersede" in gate_decision.reason.lower()
+    # No action enqueued!
+    assert gate_decision.actions_enqueued == 0
+
+    await runtime.stop()
+

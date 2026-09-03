@@ -38,8 +38,25 @@ class EpisodeMailbox:
         
         self._queue.put_nowait(event)
 
+    def is_cancelled(self) -> bool:
+        """Non-destructive query: returns True if episode has been cancelled."""
+        return self._cancelled
+
+    def cancellation_reason(self) -> Optional[str]:
+        return self._cancellation_reason
+
+    def has_follow_up(self) -> bool:
+        """Non-destructive query: returns True if unconsumed follow-ups are pending."""
+        return bool(self._unconsumed_follow_ups)
+
+    def consume_follow_ups(self) -> list[Event]:
+        """Destructive method: ONLY consumed by PiAgentCore during cognition ReAct steps."""
+        consumed = list(self._unconsumed_follow_ups)
+        self._unconsumed_follow_ups.clear()
+        return consumed
+
     def check_steering(self) -> Optional[SteeringSignal]:
-        """Checked by Pi at ReAct step boundaries and by RuntimeGate."""
+        """Checked by Pi at ReAct step boundaries."""
         if self._cancelled:
             last_event = self._interim_events[-1] if self._interim_events else None
             return SteeringSignal(
