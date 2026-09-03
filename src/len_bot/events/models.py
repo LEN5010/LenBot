@@ -13,6 +13,7 @@ class EventType(StrEnum):
     TOOL_COMPLETED = "TOOL_COMPLETED"
     USER_JOINED = "USER_JOINED"
     HISTORICAL_IMPORT = "HISTORICAL_IMPORT"
+    STATE_ANNOTATION = "STATE_ANNOTATION"
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

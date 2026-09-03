@@ -97,7 +97,7 @@ class AgentRuntime:
 
     async def start(self) -> None:
         await self.event_store.initialize()
-        self.memory_store = MemoryStore(self.event_store._db)
+        self.memory_store = MemoryStore(self.event_store._db, write_lock=self.event_store._write_lock)
         await self.memory_store.initialize()
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
         self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate)
@@ -111,6 +111,10 @@ class AgentRuntime:
             self.config.identity_persona = saved_persona.get("identity_persona", self.config.identity_persona)
             self.config.bot_qq = saved_persona.get("bot_qq", self.config.bot_qq)
             self.bot_actor_id = f"user:{self.config.bot_qq}"
+            self.action_queue.bot_actor_id = self.bot_actor_id
+            self.scene_manager.bot_actor_id = self.bot_actor_id
+            for actor in self.scene_manager._actors.values():
+                actor.bot_actor_id = self.bot_actor_id
 
         saved_model = await self.event_store.get_dynamic_config("model_config")
         if saved_model:
@@ -220,8 +224,15 @@ class AgentRuntime:
         elif att_res.disposition == AttentionDisposition.OBSERVE:
             return
         elif att_res.disposition == AttentionDisposition.TRACK:
-            if att_res.soft_annotation and scene_state:
-                scene_state.soft_annotations.update(att_res.soft_annotation)
+            if att_res.soft_annotation:
+                annotation_event = Event(
+                    event_type=EventType.STATE_ANNOTATION,
+                    scene_id=stimulus.scene_id,
+                    actor_id="system:attention",
+                    timestamp=time.time(),
+                    metadata={"soft_annotation": att_res.soft_annotation}
+                )
+                await self.scene_manager.dispatch_event(annotation_event)
             return
         elif att_res.disposition == AttentionDisposition.WAKE:
             # 2. Trigger Cognitive Episode under concurrency semaphore as a background task

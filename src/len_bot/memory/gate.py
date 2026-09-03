@@ -44,8 +44,12 @@ class MemoryGate:
         )
         (ep_count,) = await ep_cursor.fetchone()
 
-        if (event_count + ep_count) == 0:
-            return MemoryGateResult(False, f"Rejected: None of the evidence items exist within scope {proposal.scope}: {proposal.evidence}")
+        required_evidence_count = len(set(proposal.evidence))
+        if (event_count + ep_count) < required_evidence_count:
+            return MemoryGateResult(
+                False,
+                f"Rejected: Evidence integrity check failed. Expected {required_evidence_count} evidence items in scope {proposal.scope}, found {event_count + ep_count}"
+            )
 
         # 3. Conflict Resolution on Semantic Slot (§57)
         now = time.time()

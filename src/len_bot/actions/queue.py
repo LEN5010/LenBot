@@ -68,18 +68,19 @@ class ActionQueue:
                         }
                     )
 
-                    # 2. ADR-0003 Phase 2: Commit associated Open Loop now that message sent!
+                    # 2. Item 3: Attach associated Open Loop to sent_event metadata for atomic commit in SceneActor
                     if action.associated_open_loop:
-                        loop_data = action.associated_open_loop
-                        loop_data["source_event_id"] = sent_event.id
-                        await self.event_store.save_open_loop(loop_data)
-                        logger.info("Committed OpenLoop %s after successful send", loop_data["id"])
+                        sent_event.metadata["associated_open_loop"] = action.associated_open_loop
 
                     # 3. Route to single commit authority (SceneActor)
                     if self.on_action_event:
                         await self.on_action_event(sent_event)
                     else:
-                        await self.event_store.append_event(sent_event)
+                        await self.event_store.commit_scene_event(
+                            event=sent_event,
+                            scene_state_data={},
+                            associated_open_loop=action.associated_open_loop
+                        )
                 else:
                     # Emit MESSAGE_SEND_FAILED Event
                     fail_event = Event(

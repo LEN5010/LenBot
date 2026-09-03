@@ -1,3 +1,4 @@
+import asyncio
 import aiosqlite
 import json
 import logging
@@ -8,64 +9,67 @@ from len_bot.memory.models import EpisodeRecord, MemoryItem, MemoryStatus, Memor
 logger = logging.getLogger(__name__)
 
 class MemoryStore:
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: aiosqlite.Connection, write_lock: Optional[asyncio.Lock] = None):
         self._db = db
+        self.write_lock = write_lock or asyncio.Lock()
 
     async def initialize(self) -> None:
-        # L1 Episodes
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
-                id TEXT PRIMARY KEY,
-                scene_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                source_event_ids TEXT NOT NULL,
-                participants TEXT NOT NULL,
-                tags TEXT NOT NULL,
-                created_at REAL NOT NULL
-            );
-        """)
-        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_episodes_scene ON episodes(scene_id, created_at);")
+        async with self.write_lock:
+            # L1 Episodes
+            await self._db.execute("""
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id TEXT PRIMARY KEY,
+                    scene_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_event_ids TEXT NOT NULL,
+                    participants TEXT NOT NULL,
+                    tags TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+            """)
+            await self._db.execute("CREATE INDEX IF NOT EXISTS idx_episodes_scene ON episodes(scene_id, created_at);")
 
-        # L2 Semantic / Social Memories
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
-                subject TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                temporal TEXT NOT NULL,
-                certainty TEXT NOT NULL,
-                scope TEXT NOT NULL,
-                visibility TEXT NOT NULL,
-                evidence TEXT NOT NULL,
-                status TEXT NOT NULL,
-                human_readable_assertion TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                last_confirmed_at REAL NOT NULL
-            );
-        """)
-        await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memories_slot ON memories(subject, kind, key, scope, status);"
-        )
-        await self._db.commit()
+            # L2 Semantic / Social Memories
+            await self._db.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    temporal TEXT NOT NULL,
+                    certainty TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    visibility TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    human_readable_assertion TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    last_confirmed_at REAL NOT NULL
+                );
+            """)
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_slot ON memories(subject, kind, key, scope, status);"
+            )
+            await self._db.commit()
 
     async def save_episode(self, record: EpisodeRecord) -> None:
-        await self._db.execute("""
-            INSERT INTO episodes (id, scene_id, title, summary, source_event_ids, participants, tags, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        """, (
-            record.id,
-            record.scene_id,
-            record.title,
-            record.summary,
-            json.dumps(record.source_event_ids, ensure_ascii=False),
-            json.dumps(record.participants, ensure_ascii=False),
-            json.dumps(record.tags, ensure_ascii=False),
-            record.created_at
-        ))
-        await self._db.commit()
+        async with self.write_lock:
+            await self._db.execute("""
+                INSERT INTO episodes (id, scene_id, title, summary, source_event_ids, participants, tags, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """, (
+                record.id,
+                record.scene_id,
+                record.title,
+                record.summary,
+                json.dumps(record.source_event_ids, ensure_ascii=False),
+                json.dumps(record.participants, ensure_ascii=False),
+                json.dumps(record.tags, ensure_ascii=False),
+                record.created_at
+            ))
+            await self._db.commit()
 
     async def get_episode(self, episode_id: str) -> Optional[EpisodeRecord]:
         cursor = await self._db.execute(
@@ -119,28 +123,30 @@ class MemoryStore:
         )
 
     async def save_memory(self, item: MemoryItem) -> None:
-        await self._db.execute("""
-            INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                status = excluded.status,
-                value = excluded.value,
-                certainty = excluded.certainty,
-                last_confirmed_at = excluded.last_confirmed_at;
-        """, (
-            item.id, item.subject, item.kind, item.key, item.value, item.temporal,
-            item.certainty.value, item.scope, item.visibility,
-            json.dumps(item.evidence, ensure_ascii=False), item.status.value,
-            item.human_readable_assertion, item.created_at, item.last_confirmed_at
-        ))
-        await self._db.commit()
+        async with self.write_lock:
+            await self._db.execute("""
+                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, visibility, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    value = excluded.value,
+                    certainty = excluded.certainty,
+                    last_confirmed_at = excluded.last_confirmed_at;
+            """, (
+                item.id, item.subject, item.kind, item.key, item.value, item.temporal,
+                item.certainty.value, item.scope, item.visibility,
+                json.dumps(item.evidence, ensure_ascii=False), item.status.value,
+                item.human_readable_assertion, item.created_at, item.last_confirmed_at
+            ))
+            await self._db.commit()
 
     async def update_memory_status(self, memory_id: str, status: MemoryStatus) -> None:
-        await self._db.execute(
-            "UPDATE memories SET status = ? WHERE id = ?;",
-            (status.value, memory_id)
-        )
-        await self._db.commit()
+        async with self.write_lock:
+            await self._db.execute(
+                "UPDATE memories SET status = ? WHERE id = ?;",
+                (status.value, memory_id)
+            )
+            await self._db.commit()
 
     async def query_memories(
         self,

@@ -3,7 +3,7 @@ import uuid
 import time
 from typing import Optional, Any
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
-from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
 from len_bot.scenes.models import SceneState
 from len_bot.actions.models import ActionItem, ActionType
 from len_bot.actions.queue import ActionQueue
@@ -36,30 +36,34 @@ class RuntimeGate:
         mailbox: EpisodeMailbox,
         current_scene_state: SceneState
     ) -> GateDecision:
-        # 1. Check if model explicitly chose SILENCE
+        # 1. Response Staleness & Steering Check (ADR-0002 & Item 2)
+        # Check steering FIRST before ANY state or proposal is committed (even SILENCE!)
+        steering = mailbox.check_steering()
+        if steering and steering.steering_type == SteeringType.CANCEL:
+            logger.info("Gate rejected response due to steering: %s", steering.reason)
+            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {steering.reason}")
+
+        interim_events = mailbox.get_interim_events()
+        cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了", "取消", "停"]
+        for ie in interim_events:
+            if any(ck in ie.raw_text for ck in cancel_keywords):
+                logger.info("Gate rejected response due to interim cancellation: %s", ie.raw_text)
+                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
+
+        # 2. Check if model explicitly chose SILENCE
         if outcome.disposition == FinalDisposition.SILENCE:
             await self._commit_independent_state(outcome, current_scene_state.scene_id)
             return GateDecision(FinalDisposition.SILENCE, f"Model selected SILENCE: {outcome.thought}")
 
-        # 2. Response Staleness Check (ADR-0002)
-        steering = mailbox.check_steering()
-        if steering:
-            # DO NOT commit any side-effects for cancelled or stale episodes!
-            logger.info("Gate rejected stale response due to steering: %s", steering.reason)
-            return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {steering.reason}")
-
-        interim_events = mailbox.get_interim_events()
-        # Scan interim events for cancellation or someone else answering
-        cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了"]
-        for ie in interim_events:
-            if any(ck in ie.raw_text for ck in cancel_keywords):
-                # DO NOT commit any side-effects for cancelled or stale episodes!
-                logger.info("Gate rejected stale response due to interim cancellation: %s", ie.raw_text)
-                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
-
         # 3. Two-Phase Commit (ADR-0003)
-        # Phase 1: Commit independent internal states (tasks, loop resolutions, annotations)
+        # Phase 1: Commit independent internal states (tasks, loop resolutions, memories)
         await self._commit_independent_state(outcome, current_scene_state.scene_id)
+
+        # TOCTOU Guard: Re-check freshness after async commit before physical network enqueue
+        post_commit_steering = mailbox.check_steering()
+        if post_commit_steering and post_commit_steering.steering_type == SteeringType.CANCEL:
+            logger.info("Gate aborted action enqueue due to post-commit cancellation: %s", post_commit_steering.reason)
+            return GateDecision(FinalDisposition.SILENCE, f"Gate aborted action enqueue: {post_commit_steering.reason}")
 
         # Phase 2: Enqueue message actions with dependent Open Loops
         actions_count = 0
@@ -72,7 +76,7 @@ class RuntimeGate:
                     "scene_id": current_scene_state.scene_id,
                     "target_actor_id": msg.reply_target,
                     "intent": msg.reply_intent or "general_response",
-                    "source_event_id": "", # Will be filled by ActionQueue on MESSAGE_SENT
+                    "source_event_id": "", # Will be filled by SceneActor on MESSAGE_SENT
                     "status": "active",
                     "created_at": now,
                     "expires_at": now + 86400.0 # 24h TTL
@@ -100,9 +104,8 @@ class RuntimeGate:
         )
 
     async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> None:
-        import json
         now = time.time()
-        # 1. Commit independent tasks
+        # 1. Commit independent tasks via unified event_store write authority
         for tp in outcome.task_proposals:
             task_data = {
                 "id": f"task_{uuid.uuid4().hex[:10]}",
@@ -114,24 +117,7 @@ class RuntimeGate:
                 "payload": tp.payload,
                 "created_at": now
             }
-            # Save task to tasks table with valid JSON serialization
-            cursor = await self.event_store._db.execute(
-                """
-                INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    task_data["id"],
-                    task_data["scene_id"],
-                    task_data["description"],
-                    task_data["due_at"],
-                    task_data["status"],
-                    task_data["source_event_id"],
-                    json.dumps(task_data["payload"], ensure_ascii=False),
-                    task_data["created_at"]
-                )
-            )
-            await self.event_store._db.commit()
+            await self.event_store.create_task(task_data)
 
             if self.scheduler:
                 from len_bot.scheduler.models import TaskItem, TaskStatus
