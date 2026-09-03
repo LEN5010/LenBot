@@ -31,13 +31,13 @@ class PiAgentCore:
         toolkit: Optional[Any] = None,
         max_steps: int = 5
     ) -> EpisodeOutcome:
-        # 1. Step-boundary Steering Check (ADR-0002)
-        steering = mailbox.check_steering()
-        if steering and steering.steering_type == SteeringType.CANCEL:
-            logger.info("Episode %s aborted early by steering: %s", mailbox.episode_id, steering.reason)
+        # 1. Early cancellation check before starting ReAct loop
+        if mailbox.is_cancelled():
+            reason = mailbox.cancellation_reason() or "Episode cancelled by steering"
+            logger.info("Episode %s aborted early by steering: %s", mailbox.episode_id, reason)
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
-                thought=f"Aborted early by steering: {steering.reason}"
+                thought=f"Aborted early by steering: {reason}"
             )
 
         # 2. Mock handler for offline testing & benchmark scenarios

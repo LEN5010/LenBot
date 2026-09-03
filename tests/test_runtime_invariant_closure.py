@@ -200,10 +200,15 @@ def test_item4_follow_up_steering():
     )
     mailbox.post(follow_up)
 
-    steering = mailbox.check_steering()
-    assert steering is not None
-    assert steering.steering_type == SteeringType.FOLLOW_UP
-    assert "顺便看看今天嘉宾是谁" in steering.source_event.raw_text
+    assert mailbox.has_follow_up() is True
+    # Non-destructive query: does not consume or drop follow-ups
+    assert mailbox.has_follow_up() is True
+
+    # Consumed exclusively by cognition
+    events = mailbox.consume_follow_ups()
+    assert len(events) == 1
+    assert "顺便看看今天嘉宾是谁" in events[0].raw_text
+    assert mailbox.has_follow_up() is False
 
 @pytest.mark.asyncio
 async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_path):
@@ -443,4 +448,65 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     assert gate_decision.actions_enqueued == 0
 
     await runtime.stop()
+
+@pytest.mark.asyncio
+async def test_p0_2_scene_actor_serialization_and_zero_scheduler_leak_on_cancellation(tmp_path):
+    """
+    P0-2 Definitive Invariant Test:
+    Proves that proposal commitment serialized through SceneActor eliminates races,
+    and if user cancels during cognition, NO task is written to DB and ZERO task
+    is scheduled in the Scheduler heap (no compensation needed!).
+    """
+    db_file = str(tmp_path / "zero_leak.db")
+    config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
+    runtime = AgentRuntime(config)
+    await runtime.start()
+
+    scene_id = "group:zero_leak"
+    actor = await runtime.scene_manager.get_or_create_actor(scene_id)
+
+    # 1. Episode starts and acquires lease
+    episode_id = "ep_zero_leak"
+    mailbox = EpisodeMailbox(episode_id, scene_id, base_scene_version=actor.state.version)
+    assert actor.acquire_episode_lease(episode_id, mailbox) is True
+
+    # 2. While cognition is running in background, user sends cancellation into SceneActor
+    cancel_event = Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:canceller",
+        timestamp=time.time(),
+        payload={"raw_text": "算了别查了不用了"}
+    )
+    actor.post_event(cancel_event)
+
+    # 3. Cognition finishes proposing a task
+    outcome_with_task = EpisodeOutcome(
+        disposition=FinalDisposition.SILENCE,
+        thought="I will check live status in 5 minutes",
+        task_proposals=[TaskProposal(description="Delayed check", delay_seconds=300)]
+    )
+
+    # 4. Submit proposal through SceneActor single-writer serialization point
+    decision = await actor.submit_proposal(
+        episode_id=episode_id,
+        outcome=outcome_with_task,
+        mailbox=mailbox,
+        runtime_gate=runtime.runtime_gate
+    )
+
+    # Must be rejected with SILENCE
+    assert decision.disposition == FinalDisposition.SILENCE
+    assert "rejected" in decision.reason.lower() or "cancellation" in decision.reason.lower()
+
+    # 5. Invariant Assertion: Database has ZERO tasks
+    tasks = await runtime.event_store.get_pending_tasks()
+    assert len(tasks) == 0
+
+    # 6. Invariant Assertion: Scheduler heap is completely EMPTY! Zero leak!
+    assert len(runtime.scheduler._heap) == 0
+
+    actor.release_episode_lease(episode_id)
+    await runtime.stop()
+
 

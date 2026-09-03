@@ -275,10 +275,12 @@ class AgentRuntime:
                 mailbox=mailbox
             )
 
-            gate_decision = await self.runtime_gate.evaluate_and_commit(
+            # Submit proposal through SceneActor single-writer serialization point (P0-2)
+            gate_decision = await actor.submit_proposal(
+                episode_id=episode_id,
                 outcome=outcome,
                 mailbox=mailbox,
-                current_scene_state=scene_state
+                runtime_gate=self.runtime_gate
             )
             self._last_gate_decision = gate_decision
             logger.info("Gate decision on Scene %s: %s (%s)", stimulus.scene_id, gate_decision.disposition, gate_decision.reason)

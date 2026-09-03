@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, Any, Union
 from len_bot.events.models import Event
 from len_bot.scenes.models import SceneState
 from len_bot.scenes.reducer import SceneReducer
@@ -8,6 +8,24 @@ from len_bot.events.store import EventStore
 from len_bot.cognition.mailbox import EpisodeMailbox
 
 logger = logging.getLogger(__name__)
+
+class ProposalCommitCommand:
+    def __init__(
+        self,
+        episode_id: str,
+        scene_id: str,
+        base_scene_version: int,
+        outcome: Any,
+        mailbox: EpisodeMailbox,
+        runtime_gate: Any,
+    ):
+        self.episode_id = episode_id
+        self.scene_id = scene_id
+        self.base_scene_version = base_scene_version
+        self.outcome = outcome
+        self.mailbox = mailbox
+        self.runtime_gate = runtime_gate
+        self.future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
 class SceneActor:
     def __init__(
@@ -22,7 +40,7 @@ class SceneActor:
         self.event_store = event_store
         self.on_state_updated = on_state_updated
         self.state: Optional[SceneState] = None
-        self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._queue: asyncio.Queue[Union[Event, ProposalCommitCommand]] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_mailbox: Optional[EpisodeMailbox] = None
         self._running = False
@@ -76,10 +94,47 @@ class SceneActor:
     def has_active_episode(self) -> bool:
         return self._active_mailbox is not None
 
+    async def submit_proposal(
+        self,
+        episode_id: str,
+        outcome: Any,
+        mailbox: EpisodeMailbox,
+        runtime_gate: Any,
+    ) -> Any:
+        """P0-2: Submits an episode outcome for authoritative serialization through SceneActor."""
+        cmd = ProposalCommitCommand(
+            episode_id=episode_id,
+            scene_id=self.scene_id,
+            base_scene_version=mailbox.base_scene_version,
+            outcome=outcome,
+            mailbox=mailbox,
+            runtime_gate=runtime_gate,
+        )
+        await self._queue.put(cmd)
+        return await cmd.future
+
     async def _process_loop(self) -> None:
         while self._running:
             try:
-                event = await self._queue.get()
+                item = await self._queue.get()
+                if isinstance(item, ProposalCommitCommand):
+                    try:
+                        decision = await item.runtime_gate.evaluate_and_commit(
+                            outcome=item.outcome,
+                            mailbox=item.mailbox,
+                            current_scene_state=self.state
+                        )
+                        if not item.future.done():
+                            item.future.set_result(decision)
+                    except Exception as e:
+                        logger.exception("Error evaluating proposal in SceneActor %s: %s", self.scene_id, e)
+                        if not item.future.done():
+                            item.future.set_exception(e)
+                    finally:
+                        self._queue.task_done()
+                    continue
+
+                event: Event = item
                 # 1. Pure functional state reduction to candidate state (never mutates self.state)
                 candidate_state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
 

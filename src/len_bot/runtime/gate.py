@@ -36,8 +36,7 @@ class RuntimeGate:
         mailbox: EpisodeMailbox,
         current_scene_state: SceneState
     ) -> GateDecision:
-        # 1. Response Staleness & Steering Check (ADR-0002 & P0-2)
-        # Check cancellation and pending follow-ups non-destructively before ANY state is committed
+        # 1. Freshness Validation (Serialized through SceneActor single-writer queue)
         if mailbox.is_cancelled():
             reason = mailbox.cancellation_reason() or "Episode cancelled by steering"
             logger.info("Gate rejected response due to cancellation: %s", reason)
@@ -54,25 +53,20 @@ class RuntimeGate:
                 logger.info("Gate rejected response due to interim cancellation: %s", ie.raw_text)
                 return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
 
-        # 2. Check if model explicitly chose SILENCE
+        # 2. Authoritative Database Commit (Tasks, Open Loops, Memories)
+        # Only executed if freshness is 100% intact!
+        committed_tasks = await self._commit_independent_state(outcome, current_scene_state.scene_id)
+
+        # 3. External Side-Effect Distribution (Scheduler): only register in heap after DB commit succeeds!
+        if self.scheduler and committed_tasks:
+            for item in committed_tasks:
+                self.scheduler.schedule_task(item)
+
+        # 4. Check if model explicitly chose SILENCE
         if outcome.disposition == FinalDisposition.SILENCE:
-            await self._commit_independent_state(outcome, current_scene_state.scene_id)
             return GateDecision(FinalDisposition.SILENCE, f"Model selected SILENCE: {outcome.thought}")
 
-        # 3. Two-Phase Commit (ADR-0003)
-        # Phase 1: Commit independent internal states (tasks, loop resolutions, memories)
-        created_task_ids = await self._commit_independent_state(outcome, current_scene_state.scene_id)
-
-        # TOCTOU Guard: Re-check freshness after async commit before physical network enqueue
-        if mailbox.is_cancelled() or mailbox.has_follow_up():
-            # Abort action enqueue AND cancel any tasks created during this stale episode!
-            for tid in created_task_ids:
-                await self.event_store.mark_task_status(tid, "cancelled")
-            reason = mailbox.cancellation_reason() or "stale response superseded by follow-up or cancellation"
-            logger.info("Gate aborted action enqueue and cancelled created tasks due to post-commit freshness loss: %s", reason)
-            return GateDecision(FinalDisposition.SILENCE, f"Gate aborted action enqueue: {reason}")
-
-        # Phase 2: Enqueue message actions with dependent Open Loops
+        # 5. External Side-Effect Distribution (ActionQueue): enqueue message actions with dependent Open Loops
         actions_count = 0
         now = time.time()
         for msg in outcome.message_proposals:
@@ -110,9 +104,11 @@ class RuntimeGate:
             actions_enqueued=actions_count
         )
 
-    async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> list[str]:
+    async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> list[Any]:
+        from len_bot.scheduler.models import TaskItem, TaskStatus
         now = time.time()
-        created_task_ids: list[str] = []
+        committed_tasks: list[TaskItem] = []
+
         # 1. Commit independent tasks via unified event_store write authority
         for tp in outcome.task_proposals:
             task_id = f"task_{uuid.uuid4().hex[:10]}"
@@ -127,21 +123,18 @@ class RuntimeGate:
                 "created_at": now
             }
             await self.event_store.create_task(task_data)
-            created_task_ids.append(task_id)
 
-            if self.scheduler:
-                from len_bot.scheduler.models import TaskItem, TaskStatus
-                item = TaskItem(
-                    id=task_data["id"],
-                    scene_id=task_data["scene_id"],
-                    description=task_data["description"],
-                    due_at=task_data["due_at"],
-                    status=TaskStatus.PENDING,
-                    payload=task_data["payload"],
-                    source_event_id=task_data["source_event_id"],
-                    created_at=task_data["created_at"]
-                )
-                self.scheduler.schedule_task(item)
+            item = TaskItem(
+                id=task_data["id"],
+                scene_id=task_data["scene_id"],
+                description=task_data["description"],
+                due_at=task_data["due_at"],
+                status=TaskStatus.PENDING,
+                payload=task_data["payload"],
+                source_event_id=task_data["source_event_id"],
+                created_at=task_data["created_at"]
+            )
+            committed_tasks.append(item)
 
         # 2. Resolve open loops if specified
         for loop_id in outcome.resolve_open_loop_ids:
@@ -162,3 +155,5 @@ class RuntimeGate:
                 # P0.3: Enforce that memory scope is strictly injected and fixed to current scene
                 mp.scope = scene_id
                 await self.memory_gate.commit_proposal(mp)
+
+        return committed_tasks
