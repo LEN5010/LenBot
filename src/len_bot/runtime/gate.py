@@ -44,7 +44,8 @@ class RuntimeGate:
         # 2. Response Staleness Check (ADR-0002)
         steering = mailbox.check_steering()
         if steering:
-            await self._commit_independent_state(outcome, current_scene_state.scene_id)
+            # DO NOT commit any side-effects for cancelled or stale episodes!
+            logger.info("Gate rejected stale response due to steering: %s", steering.reason)
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {steering.reason}")
 
         interim_events = mailbox.get_interim_events()
@@ -52,7 +53,8 @@ class RuntimeGate:
         cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了"]
         for ie in interim_events:
             if any(ck in ie.raw_text for ck in cancel_keywords):
-                await self._commit_independent_state(outcome, current_scene_state.scene_id)
+                # DO NOT commit any side-effects for cancelled or stale episodes!
+                logger.info("Gate rejected stale response due to interim cancellation: %s", ie.raw_text)
                 return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}")
 
         # 3. Two-Phase Commit (ADR-0003)
@@ -98,6 +100,7 @@ class RuntimeGate:
         )
 
     async def _commit_independent_state(self, outcome: EpisodeOutcome, scene_id: str) -> None:
+        import json
         now = time.time()
         # 1. Commit independent tasks
         for tp in outcome.task_proposals:
@@ -111,7 +114,7 @@ class RuntimeGate:
                 "payload": tp.payload,
                 "created_at": now
             }
-            # Save task to tasks table
+            # Save task to tasks table with valid JSON serialization
             cursor = await self.event_store._db.execute(
                 """
                 INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at)
@@ -124,7 +127,7 @@ class RuntimeGate:
                     task_data["due_at"],
                     task_data["status"],
                     task_data["source_event_id"],
-                    str(task_data["payload"]),
+                    json.dumps(task_data["payload"], ensure_ascii=False),
                     task_data["created_at"]
                 )
             )
@@ -157,9 +160,9 @@ class RuntimeGate:
                 "expires_at": now
             })
 
-        # 3. Commit memory proposals via MemoryGate (ADR-0011)
+        # 3. Commit memory proposals via MemoryGate (ADR-0011 & P0.3)
         if self.memory_gate and outcome.memory_proposals:
             for mp in outcome.memory_proposals:
-                if not mp.scope:
-                    mp.scope = scene_id
+                # P0.3: Enforce that memory scope is strictly injected and fixed to current scene
+                mp.scope = scene_id
                 await self.memory_gate.commit_proposal(mp)

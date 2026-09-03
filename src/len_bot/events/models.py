@@ -25,7 +25,7 @@ class Event(BaseModel):
 
     @property
     def raw_text(self) -> str:
-        return self.payload.get("raw_text", "")
+        return self.payload.get("raw_text") or self.payload.get("content", "")
 
     @property
     def is_mention_bot(self) -> bool:

@@ -52,12 +52,29 @@ class SceneActor:
     def post_event(self, event: Event) -> None:
         self._queue.put_nowait(event)
 
-    def attach_mailbox(self, mailbox: EpisodeMailbox) -> None:
+    def acquire_episode_lease(self, episode_id: str, mailbox: EpisodeMailbox) -> bool:
+        """P0.2: Enforce single active cognitive episode per scene."""
+        if self._active_mailbox is not None:
+            logger.warning(
+                "Scene %s already has active episode %s; rejecting new episode %s",
+                self.scene_id, self._active_mailbox.episode_id, episode_id
+            )
+            return False
         self._active_mailbox = mailbox
+        return True
+
+    def release_episode_lease(self, episode_id: str) -> None:
+        if self._active_mailbox and self._active_mailbox.episode_id == episode_id:
+            self._active_mailbox = None
+
+    def attach_mailbox(self, mailbox: EpisodeMailbox) -> bool:
+        return self.acquire_episode_lease(mailbox.episode_id, mailbox)
 
     def detach_mailbox(self, mailbox: EpisodeMailbox) -> None:
-        if self._active_mailbox and self._active_mailbox.episode_id == mailbox.episode_id:
-            self._active_mailbox = None
+        self.release_episode_lease(mailbox.episode_id)
+
+    def has_active_episode(self) -> bool:
+        return self._active_mailbox is not None
 
     async def _process_loop(self) -> None:
         while self._running:
@@ -65,19 +82,24 @@ class SceneActor:
                 event = await self._queue.get()
                 # 1. Single-writer state reduction (synchronous & zero locks)
                 self.state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
-                
-                # 2. Persist materialized state update in SQLite
-                await self.event_store.save_scene_state(
-                    self.scene_id,
-                    self.state.version,
-                    self.state.model_dump()
+
+                # 2. Check if TASK_DUE event with a task_id
+                task_id_to_trigger = None
+                if event.event_type.value == "TASK_DUE":
+                    task_id_to_trigger = event.payload.get("task_id")
+
+                # 3. P0.1 & P0.4: Atomically persist Event, FTS, Task triggered status, and SceneState
+                await self.event_store.commit_scene_event(
+                    event=event,
+                    scene_state_data=self.state.model_dump(),
+                    task_id_to_trigger=task_id_to_trigger
                 )
 
-                # 3. Route to active Episode Mailbox if present (Steering)
+                # 4. Route to active Episode Mailbox if present (Steering / Interim tracking)
                 if self._active_mailbox:
                     self._active_mailbox.post(event)
 
-                # 4. Notify downstream (e.g. StimulusBuilder)
+                # 5. Notify downstream (StimulusBuilder)
                 if self.on_state_updated:
                     await self.on_state_updated(self.state, event)
 

@@ -1,3 +1,4 @@
+import asyncio
 import aiosqlite
 import json
 import time
@@ -8,6 +9,7 @@ class EventStore:
     def __init__(self, db_path: str = "len_bot.db"):
         self.db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
@@ -444,6 +446,63 @@ class EventStore:
         )
         await self._db.commit()
 
+    async def commit_scene_event(
+        self,
+        event: Event,
+        scene_state_data: dict[str, Any],
+        task_id_to_trigger: Optional[str] = None
+    ) -> None:
+        """P0.1 & P0.4: Atomically commit Event, FTS, SceneState, and optional Task triggered status."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+
+        async with self._write_lock:
+            payload_str = json.dumps(event.payload, ensure_ascii=False)
+            metadata_str = json.dumps(event.metadata, ensure_ascii=False)
+
+            # 1. Insert Event
+            await self._db.execute(
+                """
+                INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
+            )
+
+            # 2. Insert FTS5
+            text = event.raw_text
+            if text:
+                await self._db.execute(
+                    """
+                    INSERT INTO events_fts (event_id, scene_id, actor_id, content)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (event.id, event.scene_id, event.actor_id, text)
+                )
+
+            # 3. If event triggers a task, update task status atomically in the same transaction
+            if task_id_to_trigger:
+                await self._db.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?;",
+                    ("triggered", task_id_to_trigger)
+                )
+
+            # 4. Upsert SceneState
+            version = scene_state_data.get("version", 0)
+            await self._db.execute(
+                """
+                INSERT INTO scene_states (scene_id, version, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    version = excluded.version,
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at;
+                """,
+                (event.scene_id, version, json.dumps(scene_state_data, ensure_ascii=False), time.time())
+            )
+
+            await self._db.commit()
+
     async def get_active_open_loops(self, scene_id: str) -> list[dict[str, Any]]:
         if not self._db:
             raise RuntimeError("Database not initialized")
@@ -505,6 +564,17 @@ class EventStore:
         
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
+
+        def _parse_payload(raw: Any) -> Any:
+            if isinstance(raw, dict):
+                return raw
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return raw
+            return {}
+
         return [
             {
                 "id": r[0],
@@ -513,7 +583,7 @@ class EventStore:
                 "due_at": r[3],
                 "status": r[4],
                 "source_event_id": r[5],
-                "payload": json.loads(r[6]) if isinstance(r[6], str) and r[6].startswith("{") else r[6],
+                "payload": _parse_payload(r[6]),
                 "created_at": r[7]
             }
             for r in rows

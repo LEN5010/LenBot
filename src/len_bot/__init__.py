@@ -19,6 +19,22 @@ async def run_app():
     runtime.action_queue.send_adapter = adapter.send_action
     runtime._onebot_adapter = adapter
 
+    dashboard_server = None
+    dashboard_task = None
+    if config.dashboard_enabled:
+        import uvicorn
+        from len_bot.web.app import create_app
+        app = create_app(runtime)
+        uvi_config = uvicorn.Config(
+            app=app,
+            host=config.dashboard_host,
+            port=config.dashboard_port,
+            log_level="warning"
+        )
+        dashboard_server = uvicorn.Server(uvi_config)
+        dashboard_task = asyncio.create_task(dashboard_server.serve())
+        logger.info("Len Bot Dashboard running at http://%s:%d", config.dashboard_host, config.dashboard_port)
+
     await runtime.start()
     await adapter.start()
 
@@ -26,7 +42,7 @@ async def run_app():
 ======================================================================
   🤖 Len Bot - Persistent Social Agent Runtime v0.2
 ======================================================================
-  ● Web 管理面板 (Dashboard):  http://{config.dashboard_host}:{config.dashboard_port}
+  ● Web 管理面板 (Dashboard):  {"http://" + config.dashboard_host + ":" + str(config.dashboard_port) if config.dashboard_enabled else "Disabled"}
   ● 默认管理员凭据:           admin / lenbot123
   ● OneBot v11 反向 WS 接口:  ws://{config.ws_host}:{config.ws_port}
   ● 数据库路径:               {config.db_path}
@@ -54,6 +70,10 @@ async def run_app():
     except asyncio.CancelledError:
         pass
     finally:
+        if dashboard_server:
+            dashboard_server.should_exit = True
+            if dashboard_task:
+                await dashboard_task
         logger.info("Stopping OneBot adapter...")
         await adapter.stop()
         logger.info("Stopping Agent Runtime...")

@@ -40,6 +40,10 @@ class SceneManager:
         actor = self._actors.get(scene_id)
         return actor.state if actor else None
 
+    def has_active_episode(self, scene_id: str) -> bool:
+        actor = self._actors.get(scene_id)
+        return actor.has_active_episode() if actor else False
+
     async def stop(self) -> None:
         async with self._lock:
             for actor in self._actors.values():

@@ -90,10 +90,8 @@ class TaskScheduler:
                     task = heapq.heappop(self._heap)
                     self._known_task_ids.discard(task.id)
 
-                    # Mark status as triggered in SQLite
-                    await self.event_store.mark_task_status(task.id, TaskStatus.TRIGGERED.value)
-
                     # Emit immutable TASK_DUE Event (ADR-0009)
+                    # SceneActor will atomically commit the event AND mark task triggered in SQLite in one transaction!
                     event = Event(
                         event_type=EventType.TASK_DUE,
                         scene_id=task.scene_id,
