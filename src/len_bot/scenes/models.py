@@ -11,6 +11,7 @@ class SceneState(BaseModel):
     bot_engagement: str = "idle"   # idle, observing, active
     recent_bot_message_at: Optional[float] = None
     consecutive_bot_messages: int = 0
+    intervening_messages_since_bot: int = 0
     soft_annotations: dict[str, Any] = Field(default_factory=dict)
     last_event_at: float = Field(default_factory=time.time)
     recent_event_timestamps: list[float] = Field(default_factory=list)

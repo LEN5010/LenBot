@@ -33,7 +33,7 @@ class RuntimeConfig(BaseModel):
     )
 
     # Web Dashboard Settings
-    dashboard_enabled: bool = Field(default=True, description="Whether to run the management web dashboard")
+    dashboard_enabled: bool = Field(default=False, description="Whether to run the management web dashboard")
     dashboard_host: str = Field(default="127.0.0.1", description="Dashboard HTTP bind host")
     dashboard_port: int = Field(default=11307, description="Dashboard HTTP port (default 11307)")
     dashboard_secret_key: str = Field(

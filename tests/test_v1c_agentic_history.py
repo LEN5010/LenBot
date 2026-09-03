@@ -110,8 +110,9 @@ async def test_v1c_agentic_history_recall(tmp_path):
     # =========================================================================
     # Find event id of the hotpot message
     rows = await runner.runtime.event_store.search_messages("蜀九香", allowed_scopes=[public_scene])
-    assert len(rows) == 1
-    target_id = rows[0]["id"]
+    assert len(rows) == 2  # Correctly indexes both user recommendation and bot response!
+    target_event = next(r for r in rows if r["actor_id"] == "user:1001")
+    target_id = target_event["id"]
 
     context_rows = await runner.runtime.event_store.read_context(
         event_id=target_id,

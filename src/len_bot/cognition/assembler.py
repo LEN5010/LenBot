@@ -54,7 +54,7 @@ class ContextAssembler:
         for e in recent_events:
             if e.raw_text:
                 actor = "你(Bot)" if e.actor_id == f"user:{self.config.bot_qq}" else e.actor_id
-                chat_lines.append(f"{actor}: {e.raw_text}")
+                chat_lines.append(f"[{e.id}] {actor}: {e.raw_text}")
         chat_history = "\n".join(chat_lines) if chat_lines else "(暂无近期历史)"
 
         user_content = (
@@ -70,7 +70,8 @@ class ContextAssembler:
             f"From: {stimulus.actor_id}\n"
             f"Content:\n{stimulus.combined_text}\n"
             f"MentionBot: {stimulus.has_mention_bot} | ReplyBot: {stimulus.has_reply_bot}\n\n"
-            f"请仔细审视当前情境，给出 EpisodeOutcome 决断（包括 disposition: SILENCE 或 ACTION）。"
+            f"请仔细审视当前情境，以标准 JSON 对象格式输出 EpisodeOutcome：\n"
+            f'{{"disposition": "SILENCE" | "ACTION", "thought": "...", "message_proposals": [{{"content": "..."}}], "task_proposals": [], "memory_proposals": [], "resolve_open_loop_ids": []}}'
         )
 
         return [

@@ -54,8 +54,9 @@ class ReflectionEngine:
         await self.memory_store.save_episode(episode_record)
         logger.info("Saved L1 Episode %s: %s", episode_record.id, episode_record.title)
 
-        # 3. Commit L2 Memory Proposals through Memory Gate
+        # 3. Commit L2 Memory Proposals through Memory Gate (P0.3)
         for prop in proposals:
+            prop.scope = scene_id
             gate_res = await self.memory_gate.commit_proposal(prop)
             if not gate_res.success:
                 logger.warning("MemoryGate rejected proposal: %s", gate_res.reason)

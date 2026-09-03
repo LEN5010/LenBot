@@ -42,7 +42,8 @@ class OneBotAdapter:
         echo = f"echo_{self._echo_counter}"
         
         endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
-        params = {"message": action.content}
+        msg_text = f"[CQ:reply,id={action.reply_to}]{action.content}" if action.reply_to else action.content
+        params = {"message": msg_text}
         
         target_id = action.scene_id.split(":")[-1]
         if action.action_type == ActionType.SEND_GROUP_MESSAGE:

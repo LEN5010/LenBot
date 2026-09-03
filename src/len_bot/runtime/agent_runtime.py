@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import time
-from typing import Optional, Callable, Awaitable
+import uuid
+from typing import Optional, Callable, Awaitable, Any
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType, Stimulus
 from len_bot.events.store import EventStore
@@ -10,6 +11,7 @@ from len_bot.scenes.manager import SceneManager
 from len_bot.attention.engine import AttentionEngine
 from len_bot.attention.models import AttentionDisposition, AttentionResult
 from len_bot.cognition.assembler import ContextAssembler
+from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.pi_core import PiAgentCore
 from len_bot.cognition.manager import EpisodeManager
 from len_bot.actions.models import ActionItem
@@ -42,7 +44,8 @@ class AgentRuntime:
         self.action_queue = ActionQueue(
             event_store=self.event_store,
             send_adapter=send_adapter,
-            on_action_event=self._on_action_event
+            on_action_event=self._on_action_event,
+            bot_actor_id=self.bot_actor_id
         )
         self.scheduler = TaskScheduler(
             event_store=self.event_store,
@@ -58,7 +61,8 @@ class AgentRuntime:
         
         self.scene_manager = SceneManager(
             bot_actor_id=self.bot_actor_id,
-            event_store=self.event_store
+            event_store=self.event_store,
+            on_state_updated=self._on_scene_event_committed
         )
         
         self.stimulus_builder = StimulusBuilder(
@@ -80,9 +84,16 @@ class AgentRuntime:
         self._last_attention_result: Optional[AttentionResult] = None
         self._last_gate_decision: Optional[GateDecision] = None
         self._started_at = time.time()
-        self._dashboard_server = None
-        self._dashboard_task: Optional[asyncio.Task] = None
         self._onebot_adapter = None
+        self._running = False
+        self._maintenance_task: Optional[asyncio.Task] = None
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     async def start(self) -> None:
         await self.event_store.initialize()
@@ -116,44 +127,73 @@ class AgentRuntime:
             if "interest_topics" in saved_social:
                 self.attention_engine.interest_model.topics = saved_social["interest_topics"]
 
+        self._running = True
         await self.action_queue.start()
         await self.scheduler.start()
-
-        # Start Dashboard Web Server if enabled
-        if self.config.dashboard_enabled:
-            import uvicorn
-            from len_bot.web.app import create_app
-            app = create_app(self)
-            uvi_config = uvicorn.Config(
-                app=app,
-                host=self.config.dashboard_host,
-                port=self.config.dashboard_port,
-                log_level="warning"
-            )
-            self._dashboard_server = uvicorn.Server(uvi_config)
-            self._dashboard_task = asyncio.create_task(self._dashboard_server.serve())
-            logger.info("Len Bot Dashboard running at http://%s:%d", self.config.dashboard_host, self.config.dashboard_port)
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def stop(self) -> None:
-        if self._dashboard_server:
-            self._dashboard_server.should_exit = True
-            if self._dashboard_task:
-                await self._dashboard_task
+        self._running = False
+        if self._maintenance_task:
+            self._maintenance_task.cancel()
+            try:
+                await self._maintenance_task
+            except asyncio.CancelledError:
+                pass
+
+        for t in list(self._background_tasks):
+            t.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
         await self.scheduler.stop()
         await self.scene_manager.stop()
         await self.action_queue.stop()
         await self.event_store.close()
 
+    async def _maintenance_loop(self) -> None:
+        """Periodic background heartbeat for OpenLoop GC and social decay (§109)."""
+        while self._running:
+            try:
+                await asyncio.sleep(60.0)
+                if not self._running:
+                    break
+
+                # 1. Sweep expired Open Loops past absolute TTL
+                await self.open_loop_manager.sweep_ttl_expiration()
+
+                # 2. Check scene-level decay for all active scene actors
+                for actor in list(self.scene_manager._actors.values()):
+                    if actor.state:
+                        await self.open_loop_manager.check_scene_decay(actor.state)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in AgentRuntime background maintenance heartbeat: %s", e)
+
     async def receive_event(self, event: Event) -> None:
-        """Entrypoint for all inbound events from adapters, webhooks, or sensors."""
-        # 1. Append immutable event to EventStore
-        await self.event_store.append_event(event)
-        
-        # 2. Dispatch to single-writer Scene Actor
+        """Entrypoint for all inbound events. Dispatches to SceneActor (single commit authority)."""
         await self.scene_manager.dispatch_event(event)
 
-        # 3. Feed to Stimulus Builder (sliding debounce)
+    async def _on_scene_event_committed(self, state, event: Event) -> None:
+        """Invoked by SceneActor AFTER Event and SceneState are atomically committed in SQLite."""
         await self.stimulus_builder.ingest(event)
+
+        # Micro-reflection trigger when conversation block completes (§58 & ADR-0011)
+        if (
+            self.reflection_engine
+            and state
+            and state.bot_engagement in ("observing", "idle")
+            and getattr(state, "intervening_messages_since_bot", 0) == 5
+        ):
+            async def _reflect():
+                try:
+                    recent = await self.event_store.get_recent_events(state.scene_id, limit=20)
+                    await self.reflection_engine.run_micro_reflection(state.scene_id, recent)
+                except Exception as e:
+                    logger.warning("Micro-reflection failed on scene %s: %s", state.scene_id, e)
+            self._spawn_background_task(_reflect())
 
     async def _on_action_event(self, event: Event) -> None:
         """Called by ActionQueue on MESSAGE_SENT or MESSAGE_SEND_FAILED."""
@@ -184,35 +224,52 @@ class AgentRuntime:
                 scene_state.soft_annotations.update(att_res.soft_annotation)
             return
         elif att_res.disposition == AttentionDisposition.WAKE:
-            # 2. Trigger Cognitive Episode under concurrency semaphore
-            async with self._cognition_semaphore:
-                await self._run_wake_episode(stimulus, scene_state, open_loops)
+            # 2. Trigger Cognitive Episode under concurrency semaphore as a background task
+            # Scene Actor must NEVER block for LLM inference (ADR-0004)!
+            async def _wake_coro():
+                async with self._cognition_semaphore:
+                    await self._run_wake_episode(stimulus, scene_state, open_loops)
+            self._spawn_background_task(_wake_coro())
 
     async def _run_wake_episode(self, stimulus: Stimulus, scene_state, open_loops) -> None:
+        actor = await self.scene_manager.get_or_create_actor(stimulus.scene_id)
         if scene_state is None:
-            actor = await self.scene_manager.get_or_create_actor(stimulus.scene_id)
             scene_state = actor.state
 
-        raw_events = await self.event_store.get_recent_events(stimulus.scene_id, limit=30)
-        allowed_scopes = [stimulus.scene_id, "global-safe"]
+        # P0.2: Enforce single-scene mutual exclusion and span mailbox through gate commit
+        episode_id = f"ep_{uuid.uuid4().hex[:12]}"
+        base_version = scene_state.version if scene_state else 0
+        mailbox = EpisodeMailbox(episode_id, stimulus.scene_id, base_version)
 
-        relevant_memories = []
-        if self.memory_store:
-            relevant_memories = await self.memory_store.query_memories(allowed_scopes=allowed_scopes, limit=5)
+        acquired = actor.acquire_episode_lease(episode_id, mailbox)
+        if not acquired:
+            logger.info("Scene %s already has an active cognitive episode; skipping concurrent trigger", stimulus.scene_id)
+            return
 
-        outcome, mailbox = await self.episode_manager.run_episode(
-            stimulus=stimulus,
-            scene_state=scene_state,
-            raw_events=raw_events,
-            active_open_loops=open_loops,
-            allowed_scopes=allowed_scopes,
-            relevant_memories=relevant_memories
-        )
+        try:
+            raw_events = await self.event_store.get_recent_events(stimulus.scene_id, limit=30)
+            allowed_scopes = [stimulus.scene_id, "global-safe"]
 
-        gate_decision = await self.runtime_gate.evaluate_and_commit(
-            outcome=outcome,
-            mailbox=mailbox,
-            current_scene_state=scene_state
-        )
-        self._last_gate_decision = gate_decision
-        logger.info("Gate decision on Scene %s: %s (%s)", stimulus.scene_id, gate_decision.disposition, gate_decision.reason)
+            relevant_memories = []
+            if self.memory_store:
+                relevant_memories = await self.memory_store.query_memories(allowed_scopes=allowed_scopes, limit=5)
+
+            outcome, _ = await self.episode_manager.run_episode(
+                stimulus=stimulus,
+                scene_state=scene_state,
+                raw_events=raw_events,
+                active_open_loops=open_loops,
+                allowed_scopes=allowed_scopes,
+                relevant_memories=relevant_memories,
+                mailbox=mailbox
+            )
+
+            gate_decision = await self.runtime_gate.evaluate_and_commit(
+                outcome=outcome,
+                mailbox=mailbox,
+                current_scene_state=scene_state
+            )
+            self._last_gate_decision = gate_decision
+            logger.info("Gate decision on Scene %s: %s (%s)", stimulus.scene_id, gate_decision.disposition, gate_decision.reason)
+        finally:
+            actor.release_episode_lease(episode_id)

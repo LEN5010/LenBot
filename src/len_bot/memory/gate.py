@@ -25,27 +25,27 @@ class MemoryGate:
         if not proposal.evidence:
             return MemoryGateResult(False, "Rejected: Memory proposal lacks evidence references")
 
-        # Verify evidence existence in SQLite
+        # 2. Scope Validation (§61 & P0.3)
+        if not proposal.scope:
+            return MemoryGateResult(False, "Rejected: Missing memory scope")
+
+        # Verify evidence existence in SQLite within proposal.scope (P0.3)
         placeholders = ",".join("?" for _ in proposal.evidence)
         cursor = await self.event_store._db.execute(
-            f"SELECT COUNT(*) FROM events WHERE id IN ({placeholders});",
-            proposal.evidence
+            f"SELECT COUNT(*) FROM events WHERE id IN ({placeholders}) AND scene_id = ?;",
+            [*proposal.evidence, proposal.scope]
         )
         (event_count,) = await cursor.fetchone()
         
-        # Also check episodes table if evidence might be an episode ID
+        # Also check episodes table if evidence might be an episode ID within proposal.scope
         ep_cursor = await self.memory_store._db.execute(
-            f"SELECT COUNT(*) FROM episodes WHERE id IN ({placeholders});",
-            proposal.evidence
+            f"SELECT COUNT(*) FROM episodes WHERE id IN ({placeholders}) AND scene_id = ?;",
+            [*proposal.evidence, proposal.scope]
         )
         (ep_count,) = await ep_cursor.fetchone()
 
         if (event_count + ep_count) == 0:
-            return MemoryGateResult(False, f"Rejected: None of the evidence items exist: {proposal.evidence}")
-
-        # 2. Scope Validation (§61)
-        if not proposal.scope:
-            return MemoryGateResult(False, "Rejected: Missing memory scope")
+            return MemoryGateResult(False, f"Rejected: None of the evidence items exist within scope {proposal.scope}: {proposal.evidence}")
 
         # 3. Conflict Resolution on Semantic Slot (§57)
         now = time.time()

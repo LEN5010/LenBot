@@ -17,12 +17,23 @@ class SceneReducer:
             state.recent_bot_message_at = event.timestamp
             state.consecutive_bot_messages += 1
             state.bot_engagement = "active"
+            state.intervening_messages_since_bot = 0
             state.record_participant(bot_actor_id)
         else:
             state.consecutive_bot_messages = 0
+            state.intervening_messages_since_bot += 1
             if event.actor_id:
                 state.record_participant(event.actor_id)
             state.update_activity(event.timestamp)
+
+            # Natural engagement lifecycle decay (§34 & P1)
+            time_since_bot = (event.timestamp - state.recent_bot_message_at) if state.recent_bot_message_at else 999999.0
+            if state.bot_engagement == "active":
+                if state.intervening_messages_since_bot >= 5 or time_since_bot > 1800.0:
+                    state.bot_engagement = "observing"
+            elif state.bot_engagement == "observing":
+                if state.intervening_messages_since_bot >= 15 or time_since_bot > 3600.0:
+                    state.bot_engagement = "idle"
 
         # Incorporate soft annotations if passed in event metadata
         if "soft_annotation" in event.metadata:

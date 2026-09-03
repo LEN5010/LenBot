@@ -35,15 +35,17 @@ class EpisodeManager:
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
         allowed_scopes: list[str],
-        relevant_memories: Optional[list[Any]] = None
+        relevant_memories: Optional[list[Any]] = None,
+        mailbox: Optional[EpisodeMailbox] = None
     ) -> tuple[EpisodeOutcome, EpisodeMailbox]:
-        episode_id = f"ep_{uuid.uuid4().hex[:12]}"
-        base_version = scene_state.version
-
-        # 1. Create and attach EpisodeMailbox to SceneActor
-        mailbox = EpisodeMailbox(episode_id, stimulus.scene_id, base_version)
+        managed_internally = False
         actor = await self.scene_manager.get_or_create_actor(stimulus.scene_id)
-        actor.attach_mailbox(mailbox)
+        if mailbox is None:
+            episode_id = f"ep_{uuid.uuid4().hex[:12]}"
+            base_version = scene_state.version
+            mailbox = EpisodeMailbox(episode_id, stimulus.scene_id, base_version)
+            actor.acquire_episode_lease(episode_id, mailbox)
+            managed_internally = True
 
         try:
             # 2. Assemble prompt package
@@ -70,5 +72,5 @@ class EpisodeManager:
             outcome = await self.pi_core.execute_episode(messages, mailbox, toolkit=toolkit)
             return outcome, mailbox
         finally:
-            # 4. Detach mailbox
-            actor.detach_mailbox(mailbox)
+            if managed_internally:
+                actor.release_episode_lease(mailbox.episode_id)

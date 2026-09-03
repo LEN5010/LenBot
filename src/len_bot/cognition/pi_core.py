@@ -3,7 +3,7 @@ import logging
 from typing import Optional, Callable, Awaitable, Any
 from openai import AsyncOpenAI
 from len_bot.config import RuntimeConfig
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
 from len_bot.cognition.router import CognitionRouter, CognitiveTier
 
@@ -83,42 +83,39 @@ class PiAgentCore:
 
                 active_model = router.get_model_for_tier(current_tier)
 
+                create_kwargs: dict[str, Any] = {
+                    "model": active_model,
+                    "messages": working_messages,
+                    "temperature": 0.6,
+                    "response_format": {"type": "json_object"}
+                }
                 if tools:
-                    resp = await self._client.chat.completions.create(
-                        model=active_model,
-                        messages=working_messages,
-                        tools=tools,
-                        temperature=0.6
-                    )
-                    choice = resp.choices[0]
-                    msg = choice.message
-                    if msg.tool_calls:
-                        working_messages.append(msg.model_dump())
-                        for tc in msg.tool_calls:
-                            fn_name = tc.function.name
-                            fn_args = json.loads(tc.function.arguments)
-                            tool_result = await toolkit.execute(fn_name, fn_args)
-                            working_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": tool_result
-                            })
-                            # Check dynamic escalation (§75 & ADR-0012)
-                            if router.should_escalate(current_tier, step, tool_result):
-                                current_tier = CognitiveTier.DELIBERATE
-                        continue
+                    create_kwargs["tools"] = tools
 
-                # No tool calls needed or tools completed: parse final structured EpisodeOutcome
-                active_model = router.get_model_for_tier(current_tier)
-                completion = await self._client.beta.chat.completions.parse(
-                    model=active_model,
-                    messages=working_messages,
-                    response_format=EpisodeOutcome,
-                    temperature=0.6,
-                )
-                outcome = completion.choices[0].message.parsed
-                if outcome is None:
-                    raise ValueError("Model failed to produce parsed EpisodeOutcome")
+                resp = await self._client.chat.completions.create(**create_kwargs)
+                choice = resp.choices[0]
+                msg = choice.message
+
+                # If model issued tool calls, execute them and continue ReAct loop
+                if getattr(msg, "tool_calls", None):
+                    working_messages.append(msg.model_dump())
+                    for tc in msg.tool_calls:
+                        fn_name = tc.function.name
+                        fn_args = json.loads(tc.function.arguments)
+                        tool_result = await toolkit.execute(fn_name, fn_args)
+                        working_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": tool_result
+                        })
+                        # Check dynamic escalation (§75 & ADR-0012)
+                        if router.should_escalate(current_tier, step, tool_result):
+                            current_tier = CognitiveTier.DELIBERATE
+                    continue
+
+                # Single-pass structured output: parse final EpisodeOutcome directly
+                raw_content = msg.content or ""
+                outcome = self._parse_outcome(raw_content)
 
                 # Check steering post-outcome
                 steering = mailbox.check_steering()
@@ -139,3 +136,27 @@ class PiAgentCore:
                 disposition=FinalDisposition.SILENCE,
                 thought=f"Error in LLM inference: {e}"
             )
+
+    def _parse_outcome(self, text: str) -> EpisodeOutcome:
+        cleaned = text.strip()
+        first_brace = cleaned.find("{")
+        last_brace = cleaned.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidate = cleaned[first_brace:last_brace + 1]
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return EpisodeOutcome.model_validate(data)
+            except Exception as e:
+                logger.warning("Failed parsing EpisodeOutcome from JSON: %s (candidate: %s)", e, candidate[:200])
+
+        if cleaned and not cleaned.startswith("{") and not cleaned.startswith("```"):
+            return EpisodeOutcome(
+                disposition=FinalDisposition.ACTION,
+                thought="Direct plain text output",
+                message_proposals=[MessageProposal(content=cleaned)]
+            )
+        return EpisodeOutcome(
+            disposition=FinalDisposition.SILENCE,
+            thought="Failed to parse model output"
+        )

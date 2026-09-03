@@ -13,11 +13,13 @@ class ActionQueue:
         self,
         event_store: EventStore,
         send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
-        on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None
+        on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None,
+        bot_actor_id: str = "system:action_queue"
     ):
         self.event_store = event_store
         self.send_adapter = send_adapter
         self.on_action_event = on_action_event
+        self.bot_actor_id = bot_actor_id
         self._queue: asyncio.Queue[ActionItem] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
@@ -52,19 +54,19 @@ class ActionQueue:
 
                 now = time.time()
                 if success:
-                    # 1. Emit MESSAGE_SENT Event
+                    # 1. Emit MESSAGE_SENT Event with canonical payload and actor_id
                     sent_event = Event(
                         event_type=EventType.MESSAGE_SENT,
                         scene_id=action.scene_id,
-                        actor_id="system:action_queue",
+                        actor_id=self.bot_actor_id,
                         timestamp=now,
                         payload={
                             "action_id": action.id,
+                            "raw_text": action.content,
                             "content": action.content,
                             "reply_to": action.reply_to
                         }
                     )
-                    await self.event_store.append_event(sent_event)
 
                     # 2. ADR-0003 Phase 2: Commit associated Open Loop now that message sent!
                     if action.associated_open_loop:
@@ -73,20 +75,24 @@ class ActionQueue:
                         await self.event_store.save_open_loop(loop_data)
                         logger.info("Committed OpenLoop %s after successful send", loop_data["id"])
 
+                    # 3. Route to single commit authority (SceneActor)
                     if self.on_action_event:
                         await self.on_action_event(sent_event)
+                    else:
+                        await self.event_store.append_event(sent_event)
                 else:
                     # Emit MESSAGE_SEND_FAILED Event
                     fail_event = Event(
                         event_type=EventType.MESSAGE_SEND_FAILED,
                         scene_id=action.scene_id,
-                        actor_id="system:action_queue",
+                        actor_id=self.bot_actor_id,
                         timestamp=now,
-                        payload={"action_id": action.id, "content": action.content}
+                        payload={"action_id": action.id, "content": action.content, "raw_text": action.content}
                     )
-                    await self.event_store.append_event(fail_event)
                     if self.on_action_event:
                         await self.on_action_event(fail_event)
+                    else:
+                        await self.event_store.append_event(fail_event)
 
                 self._queue.task_done()
             except asyncio.CancelledError:

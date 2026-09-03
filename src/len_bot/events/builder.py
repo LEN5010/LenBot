@@ -54,8 +54,13 @@ class StimulusBuilder:
         if event.event_type not in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED):
             return
 
+        # Do not ingest Bot's own messages (prevent echo loops from OneBot adapter)
+        if event.actor_id == f"user:{self.config.bot_qq}":
+            return
+
         key = (event.scene_id, event.actor_id)
         
+        stimulus_to_dispatch = None
         async with self._lock:
             # 3. Check Immediate Flush Triggers
             if self._is_urgent(event):
@@ -64,44 +69,44 @@ class StimulusBuilder:
                 events = (buffer.events if buffer else []) + [event]
                 if buffer and buffer.timer_task:
                     buffer.timer_task.cancel()
-                stimulus = self._create_stimulus(event.scene_id, event.actor_id, events)
-                await self.on_stimulus(stimulus)
-                return
+                stimulus_to_dispatch = self._create_stimulus(event.scene_id, event.actor_id, events)
+            else:
+                # 4. Debounce Sliding Idle Window
+                buffer = self._buffers.get(key)
+                if buffer is None:
+                    buffer = BurstBuffer(event.actor_id, event.scene_id)
+                    self._buffers[key] = buffer
 
-            # 4. Debounce Sliding Idle Window
-            buffer = self._buffers.get(key)
-            if buffer is None:
-                buffer = BurstBuffer(event.actor_id, event.scene_id)
-                self._buffers[key] = buffer
+                buffer.events.append(event)
+                buffer.last_event_at = now
 
-            buffer.events.append(event)
-            buffer.last_event_at = now
+                # If reached max wait cap, flush now
+                if (now - buffer.first_event_at) * 1000 >= self.config.debounce_max_ms:
+                    self._buffers.pop(key, None)
+                    if buffer.timer_task:
+                        buffer.timer_task.cancel()
+                    stimulus_to_dispatch = self._create_stimulus(event.scene_id, event.actor_id, buffer.events)
+                else:
+                    # Otherwise reset idle timer
+                    if buffer.timer_task:
+                        buffer.timer_task.cancel()
 
-            # If reached max wait cap, flush now
-            if (now - buffer.first_event_at) * 1000 >= self.config.debounce_max_ms:
-                self._buffers.pop(key, None)
-                if buffer.timer_task:
-                    buffer.timer_task.cancel()
-                stimulus = self._create_stimulus(event.scene_id, event.actor_id, buffer.events)
-                await self.on_stimulus(stimulus)
-                return
+                    idle_seconds = self.config.debounce_idle_ms / 1000.0
+                    buffer.timer_task = asyncio.create_task(self._wait_and_flush(key, idle_seconds))
 
-            # Otherwise reset idle timer
-            if buffer.timer_task:
-                buffer.timer_task.cancel()
-
-            idle_seconds = self.config.debounce_idle_ms / 1000.0
-            buffer.timer_task = asyncio.create_task(self._wait_and_flush(key, idle_seconds))
+        if stimulus_to_dispatch:
+            await self.on_stimulus(stimulus_to_dispatch)
 
     async def _wait_and_flush(self, key: tuple[str, str], delay: float) -> None:
         try:
             await asyncio.sleep(delay)
+            stimulus_to_dispatch = None
             async with self._lock:
                 buffer = self._buffers.pop(key, None)
-                if not buffer or not buffer.events:
-                    return
-            stimulus = self._create_stimulus(buffer.scene_id, buffer.actor_id, buffer.events)
-            await self.on_stimulus(stimulus)
+                if buffer and buffer.events:
+                    stimulus_to_dispatch = self._create_stimulus(buffer.scene_id, buffer.actor_id, buffer.events)
+            if stimulus_to_dispatch:
+                await self.on_stimulus(stimulus_to_dispatch)
         except asyncio.CancelledError:
             pass
 

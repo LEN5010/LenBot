@@ -18,6 +18,9 @@ class AttentionEngine:
     ):
         self.config = config
         self.interest_model = interest_model or InterestModel()
+        if self.config.monitored_keywords:
+            self.interest_model.topic_keywords["monitored"] = list(self.config.monitored_keywords)
+            self.interest_model.topics["monitored"] = 0.90
         self.speaking_budget = speaking_budget or SpeakingBudget(base_threshold=0.60)
         self.initiative_engine = InitiativeEngine(self.interest_model, self.speaking_budget)
 
@@ -67,13 +70,14 @@ class AttentionEngine:
         activity = scene_state.activity_level if scene_state else "quiet"
         last_bot_at = scene_state.recent_bot_message_at if scene_state else None
 
-        # Check Active Engagement continuation (§34 & §106)
+        # Check Active Engagement continuation (§34 & §106 & P1)
         if scene_state and scene_state.bot_engagement == "active" and activity != "hot":
             if last_bot_at and (now - last_bot_at) > 1.0:
-                return AttentionResult(
-                    disposition=AttentionDisposition.WAKE,
-                    reason="active_conversation_engagement"
-                )
+                if scene_state.consecutive_bot_messages < 2 and getattr(scene_state, "intervening_messages_since_bot", 0) <= 4:
+                    return AttentionResult(
+                        disposition=AttentionDisposition.WAKE,
+                        reason="active_conversation_engagement"
+                    )
 
         # Check Initiative Engine (§83-86 & ADR-0012)
         init_disp, init_reason, init_score = self.initiative_engine.evaluate(text, scene_state, now)
