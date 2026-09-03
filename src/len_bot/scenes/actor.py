@@ -88,11 +88,14 @@ class SceneActor:
                 if event.event_type.value == "TASK_DUE":
                     task_id_to_trigger = event.payload.get("task_id")
 
-                # 3. P0.1 & P0.4: Atomically persist Event, FTS, Task triggered status, and SceneState
+                associated_open_loop = event.metadata.get("associated_open_loop")
+
+                # 3. P0.1, P0.4 & Item 3: Atomically persist Event, FTS, Task triggered status, OpenLoop, and SceneState
                 await self.event_store.commit_scene_event(
                     event=event,
                     scene_state_data=self.state.model_dump(),
-                    task_id_to_trigger=task_id_to_trigger
+                    task_id_to_trigger=task_id_to_trigger,
+                    associated_open_loop=associated_open_loop
                 )
 
                 # 4. Route to active Episode Mailbox if present (Steering / Interim tracking)

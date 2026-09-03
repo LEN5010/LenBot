@@ -111,11 +111,11 @@ def test_p1_pi_core_outcome_parser():
     outcome2 = core._parse_outcome(plain_json)
     assert outcome2.disposition == FinalDisposition.SILENCE
 
-    # 3. Plain text fallback
+    # 3. Plain text / malformed string (Item 5: Zero fail-open, strict contract enforcement)
     plain_text = "直接输出的纯文本消息"
     outcome3 = core._parse_outcome(plain_text)
-    assert outcome3.disposition == FinalDisposition.ACTION
-    assert outcome3.message_proposals[0].content == plain_text
+    assert outcome3.disposition == FinalDisposition.SILENCE
+    assert len(outcome3.message_proposals) == 0
 
 @pytest.mark.asyncio
 async def test_p1_open_loop_ttl_sweep(tmp_path):

@@ -13,15 +13,16 @@ class SceneReducer:
         state.version += 1
         state.last_event_at = event.timestamp
 
-        if event.actor_id == bot_actor_id or event.event_type == EventType.MESSAGE_SENT:
+        if event.event_type == EventType.MESSAGE_SENT:
             state.recent_bot_message_at = event.timestamp
             state.consecutive_bot_messages += 1
             state.bot_engagement = "active"
             state.intervening_messages_since_bot = 0
             state.record_participant(bot_actor_id)
-        else:
+        elif event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED):
             state.consecutive_bot_messages = 0
-            state.intervening_messages_since_bot += 1
+            if event.actor_id != bot_actor_id:
+                state.intervening_messages_since_bot += 1
             if event.actor_id:
                 state.record_participant(event.actor_id)
             state.update_activity(event.timestamp)

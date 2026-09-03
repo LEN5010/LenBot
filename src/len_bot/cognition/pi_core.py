@@ -75,11 +75,16 @@ class PiAgentCore:
             # ReAct Step Loop
             for step in range(max_steps):
                 steering = mailbox.check_steering()
-                if steering and steering.steering_type == SteeringType.CANCEL:
-                    return EpisodeOutcome(
-                        disposition=FinalDisposition.SILENCE,
-                        thought=f"Aborted by steering at step {step}: {steering.reason}"
-                    )
+                if steering:
+                    if steering.steering_type == SteeringType.CANCEL:
+                        return EpisodeOutcome(
+                            disposition=FinalDisposition.SILENCE,
+                            thought=f"Aborted by steering at step {step}: {steering.reason}"
+                        )
+                    elif steering.steering_type == SteeringType.FOLLOW_UP:
+                        follow_up_content = f"【INTERIM FOLLOW-UP from {steering.source_event.actor_id}】: {steering.source_event.raw_text}"
+                        working_messages.append({"role": "user", "content": follow_up_content})
+                        logger.info("Injected follow-up into reasoning trajectory at step %d: %s", step, steering.source_event.raw_text)
 
                 active_model = router.get_model_for_tier(current_tier)
 
@@ -150,13 +155,9 @@ class PiAgentCore:
             except Exception as e:
                 logger.warning("Failed parsing EpisodeOutcome from JSON: %s (candidate: %s)", e, candidate[:200])
 
-        if cleaned and not cleaned.startswith("{") and not cleaned.startswith("```"):
-            return EpisodeOutcome(
-                disposition=FinalDisposition.ACTION,
-                thought="Direct plain text output",
-                message_proposals=[MessageProposal(content=cleaned)]
-            )
+        # Strict contract enforcement (Item 5): reject non-structured output. Zero fail-open.
+        logger.warning("Rejecting invalid non-structured model output (contract violation): %s", text[:200])
         return EpisodeOutcome(
             disposition=FinalDisposition.SILENCE,
-            thought="Failed to parse model output"
+            thought=f"Model output violated structured contract (not valid EpisodeOutcome JSON): {text[:100]}"
         )

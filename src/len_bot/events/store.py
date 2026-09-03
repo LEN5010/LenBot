@@ -131,29 +131,32 @@ class EventStore:
         if not self._db:
             raise RuntimeError("Database not initialized")
         now = time.time()
-        await self._db.execute(
-            "INSERT OR IGNORE INTO dashboard_users (username, password_hash, created_at) VALUES (?, ?, ?);",
-            (username, password_hash, now)
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT OR IGNORE INTO dashboard_users (username, password_hash, created_at) VALUES (?, ?, ?);",
+                (username, password_hash, now)
+            )
+            await self._db.commit()
 
     async def update_dashboard_user_password(self, username: str, password_hash: str) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        await self._db.execute(
-            "UPDATE dashboard_users SET password_hash = ? WHERE username = ?;",
-            (password_hash, username)
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "UPDATE dashboard_users SET password_hash = ? WHERE username = ?;",
+                (password_hash, username)
+            )
+            await self._db.commit()
 
     async def update_dashboard_user_login(self, username: str) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        await self._db.execute(
-            "UPDATE dashboard_users SET last_login_at = ? WHERE username = ?;",
-            (time.time(), username)
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "UPDATE dashboard_users SET last_login_at = ? WHERE username = ?;",
+                (time.time(), username)
+            )
+            await self._db.commit()
 
     async def get_dynamic_config(self, key: str) -> Optional[dict[str, Any]]:
         if not self._db:
@@ -172,12 +175,13 @@ class EventStore:
             raise RuntimeError("Database not initialized")
         now = time.time()
         val_str = json.dumps(value, ensure_ascii=False)
-        await self._db.execute("""
-            INSERT INTO runtime_dynamic_configs (key, value_json, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
-        """, (key, val_str, now))
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute("""
+                INSERT INTO runtime_dynamic_configs (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
+            """, (key, val_str, now))
+            await self._db.commit()
 
     async def get_stats(self) -> dict[str, int]:
         if not self._db:
@@ -209,26 +213,27 @@ class EventStore:
         payload_str = json.dumps(event.payload, ensure_ascii=False)
         metadata_str = json.dumps(event.metadata, ensure_ascii=False)
 
-        await self._db.execute(
-            """
-            INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
-            """,
-            (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
-        )
-
-        # Index text content into FTS5
-        text = event.raw_text
-        if text:
+        async with self._write_lock:
             await self._db.execute(
                 """
-                INSERT INTO events_fts (event_id, scene_id, actor_id, content)
-                VALUES (?, ?, ?, ?);
+                INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
-                (event.id, event.scene_id, event.actor_id, text)
+                (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
             )
 
-        await self._db.commit()
+            # Index text content into FTS5
+            text = event.raw_text
+            if text:
+                await self._db.execute(
+                    """
+                    INSERT INTO events_fts (event_id, scene_id, actor_id, content)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (event.id, event.scene_id, event.actor_id, text)
+                )
+
+            await self._db.commit()
 
     async def get_recent_events(self, scene_id: str, limit: int = 50) -> list[Event]:
         if not self._db:
@@ -433,26 +438,28 @@ class EventStore:
     async def save_scene_state(self, scene_id: str, version: int, state_data: dict[str, Any]) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        await self._db.execute(
-            """
-            INSERT INTO scene_states (scene_id, version, state_json, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(scene_id) DO UPDATE SET
-                version = excluded.version,
-                state_json = excluded.state_json,
-                updated_at = excluded.updated_at;
-            """,
-            (scene_id, version, json.dumps(state_data, ensure_ascii=False), time.time())
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                """
+                INSERT INTO scene_states (scene_id, version, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    version = excluded.version,
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at;
+                """,
+                (scene_id, version, json.dumps(state_data, ensure_ascii=False), time.time())
+            )
+            await self._db.commit()
 
     async def commit_scene_event(
         self,
         event: Event,
         scene_state_data: dict[str, Any],
-        task_id_to_trigger: Optional[str] = None
+        task_id_to_trigger: Optional[str] = None,
+        associated_open_loop: Optional[dict[str, Any]] = None
     ) -> None:
-        """P0.1 & P0.4: Atomically commit Event, FTS, SceneState, and optional Task triggered status."""
+        """P0.1, P0.4 & Item 3: Atomically commit Event, FTS, SceneState, optional Task triggered status, and OpenLoop activation."""
         if not self._db:
             raise RuntimeError("Database not initialized")
 
@@ -487,7 +494,27 @@ class EventStore:
                     ("triggered", task_id_to_trigger)
                 )
 
-            # 4. Upsert SceneState
+            # 4. Item 3: If message sent event has associated open loop, activate it atomically in the same transaction!
+            if associated_open_loop:
+                await self._db.execute(
+                    """
+                    INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET status = excluded.status;
+                    """,
+                    (
+                        associated_open_loop["id"],
+                        associated_open_loop["scene_id"],
+                        associated_open_loop["target_actor_id"],
+                        associated_open_loop["intent"],
+                        event.id,
+                        associated_open_loop["status"],
+                        associated_open_loop["created_at"],
+                        associated_open_loop["expires_at"]
+                    )
+                )
+
+            # 5. Upsert SceneState
             version = scene_state_data.get("version", 0)
             await self._db.execute(
                 """
@@ -533,24 +560,48 @@ class EventStore:
     async def save_open_loop(self, loop_data: dict[str, Any]) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        await self._db.execute(
-            """
-            INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET status = excluded.status;
-            """,
-            (
-                loop_data["id"],
-                loop_data["scene_id"],
-                loop_data["target_actor_id"],
-                loop_data["intent"],
-                loop_data["source_event_id"],
-                loop_data["status"],
-                loop_data["created_at"],
-                loop_data["expires_at"]
+        async with self._write_lock:
+            await self._db.execute(
+                """
+                INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET status = excluded.status;
+                """,
+                (
+                    loop_data["id"],
+                    loop_data["scene_id"],
+                    loop_data["target_actor_id"],
+                    loop_data["intent"],
+                    loop_data["source_event_id"],
+                    loop_data["status"],
+                    loop_data["created_at"],
+                    loop_data["expires_at"]
+                )
             )
-        )
-        await self._db.commit()
+            await self._db.commit()
+
+    async def create_task(self, task_data: dict[str, Any]) -> None:
+        """P0.1: Dedicated write authority for tasks under write_lock."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        async with self._write_lock:
+            await self._db.execute(
+                """
+                INSERT INTO tasks (id, scene_id, description, due_at, status, source_event_id, payload, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    task_data["id"],
+                    task_data["scene_id"],
+                    task_data["description"],
+                    task_data["due_at"],
+                    task_data["status"],
+                    task_data["source_event_id"],
+                    json.dumps(task_data.get("payload", {}), ensure_ascii=False) if not isinstance(task_data.get("payload"), str) else task_data.get("payload"),
+                    task_data["created_at"]
+                )
+            )
+            await self._db.commit()
 
     async def get_pending_tasks(self, max_due_at: Optional[float] = None) -> list[dict[str, Any]]:
         if not self._db:
@@ -592,26 +643,28 @@ class EventStore:
     async def mark_task_status(self, task_id: str, status: str) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        await self._db.execute(
-            "UPDATE tasks SET status = ? WHERE id = ?;",
-            (status, task_id)
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "UPDATE tasks SET status = ? WHERE id = ?;",
+                (status, task_id)
+            )
+            await self._db.commit()
 
     async def expire_open_loops(self, now: float) -> list[str]:
         if not self._db:
             raise RuntimeError("Database not initialized")
-        cursor = await self._db.execute(
-            "SELECT id FROM open_loops WHERE status = 'active' AND expires_at <= ?;",
-            (now,)
-        )
-        rows = await cursor.fetchall()
-        expired_ids = [r[0] for r in rows]
-        if expired_ids:
-            placeholders = ",".join("?" for _ in expired_ids)
-            await self._db.execute(
-                f"UPDATE open_loops SET status = 'expired' WHERE id IN ({placeholders});",
-                expired_ids
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "SELECT id FROM open_loops WHERE status = 'active' AND expires_at <= ?;",
+                (now,)
             )
-            await self._db.commit()
-        return expired_ids
+            rows = await cursor.fetchall()
+            expired_ids = [r[0] for r in rows]
+            if expired_ids:
+                placeholders = ",".join("?" for _ in expired_ids)
+                await self._db.execute(
+                    f"UPDATE open_loops SET status = 'expired' WHERE id IN ({placeholders});",
+                    expired_ids
+                )
+                await self._db.commit()
+            return expired_ids

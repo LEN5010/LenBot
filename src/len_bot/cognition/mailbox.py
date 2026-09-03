@@ -20,6 +20,7 @@ class EpisodeMailbox:
         self.base_scene_version = base_scene_version
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self._interim_events: list[Event] = []
+        self._unconsumed_follow_ups: list[Event] = []
         self._cancelled: bool = False
         self._cancellation_reason: Optional[str] = None
 
@@ -32,17 +33,26 @@ class EpisodeMailbox:
         if any(k in event.raw_text for k in urgent_cancel_keywords):
             self._cancelled = True
             self._cancellation_reason = f"User '{event.actor_id}' requested cancellation: {event.raw_text}"
+        elif event.is_mention_bot or event.is_reply_bot or event.event_type.value == "PRIVATE_MESSAGE_RECEIVED":
+            self._unconsumed_follow_ups.append(event)
         
         self._queue.put_nowait(event)
 
     def check_steering(self) -> Optional[SteeringSignal]:
-        """Checked by Pi at ReAct step boundaries."""
+        """Checked by Pi at ReAct step boundaries and by RuntimeGate."""
         if self._cancelled:
             last_event = self._interim_events[-1] if self._interim_events else None
             return SteeringSignal(
                 steering_type=SteeringType.CANCEL,
                 source_event=last_event,
                 reason=self._cancellation_reason or "Episode cancelled by steering"
+            )
+        if self._unconsumed_follow_ups:
+            ev = self._unconsumed_follow_ups.pop(0)
+            return SteeringSignal(
+                steering_type=SteeringType.FOLLOW_UP,
+                source_event=ev,
+                reason=f"User follow-up message: {ev.raw_text}"
             )
         return None
 
