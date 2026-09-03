@@ -60,16 +60,18 @@ class ActionQueue:
                         logger.info("Action blocked/dropped by action interceptor.")
                         continue
 
-                # ADR-0023: Shadow Mode — safety interceptors still run, but the
-                # action is RECORDED instead of sent. No MESSAGE_SENT event is
-                # emitted, so no OpenLoop activates and no social fact is produced.
-                if self.shadow_probe and self.shadow_probe():
+                # ADR-0023 & ADR-0029: Shadow Mode or shadow-origin action:
+                # Recorded instead of physically sent to prevent shadow-generated tasks from live-sending.
+                is_shadow_env = bool(self.shadow_probe and self.shadow_probe())
+                is_shadow_origin = getattr(action, "origin_mode", "live") == "shadow"
+                if is_shadow_env or is_shadow_origin:
                     if self.shadow_recorder:
                         try:
                             await self.shadow_recorder(action)
                         except Exception as rec_err:
                             logger.error("Shadow recorder failed: %s", rec_err)
-                    logger.info("[SHADOW] Would send on scene %s: %s", action.scene_id, action.content[:80])
+                    logger.info("[SHADOW] Would send on scene %s (env=%s, origin=%s): %s",
+                                action.scene_id, is_shadow_env, action.origin_mode, action.content[:80])
                     self._queue.task_done()
                     continue
 

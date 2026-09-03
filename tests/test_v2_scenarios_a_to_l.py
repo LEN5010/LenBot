@@ -407,3 +407,69 @@ async def test_scenario_l_privacy_cross_scope_leak_zero(tmp_path):
     own = await runtime.memory_store.query_memories(allowed_scopes=[private_scene], limit=10)
     assert any("辞职" in m.value for m in own)
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_scenario_m_group_social_position(tmp_path):
+    """Scenario M (Goal 11 / ADR-0024 & 交接.md §24): Group Social Position & Multi-scene Isolation.
+
+    Seed group:X with organizer / group_norm / bot-in-group social_pattern;
+    group:Y has none.
+    Same actor sends the exact same message in both scenes:
+    - group:X scoped query returns its distinct social memories and group norms.
+    - group:Y scoped query contains zero social memories from group:X (zero cross-group leakage).
+    """
+    runtime, _ = _runtime(tmp_path, name="scen_m")
+    await runtime.start()
+    group_x = "group:x"
+    group_y = "group:y"
+
+    # Seed group:X social position & group norm memories
+    await runtime.memory_store.save_memory(MemoryItem(
+        subject="user:1001", kind=MemoryKind.RECURRING_ROLE, key="group_organizer",
+        value="每周五狼人杀组织者", scope=group_x, evidence=["seed:x1"],
+        human_readable_assertion="user:1001 是本群狼人杀活动组织者"
+    ))
+    await runtime.memory_store.save_memory(MemoryItem(
+        subject=group_x, kind=MemoryKind.GROUP_NORM, key="meme_rule",
+        value="禁止刷屏表情包", scope=group_x, evidence=["seed:x2"],
+        human_readable_assertion="本群禁止连续刷屏表情包"
+    ))
+    await runtime.memory_store.save_memory(MemoryItem(
+        subject="bot", kind=MemoryKind.SOCIAL_PATTERN, key="group_standing",
+        value="群内技术顾问兼活跃吉祥物", scope=group_x, evidence=["seed:x3"],
+        human_readable_assertion="Bot 在本群承担技术顾问与吉祥物角色"
+    ))
+
+    t0 = time.time()
+    # Same actor sends the exact same query in both groups
+    msg_x = _msg(group_x, "user:1001", "周五晚上活动怎么安排？", t0)
+    msg_y = _msg(group_y, "user:1001", "周五晚上活动怎么安排？", t0 + 1)
+    await runtime.receive_event(msg_x)
+    await runtime.receive_event(msg_y)
+    await asyncio.sleep(0.3)
+
+    # 1. Scoped memory query for group:X
+    x_memories = await runtime.memory_store.query_memories(allowed_scopes=[group_x, "global-safe"], limit=50)
+    x_keys = {m.key for m in x_memories}
+    assert "group_organizer" in x_keys
+    assert "meme_rule" in x_keys
+    assert "group_standing" in x_keys
+
+    # 2. Scoped memory query for group:Y -> STRICT ZERO cross-group leakage
+    y_memories = await runtime.memory_store.query_memories(allowed_scopes=[group_y, "global-safe"], limit=50)
+    assert len(y_memories) == 0
+    y_keys = {m.key for m in y_memories}
+    assert "group_organizer" not in y_keys
+    assert "meme_rule" not in y_keys
+    assert "group_standing" not in y_keys
+
+    # 3. Verify retrieval toolkit isolation directly
+    x_toolkit_memories = await runtime.memory_store.query_memories(allowed_scopes=[group_x])
+    assert all(m.scope == group_x for m in x_toolkit_memories)
+    assert len(x_toolkit_memories) == 3
+
+    y_toolkit_memories = await runtime.memory_store.query_memories(allowed_scopes=[group_y])
+    assert len(y_toolkit_memories) == 0
+
+    await runtime.stop()

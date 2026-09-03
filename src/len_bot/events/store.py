@@ -92,16 +92,18 @@ class EventStore:
                 wake_match_json TEXT,
                 origin_episode_id TEXT,
                 origin_stimulus_id TEXT,
-                trigger_event_id TEXT
+                trigger_event_id TEXT,
+                origin_mode TEXT DEFAULT 'live'
             );
         """)
-        # Migrations for databases created in earlier stages (ADR-0018 & ADR-0029)
+        # Migrations for databases created in earlier stages (ADR-0018 & ADR-0029 & ADR-0032)
         for col, col_type in [
             ("wake_event_type", "TEXT"),
             ("wake_match_json", "TEXT"),
             ("origin_episode_id", "TEXT"),
             ("origin_stimulus_id", "TEXT"),
             ("trigger_event_id", "TEXT"),
+            ("origin_mode", "TEXT DEFAULT 'live'"),
         ]:
             try:
                 await self._db.execute(f"ALTER TABLE tasks ADD COLUMN {col} {col_type};")
@@ -849,9 +851,9 @@ class EventStore:
                 INSERT INTO tasks (
                     id, scene_id, description, due_at, status, source_event_id,
                     payload, created_at, wake_event_type, wake_match_json,
-                    origin_episode_id, origin_stimulus_id, trigger_event_id
+                    origin_episode_id, origin_stimulus_id, trigger_event_id, origin_mode
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     task_data["id"],
@@ -866,7 +868,8 @@ class EventStore:
                     wake_match_json,
                     task_data.get("origin_episode_id"),
                     task_data.get("origin_stimulus_id"),
-                    task_data.get("trigger_event_id")
+                    task_data.get("trigger_event_id"),
+                    task_data.get("origin_mode", "live"),
                 )
             )
             await self._db.commit()
@@ -888,6 +891,7 @@ class EventStore:
             "origin_episode_id": getattr(task, "origin_episode_id", None),
             "origin_stimulus_id": getattr(task, "origin_stimulus_id", None),
             "trigger_event_id": getattr(task, "trigger_event_id", None),
+            "origin_mode": getattr(task, "origin_mode", "live"),
         })
 
     async def claim_task(self, task_id: str, trigger_event_id: str = "") -> bool:
@@ -915,7 +919,7 @@ class EventStore:
         sql = """
             SELECT id, scene_id, description, due_at, status, source_event_id,
                    payload, created_at, wake_event_type, wake_match_json,
-                   origin_episode_id, origin_stimulus_id, trigger_event_id
+                   origin_episode_id, origin_stimulus_id, trigger_event_id, origin_mode
             FROM tasks WHERE status = 'pending'
         """
         params: list[Any] = []
@@ -960,6 +964,7 @@ class EventStore:
                 "origin_episode_id": r[10] if len(r) > 10 else None,
                 "origin_stimulus_id": r[11] if len(r) > 11 else None,
                 "trigger_event_id": r[12] if len(r) > 12 else None,
+                "origin_mode": r[13] if len(r) > 13 and r[13] else "live",
             }
             for r in rows
         ]
@@ -1068,14 +1073,15 @@ class EventStore:
                         INSERT INTO tasks (
                             id, scene_id, description, due_at, status, source_event_id,
                             payload, created_at, wake_event_type, wake_match_json,
-                            origin_episode_id, origin_stimulus_id
+                            origin_episode_id, origin_stimulus_id, origin_mode
                         )
-                        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?);
+                        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?);
                         """,
                         (
                             task_id, scene_id, tp.description, now + delay, episode_id,
                             payload_json, now, tp.wake_event_type, wake_match_json,
-                            episode_id, getattr(tp, "origin_stimulus_id", None)
+                            episode_id, getattr(tp, "origin_stimulus_id", None),
+                            getattr(tp, "origin_mode", "live")
                         )
                     )
                     task_item = TaskItem(
@@ -1090,7 +1096,8 @@ class EventStore:
                         wake_event_type=tp.wake_event_type,
                         wake_match=getattr(tp, "wake_match", None),
                         origin_episode_id=episode_id,
-                        origin_stimulus_id=getattr(tp, "origin_stimulus_id", None)
+                        origin_stimulus_id=getattr(tp, "origin_stimulus_id", None),
+                        origin_mode=getattr(tp, "origin_mode", "live")
                     )
                     committed_tasks.append(task_item)
 

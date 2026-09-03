@@ -53,4 +53,5 @@ class Stimulus(BaseModel):
     combined_text: str
     has_mention_bot: bool = False
     has_reply_bot: bool = False
+    origin_mode: str = "live"
     timestamp: float = Field(default_factory=time.time)

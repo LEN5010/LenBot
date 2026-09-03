@@ -232,20 +232,33 @@ Cross-time social continuity for promises and retained interests:
 
 This project uses `uv` for lightning-fast Python package and environment management.
 
+### Testing Hierarchy & Benchmark Layering (§26)
+Tests are explicitly organized into three distinct layers to ensure deterministic reliability and observable cognition:
+
+1. **Layer 1: Invariant & Boundary Tests (Deterministic, Fast, Fail-Closed)**
+   - Ensures zero state leakage, transactional rollbacks, strict scope boundaries, single-writer actors, durable task claims, and SSRF blocking.
+   - Files: `test_p0_invariants.py`, `test_runtime_invariant_closure.py`, `test_v3_stage2_authority.py`, `test_v3_stage3_staleness.py`, `test_v3_stage5_reflection.py`, `test_v3_stage6_scheduler.py`, `test_v3_stage7_plugins.py`.
+   - Run: `uv run pytest tests/test_v3_*.py -v`
+
+2. **Layer 2: Behavioral Pipeline & Scenarios (Deterministic Offline Replay)**
+   - Tests end-to-end user-observable behavior (Scenarios A through M) using deterministic offline replay with mock cognitive processors. No network or sleep dependencies.
+   - Files: `test_v2_scenarios_a_to_l.py` (Scenarios A–M: Goal 1 to 12), `test_v3_stage4_participation.py`, `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
+   - Run: `uv run pytest tests/test_v2_scenarios_a_to_l.py -v`
+
+3. **Layer 3: Model Evaluation (Live Providers, Real Transcripts, Non-CI)**
+   - Offline evaluation of real transcripts against configured model providers for qualitative social analysis.
+   - Script: `python scripts/eval_transcripts.py --transcript <transcript.jsonl> --output eval.json`
+
 ### Running Tests
 ```bash
 # Run the entire test suite
 uv run pytest
 
-# Run the V2 Scenario Benchmark (Goals 1-12, named A-L)
+# Run the V2/V3 Scenario Benchmark (Goals 1-12, Scenarios A-M)
 uv run pytest tests/test_v2_scenarios_a_to_l.py -v
 
-# Run specific test modules with verbose output
-uv run pytest tests/test_v1a_reactive_core.py -v
-uv run pytest tests/test_v1b_persistent_execution.py -v
-uv run pytest tests/test_v1c_agentic_history.py -v
-uv run pytest tests/test_v1d_memory.py -v
-uv run pytest tests/test_v1e_agency.py -v
+# Run V3 Stage specific tests
+uv run pytest tests/test_v3_stage*.py -v
 ```
 
 ### Control Plane Frontend

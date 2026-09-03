@@ -26,6 +26,7 @@ class TaskProposal(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     origin_episode_id: Optional[str] = Field(default=None)
     origin_stimulus_id: Optional[str] = Field(default=None)
+    origin_mode: str = Field(default="live")
 
 
 # Deadline cap for condition-bound tasks that never see their wake event (ADR-0018).

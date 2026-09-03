@@ -29,6 +29,7 @@ RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
     "query_open_loops",
     "query_tasks",
     "query_retention",
+    "inspect_episode",
 })
 
 

@@ -77,7 +77,8 @@ class AgentRuntime:
             action_queue=self.action_queue,
             scheduler=self.scheduler,
             ambient_store=self.ambient_store,
-            metrics=self.metrics
+            metrics=self.metrics,
+            origin_mode_provider=lambda: ("shadow" if self.shadow_mode else "live")
         )
 
         self.scene_manager = SceneManager(
