@@ -13,7 +13,8 @@ class ContextAssembler:
         scene_state: Optional[SceneState],
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
-        allowed_scopes: list[str]
+        allowed_scopes: list[str],
+        relevant_memories: Optional[list[Any]] = None
     ) -> list[dict[str, str]]:
         # 1. System Prompt (Identity + Principles)
         system_content = (
@@ -42,6 +43,11 @@ class ContextAssembler:
             lines = [f"- [ID: {l['id']}] 等待 {l['target_actor_id']} 回应意图: {l['intent']}" for l in active_open_loops]
             loops_info = "\n".join(lines)
 
+        memories_info = "无特殊认识与偏好记忆"
+        if relevant_memories:
+            lines = [f"- {m.human_readable_assertion} (确定度: {m.certainty.value})" for m in relevant_memories]
+            memories_info = "\n".join(lines)
+
         # Elastic Raw Context (keep last 20 events)
         recent_events = raw_events[-20:]
         chat_lines = []
@@ -56,6 +62,8 @@ class ContextAssembler:
             f"{scene_info}\n\n"
             f"【ACTIVE OPEN LOOPS】\n"
             f"{loops_info}\n\n"
+            f"【RELEVANT BELIEFS & MEMORY】\n"
+            f"{memories_info}\n\n"
             f"【RECENT RAW CHAT】\n"
             f"{chat_history}\n\n"
             f"【CURRENT STIMULUS】\n"

@@ -18,10 +18,17 @@ class GateDecision:
         self.actions_enqueued = actions_enqueued
 
 class RuntimeGate:
-    def __init__(self, event_store: EventStore, action_queue: ActionQueue, scheduler: Optional[Any] = None):
+    def __init__(
+        self,
+        event_store: EventStore,
+        action_queue: ActionQueue,
+        scheduler: Optional[Any] = None,
+        memory_gate: Optional[Any] = None
+    ):
         self.event_store = event_store
         self.action_queue = action_queue
         self.scheduler = scheduler
+        self.memory_gate = memory_gate
 
     async def evaluate_and_commit(
         self,
@@ -149,3 +156,10 @@ class RuntimeGate:
                 "created_at": now,
                 "expires_at": now
             })
+
+        # 3. Commit memory proposals via MemoryGate (ADR-0011)
+        if self.memory_gate and outcome.memory_proposals:
+            for mp in outcome.memory_proposals:
+                if not mp.scope:
+                    mp.scope = scene_id
+                await self.memory_gate.commit_proposal(mp)

@@ -2,16 +2,24 @@ import json
 import logging
 from typing import Any, Optional
 from len_bot.events.store import EventStore
+from len_bot.memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
 class RetrievalToolkit:
-    """Agentic History Retrieval Tools (ADR-0010) enforcing Ambient ExecutionScope (ADR-0006)."""
+    """Agentic History & Memory Retrieval Tools (ADR-0010 & ADR-0011) enforcing Ambient ExecutionScope."""
     
-    def __init__(self, event_store: EventStore, allowed_scopes: list[str], default_scene_id: str):
+    def __init__(
+        self,
+        event_store: EventStore,
+        allowed_scopes: list[str],
+        default_scene_id: str,
+        memory_store: Optional[MemoryStore] = None
+    ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
         self.default_scene_id = default_scene_id
+        self.memory_store = memory_store
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         return [
@@ -106,6 +114,43 @@ class RetrievalToolkit:
                         "required": ["actor_id"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_memory",
+                    "description": "查询当前合法范围内对特定人物、群体或话题已形成的认识记忆（L2 认知信念）。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {
+                                "type": "string",
+                                "description": "认识对象的主体，如'user:1001'或'group:123'。"
+                            },
+                            "kind": {
+                                "type": "string",
+                                "description": "记忆种类：preference（偏好）、relationship（关系）、fact（事实）、pattern（规律）。"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "inspect_episode",
+                    "description": "读取过去某次完整经历（L1 Episode）的摘要、参与人和引用的原始事件来源。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "episode_id": {
+                                "type": "string",
+                                "description": "经历事件的 ID（如 ep_rec_xxx）。"
+                            }
+                        },
+                        "required": ["episode_id"]
+                    }
+                }
             }
         ]
 
@@ -171,6 +216,39 @@ class RetrievalToolkit:
                     for r in rows
                 ]
                 return "\n".join(formatted) if formatted else f"未找到用户 {actor_id} 的历史发言。"
+
+            elif tool_name == "query_memory":
+                if not self.memory_store:
+                    return "未配置记忆库。"
+                subject = arguments.get("subject")
+                kind = arguments.get("kind")
+                memories = await self.memory_store.query_memories(
+                    allowed_scopes=self.allowed_scopes,
+                    subject=subject,
+                    kind=kind
+                )
+                formatted = [
+                    f"[{m.id}] [{m.kind.upper()}] {m.subject} -> {m.key}: {m.value} (certainty: {m.certainty.value}, assertion: {m.human_readable_assertion})"
+                    for m in memories
+                ]
+                return "\n".join(formatted) if formatted else "未找到匹配的认识信念记忆。"
+
+            elif tool_name == "inspect_episode":
+                if not self.memory_store:
+                    return "未配置经历库。"
+                episode_id = arguments.get("episode_id", "")
+                ep = await self.memory_store.get_episode(episode_id)
+                if not ep:
+                    return f"未找到经历记录 {episode_id}。"
+                if ep.scene_id not in self.allowed_scopes:
+                    return "该经历属于非公开场景，无权查阅。"
+                return (
+                    f"【经历: {ep.title}】 (ID: {ep.id})\n"
+                    f"时间: {ep.created_at} | 参与者: {', '.join(ep.participants)}\n"
+                    f"标签: {', '.join(ep.tags)}\n"
+                    f"摘要: {ep.summary}\n"
+                    f"引用原始事件数: {len(ep.source_event_ids)}"
+                )
 
             return f"未知工具: {tool_name}"
         except Exception as e:

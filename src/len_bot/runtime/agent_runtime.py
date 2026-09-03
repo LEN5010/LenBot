@@ -17,6 +17,10 @@ from len_bot.runtime.gate import RuntimeGate, GateDecision
 from len_bot.scheduler.engine import TaskScheduler
 from len_bot.state.open_loops import OpenLoopManager
 
+from len_bot.memory.store import MemoryStore
+from len_bot.memory.gate import MemoryGate
+from len_bot.memory.reflection import ReflectionEngine
+
 logger = logging.getLogger(__name__)
 
 class AgentRuntime:
@@ -30,6 +34,10 @@ class AgentRuntime:
         self.bot_actor_id = f"user:{config.bot_qq}"
         
         self.event_store = EventStore(config.db_path)
+        self.memory_store: Optional[MemoryStore] = None
+        self.memory_gate: Optional[MemoryGate] = None
+        self.reflection_engine: Optional[ReflectionEngine] = None
+
         self.action_queue = ActionQueue(
             event_store=self.event_store,
             send_adapter=send_adapter,
@@ -73,6 +81,13 @@ class AgentRuntime:
 
     async def start(self) -> None:
         await self.event_store.initialize()
+        self.memory_store = MemoryStore(self.event_store._db)
+        await self.memory_store.initialize()
+        self.memory_gate = MemoryGate(self.memory_store, self.event_store)
+        self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate)
+        self.runtime_gate.memory_gate = self.memory_gate
+        self.episode_manager.memory_store = self.memory_store
+
         await self.action_queue.start()
         await self.scheduler.start()
 
@@ -134,12 +149,17 @@ class AgentRuntime:
         raw_events = await self.event_store.get_recent_events(stimulus.scene_id, limit=30)
         allowed_scopes = [stimulus.scene_id, "global-safe"]
 
+        relevant_memories = []
+        if self.memory_store:
+            relevant_memories = await self.memory_store.query_memories(allowed_scopes=allowed_scopes, limit=5)
+
         outcome, mailbox = await self.episode_manager.run_episode(
             stimulus=stimulus,
             scene_state=scene_state,
             raw_events=raw_events,
             active_open_loops=open_loops,
-            allowed_scopes=allowed_scopes
+            allowed_scopes=allowed_scopes,
+            relevant_memories=relevant_memories
         )
 
         gate_decision = await self.runtime_gate.evaluate_and_commit(

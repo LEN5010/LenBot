@@ -18,6 +18,8 @@ class TaskProposal(BaseModel):
     delay_seconds: float = Field(description="Seconds from now until task is due")
     payload: dict[str, Any] = Field(default_factory=dict)
 
+from len_bot.memory.models import MemoryProposal
+
 class EpisodeOutcome(BaseModel):
     disposition: FinalDisposition = Field(
         default=FinalDisposition.SILENCE,
@@ -26,5 +28,6 @@ class EpisodeOutcome(BaseModel):
     thought: str = Field(description="Brief structured chain of thought explaining the decision")
     message_proposals: list[MessageProposal] = Field(default_factory=list)
     task_proposals: list[TaskProposal] = Field(default_factory=list)
+    memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
     state_annotations: dict[str, Any] = Field(default_factory=dict)

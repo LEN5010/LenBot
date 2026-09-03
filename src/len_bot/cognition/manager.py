@@ -19,12 +19,14 @@ class EpisodeManager:
         scene_manager: SceneManager,
         context_assembler: ContextAssembler,
         pi_core: PiAgentCore,
-        event_store: Optional[Any] = None
+        event_store: Optional[Any] = None,
+        memory_store: Optional[Any] = None
     ):
         self.scene_manager = scene_manager
         self.context_assembler = context_assembler
         self.pi_core = pi_core
         self.event_store = event_store
+        self.memory_store = memory_store
 
     async def run_episode(
         self,
@@ -32,7 +34,8 @@ class EpisodeManager:
         scene_state: SceneState,
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
-        allowed_scopes: list[str]
+        allowed_scopes: list[str],
+        relevant_memories: Optional[list[Any]] = None
     ) -> tuple[EpisodeOutcome, EpisodeMailbox]:
         episode_id = f"ep_{uuid.uuid4().hex[:12]}"
         base_version = scene_state.version
@@ -49,16 +52,18 @@ class EpisodeManager:
                 scene_state=scene_state,
                 raw_events=raw_events,
                 active_open_loops=active_open_loops,
-                allowed_scopes=allowed_scopes
+                allowed_scopes=allowed_scopes,
+                relevant_memories=relevant_memories
             )
 
-            # 3. Instantiate ambient RetrievalToolkit (ADR-0006 & ADR-0010)
+            # 3. Instantiate ambient RetrievalToolkit (ADR-0006 & ADR-0010 & ADR-0011)
             toolkit = None
             if self.event_store:
                 toolkit = RetrievalToolkit(
                     event_store=self.event_store,
                     allowed_scopes=allowed_scopes,
-                    default_scene_id=stimulus.scene_id
+                    default_scene_id=stimulus.scene_id,
+                    memory_store=self.memory_store
                 )
 
             # 4. Execute Pi Agent Core with tools
