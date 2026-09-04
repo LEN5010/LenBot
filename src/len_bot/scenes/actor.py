@@ -270,8 +270,12 @@ class SceneActor:
             referenced_event_ids.update(item.result.future_attention.source_event_ids)
         for memory in item.result.memory_candidates:
             referenced_event_ids.update(memory.evidence)
-        if not referenced_event_ids.issubset(known_event_ids):
-            raise ValueError("Social cognition references events outside the scene session")
+        historical_references = referenced_event_ids - known_event_ids
+        if historical_references and not await self.event_store.references_belong_to_scene(
+            historical_references,
+            self.scene_id,
+        ):
+            raise ValueError("Social cognition references evidence outside the scene scope")
 
         cognition_event = Event(
             event_type=EventType.SOCIAL_COGNITION_RECORDED,

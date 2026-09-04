@@ -226,6 +226,14 @@ _Avoid_: Spam check, flood gate
 A scene-local cognitive note that something remains interesting without creating a task or requiring an immediate visible action.
 _Avoid_: Reminder, pending reply, hidden task
 
+**Projected Social Context**:
+A model-facing view of immutable OneBot events that replaces transport-only CQ payloads with compact semantic markers and rolls out the oldest raw messages only when the configured token budget is reached.
+_Avoid_: Raw-history rewrite, summary-only context, fixed message-count window
+
+**Direct Cognition Preemption**:
+Deterministic cancellation of an in-flight model call when a newer direct mention or reply in the same scene makes its result necessarily stale; the SceneActor, Gate, and action commit paths are never interrupted.
+_Avoid_: Attention heuristic, priority classifier, bypass response
+
 ---
 
 ## 6. Testing & Verification

@@ -24,6 +24,14 @@ class RuntimeConfig(BaseModel):
     debounce_idle_ms: int = Field(default=800, description="Sliding idle window (ms)")
     debounce_max_ms: int = Field(default=2500, description="Max debounce wait cap (ms)")
     max_ingest_lag_seconds: int = Field(default=60, description="Events older than this skip stimulus")
+    social_context_window_tokens: int = Field(
+        default=200_000,
+        description="Maximum estimated Social Core input context before oldest raw messages roll out",
+    )
+    social_output_reserve_tokens: int = Field(
+        default=8_000,
+        description="Context-window reserve for the structured cognition result",
+    )
     
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(

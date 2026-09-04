@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from len_bot.events.models import Event, EventType
 from len_bot.memory.models import MemoryCertainty, MemoryKind
@@ -133,10 +133,18 @@ class SocialDecision(SessionModel):
 
 class SocialMessageProposal(SessionModel):
     content: str
-    reply_to: str | None = None
+    reply_to: str | None = Field(
+        default=None,
+        description="OneBot message_id to quote; never use a LenBot Event ID",
+    )
     expect_reply: bool = False
     reply_target: str | None = None
     reply_intent: str | None = None
+
+    @field_validator("reply_to", mode="before")
+    @classmethod
+    def normalize_onebot_message_id(cls, value):
+        return str(value) if value is not None else None
 
 
 class SocialTaskProposal(SessionModel):
