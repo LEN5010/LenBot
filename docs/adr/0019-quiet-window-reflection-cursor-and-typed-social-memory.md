@@ -1,5 +1,9 @@
 # ADR-0019: Quiet-Window Reflection, Reflection Cursor & Typed Social Memory
 
+## Status
+
+Accepted — implementation note 2026-09-05: the `ContextAssembler`【CURRENT ACTOR】person-card segment referenced below was removed with the V3 ContextAssembler; sender snapshots now reach cognition as `working_persons` projections in the Social Core situation package (ADR-0032/0033), and subject-scoped memories are retrieved on demand via the agentic retrieval tools (ADR-0035).
+
 ## Context
 
 V2 计划 Phase 4(Reflection & Social Memory)要求闭合 Goal 9/11/12。核实发现的现状缺陷:

@@ -1,5 +1,9 @@
 # ADR-0025: Proposal Contract, Typed Social State, and Scoped OpenLoop Authority
 
+## Status
+
+Partially superseded by ADR-0032/ADR-0033 — 2026-09-05. Decision 1's typed `ThreadTransition`/`SocialStateProposal` contract and `STATE_ANNOTATION` events were removed with the ParticipationThread lifecycle; social state authority moved to `GroupAgentSession` snapshots. The scoped atomic open-loop resolution and the unified memory-write validation (`memory/writes.py`) remain active.
+
 ## Context
 
 In V2:

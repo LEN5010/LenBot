@@ -1,5 +1,9 @@
 # ADR-0027: Participation Thread Lifecycle, Attention Continuation, and Read-Only Scene Detail
 
+## Status
+
+Superseded by ADR-0032/ADR-0033 — 2026-09-05. The `ParticipationThread` fade/close lifecycle and the attention continuation rules were removed with the V3 attention module; participation and thread continuity are judged by the `SocialCognitionCore` inside `GroupAgentSession` state. The read-only scene detail half remains accurate.
+
 ## Context
 
 In V2:

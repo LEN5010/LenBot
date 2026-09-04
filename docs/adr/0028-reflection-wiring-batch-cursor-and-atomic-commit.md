@@ -1,5 +1,9 @@
 # ADR-0028: Reflection Provider Wiring, Batch Cursor Ingestion, and Atomic Batch Commit
 
+## Status
+
+Partially superseded — 2026-09-05. §4's once-only postpone bound (`_reflection_postpone_counts`, keyed on the removed `bot_engagement` concept) was not retained: the quiet-window timer re-arms while a cognition episode is in flight (see ADR-0019's in-flight postponement). Provider wiring, `get_unreflected_events(after_rowid, limit=30)`, and atomic `commit_reflection_batch` remain active.
+
 ## Context
 
 In V2:

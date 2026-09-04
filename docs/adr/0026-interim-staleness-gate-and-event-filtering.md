@@ -1,5 +1,9 @@
 # ADR-0026: Interim Event Filtering, Staleness Gating, and Human Message Accounting
 
+## Status
+
+Partially superseded by ADR-0035/ADR-0037 — 2026-09-05. Step-boundary interim polling now exists only in the legacy, test-only `ReActAgentCore`; the production `SocialCognitionCore` loop does not poll the mailbox at step boundaries. Staleness is enforced by the SceneActor observation-cursor check plus `RuntimeGate`'s commit-time `has_unseen_interim` rejection (the literal scene-version comparison was replaced by unseen-interim accounting). Mailbox human-event filtering and human-message accounting remain active.
+
 ## Context
 
 In V2:

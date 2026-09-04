@@ -1,5 +1,9 @@
 # ADR-0031: Monitored Keywords Hot Reload, Shadow Annotations Persistence, and OneBot Adapter Robustness
 
+## Status
+
+Partially superseded — 2026-09-05. §1's `monitored_keywords` / `AttentionEngine` hot-reload was removed with the V3 attention module. §2 and §3 remain active; note that `GET /api/cockpit/shadow-annotations` supports a `scene_id` filter only (no label filter), and the 1000-item reply-ID ring is written but currently only reserved for future use.
+
 ## Context
 
 In V2:

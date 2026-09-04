@@ -20,7 +20,7 @@ When modifying or adding features to this codebase, you **must strictly adhere**
 5. **No implicit task creation from soft state**: Soft annotations (e.g. `possible_start_time`) must never automatically spawn scheduled tasks. Tasks require explicit `TaskProposal` from cognition.
 6. **No direct side-effects from the Social Core**: `SocialCognitionCore` outputs a structured `SocialCognitionResult` containing proposals. Actions must pass through `RuntimeGate` validation.
 7. **No overwriting raw history with memory**: The `events` table is append-only and immutable. Memories are subjective epistemic beliefs with evidence pointers back to raw events.
-8. **No automatic RAG on every message**: Working context is carried directly in `GroupAgentSession`; older history is retrieved actively and on-demand via tools (`search_messages`, `read_context`, `query_timeline`).
+8. **No automatic RAG on every message**: Working context is carried directly in `GroupAgentSession`; older history is retrieved actively and on-demand via tools (`search_messages`, `read_context`, `query_timeline`, `query_person_history`, `query_memory`, `inspect_episode`).
 9. **No prompt-level privacy enforcement**: Privacy boundaries (`ExecutionScope`) must be rigidly enforced at the SQL layer (`WHERE scene_id IN (...)`), never by asking the model not to disclose private information.
 10. **No randomness as primary agency**: Normal participation is a Social Core judgement over continuous scene context; runtime retains only deterministic anti-loop, rate, and cost ceilings.
 
@@ -30,6 +30,8 @@ When modifying or adding features to this codebase, you **must strictly adhere**
 
 ```text
 src/len_bot/
+├── main.py              # Entry point: wires AgentRuntime + OneBotAdapter + dashboard
+├── config.py            # RuntimeConfig (env-var seeding + all runtime tunables)
 ├── actions/             # Side-effect management
 │   ├── models.py        # ActionItem, ActionType
 │   └── queue.py         # ActionQueue (Two-Phase Commit for Open Loops)
@@ -52,7 +54,8 @@ src/len_bot/
 │   ├── models.py        # EpisodeRecord (L1), MemoryItem (L2), MemoryKind, MemoryCertainty
 │   ├── reflector.py     # LLMReflector (event range -> EpisodeRecord + MemoryProposals)
 │   ├── reflection.py    # ReflectionEngine (quiet-window micro-reflection & episode archival)
-│   └── store.py         # MemoryStore (episodes, memories, reflection cursors)
+│   ├── store.py         # MemoryStore (episodes, memories, reflection cursors)
+│   └── writes.py        # Unified memory proposal validation & transactional resolution
 ├── runtime/             # Core persistent runtime
 │   ├── agent_runtime.py # AgentRuntime coordinator
 │   ├── gate.py          # RuntimeGate (staleness gate, two-phase commit)
@@ -72,15 +75,17 @@ src/len_bot/
 │   ├── scenario_runner.py # ScenarioRunner for offline behavioral replay
 │   └── social.py        # social_result() factory for scripted SocialCognitionResults
 ├── plugins/             # Plugin runtime (ADR-0016/0021)
-│   ├── builtin/         # Real plugins: bilibili_live sensor, web_search tool
+│   ├── builtin/         # Real plugins: bilibili_live sensor, bilibili_content tool, web_search tool
 │   ├── base.py          # BasePlugin, PluginContext (permission-guarded)
 │   ├── host.py          # PluginHost (sandbox, lifecycle health, enable/disable)
-│   └── models.py        # PluginManifest (config_schema, emitted_events, ...)
+│   ├── models.py        # PluginManifest (config_schema, emitted_events, ...)
+│   └── net_policy.py    # Centralized SSRF network policy (ADR-0030)
 ├── web/                 # Control Plane (ADR-0017/0022)
 │   ├── frontend/        # Vue 3 + Vite source (builds to web/static/dist)
-│   ├── routes/          # auth, overview, cockpit, models, plugins, replay, ...
+│   ├── routes/          # auth, overview, cockpit, models, plugins, replay, settings, websocket
 │   ├── query_service.py # RuntimeQueryService — the ONLY read facade for routes
 │   ├── log_ring.py      # In-memory operational log ring
+│   ├── auth.py          # PBKDF2 password hashing + session auth helpers
 │   └── app.py           # FastAPI app factory (SPA + API)
 └── tools/               # Agentic retrieval tools
     └── retrieval.py     # RetrievalToolkit (search_messages, read_context, etc.)
@@ -104,13 +109,12 @@ Every scene (group chat or private chat) has a dedicated `SceneActor` coroutine 
 - An in-flight episode attaches an `EpisodeMailbox` to the actor to receive steering events.
 
 ### Step-Boundary Steering (ADR-0002)
-During a multi-step ReAct tool loop in `ReActAgentCore`:
-- At each step boundary (before model call and after tool execution), `mailbox.check_steering()` is invoked.
-- If a user sends "算了/不用了/别查了", a `SteeringType.CANCEL` signal is returned.
-- Cognition aborts early and returns `FinalDisposition.SILENCE`.
+The `EpisodeMailbox` API (`is_cancelled()`, `consume_follow_ups()`, `fetch_unseen_interim_events()`) carries steering signals into an in-flight episode:
+- If a user sends "算了/不用了/别查了", `SteeringType.CANCEL` is recorded and cognition aborts early with `FinalDisposition.SILENCE`.
+- Only the legacy `ReActAgentCore` (boundary tests) polls the mailbox at step boundaries; the production `SocialCognitionCore` relies on the SceneActor observation-cursor check plus `RuntimeGate`'s commit-time staleness rejection instead (ADR-0026/0035).
 
 ### Ambient ExecutionScope (ADR-0006)
-All retrieval tools (`search_messages`, `read_context`, `query_timeline`, `query_person_history`, `query_memory`) take `allowed_scopes: list[str]`.
+All retrieval tools (`search_messages`, `read_context`, `query_timeline`, `query_person_history`, `query_memory`, `inspect_episode`) take `allowed_scopes: list[str]`.
 - SQL queries unconditionally enforce `WHERE scene_id IN ({placeholders})`.
 - The LLM cannot access private conversations or other groups, regardless of prompt injections.
 
@@ -127,20 +131,20 @@ When an episode finishes with multiple proposals (`tasks`, `resolve_open_loop_id
 ### Semantic Memory & Scope Guard (ADR-0015)
 Epistemic beliefs follow strict evidence-based provenance and semantic slot superseding:
 - L2 beliefs store evidence event IDs; slot conflicts (`subject`, `kind`, `key`, `scope`) update previous records to `SUPERSEDED` pointing to `superseded_by` rather than erasing history.
-- Privacy boundaries (`ExecutionScope`) are rigidly enforced at SQL layer (`WHERE (scope IN (...) OR visibility = 'global')`); private chat secrets can never be retrieved or leaked into public groups.
+- Privacy boundaries (`ExecutionScope`) are rigidly enforced at SQL layer (`WHERE scope IN ({placeholders})`; the `visibility` column was fully removed by ADR-0024); private chat secrets can never be retrieved or leaked into public groups.
 - Exponential temporal decay sweeper discounts stale unreinforced tentative beliefs while access frequency reinforces enduring knowledge.
 
 ### Plugin Runtime Isolation & Sensory Decoupling (ADR-0016)
 Plugin capabilities are managed via `PluginHost` sandboxing:
 - Plugins operate as sensory inputs emitting events into the runtime event bus; they never directly prompt LLMs or send outbound messages (Goal 6, Invariant B).
-- Plugin tools are executed with timeout protection (`asyncio.wait_for`) and comprehensive exception trapping; crashing or hanging plugins cannot stall the runtime or leak uncaught exceptions to `ReActAgentCore` (Goal 7).
+- Plugin tools are executed with timeout protection (`asyncio.wait_for`) and comprehensive exception trapping; crashing or hanging plugins cannot stall the runtime or leak uncaught exceptions to `SocialCognitionCore` (Goal 7).
 - Outbound action interceptors in `ActionQueue` enable pre-flight content safety sanitization and action blocking.
 
 ### Operational Cockpit & Zero-Downtime Hot Reload (ADR-0017)
 Real-time administrative control is centralized in the Cockpit API (`/api/cockpit/`):
 - Observability exposes scene participant statistics, scheduled tasks, open loops, and epistemic memories.
 - Safe human intervention (event injection, task cancellation/trigger, loop resolution, memory refutation) strictly honors the `Event -> Runtime State` invariant without bypass.
-- Dynamic configuration updates (models, persona identity) hot-reload in-memory across all runtime components and persist in SQLite `configs` table across restarts (Goal 8 & 9).
+- Dynamic configuration updates (models, persona identity) hot-reload in-memory across all runtime components and persist in SQLite `runtime_dynamic_configs` table across restarts (Goal 8 & 9).
 
 ### Condition-Bound Obligations & Ambient Items (ADR-0018)
 Cross-time social continuity for promises and retained interests:
@@ -153,7 +157,7 @@ Cross-time social continuity for promises and retained interests:
 - Reflection fires after a scene stays quiet for `reflection_quiet_window_seconds` (debounce timer per scene) — the old message-count trigger is gone. While a cognition episode is in flight in the scene, the window postpones.
 - A per-scene `reflection_cursors` row (last event rowid) bounds each reflection to the unreflected range (`EventStore.get_events_since`); the cursor advances only after the episode record persists — the same events are never summarized twice.
 - The LLM reflector (`memory/reflector.py`) is wired in production; it only PROPOSES `EpisodeRecord + MemoryProposal[]`, with evidence citing the reflected range (Invariant E). Deterministic fallback remains only for explicit mock/test modes.
-- `MemoryKind` is a canonical enum (preference/habit/relationship/fact/group_norm/topic_interest/recurring_role/social_pattern); legacy `pattern` rows migrate once at startup. Sender snapshots flow into a 【CURRENT ACTOR】 person card (display name, group role, subject-scoped memories). `decay_memories` runs in the maintenance heartbeat.
+- `MemoryKind` is a canonical enum (preference/habit/relationship/fact/group_norm/topic_interest/recurring_role/social_pattern); legacy `pattern` rows migrate once at startup. Sender snapshots flow into the Social Core situation package as `working_persons` projections (display name, group role); subject-scoped memories reach cognition on demand via the agentic retrieval tools (ADR-0035). `decay_memories` runs in the maintenance heartbeat.
 
 ### Provider Registry & Routing Metrics (ADR-0020)
 - `ProviderRegistry` is the single authority for tier → (provider, model, client): multi-provider OpenAI-compatible configs, hot `apply_update`, lazily cached clients, persisted in `provider_config` (one-time migration from legacy `model_config`).
@@ -163,7 +167,7 @@ Cross-time social continuity for promises and retained interests:
 ### Plugin Discovery, Lifecycle Health & Real Plugins (ADR-0021)
 - `PluginManifest` declaratively exposes `config_schema/default_config/emitted_events/registered_tools`; `PluginHost` tracks per-plugin health (state, last_error, error_count, last_event_at, last_run_at) and `on_enable/on_disable` hooks are actually invoked.
 - Discovery is an explicit builtin registry (`plugins/builtin/`); `AgentRuntime.start()` loads builtin plugins with persisted config + enabled flags (`plugins_state`), `stop()` unloads. `save_plugin_state()` is the persistence authority.
-- Real plugins: `BilibiliLiveSensor` (polls the public live API, emits `LIVE_STARTED/LIVE_ENDED` facts, inert when unconfigured, never notifies directly) and `WebSearchToolPlugin` (`web_search` + `read_page` tools over DuckDuckGo, sandboxed, failures return error strings). The mock `RESERVED_PLUGINS` registry was deleted — the Control Plane shows the real registry only.
+- Real plugins: `BilibiliLiveSensor` (polls the public live API, emits `LIVE_STARTED/LIVE_ENDED` facts, inert when unconfigured, never notifies directly), `WebSearchToolPlugin` (`web_search` + `read_page` tools over DuckDuckGo, sandboxed, failures return error strings), and `BilibiliContentPlugin` (`get_video_info` / `search_bilibili` / `get_dynamic_feed` tools over the public Bilibili web API, SSRF-guarded). The mock `RESERVED_PLUGINS` registry was deleted — the Control Plane shows the real registry only.
 
 ### Control Plane Query Service, Trace & Replay Lab (ADR-0022)
 - `RuntimeQueryService` is the only read facade for web routes — no route touches `runtime.*._db`, `_actors` or `_plugins`; interventions keep their authority paths (loop resolve goes through `OpenLoopManager`).
@@ -182,14 +186,14 @@ Cross-time social continuity for promises and retained interests:
 - The cognitive proposal model replaced `thought` with typed `decision_reason`.
 
 ### Proposal Contract and Social State Authority (ADR-0025)
-- Added `ThreadTransition(KEEP, FADE, CLOSE)` and `SocialStateProposal(topic, thread_transition)`.
-- `GateDecision` has explicit `accepted: bool`; `STATE_ANNOTATION` events are only emitted when `decision.accepted is True`.
-- `validate_memory_proposal` enforces strict evidence validation, non-empty keys, and canonical `MemoryKind` enums.
+- **Partially superseded** — the typed `ThreadTransition(KEEP, FADE, CLOSE)` / `SocialStateProposal` contract and `STATE_ANNOTATION` events were removed with the ParticipationThread lifecycle; social state authority now lives in `GroupAgentSession` snapshots (ADR-0032/0033).
+- `GateDecision` has explicit `accepted: bool`.
+- `validate_memory_proposal` (`memory/writes.py`) enforces strict evidence validation, non-empty keys, and canonical `MemoryKind` enums.
 - Open loops resolve under atomic `WHERE id=? AND scene_id=? AND status='active'` guarantees.
 
 ### Semantic Staleness Gate & Interim Filtering (ADR-0026)
 - `EpisodeMailbox` only accepts human chat events (`GROUP_MESSAGE_RECEIVED`, `PRIVATE_MESSAGE_RECEIVED`), filtering out internal state and sensor facts.
-- Multi-step cognition checks `mailbox.has_unseen_interim()` at step boundaries; if interim chatter arrives during the final step, the outcome fails closed to `SILENCE`.
+- Multi-step cognition checks `mailbox.has_unseen_interim()` at step boundaries (now only in the legacy `ReActAgentCore`); in the production Social Core path, `RuntimeGate` re-checks unseen interim human events at commit time and fails closed to `SILENCE`.
 - `RuntimeGate` rejects stale outcomes where interim human events were not incorporated, tracking `stale_outcomes_rejected`.
 
 ### Participation Lifecycle & Attention Continuation (ADR-0027)
@@ -226,7 +230,7 @@ Cross-time social continuity for promises and retained interests:
 - `BurstAssembler` (replacing the per-sender `StimulusBuilder`) coalesces per scene by arrival timing only — no topic classification, keyword urgency, or wake decision. Direct mention/reply is a structural low-latency flush signal.
 
 ### Social Cognition Core Contract (ADR-0033)
-- Every valid burst enters the `SocialCognitionCore`, which sees the `GroupAgentSession`, up to 80 recent raw events, the ordered burst, and active open loops — no generic top-k memory injection.
+- Every valid burst enters the `SocialCognitionCore`, which sees the `GroupAgentSession`, token-budgeted projected raw events, the ordered burst, and active open loops — no generic top-k memory injection.
 - The strict `SocialCognitionResult` carries perception + full `SocialWorldState` snapshot, `SelfSocialState` update, exactly one `speak`/`silence` decision, and typed proposals. `silence` forbids messages; `speak` requires one.
 - Social inference runs outside `SceneActor`; the actor validates the observation cursor and evidence IDs, then atomically commits `SOCIAL_COGNITION_RECORDED` + updated session, or rejects stale results. The LLM never writes session state directly.
 
@@ -243,6 +247,10 @@ Cross-time social continuity for promises and retained interests:
 - `RoutingConfig` gains an optional single-hop `fallback` target (tried once on primary failure, skipped when identical to the primary); `ProviderConfig` gains an operator-curated `models` catalog fetched from the endpoint's `/v1/models` (Control Plane: `GET/POST /api/models/providers/{id}/models`), with route-target models backfilled at startup. Configuring a cross-vendor fallback is an explicit acknowledgement that episode context flows to that vendor.
 - The legacy boundary-test loop `PiAgentCore` is renamed `ReActAgentCore` (`cognition/react_core.py`) — the "Pi" name referenced an abandoned external-framework plan and never matched any dependency. The informal "V4 Stage 4" name for this batch is retired; ADR-0032 reserves Stage 4 for session context rollover.
 
+### Token-Budgeted Context and Direct Preemption (ADR-0037)
+- CQ media payloads are compacted only in the model-facing projection; raw events remain immutable. Recent raw conversation rolls over from the oldest edge only after the 200K-token input budget is reached.
+- A direct mention/reply may cancel an older same-scene model call while it is still in inference, because that result is already guaranteed to fail freshness. Scene commits, Gate evaluation, and action delivery are never preempted.
+
 ---
 
 ## 4. Development & Testing Workflow
@@ -255,7 +263,7 @@ Tests are explicitly organized into three distinct layers to ensure deterministi
 1. **Layer 1: Invariant & Boundary Tests (Deterministic, Fast, Fail-Closed)**
    - Ensures zero state leakage, transactional rollbacks, strict scope boundaries, single-writer actors, durable task claims, and SSRF blocking.
    - Files: `test_p0_invariants.py`, `test_runtime_invariant_closure.py`, `test_v3_stage2_authority.py`, `test_v3_stage3_staleness.py`, `test_v3_stage5_reflection.py`, `test_v3_stage6_scheduler.py`, `test_v3_stage7_plugins.py`, `test_v4_stage1_session.py`, `test_v4_stage2_social_core.py`.
-   - Run: `uv run pytest tests/test_v3_*.py -v`
+   - Run: `uv run pytest tests/test_p0_invariants.py tests/test_runtime_invariant_closure.py tests/test_v3_stage*.py tests/test_v4_stage1_session.py tests/test_v4_stage2_social_core.py -v`
 
 2. **Layer 2: Behavioral Pipeline & Scenarios (Deterministic Offline Replay)**
    - Tests end-to-end user-observable behavior using deterministic offline replay with scripted cognitive processors. No network or sleep dependencies.
