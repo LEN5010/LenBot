@@ -15,7 +15,11 @@ logger = logging.getLogger("len_bot")
 async def run_app():
     config = RuntimeConfig()
     runtime = AgentRuntime(config)
-    adapter = OneBotAdapter(config, on_event=runtime.receive_event)
+    adapter = OneBotAdapter(
+        config,
+        on_event=runtime.receive_event,
+        on_self_id=runtime.update_bot_identity,
+    )
     runtime.action_queue.send_adapter = adapter.send_action
     runtime._onebot_adapter = adapter
 
@@ -38,13 +42,21 @@ async def run_app():
     await runtime.start()
     await adapter.start()
 
+    onebot_link = (
+        f"主动连接 {config.onebot_ws_url}"
+        if config.onebot_connection_mode == "forward_ws"
+        else f"等待接入 ws://{config.ws_host}:{config.ws_port}"
+    )
+    action_transport = "WebSocket" if config.onebot_action_transport == "websocket" else "HTTP"
+
     banner = f"""
 ======================================================================
   🤖 Len Bot - Persistent Social Agent Runtime v0.2
 ======================================================================
   ● Web 管理面板 (Dashboard):  {"http://" + config.dashboard_host + ":" + str(config.dashboard_port) if config.dashboard_enabled else "Disabled"}
   ● 默认管理员凭据:           admin / lenbot123
-  ● OneBot v11 反向 WS 接口:  ws://{config.ws_host}:{config.ws_port}
+  ● OneBot v11 消息连接:      {onebot_link}
+  ● OneBot v11 发送方式:      {action_transport}
   ● 数据库路径:               {config.db_path}
 ======================================================================
   Bot 正在持续观察环境、守护时间感与未决事务中... 按 Ctrl+C 优雅退出

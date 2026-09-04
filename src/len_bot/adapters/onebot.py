@@ -5,6 +5,7 @@ import re
 import time
 from collections import deque
 from typing import Optional, Callable, Awaitable
+import httpx
 import websockets
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
@@ -13,46 +14,141 @@ from len_bot.actions.models import ActionItem, ActionType
 logger = logging.getLogger(__name__)
 
 class OneBotAdapter:
-    def __init__(self, config: RuntimeConfig, on_event: Callable[[Event], Awaitable[None]]):
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        on_event: Callable[[Event], Awaitable[None]],
+        on_self_id: Optional[Callable[[int], None]] = None,
+    ):
         self.config = config
         self.on_event = on_event
+        self.on_self_id = on_self_id
         self._server = None
-        self._active_ws: Optional[websockets.WebSocketServerProtocol] = None
+        self._active_ws = None
+        self._client_task: Optional[asyncio.Task] = None
+        self._stopping = False
+        self._last_error: Optional[str] = None
         self._echo_counter = 0
         self._pending_requests: dict[str, asyncio.Future[dict]] = {}
         self._reply_cache: deque[tuple[str, str]] = deque(maxlen=1000)
+        self._own_message_ids: deque[str] = deque(maxlen=1000)
+        self._self_id: Optional[int] = None
 
     async def start(self) -> None:
+        self._stopping = False
+        self._last_error = None
+        if self.config.onebot_connection_mode == "forward_ws":
+            self._client_task = asyncio.create_task(self._forward_connection_loop())
+            logger.info("OneBot forward WebSocket connector started for %s", self.config.onebot_ws_url)
+            return
         self._server = await websockets.serve(
             self._handle_connection,
             self.config.ws_host,
-            self.config.ws_port
+            self.config.ws_port,
+            ping_interval=20,
+            ping_timeout=20,
         )
-        logger.info("OneBot Reverse WebSocket server started on ws://%s:%s", self.config.ws_host, self.config.ws_port)
+        logger.info("OneBot reverse WebSocket server started on ws://%s:%s", self.config.ws_host, self.config.ws_port)
 
     async def stop(self) -> None:
+        self._stopping = True
+        if self._client_task:
+            self._client_task.cancel()
+            try:
+                await self._client_task
+            except asyncio.CancelledError:
+                pass
+            self._client_task = None
+        if self._active_ws:
+            await self._active_ws.close(code=1001, reason="LenBot connection restart")
+            self._active_ws = None
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+            self._server = None
+        self._fail_pending(ConnectionError("OneBot connection closed"))
+
+    async def restart(self) -> None:
+        await self.stop()
+        await self.start()
+
+    @property
+    def connected(self) -> bool:
+        return self._active_ws is not None
+
+    def status(self) -> dict:
+        return {
+            "connection_mode": self.config.onebot_connection_mode,
+            "action_transport": self.config.onebot_action_transport,
+            "ws_url": self.config.onebot_ws_url,
+            "http_url": self.config.onebot_http_url,
+            "host": self.config.ws_host,
+            "port": self.config.ws_port,
+            "connected": self.connected,
+            "remote_address": self._remote_address(),
+            "server_status": "listening" if self._server else "stopped",
+            "connector_status": "running" if self._client_task and not self._client_task.done() else "stopped",
+            "last_error": self._last_error,
+            "access_token_set": bool(self.config.onebot_access_token),
+            "echo_counter": self._echo_counter,
+            "self_id": self._self_id,
+        }
+
+    def _remote_address(self) -> Optional[str]:
+        if not self._active_ws:
+            return None
+        try:
+            return str(self._active_ws.remote_address)
+        except Exception:
+            return "connected"
+
+    def _auth_headers(self) -> dict[str, str]:
+        token = self.config.onebot_access_token.strip()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def _is_authorized(self, websocket) -> bool:
+        expected = self.config.onebot_access_token.strip()
+        if not expected:
+            return True
+        request = getattr(websocket, "request", None)
+        actual = request.headers.get("Authorization", "") if request else ""
+        return actual == f"Bearer {expected}"
+
+    async def _forward_connection_loop(self) -> None:
+        retry_delay = 1.0
+        while not self._stopping:
+            try:
+                async with websockets.connect(
+                    self.config.onebot_ws_url,
+                    additional_headers=self._auth_headers(),
+                    proxy=None,
+                    open_timeout=10,
+                    ping_interval=20,
+                    ping_timeout=20,
+                ) as websocket:
+                    self._last_error = None
+                    retry_delay = 1.0
+                    await self._consume_connection(websocket)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._last_error = str(error)
+                logger.warning("OneBot forward WebSocket connection failed: %s", error)
+            if not self._stopping:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30.0)
 
     async def send_action(self, action: ActionItem) -> bool:
         """Sends action to connected OneBot client via JSON-RPC."""
+        if self.config.onebot_action_transport == "http":
+            return await self._send_http_action(action)
         if not self._active_ws:
             logger.warning("Cannot send action: No OneBot client connected")
             return False
 
         self._echo_counter += 1
         echo = f"echo_{self._echo_counter}"
-        
-        endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
-        msg_text = f"[CQ:reply,id={action.reply_to}]{action.content}" if action.reply_to else action.content
-        params = {"message": msg_text}
-        
-        target_id = action.scene_id.split(":")[-1]
-        if action.action_type == ActionType.SEND_GROUP_MESSAGE:
-            params["group_id"] = int(target_id)
-        else:
-            params["user_id"] = int(target_id)
+        endpoint, params = self._action_payload(action)
 
         payload = {
             "action": endpoint,
@@ -66,15 +162,90 @@ class OneBotAdapter:
         try:
             await self._active_ws.send(json.dumps(payload))
             res = await asyncio.wait_for(fut, timeout=10.0)
-            return res.get("status") == "ok"
+            if self._response_ok(res):
+                self._remember_own_message(res)
+                return True
+            logger.warning("OneBot WebSocket action rejected: status=%s retcode=%s", res.get("status"), res.get("retcode"))
+            return False
         except Exception as e:
             logger.error("Failed sending OneBot action: %s", e)
             return False
         finally:
             self._pending_requests.pop(echo, None)
 
+    async def _send_http_action(self, action: ActionItem) -> bool:
+        endpoint, params = self._action_payload(action)
+        url = f"{self.config.onebot_http_url.rstrip('/')}/{endpoint}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, headers=self._auth_headers()) as client:
+                response = await client.post(url, json=params)
+                response.raise_for_status()
+                data = response.json()
+            if self._response_ok(data):
+                self._remember_own_message(data)
+                return True
+            logger.warning("OneBot HTTP action rejected: status=%s retcode=%s", data.get("status"), data.get("retcode"))
+            return False
+        except Exception as error:
+            logger.error("Failed sending OneBot HTTP action: %s", error)
+            return False
+
+    async def test_http_connection(self) -> dict:
+        url = f"{self.config.onebot_http_url.rstrip('/')}/get_status"
+        started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=5.0, headers=self._auth_headers()) as client:
+                response = await client.get(url)
+                data = response.json()
+            return {
+                "success": response.is_success and self._response_ok(data),
+                "latency_ms": round((time.monotonic() - started) * 1000),
+                "retcode": data.get("retcode"),
+                "wording": data.get("wording"),
+            }
+        except Exception as error:
+            return {
+                "success": False,
+                "latency_ms": round((time.monotonic() - started) * 1000),
+                "wording": str(error),
+            }
+
+    def _action_payload(self, action: ActionItem) -> tuple[str, dict]:
+        endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
+        msg_text = f"[CQ:reply,id={action.reply_to}]{action.content}" if action.reply_to else action.content
+        params = {"message": msg_text}
+        target_id = action.scene_id.split(":")[-1]
+        if action.action_type == ActionType.SEND_GROUP_MESSAGE:
+            params["group_id"] = int(target_id)
+        else:
+            params["user_id"] = int(target_id)
+        return endpoint, params
+
+    @staticmethod
+    def _response_ok(data: dict) -> bool:
+        return data.get("status") == "ok" and data.get("retcode", 0) == 0
+
+    def _remember_own_message(self, response: dict) -> None:
+        message_id = (response.get("data") or {}).get("message_id")
+        if message_id is not None:
+            self._own_message_ids.append(str(message_id))
+
+    def _fail_pending(self, error: Exception) -> None:
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(error)
+
     async def _handle_connection(self, websocket) -> None:
-        logger.info("OneBot client connected: %s", websocket.remote_address)
+        if not self._is_authorized(websocket):
+            logger.warning("Rejected unauthorized OneBot reverse WebSocket client")
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+        if self._active_ws and self._active_ws is not websocket:
+            await self._active_ws.close(code=1012, reason="Replaced by new OneBot connection")
+        await self._consume_connection(websocket)
+
+    async def _consume_connection(self, websocket) -> None:
+        logger.info("OneBot WebSocket connected: %s", websocket.remote_address)
         self._active_ws = websocket
         try:
             async for raw_msg in websocket:
@@ -83,7 +254,9 @@ class OneBotAdapter:
                     # Check if response to our sent action
                     echo = data.get("echo")
                     if echo and echo in self._pending_requests:
-                        self._pending_requests[echo].set_result(data)
+                        future = self._pending_requests[echo]
+                        if not future.done():
+                            future.set_result(data)
                         continue
 
                     # Otherwise process inbound event
@@ -95,9 +268,11 @@ class OneBotAdapter:
         finally:
             if self._active_ws == websocket:
                 self._active_ws = None
-            logger.info("OneBot client disconnected")
+                self._fail_pending(ConnectionError("OneBot WebSocket disconnected"))
+            logger.info("OneBot WebSocket disconnected")
 
     def _normalize_event(self, data: dict) -> Optional[Event]:
+        self._observe_self_id(data)
         post_type = data.get("post_type")
         if post_type != "message":
             return None
@@ -134,10 +309,6 @@ class OneBotAdapter:
                    for s in data.get("message", []) if isinstance(s, dict))
         )
 
-        reply_bot = (
-            "[CQ:reply" in raw_text and f"qq={self.config.bot_qq}" in raw_text
-        )
-
         # ADR-0031, §17: Extract reply_to_message_id and maintain ring buffer
         reply_to_id = None
         reply_match = re.search(r"\[CQ:reply,id=(-?\d+)\]", raw_text)
@@ -152,6 +323,7 @@ class OneBotAdapter:
         msg_id = data.get("message_id")
         if reply_to_id and msg_id:
             self._reply_cache.append((str(msg_id), str(reply_to_id)))
+        reply_bot = bool(reply_to_id and str(reply_to_id) in self._own_message_ids)
 
         # Person Context (ADR-0019 §十一): keep a sender snapshot for the person card.
         sender_raw = data.get("sender") or {}
@@ -175,3 +347,21 @@ class OneBotAdapter:
                 "sender": sender_snapshot
             }
         )
+
+    def _observe_self_id(self, data: dict) -> None:
+        raw_self_id = data.get("self_id")
+        if raw_self_id is None:
+            return
+        try:
+            self_id = int(raw_self_id)
+        except (TypeError, ValueError):
+            return
+        if self_id <= 0 or self_id == self._self_id:
+            return
+
+        previous = self._self_id
+        self._self_id = self_id
+        self.config.bot_qq = self_id
+        if self.on_self_id:
+            self.on_self_id(self_id)
+        logger.info("OneBot self identity detected: %s (previous: %s)", self_id, previous)

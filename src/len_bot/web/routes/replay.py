@@ -43,7 +43,7 @@ async def replay_scene(req: ReplayRequest, request: Request, user: str = Depends
     lab = ReplayLab(runtime.config, runtime.social_core)
     rows = await lab.run(event_objs)
     runs = [{
-        "policy": "Social Core",
+        "policy": "社交认知核心",
         "rows": rows,
         "summary": {
             "cognition": len(rows),

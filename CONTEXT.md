@@ -22,6 +22,18 @@ _Avoid_: Attention engine, classifier, semantic batcher
 An ingress filter that admits delayed or reconnected historical events into the Event Store while suppressing stimulus generation to prevent attention flooding.
 _Avoid_: Message filter, deduplicator
 
+**OneBot Link**:
+The single runtime-owned bridge that receives OneBot events over WebSocket and delivers approved actions through the operator-selected OneBot transport.
+_Avoid_: Plugin connection, message sender, protocol session
+
+**OneBot Connection Mode**:
+Whether LenBot actively connects to a OneBot WebSocket or listens for a OneBot client to connect; both modes feed the same event normalization path.
+_Avoid_: Bot mode, server role, deployment type
+
+**OneBot Action Transport**:
+The explicitly selected protocol used for each approved outbound action (`websocket` or `http`), with no automatic cross-transport retry after an ambiguous send.
+_Avoid_: Fallback channel, redundant sender
+
 **Scene**:
 An isolated conversational or observational space (such as a group chat, private chat, or livestream monitor) possessing its own independent context, ordering, and social dynamics.
 _Avoid_: Channel, room, session, thread

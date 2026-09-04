@@ -4,7 +4,7 @@ import time
 from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.events.models import Event, EventType
-from len_bot.memory.models import MemoryItem, MemoryProposal, MemoryStatus, MemoryCertainty
+from len_bot.memory.models import EpisodeRecord, MemoryItem, MemoryProposal, MemoryStatus, MemoryCertainty
 from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 
@@ -113,6 +113,31 @@ async def test_scenario_d_cross_scene_preference_and_privacy_boundary(tmp_path):
     )
     priv_mem = await private_toolkit.execute("query_memory", {"subject": actor_a, "key": "bank_card_password"})
     assert "987654" in priv_mem
+
+    # L1 episode lookup must enforce the same boundary in SQL. Knowing an
+    # episode ID from another scene is not authority to read its summary.
+    private_episode = EpisodeRecord(
+        id="episode-private-secret",
+        scene_id=private_chat,
+        title="私聊里的敏感事情",
+        summary="银行卡密码是 987654",
+        source_event_ids=[ev_secret.id],
+        participants=[actor_a],
+        tags=["private"],
+    )
+    await runtime.memory_store.save_episode(private_episode)
+    hidden_episode = await toolkit.execute(
+        "inspect_episode",
+        {"episode_id": private_episode.id},
+    )
+    assert "987654" not in hidden_episode
+    assert "当前可用范围内未找到" in hidden_episode
+
+    visible_episode = await private_toolkit.execute(
+        "inspect_episode",
+        {"episode_id": private_episode.id},
+    )
+    assert "987654" in visible_episode
 
     await runtime.stop()
 

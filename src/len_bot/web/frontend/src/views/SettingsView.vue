@@ -3,6 +3,13 @@ import { ref, onMounted } from 'vue'
 import { api, fmtTime } from '../api.js'
 
 const me = ref(null)
+const onebot = ref(null)
+const persona = ref({ identity_name: '', identity_persona: '', conversation_style: '' })
+const onebotForm = ref({
+  connection_mode: 'forward_ws', action_transport: 'websocket',
+  ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
+  host: '127.0.0.1', port: 8080, access_token: '',
+})
 const shadow = ref({ enabled: false, would_send: [] })
 const annotations = ref({ annotations: [], stats: { TP: 0, FP: 0, TN: 0, FN: 0 }, total: 0, accuracy: 0, precision: 0 })
 const form = ref({ current_password: '', new_password: '' })
@@ -13,6 +20,23 @@ onMounted(load)
 async function load() {
   try {
     me.value = await api('/api/auth/me')
+    const personaRes = await api('/api/settings/persona')
+    persona.value = {
+      identity_name: personaRes.identity_name,
+      identity_persona: personaRes.identity_persona,
+      conversation_style: personaRes.conversation_style || '',
+    }
+    const onebotRes = await api('/api/websocket/status')
+    onebot.value = onebotRes
+    onebotForm.value = {
+      connection_mode: onebotRes.connection_mode,
+      action_transport: onebotRes.action_transport,
+      ws_url: onebotRes.ws_url,
+      http_url: onebotRes.http_url,
+      host: onebotRes.host,
+      port: onebotRes.port,
+      access_token: '',
+    }
     const shadowRes = await api('/api/cockpit/shadow')
     shadow.value.enabled = !!shadowRes.enabled
     shadow.value.would_send = shadowRes.would_send || []
@@ -22,6 +46,55 @@ async function load() {
   } catch (e) {
     error.value = e.message
   }
+}
+
+async function savePersona() {
+  error.value = ''
+  message.value = ''
+  try {
+    const res = await api('/api/settings/persona', {
+      method: 'POST',
+      body: JSON.stringify(persona.value),
+    })
+    message.value = res.message
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function saveOneBot(showSuccess = true) {
+  error.value = ''
+  message.value = ''
+  try {
+    const body = { ...onebotForm.value }
+    if (!body.access_token) body.access_token = null
+    const res = await api('/api/websocket/config', { method: 'POST', body: JSON.stringify(body) })
+    if (showSuccess) message.value = res.message
+    await load()
+    return true
+  } catch (e) {
+    error.value = e.message
+    return false
+  }
+}
+
+async function testOneBotHttp() {
+  error.value = ''
+  message.value = ''
+  if (!await saveOneBot(false)) return
+  try {
+    const res = await api('/api/websocket/test-http', { method: 'POST' })
+    message.value = res.message
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function onebotStatusText() {
+  if (onebot.value?.connected) return '已经连接，可以收取消息'
+  if (onebot.value?.connection_mode === 'forward_ws') return '正在等待连接成功，失败后会自动重试'
+  return '正在监听，等待 OneBot 主动连接'
 }
 
 async function toggleShadow() {
@@ -96,6 +169,78 @@ async function changePassword() {
 
     <p v-if="message" class="tag ok" style="margin-bottom: 16px;">✓ {{ message }}</p>
     <p v-if="error" class="tag bad" style="margin-bottom: 16px;">✕ {{ error }}</p>
+
+    <div class="panel persona-panel">
+      <div class="panel-header">
+        <div>
+          <div class="bento-badge">机器人性格</div>
+          <h2>人格与说话方式</h2>
+          <p class="muted">这里写的是机器人长期稳定的性格，不需要填写技术提示词。</p>
+        </div>
+        <button class="primary" @click="savePersona">保存并立即生效</button>
+      </div>
+      <div class="persona-fields">
+        <label>机器人名字
+          <input v-model="persona.identity_name" placeholder="例如：Len" />
+        </label>
+        <label class="wide">它是一个怎样的人
+          <textarea v-model="persona.identity_persona" rows="5" placeholder="例如：嘴有点损但没有恶意，熟人面前话多，对比赛和直播很感兴趣……"></textarea>
+          <small>写性格、兴趣、价值倾向，以及它在群里的常见角色。</small>
+        </label>
+        <label class="wide">希望它怎么说话
+          <textarea v-model="persona.conversation_style" rows="4" placeholder="例如：短句、口语化，可以接梗，不写长篇解释，不用客服腔……"></textarea>
+          <small>这里只控制表达习惯，不会绕过运行时安全和发送限制。</small>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel onebot-panel" v-if="onebot">
+      <div class="panel-header">
+        <div>
+          <div class="bento-badge">QQ 连接</div>
+          <h2>连接 OneBot</h2>
+          <p class="muted">{{ onebotStatusText() }}</p>
+          <p v-if="onebot.self_id" class="muted">已自动识别机器人 QQ：{{ onebot.self_id }}</p>
+        </div>
+        <span class="tag" :class="onebot.connected ? 'ok' : 'warn'">{{ onebot.connected ? '已连接' : '未连接' }}</span>
+      </div>
+
+      <div class="connection-mode-grid">
+        <label class="choice-card" :class="{ selected: onebotForm.connection_mode === 'forward_ws' }">
+          <input v-model="onebotForm.connection_mode" type="radio" value="forward_ws" />
+          <span><strong>主动连接 OneBot</strong><small>适合 OneBot 已经监听连接端口的情况</small></span>
+        </label>
+        <label class="choice-card" :class="{ selected: onebotForm.connection_mode === 'reverse_ws' }">
+          <input v-model="onebotForm.connection_mode" type="radio" value="reverse_ws" />
+          <span><strong>等待 OneBot 连接</strong><small>由 LenBot 监听端口，等待 OneBot 接入</small></span>
+        </label>
+      </div>
+
+      <div class="connection-fields">
+        <template v-if="onebotForm.connection_mode === 'forward_ws'">
+          <label>消息连接地址<input v-model="onebotForm.ws_url" required placeholder="ws://127.0.0.1:13001/" /></label>
+        </template>
+        <template v-else>
+          <label>监听地址<input v-model="onebotForm.host" required placeholder="127.0.0.1" /></label>
+          <label>监听端口<input v-model.number="onebotForm.port" type="number" min="1" max="65535" /></label>
+        </template>
+        <label>发送消息的方式
+          <select v-model="onebotForm.action_transport">
+            <option value="websocket">使用消息连接收发</option>
+            <option value="http">使用 HTTP 接口发送</option>
+          </select>
+        </label>
+        <label>HTTP 接口地址<input v-model="onebotForm.http_url" :required="onebotForm.action_transport === 'http'" placeholder="http://127.0.0.1:13000/" /></label>
+        <label class="wide">访问令牌
+          <input v-model="onebotForm.access_token" type="password" :placeholder="onebot.access_token_set ? '已保存，留空不会修改' : '从 OneBot 面板复制访问令牌'" />
+        </label>
+      </div>
+      <p v-if="onebot.last_error" class="notice error">最近一次连接失败：{{ onebot.last_error }}</p>
+      <div class="action-btn-group connection-actions">
+        <button class="primary" @click="saveOneBot()">保存并重新连接</button>
+        <button @click="testOneBotHttp">测试 HTTP 接口</button>
+      </div>
+    </div>
 
     <div class="panel">
       <div class="panel-header">
@@ -260,6 +405,92 @@ async function changePassword() {
   max-width: 320px;
 }
 
+.connection-mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 16px 0;
+}
+.choice-card {
+  min-height: 82px;
+  padding: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+}
+.choice-card.selected {
+  border-color: var(--border-accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.07);
+}
+.choice-card input {
+  width: 18px;
+  min-height: 18px;
+  margin-top: 2px;
+}
+.choice-card strong, .choice-card small {
+  display: block;
+}
+.choice-card strong {
+  color: var(--text);
+}
+.choice-card small {
+  margin-top: 5px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.connection-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 13px;
+}
+.connection-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+.connection-fields .wide {
+  grid-column: 1 / -1;
+}
+.connection-actions {
+  margin-top: 15px;
+}
+.persona-panel {
+  margin-bottom: 24px;
+}
+.persona-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) 1fr;
+  gap: 14px;
+}
+.persona-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+.persona-fields .wide {
+  grid-column: 1 / -1;
+}
+.persona-fields small {
+  color: var(--muted);
+  font-weight: 400;
+  line-height: 1.5;
+}
+.persona-fields textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
 .action-btn-group {
   display: flex;
   gap: 6px;
@@ -307,5 +538,17 @@ async function changePassword() {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 14px 16px;
+}
+
+@media (max-width: 600px) {
+  .connection-mode-grid, .connection-fields {
+    grid-template-columns: 1fr;
+  }
+  .persona-fields {
+    grid-template-columns: 1fr;
+  }
+  .connection-fields .wide {
+    grid-column: auto;
+  }
 }
 </style>

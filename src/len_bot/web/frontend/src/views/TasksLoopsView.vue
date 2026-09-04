@@ -68,10 +68,10 @@ function taskStatus(value) {
           <tr>
             <th>预定执行时间</th>
             <th>会话场景</th>
-            <th>任务内容描述</th>
-            <th>唤醒触发条件</th>
+            <th>要做什么</th>
+            <th>何时触发</th>
             <th>当前状态</th>
-            <th>调度操作</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -115,13 +115,13 @@ function taskStatus(value) {
       <table>
         <thead>
           <tr>
-            <th>记录编号</th>
-            <th>会话场景</th>
-            <th>等待目标成员</th>
-            <th>预期回应意图</th>
+            <th>编号</th>
+            <th>群聊</th>
+            <th>正在等谁</th>
+            <th>在等什么</th>
             <th>发起时间</th>
             <th>等待截止时间</th>
-            <th>运维干预</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -133,11 +133,11 @@ function taskStatus(value) {
             <td>{{ fmtTime(l.created_at) }}</td>
             <td>{{ fmtTime(l.expires_at) }}</td>
             <td>
-              <button class="small-btn danger" @click="resolveLoop(l.id)">手动闭环</button>
+              <button class="small-btn danger" @click="resolveLoop(l.id)">结束等待</button>
             </td>
           </tr>
           <tr v-if="!loops.length">
-            <td colspan="7" class="muted" style="text-align: center; padding: 24px;">当前无未闭环社交承诺</td>
+            <td colspan="7" class="muted" style="text-align: center; padding: 24px;">当前没有正在等待的回复</td>
           </tr>
         </tbody>
       </table>

@@ -23,7 +23,7 @@ function engagementLabel(value) { return value === 'participating' || value === 
         <div class="bento-card bento-col-4 primary-card">
           <div class="bento-badge">QQ 连接</div>
           <div class="hero-status"><span :class="data.stats.websocket_connected ? 'big-dot online' : 'big-dot'"></span>{{ data.stats.websocket_connected ? '已经连接' : '等待连接' }}</div>
-          <div class="bento-desc">{{ data.stats.websocket_connected ? '可以正常接收群消息' : '请检查 QQ 端的反向连接设置' }}</div>
+          <div class="bento-desc">{{ data.stats.websocket_connected ? '可以正常接收群消息' : data.stats.onebot_connection_mode === 'forward_ws' ? '正在主动连接 OneBot，断线后会自动重试' : '正在等待 OneBot 主动接入' }}</div>
         </div>
         <div class="bento-card bento-col-4">
           <div class="bento-badge">消息发送</div>

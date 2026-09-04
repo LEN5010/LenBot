@@ -117,10 +117,23 @@ async def save_provider_models(
     provider = next((item for item in providers if item.id == provider_id), None)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"未找到供应商“{provider_id}”")
-    provider.models = sorted({model.strip() for model in req.models if model.strip()})
     routing = RoutingConfig(**snapshot["routing"])
+    selected_models = {model.strip() for model in req.models if model.strip()}
+    route_targets = [routing.normal, routing.deliberate]
+    if routing.fallback is not None:
+        route_targets.append(routing.fallback)
+    active_models = {
+        target.model
+        for target in route_targets
+        if target.provider_id == provider_id
+    }
+    retained_models = active_models - selected_models
+    provider.models = sorted(selected_models | active_models)
     await _persist_and_apply(runtime, providers, routing)
-    return {"success": True, "message": "可选模型已保存", "models": provider.models}
+    message = "可选模型已保存"
+    if retained_models:
+        message += "；当前正在使用的模型已自动保留"
+    return {"success": True, "message": message, "models": provider.models}
 
 
 @router.get("/routing")
@@ -136,7 +149,7 @@ async def update_routing(req: RoutingUpdateRequest, request: Request, user: str 
     snap = runtime.provider_registry.export()
     providers = [ProviderConfig(**p) for p in snap.get("providers", [])]
     if not providers:
-        raise HTTPException(status_code=400, detail="No providers configured yet")
+        raise HTTPException(status_code=400, detail="请先添加模型供应商")
     routing = RoutingConfig(
         normal=RouteTarget(provider_id=req.normal_provider_id, model=req.normal_model.strip()),
         deliberate=RouteTarget(provider_id=req.deliberate_provider_id, model=req.deliberate_model.strip()),
@@ -164,7 +177,7 @@ async def test_model_connection(req: ModelTestRequest, request: Request, user: s
     snap = runtime.provider_registry.export()
     provider = next((ProviderConfig(**p) for p in snap.get("providers", []) if p["id"] == req.provider_id), None)
     if provider is None:
-        raise HTTPException(status_code=404, detail=f"Provider '{req.provider_id}' not found")
+        raise HTTPException(status_code=404, detail=f"未找到供应商“{req.provider_id}”")
 
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url, timeout=30.0)
@@ -172,7 +185,7 @@ async def test_model_connection(req: ModelTestRequest, request: Request, user: s
     try:
         completion = await client.chat.completions.create(
             model=req.model,
-            messages=[{"role": "user", "content": "Ping test: respond with 'pong'"}],
+            messages=[{"role": "user", "content": "这是连接测试，请只回复：连接正常"}],
             max_tokens=10,
             temperature=0.1
         )

@@ -38,6 +38,7 @@ class RuntimeQueryService:
                 "active_scenes": sum(1 for s in scenes if s["activity"] in ("active", "hot")),
                 "memory_beliefs_count": memory_count,
                 "websocket_connected": self.websocket_connected(),
+                "onebot_connection_mode": rt.config.onebot_connection_mode,
                 "normal_model": routing["routing"]["normal"]["model"] if routing["routing"] else None,
                 "deliberate_model": routing["routing"]["deliberate"]["model"] if routing["routing"] else None,
                 "identity_name": rt.config.identity_name,
@@ -51,7 +52,28 @@ class RuntimeQueryService:
 
     def websocket_connected(self) -> bool:
         adapter = getattr(self.runtime, "_onebot_adapter", None)
-        return bool(adapter and getattr(adapter, "_active_ws", None) is not None)
+        return bool(adapter and adapter.connected)
+
+    def onebot_status(self) -> dict:
+        adapter = getattr(self.runtime, "_onebot_adapter", None)
+        if adapter:
+            return adapter.status()
+        config = self.runtime.config
+        return {
+            "connection_mode": config.onebot_connection_mode,
+            "action_transport": config.onebot_action_transport,
+            "ws_url": config.onebot_ws_url,
+            "http_url": config.onebot_http_url,
+            "host": config.ws_host,
+            "port": config.ws_port,
+            "connected": False,
+            "remote_address": None,
+            "server_status": "stopped",
+            "connector_status": "stopped",
+            "last_error": None,
+            "access_token_set": bool(config.onebot_access_token),
+            "echo_counter": 0,
+        }
 
     # ---------- Scenes ----------
 

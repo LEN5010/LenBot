@@ -47,6 +47,7 @@ OneBot / Plugin / Scheduler Event
 - Stage 3 已完成：生产路径已切换为 `Hard Event Gate → Social Cognition Core → RuntimeGate`；V3 Attention、Interest、SpeakingBudget 与 ParticipationThread 业务路径已删除。
 - Stage 6 已完成：RetainedAttention 在合法 Session 提交时清理；NextWakeIntent 经 RuntimeGate 转换为可恢复的 durable task，并以 `TASK_DUE` 重新进入 Social Core。
 - Agentic Retrieval 已完成（ADR-0035）：SocialCognitionCore 升级为有界 ReAct 工具循环，模型可按需调用历史/记忆检索工具（带强制收敛、工具错误回灌与确定性工具预算）；ProviderRegistry 支持主→备回退路由、模型目录管理与调用指标，控制台可在线勾选模型并指定普通/思考/回退三类用途。
+- OneBot 连接已支持主动连接与等待接入两种模式（ADR-0036），消息发送可明确选择 WebSocket 或 HTTP；配置由控制台持久化，主动连接断开后自动重连。
 
 ---
 

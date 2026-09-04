@@ -25,8 +25,8 @@ class BilibiliLiveSensor(BasePlugin):
     def __init__(self):
         super().__init__(manifest=PluginManifest(
             id="bilibili_live_sensor",
-            name="Bilibili 直播监控感官",
-            description="轮询指定直播间状态，向事件总线投递 LIVE_STARTED / LIVE_ENDED 事实事件（不直接通知任何人）。",
+            name="哔哩哔哩直播监测",
+            description="监测指定直播间的开播和下播状态，再交给机器人判断是否需要告诉群友。",
             version="1.0.0",
             plugin_type=PluginType.SENSORY,
             permissions=[PluginPermission.EMIT_EVENT],

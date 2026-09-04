@@ -25,15 +25,15 @@ class BilibiliContentPlugin(BasePlugin):
         super().__init__(manifest=PluginManifest(
             id="bilibili_content",
             name="哔哩哔哩内容查询工具",
-            description="供认知模型主动调用的 B站公开视频信息、搜索与动态检索工具。",
+            description="机器人需要时主动查询哔哩哔哩公开视频、搜索结果和用户动态。",
             version="1.0.0",
             plugin_type=PluginType.TOOL,
             permissions=[PluginPermission.REGISTER_TOOL],
             config_schema={
                 "type": "object",
                 "properties": {
-                    "sessdata": {"type": "string", "title": "SESSDATA (用户 Cookie，用于高级检索)"},
-                    "bili_jct": {"type": "string", "title": "bili_jct (CSRF Token)"},
+                    "sessdata": {"type": "string", "title": "登录凭据（SESSDATA，用于高级查询）"},
+                    "bili_jct": {"type": "string", "title": "请求校验值（bili_jct）"},
                 }
             },
             default_config={"sessdata": "", "bili_jct": ""},

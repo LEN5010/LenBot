@@ -70,6 +70,7 @@ async function fetchModels(providerId) {
   error.value = ''; loadingModels.value = providerId
   try {
     const result = await api(`/api/models/providers/${encodeURIComponent(providerId)}/models`)
+    if (!Array.isArray(result.models)) throw new Error('后台服务版本过旧，请重启 LenBot 后再获取模型')
     catalogs.value[providerId] = result.models
     const current = new Set(providerById(providerId)?.models || [])
     selectedModels.value[providerId] = result.models.filter(model => current.has(model))
@@ -130,7 +131,7 @@ function tierName(tier) { return tier === 'deliberate' ? '思考模式' : '普�
         <div class="step-number">1</div>
         <div class="bento-badge">添加供应商</div>
         <h2>连接模型接口</h2>
-        <p class="muted">支持与 OpenAI 接口格式兼容的服务。</p>
+        <p class="muted">支持常见的通用模型接口格式。</p>
         <form class="provider-form" @submit.prevent="saveProvider">
           <label>供应商名称<input v-model="providerForm.id" required placeholder="例如：深度求索" /></label>
           <label>接口地址<input v-model="providerForm.base_url" required placeholder="https://example.com/v1" /></label>

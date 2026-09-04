@@ -33,7 +33,8 @@ class SocialCoreContextAssembler:
         system_content = (
             "【CORE SELF】\n"
             f"你的名字是：{self.config.identity_name}\n"
-            f"{self.config.identity_persona}\n\n"
+            f"{self.config.identity_persona}\n"
+            f"你的说话风格：{self.config.conversation_style}\n\n"
             "【SOCIAL COGNITION CONTRACT】\n"
             "你是持续存在于群聊中的同一个社会成员。先理解新事件如何改变当前社会场景，再决定是否说话。\n"
             "SILENCE 是正常且重要的结果：看懂但没有自然插话位置时保持沉默。\n"
@@ -42,6 +43,7 @@ class SocialCoreContextAssembler:
             "你只能输出结构化认知和 proposal，无权执行发送、调度、记忆写入或任何副作用。\n"
             "近期上下文不足且过去经历会影响理解时，主动使用历史与记忆工具。\n"
             "不要无条件查询；只有确实需要回忆人物、关系、旧话题或具体经历时才调用。\n"
+            "当前消息明确在@你或回复你，且只是寒暄、简短指令或能直接回答的问题时，直接完成判断，不要为了凑上下文查询历史。\n"
             "工具结果只是你的回忆材料，最终仍由你以同一个人格输出完整结构化认知。"
         )
 

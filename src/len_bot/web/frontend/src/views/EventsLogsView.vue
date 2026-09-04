@@ -11,11 +11,13 @@ const error = ref('')
 const EVENT_TYPES = [
   'GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED', 'MESSAGE_SENT', 'MESSAGE_SEND_FAILED',
   'TASK_DUE', 'STATE_ANNOTATION', 'LIVE_STARTED', 'LIVE_ENDED', 'TOOL_COMPLETED', 'USER_JOINED',
+  'HISTORICAL_IMPORT', 'SOCIAL_COGNITION_RECORDED',
 ]
 const EVENT_LABELS = {
   GROUP_MESSAGE_RECEIVED: '收到群消息', PRIVATE_MESSAGE_RECEIVED: '收到私聊', MESSAGE_SENT: '消息已发送',
   MESSAGE_SEND_FAILED: '消息发送失败', TASK_DUE: '计划到期', STATE_ANNOTATION: '状态更新',
   LIVE_STARTED: '直播开始', LIVE_ENDED: '直播结束', TOOL_COMPLETED: '查询完成', USER_JOINED: '成员加入',
+  HISTORICAL_IMPORT: '导入历史消息', SOCIAL_COGNITION_RECORDED: '完成一次理解',
 }
 function eventLabel(value) { return EVENT_LABELS[value] || value }
 function levelLabel(value) { return value === 'ERROR' ? '错误' : value === 'WARNING' ? '警告' : '信息' }
@@ -56,8 +58,8 @@ async function load() {
       </div>
 
       <div class="toolbar filter-bar">
-        <input v-model="filters.scene_id" placeholder="过滤场景 如 group:123..." />
-        <input v-model="filters.actor_id" placeholder="过滤主体 如 user:1001..." />
+        <input v-model="filters.scene_id" placeholder="按群聊编号筛选，例如 group:123" />
+        <input v-model="filters.actor_id" placeholder="按成员编号筛选，例如 user:1001" />
         <select v-model="filters.event_type">
           <option value="">全部事件类型</option>
           <option v-for="t in EVENT_TYPES" :key="t" :value="t">{{ eventLabel(t) }}</option>
@@ -72,7 +74,7 @@ async function load() {
             <th>事件类型</th>
             <th>发生场景</th>
             <th>发起主体</th>
-            <th>事件载荷内容</th>
+            <th>相关内容</th>
           </tr>
         </thead>
         <tbody>

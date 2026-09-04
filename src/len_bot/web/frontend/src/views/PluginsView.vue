@@ -62,6 +62,15 @@ function setFieldValue(p, key, value) {
 function parseList(raw) {
   return raw.split(/[,\s]+/).filter(Boolean)
 }
+
+const PERMISSION_LABELS = { emit_event: '提交观察结果', register_tool: '提供查询能力', intercept_action: '检查待发消息' }
+const EVENT_LABELS = { LIVE_STARTED: '发现直播开始', LIVE_ENDED: '发现直播结束' }
+const TOOL_LABELS = {
+  web_search: '搜索网页', read_page: '读取网页',
+  get_video_info: '查询视频信息', search_bilibili: '搜索哔哩哔哩', get_dynamic_feed: '查询用户动态',
+}
+function labels(values, dictionary) { return (values || []).map(value => dictionary[value] || value).join('、') }
+function stateLabel(value) { return value === 'enabled' ? '运行中' : value === 'disabled' ? '已停用' : value === 'error' ? '运行异常' : '正在准备' }
 </script>
 
 <template>
@@ -87,12 +96,12 @@ function parseList(raw) {
             <span class="plugin-type-badge">
               {{ p.plugin_type === 'sensor' ? '信息监测' : '查询工具' }}
             </span>
-            <h3>{{ p.name }} <code>{{ p.id }}</code> <span class="tag">v{{ p.version }}</span></h3>
+            <h3>{{ p.name }} <span class="tag">版本 {{ p.version }}</span></h3>
             <p class="muted plugin-desc">{{ p.description }}</p>
           </div>
           <div class="plugin-action-group">
             <span class="tag" :class="p.state === 'enabled' ? 'ok' : (p.state === 'error' ? 'bad' : '')">
-              {{ p.state === 'enabled' ? '运行中' : p.state === 'disabled' ? '已禁用' : p.state }}
+              {{ stateLabel(p.state) }}
             </span>
             <button :class="p.enabled ? 'danger' : 'primary'" @click="toggle(p)">
               {{ p.enabled ? '停用插件' : '启用插件' }}
@@ -105,15 +114,15 @@ function parseList(raw) {
             <div class="bento-badge">它能做什么</div>
             <div class="kv">
               <span class="k">已获权限</span>
-              <span class="v">{{ p.permissions.join(', ') || '无特殊权限' }}</span>
+              <span class="v">{{ labels(p.permissions, PERMISSION_LABELS) || '无特殊权限' }}</span>
             </div>
             <div class="kv" v-if="p.emitted_events?.length">
               <span class="k">能够发现</span>
-              <span class="v code-text">{{ p.emitted_events.join(', ') }}</span>
+              <span class="v">{{ labels(p.emitted_events, EVENT_LABELS) }}</span>
             </div>
             <div class="kv" v-if="p.registered_tools?.length">
               <span class="k">提供工具</span>
-              <span class="v code-text">{{ p.registered_tools.join(', ') }}</span>
+              <span class="v">{{ labels(p.registered_tools, TOOL_LABELS) }}</span>
             </div>
           </div>
 

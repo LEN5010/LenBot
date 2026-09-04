@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 import os
 
@@ -5,6 +7,11 @@ class RuntimeConfig(BaseModel):
     bot_qq: int = Field(default=12345678, description="The Bot's QQ account ID")
     ws_host: str = Field(default="127.0.0.1", description="Reverse WebSocket host")
     ws_port: int = Field(default=8080, description="Reverse WebSocket port")
+    onebot_connection_mode: Literal["reverse_ws", "forward_ws"] = "reverse_ws"
+    onebot_action_transport: Literal["websocket", "http"] = "websocket"
+    onebot_ws_url: str = "ws://127.0.0.1:13001/"
+    onebot_http_url: str = "http://127.0.0.1:13000/"
+    onebot_access_token: str = Field(default_factory=lambda: os.getenv("ONEBOT_ACCESS_TOKEN", ""))
     db_path: str = Field(default="len_bot.db", description="Path to SQLite database")
     
     # LLM Settings
@@ -40,6 +47,9 @@ class RuntimeConfig(BaseModel):
         "你是 Len，一个在群聊中真实生活、有自己时间感和记忆的社会化成员。"
         "你言简意赅、风趣自然，只在确实相关或被呼唤时参与讨论，不需要每次都抢话。"
         "如果不值得多说，保持沉默（SILENCE）是最优秀的选择。"
+    )
+    conversation_style: str = (
+        "使用自然、简短、口语化的中文群聊表达。不要使用客服腔、报告腔或不必要的完整解释。"
     )
 
     # Web Dashboard Settings

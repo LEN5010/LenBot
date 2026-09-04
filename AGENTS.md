@@ -34,7 +34,7 @@ src/len_bot/
 │   ├── models.py        # ActionItem, ActionType
 │   └── queue.py         # ActionQueue (Two-Phase Commit for Open Loops)
 ├── adapters/            # External sensory and protocol adapters
-│   └── onebot.py        # OneBot v11 Reverse WebSocket adapter
+│   └── onebot.py        # OneBot v11 active/passive WebSocket link + selected action transport
 ├── cognition/           # Ephemeral cognitive execution
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
 │   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, FinalDisposition
@@ -214,6 +214,11 @@ Cross-time social continuity for promises and retained interests:
 - `POST /api/cockpit/social` and the `AttentionEngine.monitored_keywords` it synced were removed with the V3 attention module.
 - `shadow_annotations` table and endpoints (`POST /api/cockpit/shadow-annotations`, `GET /api/cockpit/shadow-annotations`) track TP/FP/TN/FN human evaluation feedback and accuracy metrics.
 - OneBot v11 adapter drops bot's own self-sent echo messages, parses `reply_to_message_id` into a 1000-item ring buffer, and formats quote replies with `[CQ:reply,id=...]`.
+
+### Runtime-Owned OneBot Link (ADR-0036)
+- `OneBotAdapter` owns exactly one event link in either active-connect or passive-listen WebSocket mode; both normalize events through the same path.
+- Operators explicitly select WebSocket or HTTP for outbound actions. An action is never retried on the other transport after an ambiguous result, preventing duplicate visible messages.
+- Forward WebSocket reconnects with bounded backoff, pending echo requests fail on disconnect, and access tokens remain write-only in the Control Plane.
 
 ### Persistent GroupAgentSession & Scene Bursts (ADR-0032)
 - Each `SceneActor` owns one `GroupAgentSession` holding the scene's structured social state (world state, self state, working persons/relationships, retained attention). The session reducer updates only factual observations; it never infers topics, mood, or whether to speak.
