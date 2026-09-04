@@ -18,7 +18,7 @@ When modifying or adding features to this codebase, you **must strictly adhere**
 3. **No persistent LLM sessions**: Never store state inside LLM prompt history or permanent chat sessions. All truth is materialized in SQLite WAL tables.
 4. **No execution authority in Reflection**: Reflection processes only propose epistemic beliefs (`MemoryProposal`); they have zero authority over tasks, open loops, or action queues.
 5. **No implicit task creation from soft state**: Soft annotations (e.g. `possible_start_time`) must never automatically spawn scheduled tasks. Tasks require explicit `TaskProposal` from cognition.
-6. **No direct side-effects from Pi**: Pi outputs structured `EpisodeOutcome` containing proposals. Actions must pass through `RuntimeGate` validation.
+6. **No direct side-effects from the Social Core**: `SocialCognitionCore` outputs a structured `SocialCognitionResult` containing proposals. Actions must pass through `RuntimeGate` validation.
 7. **No overwriting raw history with memory**: The `events` table is append-only and immutable. Memories are subjective epistemic beliefs with evidence pointers back to raw events.
 8. **No automatic RAG on every message**: Working context is carried directly in `GroupAgentSession`; older history is retrieved actively and on-demand via tools (`search_messages`, `read_context`, `query_timeline`).
 9. **No prompt-level privacy enforcement**: Privacy boundaries (`ExecutionScope`) must be rigidly enforced at the SQL layer (`WHERE scene_id IN (...)`), never by asking the model not to disclose private information.
@@ -35,21 +35,14 @@ src/len_bot/
 │   └── queue.py         # ActionQueue (Two-Phase Commit for Open Loops)
 ├── adapters/            # External sensory and protocol adapters
 │   └── onebot.py        # OneBot v11 Reverse WebSocket adapter
-├── attention/           # Attention filtering & initiative
-│   ├── budget.py        # SpeakingBudget (anti-chatterbox thresholding)
-│   ├── engine.py        # AttentionEngine (Hard, Heuristic, Initiative)
-│   ├── initiative.py    # InitiativeEngine (WAKE_FOR_INITIATIVE, RETAIN_FOR_LATER)
-│   └── models.py        # AttentionResult, AttentionDisposition
 ├── cognition/           # Ephemeral cognitive execution
-│   ├── assembler.py     # ContextAssembler (Situation Package generator)
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
-│   ├── manager.py       # EpisodeManager (ephemeral episode lifecycle)
-│   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, RetainedItemProposal
-│   ├── pi_core.py       # PiAgentCore (ReAct loop with step-boundary steering)
+│   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, FinalDisposition
+│   ├── pi_core.py       # PiAgentCore (legacy V3 ReAct loop; kept for boundary tests only)
 │   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing)
 │   ├── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
-│   ├── session.py       # GroupAgentSession and validated social state proposals
-│   └── social_core.py   # Social Cognition Core + direct working-context assembly
+│   ├── session.py       # GroupAgentSession, SocialCognitionResult + session reducer
+│   └── social_core.py   # SocialCognitionCore + direct working-context assembly
 ├── events/              # Immutable event bus & raw storage
 │   ├── builder.py       # BurstAssembler (scene event coalescing; no social judgement)
 │   ├── models.py        # Event, EventType, Stimulus, StimulusType
@@ -67,18 +60,17 @@ src/len_bot/
 ├── scenes/              # Scene state management
 │   ├── actor.py         # SceneActor (single-writer asynchronous worker)
 │   ├── manager.py       # SceneManager (actor registry)
-│   ├── models.py        # SceneState, ParticipationThread
+│   ├── models.py        # SceneState (operational facts only; social state lives in GroupAgentSession)
 │   └── reducer.py       # SceneReducer (pure functional state transition)
 ├── scheduler/           # Deterministic time execution
 │   ├── engine.py        # TaskScheduler (min-heap + condition-bound wake + sync)
 │   └── models.py        # TaskItem (due_at, wake_event_type), TaskStatus
-├── state/               # Social and operational state
-│   ├── ambient.py       # AmbientStore (short-lived retained soft state, in-memory)
-│   ├── interest.py      # InterestModel (topic weights & scoring)
+├── state/               # Operational state
 │   └── open_loops.py    # OpenLoopManager (TTL sweeper & decay)
 ├── testing/             # Deterministic test utilities
-│   ├── replay.py        # ReplayLab (deterministic offline attention/cognition replay)
-│   └── scenario_runner.py # ScenarioRunner for offline behavioral replay
+│   ├── replay.py        # ReplayLab (GroupAgentSession reducer + injected Social Core replay)
+│   ├── scenario_runner.py # ScenarioRunner for offline behavioral replay
+│   └── social.py        # social_result() factory for scripted SocialCognitionResults
 ├── plugins/             # Plugin runtime (ADR-0016/0021)
 │   ├── builtin/         # Real plugins: bilibili_live sensor, web_search tool
 │   ├── base.py          # BasePlugin, PluginContext (permission-guarded)
@@ -130,10 +122,7 @@ When an episode finishes with multiple proposals (`tasks`, `resolve_open_loop_id
 - External side-effects (`TaskScheduler` heap registration and `ActionQueue` enqueue) only execute after database transaction commits successfully.
 
 ### Social Behavior Core & Interim Context (ADR-0014)
-Conversational continuity in multi-user groups is governed by `ParticipationThread`:
-- Natural continuation without `@` is permitted when an active thread matches topic and participants, bounded by speaking budget and conversational adjacency.
-- When topic drifts, cognition emits `state_annotations={"close_thread": True}`, materialized via `STATE_ANNOTATION` event to step the bot out cleanly.
-- `EpisodeMailbox` tracks unread interim events; `PiAgentCore` injects contemporary scene chatter at ReAct step boundaries so that cognition detects semantic staleness (e.g. peer answered) and outputs `SILENCE`.
+**Superseded** — `ParticipationThread`, speaking-budget continuation, and `STATE_ANNOTATION` thread stepping were removed; conversational continuity is now a `SocialCognitionCore` judgement over persistent `GroupAgentSession` state (ADR-0032/0033). The `EpisodeMailbox` steering/staleness mechanics survive (see ADR-0026).
 
 ### Semantic Memory & Scope Guard (ADR-0015)
 Epistemic beliefs follow strict evidence-based provenance and semantic slot superseding:
@@ -149,27 +138,27 @@ Plugin capabilities are managed via `PluginHost` sandboxing:
 
 ### Operational Cockpit & Zero-Downtime Hot Reload (ADR-0017)
 Real-time administrative control is centralized in the Cockpit API (`/api/cockpit/`):
-- Observability exposes scene participant statistics, active participation threads, scheduled tasks, open loops, and epistemic memories.
+- Observability exposes scene participant statistics, scheduled tasks, open loops, and epistemic memories.
 - Safe human intervention (event injection, task cancellation/trigger, loop resolution, memory refutation) strictly honors the `Event -> Runtime State` invariant without bypass.
-- Dynamic configuration updates (models, persona identity, speaking budget) hot-reload in-memory across all runtime components and persist in SQLite `configs` table across restarts (Goal 8 & 9).
+- Dynamic configuration updates (models, persona identity) hot-reload in-memory across all runtime components and persist in SQLite `configs` table across restarts (Goal 8 & 9).
 
 ### Condition-Bound Obligations & Ambient Items (ADR-0018)
 Cross-time social continuity for promises and retained interests:
 - `TaskItem.wake_event_type` turns a TaskProposal into a condition-bound obligation: it fires via the standard `TASK_DUE` authority path when a matching event commits in its scene, or at its deadline — whichever comes first. "开播叫我" + `LIVE_STARTED` → WAKE → fulfil.
-- Plugin fact events (`LIVE_STARTED/LIVE_ENDED` → `PLUGIN_FACT` stimulus) are explicitly OBSERVE-only in `AttentionEngine`: a bare fact never wakes cognition and never creates a task (Invariant F & H).
-- `AmbientStore` (in-memory, TTL ~hours) keeps short-lived retained soft state. Cognition may retain via `EpisodeOutcome.retained_item_proposals` (written post-transaction, never inside it); relevant items enter the Situation Package as 【RELEVANT AMBIENT ITEMS】 and cognition decides to use them or SILENCE.
+- Plugin fact events (`LIVE_STARTED/LIVE_ENDED` → `PLUGIN_FACT` stimulus) enter the `SocialCognitionCore` directly with no attention prefilter (ADR-0032/0033): the Social Core alone decides speak/silence, so a bare fact does not on its own create speech or tasks.
+- Retained soft state now lives in `GroupAgentSession.retained_attention`: the Social Core proposes `retained_attention` items in its `SocialCognitionResult` and sees them in its situation package on later calls, deciding to use them or stay silent (the separate `AmbientStore` was removed).
 - `OpenLoopManager.resolve_loop` only transitions ACTIVE loops and preserves target/intent/source for traceability.
 
 ### Quiet-Window Reflection & Typed Social Memory (ADR-0019)
-- Reflection fires after a scene stays quiet for `reflection_quiet_window_seconds` (debounce timer per scene) — the old message-count trigger is gone. While `bot_engagement == "active"` the window postpones.
+- Reflection fires after a scene stays quiet for `reflection_quiet_window_seconds` (debounce timer per scene) — the old message-count trigger is gone. While a cognition episode is in flight in the scene, the window postpones.
 - A per-scene `reflection_cursors` row (last event rowid) bounds each reflection to the unreflected range (`EventStore.get_events_since`); the cursor advances only after the episode record persists — the same events are never summarized twice.
 - The LLM reflector (`memory/reflector.py`) is wired in production; it only PROPOSES `EpisodeRecord + MemoryProposal[]`, with evidence citing the reflected range (Invariant E). Deterministic fallback remains only for explicit mock/test modes.
 - `MemoryKind` is a canonical enum (preference/habit/relationship/fact/group_norm/topic_interest/recurring_role/social_pattern); legacy `pattern` rows migrate once at startup. Sender snapshots flow into a 【CURRENT ACTOR】 person card (display name, group role, subject-scoped memories). `decay_memories` runs in the maintenance heartbeat.
 
 ### Provider Registry & Routing Metrics (ADR-0020)
 - `ProviderRegistry` is the single authority for tier → (provider, model, client): multi-provider OpenAI-compatible configs, hot `apply_update`, lazily cached clients, persisted in `provider_config` (one-time migration from legacy `model_config`).
-- `RuntimeMetrics` records every live LLM call per (tier, provider, model): calls, errors, prompt/completion tokens, latency p50/p95, escalation reasons — plus social counters (human_messages, observe/track/wake, wake_silence, visible_messages, visible_speech_ratio, would_send, cancellations_honored).
-- `PiAgentCore` resolves per step, so tier switches and hot config updates apply at the next ReAct step; escalation (`should_escalate`) returns a reason that lands in metrics. Retrieval tools with large evidence sets append the `[COMPLEXITY: HIGH]` marker — the escalation signal has real producers.
+- `RuntimeMetrics` records every live LLM call per (tier, provider, model): calls, errors, prompt/completion tokens, latency p50/p95, escalation reasons — plus social counters (human_messages, social_cognition, intentional_silence, social_would_speak, gate_action, visible_messages, would_send, cancellations_honored, stale_outcomes_rejected).
+- `SocialCognitionCore` (and the legacy `PiAgentCore`) resolve provider+model per call from the registry, so tier switches and hot config updates (`apply_update`) take effect on the next cognition call.
 
 ### Plugin Discovery, Lifecycle Health & Real Plugins (ADR-0021)
 - `PluginManifest` declaratively exposes `config_schema/default_config/emitted_events/registered_tools`; `PluginHost` tracks per-plugin health (state, last_error, error_count, last_event_at, last_run_at) and `on_enable/on_disable` hooks are actually invoked.
@@ -178,8 +167,8 @@ Cross-time social continuity for promises and retained interests:
 
 ### Control Plane Query Service, Trace & Replay Lab (ADR-0022)
 - `RuntimeQueryService` is the only read facade for web routes — no route touches `runtime.*._db`, `_actors` or `_plugins`; interventions keep their authority paths (loop resolve goes through `OpenLoopManager`).
-- `traces` table stores per-stimulus attention rows and per-episode chain rows (Stimulus → Attention → per-step cognition → Outcome → Gate → durable effects → actions): the "why did the bot speak/stay silent" question is answerable from the Trace view.
-- Metrics/social endpoints, filtered event queries, and an in-memory log ring (`GET /api/logs`) complete observability. `ReplayLab` deterministically replays a recorded window through the pure reducer + real AttentionEngine with policy override sets (Replay Lab, Policy A vs B).
+- `traces` table stores per-burst `social_cognition` chain rows (burst → Social Core → decision → gate → durable effects → actions): the "why did the bot speak/stay silent" question is answerable from the Trace view.
+- Metrics/social endpoints, filtered event queries, and an in-memory log ring (`GET /api/logs`) complete observability. `ReplayLab` deterministically replays a recorded window through the pure `GroupAgentSession` reducer + the runtime's `SocialCognitionCore` (Replay Lab, Policy view via `POST /api/replay`).
 - The Vue 3 + Vite frontend (`web/frontend/`, builds to `web/static/dist/`) implements the ten-view information architecture; CORS wildcard+credentials was removed.
 
 ### Shadow Mode (ADR-0023)
@@ -204,9 +193,7 @@ Cross-time social continuity for promises and retained interests:
 - `RuntimeGate` rejects stale outcomes where interim human events were not incorporated, tracking `stale_outcomes_rejected`.
 
 ### Participation Lifecycle & Attention Continuation (ADR-0027)
-- `ParticipationThread` implements a 2-minute fade (`THREAD_FADE_AFTER = 120.0s`) and 5-minute close (`THREAD_CLOSE_AFTER = 300.0s`).
-- `last_relevant_at` only updates on relevant mentions, replies, or active topic continuations; intervening chatter increments message counter without prolonging the decay clock.
-- Attention continuation requires topic match or immediate adjacency; off-topic participant chatter evaluates to `OBSERVE` with reason `participant_off_topic`.
+**Superseded** — the `ParticipationThread` fade/close lifecycle and the attention continuation rules were removed with the V3 attention module; participation and thread continuity are judged by the `SocialCognitionCore` inside `GroupAgentSession` state (ADR-0032/0033).
 
 ### Quiet-Window Reflection & Atomic Batch Commit (ADR-0028)
 - Unreflected events are fetched via `get_unreflected_events(after_rowid, limit=30)` without skipping older events.
@@ -224,9 +211,19 @@ Cross-time social continuity for promises and retained interests:
 - Centralized SSRF network policy blocks loopback, RFC 1918, RFC 3927 cloud metadata (`169.254.169.254`), and internal domains without breaking macOS/Linux transparent proxy tunnels.
 
 ### Social Hot Reload, Shadow Annotations & OneBot Hardening (ADR-0031)
-- `POST /api/cockpit/social` immediately synchronizes `AttentionEngine.monitored_keywords` in memory.
+- `POST /api/cockpit/social` and the `AttentionEngine.monitored_keywords` it synced were removed with the V3 attention module.
 - `shadow_annotations` table and endpoints (`POST /api/cockpit/shadow-annotations`, `GET /api/cockpit/shadow-annotations`) track TP/FP/TN/FN human evaluation feedback and accuracy metrics.
 - OneBot v11 adapter drops bot's own self-sent echo messages, parses `reply_to_message_id` into a 1000-item ring buffer, and formats quote replies with `[CQ:reply,id=...]`.
+
+### Persistent GroupAgentSession & Scene Bursts (ADR-0032)
+- Each `SceneActor` owns one `GroupAgentSession` holding the scene's structured social state (world state, self state, working persons/relationships, retained attention, next wake intent). The session reducer updates only factual observations; it never infers topics, mood, or whether to speak.
+- `EventStore.commit_scene_event` is the single commit point for the raw event, `SceneState`, and `GroupAgentSession`; `last_observed_event_rowid` / `last_cognized_event_rowid` bound recovery and cognition freshness.
+- `BurstAssembler` (replacing the per-sender `StimulusBuilder`) coalesces per scene by arrival timing only — no topic classification, keyword urgency, or wake decision. Direct mention/reply is a structural low-latency flush signal.
+
+### Social Cognition Core Contract (ADR-0033)
+- Every valid burst enters the `SocialCognitionCore`, which sees the `GroupAgentSession`, up to 80 recent raw events, the ordered burst, and active open loops — no generic top-k memory injection.
+- The strict `SocialCognitionResult` carries perception + full `SocialWorldState` snapshot, `SelfSocialState` update, exactly one `speak`/`silence` decision, and typed proposals. `silence` forbids messages; `speak` requires one.
+- Social inference runs outside `SceneActor`; the actor validates the observation cursor and evidence IDs, then atomically commits `SOCIAL_COGNITION_RECORDED` + updated session, or rejects stale results. The LLM never writes session state directly.
 
 ---
 
@@ -239,13 +236,13 @@ Tests are explicitly organized into three distinct layers to ensure deterministi
 
 1. **Layer 1: Invariant & Boundary Tests (Deterministic, Fast, Fail-Closed)**
    - Ensures zero state leakage, transactional rollbacks, strict scope boundaries, single-writer actors, durable task claims, and SSRF blocking.
-   - Files: `test_p0_invariants.py`, `test_runtime_invariant_closure.py`, `test_v3_stage2_authority.py`, `test_v3_stage3_staleness.py`, `test_v3_stage5_reflection.py`, `test_v3_stage6_scheduler.py`, `test_v3_stage7_plugins.py`.
+   - Files: `test_p0_invariants.py`, `test_runtime_invariant_closure.py`, `test_v3_stage2_authority.py`, `test_v3_stage3_staleness.py`, `test_v3_stage5_reflection.py`, `test_v3_stage6_scheduler.py`, `test_v3_stage7_plugins.py`, `test_v4_stage1_session.py`, `test_v4_stage2_social_core.py`.
    - Run: `uv run pytest tests/test_v3_*.py -v`
 
 2. **Layer 2: Behavioral Pipeline & Scenarios (Deterministic Offline Replay)**
-   - Tests end-to-end user-observable behavior (Scenarios A through M) using deterministic offline replay with mock cognitive processors. No network or sleep dependencies.
-   - Files: `test_v2_scenarios_a_to_l.py` (Scenarios A–M: Goal 1 to 12), `test_v3_stage4_participation.py`, `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
-   - Run: `uv run pytest tests/test_v2_scenarios_a_to_l.py -v`
+   - Tests end-to-end user-observable behavior using deterministic offline replay with scripted cognitive processors. No network or sleep dependencies.
+   - Files: `test_burst_assembler.py`, `test_v4_stage3_social_path.py` (V4 social path: mention/continuation, intentional silence, stale rejection, anti-loop ceiling), `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
+   - Run: `uv run pytest tests/test_v4_stage3_social_path.py tests/test_burst_assembler.py -v`
 
 3. **Layer 3: Model Evaluation (Live Providers, Real Transcripts, Non-CI)**
    - Offline evaluation of real transcripts against configured model providers for qualitative social analysis.
@@ -256,10 +253,10 @@ Tests are explicitly organized into three distinct layers to ensure deterministi
 # Run the entire test suite
 uv run pytest
 
-# Run the V2/V3 Scenario Benchmark (Goals 1-12, Scenarios A-M)
-uv run pytest tests/test_v2_scenarios_a_to_l.py -v
+# Run the V4 stage tests (session, Social Core, social path)
+uv run pytest tests/test_v4_stage*.py -v
 
-# Run V3 Stage specific tests
+# Run the legacy V3 stage tests
 uv run pytest tests/test_v3_stage*.py -v
 ```
 
