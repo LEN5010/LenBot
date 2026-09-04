@@ -30,7 +30,6 @@ class OneBotAdapter:
         self._last_error: Optional[str] = None
         self._echo_counter = 0
         self._pending_requests: dict[str, asyncio.Future[dict]] = {}
-        self._reply_cache: deque[tuple[str, str]] = deque(maxlen=1000)
         self._own_message_ids: deque[str] = deque(maxlen=1000)
         self._self_id: Optional[int] = None
 
@@ -309,7 +308,8 @@ class OneBotAdapter:
                    for s in data.get("message", []) if isinstance(s, dict))
         )
 
-        # ADR-0031, §17: Extract reply_to_message_id and maintain ring buffer
+        # ADR-0031, §17: Extract reply_to_message_id (reply-bot detection; quote
+        # replies use the OneBot message id directly exposed in cognition context).
         reply_to_id = None
         reply_match = re.search(r"\[CQ:reply,id=(-?\d+)\]", raw_text)
         if reply_match:
@@ -320,10 +320,8 @@ class OneBotAdapter:
                     reply_to_id = str(seg.get("data", {}).get("id", ""))
                     break
 
-        msg_id = data.get("message_id")
-        if reply_to_id and msg_id:
-            self._reply_cache.append((str(msg_id), str(reply_to_id)))
         reply_bot = bool(reply_to_id and str(reply_to_id) in self._own_message_ids)
+        msg_id = data.get("message_id")
 
         # Person Context (ADR-0019 §十一): keep a sender snapshot for the person card.
         sender_raw = data.get("sender") or {}

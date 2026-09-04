@@ -14,10 +14,13 @@ class SteeringSignal(BaseModel):
     reason: str
 
 class EpisodeMailbox:
-    def __init__(self, episode_id: str, scene_id: str, base_scene_version: int):
+    def __init__(self, episode_id: str, scene_id: str, base_scene_version: int,
+                 origin_stimulus_id: Optional[str] = None):
         self.episode_id = episode_id
         self.scene_id = scene_id
         self.base_scene_version = base_scene_version
+        # ADR-0029: burst event that triggered this episode; attached to dependent open loops.
+        self.origin_stimulus_id = origin_stimulus_id
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self._interim_events: list[Event] = []
         self._unconsumed_follow_ups: list[Event] = []

@@ -204,6 +204,7 @@ class RuntimeGate:
                     "target_actor_id": msg.reply_target,
                     "intent": msg.reply_intent or "general_response",
                     "source_event_id": "", # Will be filled by SceneActor on MESSAGE_SENT
+                    "source_stimulus_id": getattr(mailbox, "origin_stimulus_id", None),
                     "status": "active",
                     "created_at": now,
                     "expires_at": now + 86400.0 # 24h TTL

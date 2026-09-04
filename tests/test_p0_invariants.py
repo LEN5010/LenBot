@@ -52,24 +52,36 @@ async def test_p0_1_atomic_event_and_scene_state(tmp_path):
 async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
     """
     P0.2: Verifies that only ONE active cognitive episode can run per scene at any time.
-    A concurrent trigger in the same scene must be rejected while the first is in flight,
-    and interim events must flow into the active mailbox until Gate commit finishes.
+    A non-direct interim event is folded into the active mailbox while an episode is
+    in flight; a direct @Bot during in-flight cognition deterministically PREEMPTS the
+    episode (ADR-0037): the in-flight model call is cancelled and cognition restarts
+    over the merged burst — the two episodes must never overlap in flight.
     """
     db_file = str(tmp_path / "p0_concurrency.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file, debounce_idle_ms=20, debounce_max_ms=50)
 
     episode_1_started = asyncio.Event()
-    episode_1_can_finish = asyncio.Event()
+    episode_1_cancelled = asyncio.Event()
     episodes_executed: list[str] = []
+    concurrent_overlap = False
 
     async def slow_social_core(messages: list[dict[str, str]]):
+        nonlocal concurrent_overlap
         user_prompt = messages[1]["content"]
+        in_flight = episode_1_started.is_set() and not episode_1_cancelled.is_set()
+        if in_flight and episodes_executed:
+            # A second episode must never run while the first is still live.
+            concurrent_overlap = True
         episodes_executed.append(user_prompt)
         if len(episodes_executed) == 1:
             episode_1_started.set()
-            await episode_1_can_finish.wait()
+            try:
+                await episode_1_cancelled.wait()
+            except asyncio.CancelledError:
+                episode_1_cancelled.set()
+                raise
             return social_result(reason="stale first answer", content="Slow response")
-        return social_result(reason="new chatter superseded the first answer")
+        return social_result(reason="merged burst re-cognized after preemption")
 
     runner = ScenarioRunner(config=config, mock_social_handler=slow_social_core)
     await runner.setup()
@@ -93,20 +105,23 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
     interim_events = actor._active_mailbox.get_interim_events()
     assert any("在你想的时候插句话" in e.raw_text for e in interim_events)
 
-    # 3. Another @Bot arrives in the SAME scene attempting concurrent episode
+    # 3. A direct @Bot arrives in the SAME scene: ADR-0037 direct preemption.
+    # The in-flight episode is cancelled; cognition restarts over the merged burst.
     await runner.step_message(scene_id, user_id=1003, text="@Bot 并发打断", at_bot=True)
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(episode_1_cancelled.wait(), timeout=5.0)
+    await runner.settle(0.2)
 
-    # Must NOT have started a second episode (episodes_executed length remains 1)
-    assert len(episodes_executed) == 1
+    # Exactly two cognition calls, strictly sequential; the restarted episode
+    # saw the merged burst (both direct messages + the interim chatter).
+    assert not concurrent_overlap
+    assert len(episodes_executed) == 2
+    merged_prompt = episodes_executed[1]
+    assert "第一条任务" in merged_prompt
+    assert "并发打断" in merged_prompt
+    assert "在你想的时候插句话" in merged_prompt
 
-    # 4. Release Episode 1 and let it finish through Gate
-    episode_1_can_finish.set()
-    await runner.settle(0.15)
-
-    # Lease must be released after Gate commit completes
+    # Lease must be released after the preempted restart completes
     assert actor.has_active_episode() is False
-    assert len(episodes_executed) >= 2
     assert runner.sent_actions == []
 
     await runner.teardown()

@@ -821,8 +821,8 @@ class EventStore:
                 if associated_open_loop:
                     await self._db.execute(
                         """
-                        INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, source_stimulus_id, status, created_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(id) DO UPDATE SET status = excluded.status;
                         """,
                         (
@@ -831,6 +831,7 @@ class EventStore:
                             associated_open_loop["target_actor_id"],
                             associated_open_loop["intent"],
                             event.id,
+                            associated_open_loop.get("source_stimulus_id"),
                             associated_open_loop["status"],
                             associated_open_loop["created_at"],
                             associated_open_loop["expires_at"]
@@ -892,7 +893,7 @@ class EventStore:
             raise RuntimeError("Database not initialized")
         cursor = await self._db.execute(
             """
-            SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at
+            SELECT id, scene_id, target_actor_id, intent, source_event_id, source_stimulus_id, status, created_at, expires_at
             FROM open_loops
             WHERE scene_id = ? AND status = 'active'
             ORDER BY created_at ASC;
@@ -907,9 +908,10 @@ class EventStore:
                 "target_actor_id": r[2],
                 "intent": r[3],
                 "source_event_id": r[4],
-                "status": r[5],
-                "created_at": r[6],
-                "expires_at": r[7],
+                "source_stimulus_id": r[5],
+                "status": r[6],
+                "created_at": r[7],
+                "expires_at": r[8],
             }
             for r in rows
         ]
@@ -920,8 +922,8 @@ class EventStore:
         async with self._write_lock:
             await self._db.execute(
                 """
-                INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, source_stimulus_id, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status = excluded.status;
                 """,
                 (
@@ -930,6 +932,7 @@ class EventStore:
                     loop_data["target_actor_id"],
                     loop_data["intent"],
                     loop_data["source_event_id"],
+                    loop_data.get("source_stimulus_id"),
                     loop_data["status"],
                     loop_data["created_at"],
                     loop_data["expires_at"]

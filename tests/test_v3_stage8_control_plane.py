@@ -84,10 +84,6 @@ async def test_onebot_adapter_drops_self_echo_and_extracts_reply():
     assert user_event.payload["message_id"] == 1002
     assert user_event.payload["reply_to_message_id"] == "54321"
 
-    # Ring buffer recorded the reply link
-    assert len(adapter._reply_cache) == 1
-    assert adapter._reply_cache[-1] == ("1002", "54321")
-
     adapter._own_message_ids.append("54321")
     reply_event = adapter._normalize_event({
         "post_type": "message",
