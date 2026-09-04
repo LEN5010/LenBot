@@ -40,11 +40,14 @@ src/len_bot/
 ├── cognition/           # Ephemeral cognitive execution
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
 │   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, FinalDisposition
+│   ├── fast_core.py     # FastSocialCognition (one-shot SILENCE/SPEAK/FULL; ADR-0038)
+│   ├── persona.py       # Layered persona blocks (identity core / self state / register / exemplars)
+│   ├── projection.py    # Shared model-facing CQ projection + token budgeting
 │   ├── react_core.py    # ReActAgentCore (legacy V3 ReAct loop; kept for boundary tests only)
-│   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing)
+│   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing incl. fast)
 │   ├── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
-│   ├── session.py       # GroupAgentSession, SocialCognitionResult + session reducer
-│   └── social_core.py   # SocialCognitionCore + direct working-context assembly
+│   ├── session.py       # GroupAgentSession, Social/FastCognitionResult + session reducer
+│   └── social_core.py   # SocialCognitionCore (FULL path) + direct working-context assembly
 ├── events/              # Immutable event bus & raw storage
 │   ├── builder.py       # BurstAssembler (scene event coalescing; no social judgement)
 │   ├── models.py        # Event, EventType, Stimulus, StimulusType
@@ -57,9 +60,10 @@ src/len_bot/
 │   ├── store.py         # MemoryStore (episodes, memories, reflection cursors)
 │   └── writes.py        # Unified memory proposal validation & transactional resolution
 ├── runtime/             # Core persistent runtime
-│   ├── agent_runtime.py # AgentRuntime coordinator
+│   ├── agent_runtime.py # AgentRuntime coordinator (FAST/FULL routing, ADR-0038)
 │   ├── gate.py          # RuntimeGate (staleness gate, two-phase commit)
-│   └── metrics.py       # RuntimeMetrics (routing + social behavior counters)
+│   ├── metrics.py       # RuntimeMetrics (routing + social counters + latency phases)
+│   └── style_guard.py   # Local anti-slop detector (duplicates/openers/n-grams)
 ├── scenes/              # Scene state management
 │   ├── actor.py         # SceneActor (single-writer asynchronous worker)
 │   ├── manager.py       # SceneManager (actor registry)
@@ -82,7 +86,7 @@ src/len_bot/
 │   └── net_policy.py    # Centralized SSRF network policy (ADR-0030)
 ├── web/                 # Control Plane (ADR-0017/0022)
 │   ├── frontend/        # Vue 3 + Vite source (builds to web/static/dist)
-│   ├── routes/          # auth, overview, cockpit, models, plugins, replay, settings, websocket
+│   ├── routes/          # auth, overview, cockpit, models, plugins, replay, settings, voice, websocket
 │   ├── query_service.py # RuntimeQueryService — the ONLY read facade for routes
 │   ├── log_ring.py      # In-memory operational log ring
 │   ├── auth.py          # PBKDF2 password hashing + session auth helpers
@@ -250,6 +254,14 @@ Cross-time social continuity for promises and retained interests:
 ### Token-Budgeted Context and Direct Preemption (ADR-0037)
 - CQ media payloads are compacted only in the model-facing projection; raw events remain immutable. Recent raw conversation rolls over from the oldest edge only after the 200K-token input budget is reached.
 - A direct mention/reply may cancel an older same-scene model call while it is still in inference, because that result is already guaranteed to fail freshness. Scene commits, Gate evaluation, and action delivery are never preempted.
+
+### Fast/Full Cognition Split & Voice Architecture (ADR-0038)
+- `FastSocialCognition` (`cognition/fast_core.py`) is the production entry for casual social bursts: ONE small-model call (`fast` tier, degrades to `normal` when unset) that outputs `silence`, `speak` with final short messages, or `full`. Routing is structural only — `TASK_DUE`/tool-completion bursts go straight to FULL; no keyword/relevance rules exist anywhere.
+- FAST's contract is deliberately unexpressive: no world/person/relationship updates, no memory candidates, no task proposals. Its commit path (`SceneActor.submit_fast_cognition`) enforces the same observation-cursor staleness contract and emits `SOCIAL_COGNITION_RECORDED` with `payload.kind == "fast"`; `GroupAgentSessionReducer.apply_fast_cognition` advances immediate state only. An unrecoverable FAST failure escalates to FULL — never to a hallucinated reply or a dropped burst.
+- Persona is layered, not two static strings: Identity Core (observable behavioural tendencies, `identity_core`, editable via Control Plane) + adaptive self state + per-scene **Group Register** (deterministic reducer stats over human messages: lengths/fragments/punctuation/emoji/questions/short reactions — style context only, never a decision input) + **Dynamic Voice Exemplars** (`voice_exemplars` table, `GET/POST /api/voice/exemplars`, LRU rotation with use-count bumping — style imitation, never verbatim reuse).
+- Deferred cognition: the quiet-window reflector additionally proposes a merge-only `SocialWorldPatch` (mood/topics/dynamics/group identity, topic ids grounded in real event ids) applied through the standard `SOCIAL_COGNITION_RECORDED` event path so the SceneActor stays the single session writer. FULL results continue to replace the world snapshot wholesale.
+- Anti-slop: `runtime/style_guard.py` is a local detector (exact duplicates, repeated openers, repeated n-grams) recording `style_slop_flags` and triggering at most one corrective FAST retry per burst (`style_retries`). No per-reply LLM critic.
+- Metrics: `bursts_total`, `cognition_fast_calls/speak/silence/to_full`, `cognition_full_calls`, `cognition_deliberate_calls`, plus latency percentiles per phase (`event_to_burst`, `burst_to_request`, `model_total`, `gate`) in `metrics.snapshot().latency`.
 
 ---
 

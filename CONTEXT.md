@@ -78,6 +78,14 @@ _Avoid_: Model switcher, prompt dispatcher
 The bounded ReAct loop inside Social Cognition Core through which the model may call history and memory retrieval tools on demand before producing its structured decision.
 _Avoid_: Auto-RAG, per-message memory injection, agent framework
 
+**Fast Social Cognition**:
+The one-shot low-latency cognition call for casual social bursts that decides silence, speaks final short messages, or escalates to full cognition — nothing else.
+_Avoid_: Classifier, attention filter, cheap model substitute for judgement
+
+**Full Cognition**:
+The complete Social Cognition Core episode with agentic retrieval, world-model rebuild, and typed proposals, used for complex, tool-bound, or escalated bursts.
+_Avoid_: Slow mode, retry path, optional luxury
+
 **Tool Budget**:
 The deterministic per-episode ceiling on retrieval tool executions (`max_tool_calls`); exhausting it, or reaching the last loop step, forces a final decision via `tool_choice="none"`.
 _Avoid_: Soft suggestion, retry limit
@@ -209,6 +217,30 @@ _Avoid_: Delete, in-place update
 **Micro-Reflection**:
 A background cognitive consolidation job triggered after a conversation quiets down, transforming raw events into L1 episodes and proposing L2 social beliefs.
 _Avoid_: Auto-summary, offline cleanup
+
+**Identity Core**:
+The stable, long-term layer of the persona expressed as observable behavioural tendencies (how it treats friends versus strangers, when it is serious or dismissive, its humour and conflict style).
+_Avoid_: Static prompt string, adjective list, mood simulator
+
+**Group Register**:
+Per-scene factual statistics of how the group actually chats (message length, fragmentation, punctuation, emoji, questions, common short reactions), rendered as style context only and never consulted by decisions.
+_Avoid_: Style rule engine, accommodation enforcer, vocabulary copier
+
+**Voice Exemplar**:
+A curated record of the bot's own past expression used as rotating few-shot style material; selection is least-recently-used per scene and never copied verbatim into replies.
+_Avoid_: Fixed few-shot block, template reply, training data claim
+
+**Immediate State**:
+The strictly consistent state a FAST result commits in the current event chain: observation cursor, bot's own message facts, open loops, consecutive-message counters, staleness, and gate authority.
+_Avoid_: Cached reply state, lazy write, eventually-consistent side effects
+
+**Deferred Cognition**:
+Long-horizon social understanding (group mood, topic evolution, identity) proposed by quiet-window reflection as a merge-only patch applied through the lawful event path after the fact.
+_Avoid_: Second cognition agent, blocking pre-send work, wholesale world rewrite
+
+**Style Guard**:
+A purely local anti-slop detector over the bot's recent messages (duplicates, repeated openers, repeated n-grams) that feeds metrics and permits at most one corrective retry.
+_Avoid_: LLM critic, output censorship, sampler-only fix
 
 ---
 
