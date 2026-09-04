@@ -110,6 +110,10 @@ _Avoid_: Task, timer, automatic notification
 A cognition proposal to observe a scene again at a future time; the scheduler and runtime gate retain all authority to validate and commit it.
 _Avoid_: Model-owned timer, scheduled message
 
+**Pending Next Wake**:
+The single scene-scoped durable task created from an accepted Next Wake Intent; its committed due time and origin mode are the scheduling truth shown to cognition.
+_Avoid_: Session timer, model wake state, retained attention
+
 **Intentional Silence**:
 A successful cognition result in which the agent understood the event and chose not to participate.
 _Avoid_: Dropped event, ignored input, model failure

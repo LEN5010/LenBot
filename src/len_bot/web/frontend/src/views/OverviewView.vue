@@ -20,7 +20,7 @@ async function load() {
     <div class="toolbar">
       <div class="page-title">
         <h1>运行总览监控看板</h1>
-        <p class="muted">全域社交运行时状态、注意力过滤与状态量指标</p>
+        <p class="muted">全域社交运行时、持续认知与状态量指标</p>
       </div>
       <button class="primary" @click="load">
         <span>⟳ 刷新状态</span>
@@ -63,29 +63,29 @@ async function load() {
           </div>
         </div>
 
-        <!-- Bento Card 2: 社交发言与预算 -->
+        <!-- Bento Card 2: 社交认知与表达 -->
         <div class="bento-card bento-col-4">
-          <div class="bento-badge">🎯 社交发言与克制预算</div>
+          <div class="bento-badge">🎯 社交认知与表达</div>
           <div class="bento-hero-stat">
             {{ (data.social_metrics.visible_speech_ratio * 100).toFixed(1) }}<span class="unit">%</span>
           </div>
-          <div class="bento-desc">群聊消息可见发言率（严格克制防话痨）</div>
+          <div class="bento-desc">看懂、沉默、提议发言与最终投递</div>
           <div class="kv-list">
             <div class="kv">
               <span class="k">人类消息接收</span>
               <span class="v highlight">{{ data.social_metrics.human_messages }}</span>
             </div>
             <div class="kv">
-              <span class="k">注意力 观察/跟踪/唤醒</span>
-              <span class="v">{{ data.social_metrics.observe }} / {{ data.social_metrics.track }} / {{ data.social_metrics.wake }}</span>
+              <span class="k">认知 / 提议发言</span>
+              <span class="v">{{ data.social_metrics.social_cognition }} / {{ data.social_metrics.social_would_speak }}</span>
             </div>
             <div class="kv">
               <span class="k">实际发出可见消息</span>
               <span class="v">{{ data.social_metrics.visible_messages }}</span>
             </div>
             <div class="kv">
-              <span class="k">唤醒后克制静默 (Silence)</span>
-              <span class="v ok-text">{{ data.social_metrics.wake_silence }}</span>
+              <span class="k">理解后主动静默</span>
+              <span class="v ok-text">{{ data.social_metrics.intentional_silence }}</span>
             </div>
             <div class="kv">
               <span class="k">推演拦截 (Would-send)</span>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -90,12 +91,6 @@ class RetainedAttentionItem(SessionModel):
     summary: str
     source_event_ids: list[str]
     expires_at: float | None = None
-
-
-class NextWakeIntent(SessionModel):
-    reason: str
-    wake_at: float
-    source_event_ids: list[str]
 
 
 class SocialDecisionAction(StrEnum):
@@ -192,9 +187,11 @@ class SocialCognitionResult(SessionModel):
             raise ValueError("speak requires at least one message proposal")
         if self.decision.action == SocialDecisionAction.SILENCE and self.message_proposals:
             raise ValueError("silence cannot contain message proposals")
+        if any(proposal.payload.get("kind") == "next_wake" for proposal in self.task_proposals):
+            raise ValueError("next_wake is reserved for future_attention")
         return self
 
-    def to_episode_outcome(self, scene_id: str):
+    def to_episode_outcome(self, scene_id: str, through_event_rowid: int):
         from len_bot.cognition.models import (
             EpisodeOutcome,
             FinalDisposition,
@@ -208,6 +205,26 @@ class SocialCognitionResult(SessionModel):
             if self.decision.action == SocialDecisionAction.SPEAK
             else FinalDisposition.SILENCE
         )
+        task_proposals = [
+            TaskProposal(**proposal.model_dump())
+            for proposal in self.task_proposals
+        ]
+        if self.future_attention is not None:
+            # ADR-0034: a next-wake intent becomes a durable task on the exact
+            # TaskProposal authority path; the task payload records the observed
+            # cursor at creation so the runtime can reject evidence-free renewal.
+            task_proposals.append(
+                TaskProposal(
+                    description=f"[next wake] {self.future_attention.reason}",
+                    delay_seconds=max(0.0, self.future_attention.wake_at - time.time()),
+                    payload={
+                        "kind": "next_wake",
+                        "reason": self.future_attention.reason,
+                        "observed_event_rowid": through_event_rowid,
+                        "source_event_ids": self.future_attention.source_event_ids,
+                    },
+                )
+            )
         return EpisodeOutcome(
             disposition=disposition,
             decision_reason=self.decision.reason,
@@ -215,10 +232,7 @@ class SocialCognitionResult(SessionModel):
                 MessageProposal(**proposal.model_dump())
                 for proposal in self.message_proposals
             ],
-            task_proposals=[
-                TaskProposal(**proposal.model_dump())
-                for proposal in self.task_proposals
-            ],
+            task_proposals=task_proposals,
             memory_proposals=[
                 MemoryProposal(scope=scene_id, **candidate.model_dump())
                 for candidate in self.memory_candidates
@@ -239,7 +253,6 @@ class GroupAgentSession(SessionModel):
     working_persons: dict[str, WorkingPersonModel] = Field(default_factory=dict)
     working_relationships: dict[str, RelationshipModel] = Field(default_factory=dict)
     retained_attention: list[RetainedAttentionItem] = Field(default_factory=list)
-    next_wake_intent: NextWakeIntent | None = None
     recent_episode_summary: str | None = None
 
 
@@ -268,6 +281,7 @@ class GroupAgentSessionReducer:
         """Advance only factual working state; social meaning is cognition-owned."""
         candidate = state.model_copy(deep=True)
         candidate.version += 1
+        cls._prune_expired_retained(candidate, event.timestamp)
 
         if event.event_type in cls._CONVERSATION_EVENT_TYPES:
             candidate.conversation_event_ids.append(event.id)
@@ -300,6 +314,19 @@ class GroupAgentSessionReducer:
         person.recent_event_ids.append(event.id)
         state.working_persons[event.actor_id] = person
 
+    @staticmethod
+    def _prune_expired_retained(state: GroupAgentSession, now: float) -> None:
+        """ADR-0034: drop expired retained attention inside the lawful commit path."""
+        if not state.retained_attention:
+            return
+        kept = [
+            item
+            for item in state.retained_attention
+            if item.expires_at is None or item.expires_at > now
+        ]
+        if len(kept) != len(state.retained_attention):
+            state.retained_attention = kept
+
     @classmethod
     def apply_cognition(
         cls,
@@ -310,6 +337,7 @@ class GroupAgentSessionReducer:
         candidate = state.model_copy(deep=True)
         candidate.version += 1
         candidate.last_cognized_event_rowid = through_event_rowid
+        cls._prune_expired_retained(candidate, time.time())
         candidate.social_world = result.perception.world_state
 
         update = result.self_state
@@ -345,8 +373,4 @@ class GroupAgentSessionReducer:
             )
             for index, item in enumerate(result.retained_attention)
         )
-        if result.future_attention:
-            candidate.next_wake_intent = NextWakeIntent(
-                **result.future_attention.model_dump()
-            )
         return candidate

@@ -27,6 +27,12 @@ class RuntimeConfig(BaseModel):
         default=60.0,
         description="Background heartbeat: open-loop GC and memory decay"
     )
+
+    # Ambient Cognition (ADR-0034): durable next-wake intents
+    next_wake_min_interval_seconds: float = Field(
+        default=60.0,
+        description="Minimum delay for Social Core next-wake tasks; closer wakes are clamped"
+    )
     
     # Identity
     identity_name: str = "Len"

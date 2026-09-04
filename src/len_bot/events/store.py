@@ -1,11 +1,14 @@
 import asyncio
 import aiosqlite
 import json
+import logging
 import time
 from typing import Any, Optional
 from len_bot.events.models import Event, EventType
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
+
+logger = logging.getLogger(__name__)
 
 class EventStore:
     def __init__(self, db_path: str = "len_bot.db"):
@@ -1039,6 +1042,34 @@ class EventStore:
             for r in rows
         ]
 
+    async def get_pending_next_wake(self, scene_id: str) -> Optional[dict[str, Any]]:
+        """Return the scene's authoritative pending ambient wake, if any."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            """
+            SELECT id, description, due_at, payload, created_at, origin_mode
+            FROM tasks
+            WHERE scene_id = ? AND status = 'pending'
+              AND json_extract(payload, '$.kind') = 'next_wake'
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """,
+            (scene_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[3])
+        return {
+            "task_id": row[0],
+            "reason": payload["reason"],
+            "wake_at": row[2],
+            "source_event_ids": payload.get("source_event_ids", []),
+            "created_at": row[4],
+            "origin_mode": row[5] or "live",
+        }
+
     async def mark_task_status(self, task_id: str, status: str, trigger_event_id: Optional[str] = None) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
@@ -1135,6 +1166,22 @@ class EventStore:
                 for tp in task_proposals:
                     task_id = f"task_{uuid.uuid4().hex[:10]}"
                     payload_json = json.dumps(tp.payload, ensure_ascii=False)
+                    # ADR-0034: at most one pending next-wake task per scene; a new
+                    # one durably supersedes the previous inside the same transaction.
+                    if tp.payload.get("kind") == "next_wake":
+                        supersede_cursor = await self._db.execute(
+                            """
+                            UPDATE tasks SET status = 'cancelled'
+                            WHERE scene_id = ? AND status = 'pending'
+                              AND json_extract(payload, '$.kind') = 'next_wake';
+                            """,
+                            (scene_id,)
+                        )
+                        if supersede_cursor.rowcount:
+                            logger.info(
+                                "Next-wake supersede on scene %s: cancelled %d prior pending task(s)",
+                                scene_id, supersede_cursor.rowcount
+                            )
                     wake_match_json = json.dumps(tp.wake_match, ensure_ascii=False) if getattr(tp, "wake_match", None) else None
                     # ADR-0018: condition-bound tasks fire on wake_event_type or deadline, whichever first.
                     delay = tp.delay_seconds if tp.delay_seconds is not None else CONDITION_TASK_DEFAULT_DEADLINE_SECONDS

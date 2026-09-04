@@ -5,7 +5,7 @@ import uuid
 from collections import deque
 from typing import Optional, Callable, Awaitable, Any
 from len_bot.config import RuntimeConfig
-from len_bot.events.models import Event, EventType, Stimulus
+from len_bot.events.models import Event, EventType, Stimulus, StimulusType
 from len_bot.events.store import EventStore
 from len_bot.events.builder import BurstAssembler
 from len_bot.scenes.manager import SceneManager
@@ -71,7 +71,8 @@ class AgentRuntime:
             action_queue=self.action_queue,
             scheduler=self.scheduler,
             metrics=self.metrics,
-            origin_mode_provider=lambda: ("shadow" if self.shadow_mode else "live")
+            origin_mode_provider=lambda: ("shadow" if self.shadow_mode else "live"),
+            next_wake_min_interval_seconds=config.next_wake_min_interval_seconds
         )
 
         self.scene_manager = SceneManager(
@@ -395,6 +396,7 @@ class AgentRuntime:
                 through_event_rowid = session.last_observed_event_rowid
                 raw_events = await self.event_store.get_recent_events(scene_id, limit=100)
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
+                pending_next_wake = await self.event_store.get_pending_next_wake(scene_id)
 
                 async with self._cognition_semaphore:
                     result, core_trace = await self.social_core.execute(
@@ -402,8 +404,18 @@ class AgentRuntime:
                         burst=burst,
                         raw_events=raw_events,
                         active_open_loops=open_loops,
+                        pending_next_wake=pending_next_wake,
                     )
                 self.metrics.inc_social("social_cognition")
+
+                # ADR-0034: a next-wake TASK_DUE that saw no new human/plugin social
+                # evidence since task creation must not renew itself.
+                if result.future_attention is not None and await self._is_evidence_free_next_wake(burst):
+                    logger.info(
+                        "Next-wake renewal rejected on scene %s: no new external events since task creation",
+                        scene_id,
+                    )
+                    result.future_attention = None
 
                 mode = "shadow" if self.shadow_mode else "live"
                 accepted = await actor.submit_social_cognition(
@@ -425,7 +437,7 @@ class AgentRuntime:
                     )
                     continue
 
-                outcome = result.to_episode_outcome(scene_id)
+                outcome = result.to_episode_outcome(scene_id, through_event_rowid=through_event_rowid)
                 gate_decision = await actor.submit_proposal(
                     episode_id=episode_id,
                     outcome=outcome,
@@ -467,6 +479,28 @@ class AgentRuntime:
                 )
             finally:
                 actor.release_episode_lease(episode_id)
+
+    async def _is_evidence_free_next_wake(self, burst: Stimulus) -> bool:
+        """Whether a next-wake TASK_DUE has no newer human/plugin social evidence."""
+        if burst.stimulus_type != StimulusType.PROACTIVE_TASK or not burst.events:
+            return False
+        due_event = burst.events[0]
+        task_payload = due_event.payload.get("payload")
+        if not isinstance(task_payload, dict) or task_payload.get("kind") != "next_wake":
+            return False
+        created_rowid = int(task_payload.get("observed_event_rowid") or 0)
+        events_after = await self.event_store.get_events_since(
+            burst.scene_id, after_rowid=created_rowid, limit=200
+        )
+        evidence_types = {
+            EventType.GROUP_MESSAGE_RECEIVED,
+            EventType.PRIVATE_MESSAGE_RECEIVED,
+            EventType.LIVE_STARTED,
+            EventType.LIVE_ENDED,
+            EventType.TOOL_COMPLETED,
+            EventType.USER_JOINED,
+        }
+        return not any(event.event_type in evidence_types for event in events_after)
 
     async def _save_social_trace(
         self,

@@ -1,9 +1,23 @@
+import json
 import time
 
 import pytest
 
+from len_bot.cognition.session import (
+    GroupAgentSession,
+    GroupAgentSessionReducer,
+    RetainedAttentionItem,
+    RetainedAttentionProposal,
+    SelfSocialStateUpdate,
+    SocialCognitionResult,
+    SocialDecision,
+    SocialDecisionAction,
+    SocialPerception,
+    SocialWorldState,
+)
+from len_bot.cognition.social_core import SocialCoreContextAssembler
 from len_bot.config import RuntimeConfig
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import Event, EventType, Stimulus, StimulusType
 from len_bot.runtime.agent_runtime import AgentRuntime
 
 
@@ -188,3 +202,148 @@ async def test_recent_context_uses_scene_commit_order(tmp_path):
     recent = await runtime.event_store.get_recent_events(scene_id)
     assert [event.id for event in recent] == ["committed-first", "committed-second"]
     await runtime.stop()
+
+
+def _retained_item(summary: str, expires_at: float | None) -> RetainedAttentionItem:
+    return RetainedAttentionItem(
+        id=f"retained:{summary}",
+        summary=summary,
+        source_event_ids=[],
+        expires_at=expires_at,
+    )
+
+
+def _silent_cognition_result(
+    retained: list[RetainedAttentionProposal] | None = None,
+) -> SocialCognitionResult:
+    return SocialCognitionResult(
+        perception=SocialPerception(summary="understood", world_state=SocialWorldState()),
+        self_state=SelfSocialStateUpdate(
+            engagement="observing",
+            social_position="observer",
+            current_interest="low",
+            inclination_to_speak="low",
+        ),
+        decision=SocialDecision(action=SocialDecisionAction.SILENCE, reason="no opening"),
+        retained_attention=retained or [],
+    )
+
+
+def test_event_commit_prunes_expired_retained_attention():
+    """ADR-0034: the session reducer prunes expired retained attention inside the
+    lawful Event -> Runtime State commit path (using the event timestamp)."""
+    now = 1_000_000.0
+    session = GroupAgentSession(
+        scene_id="group:expiry",
+        retained_attention=[
+            _retained_item("stale", now - 1),
+            _retained_item("fresh", now + 60),
+            _retained_item("immortal", None),
+        ],
+    )
+    event = Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id="group:expiry",
+        actor_id="user:A",
+        timestamp=now,
+        payload={"raw_text": "hi"},
+    )
+
+    reduced = GroupAgentSessionReducer.reduce(session, event, "user:42")
+
+    assert [item.summary for item in reduced.retained_attention] == ["fresh", "immortal"]
+    # Pure functional transition: the input session is never mutated.
+    assert len(session.retained_attention) == 3
+
+
+def test_cognition_commit_prunes_expired_retained_attention():
+    """Expired entries are pruned before new cognition proposals are appended."""
+    now = time.time()
+    session = GroupAgentSession(
+        scene_id="group:expiry",
+        retained_attention=[
+            _retained_item("stale", now - 1),
+            _retained_item("fresh", now + 60),
+        ],
+    )
+
+    updated = GroupAgentSessionReducer.apply_cognition(
+        session,
+        _silent_cognition_result(
+            retained=[
+                RetainedAttentionProposal(summary="new", source_event_ids=[], expires_at=now + 300)
+            ]
+        ),
+        through_event_rowid=7,
+    )
+
+    assert [item.summary for item in updated.retained_attention] == ["fresh", "new"]
+
+
+@pytest.mark.asyncio
+async def test_persisted_expired_retained_attention_pruned_on_first_commit(tmp_path):
+    """A session restored from DB keeps raw state at load; the first lawful commit
+    prunes expired retained attention durably, and downstream context assembly only
+    ever sees the live item."""
+    now = time.time()
+    db_path = str(tmp_path / "retained-restart.db")
+    config = RuntimeConfig(bot_qq=42, db_path=db_path, debounce_idle_ms=5_000)
+    scene_id = "group:retained"
+
+    first_runtime = AgentRuntime(config)
+    await first_runtime.start()
+    await commit_event(first_runtime, Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:A",
+        payload={"raw_text": "昨天说九点播"},
+    ))
+
+    # Simulate a session persisted with one expired and one live retained item.
+    persisted = await first_runtime.event_store.load_group_agent_session(scene_id)
+    persisted["retained_attention"] = [
+        _retained_item("EXPIRED_MARKER", now - 1).model_dump(mode="json"),
+        _retained_item("FRESH_MARKER", now + 600).model_dump(mode="json"),
+    ]
+    await first_runtime.event_store._db.execute(
+        "UPDATE group_agent_sessions SET state_json = ? WHERE scene_id = ?;",
+        (json.dumps(persisted, ensure_ascii=False), scene_id),
+    )
+    await first_runtime.event_store._db.commit()
+    await first_runtime.stop()
+
+    second_runtime = AgentRuntime(config)
+    await second_runtime.start()
+    actor = await second_runtime.scene_manager.get_or_create_actor(scene_id)
+    assert {item.summary for item in actor.group_session.retained_attention} == {
+        "EXPIRED_MARKER",
+        "FRESH_MARKER",
+    }
+
+    await commit_event(second_runtime, Event(
+        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=scene_id,
+        actor_id="user:B",
+        payload={"raw_text": "新消息来了"},
+    ))
+
+    assert [item.summary for item in actor.group_session.retained_attention] == ["FRESH_MARKER"]
+    persisted_after = await second_runtime.event_store.load_group_agent_session(scene_id)
+    assert [item["summary"] for item in persisted_after["retained_attention"]] == ["FRESH_MARKER"]
+
+    context = SocialCoreContextAssembler(second_runtime.config).assemble(
+        session=actor.group_session,
+        burst=Stimulus(
+            scene_id=scene_id,
+            stimulus_type=StimulusType.SINGLE_MESSAGE,
+            source_event_ids=[],
+            actor_id="user:B",
+            combined_text="新消息来了",
+        ),
+        raw_events=[],
+        active_open_loops=[],
+    )
+    situation = context[1]["content"]
+    assert "FRESH_MARKER" in situation
+    assert "EXPIRED_MARKER" not in situation
+    await second_runtime.stop()
