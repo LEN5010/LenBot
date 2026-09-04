@@ -63,7 +63,7 @@ class EpisodeMailbox:
         return bool(self._unconsumed_follow_ups)
 
     def consume_follow_ups(self) -> list[Event]:
-        """Destructive method: ONLY consumed by PiAgentCore during cognition ReAct steps."""
+        """Destructive method: ONLY consumed by ReActAgentCore during cognition ReAct steps."""
         consumed = list(self._unconsumed_follow_ups)
         self._unconsumed_follow_ups.clear()
         return consumed

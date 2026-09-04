@@ -38,7 +38,7 @@ src/len_bot/
 ├── cognition/           # Ephemeral cognitive execution
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
 │   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, FinalDisposition
-│   ├── pi_core.py       # PiAgentCore (legacy V3 ReAct loop; kept for boundary tests only)
+│   ├── react_core.py    # ReActAgentCore (legacy V3 ReAct loop; kept for boundary tests only)
 │   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing)
 │   ├── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
 │   ├── session.py       # GroupAgentSession, SocialCognitionResult + session reducer
@@ -104,7 +104,7 @@ Every scene (group chat or private chat) has a dedicated `SceneActor` coroutine 
 - An in-flight episode attaches an `EpisodeMailbox` to the actor to receive steering events.
 
 ### Step-Boundary Steering (ADR-0002)
-During a multi-step ReAct tool loop in `PiAgentCore`:
+During a multi-step ReAct tool loop in `ReActAgentCore`:
 - At each step boundary (before model call and after tool execution), `mailbox.check_steering()` is invoked.
 - If a user sends "算了/不用了/别查了", a `SteeringType.CANCEL` signal is returned.
 - Cognition aborts early and returns `FinalDisposition.SILENCE`.
@@ -133,7 +133,7 @@ Epistemic beliefs follow strict evidence-based provenance and semantic slot supe
 ### Plugin Runtime Isolation & Sensory Decoupling (ADR-0016)
 Plugin capabilities are managed via `PluginHost` sandboxing:
 - Plugins operate as sensory inputs emitting events into the runtime event bus; they never directly prompt LLMs or send outbound messages (Goal 6, Invariant B).
-- Plugin tools are executed with timeout protection (`asyncio.wait_for`) and comprehensive exception trapping; crashing or hanging plugins cannot stall the runtime or leak uncaught exceptions to `PiAgentCore` (Goal 7).
+- Plugin tools are executed with timeout protection (`asyncio.wait_for`) and comprehensive exception trapping; crashing or hanging plugins cannot stall the runtime or leak uncaught exceptions to `ReActAgentCore` (Goal 7).
 - Outbound action interceptors in `ActionQueue` enable pre-flight content safety sanitization and action blocking.
 
 ### Operational Cockpit & Zero-Downtime Hot Reload (ADR-0017)
@@ -158,7 +158,7 @@ Cross-time social continuity for promises and retained interests:
 ### Provider Registry & Routing Metrics (ADR-0020)
 - `ProviderRegistry` is the single authority for tier → (provider, model, client): multi-provider OpenAI-compatible configs, hot `apply_update`, lazily cached clients, persisted in `provider_config` (one-time migration from legacy `model_config`).
 - `RuntimeMetrics` records every live LLM call per (tier, provider, model): calls, errors, prompt/completion tokens, latency p50/p95, escalation reasons — plus social counters (human_messages, social_cognition, intentional_silence, social_would_speak, gate_action, visible_messages, would_send, cancellations_honored, stale_outcomes_rejected).
-- `SocialCognitionCore` (and the legacy `PiAgentCore`) resolve provider+model per call from the registry, so tier switches and hot config updates (`apply_update`) take effect on the next cognition call.
+- `SocialCognitionCore` (and the legacy `ReActAgentCore`) resolve provider+model per call from the registry, so tier switches and hot config updates (`apply_update`) take effect on the next cognition call.
 
 ### Plugin Discovery, Lifecycle Health & Real Plugins (ADR-0021)
 - `PluginManifest` declaratively exposes `config_schema/default_config/emitted_events/registered_tools`; `PluginHost` tracks per-plugin health (state, last_error, error_count, last_event_at, last_run_at) and `on_enable/on_disable` hooks are actually invoked.
