@@ -497,6 +497,7 @@ class AgentRuntime:
                 voice_examples = await self._select_voice_examples(scene_id)
 
                 fast_result: FastCognitionResult | None = None
+                fast_trace_stage: dict[str, Any] | None = None
                 core_trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
 
                 async with self._cognition_semaphore:
@@ -518,10 +519,11 @@ class AgentRuntime:
                                 if fast_result is not None and fast_result.decision == FastDecisionAction.FULL:
                                     core_trace["escalated_to_full"] = True
                                     self.metrics.inc_social("cognition_fast_to_full")
+                                    fast_trace_stage = core_trace
                                     fast_result = None
                             except Exception as fast_error:
                                 # Unrecoverable FAST failure escalates to FULL —
-                                # never to a hallucinated reply, never to a drop.
+                                # never to a hallucinated reply, never to a dropped burst.
                                 logger.warning(
                                     "FAST cognition failed on %s; escalating to FULL: %s",
                                     scene_id, fast_error,
@@ -531,12 +533,13 @@ class AgentRuntime:
                                     "fast_error": str(fast_error)[:200],
                                     "steps": [], "escalations": [],
                                 }
+                                fast_trace_stage = core_trace
                                 self.metrics.inc_social("cognition_fast_to_full")
                                 fast_result = None
                         if fast_result is None:
                             self.metrics.inc_social("cognition_full_calls")
                             self.metrics.record_latency("burst_to_request", time.monotonic() - cognition_started)
-                            result, core_trace = await self.social_core.execute(
+                            result, full_trace = await self.social_core.execute(
                                 session=session,
                                 burst=burst,
                                 raw_events=raw_events,
@@ -545,6 +548,13 @@ class AgentRuntime:
                                 toolkit=retrieval,
                                 voice_examples=voice_examples,
                             )
+                            if fast_trace_stage is not None:
+                                # Keep the FAST stage visible in the FULL trace.
+                                full_trace["fast_stage"] = {
+                                    key: fast_trace_stage.get(key)
+                                    for key in ("path", "fast_error", "escalated_to_full", "provider_id", "model", "latency_ms")
+                                }
+                            core_trace = full_trace
                     finally:
                         self._social_inference_scenes.discard(scene_id)
                 self.metrics.inc_social("social_cognition")
