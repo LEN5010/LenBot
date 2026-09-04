@@ -9,183 +9,95 @@ const error = ref('')
 
 onMounted(load)
 async function load() {
+  error.value = ''
   try {
     const params = new URLSearchParams()
     if (filters.value.scene_id) params.set('scene_id', filters.value.scene_id)
     if (filters.value.kind) params.set('kind', filters.value.kind)
     params.set('limit', '100')
     traces.value = await api('/api/cockpit/traces?' + params.toString())
-  } catch (e) {
-    error.value = e.message
-  }
+  } catch (e) { error.value = e.message }
 }
 
-const selectedDetail = ref(null)
-function openTrace(t) {
-  selected.value = t
-  selectedDetail.value = JSON.stringify(t.payload, null, 2)
-}
+function kindLabel(kind) { return kind === 'social_cognition_error' ? '处理失败' : '社交判断' }
+function decisionLabel(action) { return action === 'speak' ? '准备发言' : action === 'silence' ? '选择沉默' : '未完成' }
+function toolCount(trace) { return (trace.payload?.cognition?.steps || []).reduce((count, step) => count + (step.tool_calls?.length || 0), 0) }
+function messages(trace) { return (trace.payload?.result?.message_proposals || []).map(item => item.content).join(' / ') }
 </script>
 
 <template>
   <div class="trace-view">
     <div class="toolbar">
-      <div class="page-title">
-        <h1>决策因果链路 (Trace)</h1>
-        <p class="muted">刺激源 → 注意力评估 → 认知推理 → 运行门禁 → 持久化影响的完整因果链条</p>
-      </div>
-      <button class="primary" @click="load">
-        <span>⟳ 刷新链路</span>
-      </button>
+      <div class="page-title"><h1>机器人动态</h1><p class="muted">查看它刚才看懂了什么、为什么开口或沉默。</p></div>
+      <button @click="load">刷新</button>
     </div>
 
     <div class="toolbar filter-bar">
-      <input v-model="filters.scene_id" placeholder="输入 scene_id 精确过滤..." />
-      <select v-model="filters.kind">
-        <option value="">全部链路类型</option>
-        <option value="attention">注意力评估 (Attention)</option>
-        <option value="episode">认知推演周期 (Episode)</option>
-      </select>
+      <input v-model="filters.scene_id" placeholder="输入群聊标识" />
+      <select v-model="filters.kind"><option value="">全部动态</option><option value="social_cognition">社交判断</option><option value="social_cognition_error">处理失败</option></select>
       <button @click="load">筛选</button>
     </div>
+    <p v-if="error" class="tag bad">{{ error }}</p>
 
-    <div class="panel">
-      <table>
-        <thead>
-          <tr>
-            <th>发生时间</th>
-            <th>链路类型</th>
-            <th>关联场景</th>
-            <th>参考标识 (Ref ID)</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in traces" :key="t.id" :class="{ 'active-row': selected?.id === t.id }">
-            <td>{{ fmtTime(t.created_at) }}</td>
-            <td>
-              <span class="tag" :class="t.kind === 'episode' ? 'warn' : 'ok'">{{ t.kind }}</span>
-            </td>
-            <td><code>{{ t.scene_id }}</code></td>
-            <td class="muted"><code>{{ t.ref_id }}</code></td>
-            <td>
-              <button class="small-btn" @click="openTrace(t)">查看因果</button>
-            </td>
-          </tr>
-          <tr v-if="!traces.length">
-            <td colspan="5" class="muted" style="text-align: center; padding: 24px;">暂无匹配的决策因果链记录</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="activity-list">
+      <article v-for="trace in traces" :key="trace.id" class="activity-card" :class="{ selected: selected?.id === trace.id }" @click="selected = trace">
+        <div class="activity-time">{{ fmtTime(trace.created_at) }}</div>
+        <div class="activity-main">
+          <div class="activity-title">
+            <span :class="trace.kind === 'social_cognition_error' ? 'tag bad' : 'tag ok'">{{ kindLabel(trace.kind) }}</span>
+            <strong>{{ trace.payload?.burst?.text || trace.payload?.error || '没有文本内容' }}</strong>
+          </div>
+          <p v-if="trace.payload?.result">{{ trace.payload.result.perception?.summary || trace.payload.result.decision?.reason }}</p>
+          <p v-else class="bad-text">{{ trace.payload?.error }}</p>
+        </div>
+        <div class="activity-decision">
+          <strong>{{ decisionLabel(trace.payload?.result?.decision?.action) }}</strong>
+          <span v-if="toolCount(trace)">回忆了 {{ toolCount(trace) }} 次</span>
+        </div>
+      </article>
+      <div v-if="!traces.length" class="panel empty">还没有机器人动态</div>
     </div>
 
-    <!-- Selected Trace Details Bento Panel -->
     <div v-if="selected" class="panel detail-panel">
-      <div class="trace-header">
-        <h3>因果链快照 · <code>{{ selected.id }}</code> ({{ selected.kind }})</h3>
-        <span class="tag" :class="selected.kind === 'episode' ? 'warn' : 'ok'">{{ selected.kind }}</span>
+      <div class="panel-header"><div><div class="bento-badge">这次判断的详情</div><h2>{{ decisionLabel(selected.payload?.result?.decision?.action) }}</h2></div><button class="small-btn" @click="selected = null">关闭</button></div>
+
+      <div v-if="selected.payload?.result" class="bento-grid">
+        <div class="bento-card bento-col-6">
+          <div class="bento-badge">它看懂了什么</div>
+          <p class="detail-copy">{{ selected.payload.result.perception?.summary || '没有留下理解摘要' }}</p>
+          <div class="kv"><span class="k">当时收到的内容</span><span class="v">{{ selected.payload.burst?.text || '—' }}</span></div>
+          <div class="kv"><span class="k">是否使用历史记忆</span><span class="v">{{ toolCount(selected) ? `是，共 ${toolCount(selected)} 次` : '否' }}</span></div>
+        </div>
+        <div class="bento-card bento-col-6">
+          <div class="bento-badge">为什么这样决定</div>
+          <p class="detail-copy">{{ selected.payload.result.decision?.reason || '没有填写原因' }}</p>
+          <div class="kv"><span class="k">准备发送</span><span class="v highlight">{{ messages(selected) || '不发送消息' }}</span></div>
+          <div class="kv"><span class="k">系统是否允许</span><span class="v">{{ selected.payload.gate?.accepted === false ? '已阻止' : selected.payload.gate ? '已允许' : '无需发送' }}</span></div>
+        </div>
       </div>
 
-      <template v-if="selected.kind === 'episode' && selected.payload">
-        <div class="bento-grid" style="margin-top: 14px;">
-          <div class="bento-card bento-col-6">
-            <div class="bento-badge">📡 刺激输入与注意力评估</div>
-            <div class="kv">
-              <span class="k">刺激源 (Stimulus)</span>
-              <span class="v highlight">{{ selected.payload.stimulus?.actor_id }}: {{ selected.payload.stimulus?.text }}</span>
-            </div>
-            <div class="kv">
-              <span class="k">注意力判定 (Attention)</span>
-              <span class="tag" :class="selected.payload.attention?.disposition === 'WAKE' ? 'ok' : 'warn'">
-                {{ selected.payload.attention?.disposition }}
-              </span>
-            </div>
-            <div class="kv">
-              <span class="k">注意力决策原因</span>
-              <span class="v">{{ selected.payload.attention?.reason }}</span>
-            </div>
-          </div>
-
-          <div class="bento-card bento-col-6">
-            <div class="bento-badge">🧠 认知推理与安全门禁</div>
-            <div class="kv">
-              <span class="k">推理模式与步数</span>
-              <span class="v">{{ selected.payload.cognition?.mode }} · {{ selected.payload.cognition?.steps?.length }} 步推理</span>
-            </div>
-            <div class="kv">
-              <span class="k">认知结论 (Outcome)</span>
-              <span class="v ok-text">{{ selected.payload.outcome?.disposition }}</span>
-            </div>
-            <div class="kv">
-              <span class="k">决策理由 (Decision Reason)</span>
-              <span class="v">{{ selected.payload.outcome?.decision_reason || selected.payload.outcome?.thought || '—' }}</span>
-            </div>
-            <div class="kv">
-              <span class="k">运行时门禁 (Gate)</span>
-              <span class="tag" :class="selected.payload.gate?.disposition === 'ACCEPT' ? 'ok' : 'bad'">
-                {{ selected.payload.gate?.disposition }} ({{ selected.payload.gate?.reason || '无' }})
-              </span>
-            </div>
-          </div>
-        </div>
-      </template>
-
-      <h4 style="margin: 16px 0 8px; color: var(--muted)">原始状态载荷 JSON</h4>
-      <pre>{{ selectedDetail }}</pre>
+      <details><summary>查看原始记录</summary><pre>{{ JSON.stringify(selected.payload, null, 2) }}</pre></details>
     </div>
   </div>
 </template>
 
 <style scoped>
-.page-title h1 {
-  margin: 0;
-  font-size: 1.4rem;
-}
-.page-title p {
-  margin: 4px 0 0;
-  font-size: 0.85rem;
-}
-
-.filter-bar {
-  margin-top: 14px;
-}
-
-.small-btn {
-  padding: 4px 10px;
-  font-size: 0.82rem;
-}
-
-.active-row td {
-  background: rgba(99, 102, 241, 0.08);
-}
-
-.trace-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  padding-bottom: 12px;
-}
-.trace-header h3 {
-  margin: 0;
-}
-
-.bento-col-6 {
-  grid-column: span 6;
-}
-
-@media (max-width: 900px) {
-  .bento-col-6 {
-    grid-column: span 12;
-  }
-}
-
-.highlight {
-  color: #60a5fa;
-  font-weight: 500;
-}
-.ok-text {
-  color: #34d399;
-  font-weight: 600;
-}
+.activity-list { display: grid; gap: 11px; }
+.activity-card { padding: 15px 17px; display: grid; grid-template-columns: 130px minmax(0, 1fr) 120px; gap: 16px; align-items: center; cursor: pointer; background: rgba(255,255,255,.72); border: 1px solid rgba(255,255,255,.9); border-radius: 15px; box-shadow: var(--shadow-sm); transition: .18s ease; }
+.activity-card:hover, .activity-card.selected { transform: translateY(-1px); border-color: var(--border-accent); background: rgba(255,255,255,.93); }
+.activity-time { color: var(--muted); font-size: .8rem; }
+.activity-title { display: flex; align-items: center; gap: 9px; }
+.activity-title strong { overflow: hidden; color: var(--text); font-size: .91rem; text-overflow: ellipsis; white-space: nowrap; }
+.activity-main p { margin: 6px 0 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+.activity-decision { text-align: right; }
+.activity-decision strong, .activity-decision span { display: block; }
+.activity-decision strong { color: var(--text-soft); font-size: .86rem; }
+.activity-decision span { margin-top: 4px; color: var(--accent); font-size: .75rem; }
+.detail-panel { margin-top: 20px; }
+.bento-col-6 { grid-column: span 6; }
+.detail-copy { min-height: 50px; color: var(--text-soft); line-height: 1.65; }
+details { color: var(--muted); font-size: .84rem; }
+summary { cursor: pointer; }
+.empty { color: var(--muted); text-align: center; }
+@media (max-width: 760px) { .activity-card { grid-template-columns: 1fr; } .activity-time, .activity-decision { text-align: left; } .bento-col-6 { grid-column: span 12; } }
 </style>

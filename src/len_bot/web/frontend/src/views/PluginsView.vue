@@ -37,7 +37,7 @@ async function saveConfig(p) {
       method: 'POST',
       body: JSON.stringify({ plugin_id: p.id, config: p.config })
     })
-    message.value = `插件 ${p.name} (${p.id}) 配置已成功保存`
+    message.value = `“${p.name}”的配置已保存`
     await load()
   } catch (e) {
     error.value = e.message
@@ -68,11 +68,11 @@ function parseList(raw) {
   <div class="plugins-view">
     <div class="toolbar">
       <div class="page-title">
-        <h1>扩展插件生态 (Plugins)</h1>
-        <p class="muted">真实 PluginHost 宿主隔离环境：感官插件仅广播事实事件，工具插件供认知决策主动调用</p>
+        <h1>扩展能力</h1>
+        <p class="muted">管理直播监测、网页查询等机器人能力。</p>
       </div>
       <button class="primary" @click="load">
-        <span>⟳ 刷新插件</span>
+        <span>刷新</span>
       </button>
     </div>
 
@@ -85,7 +85,7 @@ function parseList(raw) {
         <div class="plugin-header">
           <div class="plugin-title-group">
             <span class="plugin-type-badge">
-              {{ p.plugin_type === 'sensor' ? '📡 感官监控 (Sensor)' : '🛠️ 认知工具 (Tool)' }}
+              {{ p.plugin_type === 'sensor' ? '信息监测' : '查询工具' }}
             </span>
             <h3>{{ p.name }} <code>{{ p.id }}</code> <span class="tag">v{{ p.version }}</span></h3>
             <p class="muted plugin-desc">{{ p.description }}</p>
@@ -102,42 +102,42 @@ function parseList(raw) {
 
         <div class="bento-grid" style="margin: 16px 0;">
           <div class="bento-card bento-col-4">
-            <div class="bento-badge">🛡️ 安全权限边界</div>
+            <div class="bento-badge">它能做什么</div>
             <div class="kv">
-              <span class="k">授予权限</span>
+              <span class="k">已获权限</span>
               <span class="v">{{ p.permissions.join(', ') || '无特殊权限' }}</span>
             </div>
             <div class="kv" v-if="p.emitted_events?.length">
-              <span class="k">发射事实事件</span>
+              <span class="k">能够发现</span>
               <span class="v code-text">{{ p.emitted_events.join(', ') }}</span>
             </div>
             <div class="kv" v-if="p.registered_tools?.length">
-              <span class="k">注册智能体工具</span>
+              <span class="k">提供工具</span>
               <span class="v code-text">{{ p.registered_tools.join(', ') }}</span>
             </div>
           </div>
 
           <div class="bento-card bento-col-8">
-            <div class="bento-badge">📈 运行健康监控</div>
+            <div class="bento-badge">运行情况</div>
             <div class="kv">
-              <span class="k">异常错误计数</span>
+              <span class="k">发生错误</span>
               <span class="v" :class="p.error_count > 0 ? 'bad-text' : 'ok-text'">{{ p.error_count }} 次</span>
             </div>
             <div class="kv">
-              <span class="k">最近事件广播</span>
+              <span class="k">最近发现信息</span>
               <span class="v">{{ p.last_event_at ? fmtAgo(p.last_event_at) : '—' }}</span>
             </div>
             <div class="kv">
-              <span class="k">最近执行时间</span>
+              <span class="k">最近使用</span>
               <span class="v">{{ p.last_run_at ? fmtAgo(p.last_run_at) : '—' }}</span>
             </div>
-            <p v-if="p.last_error" class="tag bad" style="margin-top: 8px;">错误报告: {{ p.last_error }}</p>
+            <p v-if="p.last_error" class="tag bad" style="margin-top: 8px;">最近错误：{{ p.last_error }}</p>
           </div>
         </div>
 
         <!-- Dynamic Configuration Form (schema-driven) -->
         <div v-if="schemaFields(p).length" class="config-box">
-          <h4 style="margin: 0 0 12px; color: #cbd5e1;">参数配置 (Config Schema 驱动)</h4>
+          <h4 style="margin: 0 0 12px; color: var(--text-soft);">参数设置</h4>
           <div class="config-fields-grid">
             <div class="field-item" v-for="f in schemaFields(p)" :key="f.key">
               <label>{{ f.schema.title || f.key }}</label>
@@ -184,14 +184,14 @@ function parseList(raw) {
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 14px;
 }
 
 .plugin-type-badge {
   font-size: 0.74rem;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--accent-strong);
   margin-bottom: 4px;
   display: inline-block;
 }
@@ -230,18 +230,12 @@ function parseList(raw) {
   font-size: 0.84rem;
 }
 
-.ok-text {
-  color: #34d399;
-  font-weight: 600;
-}
-.bad-text {
-  color: #f87171;
-  font-weight: 600;
-}
+.ok-text { color: var(--ok); font-weight: 600; }
+.bad-text { color: var(--bad); font-weight: 600; }
 
 .config-box {
-  background: rgba(14, 20, 32, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(239, 246, 255, 0.66);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 16px 18px;
   margin-top: 14px;

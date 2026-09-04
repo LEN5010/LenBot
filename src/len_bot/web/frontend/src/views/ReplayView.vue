@@ -28,14 +28,15 @@ async function run() {
 }
 
 const DECISION_CLASS = { speak: 'ok', silence: '' }
+function decisionLabel(value) { return value === 'speak' ? '准备发言' : value === 'silence' ? '选择沉默' : value }
 </script>
 
 <template>
   <div class="replay-view">
     <div class="toolbar">
       <div class="page-title">
-        <h1>策略离线实验室 (Replay Lab)</h1>
-        <p class="muted">将录制的事件窗口逐条送入真实 Social Core，查看理解、静默与拟发言结果</p>
+        <h1>聊天回放</h1>
+        <p class="muted">用已经发生的聊天重新测试机器人会怎样理解和回应。</p>
       </div>
     </div>
 
@@ -47,11 +48,11 @@ const DECISION_CLASS = { speak: 'ok', silence: '' }
         <h2>回放范围</h2>
       </div>
       <div class="toolbar">
-        <input v-model="sceneId" placeholder="场景标识 (如 group:123)" style="min-width: 240px" />
-        <input v-model="since" placeholder="起始时间戳 (Unix 秒, 可选)" />
-        <input v-model="until" placeholder="截止时间戳 (Unix 秒, 可选)" />
+        <input v-model="sceneId" placeholder="群聊标识，例如 group:123" style="min-width: 240px" />
+        <input v-model="since" placeholder="开始时间，可不填" />
+        <input v-model="until" placeholder="结束时间，可不填" />
         <button class="primary" :disabled="busy || !sceneId" @click="run">
-          {{ busy ? '⚡ 正在离线推演…' : '▶ 执行 Social Core 回放' }}
+          {{ busy ? '正在回放…' : '开始回放' }}
         </button>
       </div>
     </div>
@@ -73,7 +74,7 @@ const DECISION_CLASS = { speak: 'ok', silence: '' }
             <th>发言成员</th>
             <th>原始输入内容</th>
             <th>社交决策</th>
-            <th>判定理由 (Reason)</th>
+            <th>为什么这样决定</th>
             <th>认知响应结论</th>
           </tr>
         </thead>
@@ -84,7 +85,7 @@ const DECISION_CLASS = { speak: 'ok', silence: '' }
             <td class="text-cell">{{ r.text }}</td>
             <td>
               <span class="tag" :class="DECISION_CLASS[r.decision] || ''">
-                {{ r.decision }}
+                {{ decisionLabel(r.decision) }}
               </span>
             </td>
             <td class="muted">{{ r.reason }}</td>
@@ -124,13 +125,13 @@ const DECISION_CLASS = { speak: 'ok', silence: '' }
 }
 
 .text-cell {
-  color: #e2e8f0;
+  color: var(--text);
   font-weight: 500;
   max-width: 320px;
 }
 
 .highlight {
-  color: #60a5fa;
+  color: var(--accent-strong);
   font-weight: 500;
 }
 </style>

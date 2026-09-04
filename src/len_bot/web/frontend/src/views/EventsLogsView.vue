@@ -12,6 +12,13 @@ const EVENT_TYPES = [
   'GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED', 'MESSAGE_SENT', 'MESSAGE_SEND_FAILED',
   'TASK_DUE', 'STATE_ANNOTATION', 'LIVE_STARTED', 'LIVE_ENDED', 'TOOL_COMPLETED', 'USER_JOINED',
 ]
+const EVENT_LABELS = {
+  GROUP_MESSAGE_RECEIVED: '收到群消息', PRIVATE_MESSAGE_RECEIVED: '收到私聊', MESSAGE_SENT: '消息已发送',
+  MESSAGE_SEND_FAILED: '消息发送失败', TASK_DUE: '计划到期', STATE_ANNOTATION: '状态更新',
+  LIVE_STARTED: '直播开始', LIVE_ENDED: '直播结束', TOOL_COMPLETED: '查询完成', USER_JOINED: '成员加入',
+}
+function eventLabel(value) { return EVENT_LABELS[value] || value }
+function levelLabel(value) { return value === 'ERROR' ? '错误' : value === 'WARNING' ? '警告' : '信息' }
 
 onMounted(load)
 async function load() {
@@ -31,11 +38,11 @@ async function load() {
   <div class="events-logs-view">
     <div class="toolbar">
       <div class="page-title">
-        <h1>事件总线与系统日志 (Events & Logs)</h1>
-        <p class="muted">Events 是不可篡改的领域事实；Logs 是内存环形运维排查日志</p>
+        <h1>运行记录</h1>
+        <p class="muted">查看机器人收到、处理和发送过的内容；详细日志放在页面底部。</p>
       </div>
       <button class="primary" @click="load">
-        <span>⟳ 刷新数据</span>
+        <span>刷新</span>
       </button>
     </div>
 
@@ -44,7 +51,7 @@ async function load() {
     <!-- Events Panel -->
     <div class="panel">
       <div class="panel-header">
-        <h2>领域事实事件总线 (Immutable Event Bus)</h2>
+        <h2>事件记录</h2>
         <span class="tag ok">最近 {{ events.length }} 条记录</span>
       </div>
 
@@ -53,7 +60,7 @@ async function load() {
         <input v-model="filters.actor_id" placeholder="过滤主体 如 user:1001..." />
         <select v-model="filters.event_type">
           <option value="">全部事件类型</option>
-          <option v-for="t in EVENT_TYPES" :key="t" :value="t">{{ t }}</option>
+          <option v-for="t in EVENT_TYPES" :key="t" :value="t">{{ eventLabel(t) }}</option>
         </select>
         <button @click="load">筛选事件</button>
       </div>
@@ -71,7 +78,7 @@ async function load() {
         <tbody>
           <tr v-for="e in events" :key="e.id">
             <td>{{ fmtTime(e.timestamp) }}</td>
-            <td><span class="tag">{{ e.event_type }}</span></td>
+            <td><span class="tag">{{ eventLabel(e.event_type) }}</span></td>
             <td><code>{{ e.scene_id }}</code></td>
             <td><code>{{ e.actor_id }}</code></td>
             <td class="payload-cell">{{ e.payload?.raw_text || e.payload?.content || '—' }}</td>
@@ -86,13 +93,13 @@ async function load() {
     <!-- Logs Panel -->
     <div class="panel" style="margin-top: 24px;">
       <div class="panel-header">
-        <h2>系统运行日志缓冲 (In-Memory Log Ring)</h2>
+        <h2>详细运行日志</h2>
         <div class="toolbar" style="margin: 0;">
           <select v-model="logLevel">
             <option value="">全部日志级别</option>
-            <option value="INFO">INFO (信息)</option>
-            <option value="WARNING">WARNING (警告)</option>
-            <option value="ERROR">ERROR (异常)</option>
+            <option value="INFO">信息</option>
+            <option value="WARNING">警告</option>
+            <option value="ERROR">错误</option>
           </select>
           <button class="small-btn" @click="load">过滤日志</button>
         </div>
@@ -112,7 +119,7 @@ async function load() {
             <td>{{ fmtTime(l.timestamp) }}</td>
             <td>
               <span class="tag" :class="l.level === 'ERROR' ? 'bad' : (l.level === 'WARNING' ? 'warn' : 'ok')">
-                {{ l.level }}
+                {{ levelLabel(l.level) }}
               </span>
             </td>
             <td class="muted"><code>{{ l.component }}</code></td>
@@ -157,7 +164,7 @@ async function load() {
 }
 
 .payload-cell {
-  color: #e2e8f0;
+  color: var(--text);
   font-weight: 500;
   max-width: 400px;
 }
@@ -165,6 +172,6 @@ async function load() {
 .log-message-cell {
   font-family: monospace;
   font-size: 0.84rem;
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 </style>

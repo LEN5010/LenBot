@@ -37,17 +37,21 @@ async function resolveLoop(id) {
   await api(`/api/cockpit/loops/${id}/resolve`, { method: 'POST' })
   await load()
 }
+
+function taskStatus(value) {
+  return value === 'pending' ? '等待中' : value === 'claimed' ? '执行中' : value === 'completed' ? '已完成' : value === 'cancelled' ? '已取消' : value
+}
 </script>
 
 <template>
   <div class="tasks-loops-view">
     <div class="toolbar">
       <div class="page-title">
-        <h1>任务与社会闭环管控 (Tasks & Open Loops)</h1>
-        <p class="muted">条件触发义务 (Condition-Bound Tasks) 与跨事件等待闭环 (Two-Phase Commit)</p>
+        <h1>计划与等待</h1>
+        <p class="muted">查看机器人准备稍后处理的事情，以及正在等待谁回复。</p>
       </div>
       <button class="primary" @click="load">
-        <span>⟳ 刷新数据</span>
+        <span>刷新</span>
       </button>
     </div>
 
@@ -56,7 +60,7 @@ async function resolveLoop(id) {
     <!-- Scheduled Tasks Panel -->
     <div class="panel">
       <div class="panel-header">
-        <h2>定时与条件义务调度 (Scheduled Tasks)</h2>
+        <h2>稍后要做的事</h2>
         <span class="tag">共 {{ tasks.length }} 项任务</span>
       </div>
       <table>
@@ -83,7 +87,7 @@ async function resolveLoop(id) {
             </td>
             <td>
               <span class="tag" :class="t.status === 'pending' ? 'ok' : t.status === 'claimed' ? 'warn' : ''">
-                {{ t.status }}
+                {{ taskStatus(t.status) }}
               </span>
             </td>
             <td>
@@ -92,7 +96,7 @@ async function resolveLoop(id) {
                 <button class="small-btn" v-if="t.wake_event_type" @click="promoteTask(t.id)">解除条件</button>
                 <button class="small-btn danger" @click="cancelTask(t.id)">取消</button>
               </div>
-              <span v-else class="muted">已终态</span>
+              <span v-else class="muted">已经结束</span>
             </td>
           </tr>
           <tr v-if="!tasks.length">
@@ -105,18 +109,18 @@ async function resolveLoop(id) {
     <!-- Active Open Loops Panel -->
     <div class="panel" style="margin-top: 24px;">
       <div class="panel-header">
-        <h2>活跃等待社交闭环 (Active Open Loops)</h2>
+        <h2>正在等待的回复</h2>
         <span class="tag ok">共 {{ loops.length }} 条等待</span>
       </div>
       <table>
         <thead>
           <tr>
-            <th>闭环标识 (ID)</th>
+            <th>记录编号</th>
             <th>会话场景</th>
             <th>等待目标成员</th>
             <th>预期回应意图</th>
             <th>发起时间</th>
-            <th>TTL 过期时间</th>
+            <th>等待截止时间</th>
             <th>运维干预</th>
           </tr>
         </thead>
@@ -173,7 +177,7 @@ async function resolveLoop(id) {
 }
 
 .highlight {
-  color: #e2e8f0;
+  color: var(--text);
   font-weight: 500;
 }
 </style>
