@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from len_bot.cognition.providers import ProviderRegistry
-from len_bot.cognition.router import CognitiveTier
+from len_bot.cognition.router import CognitionRouter, CognitiveTier
 from len_bot.cognition.session import GroupAgentSession, SocialCognitionResult
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, Stimulus
@@ -40,7 +40,9 @@ class SocialCoreContextAssembler:
             "不要依赖关键词决定话题延续；结合人物、前文、群体互动和你刚才的行为判断。\n"
             "不要把事实查询结果写成客服报告；最终表达必须保持同一个群友人格。\n"
             "你只能输出结构化认知和 proposal，无权执行发送、调度、记忆写入或任何副作用。\n"
-            "当前阶段不执行工具；需要外部事实但无法判断时，保持沉默并在 reason 中说明。"
+            "近期上下文不足且过去经历会影响理解时，主动使用历史与记忆工具。\n"
+            "不要无条件查询；只有确实需要回忆人物、关系、旧话题或具体经历时才调用。\n"
+            "工具结果只是你的回忆材料，最终仍由你以同一个人格输出完整结构化认知。"
         )
 
         situation = {
@@ -102,6 +104,8 @@ class SocialCognitionCore:
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
         pending_next_wake: dict[str, Any] | None = None,
+        toolkit: Any | None = None,
+        max_steps: int = 5,
     ) -> tuple[SocialCognitionResult, dict[str, Any]]:
         messages = self.context_assembler.assemble(
             session=session,
@@ -114,52 +118,116 @@ class SocialCognitionCore:
             result = await self.mock_handler(messages)
             return SocialCognitionResult.model_validate(result), {"mode": "mock", "steps": []}
 
-        resolution = self.registry.resolve(CognitiveTier.NORMAL)
-        started = time.monotonic()
-        try:
-            response = await resolution.client.chat.completions.create(
-                model=resolution.model,
-                messages=messages,
-                temperature=0.4,
-                response_format={"type": "json_object"},
+        working_messages: list[dict[str, Any]] = list(messages)
+        tools = toolkit.get_tool_definitions() if toolkit else None
+        router = CognitionRouter()
+        tier = CognitiveTier.NORMAL
+        trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
+
+        for step in range(max_steps):
+            response, resolution, used_fallback, latency = await self._call_model(
+                tier=tier,
+                messages=working_messages,
+                tools=tools,
             )
-        except Exception as error:
+            usage = getattr(response, "usage", None)
             if self.metrics:
-                self.metrics.record_error(
-                    CognitiveTier.NORMAL.value,
+                self.metrics.record_call(
+                    tier.value,
                     resolution.provider_id,
                     resolution.model,
-                    str(error),
+                    latency,
+                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
                 )
-            raise
+                if used_fallback:
+                    self.metrics.inc_social("model_fallbacks")
 
-        latency = time.monotonic() - started
-        usage = getattr(response, "usage", None)
-        if self.metrics:
-            self.metrics.record_call(
-                CognitiveTier.NORMAL.value,
-                resolution.provider_id,
-                resolution.model,
-                latency,
-                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            )
+            message = response.choices[0].message
+            step_trace: dict[str, Any] = {
+                "step": step,
+                "tier": tier.value,
+                "provider_id": resolution.provider_id,
+                "model": resolution.model,
+                "fallback": used_fallback,
+                "tool_calls": [],
+            }
+            trace["steps"].append(step_trace)
 
-        content = response.choices[0].message.content or ""
-        result = self._parse_result(content)
-        trace = {
-            "mode": "live",
-            "steps": [
-                {
-                    "step": 0,
-                    "tier": CognitiveTier.NORMAL.value,
-                    "provider_id": resolution.provider_id,
-                    "model": resolution.model,
-                    "tool_calls": [],
-                }
-            ],
+            if getattr(message, "tool_calls", None):
+                if toolkit is None:
+                    raise ValueError("Social Core requested a tool without a retrieval toolkit")
+                working_messages.append(message.model_dump())
+                for tool_call in message.tool_calls:
+                    arguments = json.loads(tool_call.function.arguments or "{}")
+                    tool_result = await toolkit.execute(tool_call.function.name, arguments)
+                    working_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_result,
+                    })
+                    step_trace["tool_calls"].append({
+                        "name": tool_call.function.name,
+                        "arguments": arguments,
+                        "result_preview": tool_result[:300],
+                    })
+                    reason = router.should_escalate(tier, step + 1, tool_result)
+                    if reason:
+                        tier = CognitiveTier.DELIBERATE
+                        trace["escalations"].append({"step": step, "reason": reason})
+                        if self.metrics:
+                            self.metrics.record_escalation(reason)
+                continue
+
+            return self._parse_result(message.content or ""), trace
+
+        raise RuntimeError("Social Core reached the retrieval step limit without a final decision")
+
+    async def _call_model(
+        self,
+        tier: CognitiveTier,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> tuple[Any, Any, bool, float]:
+        primary = self.registry.resolve(tier)
+        try:
+            started = time.monotonic()
+            response = await self._create_completion(primary, messages, tools)
+            return response, primary, False, time.monotonic() - started
+        except Exception as error:
+            if self.metrics:
+                self.metrics.record_error(tier.value, primary.provider_id, primary.model, str(error))
+            fallback = self.registry.resolve_fallback()
+            if (
+                fallback is None
+                or (fallback.provider_id, fallback.model) == (primary.provider_id, primary.model)
+            ):
+                raise
+            started = time.monotonic()
+            try:
+                response = await self._create_completion(fallback, messages, tools)
+            except Exception as fallback_error:
+                if self.metrics:
+                    self.metrics.record_error(
+                        tier.value,
+                        fallback.provider_id,
+                        fallback.model,
+                        str(fallback_error),
+                    )
+                raise
+            return response, fallback, True, time.monotonic() - started
+
+    @staticmethod
+    async def _create_completion(resolution, messages, tools):
+        kwargs: dict[str, Any] = {
+            "model": resolution.model,
+            "messages": messages,
+            "temperature": 0.4,
+            "response_format": {"type": "json_object"},
         }
-        return result, trace
+        if tools:
+            kwargs["tools"] = tools
+        return await resolution.client.chat.completions.create(**kwargs)
 
     @staticmethod
     def _parse_result(text: str) -> SocialCognitionResult:

@@ -26,6 +26,7 @@ from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.cognition.session import SocialDecisionAction
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.plugins import PluginHost
+from len_bot.tools.retrieval import RetrievalToolkit
 
 logger = logging.getLogger(__name__)
 
@@ -135,13 +136,31 @@ class AgentRuntime:
         if saved_providers and saved_providers.get("routing"):
             providers = [ProviderConfig(**p) for p in saved_providers.get("providers", [])]
             routing = RoutingConfig(**saved_providers["routing"])
+            catalog_migrated = False
+            by_id = {provider.id: provider for provider in providers}
+            route_targets = [routing.normal, routing.deliberate]
+            if routing.fallback is not None:
+                route_targets.append(routing.fallback)
+            for target in route_targets:
+                provider = by_id.get(target.provider_id)
+                if provider is not None and target.model not in provider.models:
+                    provider.models.append(target.model)
+                    catalog_migrated = True
             await self.provider_registry.apply_update(providers, routing)
+            if catalog_migrated:
+                await self.event_store.save_dynamic_config(
+                    "provider_config", self.provider_registry.export()
+                )
         else:
             legacy = await self.event_store.get_dynamic_config("model_config") or {}
             seed_provider = ProviderConfig(
                 id="default",
                 base_url=legacy.get("openai_base_url", self.config.openai_base_url),
-                api_key=self.config.openai_api_key
+                api_key=self.config.openai_api_key,
+                models=list(dict.fromkeys([
+                    legacy.get("default_model", self.config.default_model),
+                    legacy.get("deliberate_model", self.config.deliberate_model),
+                ])),
             )
             seed_routing = RoutingConfig(
                 normal=RouteTarget(provider_id="default", model=legacy.get("default_model", self.config.default_model)),
@@ -397,6 +416,12 @@ class AgentRuntime:
                 raw_events = await self.event_store.get_recent_events(scene_id, limit=100)
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
                 pending_next_wake = await self.event_store.get_pending_next_wake(scene_id)
+                retrieval = RetrievalToolkit(
+                    event_store=self.event_store,
+                    allowed_scopes=[scene_id, "global-safe"],
+                    default_scene_id=scene_id,
+                    memory_store=self.memory_store,
+                )
 
                 async with self._cognition_semaphore:
                     result, core_trace = await self.social_core.execute(
@@ -405,6 +430,7 @@ class AgentRuntime:
                         raw_events=raw_events,
                         active_open_loops=open_loops,
                         pending_next_wake=pending_next_wake,
+                        toolkit=retrieval,
                     )
                 self.metrics.inc_social("social_cognition")
 
