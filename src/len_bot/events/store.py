@@ -640,6 +640,31 @@ class EventStore:
 
         return before_list + [target_dict] + after_list
 
+    async def references_belong_to_scene(
+        self,
+        reference_ids: set[str],
+        scene_id: str,
+    ) -> bool:
+        """Validate retrieved event/episode references against the SQL scope boundary."""
+        if not reference_ids:
+            return True
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+
+        ids = list(reference_ids)
+        placeholders = ",".join("?" for _ in ids)
+        event_cursor = await self._db.execute(
+            f"SELECT id FROM events WHERE scene_id = ? AND id IN ({placeholders})",
+            [scene_id, *ids],
+        )
+        episode_cursor = await self._db.execute(
+            f"SELECT id FROM episodes WHERE scene_id = ? AND id IN ({placeholders})",
+            [scene_id, *ids],
+        )
+        found = {row[0] for row in await event_cursor.fetchall()}
+        found.update(row[0] for row in await episode_cursor.fetchall())
+        return found == reference_ids
+
     async def query_timeline(
         self,
         scene_id: str,

@@ -104,6 +104,8 @@ class AgentRuntime:
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
+        self._social_active_bursts: dict[str, Stimulus] = {}
+        self._social_inference_scenes: set[str] = set()
         self._direct_retry_counts: dict[str, int] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
@@ -261,6 +263,8 @@ class AgentRuntime:
         self._running = False
         await self.burst_assembler.close()
         self._social_pending.clear()
+        self._social_active_bursts.clear()
+        self._social_inference_scenes.clear()
         for timer in self._reflection_timers.values():
             timer.cancel()
         self._reflection_timers.clear()
@@ -407,6 +411,21 @@ class AgentRuntime:
         self._social_pending[scene_id] = (
             self._merge_social_bursts(pending, burst) if pending else burst
         )
+        task = self._social_tasks.get(scene_id)
+        active = self._social_active_bursts.get(scene_id)
+        if (
+            (burst.has_mention_bot or burst.has_reply_bot)
+            and active is not None
+            and scene_id in self._social_inference_scenes
+            and task is not None
+            and not task.done()
+        ):
+            self._social_pending[scene_id] = self._merge_social_bursts(
+                active,
+                self._social_pending[scene_id],
+            )
+            logger.info("Direct social event preempting in-flight cognition on scene %s", scene_id)
+            task.cancel()
         if scene_id not in self._social_tasks:
             self._start_social_task(scene_id)
 
@@ -423,6 +442,7 @@ class AgentRuntime:
     async def _run_social_cognition_loop(self, scene_id: str) -> None:
         while scene_id in self._social_pending:
             burst = self._social_pending.pop(scene_id)
+            self._social_active_bursts[scene_id] = burst
             actor = await self.scene_manager.get_or_create_actor(scene_id)
             episode_id = f"social_{uuid.uuid4().hex[:12]}"
             scene_state = actor.state
@@ -438,7 +458,7 @@ class AgentRuntime:
             try:
                 session = actor.group_session.model_copy(deep=True)
                 through_event_rowid = session.last_observed_event_rowid
-                raw_events = await self.event_store.get_recent_events(scene_id, limit=100)
+                raw_events = await self.event_store.get_recent_events(scene_id, limit=12_000)
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
                 pending_next_wake = await self.event_store.get_pending_next_wake(scene_id)
                 retrieval = RetrievalToolkit(
@@ -449,14 +469,18 @@ class AgentRuntime:
                 )
 
                 async with self._cognition_semaphore:
-                    result, core_trace = await self.social_core.execute(
-                        session=session,
-                        burst=burst,
-                        raw_events=raw_events,
-                        active_open_loops=open_loops,
-                        pending_next_wake=pending_next_wake,
-                        toolkit=retrieval,
-                    )
+                    self._social_inference_scenes.add(scene_id)
+                    try:
+                        result, core_trace = await self.social_core.execute(
+                            session=session,
+                            burst=burst,
+                            raw_events=raw_events,
+                            active_open_loops=open_loops,
+                            pending_next_wake=pending_next_wake,
+                            toolkit=retrieval,
+                        )
+                    finally:
+                        self._social_inference_scenes.discard(scene_id)
                 self.metrics.inc_social("social_cognition")
 
                 # ADR-0034: a next-wake TASK_DUE that saw no new human/plugin social
@@ -544,6 +568,9 @@ class AgentRuntime:
                 else:
                     self._direct_retry_counts.pop(retry_key, None)
             finally:
+                if self._social_active_bursts.get(scene_id) is burst:
+                    self._social_active_bursts.pop(scene_id, None)
+                self._social_inference_scenes.discard(scene_id)
                 actor.release_episode_lease(episode_id)
 
     @staticmethod

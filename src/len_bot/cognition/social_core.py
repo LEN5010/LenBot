@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -24,11 +26,7 @@ class SocialCoreContextAssembler:
         active_open_loops: list[dict[str, Any]],
         pending_next_wake: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
-        recent_chat = []
-        for event in raw_events[-80:]:
-            if event.raw_text:
-                actor = "你(Bot)" if event.actor_id == f"user:{self.config.bot_qq}" else event.actor_id
-                recent_chat.append(f"[{event.id}] {actor}: {event.raw_text}")
+        active_open_loop_ids = [item["id"] for item in active_open_loops]
 
         system_content = (
             "【CORE SELF】\n"
@@ -44,6 +42,10 @@ class SocialCoreContextAssembler:
             "近期上下文不足且过去经历会影响理解时，主动使用历史与记忆工具。\n"
             "不要无条件查询；只有确实需要回忆人物、关系、旧话题或具体经历时才调用。\n"
             "当前消息明确在@你或回复你，且只是寒暄、简短指令或能直接回答的问题时，直接完成判断，不要为了凑上下文查询历史。\n"
+            "SocialWorldState.open_threads 是你理解出的社会话题；resolve_open_loop_ids 是 Runtime 事务字段，两者不是同一种 ID。\n"
+            "resolve_open_loop_ids 只能填写 CURRENT SOCIAL STATE 的 active_open_loops 中真实存在的 id；没有匹配项时必须输出空数组。\n"
+            "message_proposals.reply_to 只能填写 OneBotMessageID，绝不能填写 EventID；不需要引用回复时填 null。\n"
+            "保持输出紧凑，只保留当前真正活跃的话题、人物更新和必要证据，避免重复复述整个聊天记录。\n"
             "工具结果只是你的回忆材料，最终仍由你以同一个人格输出完整结构化认知。"
         )
 
@@ -52,11 +54,18 @@ class SocialCoreContextAssembler:
             "social_world_state": session.social_world.model_dump(mode="json"),
             "self_social_state": session.self_social_state.model_dump(mode="json"),
             "working_persons": {
-                key: value.model_dump(mode="json")
+                key: {
+                    "display_name": value.display_name,
+                    "group_role": value.group_role,
+                    "recent_context": value.recent_context[-10:],
+                }
                 for key, value in session.working_persons.items()
             },
             "working_relationships": {
-                key: value.model_dump(mode="json")
+                key: {
+                    "familiarity": value.familiarity,
+                    "patterns": value.patterns[-10:],
+                }
                 for key, value in session.working_relationships.items()
             },
             "retained_attention": [
@@ -67,23 +76,105 @@ class SocialCoreContextAssembler:
             "active_open_loops": active_open_loops,
         }
         schema = SocialCognitionResult.model_json_schema()
+        projected_burst = self._project_onebot_text(burst.combined_text)
+        situation_json = json.dumps(situation, ensure_ascii=False)
+        schema_json = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        fixed_user_content = (
+            "【CURRENT SOCIAL STATE】\n"
+            f"{situation_json}\n\n"
+            "【CURRENT BURST】\n"
+            f"{projected_burst}\n"
+            f"SourceEventIDs: {burst.source_event_ids}\n"
+            f"MentionBot: {burst.has_mention_bot} | ReplyBot: {burst.has_reply_bot}\n\n"
+            "【RUNTIME REFERENCE AUTHORITY】\n"
+            f"允许关闭的 Runtime OpenLoop IDs: {json.dumps(active_open_loop_ids, ensure_ascii=False)}\n\n"
+            "输出一个 JSON 对象，必须严格符合以下 schema；social world 输出理解后的完整当前快照。\n"
+            f"{schema_json}"
+        )
+        input_budget = max(
+            0,
+            self.config.social_context_window_tokens
+            - self.config.social_output_reserve_tokens
+            - self._estimate_tokens(system_content)
+            - self._estimate_tokens(fixed_user_content),
+        )
+        recent_chat = self._pack_recent_chat(raw_events, input_budget)
         chat_text = "\n".join(recent_chat) if recent_chat else "(暂无近期原始对话)"
         user_content = (
             "【CURRENT SOCIAL STATE】\n"
-            f"{json.dumps(situation, ensure_ascii=False)}\n\n"
+            f"{situation_json}\n\n"
             "【RECENT RAW CONVERSATION】\n"
             f"{chat_text}\n\n"
             "【CURRENT BURST】\n"
-            f"{burst.combined_text}\n"
+            f"{projected_burst}\n"
             f"SourceEventIDs: {burst.source_event_ids}\n"
             f"MentionBot: {burst.has_mention_bot} | ReplyBot: {burst.has_reply_bot}\n\n"
+            "【RUNTIME REFERENCE AUTHORITY】\n"
+            f"允许关闭的 Runtime OpenLoop IDs: {json.dumps(active_open_loop_ids, ensure_ascii=False)}\n\n"
             "输出一个 JSON 对象，必须严格符合以下 schema；social world 输出理解后的完整当前快照。\n"
-            f"{json.dumps(schema, ensure_ascii=False)}"
+            f"{schema_json}"
         )
         return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ]
+
+    def _pack_recent_chat(self, raw_events: list[Event], token_budget: int) -> list[str]:
+        selected: list[str] = []
+        used = 0
+        for event in reversed(raw_events):
+            if not event.raw_text:
+                continue
+            line = self._project_event(event)
+            cost = self._estimate_tokens(line) + 1
+            if used + cost > token_budget:
+                break
+            selected.append(line)
+            used += cost
+        selected.reverse()
+        return selected
+
+    def _project_event(self, event: Event) -> str:
+        sender = event.payload.get("sender") or {}
+        display_name = sender.get("card") or sender.get("nickname")
+        actor = "你(Bot)" if event.actor_id == f"user:{self.config.bot_qq}" else (display_name or event.actor_id)
+        onebot_message_id = event.payload.get("message_id")
+        message_ref = (
+            f"EventID={event.id} OneBotMessageID={onebot_message_id}"
+            if onebot_message_id is not None
+            else f"EventID={event.id}"
+        )
+        return f"[{message_ref}] {actor}({event.actor_id}): {self._project_onebot_text(event.raw_text)}"
+
+    @staticmethod
+    def _project_onebot_text(text: str) -> str:
+        labels = {
+            "image": "图片",
+            "record": "语音",
+            "video": "视频",
+            "face": "表情",
+            "reply": "回复消息",
+            "at": "提及",
+        }
+
+        def replace(match: re.Match[str]) -> str:
+            cq_type = match.group(1)
+            payload = match.group(2) or ""
+            label = labels.get(cq_type, f"CQ:{cq_type}")
+            if cq_type == "at":
+                qq_match = re.search(r"(?:^|,)qq=([^,]+)", payload)
+                return f"[提及 QQ {qq_match.group(1)}]" if qq_match else "[提及成员]"
+            if cq_type == "reply":
+                id_match = re.search(r"(?:^|,)id=([^,]+)", payload)
+                return f"[回复消息 {id_match.group(1)}]" if id_match else "[回复消息]"
+            return f"[{label}]"
+
+        return re.sub(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]", replace, text)
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        cjk = sum(1 for char in text if "\u3400" <= char <= "\u9fff")
+        return cjk + math.ceil((len(text) - cjk) / 4)
 
 
 class SocialCognitionCore:
@@ -128,6 +219,8 @@ class SocialCognitionCore:
         tier = CognitiveTier.NORMAL
         trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
         tool_calls_used = 0
+        contract_repairs = 0
+        active_open_loop_ids = {item["id"] for item in active_open_loops}
 
         for step in range(max_steps):
             force_final = step == max_steps - 1 or tool_calls_used >= max_tool_calls
@@ -252,7 +345,32 @@ class SocialCognitionCore:
                     tool_calls_used += 1
                 continue
 
-            return self._parse_result(message.content or ""), trace
+            content = message.content or ""
+            try:
+                result = self._parse_result(content)
+                invalid_loop_ids = set(result.resolve_open_loop_ids) - active_open_loop_ids
+                if invalid_loop_ids:
+                    raise ValueError(
+                        "resolve_open_loop_ids contains non-Runtime IDs: "
+                        + ", ".join(sorted(invalid_loop_ids))
+                    )
+            except Exception as contract_error:
+                if contract_repairs >= 1 or step >= max_steps - 1:
+                    raise
+                contract_repairs += 1
+                working_messages.append({"role": "assistant", "content": content})
+                working_messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一份结果不能提交："
+                        f"{contract_error}。请重新输出完整、紧凑且符合 schema 的 JSON。"
+                        "不要调用工具。resolve_open_loop_ids 只能使用允许列表中的真实 Runtime ID；"
+                        "SocialWorldState.open_threads 的自定义 ID 不能放进去。"
+                    ),
+                })
+                continue
+
+            return result, trace
 
         raise RuntimeError("Social Core loop exited without decision")
 
