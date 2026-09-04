@@ -49,6 +49,7 @@ class RuntimeMetrics:
             "followups_incorporated": 0,
             "openloops_resolved": 0,
             "obligations_fulfilled": 0,
+            "model_fallbacks": 0,
         }
 
     def _route(self, tier: str, provider_id: str, model: str) -> RouteStats:
