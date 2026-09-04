@@ -39,17 +39,29 @@ async function injectEvent() {
     error.value = e.message
   }
 }
+
+function activityLabel(value) {
+  return value === 'HIGH' ? '很活跃' : value === 'MEDIUM' ? '有消息' : '安静'
+}
+
+function engagementLabel(value) {
+  return value === 'participating' || value === 'active' ? '正在参与' : value === 'lightly_participating' ? '偶尔参与' : '正在旁观'
+}
+
+function traceLabel(value) {
+  return value === 'social_cognition_error' ? '处理失败' : '社交判断'
+}
 </script>
 
 <template>
   <div class="scenes-view">
     <div class="toolbar">
       <div class="page-title">
-        <h1>会话场景看板 (Scenes)</h1>
-        <p class="muted">单写者场景状态机 (SceneActor)、会话聚焦线程与实时上下文注入</p>
+        <h1>群聊状态</h1>
+        <p class="muted">查看机器人正在关注哪些群、聊什么，以及它当前是否参与。</p>
       </div>
       <button class="primary" @click="load">
-        <span>⟳ 刷新场景</span>
+        <span>刷新</span>
       </button>
     </div>
 
@@ -70,9 +82,9 @@ async function injectEvent() {
           <span v-else class="tag ok">活跃中</span>
         </div>
         <div class="kv">
-          <span class="k">场景活跃度</span>
+          <span class="k">最近状态</span>
           <span class="tag" :class="s.activity_level === 'HIGH' ? 'ok' : s.activity_level === 'MEDIUM' ? 'warn' : ''">
-            {{ s.activity_level }}
+            {{ activityLabel(s.activity_level) }}
           </span>
         </div>
         <div class="kv">
@@ -80,8 +92,8 @@ async function injectEvent() {
           <span class="v">{{ s.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
         </div>
         <div class="kv">
-          <span class="k">自身状态</span>
-          <span class="v highlight">{{ s.self_social_state?.engagement || 'observing' }}</span>
+          <span class="k">机器人状态</span>
+          <span class="v highlight">{{ engagementLabel(s.self_social_state?.engagement) }}</span>
         </div>
         <div class="kv">
           <span class="k">参与成员数</span>
@@ -96,64 +108,54 @@ async function injectEvent() {
         <div class="detail-header">
           <div>
             <h2>场景详情 · <code>{{ detail.scene_id }}</code></h2>
-            <p class="muted">当前状态机版本 v{{ detail.version }} · 参与度 {{ detail.self_social_state?.engagement || 'observing' }}</p>
+            <p class="muted">机器人{{ engagementLabel(detail.self_social_state?.engagement) }}，最近有 {{ detail.participants?.length || 0 }} 位成员参与</p>
           </div>
           <button class="primary" @click="injectEvent">
-            <span>⚡ 模拟注入消息</span>
+            <span>模拟一条消息</span>
           </button>
         </div>
 
         <div class="detail-grid">
           <div class="kv">
-            <span class="k">活跃度等级</span>
+            <span class="k">最近状态</span>
             <span class="tag" :class="detail.activity_level === 'HIGH' ? 'ok' : 'warn'">
-              {{ detail.activity_level }}
+              {{ activityLabel(detail.activity_level) }}
             </span>
           </div>
           <div class="kv">
-            <span class="k">当前聚焦话题</span>
+            <span class="k">正在聊的话题</span>
             <span class="v highlight">{{ detail.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
           </div>
           <div class="kv">
-            <span class="k">常驻参与成员</span>
+            <span class="k">最近参与成员</span>
             <span class="v">{{ detail.participants.join(', ') || '—' }}</span>
           </div>
           <div class="kv">
-            <span class="k">开放社会线程</span>
+            <span class="k">还没聊完的事</span>
             <span class="v">{{ detail.social_world?.open_threads?.map(t => t.summary).join(' / ') || '—' }}</span>
           </div>
         </div>
       </div>
 
-      <h2>最近决策链路 (Trace Timeline)</h2>
+      <h2>最近的机器人动态</h2>
       <div class="panel">
         <table>
           <thead>
             <tr>
               <th>时间</th>
-              <th>追踪类型 (Kind)</th>
-              <th>关联标识</th>
-              <th>决策推演内容</th>
+              <th>类型</th>
+              <th>机器人理解</th>
+              <th>最终决定</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="t in detail.timeline" :key="t.id">
               <td>{{ new Date(t.created_at * 1000).toLocaleTimeString() }}</td>
               <td>
-                <span class="tag" :class="t.kind === 'episode' ? 'warn' : 'ok'">{{ t.kind }}</span>
+                <span class="tag" :class="t.kind === 'social_cognition_error' ? 'bad' : 'ok'">{{ traceLabel(t.kind) }}</span>
               </td>
-              <td class="muted"><code>{{ t.ref_id.slice(0, 16) }}</code></td>
-              <td>
-                <template v-if="t.kind === 'attention'">
-                  <span class="tag">{{ t.payload.disposition }}</span>
-                  <span class="muted">【{{ t.payload.reason }}】</span>
-                  {{ t.payload.text }}
-                </template>
-                <template v-else>
-                  <span class="tag warn">{{ t.payload.outcome?.disposition }}</span>
-                  门禁: <code>{{ t.payload.gate?.disposition }}</code> · 触发动作: {{ t.payload.actions_enqueued }}
-                </template>
-              </td>
+              <td>{{ t.payload.result?.perception?.summary || t.payload.error || '—' }}</td>
+              <td>{{ t.payload.result?.decision?.action === 'speak' ? '准备发言' : t.payload.result?.decision?.action === 'silence' ? '选择沉默' : '未完成' }}</td>
             </tr>
             <tr v-if="!detail.timeline?.length">
               <td colspan="4" class="muted" style="text-align: center; padding: 20px;">该场景暂无行为链路记录</td>
@@ -186,7 +188,7 @@ async function injectEvent() {
 .bento-scene-card.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-md);
-  background: rgba(24, 34, 54, 0.85);
+  background: rgba(235, 243, 255, 0.92);
 }
 
 .scene-header {
@@ -223,8 +225,5 @@ async function injectEvent() {
   gap: 12px;
 }
 
-.highlight {
-  color: #60a5fa;
-  font-weight: 500;
-}
+.highlight { color: var(--accent-strong); font-weight: 600; }
 </style>

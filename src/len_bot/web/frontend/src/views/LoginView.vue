@@ -17,7 +17,7 @@ async function login() {
       body: JSON.stringify({ username: username.value, password: password.value }),
     })
     if (res.is_default_password) {
-      error.value = '当前为默认初始密码，登录后请尽快前往「系统设置」修改。'
+      error.value = '当前为默认初始密码，登录后请尽快前往「设置」修改。'
     }
     emit('logged-in')
   } catch (e) {
@@ -33,9 +33,9 @@ async function login() {
     <div class="glow-orb"></div>
     <form class="login-card" @submit.prevent="login">
       <div class="brand-header">
-        <div class="logo-badge">🤖</div>
-        <h1>LenBot 控制中心</h1>
-        <p class="subtitle">社交持久化智能体 · 集中运维中枢</p>
+        <div class="logo-badge">L</div>
+        <h1>LenBot 管理中心</h1>
+        <p class="subtitle">查看和管理你的 QQ 机器人</p>
       </div>
       <label>
         <span>管理员账号</span>
@@ -47,10 +47,10 @@ async function login() {
       </label>
       <p v-if="error" class="error">{{ error }}</p>
       <button class="primary submit-btn" :disabled="busy" type="submit">
-        {{ busy ? '身份验证中…' : '登录控制台' }}
+        {{ busy ? '正在登录…' : '登录' }}
       </button>
       <div class="login-footer">
-        <span>安全会话加密 · 实时状态同步</span>
+        <span>登录后即可查看机器人的运行情况</span>
       </div>
     </form>
   </div>
@@ -64,14 +64,15 @@ async function login() {
   justify-content: center;
   position: relative;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.12) 0%, rgba(56, 189, 248, 0.05) 35%, transparent 70%);
+  background: var(--bg-gradient);
+  background-attachment: fixed;
 }
 
 .glow-orb {
   position: absolute;
-  width: 500px;
-  height: 500px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.18) 0%, rgba(99, 102, 241, 0.08) 50%, transparent 70%);
+  width: 520px;
+  height: 520px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.16) 0%, rgba(99, 102, 241, 0.08) 50%, transparent 70%);
   border-radius: 50%;
   filter: blur(60px);
   pointer-events: none;
@@ -80,42 +81,45 @@ async function login() {
 .login-card {
   position: relative;
   z-index: 1;
-  width: 380px;
-  background: rgba(18, 24, 38, 0.78);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
-  padding: 36px 32px;
+  width: 390px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: var(--radius-lg);
+  padding: 38px 34px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  box-shadow: var(--shadow-bento);
 }
 
 .brand-header {
   text-align: center;
-  margin-bottom: 8px;
-}
-
-.logo-badge {
-  font-size: 2.2rem;
   margin-bottom: 6px;
 }
 
-h1 {
+.logo-badge {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 10px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 1.5rem;
+  font-weight: 800;
+  border-radius: 15px;
+  background: var(--accent-gradient);
+  box-shadow: 0 10px 24px var(--accent-glow);
+}
+
+.brand-header h1 {
   font-size: 1.35rem;
-  font-weight: 700;
-  margin: 0;
-  justify-content: center;
-  background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
 
 .subtitle {
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.86rem;
   margin: 6px 0 0;
 }
 
@@ -124,8 +128,8 @@ label {
   flex-direction: column;
   gap: 6px;
   font-size: 0.86rem;
-  color: #cbd5e1;
-  font-weight: 500;
+  color: var(--text-soft);
+  font-weight: 650;
 }
 
 label input {
@@ -140,9 +144,9 @@ label input {
 }
 
 .error {
-  color: #f87171;
+  color: var(--bad);
   background: var(--bad-bg);
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(220, 38, 38, 0.16);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   font-size: 0.84rem;
@@ -151,7 +155,7 @@ label input {
 
 .login-footer {
   text-align: center;
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: var(--muted);
   margin-top: 4px;
 }
