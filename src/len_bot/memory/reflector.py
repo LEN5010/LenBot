@@ -1,10 +1,11 @@
-"""LLM Reflector (ADR-0019 §10.5): turns an unreflected event range into an
-L1 EpisodeRecord plus evidence-backed L2 MemoryProposals.
+"""LLM Reflector (ADR-0019 §10.5, ADR-0038): turns an unreflected event range
+into an L1 EpisodeRecord, evidence-backed L2 MemoryProposals, and a deferred
+merge-only SocialWorldPatch.
 
-The reflector is a cognition-tier consumer: it only PROPOSES memories; the
-MemoryGate / atomic commit chain remains the sole write authority (Invariant E).
-Evidence integrity is enforced downstream — every proposal here cites the full
-reflected event range, all of which provably exist in the scene scope.
+The reflector is a cognition-tier consumer: it only PROPOSES; the MemoryGate /
+atomic commit chain remains the sole write authority for memories, and the
+SocialWorldPatch merges into the session only through the SceneActor's lawful
+event path. Evidence integrity is enforced downstream.
 """
 
 import json
@@ -15,6 +16,7 @@ from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
+from len_bot.cognition.session import SocialWorldPatch
 from len_bot.events.models import Event
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryCertainty
 
@@ -31,12 +33,18 @@ _REFLECT_SYSTEM_PROMPT = (
     "   - 某人对某话题兴趣高 → topic_interest\n"
     "   - 群里晚上活跃 → group_norm\n"
     "   - Bot 在该群常参与某类话题 → social_pattern\n"
+    "3. 一个 social_world_patch（可省略）：对当前社会世界的延迟理解，只做增量合并——\n"
+    "   mood/activity 一句话；open_topics 只开真正活跃的新话题，id 必须是 topic:<某个真实事件ID>；\n"
+    "   close_topic_ids 只填确认已经结束的旧话题 id；social_dynamics_add 是新的群体互动模式观察；\n"
+    "   group_identity 只在确有证据时更新。\n"
     "禁止给人贴人格标签（如\"内向\"），禁止无证据推断敏感属性。\n"
     "只输出一个 JSON 对象，不要输出其他文本：\n"
     '{"title": "...", "summary": "...", "tags": ["..."], '
     '"memory_proposals": [{"subject": "user:123", "kind": "preference", "key": "...", '
     '"value": "...", "certainty": "tentative|likely|strong|explicit", '
-    '"human_readable_assertion": "..."}]}'
+    '"human_readable_assertion": "..."}], '
+    '"social_world_patch": {"mood": "...", "open_topics": [{"id": "topic:<事件ID>", '
+    '"subject": "...", "context": "..."}], "close_topic_ids": [], "social_dynamics_add": []}}'
 )
 
 
@@ -57,7 +65,7 @@ class LLMReflector:
             raise ValueError(f"Reflector output has no JSON object: {text[:120]}")
         return json.loads(text[start:end + 1])
 
-    async def __call__(self, events: list[Event]) -> tuple[EpisodeRecord, list[MemoryProposal]]:
+    async def __call__(self, events: list[Event]) -> tuple[EpisodeRecord, list[MemoryProposal], SocialWorldPatch | None]:
         window = events[-self.max_events:]
         event_ids = [e.id for e in window]
         participants = sorted({e.actor_id for e in window if e.actor_id})
@@ -104,4 +112,38 @@ class LLMReflector:
             except Exception as e:
                 logger.warning("Skipping malformed memory proposal from reflector: %s (%s)", mp, e)
 
-        return episode, proposals
+        patch = self._parse_patch(parsed.get("social_world_patch"), event_ids)
+        return episode, proposals, patch
+
+    def _parse_patch(self, data: Any, event_ids: list[str]) -> SocialWorldPatch | None:
+        """Merge-only deferred patch; invalid shapes are dropped, never fatal."""
+        if not isinstance(data, dict) or not data:
+            return None
+        try:
+            patch = SocialWorldPatch.model_validate(data)
+        except Exception as e:
+            logger.warning("Dropping malformed social_world_patch from reflector: %s", e)
+            return None
+        known = set(event_ids)
+        valid_topics = []
+        for topic in patch.open_topics:
+            grounding = topic.id.removeprefix("topic:")
+            if grounding in known:
+                valid_topics.append(topic)
+            else:
+                logger.warning("Dropping ungrounded reflector topic %s", topic.id)
+        patch.open_topics = valid_topics
+        patch.close_topic_ids = [
+            tid for tid in patch.close_topic_ids if tid.removeprefix("topic:") in known
+        ]
+        patch.source_event_ids = event_ids
+        if not any([
+            patch.mood,
+            patch.activity,
+            patch.open_topics,
+            patch.close_topic_ids,
+            patch.social_dynamics_add,
+            patch.group_identity is not None,
+        ]):
+            return None
+        return patch

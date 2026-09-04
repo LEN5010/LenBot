@@ -3,6 +3,7 @@ import aiosqlite
 import json
 import logging
 import time
+import uuid
 from typing import Any, Optional
 from len_bot.events.models import Event, EventType
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
@@ -173,6 +174,22 @@ class EventStore:
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_shadow_annotations_scene ON shadow_annotations(scene_id, created_at);")
+
+        # ADR-0038 §5: curated bot voice exemplars (scene_id='' means global)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS voice_exemplars (
+                id TEXT PRIMARY KEY,
+                scene_id TEXT NOT NULL DEFAULT '',
+                context TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                tag TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at REAL NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+        """)
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_voice_exemplars_scene ON voice_exemplars(scene_id, enabled);")
 
         await self._db.commit()
 
@@ -939,6 +956,133 @@ class EventStore:
                 )
             )
             await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # ADR-0038 §5: curated bot voice exemplars
+    # ------------------------------------------------------------------
+
+    async def add_voice_example(
+        self,
+        scene_id: str,
+        content: str,
+        context: str = "",
+        tag: str = "",
+    ) -> dict[str, Any]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        example_id = f"voice_{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        async with self._write_lock:
+            await self._db.execute(
+                """
+                INSERT INTO voice_exemplars (id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at)
+                VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?);
+                """,
+                (example_id, scene_id or "", context, content, tag, now),
+            )
+            await self._db.commit()
+        return {
+            "id": example_id,
+            "scene_id": scene_id or "",
+            "context": context,
+            "content": content,
+            "tag": tag,
+            "enabled": True,
+            "use_count": 0,
+            "last_used_at": 0.0,
+            "created_at": now,
+        }
+
+    async def list_voice_examples(self, scene_id: str | None = None) -> list[dict[str, Any]]:
+        """All exemplars; when scene_id is given, that scene's plus global ones."""
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        if scene_id is None:
+            cursor = await self._db.execute(
+                "SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at FROM voice_exemplars ORDER BY created_at DESC;"
+            )
+        else:
+            cursor = await self._db.execute(
+                """
+                SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at
+                FROM voice_exemplars
+                WHERE scene_id IN (?, '')
+                ORDER BY created_at DESC;
+                """,
+                (scene_id,),
+            )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "scene_id": r[1],
+                "context": r[2],
+                "content": r[3],
+                "tag": r[4],
+                "enabled": bool(r[5]),
+                "use_count": r[6],
+                "last_used_at": r[7],
+                "created_at": r[8],
+            }
+            for r in rows
+        ]
+
+    async def delete_voice_example(self, example_id: str) -> bool:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "DELETE FROM voice_exemplars WHERE id = ?;",
+                (example_id,),
+            )
+            await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def set_voice_example_enabled(self, example_id: str, enabled: bool) -> bool:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "UPDATE voice_exemplars SET enabled = ? WHERE id = ?;",
+                (1 if enabled else 0, example_id),
+            )
+            await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def select_voice_examples(self, scene_id: str, limit: int) -> list[dict[str, Any]]:
+        """ADR-0038 §5: LRU rotation — least-recently-used enabled exemplars first.
+
+        Bumps use_count/last_used_at for the picked rows so the same batch is
+        not injected repeatedly.
+        """
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        if limit <= 0:
+            return []
+        cursor = await self._db.execute(
+            """
+            SELECT id, scene_id, context, content, tag FROM voice_exemplars
+            WHERE enabled = 1 AND scene_id IN (?, '')
+            ORDER BY last_used_at ASC, use_count ASC, created_at DESC
+            LIMIT ?;
+            """,
+            (scene_id, limit),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return []
+        now = time.time()
+        picked = [
+            {"id": r[0], "scene_id": r[1], "context": r[2], "content": r[3], "tag": r[4]}
+            for r in rows
+        ]
+        async with self._write_lock:
+            await self._db.executemany(
+                "UPDATE voice_exemplars SET use_count = use_count + 1, last_used_at = ? WHERE id = ?;",
+                [(now, item["id"]) for item in picked],
+            )
+            await self._db.commit()
+        return picked
 
     async def create_task(self, task_data: dict[str, Any]) -> None:
         """P0.1: Dedicated write authority for tasks under write_lock."""

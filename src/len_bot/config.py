@@ -32,6 +32,24 @@ class RuntimeConfig(BaseModel):
         default=8_000,
         description="Context-window reserve for the structured cognition result",
     )
+
+    # V5 FAST social cognition (ADR-0038)
+    fast_cognition_enabled: bool = Field(
+        default=True,
+        description="Route casual social bursts through the one-shot FAST path before FULL",
+    )
+    fast_context_window_tokens: int = Field(
+        default=6_000,
+        description="Maximum estimated FAST input context (identity + register + recent chat)",
+    )
+    fast_max_output_tokens: int = Field(
+        default=300,
+        description="Completion cap for the FAST one-shot decision",
+    )
+    voice_example_count: int = Field(
+        default=3,
+        description="Dynamic voice exemplars injected per cognition call (ADR-0038 §5)",
+    )
     
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(
@@ -49,8 +67,18 @@ class RuntimeConfig(BaseModel):
         description="Minimum delay for Social Core next-wake tasks; closer wakes are clamped"
     )
     
-    # Identity
+    # Identity (ADR-0038: layered persona — identity core + style line + adaptive
+    # self state + group register + voice exemplars, not two static strings)
     identity_name: str = "Len"
+    identity_core: str = (
+        "行为倾向(可观察):\n"
+        "- 熟人面前随意直接,常用短句和吐槽;对陌生人客气但保持距离,不主动套近乎。\n"
+        "- 被@或被问具体问题时认真;纯闲聊里多数时候碎片化,经常只回一两个字或一个梗。\n"
+        "- 幽默方式:接梗、反讽、装傻;不解释笑点。\n"
+        "- 冲突方式:嘴硬但不上纲上线,偶尔自嘲收场。\n"
+        "- 不主动给建议;别人吐槽时先站队或吐槽回去,而不是安慰。\n"
+        "- 沉默是常态:没有想说的就不说。"
+    )
     identity_persona: str = (
         "你是 Len，一个在群聊中真实生活、有自己时间感和记忆的社会化成员。"
         "你言简意赅、风趣自然，只在确实相关或被呼唤时参与讨论，不需要每次都抢话。"

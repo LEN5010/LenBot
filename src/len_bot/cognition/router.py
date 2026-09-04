@@ -5,6 +5,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 class CognitiveTier(StrEnum):
+    FAST = "fast"          # ADR-0038: one-shot low-latency social cognition
     NORMAL = "normal"
     DELIBERATE = "deliberate"
 
