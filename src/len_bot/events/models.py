@@ -16,6 +16,7 @@ class EventType(StrEnum):
     STATE_ANNOTATION = "STATE_ANNOTATION"
     LIVE_STARTED = "LIVE_STARTED"
     LIVE_ENDED = "LIVE_ENDED"
+    SOCIAL_COGNITION_RECORDED = "SOCIAL_COGNITION_RECORDED"
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -55,3 +56,4 @@ class Stimulus(BaseModel):
     has_reply_bot: bool = False
     origin_mode: str = "live"
     timestamp: float = Field(default_factory=time.time)
+    events: list[Event] = Field(default_factory=list)

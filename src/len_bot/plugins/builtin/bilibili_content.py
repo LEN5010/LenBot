@@ -1,4 +1,4 @@
-"""Bilibili Content Tool Plugin (交接.md §31, Stage 9 Item 36).
+"""Bilibili Content Tool Plugin (ADR-0021 and ADR-0030).
 
 Cognition-invoked agentic tools for querying public Bilibili video details,
 search results, and dynamic feeds.

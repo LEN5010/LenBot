@@ -20,9 +20,9 @@ When modifying or adding features to this codebase, you **must strictly adhere**
 5. **No implicit task creation from soft state**: Soft annotations (e.g. `possible_start_time`) must never automatically spawn scheduled tasks. Tasks require explicit `TaskProposal` from cognition.
 6. **No direct side-effects from Pi**: Pi outputs structured `EpisodeOutcome` containing proposals. Actions must pass through `RuntimeGate` validation.
 7. **No overwriting raw history with memory**: The `events` table is append-only and immutable. Memories are subjective epistemic beliefs with evidence pointers back to raw events.
-8. **No automatic RAG on every message**: Prompts include only a tight elastic window of recent raw messages. Historical context is retrieved actively and on-demand via tools (`search_messages`, `read_context`, `query_timeline`).
+8. **No automatic RAG on every message**: Working context is carried directly in `GroupAgentSession`; older history is retrieved actively and on-demand via tools (`search_messages`, `read_context`, `query_timeline`).
 9. **No prompt-level privacy enforcement**: Privacy boundaries (`ExecutionScope`) must be rigidly enforced at the SQL layer (`WHERE scene_id IN (...)`), never by asking the model not to disclose private information.
-10. **No randomness as primary agency**: Proactive behavior is governed by an explicit `InterestModel` evaluated against a dynamic `SpeakingBudget` cost curve.
+10. **No randomness as primary agency**: Normal participation is a Social Core judgement over continuous scene context; runtime retains only deterministic anti-loop, rate, and cost ceilings.
 
 ---
 
@@ -47,9 +47,11 @@ src/len_bot/
 │   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, RetainedItemProposal
 │   ├── pi_core.py       # PiAgentCore (ReAct loop with step-boundary steering)
 │   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing)
-│   └── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
+│   ├── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
+│   ├── session.py       # GroupAgentSession and validated social state proposals
+│   └── social_core.py   # Social Cognition Core + direct working-context assembly
 ├── events/              # Immutable event bus & raw storage
-│   ├── builder.py       # StimulusBuilder (burst coalescing & debounce)
+│   ├── builder.py       # BurstAssembler (scene event coalescing; no social judgement)
 │   ├── models.py        # Event, EventType, Stimulus, StimulusType
 │   └── store.py         # EventStore (SQLite WAL + native trigram FTS5 + traces)
 ├── memory/              # Epistemic beliefs & reflection

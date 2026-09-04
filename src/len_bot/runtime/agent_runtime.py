@@ -5,30 +5,25 @@ import uuid
 from collections import deque
 from typing import Optional, Callable, Awaitable, Any
 from len_bot.config import RuntimeConfig
-from len_bot.events.models import Event, EventType, Stimulus, StimulusType
+from len_bot.events.models import Event, EventType, Stimulus
 from len_bot.events.store import EventStore
-from len_bot.events.builder import StimulusBuilder
+from len_bot.events.builder import BurstAssembler
 from len_bot.scenes.manager import SceneManager
-from len_bot.attention.engine import AttentionEngine
-from len_bot.attention.models import AttentionDisposition, AttentionResult
-from len_bot.cognition.assembler import ContextAssembler
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import FinalDisposition
-from len_bot.cognition.pi_core import PiAgentCore
-from len_bot.cognition.manager import EpisodeManager
 from len_bot.actions.models import ActionItem
 from len_bot.actions.queue import ActionQueue
 from len_bot.runtime.gate import RuntimeGate, GateDecision
 from len_bot.scheduler.engine import TaskScheduler
 from len_bot.state.open_loops import OpenLoopManager
-from len_bot.scenes.models import ThreadStatus
 
 from len_bot.memory.store import MemoryStore
 from len_bot.memory.gate import MemoryGate
 from len_bot.memory.reflection import ReflectionEngine
-from len_bot.state.ambient import AmbientStore
 from len_bot.cognition.providers import ProviderConfig, ProviderRegistry, RouteTarget, RoutingConfig
 from len_bot.cognition.router import CognitiveTier
+from len_bot.cognition.social_core import SocialCognitionCore
+from len_bot.cognition.session import SocialDecisionAction
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.plugins import PluginHost
 
@@ -39,10 +34,10 @@ class AgentRuntime:
         self,
         config: RuntimeConfig,
         send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
-        mock_pi_handler: Optional[Callable] = None
+        mock_social_handler: Optional[Callable] = None,
     ):
         self.config = config
-        self.mock_pi_handler = mock_pi_handler
+        self.mock_social_handler = mock_social_handler
         self.bot_actor_id = f"user:{config.bot_qq}"
         
         self.event_store = EventStore(config.db_path)
@@ -71,12 +66,10 @@ class AgentRuntime:
             metrics=self.metrics
         )
         self.open_loop_manager = OpenLoopManager(self.event_store)
-        self.ambient_store = AmbientStore()
         self.runtime_gate = RuntimeGate(
             event_store=self.event_store,
             action_queue=self.action_queue,
             scheduler=self.scheduler,
-            ambient_store=self.ambient_store,
             metrics=self.metrics,
             origin_mode_provider=lambda: ("shadow" if self.shadow_mode else "live")
         )
@@ -87,30 +80,19 @@ class AgentRuntime:
             on_state_updated=self._on_scene_event_committed
         )
         
-        self.stimulus_builder = StimulusBuilder(
+        self.burst_assembler = BurstAssembler(
             config=config,
-            on_stimulus=self._on_stimulus
+            on_burst=self._on_burst,
         )
-        self.attention_engine = AttentionEngine(config)
-        
-        self.context_assembler = ContextAssembler(config)
         self.provider_registry = ProviderRegistry()
-        self.pi_core = PiAgentCore(
-            config,
+        self.social_core = SocialCognitionCore(
+            config=config,
             registry=self.provider_registry,
             metrics=self.metrics,
-            mock_handler=mock_pi_handler
-        )
-        self.episode_manager = EpisodeManager(
-            scene_manager=self.scene_manager,
-            context_assembler=self.context_assembler,
-            pi_core=self.pi_core,
-            event_store=self.event_store,
-            plugin_host=self.plugin_host
+            mock_handler=mock_social_handler,
         )
 
         self._cognition_semaphore = asyncio.Semaphore(2)  # Max 2 concurrent episodes (§93)
-        self._last_attention_result: Optional[AttentionResult] = None
         self._last_gate_decision: Optional[GateDecision] = None
         self._started_at = time.time()
         self._onebot_adapter = None
@@ -118,7 +100,8 @@ class AgentRuntime:
         self._maintenance_task: Optional[asyncio.Task] = None
         self._background_tasks: set[asyncio.Task] = set()
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
-        self._reflection_postpone_counts: dict[str, int] = {}
+        self._social_pending: dict[str, Stimulus] = {}
+        self._social_tasks: dict[str, asyncio.Task] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -132,7 +115,6 @@ class AgentRuntime:
         await self.memory_store.initialize()
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
         self.runtime_gate.memory_gate = self.memory_gate
-        self.episode_manager.memory_store = self.memory_store
 
         # Load dynamic configurations from database if present
         saved_persona = await self.event_store.get_dynamic_config("persona_config")
@@ -170,7 +152,7 @@ class AgentRuntime:
 
         # ADR-0028 §11: Wire LLMReflector AFTER provider_registry has loaded providers and routing
         has_live_provider = self.provider_registry.has_live_provider()
-        if self.mock_pi_handler is None and has_live_provider:
+        if self.mock_social_handler is None and has_live_provider:
             from len_bot.memory.reflector import LLMReflector
 
             def _resolve_reflection_route():
@@ -181,14 +163,6 @@ class AgentRuntime:
             self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate, llm_reflector=reflector, event_store=self.event_store)
         else:
             self.reflection_engine = ReflectionEngine(self.memory_store, self.memory_gate, event_store=self.event_store)
-
-        saved_social = await self.event_store.get_dynamic_config("social_config")
-        if saved_social:
-            self.config.monitored_keywords = saved_social.get("monitored_keywords", self.config.monitored_keywords)
-            if "speaking_budget_base_threshold" in saved_social:
-                self.attention_engine.speaking_budget.base_threshold = saved_social["speaking_budget_base_threshold"]
-            if "interest_topics" in saved_social:
-                self.attention_engine.interest_model.topics = saved_social["interest_topics"]
 
         # Shadow Mode (ADR-0023): hot-toggleable, persisted across restarts
         saved_shadow = await self.event_store.get_dynamic_config("shadow_config")
@@ -243,6 +217,8 @@ class AgentRuntime:
 
     async def stop(self) -> None:
         self._running = False
+        await self.burst_assembler.close()
+        self._social_pending.clear()
         for timer in self._reflection_timers.values():
             timer.cancel()
         self._reflection_timers.clear()
@@ -265,7 +241,7 @@ class AgentRuntime:
         await self.event_store.close()
 
     async def _maintenance_loop(self) -> None:
-        """Periodic background heartbeat for OpenLoop GC, ambient sweep and memory decay."""
+        """Periodic background heartbeat for durable open-loop and memory maintenance."""
         while self._running:
             try:
                 await asyncio.sleep(max(0.05, self.config.maintenance_interval_seconds))
@@ -275,23 +251,7 @@ class AgentRuntime:
                 # 1. Sweep expired Open Loops past absolute TTL
                 await self.open_loop_manager.sweep_ttl_expiration()
 
-                # 2. Check scene-level decay for all active scene actors and ParticipationThread decay (ADR-0027)
-                now = time.time()
-                for actor in list(self.scene_manager._actors.values()):
-                    if actor.state:
-                        await self.open_loop_manager.check_scene_decay(actor.state)
-                        th = actor.state.current_thread
-                        if th and th.status != ThreadStatus.CLOSED:
-                            elapsed = now - th.last_relevant_at
-                            if elapsed > 300.0:
-                                th.status = ThreadStatus.CLOSED
-                            elif elapsed > 120.0 and th.status == ThreadStatus.ACTIVE:
-                                th.status = ThreadStatus.FADING
-
-                # 3. Expire ambient retained items past TTL (ADR-0018)
-                self.ambient_store.sweep()
-
-                # 4. Temporal decay of stale epistemic beliefs (ADR-0015/0019)
+                # 2. Temporal decay of stale epistemic beliefs (ADR-0015/0019)
                 if self.memory_store:
                     await self.memory_store.decay_memories()
 
@@ -309,7 +269,7 @@ class AgentRuntime:
         if event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED) and event.actor_id != self.bot_actor_id:
             self.metrics.inc_social("human_messages")
 
-        await self.stimulus_builder.ingest(event)
+        await self.burst_assembler.ingest(event)
 
         # Condition-bound obligations (ADR-0018): fire tasks whose wake_event_type
         # matches this committed event. Firing takes the standard TASK_DUE path.
@@ -346,16 +306,6 @@ class AgentRuntime:
                     self._schedule_quiet_window_reflection(state)
                 return
 
-            state = self.scene_manager.get_scene_state(scene_id)
-            postpone_count = self._reflection_postpone_counts.get(scene_id, 0)
-            if state and state.bot_engagement == "active" and postpone_count < 1:
-                # Bot is mid-conversation; postpone once, but next time force reflection (ADR-0028, §12)
-                self._reflection_postpone_counts[scene_id] = postpone_count + 1
-                self._schedule_quiet_window_reflection(state)
-                return
-
-            self._reflection_postpone_counts[scene_id] = 0
-
             cursor_rowid = await self.memory_store.get_reflection_cursor(scene_id)
             # ADR-0028, §10.1: Batch size 30 unreflected events
             events = await self.event_store.get_unreflected_events(scene_id, after_rowid=cursor_rowid, limit=30)
@@ -389,195 +339,176 @@ class AgentRuntime:
             self.metrics.inc_social("visible_messages")
         await self.scene_manager.dispatch_event(event)
 
-    async def _on_stimulus(self, stimulus: Stimulus) -> None:
-        """Callback invoked when StimulusBuilder produces a Stimulus."""
-        scene_state = self.scene_manager.get_scene_state(stimulus.scene_id)
-        open_loops = await self.event_store.get_active_open_loops(stimulus.scene_id)
-
-        # 1. Attention Engine Evaluation
-        att_res = self.attention_engine.evaluate(stimulus, scene_state, open_loops, now=stimulus.timestamp)
-        self._last_attention_result = att_res
-        self.metrics.inc_social(att_res.disposition.value.lower())  # observe / track / wake
-
-        logger.info(
-            "Attention on Scene %s: %s (reason: %s)",
-            stimulus.scene_id,
-            att_res.disposition.value,
-            att_res.reason
-        )
-
-        if att_res.disposition == AttentionDisposition.DROP:
-            self._spawn_background_task(self.event_store.save_trace(
-                kind="attention", scene_id=stimulus.scene_id,
-                ref_id=stimulus.id,
-                payload={"stimulus_type": stimulus.stimulus_type.value, "actor_id": stimulus.actor_id,
-                         "text": stimulus.combined_text[:120], "disposition": "drop", "reason": att_res.reason}
-            ))
-            return
-        elif att_res.disposition == AttentionDisposition.OBSERVE:
-            self._spawn_background_task(self.event_store.save_trace(
-                kind="attention", scene_id=stimulus.scene_id,
-                ref_id=stimulus.id,
-                payload={"stimulus_type": stimulus.stimulus_type.value, "actor_id": stimulus.actor_id,
-                         "text": stimulus.combined_text[:120], "disposition": "observe", "reason": att_res.reason}
-            ))
-            return
-        elif att_res.disposition == AttentionDisposition.TRACK:
-            if att_res.soft_annotation:
-                annotation_event = Event(
-                    event_type=EventType.STATE_ANNOTATION,
-                    scene_id=stimulus.scene_id,
-                    actor_id="system:attention",
-                    timestamp=time.time(),
-                    metadata={"soft_annotation": att_res.soft_annotation}
+    async def _on_burst(self, burst: Stimulus) -> None:
+        """Every valid scene burst enters the Social Cognition Core."""
+        if (
+            self.social_core.mock_handler is None
+            and not self.provider_registry.has_live_provider()
+        ):
+            self._spawn_background_task(
+                self.event_store.save_trace(
+                    kind="social_cognition_error",
+                    scene_id=burst.scene_id,
+                    ref_id=burst.id,
+                    payload={
+                        "error": "No Social Core provider configured",
+                        "source_event_ids": burst.source_event_ids,
+                    },
                 )
-                await self.scene_manager.dispatch_event(annotation_event)
-            self._spawn_background_task(self.event_store.save_trace(
-                kind="attention", scene_id=stimulus.scene_id,
-                ref_id=stimulus.id,
-                payload={"stimulus_type": stimulus.stimulus_type.value, "actor_id": stimulus.actor_id,
-                         "text": stimulus.combined_text[:120], "disposition": "track", "reason": att_res.reason}
-            ))
+            )
             return
-        elif att_res.disposition == AttentionDisposition.WAKE:
-            self._spawn_background_task(self.event_store.save_trace(
-                kind="attention", scene_id=stimulus.scene_id,
-                ref_id=stimulus.id,
-                payload={"stimulus_type": stimulus.stimulus_type.value, "actor_id": stimulus.actor_id,
-                         "text": stimulus.combined_text[:120], "disposition": "wake", "reason": att_res.reason}
-            ))
-            # 2. Trigger Cognitive Episode under concurrency semaphore as a background task
-            # Scene Actor must NEVER block for LLM inference (ADR-0004)!
-            async def _wake_coro():
-                async with self._cognition_semaphore:
-                    await self._run_wake_episode(stimulus, scene_state, open_loops, att_res)
-            self._spawn_background_task(_wake_coro())
+        self._queue_social_cognition(burst)
 
-    async def _save_episode_trace(
-        self,
-        stimulus: Stimulus,
-        episode_id: str,
-        attention: AttentionResult,
-        step_trace: dict,
-        outcome,
-        gate_decision: GateDecision
-    ) -> None:
-        """ADR-0022: one durable row = the full Event→Attention→Cognition→Gate→effects chain."""
-        committed = gate_decision.committed_proposal
-        payload = {
-            "stimulus": {
-                "id": stimulus.id,
-                "type": stimulus.stimulus_type.value,
-                "actor_id": stimulus.actor_id,
-                "text": stimulus.combined_text[:200],
-                "source_event_ids": stimulus.source_event_ids,
-            },
-            "attention": {"disposition": attention.disposition.value.lower(), "reason": attention.reason},
-            "cognition": {
-                "mode": step_trace.get("mode"),
-                "steps": step_trace.get("steps", []),
-                "interim_injections": step_trace.get("interim_injections", 0),
-                "follow_ups": step_trace.get("follow_ups", 0),
-                "escalations": step_trace.get("escalations", []),
-            },
-            "outcome": {
-                "disposition": outcome.disposition.value,
-                "decision_reason": outcome.decision_reason[:300],
-                "messages": len(outcome.message_proposals),
-                "tasks": len(outcome.task_proposals),
-                "memories": len(outcome.memory_proposals),
-                "resolve_loops": len(outcome.resolve_open_loop_ids),
-                "retained_items": len(outcome.retained_item_proposals),
-            },
-            "gate": {"disposition": gate_decision.disposition.value, "reason": gate_decision.reason},
-            "durable_effects": {
-                "tasks": [t.id for t in committed.committed_tasks] if committed else [],
-                "resolved_loops": committed.resolved_loop_ids if committed else [],
-                "memories": [m.id for m in committed.committed_memories] if committed else [],
-            },
-            "actions_enqueued": gate_decision.actions_enqueued,
-        }
-        try:
-            await self.event_store.save_trace(kind="episode", scene_id=stimulus.scene_id, ref_id=episode_id, payload=payload)
-        except Exception as e:
-            logger.warning("Failed saving episode trace on scene %s: %s", stimulus.scene_id, e)
+    def _queue_social_cognition(self, burst: Stimulus) -> None:
+        scene_id = burst.scene_id
+        self._social_pending[scene_id] = burst
+        if scene_id not in self._social_tasks:
+            self._start_social_task(scene_id)
 
-    async def _run_wake_episode(self, stimulus: Stimulus, scene_state, open_loops, att_res: Optional[AttentionResult] = None) -> None:
-        actor = await self.scene_manager.get_or_create_actor(stimulus.scene_id)
-        if scene_state is None:
+    def _start_social_task(self, scene_id: str) -> None:
+        task = self._spawn_background_task(self._run_social_cognition_loop(scene_id))
+        self._social_tasks[scene_id] = task
+        task.add_done_callback(lambda _task: self._social_task_finished(scene_id))
+
+    def _social_task_finished(self, scene_id: str) -> None:
+        self._social_tasks.pop(scene_id, None)
+        if self._running and scene_id in self._social_pending:
+            self._start_social_task(scene_id)
+
+    async def _run_social_cognition_loop(self, scene_id: str) -> None:
+        while scene_id in self._social_pending:
+            burst = self._social_pending.pop(scene_id)
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            episode_id = f"social_{uuid.uuid4().hex[:12]}"
             scene_state = actor.state
+            mailbox = EpisodeMailbox(
+                episode_id=episode_id,
+                scene_id=scene_id,
+                base_scene_version=scene_state.version,
+            )
+            mailbox.origin_mode = burst.origin_mode
+            if not actor.acquire_episode_lease(episode_id, mailbox):
+                raise RuntimeError(f"Concurrent Social Core episode in scene {scene_id}")
 
-        # P0.2: Enforce single-scene mutual exclusion and span mailbox through gate commit
-        episode_id = f"ep_{uuid.uuid4().hex[:12]}"
-        base_version = scene_state.version if scene_state else 0
-        mailbox = EpisodeMailbox(episode_id, stimulus.scene_id, base_version)
+            try:
+                session = actor.group_session.model_copy(deep=True)
+                through_event_rowid = session.last_observed_event_rowid
+                raw_events = await self.event_store.get_recent_events(scene_id, limit=100)
+                open_loops = await self.event_store.get_active_open_loops(scene_id)
 
-        acquired = actor.acquire_episode_lease(episode_id, mailbox)
-        if not acquired:
-            logger.info("Scene %s already has an active cognitive episode; skipping concurrent trigger", stimulus.scene_id)
-            return
+                async with self._cognition_semaphore:
+                    result, core_trace = await self.social_core.execute(
+                        session=session,
+                        burst=burst,
+                        raw_events=raw_events,
+                        active_open_loops=open_loops,
+                    )
+                self.metrics.inc_social("social_cognition")
 
-        try:
-            raw_events = await self.event_store.get_recent_events(stimulus.scene_id, limit=30)
-            allowed_scopes = [stimulus.scene_id, "global-safe"]
-
-            relevant_memories = []
-            if self.memory_store:
-                relevant_memories = await self.memory_store.query_memories(allowed_scopes=allowed_scopes, limit=5)
-
-            # Person Card (ADR-0019 §11.1): sender snapshot from the actor's latest
-            # event + subject-scoped memories for the current actor.
-            actor_profile = None
-            for e in reversed(raw_events):
-                if e.actor_id == stimulus.actor_id and e.payload.get("sender"):
-                    actor_profile = e.payload["sender"]
-                    break
-            actor_memories = []
-            if self.memory_store:
-                actor_memories = await self.memory_store.query_memories(
-                    allowed_scopes=allowed_scopes, subject=stimulus.actor_id, limit=3
+                mode = "shadow" if self.shadow_mode else "live"
+                accepted = await actor.submit_social_cognition(
+                    result=result,
+                    through_event_rowid=through_event_rowid,
+                    source_event_ids=burst.source_event_ids,
+                    mode=mode,
                 )
+                if not accepted:
+                    self.metrics.inc_social("stale_outcomes_rejected")
+                    self._social_pending.setdefault(scene_id, burst)
+                    await self._save_social_trace(
+                        burst=burst,
+                        episode_id=episode_id,
+                        core_trace=core_trace,
+                        result=result,
+                        session_commit_accepted=False,
+                        gate_decision=None,
+                    )
+                    continue
 
-            # Ambient retained items relevant to the current stimulus (ADR-0018, Goal 7)
-            ambient_items = self.ambient_store.match(text=stimulus.combined_text, scope=stimulus.scene_id)
+                outcome = result.to_episode_outcome(scene_id)
+                gate_decision = await actor.submit_proposal(
+                    episode_id=episode_id,
+                    outcome=outcome,
+                    mailbox=mailbox,
+                    runtime_gate=self.runtime_gate,
+                )
+                self._last_gate_decision = gate_decision
 
-            outcome, step_trace, _mailbox = await self.episode_manager.run_episode(
-                stimulus=stimulus,
-                scene_state=scene_state,
-                raw_events=raw_events,
-                active_open_loops=open_loops,
-                allowed_scopes=allowed_scopes,
-                relevant_memories=relevant_memories,
-                mailbox=mailbox,
-                ambient_items=ambient_items,
-                actor_profile=actor_profile,
-                actor_memories=actor_memories
-            )
+                if result.decision.action == SocialDecisionAction.SILENCE:
+                    self.metrics.inc_social("intentional_silence")
+                else:
+                    self.metrics.inc_social("social_would_speak")
+                if gate_decision.disposition == FinalDisposition.ACTION:
+                    self.metrics.inc_social("gate_action")
+                    if not burst.has_mention_bot and not burst.has_reply_bot:
+                        self.metrics.inc_social(
+                            "unsolicited_visible_messages",
+                            gate_decision.actions_enqueued,
+                        )
 
-            # Submit proposal through SceneActor single-writer serialization point (P0-2)
-            gate_decision = await actor.submit_proposal(
-                episode_id=episode_id,
-                outcome=outcome,
-                mailbox=mailbox,
-                runtime_gate=self.runtime_gate
-            )
-            self._last_gate_decision = gate_decision
-            if gate_decision.disposition == FinalDisposition.SILENCE:
-                self.metrics.inc_social("wake_silence")
-            else:
-                self.metrics.inc_social("gate_action")
-                if not stimulus.has_mention_bot and not stimulus.has_reply_bot:
-                    self.metrics.inc_social("unsolicited_visible_messages", gate_decision.actions_enqueued)
-            logger.info("Gate decision on Scene %s: %s (%s)", stimulus.scene_id, gate_decision.disposition, gate_decision.reason)
+                await self._save_social_trace(
+                    burst=burst,
+                    episode_id=episode_id,
+                    core_trace=core_trace,
+                    result=result,
+                    session_commit_accepted=True,
+                    gate_decision=gate_decision,
+                )
+            except Exception as error:
+                logger.exception("Social cognition failed on %s: %s", scene_id, error)
+                await self.event_store.save_trace(
+                    kind="social_cognition_error",
+                    scene_id=scene_id,
+                    ref_id=burst.id,
+                    payload={
+                        "error": str(error),
+                        "source_event_ids": burst.source_event_ids,
+                    },
+                )
+            finally:
+                actor.release_episode_lease(episode_id)
 
-            # ADR-0022: persist the full behavior chain for the Control Plane Trace view
-            await self._save_episode_trace(
-                stimulus=stimulus,
-                episode_id=episode_id,
-                attention=att_res,
-                step_trace=step_trace,
-                outcome=outcome,
-                gate_decision=gate_decision
-            )
-        finally:
-            actor.release_episode_lease(episode_id)
+    async def _save_social_trace(
+        self,
+        burst: Stimulus,
+        episode_id: str,
+        core_trace: dict[str, Any],
+        result,
+        session_commit_accepted: bool,
+        gate_decision: Optional[GateDecision],
+    ) -> None:
+        committed = gate_decision.committed_proposal if gate_decision else None
+        payload = {
+            "burst": {
+                "id": burst.id,
+                "type": burst.stimulus_type.value,
+                "actor_id": burst.actor_id,
+                "text": burst.combined_text[:300],
+                "source_event_ids": burst.source_event_ids,
+            },
+            "cognition": core_trace,
+            "result": result.model_dump(mode="json"),
+            "session_commit_accepted": session_commit_accepted,
+            "gate": (
+                {
+                    "accepted": gate_decision.accepted,
+                    "disposition": gate_decision.disposition.value,
+                    "reason": gate_decision.reason,
+                }
+                if gate_decision
+                else None
+            ),
+            "durable_effects": {
+                "tasks": [task.id for task in committed.committed_tasks] if committed else [],
+                "resolved_loops": committed.resolved_loop_ids if committed else [],
+                "memories": [memory.id for memory in committed.committed_memories] if committed else [],
+            },
+            "actions_enqueued": gate_decision.actions_enqueued if gate_decision else 0,
+            "shadow": self.shadow_mode,
+        }
+        await self.event_store.save_trace(
+            kind="social_cognition",
+            scene_id=burst.scene_id,
+            ref_id=episode_id,
+            payload=payload,
+        )

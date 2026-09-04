@@ -77,14 +77,11 @@ async function injectEvent() {
         </div>
         <div class="kv">
           <span class="k">当前话题</span>
-          <span class="v">{{ s.active_topic || '—' }}</span>
+          <span class="v">{{ s.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
         </div>
         <div class="kv">
-          <span class="k">参与线程</span>
-          <span v-if="s.current_thread" class="v highlight">
-            {{ s.current_thread.topic }} ({{ s.current_thread.status }})
-          </span>
-          <span v-else class="muted">无聚焦线程</span>
+          <span class="k">自身状态</span>
+          <span class="v highlight">{{ s.self_social_state?.engagement || 'observing' }}</span>
         </div>
         <div class="kv">
           <span class="k">参与成员数</span>
@@ -99,7 +96,7 @@ async function injectEvent() {
         <div class="detail-header">
           <div>
             <h2>场景详情 · <code>{{ detail.scene_id }}</code></h2>
-            <p class="muted">当前状态机版本 v{{ detail.version }} · 参与度 {{ detail.bot_engagement }}</p>
+            <p class="muted">当前状态机版本 v{{ detail.version }} · 参与度 {{ detail.self_social_state?.engagement || 'observing' }}</p>
           </div>
           <button class="primary" @click="injectEvent">
             <span>⚡ 模拟注入消息</span>
@@ -115,17 +112,15 @@ async function injectEvent() {
           </div>
           <div class="kv">
             <span class="k">当前聚焦话题</span>
-            <span class="v highlight">{{ detail.active_topic || '—' }}</span>
+            <span class="v highlight">{{ detail.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
           </div>
           <div class="kv">
             <span class="k">常驻参与成员</span>
             <span class="v">{{ detail.participants.join(', ') || '—' }}</span>
           </div>
-          <div class="kv" v-if="detail.current_thread">
-            <span class="k">关联参与线程</span>
-            <span class="v">
-              {{ detail.current_thread.topic }} · 状态: {{ detail.current_thread.status }} · 外部干预 {{ detail.current_thread.intervening_messages }} 条
-            </span>
+          <div class="kv">
+            <span class="k">开放社会线程</span>
+            <span class="v">{{ detail.social_world?.open_threads?.map(t => t.summary).join(' / ') || '—' }}</span>
           </div>
         </div>
       </div>

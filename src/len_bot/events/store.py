@@ -63,6 +63,17 @@ class EventStore:
                 updated_at REAL NOT NULL
             );
         """)
+
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS group_agent_sessions (
+                scene_id TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                last_observed_event_rowid INTEGER NOT NULL,
+                last_cognized_event_rowid INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+        """)
         
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS open_loops (
@@ -96,7 +107,7 @@ class EventStore:
                 origin_mode TEXT DEFAULT 'live'
             );
         """)
-        # Migrations for databases created in earlier stages (ADR-0018 & ADR-0029 & ADR-0032)
+        # Migrations for databases created in earlier stages (ADR-0018 & ADR-0029)
         for col, col_type in [
             ("wake_event_type", "TEXT"),
             ("wake_match_json", "TEXT"),
@@ -391,22 +402,27 @@ class EventStore:
             await self._db.commit()
 
     async def get_recent_events(self, scene_id: str, limit: int = 50) -> list[Event]:
+        """Return the latest scene events in their authoritative commit order."""
         if not self._db:
             raise RuntimeError("Database not initialized")
         
         cursor = await self._db.execute(
             """
             SELECT id, event_type, scene_id, actor_id, timestamp, payload, metadata
-            FROM events
-            WHERE scene_id = ?
-            ORDER BY timestamp DESC, id DESC
-            LIMIT ?;
+            FROM (
+                SELECT rowid, id, event_type, scene_id, actor_id, timestamp, payload, metadata
+                FROM events
+                WHERE scene_id = ?
+                ORDER BY rowid DESC
+                LIMIT ?
+            )
+            ORDER BY rowid ASC;
             """,
             (scene_id, limit)
         )
         rows = await cursor.fetchall()
         events = []
-        for r in reversed(rows):
+        for r in rows:
             events.append(Event(
                 id=r[0],
                 event_type=EventType(r[1]),
@@ -690,6 +706,26 @@ class EventStore:
             return data
         return None
 
+    async def load_group_agent_session(self, scene_id: str) -> Optional[dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Database not initialized")
+        cursor = await self._db.execute(
+            """
+            SELECT version, last_observed_event_rowid, last_cognized_event_rowid, state_json
+            FROM group_agent_sessions
+            WHERE scene_id = ?;
+            """,
+            (scene_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = json.loads(row[3])
+        data["version"] = row[0]
+        data["last_observed_event_rowid"] = row[1]
+        data["last_cognized_event_rowid"] = row[2]
+        return data
+
     async def save_scene_state(self, scene_id: str, version: int, state_data: dict[str, Any]) -> None:
         if not self._db:
             raise RuntimeError("Database not initialized")
@@ -712,9 +748,11 @@ class EventStore:
         event: Event,
         scene_state_data: dict[str, Any],
         task_id_to_trigger: Optional[str] = None,
-        associated_open_loop: Optional[dict[str, Any]] = None
-    ) -> None:
-        """P0.1, P0.4 & Item 3: Atomically commit Event, FTS, SceneState, optional Task triggered status, and OpenLoop activation."""
+        associated_open_loop: Optional[dict[str, Any]] = None,
+        group_session_data: Optional[dict[str, Any]] = None,
+        advance_session_observation: bool = True,
+    ) -> int:
+        """Atomically commit an Event and its materialized scene state."""
         if not self._db:
             raise RuntimeError("Database not initialized")
 
@@ -724,13 +762,14 @@ class EventStore:
                 metadata_str = json.dumps(event.metadata, ensure_ascii=False)
 
                 # 1. Insert Event
-                await self._db.execute(
+                event_cursor = await self._db.execute(
                     """
                     INSERT INTO events (id, event_type, scene_id, actor_id, timestamp, payload, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?);
                     """,
                     (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
                 )
+                event_rowid = int(event_cursor.lastrowid)
 
                 # 2. Insert FTS5
                 text = event.raw_text
@@ -784,7 +823,38 @@ class EventStore:
                     (event.scene_id, version, json.dumps(scene_state_data, ensure_ascii=False), time.time())
                 )
 
+                if group_session_data is not None:
+                    persisted_session = dict(group_session_data)
+                    if advance_session_observation:
+                        persisted_session["last_observed_event_rowid"] = event_rowid
+                    session_version = int(persisted_session.get("version", 0))
+                    last_observed = int(persisted_session.get("last_observed_event_rowid", 0))
+                    last_cognized = int(persisted_session.get("last_cognized_event_rowid", 0))
+                    await self._db.execute(
+                        """
+                        INSERT INTO group_agent_sessions (
+                            scene_id, version, last_observed_event_rowid,
+                            last_cognized_event_rowid, state_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(scene_id) DO UPDATE SET
+                            version = excluded.version,
+                            last_observed_event_rowid = excluded.last_observed_event_rowid,
+                            last_cognized_event_rowid = excluded.last_cognized_event_rowid,
+                            state_json = excluded.state_json,
+                            updated_at = excluded.updated_at;
+                        """,
+                        (
+                            event.scene_id,
+                            session_version,
+                            last_observed,
+                            last_cognized,
+                            json.dumps(persisted_session, ensure_ascii=False),
+                            time.time(),
+                        ),
+                    )
+
                 await self._db.commit()
+                return event_rowid
             except Exception:
                 await self._db.rollback()
                 raise

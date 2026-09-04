@@ -9,6 +9,7 @@ from len_bot.actions.models import ActionItem, ActionType
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.plugins.base import BasePlugin, PluginContext
+from len_bot.testing.social import social_result
 
 class LotterySensoryPlugin(BasePlugin):
     """Goal 6: Social participant plugin that emits sensory events rather than sending messages directly."""
@@ -115,22 +116,17 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
         sent_messages.append(action.content)
         return True
 
-    # Custom mock Pi handler representing natural persona response
-    async def mock_pi(messages, toolkit=None):
+    async def mock_social_core(messages):
         last_msg = messages[-1]["content"] if messages else ""
         if "抽奖" in last_msg:
-            return EpisodeOutcome(
-                decision_reason="有人发起了抽奖，我需要用自然的口吻开心地回应并预告开奖时间",
-                disposition=FinalDisposition.ACTION,
-                message_proposals=[MessageProposal(content="好耶！开抽开抽，两小时后见分晓~")]
+            return social_result(
+                reason="有人发起了抽奖，自然接一句",
+                content="好耶！开抽开抽，两小时后见分晓~",
             )
-        return EpisodeOutcome(
-            decision_reason="无须发言",
-            disposition=FinalDisposition.SILENCE
-        )
+        return social_result(reason="无须发言")
 
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file, debounce_idle_ms=50, debounce_max_ms=100)
-    runtime = AgentRuntime(config, send_adapter=mock_adapter, mock_pi_handler=mock_pi)
+    runtime = AgentRuntime(config, send_adapter=mock_adapter, mock_social_handler=mock_social_core)
     await runtime.start()
 
     # Load sensory plugin

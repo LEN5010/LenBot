@@ -18,11 +18,6 @@ class RuntimeConfig(BaseModel):
     debounce_max_ms: int = Field(default=2500, description="Max debounce wait cap (ms)")
     max_ingest_lag_seconds: int = Field(default=60, description="Events older than this skip stimulus")
     
-    # Heuristic Attention
-    monitored_keywords: list[str] = Field(
-        default_factory=lambda: ["直播", "开播", "几点", "有人看吗", "bot", "Bot"]
-    )
-
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(
         default=150.0,
@@ -30,7 +25,7 @@ class RuntimeConfig(BaseModel):
     )
     maintenance_interval_seconds: float = Field(
         default=60.0,
-        description="Background heartbeat: open-loop GC, ambient sweep, memory decay"
+        description="Background heartbeat: open-loop GC and memory decay"
     )
     
     # Identity

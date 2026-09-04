@@ -8,6 +8,7 @@ from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.web.app import create_app
 from len_bot.events.models import Event, EventType
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
+from len_bot.testing.social import social_result
 
 
 async def _make_runtime_and_client(config):
@@ -35,17 +36,13 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         sent_actions.append(item)
         return True
 
-    async def mock_pi(messages):
-        stimulus_text = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
+    async def mock_social_core(messages):
+        stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
         if "帮我看看" in stimulus_text:
-            return EpisodeOutcome(
-                disposition=FinalDisposition.ACTION,
-                decision_reason="User asked directly",
-                message_proposals=[MessageProposal(content="看了一下，没问题")]
-            )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="silence")
+            return social_result(reason="User asked directly", content="看了一下，没问题")
+        return social_result(reason="silence")
 
-    runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
+    runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
     await runtime.start()
     app = create_app(runtime)
     transport = ASGITransport(app=app)
@@ -62,20 +59,13 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         ))
         await asyncio.sleep(0.4)
 
-        # Attention traces exist for the evaluated stimulus
         traces = (await client.get("/api/cockpit/traces", params={"scene_id": scene_id}, headers=headers)).json()
         kinds = {t["kind"] for t in traces}
-        assert "attention" in kinds
-        attention_rows = [t for t in traces if t["kind"] == "attention"]
-        assert any(t["payload"]["disposition"] == "wake" for t in attention_rows)
-
-        # Episode trace carries the whole chain
-        episode_rows = [t for t in traces if t["kind"] == "episode"]
-        assert episode_rows
-        payload = episode_rows[0]["payload"]
-        assert payload["attention"]["disposition"] == "wake"
-        assert payload["attention"]["reason"] == "explicit_mention_bot"
-        assert payload["outcome"]["disposition"] == "ACTION"
+        assert "social_cognition" in kinds
+        social_rows = [t for t in traces if t["kind"] == "social_cognition"]
+        assert social_rows
+        payload = social_rows[0]["payload"]
+        assert payload["result"]["decision"]["action"] == "speak"
         assert payload["gate"]["disposition"] == "ACTION"
         assert payload["actions_enqueued"] == 1
         assert len(sent_actions) == 1
@@ -88,12 +78,12 @@ async def test_trace_captures_full_causal_chain(tmp_path):
 async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
     """ADR-0022: QueryService exposes superseded chains & filtered event queries."""
     # Mock cognition keeps any incidental wake fully offline
-    async def mock_pi(messages):
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="offline")
+    async def mock_social_core(messages):
+        return social_result(reason="offline")
 
     runtime = AgentRuntime(
         RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "chain.db")),
-        mock_pi_handler=mock_pi
+        mock_social_handler=mock_social_core
     )
     await runtime.start()
     app = create_app(runtime)
@@ -137,7 +127,7 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
         "/api/cockpit/../overview/recent_events", headers=headers  # overview endpoint sanity
     ))
     by_scene = (await client.get(
-        "/api/cockpit/traces", params={"scene_id": scene_id, "kind": "attention"}, headers=headers
+        "/api/cockpit/traces", params={"scene_id": scene_id, "kind": "social_cognition"}, headers=headers
     )).json()
     assert isinstance(by_scene, list)
 
@@ -152,16 +142,15 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
 @pytest.mark.asyncio
 async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
     """
-    ADR-0022 (§三十一 Replay Lab): recorded events replay offline with real
-    AttentionEngine; two override sets produce comparable dispositions.
+    Replay Lab sends each recorded social event through the same Social Core.
     """
     # Mock cognition keeps the ingestion path fully offline (no LLM, no network)
-    async def mock_pi(messages):
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="offline replay")
+    async def mock_social_core(messages):
+        return social_result(reason="offline replay", summary="understood replay event")
 
     runtime = AgentRuntime(
         RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "replay.db")),
-        mock_pi_handler=mock_pi
+        mock_social_handler=mock_social_core
     )
     await runtime.start()
     app = create_app(runtime)
@@ -191,27 +180,15 @@ async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
             "scene_id": scene_id,
             "since": t0 - 1,
             "until": t0 + 100,
-            "overrides": [
-                {},
-                {"monitored_keywords": ["不存在的关键词"], "speaking_budget_base_threshold": 1.0}
-            ]
         })
         assert res.status_code == 200
         data = res.json()
         assert data["event_count"] >= 4
-        assert len(data["runs"]) == 2
-        policy_a, policy_b = data["runs"]
-        rows_a = {r["text"]: r for r in policy_a["rows"] if r["disposition"] in ("wake", "observe", "track")}
-        rows_b = {r["text"]: r for r in policy_b["rows"] if r["disposition"] in ("wake", "observe", "track")}
-
-        # @mention wakes under default policy
-        assert rows_a["@Bot 你呢"]["disposition"] == "wake"
-        # Lockdown policy (empty monitored keywords + budget 1.0) suppresses initiative
-        wake_texts_a = [t for t, r in rows_a.items() if r["disposition"] == "wake"]
-        wake_texts_b = [t for t, r in rows_b.items() if r["disposition"] == "wake"]
-        assert "@Bot 你呢" in wake_texts_a
-        assert "今晚Major决赛看吗" not in wake_texts_a or rows_a["今晚Major决赛看吗"]["disposition"] == "wake"
-        assert "今晚Major决赛看吗" not in wake_texts_b  # initiative suppressed under Policy B
+        assert len(data["runs"]) == 1
+        rows = data["runs"][0]["rows"]
+        assert len(rows) >= 4
+        assert all(row["decision"] == "silence" for row in rows)
+        assert all(row["understanding"] == "understood replay event" for row in rows)
     finally:
         await client.aclose()
         await runtime.stop()
@@ -231,17 +208,15 @@ async def test_shadow_mode_records_without_sending(tmp_path):
         sent_actions.append(item)
         return True
 
-    async def mock_pi(messages):
-        stimulus_text = messages[-1]["content"].split("【CURRENT STIMULUS】")[-1]
+    async def mock_social_core(messages):
+        stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
         if "你好" in stimulus_text:
-            return EpisodeOutcome(
-                disposition=FinalDisposition.ACTION,
-                decision_reason="greeting",
-                message_proposals=[MessageProposal(content="你好呀", expect_reply=True, reply_target="user:A")]
+            return social_result(
+                reason="greeting", content="你好呀", expect_reply=True, reply_target="user:A"
             )
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="silence")
+        return social_result(reason="silence")
 
-    runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
+    runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
     await runtime.start()
     await runtime.set_shadow_mode(True)
 

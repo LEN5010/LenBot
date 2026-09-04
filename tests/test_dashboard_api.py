@@ -51,7 +51,7 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert stats_res.status_code == 200
         stats_data = stats_res.json()
         assert "total_events" in stats_data["stats"]
-        assert "speaking_budget_threshold" in stats_data["stats"]
+        assert "social_cognition" in stats_data["social_metrics"]
 
         # 6. WebSocket status
         ws_res = await client.get("/api/websocket/status", headers=headers)
@@ -106,7 +106,7 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert metrics_res.status_code == 200
         assert "social" in metrics_res.json()
 
-        # 8. Persona & Social Settings
+        # 8. Persona Settings
         persona_post = await client.post("/api/settings/persona", headers=headers, json={
             "identity_name": "LenAdmin",
             "identity_persona": "Custom test persona",
@@ -115,15 +115,6 @@ async def test_dashboard_auth_and_management(tmp_path):
         assert persona_post.status_code == 200
         assert runtime.config.identity_name == "LenAdmin"
         assert runtime.config.bot_qq == 987654321
-
-        social_post = await client.post("/api/settings/social", headers=headers, json={
-            "monitored_keywords": ["测试", "直播"],
-            "speaking_budget_base_threshold": 0.75,
-            "interest_topics": {"gaming": 0.95, "tech": 0.8}
-        })
-        assert social_post.status_code == 200
-        assert runtime.attention_engine.speaking_budget.base_threshold == 0.75
-        assert runtime.attention_engine.interest_model.topics["gaming"] == 0.95
 
         # 9. Plugins Subsystem (real registry only, ADR-0021)
         plugins_get = await client.get("/api/plugins/list", headers=headers)

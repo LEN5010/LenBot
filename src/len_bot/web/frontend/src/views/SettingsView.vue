@@ -3,12 +3,6 @@ import { ref, onMounted } from 'vue'
 import { api, fmtTime } from '../api.js'
 
 const me = ref(null)
-const social = ref({
-  monitored_keywords: [],
-  speaking_budget_base_threshold: 0.60,
-  interest_topics: {}
-})
-const keywordsInput = ref('')
 const shadow = ref({ enabled: false, would_send: [] })
 const annotations = ref({ annotations: [], stats: { TP: 0, FP: 0, TN: 0, FN: 0 }, total: 0, accuracy: 0, precision: 0 })
 const form = ref({ current_password: '', new_password: '' })
@@ -19,36 +13,12 @@ onMounted(load)
 async function load() {
   try {
     me.value = await api('/api/auth/me')
-    const socialRes = await api('/api/cockpit/social')
-    social.value = socialRes
-    keywordsInput.value = (socialRes.monitored_keywords || []).join(', ')
-
     const shadowRes = await api('/api/cockpit/shadow')
     shadow.value.enabled = !!shadowRes.enabled
     shadow.value.would_send = shadowRes.would_send || []
 
     const annRes = await api('/api/cockpit/shadow-annotations')
     annotations.value = annRes
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
-async function saveSocial() {
-  error.value = ''
-  message.value = ''
-  try {
-    const kws = keywordsInput.value.split(/[,，\s]+/).filter(Boolean)
-    await api('/api/cockpit/social', {
-      method: 'POST',
-      body: JSON.stringify({
-        monitored_keywords: kws,
-        speaking_budget_base_threshold: Number(social.value.speaking_budget_base_threshold),
-        interest_topics: social.value.interest_topics
-      })
-    })
-    message.value = '社交参数与注意力关键词已实时热生效！'
-    await load()
   } catch (e) {
     error.value = e.message
   }
@@ -117,7 +87,7 @@ async function changePassword() {
     <div class="toolbar">
       <div class="page-title">
         <h1>系统设置与策略调优 (Settings & Security)</h1>
-        <p class="muted">注意力触发关键词热更新、影子推演打标评测与管理员安全凭据管控</p>
+        <p class="muted">Social Core 影子推演打标评测与管理员安全凭据管控</p>
       </div>
       <button class="primary" @click="load">
         <span>⟳ 刷新配置</span>
@@ -127,40 +97,7 @@ async function changePassword() {
     <p v-if="message" class="tag ok" style="margin-bottom: 16px;">✓ {{ message }}</p>
     <p v-if="error" class="tag bad" style="margin-bottom: 16px;">✕ {{ error }}</p>
 
-    <!-- Section 1: Social & Speaking Budget Bento Panel -->
     <div class="panel">
-      <div class="panel-header">
-        <h2>社交偏好与发言预算设置 (Hot Reload)</h2>
-        <span class="muted">无需重启，注意力引擎即时生效</span>
-      </div>
-
-      <div class="form-vertical">
-        <label>
-          <span>重点关注关键词 (Monitored Keywords，触发高优先级主动唤醒)：</span>
-          <input v-model="keywordsInput" placeholder="使用逗号分隔关键词，如: 开播, 帮忙, 智能体, lenbot" />
-        </label>
-        <label>
-          <span>发言预算基础门槛阈值 (Speaking Budget Base Threshold, 0.1 ~ 1.0)：</span>
-          <div class="slider-row">
-            <input
-              type="range"
-              min="0.1"
-              max="1.0"
-              step="0.05"
-              v-model.number="social.speaking_budget_base_threshold"
-              style="flex: 1;"
-            />
-            <span class="v highlight" style="min-width: 48px; text-align: right;">
-              {{ Number(social.speaking_budget_base_threshold).toFixed(2) }}
-            </span>
-          </div>
-        </label>
-        <button class="primary" style="margin-top: 8px;" @click="saveSocial">保存并应用社交策略</button>
-      </div>
-    </div>
-
-    <!-- Section 2: Shadow Mode & Human Evaluation Panel -->
-    <div class="panel" style="margin-top: 24px;">
       <div class="panel-header">
         <div>
           <h2>影子推演模式与人工评测 (Shadow Mode)</h2>
@@ -229,7 +166,6 @@ async function changePassword() {
       </table>
     </div>
 
-    <!-- Section 3: Admin Security Panel -->
     <div class="panel" v-if="me" style="margin-top: 24px;">
       <div class="panel-header">
         <h2>系统访问安全凭据 (Security)</h2>

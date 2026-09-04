@@ -1,4 +1,4 @@
-"""V3 Stage 9 Completion Tests (交接.md §21, §24, §31, §36).
+"""V3 Stage 9 Completion Tests.
 
 Tests:
 1. BilibiliContentPlugin: get_video_info, search_bilibili, get_dynamic_feed, and sandbox error handling.

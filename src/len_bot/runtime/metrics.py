@@ -1,8 +1,8 @@
 """Runtime Metrics (ADR-0020): routing + social behavior counters, in-memory.
 
 Routing metrics record every live LLM call per (tier, provider, model): calls,
-errors, tokens, latency. Social counters quantify behavior quality (§三十二):
-observe/track/wake rates, visible speech ratio, wake→silence, would-send.
+errors, tokens, latency. Social counters distinguish cognition, intentional
+silence, proposed speech, gate approval, and physical/shadow delivery.
 In-memory only — they reset on restart; durable state remains event-owned.
 """
 
@@ -37,10 +37,9 @@ class RuntimeMetrics:
         self._escalations: Deque[tuple[float, str]] = deque(maxlen=self.MAX_ESCALATIONS)
         self.social: dict[str, int] = {
             "human_messages": 0,
-            "observe": 0,
-            "track": 0,
-            "wake": 0,
-            "wake_silence": 0,
+            "social_cognition": 0,
+            "intentional_silence": 0,
+            "social_would_speak": 0,
             "gate_action": 0,
             "visible_messages": 0,
             "unsolicited_visible_messages": 0,
