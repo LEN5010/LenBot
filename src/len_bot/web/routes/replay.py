@@ -14,8 +14,6 @@ class ReplayRequest(BaseModel):
     since: Optional[float] = None
     until: Optional[float] = None
     limit: int = 300
-    # One entry per policy run; empty list = single run with defaults
-    overrides: list[dict] = []
 
 
 @router.post("")
@@ -42,19 +40,15 @@ async def replay_scene(req: ReplayRequest, request: Request, user: str = Depends
         for e in events
     ]
 
-    lab = ReplayLab(runtime.config)
-    runs = []
-    override_sets = req.overrides if req.overrides else [{}]
-    for idx, overrides in enumerate(override_sets):
-        rows = await lab.run(event_objs, overrides=overrides)
-        runs.append({
-            "policy": f"Policy {chr(65 + idx)}" if len(override_sets) > 1 else "Replay",
-            "overrides": overrides,
-            "rows": rows,
-            "summary": {
-                "messages": sum(1 for r in rows if r["disposition"] in ("wake", "observe", "track")),
-                "wake": sum(1 for r in rows if r["disposition"] == "wake"),
-                "action": sum(1 for r in rows if r.get("cognition") == "ACTION"),
-            },
-        })
+    lab = ReplayLab(runtime.config, runtime.social_core)
+    rows = await lab.run(event_objs)
+    runs = [{
+        "policy": "Social Core",
+        "rows": rows,
+        "summary": {
+            "cognition": len(rows),
+            "silence": sum(1 for r in rows if r["decision"] == "silence"),
+            "would_speak": sum(1 for r in rows if r["decision"] == "speak"),
+        },
+    }]
     return {"scene_id": req.scene_id, "event_count": len(event_objs), "runs": runs}

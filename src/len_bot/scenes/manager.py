@@ -4,6 +4,7 @@ from len_bot.events.models import Event
 from len_bot.scenes.models import SceneState
 from len_bot.scenes.actor import SceneActor
 from len_bot.events.store import EventStore
+from len_bot.cognition.session import GroupAgentSession
 
 class SceneManager:
     def __init__(
@@ -39,6 +40,10 @@ class SceneManager:
     def get_scene_state(self, scene_id: str) -> Optional[SceneState]:
         actor = self._actors.get(scene_id)
         return actor.state if actor else None
+
+    def get_group_session(self, scene_id: str) -> Optional[GroupAgentSession]:
+        actor = self._actors.get(scene_id)
+        return actor.group_session if actor else None
 
     def has_active_episode(self, scene_id: str) -> bool:
         actor = self._actors.get(scene_id)

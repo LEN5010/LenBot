@@ -1,4 +1,4 @@
-"""Layer 3 Model Evaluation Script (交接.md §26 / Stage 9 Item 35).
+"""Layer 3 Model Evaluation Script.
 
 Usage:
     python scripts/eval_transcripts.py --transcript path/to/transcript.jsonl [--output eval_results.json]

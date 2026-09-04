@@ -1,46 +1,20 @@
-"""Replay Lab (ADR-0022, V2 plan §三十一).
+"""Offline Social Core replay with no action execution authority."""
 
-Deterministic offline replay of a recorded event window: each message becomes a
-stimulus, SceneState is materialized with the pure SceneReducer, and the real
-AttentionEngine evaluates per-message dispositions — no sleeps, no network.
-Optional cognition mock resolves WAKE into SILENCE/ACTION rows. Multiple
-override sets allow Policy A vs Policy B comparison.
-"""
-
-from typing import Any, Callable, Awaitable, Optional
+from typing import Any, Optional
 
 from len_bot.config import RuntimeConfig
-from len_bot.attention.engine import AttentionEngine
-from len_bot.attention.models import AttentionDisposition
 from len_bot.events.models import Event, EventType, Stimulus, StimulusType
-from len_bot.scenes.reducer import SceneReducer
-from len_bot.scenes.models import SceneState
-
-_APPLIABLE_OVERRIDES = {
-    "monitored_keywords",
-}
-
-
-def _apply_overrides(config: RuntimeConfig, overrides: Optional[dict]) -> tuple[RuntimeConfig, dict]:
-    cfg = config.model_copy(deep=True)
-    budget_threshold = None
-    if overrides:
-        for key, value in overrides.items():
-            if key in _APPLIABLE_OVERRIDES:
-                setattr(cfg, key, value)
-            elif key == "speaking_budget_base_threshold":
-                budget_threshold = value
-    return cfg, {"speaking_budget_base_threshold": budget_threshold}
+from len_bot.cognition.session import GroupAgentSession, GroupAgentSessionReducer
 
 
 class ReplayLab:
     def __init__(
         self,
         config: RuntimeConfig,
-        mock_cognition: Optional[Callable[[Stimulus], Awaitable[Any]]] = None,
+        social_core: Any,
     ):
         self.config = config
-        self.mock_cognition = mock_cognition
+        self.social_core = social_core
 
     @staticmethod
     def _to_stimulus(event: Event) -> Optional[Stimulus]:
@@ -75,39 +49,40 @@ class ReplayLab:
             )
         return None
 
-    async def run(self, events: list[Event], overrides: Optional[dict] = None) -> list[dict]:
-        cfg, extra = _apply_overrides(self.config, overrides)
-        attention = AttentionEngine(cfg)
-        if extra.get("speaking_budget_base_threshold") is not None:
-            attention.speaking_budget.base_threshold = extra["speaking_budget_base_threshold"]
-
-        state: Optional[SceneState] = None
+    async def run(self, events: list[Event]) -> list[dict]:
+        sessions: dict[str, GroupAgentSession] = {}
+        raw_by_scene: dict[str, list[Event]] = {}
         rows: list[dict] = []
         bot_actor_id = f"user:{self.config.bot_qq}"
 
         for event in sorted(events, key=lambda e: e.timestamp):
-            # Materialize durable state first (pure reducer, no persistence)
-            state = SceneReducer.reduce(state, event, bot_actor_id)
+            session = sessions.setdefault(event.scene_id, GroupAgentSession(scene_id=event.scene_id))
+            session = GroupAgentSessionReducer.reduce(session, event, bot_actor_id)
+            sessions[event.scene_id] = session
+            raw_by_scene.setdefault(event.scene_id, []).append(event)
 
             stimulus = self._to_stimulus(event)
             if stimulus is None:
                 continue
 
-            att = attention.evaluate(stimulus, state, [], now=event.timestamp)
+            result, trace = await self.social_core.execute(
+                session=session.model_copy(deep=True),
+                burst=stimulus,
+                raw_events=raw_by_scene[event.scene_id][-100:],
+                active_open_loops=[],
+            )
+            session = GroupAgentSessionReducer.apply_cognition(session, result, len(raw_by_scene[event.scene_id]))
+            sessions[event.scene_id] = session
             row = {
                 "event_id": event.id,
                 "timestamp": event.timestamp,
                 "actor_id": event.actor_id,
                 "text": event.raw_text[:120],
-                "disposition": att.disposition.value.lower(),
-                "reason": att.reason,
+                "decision": result.decision.action.value,
+                "reason": result.decision.reason,
+                "understanding": result.perception.summary,
+                "would_send": [p.content for p in result.message_proposals],
+                "trace": trace,
             }
-
-            if att.disposition == AttentionDisposition.WAKE and self.mock_cognition:
-                cognition = await self.mock_cognition(stimulus)
-                row["cognition"] = str(cognition)
-            elif att.disposition == AttentionDisposition.WAKE:
-                row["cognition"] = "WAKE (no cognition mock: episode would run)"
-
             rows.append(row)
         return rows

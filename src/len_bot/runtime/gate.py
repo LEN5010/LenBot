@@ -14,6 +14,9 @@ from len_bot.memory.models import MemoryItem
 
 logger = logging.getLogger(__name__)
 
+MAX_MESSAGES_PER_OUTCOME = 3
+MAX_CONSECUTIVE_BOT_MESSAGES = 4
+
 @dataclass
 class ProposalCommit:
     episode_id: str
@@ -53,7 +56,6 @@ class RuntimeGate:
         action_queue: ActionQueue,
         scheduler: Optional[Any] = None,
         memory_gate: Optional[Any] = None,
-        ambient_store: Optional[Any] = None,
         metrics: Optional[Any] = None,
         origin_mode_provider: Optional[Callable[[], str]] = None
     ):
@@ -61,7 +63,6 @@ class RuntimeGate:
         self.action_queue = action_queue
         self.scheduler = scheduler
         self.memory_gate = memory_gate
-        self.ambient_store = ambient_store
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
 
@@ -113,6 +114,20 @@ class RuntimeGate:
                 accepted=False
             )
 
+        if outcome.disposition == FinalDisposition.ACTION:
+            if len(outcome.message_proposals) > MAX_MESSAGES_PER_OUTCOME:
+                return GateDecision(
+                    FinalDisposition.SILENCE,
+                    "Gate rejected hard anti-spam ceiling: too many messages in one outcome",
+                    accepted=False,
+                )
+            if current_scene_state.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
+                return GateDecision(
+                    FinalDisposition.SILENCE,
+                    "Gate rejected hard anti-loop ceiling: consecutive bot messages",
+                    accepted=False,
+                )
+
         # ADR-0021 & ADR-0029: Origin Mode Tracking (live vs shadow)
         curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
         if curr_origin == "shadow":
@@ -153,20 +168,6 @@ class RuntimeGate:
         if self.scheduler and committed_tasks:
             for item in committed_tasks:
                 self.scheduler.schedule_task(item)
-
-        # 3b. External Side-Effect Distribution (Ambient Store, ADR-0018): retained items are
-        # non-durable soft state, so they are written AFTER the durable transaction — same tier
-        # as scheduler heap registration, never inside it.
-        if self.ambient_store and proposal_commit.outcome.retained_item_proposals:
-            for rp in proposal_commit.outcome.retained_item_proposals:
-                self.ambient_store.retain(
-                    scope=proposal_commit.scene_id,
-                    source="cognition",
-                    topic=rp.topic,
-                    summary=rp.summary,
-                    salience=rp.salience,
-                    evidence_event_id=rp.source_event_id or ""
-                )
 
         # 4. Check if model explicitly chose SILENCE
         if outcome.disposition == FinalDisposition.SILENCE:

@@ -212,10 +212,8 @@ def test_item4_follow_up_steering():
 @pytest.mark.asyncio
 async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_path):
     """
-    Item 6:
-    - Reducer ignores MESSAGE_SEND_FAILED for bot engagement
-    - TRACK emits STATE_ANNOTATION and updates SceneState.soft_annotations
-    - MemoryGate rejects if any evidence item does not exist or belongs to another scope
+    SceneReducer keeps only deterministic delivery facts, and MemoryGate rejects
+    evidence that does not exist or belongs to another scope.
     """
     bot_id = "user:12345678"
     scene_id = "group:reducer_test"
@@ -229,21 +227,7 @@ async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_pat
         payload={"raw_text": "网络发送失败消息"}
     )
     state = SceneReducer.reduce(None, fail_event, bot_id)
-    assert state.bot_engagement == "idle"
     assert state.consecutive_bot_messages == 0
-
-    # 2. STATE_ANNOTATION incorporates soft annotation via Event -> Reducer
-    anno_event = Event(
-        event_type=EventType.STATE_ANNOTATION,
-        scene_id=scene_id,
-        actor_id="system:attention",
-        timestamp=time.time(),
-        metadata={"soft_annotation": {"topic": "直播", "confidence": 0.9}}
-    )
-    state = SceneReducer.reduce(state, anno_event, bot_id)
-    assert state.soft_annotations["topic"] == "直播"
-    assert state.active_topic == "直播"
-    # Intervening messages count was NOT incremented by system annotation event!
     assert state.intervening_messages_since_bot == 0
 
     # 3. Evidence integrity in MemoryGate
@@ -313,7 +297,7 @@ async def test_p0_1_transaction_failure_rollback_preserves_state(tmp_path):
 
     scene_id = "group:p0_rollback"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
-    actor.state = SceneState(scene_id=scene_id, version=1, active_topic="initial_topic")
+    actor.state = SceneState(scene_id=scene_id, version=1, participants=["user:initial"])
 
     # Step 1: Cause an error during commit_scene_event (e.g. inject an error on execute)
     orig_execute = runtime.event_store._db.execute
@@ -337,9 +321,9 @@ async def test_p0_1_transaction_failure_rollback_preserves_state(tmp_path):
     actor.post_event(failed_event)
     await asyncio.sleep(0.1)
 
-    # In-memory state MUST be preserved at version 1 with initial_topic!
+    # In-memory state MUST be preserved at version 1 with its factual snapshot.
     assert actor.state.version == 1
-    assert actor.state.active_topic == "initial_topic"
+    assert actor.state.participants == ["user:initial"]
 
     # Database MUST NOT contain the failed event
     events = await runtime.event_store.get_recent_events(scene_id)
@@ -507,5 +491,4 @@ async def test_p0_2_scene_actor_serialization_and_zero_scheduler_leak_on_cancell
 
     actor.release_episode_lease(episode_id)
     await runtime.stop()
-
 

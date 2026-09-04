@@ -7,9 +7,6 @@ from len_bot.memory.models import MemoryProposal, MemoryStatus, MemoryCertainty,
 from len_bot.memory.store import MemoryStore
 from len_bot.memory.gate import MemoryGate
 from len_bot.memory.reflection import ReflectionEngine
-from len_bot.cognition.assembler import ContextAssembler
-from len_bot.events.models import Stimulus, StimulusType
-from len_bot.scenes.models import SceneState
 
 @pytest.mark.asyncio
 async def test_v1d_memory_gate_evidence_and_conflict(tmp_path):
@@ -112,9 +109,9 @@ async def test_v1d_memory_gate_evidence_and_conflict(tmp_path):
     await event_store.close()
 
 @pytest.mark.asyncio
-async def test_v1d_micro_reflection_and_prompt_assembly(tmp_path):
+async def test_v1d_micro_reflection(tmp_path):
     """
-    Tests Micro-Reflection L1 generation and ContextAssembler integration.
+    Tests Micro-Reflection L1 generation.
     """
     db_file = str(tmp_path / "v1d_ref.db")
     event_store = EventStore(db_file)
@@ -143,22 +140,5 @@ async def test_v1d_micro_reflection_and_prompt_assembly(tmp_path):
     loaded_ep = await mem_store.get_episode(ep_rec.id)
     assert loaded_ep is not None
     assert loaded_ep.title == "直播话题讨论"
-
-    # Verify ContextAssembler injects memory
-    config = RuntimeConfig()
-    assembler = ContextAssembler(config)
-    st = Stimulus(scene_id="group:200", stimulus_type=StimulusType.SINGLE_MESSAGE, source_event_ids=[e1.id], actor_id="user:A", combined_text="hi")
-    state = SceneState(scene_id="group:200")
-
-    # Manually pass a memory
-    from len_bot.memory.models import MemoryItem
-    dummy_mem = MemoryItem(
-        subject="user:A", kind="preference", key="live", value="interested",
-        scope="group:200", human_readable_assertion="User A is fond of game livestreams"
-    )
-    prompt = assembler.assemble(st, state, [e1], [], ["group:200"], relevant_memories=[dummy_mem])
-    user_content = prompt[1]["content"]
-    assert "【RELEVANT BELIEFS & MEMORY】" in user_content
-    assert "User A is fond of game livestreams" in user_content
 
     await event_store.close()

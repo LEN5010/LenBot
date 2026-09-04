@@ -7,6 +7,11 @@ from len_bot.scenes.models import SceneState
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.events.store import EventStore
 from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.cognition.session import (
+    GroupAgentSession,
+    GroupAgentSessionReducer,
+    SocialCognitionResult,
+)
 from len_bot.runtime.gate import ProposalCommit
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,21 @@ class ProposalCommitCommand:
         self.runtime_gate = runtime_gate
         self.future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
+
+class SocialCognitionCommitCommand:
+    def __init__(
+        self,
+        result: SocialCognitionResult,
+        through_event_rowid: int,
+        source_event_ids: list[str],
+        mode: str,
+    ):
+        self.result = result
+        self.through_event_rowid = through_event_rowid
+        self.source_event_ids = source_event_ids
+        self.mode = mode
+        self.future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
 class SceneActor:
     def __init__(
         self,
@@ -49,7 +69,10 @@ class SceneActor:
         self.event_store = event_store
         self.on_state_updated = on_state_updated
         self.state: Optional[SceneState] = None
-        self._queue: asyncio.Queue[Union[Event, ProposalCommitCommand]] = asyncio.Queue()
+        self.group_session: Optional[GroupAgentSession] = None
+        self._queue: asyncio.Queue[
+            Union[Event, ProposalCommitCommand, SocialCognitionCommitCommand]
+        ] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_mailbox: Optional[EpisodeMailbox] = None
         self._running = False
@@ -63,6 +86,12 @@ class SceneActor:
             self.state = SceneState(**saved)
         else:
             self.state = SceneState(scene_id=self.scene_id, version=0)
+
+        saved_session = await self.event_store.load_group_agent_session(self.scene_id)
+        if saved_session:
+            self.group_session = GroupAgentSession(**saved_session)
+        else:
+            self.group_session = GroupAgentSession(scene_id=self.scene_id)
 
         self._running = True
         self._worker_task = asyncio.create_task(self._process_loop())
@@ -122,10 +151,43 @@ class SceneActor:
         await self._queue.put(cmd)
         return await cmd.future
 
+    async def submit_social_cognition(
+        self,
+        result: SocialCognitionResult,
+        through_event_rowid: int,
+        source_event_ids: list[str],
+        mode: str = "shadow",
+    ) -> bool:
+        cmd = SocialCognitionCommitCommand(
+            result=result,
+            through_event_rowid=through_event_rowid,
+            source_event_ids=source_event_ids,
+            mode=mode,
+        )
+        await self._queue.put(cmd)
+        return await cmd.future
+
     async def _process_loop(self) -> None:
         while self._running:
             try:
                 item = await self._queue.get()
+                if isinstance(item, SocialCognitionCommitCommand):
+                    try:
+                        accepted = await self._commit_social_cognition(item)
+                        if not item.future.done():
+                            item.future.set_result(accepted)
+                    except Exception as error:
+                        logger.exception(
+                            "Error committing social cognition in SceneActor %s: %s",
+                            self.scene_id,
+                            error,
+                        )
+                        if not item.future.done():
+                            item.future.set_exception(error)
+                    finally:
+                        self._queue.task_done()
+                    continue
+
                 if isinstance(item, ProposalCommitCommand):
                     try:
                         decision = await item.runtime_gate.evaluate_and_commit(
@@ -134,29 +196,6 @@ class SceneActor:
                             current_scene_state=self.state,
                             proposal_commit=item.proposal_commit,
                         )
-                        # Invariant A: If outcome proposed social_state_proposal and gate accepted, reduce via STATE_ANNOTATION event
-                        if decision.accepted and getattr(item.outcome, "social_state_proposal", None):
-                            ssp = item.outcome.social_state_proposal
-                            metadata_payload = {}
-                            if ssp.topic is not None:
-                                metadata_payload["topic"] = ssp.topic
-                            if ssp.thread_transition is not None:
-                                metadata_payload["thread_transition"] = ssp.thread_transition.value if hasattr(ssp.thread_transition, "value") else str(ssp.thread_transition)
-                            if metadata_payload:
-                                anno_event = Event(
-                                    event_type=EventType.STATE_ANNOTATION,
-                                    scene_id=self.scene_id,
-                                    actor_id="system:cognition",
-                                    timestamp=time.time(),
-                                    metadata={"social_state": metadata_payload}
-                                )
-                                candidate_state = SceneReducer.reduce(self.state, anno_event, self.bot_actor_id)
-                                await self.event_store.commit_scene_event(
-                                    event=anno_event,
-                                    scene_state_data=candidate_state.model_dump()
-                                )
-                                self.state = candidate_state
-
                         if not item.future.done():
                             item.future.set_result(decision)
                     except Exception as e:
@@ -170,6 +209,9 @@ class SceneActor:
                 event: Event = item
                 # 1. Pure functional state reduction to candidate state (never mutates self.state)
                 candidate_state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
+                candidate_session = GroupAgentSessionReducer.reduce(
+                    self.group_session, event, self.bot_actor_id
+                )
 
                 # 2. Check if TASK_DUE event with a task_id
                 task_id_to_trigger = None
@@ -180,21 +222,24 @@ class SceneActor:
 
                 # 3. P0-1: Atomically persist Event, FTS, Task triggered status, OpenLoop, and SceneState
                 # Persist first!
-                await self.event_store.commit_scene_event(
+                event_rowid = await self.event_store.commit_scene_event(
                     event=event,
                     scene_state_data=candidate_state.model_dump(),
                     task_id_to_trigger=task_id_to_trigger,
-                    associated_open_loop=associated_open_loop
+                    associated_open_loop=associated_open_loop,
+                    group_session_data=candidate_session.model_dump(),
                 )
 
                 # 4. Publish state ONLY after database commit succeeds!
+                candidate_session.last_observed_event_rowid = event_rowid
                 self.state = candidate_state
+                self.group_session = candidate_session
 
                 # 5. Route to active Episode Mailbox if present (Steering / Interim tracking)
                 if self._active_mailbox:
                     self._active_mailbox.post(event)
 
-                # 6. Notify downstream (StimulusBuilder)
+                # 6. Notify downstream (BurstAssembler)
                 if self.on_state_updated:
                     await self.on_state_updated(self.state, event)
 
@@ -204,3 +249,56 @@ class SceneActor:
             except Exception as e:
                 logger.exception("Error processing event in SceneActor %s (in-memory state rolled back/untouched): %s", self.scene_id, e)
                 self._queue.task_done()
+
+    async def _commit_social_cognition(self, item: SocialCognitionCommitCommand) -> bool:
+        if self.group_session.last_observed_event_rowid != item.through_event_rowid:
+            return False
+
+        known_event_ids = set(self.group_session.conversation_event_ids)
+        referenced_event_ids = set(item.source_event_ids)
+        for thread in item.result.perception.world_state.open_threads:
+            referenced_event_ids.update(thread.source_event_ids)
+        for expectation in item.result.perception.world_state.latent_expectations:
+            referenced_event_ids.update(expectation.source_event_ids)
+        for person in item.result.perception.person_updates:
+            referenced_event_ids.update(person.source_event_ids)
+        for relationship in item.result.perception.relationship_updates:
+            referenced_event_ids.update(relationship.source_event_ids)
+        for retained in item.result.retained_attention:
+            referenced_event_ids.update(retained.source_event_ids)
+        if item.result.future_attention:
+            referenced_event_ids.update(item.result.future_attention.source_event_ids)
+        for memory in item.result.memory_candidates:
+            referenced_event_ids.update(memory.evidence)
+        if not referenced_event_ids.issubset(known_event_ids):
+            raise ValueError("Social cognition references events outside the scene session")
+
+        cognition_event = Event(
+            event_type=EventType.SOCIAL_COGNITION_RECORDED,
+            scene_id=self.scene_id,
+            actor_id="system:social_core",
+            timestamp=time.time(),
+            payload={
+                "source_event_ids": item.source_event_ids,
+                "result": item.result.model_dump(mode="json"),
+            },
+            metadata={
+                "through_event_rowid": item.through_event_rowid,
+                "mode": item.mode,
+            },
+        )
+        candidate_state = SceneReducer.reduce(self.state, cognition_event, self.bot_actor_id)
+        candidate_session = GroupAgentSessionReducer.apply_cognition(
+            self.group_session,
+            item.result,
+            item.through_event_rowid,
+        )
+        await self.event_store.commit_scene_event(
+            event=cognition_event,
+            scene_state_data=candidate_state.model_dump(),
+            group_session_data=candidate_session.model_dump(),
+            advance_session_observation=False,
+        )
+        self.state = candidate_state
+        self.group_session = candidate_session
+        return True

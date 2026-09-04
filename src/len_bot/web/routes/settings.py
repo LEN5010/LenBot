@@ -9,11 +9,6 @@ class PersonaSettingsRequest(BaseModel):
     identity_persona: str
     bot_qq: int
 
-class SocialSettingsRequest(BaseModel):
-    monitored_keywords: list[str]
-    speaking_budget_base_threshold: float
-    interest_topics: dict[str, float]
-
 @router.get("/persona")
 async def get_persona_settings(request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
@@ -41,35 +36,3 @@ async def update_persona_settings(req: PersonaSettingsRequest, request: Request,
         "bot_qq": runtime.config.bot_qq
     })
     return {"success": True, "message": "Persona settings saved"}
-
-@router.get("/social")
-async def get_social_settings(request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    interests = runtime.attention_engine.interest_model.topics
-    threshold = runtime.attention_engine.speaking_budget.base_threshold
-
-    return {
-        "monitored_keywords": runtime.config.monitored_keywords,
-        "speaking_budget_base_threshold": threshold,
-        "interest_topics": interests
-    }
-
-@router.post("/social")
-async def update_social_settings(req: SocialSettingsRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    runtime.config.monitored_keywords = [k.strip() for k in req.monitored_keywords if k.strip()]
-    runtime.attention_engine.update_monitored_keywords(runtime.config.monitored_keywords)
-    
-    # Update speaking budget & interest model live in memory
-    runtime.attention_engine.speaking_budget.base_threshold = max(0.1, min(1.0, req.speaking_budget_base_threshold))
-    runtime.attention_engine.interest_model.topics = {
-        k: max(0.0, min(1.0, float(v))) for k, v in req.interest_topics.items()
-    }
-
-    await runtime.event_store.save_dynamic_config("social_config", {
-        "monitored_keywords": runtime.config.monitored_keywords,
-        "speaking_budget_base_threshold": runtime.attention_engine.speaking_budget.base_threshold,
-        "interest_topics": runtime.attention_engine.interest_model.topics
-    })
-
-    return {"success": True, "message": "Social and attention settings saved"}

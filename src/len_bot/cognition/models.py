@@ -33,25 +33,6 @@ class TaskProposal(BaseModel):
 CONDITION_TASK_DEFAULT_DEADLINE_SECONDS = 604800.0
 
 
-class RetainedItemProposal(BaseModel):
-    """Optional cognition proposal to retain a short-lived ambient item (ADR-0018, Goal 7)."""
-    topic: str = Field(description="Short topical label used for future lexical matching")
-    summary: str = Field(description="What the agent saw / learned, in one or two sentences")
-    salience: float = Field(default=0.5, description="Estimated usefulness if a related topic appears [0,1]")
-    source_event_id: Optional[str] = Field(default=None, description="Optional evidence event id from recent raw chat")
-
-class ThreadTransition(StrEnum):
-    KEEP = "keep"
-    FADE = "fade"
-    CLOSE = "close"
-
-class SocialStateProposal(BaseModel):
-    topic: Optional[str] = Field(default=None, description="Current conversational topic if updated")
-    thread_transition: Optional[ThreadTransition] = Field(
-        default=None,
-        description="Optional transition for participation thread: keep, fade, or close"
-    )
-
 from len_bot.memory.models import MemoryProposal
 
 class EpisodeOutcome(BaseModel):
@@ -64,5 +45,3 @@ class EpisodeOutcome(BaseModel):
     task_proposals: list[TaskProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
-    social_state_proposal: Optional[SocialStateProposal] = Field(default=None)
-    retained_item_proposals: list[RetainedItemProposal] = Field(default_factory=list)

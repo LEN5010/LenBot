@@ -10,9 +10,13 @@ A persistent runtime environment for autonomous social agents that maintains tem
 An immutable, historical record of a factual occurrence in the external world or within the runtime (e.g., `GROUP_MESSAGE_RECEIVED`, `TASK_DUE`, `MESSAGE_SENT`).
 _Avoid_: Message, update, trigger
 
-**Stimulus**:
-A structured cognitive trigger synthesized by debouncing or coalescing one or more raw events, prepared for attention evaluation.
-_Avoid_: Raw event, input message, alert
+**Conversation Burst**:
+An ordered group of committed events from one scene, assembled only by short arrival timing and retaining every source event reference.
+_Avoid_: Request, per-user batch, attention trigger
+
+**Burst Assembler**:
+A lightweight temporal assembler that creates conversation bursts without deciding topic, interest, social relevance, or whether cognition should run.
+_Avoid_: Attention engine, classifier, semantic batcher
 
 **Historical Ingestion Gate**:
 An ingress filter that admits delayed or reconnected historical events into the Event Store while suppressing stimulus generation to prevent attention flooding.
@@ -26,9 +30,9 @@ _Avoid_: Channel, room, session, thread
 A dedicated asynchronous worker coroutine consuming an isolated event queue for a single scene to serialize state mutations and route steering signals.
 _Avoid_: Event loop, thread, listener
 
-**Sliding Idle Window**:
-A debouncing buffer that coalesces consecutive message events from the same actor, resetting on each arrival up to an absolute time ceiling.
-_Avoid_: Throttle, batch timer
+**Group Agent Session**:
+The durable working social state of the agent in one scene, restored across runtime restarts and never hidden solely inside model context.
+_Avoid_: LLM session, HTTP session, global conversation state
 
 ---
 
@@ -58,9 +62,9 @@ _Avoid_: Model size, prompt mode
 The runtime orchestrator that selects the appropriate model tier and executes dynamic in-flight escalation based on tool result complexity or step depth.
 _Avoid_: Model switcher, prompt dispatcher
 
-**Elastic Context Partition**:
-A prioritized prompt budgeting policy where core identity, relevant memory beliefs, and execution state are strictly preserved while raw event history shrinks elastically under token limits.
-_Avoid_: Context truncation, token trimming
+**Social Core Context**:
+The direct cognitive context composed from core self, group identity, current social and self state, recent raw conversation, unresolved social threads, and the current burst.
+_Avoid_: Generic top-k RAG, prompt history as state
 
 **Proposal**:
 A candidate action, task, memory, or state modification produced by cognition, awaiting runtime validation before execution or commitment.
@@ -81,6 +85,34 @@ _Avoid_: Distributed commit, sync save
 ---
 
 ## 3. Social & Temporal State
+
+**Social World State**:
+The agent's revisable understanding of current topics, social dynamics, open social threads, mood, and latent expectations in one scene.
+_Avoid_: Runtime rule flags, keyword topic map
+
+**Self Social State**:
+The agent's revisable understanding of its own recent participation, social position, interest, speaking inclination, and received feedback in one scene.
+_Avoid_: Speaking score, single budget number
+
+**Working Person Model**:
+Current scene-local knowledge about a participant needed for ongoing conversation, grounded in recent observations and durable memory.
+_Avoid_: User profile row, global identity record
+
+**Relationship Model**:
+Current scene-local knowledge of the agent's interaction history and communication patterns with a participant.
+_Avoid_: Person model, affinity score
+
+**Latent Expectation**:
+A non-obligatory expectation that a future condition may make an unresolved social matter worth reconsidering.
+_Avoid_: Task, timer, automatic notification
+
+**Next Wake Intent**:
+A cognition proposal to observe a scene again at a future time; the scheduler and runtime gate retain all authority to validate and commit it.
+_Avoid_: Model-owned timer, scheduled message
+
+**Intentional Silence**:
+A successful cognition result in which the agent understood the event and chose not to participate.
+_Avoid_: Dropped event, ignored input, model failure
 
 **Open Loop**:
 An explicit, tracked social or task dependency that has been initiated but not yet concluded (e.g. waiting for user A to answer an inquiry).
@@ -144,23 +176,19 @@ _Avoid_: Auto-summary, offline cleanup
 
 ---
 
-## 5. Proactive Agency & Social Budget
+## 5. Proactive Agency & Safety
 
-**Speaking Budget**:
-A dynamic social pressure regulator that calculates the cost of proactive speaking based on consecutive bot messages, recent speaking timestamps, and group traffic density.
-_Avoid_: Rate limiter, throttle
+**Hard Speaking Ceiling**:
+A deterministic anti-loop and spam safety limit that rejects extreme output patterns without deciding normal social timing.
+_Avoid_: Social judgement, participation heuristic
 
 **Monologue Prevention**:
 A hard budget barrier that forbids unsolicited proactive initiative when the bot has already sent two or more consecutive messages without human intervention.
 _Avoid_: Spam check, flood gate
 
-**Interest Model**:
-A declarative mapping of topic weights and keyword signals representing the agent's intrinsic curiosities, used to score incoming social observations.
-_Avoid_: Embedding matcher, preference prompt
-
-**Initiative Engine**:
-The evaluation pipeline that compares an event's interest score against the scene's current speaking budget threshold to output `WAKE_FOR_INITIATIVE`, `RETAIN_FOR_LATER`, or `DISCARD`.
-_Avoid_: Proactive timer, auto-chatter
+**Retained Attention**:
+A scene-local cognitive note that something remains interesting without creating a task or requiring an immediate visible action.
+_Avoid_: Reminder, pending reply, hidden task
 
 ---
 
@@ -170,6 +198,6 @@ _Avoid_: Proactive timer, auto-chatter
 An offline test execution harness that feeds timestamped event traces into the runtime to assert deterministic state transitions, cognitive decisions, and gate outcomes.
 _Avoid_: Mock framework, integration test
 
-**Keyword Probe**:
-A deterministic heuristic rule matching specific semantic interest tokens combined with speaking cooldown budgets to trigger candidate wake episodes.
-_Avoid_: Regex trigger, word watcher
+**Social Continuity Error**:
+A behavioral failure where the agent loses or misapplies scene context, speaker relationships, topic/thread identity, its own recent behavior, or conversational timing.
+_Avoid_: Wrong answer only, generic hallucination rate

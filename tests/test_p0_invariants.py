@@ -10,6 +10,7 @@ from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.memory.models import MemoryProposal, MemoryCertainty
 from len_bot.actions.models import ActionItem
 from len_bot.testing.scenario_runner import ScenarioRunner
+from len_bot.testing.social import social_result
 
 @pytest.mark.asyncio
 async def test_p0_1_atomic_event_and_scene_state(tmp_path):
@@ -61,18 +62,16 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
     episode_1_can_finish = asyncio.Event()
     episodes_executed: list[str] = []
 
-    async def slow_mock_pi(messages: list[dict[str, str]]) -> EpisodeOutcome:
+    async def slow_social_core(messages: list[dict[str, str]]):
         user_prompt = messages[1]["content"]
         episodes_executed.append(user_prompt)
-        episode_1_started.set()
-        await episode_1_can_finish.wait()
-        return EpisodeOutcome(
-            disposition=FinalDisposition.ACTION,
-            decision_reason="Finished slow thinking",
-            message_proposals=[MessageProposal(content="Slow response")]
-        )
+        if len(episodes_executed) == 1:
+            episode_1_started.set()
+            await episode_1_can_finish.wait()
+            return social_result(reason="stale first answer", content="Slow response")
+        return social_result(reason="new chatter superseded the first answer")
 
-    runner = ScenarioRunner(config=config, mock_pi_handler=slow_mock_pi)
+    runner = ScenarioRunner(config=config, mock_social_handler=slow_social_core)
     await runner.setup()
 
     scene_id = "group:concurrency_test"
@@ -107,8 +106,8 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
 
     # Lease must be released after Gate commit completes
     assert actor.has_active_episode() is False
-    assert len(runner.sent_actions) == 1
-    assert runner.sent_actions[0].content == "Slow response"
+    assert len(episodes_executed) >= 2
+    assert runner.sent_actions == []
 
     await runner.teardown()
 

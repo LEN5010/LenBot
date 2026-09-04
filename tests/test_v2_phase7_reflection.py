@@ -17,6 +17,7 @@ from len_bot.memory.models import (
 )
 from len_bot.memory.reflection import ReflectionEngine
 from len_bot.memory.reflector import LLMReflector
+from len_bot.testing.social import social_result
 
 
 def _msg(scene_id, actor_id, text, t, **extra):
@@ -186,18 +187,17 @@ async def test_memory_kind_legacy_pattern_migration(tmp_path):
 @pytest.mark.asyncio
 async def test_person_card_in_situation_package(tmp_path):
     """
-    ADR-0019 §11.1: the sender snapshot survives into the Situation Package as a
-    person card (display name + group role + per-person memories) — no more bare
-    'user:123456' in prompts.
+    Sender facts survive in GroupAgentSession working persons without generic
+    memory injection.
     """
     prompts_seen = []
 
-    async def mock_pi(messages):
+    async def mock_social_core(messages):
         prompts_seen.append(messages)
-        return EpisodeOutcome(disposition=FinalDisposition.SILENCE, decision_reason="ok")
+        return social_result(reason="ok")
 
     config = RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "person.db"))
-    runtime = AgentRuntime(config, mock_pi_handler=mock_pi)
+    runtime = AgentRuntime(config, mock_social_handler=mock_social_core)
     await runtime.start()
 
     scene_id = "group:person_card"
@@ -231,11 +231,11 @@ async def test_person_card_in_situation_package(tmp_path):
 
     assert len(prompts_seen) == 1
     user_content = prompts_seen[0][-1]["content"]
-    actor_section = user_content.split("【CURRENT ACTOR】")[1].split("【ACTIVE OPEN LOOPS】")[0]
-    assert "A班长" in actor_section          # display name: card wins over nickname
-    assert "user:A" in actor_section          # actor id preserved
-    assert "admin" in actor_section           # group role
-    assert "A 经常组织开黑活动" in actor_section  # subject-scoped memory
+    social_state = user_content.split("【CURRENT SOCIAL STATE】")[1].split("【RECENT RAW CONVERSATION】")[0]
+    assert "A班长" in social_state
+    assert "user:A" in social_state
+    assert "admin" in social_state
+    assert "A 经常组织开黑活动" not in social_state
 
     await runtime.stop()
 
@@ -280,67 +280,3 @@ async def test_decay_sweeper_runs_in_maintenance_loop(tmp_path):
 
     await runtime.stop()
 
-
-@pytest.mark.asyncio
-async def test_scenario_j_natural_memory_recall(tmp_path):
-    """
-    Scenario J (Goal 9 — 平常表现为'记得', 需要时才'翻记录'):
-    A person memory exists from days ago. When A mentions the topic again, the
-    Situation Package carries the belief and cognition answers NATURALLY.
-    The prompt rules mandate natural recall and forbid record-recitation;
-    retrieval tools are reserved for evidence requests.
-    """
-    prompts_seen = []
-    sent_actions = []
-
-    async def mock_send(item):
-        sent_actions.append(item)
-        return True
-
-    async def mock_pi(messages):
-        prompts_seen.append(messages)
-        return EpisodeOutcome(
-            disposition=FinalDisposition.ACTION,
-            decision_reason="I remember A said he was too lazy to play",
-            message_proposals=[MessageProposal(content="你前几天不是还说懒得开黑么")]
-        )
-
-    config = RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "recall.db"))
-    runtime = AgentRuntime(config, send_adapter=mock_send, mock_pi_handler=mock_pi)
-    await runtime.start()
-
-    scene_id = "group:remember"
-    await runtime.memory_store.save_memory(MemoryItem(
-        subject="user:A",
-        kind=MemoryKind.TOPIC_INTEREST,
-        key="gaming",
-        value="前几天聊过想玩某游戏但懒得开黑",
-        scope=scene_id,
-        evidence=["seed"],
-        human_readable_assertion="A 前几天聊过想玩某游戏但懒得开黑",
-        created_at=time.time(),
-        last_confirmed_at=time.time()
-    ))
-
-    t0 = time.time()
-    ev = Event(
-        event_type=EventType.GROUP_MESSAGE_RECEIVED,
-        scene_id=scene_id,
-        actor_id="user:A",
-        timestamp=t0,
-        payload={"raw_text": "@Bot 最近又想玩那个了", "at_bot": True}
-    )
-    await runtime.receive_event(ev)
-    await asyncio.sleep(0.3)
-
-    assert len(prompts_seen) == 1
-    user_content = prompts_seen[0][-1]["content"]
-    memory_section = user_content.split("【RELEVANT BELIEFS & MEMORY】")[1].split("【RELEVANT AMBIENT ITEMS】")[0]
-    assert "A 前几天聊过想玩某游戏但懒得开黑" in memory_section
-    # Rule 8: natural recall, evidence lookup only on demand
-    assert "自然口吻" in prompts_seen[0][0]["content"]
-
-    assert len(sent_actions) == 1
-    assert sent_actions[0].content == "你前几天不是还说懒得开黑么"
-
-    await runtime.stop()

@@ -38,7 +38,6 @@ class RuntimeQueryService:
                 "active_scenes": sum(1 for s in scenes if s["activity"] in ("active", "hot")),
                 "memory_beliefs_count": memory_count,
                 "websocket_connected": self.websocket_connected(),
-                "speaking_budget_threshold": rt.attention_engine.speaking_budget.base_threshold,
                 "normal_model": routing["routing"]["normal"]["model"] if routing["routing"] else None,
                 "deliberate_model": routing["routing"]["deliberate"]["model"] if routing["routing"] else None,
                 "identity_name": rt.config.identity_name,
@@ -60,12 +59,13 @@ class RuntimeQueryService:
         summaries = []
         for scene_id, actor in self.runtime.scene_manager._actors.items():
             state = actor.state
+            session = actor.group_session
             summaries.append({
                 "scene_id": scene_id,
                 "version": state.version if state else 0,
                 "activity": state.activity_level if state else "idle",
-                "active_topic": state.active_topic or "None",
-                "bot_engagement": state.bot_engagement if state else "idle",
+                "topics": [topic.model_dump(mode="json") for topic in session.social_world.topics] if session else [],
+                "engagement": session.self_social_state.engagement if session else "observing",
                 "consecutive_bot_messages": state.consecutive_bot_messages if state else 0,
             })
         return summaries
@@ -74,21 +74,14 @@ class RuntimeQueryService:
         scenes = []
         for scene_id, actor in self.runtime.scene_manager._actors.items():
             state = actor.state
-            thread_info = None
-            if state and state.current_thread:
-                thread_info = {
-                    "topic": state.current_thread.topic,
-                    "status": state.current_thread.status.value,
-                    "participants": state.current_thread.participants,
-                    "intervening_messages": state.current_thread.intervening_messages,
-                }
+            session = actor.group_session
             scenes.append({
                 "scene_id": scene_id,
                 "version": state.version if state else 0,
                 "activity_level": state.activity_level if state else "idle",
-                "active_topic": state.active_topic if state else None,
                 "participant_count": len(state.participants) if state else 0,
-                "current_thread": thread_info,
+                "social_world": session.social_world.model_dump(mode="json") if session else None,
+                "self_social_state": session.self_social_state.model_dump(mode="json") if session else None,
                 "is_in_memory": True,
             })
 
@@ -99,8 +92,8 @@ class RuntimeQueryService:
             if r[0] and r[0] not in existing_ids:
                 scenes.append({
                     "scene_id": r[0], "version": 0, "activity_level": "idle",
-                    "active_topic": None, "participant_count": 0,
-                    "current_thread": None, "is_in_memory": False,
+                    "participant_count": 0, "social_world": None,
+                    "self_social_state": None, "is_in_memory": False,
                 })
         return scenes
 
@@ -113,24 +106,25 @@ class RuntimeQueryService:
                 return None
             state = SceneState.model_validate(raw_state)
 
-        thread_info = None
-        if state.current_thread:
-            thread_info = {
-                "topic": state.current_thread.topic,
-                "status": state.current_thread.status.value,
-                "participants": state.current_thread.participants,
-                "intervening_messages": state.current_thread.intervening_messages,
-                "last_relevant_at": state.current_thread.last_relevant_at,
-            }
+        actor = self.runtime.scene_manager._actors.get(scene_id)
+        session = actor.group_session if actor else None
+        if session is None:
+            raw_session = await self.runtime.event_store.load_group_agent_session(scene_id)
+            if raw_session:
+                from len_bot.cognition.session import GroupAgentSession
+                session = GroupAgentSession.model_validate(raw_session)
         return {
             "scene_id": scene_id,
             "version": state.version,
             "activity_level": state.activity_level,
-            "active_topic": state.active_topic,
-            "bot_engagement": state.bot_engagement,
             "consecutive_bot_messages": state.consecutive_bot_messages,
             "participants": state.participants,
-            "current_thread": thread_info,
+            "social_world": session.social_world.model_dump(mode="json") if session else None,
+            "self_social_state": session.self_social_state.model_dump(mode="json") if session else None,
+            "working_persons": {
+                key: value.model_dump(mode="json")
+                for key, value in (session.working_persons.items() if session else [])
+            },
         }
 
     # ---------- Events / Tasks / Loops / Memories ----------

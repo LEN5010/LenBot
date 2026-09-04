@@ -8,68 +8,49 @@
 
 本项目不是一个简单的“接入 LLM 的 QQ 机器人框架”，而是一个**以持续存在的持久化运行时（Persistent Runtime）为主体**的社会化 Agent 系统。
 
-* **LLM 不是 Agent**：大语言模型仅是按需启动的短暂认知执行器（Pi Agent Core）。
+* **LLM 不是 Agent**：大语言模型仅是按需启动的短暂认知执行器（Social Cognition Core）。
 * **LLM 永远只能产出提案（Proposal）**：模型不直接拥有真实世界的修改权与不可逆副作用，全部操作均须经由运行时门禁（`RuntimeGate`）审核提交。
 * **单进程模块化单体**：基于 Python 3.13、`asyncio` 与 SQLite WAL 模式构建，零外部消息队列中间件依赖，保证极致的因果确定性与微秒级状态一致性。
 
 ```text
-       QQ / OneBot v11                Scheduler / Plugins
-              │                                │
-              ▼                                ▼
-       Event Adapters ──────────────────► Raw Events
-                                               │
-                                               ▼
-                                         Event Store (SQLite WAL)
-                                               │
-                                               ▼
-                                         Scene Reducer (Single-Writer)
-                                               │
-                                               ▼
-                                       Stimulus Builder (Debounce & Burst)
-                                               │
-                                               ▼
-                                        Attention Engine
-                                    ┌──────────┼──────────┐
-                                    ▼          ▼          ▼
-                                  DROP      OBSERVE     TRACK
-                                                          │
-                                                Soft Scene Annotation
-                                                          │
-                                                         WAKE
-                                                          │
-                                                          ▼
-                                                   Episode Manager
-                                                          │
-                                                          ▼
-                                                  Context Assembler
-                                                          │
-                                                          ▼
-                                                  Cognition Router (Normal <-> Deliberate)
-                                                          │
-                                                          ▼
-                                                    Pi Agent Core (ReAct Loop + Steering)
-                                                    ↙           ↓          ↘
-                                              search_messages  read_context query_memory
-                                                    \           │          /
-                                                     ▼          ▼         ▼
-                                                      Episode Outcome
-                                                            │
-                                                            ▼
-                                                       Runtime Gate (Staleness / Two-Phase Commit)
-                                                   ┌────────┼────────┐
-                                                   ▼        ▼        ▼
-                                                SILENCE   State    Action
-                                                          Commit  Proposal
-                                                                     │
-                                                                     ▼
-                                                                Action Queue (OneBot Adapter)
+OneBot / Plugin / Scheduler Event
+                │
+                ▼
+         Event Store (SQLite WAL)
+                │
+                ▼
+       SceneActor (single writer)
+                │
+        ┌───────┴────────┐
+        ▼                ▼
+ BurstAssembler   GroupAgentSession
+        └───────┬────────┘
+                ▼
+      Social Cognition Core
+         ┌──────┼──────┐
+         ▼      ▼      ▼
+      SILENCE  SPEAK  TOOL → Worker → Social Core
+                │
+                ▼
+           RuntimeGate
+                │
+                ▼
+           ActionQueue
 ```
 
 ---
 
-## 🚀 核心架构特性与第一阶段落地里程（V1-A ~ V1-E）
+## V4 迁移状态
 
-系统严格遵循《系统架构设计 v0.2》规范，现已全部完成第一阶段 5 个里程碑的交付，自动化测试全量通过（18/18 Passed）：
+- Stage 1 已完成：`StimulusBuilder` 已由按 scene 保序、无语义判断的 `BurstAssembler` 替代；`GroupAgentSession` 与 Event、`SceneState` 在同一事务提交并支持重启恢复。
+- Stage 2 已完成：严格结构化的 `SocialCognitionResult` 已接入 Shadow；它可更新 session 与记录 intentional silence / would-speak trace，但没有发送、工具、调度或记忆提交 authority。
+- Stage 3 尚未开始：当前生产发送路径仍使用 V3 Attention；下一阶段会直接替换并删除旧社会判断，而不是长期维护双轨或增加 feature flag。
+
+---
+
+## 🚀 Runtime Foundation 与历史里程（V1-A ~ V3）
+
+以下能力构成已验证的 Runtime Foundation。Attention、Interest 与 ParticipationThread 条目描述的是 V1–V3 历史实现，将在 V4 Stage 3 被 Social Cognition Core 取代。
 
 ### 1. V1-A：反应式核心（Reactive Core）
 * **事件与刺激分离（`Event != Stimulus`）**：支持滑动空闲窗口（`Sliding Idle Window`）防抖聚合，识别 `@Bot` 与急迫词立即抢占 Flush。
@@ -119,6 +100,8 @@
 | [`0010`](docs/adr/0010-agentic-history-retrieval-tools.md) | **Agentic History Retrieval Tools** | 拒绝全量注入与向量 RAG，由 Agent 自主按需调起检索工具 |
 | [`0011`](docs/adr/0011-four-tier-memory-and-evidence-gate.md) | **Four-Tier Memory & Evidence Gate** | 建立四层记忆体系与强证据链检验，冲突采用 superseded 软淘汰 |
 | [`0012`](docs/adr/0012-agency-initiative-and-model-routing.md) | **Agency, Initiative & Model Routing** | 发言预算动态抑制抗话痨，显式兴趣打分，ReAct 工具结果驱动动态升阶 |
+| [`0032`](docs/adr/0032-group-agent-session-and-scene-bursts.md) | **Group Agent Session & Scene Bursts** | 持久化每个 scene 的工作社会状态，以纯时间 burst 保留多人对话顺序 |
+| [`0033`](docs/adr/0033-social-cognition-core-shadow-contract.md) | **Social Cognition Shadow Contract** | 严格结构化认知结果、intentional silence 与无副作用 Shadow 提交路径 |
 
 更多设计理念与领域名词见 [`CONTEXT.md`](CONTEXT.md) 与面向开发代理的指导原则 [`AGENTS.md`](AGENTS.md)。
 
@@ -138,7 +121,7 @@ uv sync
 
 ### 3. 运行自动化测试套件
 ```bash
-# 运行全部 19 项端到端架构与控制台 API 集成测试
+# 运行完整架构、边界与场景测试
 uv run pytest -v
 ```
 
@@ -194,4 +177,4 @@ uv run pytest -v
 
 ## 📜 核心架构金律（§110）
 
-> **Persistent Runtime 是持续存在的 Agent；Event 是它经历到的世界变化；Scene State、Task 和 Open Loop 构成它当前的执行现实；Memory 是它形成的认识；Attention 决定什么值得思考；Pi 是按需启动的认知皮层；所有认知结果都只是 Proposal，只有 Runtime 才拥有最终状态和行动权。**
+> **Persistent Runtime 是持续存在的 Agent；Event 是它经历到的世界变化；Group Agent Session 承载每个群的社会连续性；Social Core 理解场景并提出 SILENCE / SPEAK / TOOL；所有认知结果都只是 Proposal，只有 Runtime 才拥有最终状态和行动权。**

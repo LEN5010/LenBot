@@ -8,40 +8,6 @@ from len_bot.web.app import create_app
 from len_bot.adapters.onebot import OneBotAdapter
 
 @pytest.mark.asyncio
-async def test_monitored_keywords_hot_reload_on_social_update(tmp_path):
-    """ADR-0031, §23.1: POST /api/cockpit/social hot-reloads AttentionEngine keywords live."""
-    db_file = str(tmp_path / "hot_reload.db")
-    config = RuntimeConfig(bot_qq=12345678, db_path=db_file, monitored_keywords=["cold_key"])
-    runtime = AgentRuntime(config)
-    await runtime.start()
-
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Login
-        login_res = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        assert login_res.status_code == 200
-
-        # Initial check
-        assert runtime.attention_engine.monitored_keywords == ["cold_key"]
-
-        # Hot reload via POST /api/cockpit/social
-        res = await client.post("/api/cockpit/social", json={
-            "monitored_keywords": ["keyword_alpha", "keyword_beta"],
-            "speaking_budget_base_threshold": 0.55,
-            "interest_topics": {"tech": 0.8}
-        })
-        assert res.status_code == 200
-
-        # Runtime & AttentionEngine must both be updated!
-        assert runtime.config.monitored_keywords == ["keyword_alpha", "keyword_beta"]
-        assert runtime.attention_engine.monitored_keywords == ["keyword_alpha", "keyword_beta"]
-        assert runtime.attention_engine.interest_model.topic_keywords["monitored"] == ["keyword_alpha", "keyword_beta"]
-
-    await runtime.stop()
-
-
-@pytest.mark.asyncio
 async def test_shadow_annotations_crud_and_metrics(tmp_path):
     """ADR-0031, §23.3: Shadow annotations are persisted in SQLite and queried with precision/accuracy."""
     db_file = str(tmp_path / "shadow_ann.db")

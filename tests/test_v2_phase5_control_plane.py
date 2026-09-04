@@ -254,16 +254,6 @@ async def test_goal9_dynamic_config_hot_reload_and_persistence(tmp_path):
         assert runtime1.bot_actor_id == "user:999888777"
         assert runtime1.action_queue.bot_actor_id == "user:999888777"
 
-        # 3. Update Social & Attention Config
-        social_post = await client.post("/api/settings/social", headers=headers, json={
-            "monitored_keywords": ["直播", "开奖", "热榜"],
-            "speaking_budget_base_threshold": 0.88,
-            "interest_topics": {"robotics": 0.99, "ai": 0.95}
-        })
-        assert social_post.status_code == 200
-        assert runtime1.attention_engine.speaking_budget.base_threshold == 0.88
-        assert runtime1.attention_engine.interest_model.topics["robotics"] == 0.99
-
     # Stop runtime1 (simulating process shutdown)
     await runtime1.stop()
 
@@ -279,7 +269,4 @@ async def test_goal9_dynamic_config_hot_reload_and_persistence(tmp_path):
     assert runtime2.config.identity_name == "LenHotPersona"
     assert runtime2.config.bot_qq == 999888777
     assert runtime2.bot_actor_id == "user:999888777"
-    assert runtime2.attention_engine.speaking_budget.base_threshold == 0.88
-    assert runtime2.attention_engine.interest_model.topics["robotics"] == 0.99
-
     await runtime2.stop()

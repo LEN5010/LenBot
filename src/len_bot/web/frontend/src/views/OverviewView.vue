@@ -134,7 +134,7 @@ async function load() {
               <th>场景标识 (Scene ID)</th>
               <th>版本</th>
               <th>场景活跃度</th>
-              <th>当前聚焦话题</th>
+              <th>Social Core 话题</th>
               <th>智能体参与度</th>
               <th>连续发言</th>
             </tr>
@@ -148,10 +148,10 @@ async function load() {
                   {{ s.activity }}
                 </span>
               </td>
-              <td>{{ s.active_topic || '—' }}</td>
+              <td>{{ s.topics?.map(t => t.subject).join(' / ') || '—' }}</td>
               <td>
-                <span class="tag" :class="s.bot_engagement === 'active' ? 'ok' : ''">
-                  {{ s.bot_engagement }}
+                <span class="tag" :class="s.engagement === 'participating' ? 'ok' : ''">
+                  {{ s.engagement }}
                 </span>
               </td>
               <td>{{ s.consecutive_bot_messages }}</td>
