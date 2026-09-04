@@ -70,6 +70,7 @@ class ReplayLab:
                 burst=stimulus,
                 raw_events=raw_by_scene[event.scene_id][-100:],
                 active_open_loops=[],
+                pending_next_wake=None,
             )
             session = GroupAgentSessionReducer.apply_cognition(session, result, len(raw_by_scene[event.scene_id]))
             sessions[event.scene_id] = session

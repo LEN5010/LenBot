@@ -22,6 +22,7 @@ class SocialCoreContextAssembler:
         burst: Stimulus,
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
+        pending_next_wake: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         recent_chat = []
         for event in raw_events[-80:]:
@@ -57,11 +58,7 @@ class SocialCoreContextAssembler:
             "retained_attention": [
                 item.model_dump(mode="json") for item in session.retained_attention
             ],
-            "next_wake_intent": (
-                session.next_wake_intent.model_dump(mode="json")
-                if session.next_wake_intent
-                else None
-            ),
+            "pending_next_wake": pending_next_wake,
             "recent_episode_summary": session.recent_episode_summary,
             "active_open_loops": active_open_loops,
         }
@@ -104,12 +101,14 @@ class SocialCognitionCore:
         burst: Stimulus,
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
+        pending_next_wake: dict[str, Any] | None = None,
     ) -> tuple[SocialCognitionResult, dict[str, Any]]:
         messages = self.context_assembler.assemble(
             session=session,
             burst=burst,
             raw_events=raw_events,
             active_open_loops=active_open_loops,
+            pending_next_wake=pending_next_wake,
         )
         if self.mock_handler:
             result = await self.mock_handler(messages)

@@ -44,13 +44,14 @@ OneBot / Plugin / Scheduler Event
 
 - Stage 1 已完成：`StimulusBuilder` 已由按 scene 保序、无语义判断的 `BurstAssembler` 替代；`GroupAgentSession` 与 Event、`SceneState` 在同一事务提交并支持重启恢复。
 - Stage 2 已完成：严格结构化的 `SocialCognitionResult` 已接入 Shadow；它可更新 session 与记录 intentional silence / would-speak trace，但没有发送、工具、调度或记忆提交 authority。
-- Stage 3 尚未开始：当前生产发送路径仍使用 V3 Attention；下一阶段会直接替换并删除旧社会判断，而不是长期维护双轨或增加 feature flag。
+- Stage 3 已完成：生产路径已切换为 `Hard Event Gate → Social Cognition Core → RuntimeGate`；V3 Attention、Interest、SpeakingBudget 与 ParticipationThread 业务路径已删除。
+- Stage 6 已完成：RetainedAttention 在合法 Session 提交时清理；NextWakeIntent 经 RuntimeGate 转换为可恢复的 durable task，并以 `TASK_DUE` 重新进入 Social Core。
 
 ---
 
 ## 🚀 Runtime Foundation 与历史里程（V1-A ~ V3）
 
-以下能力构成已验证的 Runtime Foundation。Attention、Interest 与 ParticipationThread 条目描述的是 V1–V3 历史实现，将在 V4 Stage 3 被 Social Cognition Core 取代。
+以下能力构成已验证的 Runtime Foundation。Attention、Interest 与 ParticipationThread 条目仅描述 V1–V3 历史实现，相关生产路径已在 V4 Stage 3 删除。
 
 ### 1. V1-A：反应式核心（Reactive Core）
 * **事件与刺激分离（`Event != Stimulus`）**：支持滑动空闲窗口（`Sliding Idle Window`）防抖聚合，识别 `@Bot` 与急迫词立即抢占 Flush。
@@ -102,6 +103,7 @@ OneBot / Plugin / Scheduler Event
 | [`0012`](docs/adr/0012-agency-initiative-and-model-routing.md) | **Agency, Initiative & Model Routing** | 发言预算动态抑制抗话痨，显式兴趣打分，ReAct 工具结果驱动动态升阶 |
 | [`0032`](docs/adr/0032-group-agent-session-and-scene-bursts.md) | **Group Agent Session & Scene Bursts** | 持久化每个 scene 的工作社会状态，以纯时间 burst 保留多人对话顺序 |
 | [`0033`](docs/adr/0033-social-cognition-core-shadow-contract.md) | **Social Cognition Shadow Contract** | 严格结构化认知结果、intentional silence 与无副作用 Shadow 提交路径 |
+| [`0034`](docs/adr/0034-social-core-production-and-durable-ambient-wake.md) | **Social Core Production & Ambient Wake** | 唯一 Social Core 生产路径与 Runtime 所有的 durable NextWake |
 
 更多设计理念与领域名词见 [`CONTEXT.md`](CONTEXT.md) 与面向开发代理的指导原则 [`AGENTS.md`](AGENTS.md)。
 

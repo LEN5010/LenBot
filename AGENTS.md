@@ -216,7 +216,7 @@ Cross-time social continuity for promises and retained interests:
 - OneBot v11 adapter drops bot's own self-sent echo messages, parses `reply_to_message_id` into a 1000-item ring buffer, and formats quote replies with `[CQ:reply,id=...]`.
 
 ### Persistent GroupAgentSession & Scene Bursts (ADR-0032)
-- Each `SceneActor` owns one `GroupAgentSession` holding the scene's structured social state (world state, self state, working persons/relationships, retained attention, next wake intent). The session reducer updates only factual observations; it never infers topics, mood, or whether to speak.
+- Each `SceneActor` owns one `GroupAgentSession` holding the scene's structured social state (world state, self state, working persons/relationships, retained attention). The session reducer updates only factual observations; it never infers topics, mood, or whether to speak.
 - `EventStore.commit_scene_event` is the single commit point for the raw event, `SceneState`, and `GroupAgentSession`; `last_observed_event_rowid` / `last_cognized_event_rowid` bound recovery and cognition freshness.
 - `BurstAssembler` (replacing the per-sender `StimulusBuilder`) coalesces per scene by arrival timing only — no topic classification, keyword urgency, or wake decision. Direct mention/reply is a structural low-latency flush signal.
 
@@ -224,6 +224,12 @@ Cross-time social continuity for promises and retained interests:
 - Every valid burst enters the `SocialCognitionCore`, which sees the `GroupAgentSession`, up to 80 recent raw events, the ordered burst, and active open loops — no generic top-k memory injection.
 - The strict `SocialCognitionResult` carries perception + full `SocialWorldState` snapshot, `SelfSocialState` update, exactly one `speak`/`silence` decision, and typed proposals. `silence` forbids messages; `speak` requires one.
 - Social inference runs outside `SceneActor`; the actor validates the observation cursor and evidence IDs, then atomically commits `SOCIAL_COGNITION_RECORDED` + updated session, or rejects stale results. The LLM never writes session state directly.
+
+### Durable Ambient Wake (ADR-0034)
+- `future_attention` is only an LLM proposal. `RuntimeGate` converts it to the reserved `next_wake` task kind, clamps the minimum delay, and commits it through the existing atomic task path.
+- The pending task row is the only scheduling truth. Social Core sees a read-only `pending_next_wake` projection; `GroupAgentSession` does not duplicate due time or task status.
+- One scene has at most one pending next wake. A newer committed wake supersedes the older one, and a due wake cannot self-renew without a newer human or plugin social event.
+- Retained attention is session-owned soft state and is pruned on the next lawful event or cognition commit before context assembly.
 
 ---
 
@@ -241,7 +247,7 @@ Tests are explicitly organized into three distinct layers to ensure deterministi
 
 2. **Layer 2: Behavioral Pipeline & Scenarios (Deterministic Offline Replay)**
    - Tests end-to-end user-observable behavior using deterministic offline replay with scripted cognitive processors. No network or sleep dependencies.
-   - Files: `test_burst_assembler.py`, `test_v4_stage3_social_path.py` (V4 social path: mention/continuation, intentional silence, stale rejection, anti-loop ceiling), `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
+   - Files: `test_burst_assembler.py`, `test_v4_stage3_social_path.py` (mention/continuation, intentional silence, stale rejection, anti-loop ceiling), `test_v4_stage6_ambient.py` (durable wake, restart, Shadow and renewal), `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
    - Run: `uv run pytest tests/test_v4_stage3_social_path.py tests/test_burst_assembler.py -v`
 
 3. **Layer 3: Model Evaluation (Live Providers, Real Transcripts, Non-CI)**

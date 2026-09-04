@@ -44,6 +44,17 @@ class TaskScheduler:
                 pass
 
     def schedule_task(self, task: TaskItem) -> None:
+        if task.payload.get("kind") == "next_wake":
+            superseded_ids = {
+                queued.id
+                for queued in self._heap
+                if queued.scene_id == task.scene_id
+                and queued.payload.get("kind") == "next_wake"
+            }
+            if superseded_ids:
+                self._known_task_ids.difference_update(superseded_ids)
+                self._heap = [queued for queued in self._heap if queued.id not in superseded_ids]
+                heapq.heapify(self._heap)
         if task.id not in self._known_task_ids:
             self._known_task_ids.add(task.id)
             heapq.heappush(self._heap, task)

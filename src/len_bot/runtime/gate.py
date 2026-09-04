@@ -57,7 +57,8 @@ class RuntimeGate:
         scheduler: Optional[Any] = None,
         memory_gate: Optional[Any] = None,
         metrics: Optional[Any] = None,
-        origin_mode_provider: Optional[Callable[[], str]] = None
+        origin_mode_provider: Optional[Callable[[], str]] = None,
+        next_wake_min_interval_seconds: float = 60.0
     ):
         self.event_store = event_store
         self.action_queue = action_queue
@@ -65,6 +66,7 @@ class RuntimeGate:
         self.memory_gate = memory_gate
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
+        self.next_wake_min_interval_seconds = next_wake_min_interval_seconds
 
     async def evaluate_and_commit(
         self,
@@ -133,6 +135,19 @@ class RuntimeGate:
         if curr_origin == "shadow":
             for tp in proposal_commit.outcome.task_proposals:
                 tp.origin_mode = "shadow"
+
+        # ADR-0034: next-wake tasks are clamped to the configured minimum interval
+        for tp in proposal_commit.outcome.task_proposals:
+            if (
+                tp.payload.get("kind") == "next_wake"
+                and tp.delay_seconds is not None
+                and tp.delay_seconds < self.next_wake_min_interval_seconds
+            ):
+                logger.info(
+                    "Clamping next-wake delay %.1fs to minimum interval %.1fs on scene %s",
+                    tp.delay_seconds, self.next_wake_min_interval_seconds, proposal_commit.scene_id
+                )
+                tp.delay_seconds = self.next_wake_min_interval_seconds
 
         # 2. Authoritative Database Commit (Tasks, Open Loops, Memories) - All-or-Nothing Atomic Transaction
         try:
