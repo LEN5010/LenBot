@@ -46,6 +46,7 @@ OneBot / Plugin / Scheduler Event
 - Stage 2 已完成：严格结构化的 `SocialCognitionResult` 已接入 Shadow；它可更新 session 与记录 intentional silence / would-speak trace，但没有发送、工具、调度或记忆提交 authority。
 - Stage 3 已完成：生产路径已切换为 `Hard Event Gate → Social Cognition Core → RuntimeGate`；V3 Attention、Interest、SpeakingBudget 与 ParticipationThread 业务路径已删除。
 - Stage 6 已完成：RetainedAttention 在合法 Session 提交时清理；NextWakeIntent 经 RuntimeGate 转换为可恢复的 durable task，并以 `TASK_DUE` 重新进入 Social Core。
+- Agentic Retrieval 已完成（ADR-0035）：SocialCognitionCore 升级为有界 ReAct 工具循环，模型可按需调用历史/记忆检索工具（带强制收敛、工具错误回灌与确定性工具预算）；ProviderRegistry 支持主→备回退路由、模型目录管理与调用指标，控制台可在线勾选模型并指定普通/思考/回退三类用途。
 
 ---
 
@@ -112,7 +113,7 @@ OneBot / Plugin / Scheduler Event
 ## 🛠️ 快速开始
 
 ### 1. 运行环境要求
-* **Python**: 3.11+ (推荐 3.13+)
+* **Python**: 3.13（`.python-version` 固定；CI 同版本运行）
 * **包管理器**: [uv](https://github.com/astral-sh/uv) (推荐) 或 pip
 
 ### 2. 安装与环境同步

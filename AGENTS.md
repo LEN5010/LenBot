@@ -231,6 +231,13 @@ Cross-time social continuity for promises and retained interests:
 - One scene has at most one pending next wake. A newer committed wake supersedes the older one, and a due wake cannot self-renew without a newer human or plugin social event.
 - Retained attention is session-owned soft state and is pruned on the next lawful event or cognition commit before context assembly.
 
+### Agentic Memory Retrieval & Provider Fallback (ADR-0035)
+- `SocialCognitionCore.execute` is a bounded ReAct loop: with an injected `RetrievalToolkit` (scope-guarded, `allowed_scopes=[scene_id, "global-safe"]`), the model may call the standard retrieval tools on demand. Retrieval stays a per-episode judgement, never automatic per-message injection (Invariant 8).
+- Failure semantics are deterministic and fail-closed: the last loop step or an exhausted `max_tool_calls` budget forces a final decision via `tool_choice="none"`; malformed tool arguments and toolkit exceptions feed back to the model as `role:"tool"` error payloads instead of aborting the episode; assistant tool-call echoes are reconstructed minimally (`role/content/tool_calls`) so strict OpenAI-compatible endpoints — especially cross-vendor fallbacks — do not reject them.
+- Per-step traces carry tier/provider/model/fallback/`forced_final`/latency/tokens into the `traces` payload (Trace view renders tool-call counts); `RuntimeMetrics` adds `retrieval_tool_calls`, `retrieval_tool_errors`, and `retrieval_forced_finals`.
+- `RoutingConfig` gains an optional single-hop `fallback` target (tried once on primary failure, skipped when identical to the primary); `ProviderConfig` gains an operator-curated `models` catalog fetched from the endpoint's `/v1/models` (Control Plane: `GET/POST /api/models/providers/{id}/models`), with route-target models backfilled at startup. Configuring a cross-vendor fallback is an explicit acknowledgement that episode context flows to that vendor.
+- The legacy boundary-test loop `PiAgentCore` is renamed `ReActAgentCore` (`cognition/react_core.py`) — the "Pi" name referenced an abandoned external-framework plan and never matched any dependency. The informal "V4 Stage 4" name for this batch is retired; ADR-0032 reserves Stage 4 for session context rollover.
+
 ---
 
 ## 4. Development & Testing Workflow
@@ -247,8 +254,8 @@ Tests are explicitly organized into three distinct layers to ensure deterministi
 
 2. **Layer 2: Behavioral Pipeline & Scenarios (Deterministic Offline Replay)**
    - Tests end-to-end user-observable behavior using deterministic offline replay with scripted cognitive processors. No network or sleep dependencies.
-   - Files: `test_burst_assembler.py`, `test_v4_stage3_social_path.py` (mention/continuation, intentional silence, stale rejection, anti-loop ceiling), `test_v4_stage6_ambient.py` (durable wake, restart, Shadow and renewal), `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
-   - Run: `uv run pytest tests/test_v4_stage3_social_path.py tests/test_burst_assembler.py -v`
+   - Files: `test_burst_assembler.py`, `test_v4_stage3_social_path.py` (mention/continuation, intentional silence, stale rejection, anti-loop ceiling), `test_v4_stage4_agentic_memory.py` (on-demand retrieval loop, forced convergence, tool-error feedback, provider fallback), `test_v4_stage6_ambient.py` (durable wake, restart, Shadow and renewal), `test_v3_stage8_control_plane.py`, `test_v3_stage9_completion.py`.
+   - Run: `uv run pytest tests/test_v4_stage3_social_path.py tests/test_v4_stage4_agentic_memory.py tests/test_burst_assembler.py -v`
 
 3. **Layer 3: Model Evaluation (Live Providers, Real Transcripts, Non-CI)**
    - Offline evaluation of real transcripts against configured model providers for qualitative social analysis.

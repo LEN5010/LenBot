@@ -62,6 +62,26 @@ _Avoid_: Model size, prompt mode
 The runtime orchestrator that selects the appropriate model tier and executes dynamic in-flight escalation based on tool result complexity or step depth.
 _Avoid_: Model switcher, prompt dispatcher
 
+**Retrieval Tool Loop**:
+The bounded ReAct loop inside Social Cognition Core through which the model may call history and memory retrieval tools on demand before producing its structured decision.
+_Avoid_: Auto-RAG, per-message memory injection, agent framework
+
+**Tool Budget**:
+The deterministic per-episode ceiling on retrieval tool executions (`max_tool_calls`); exhausting it, or reaching the last loop step, forces a final decision via `tool_choice="none"`.
+_Avoid_: Soft suggestion, retry limit
+
+**Forced Final**:
+A protocol enforcement step in which the retrieval tool loop demands a speak/silence decision from the model instead of allowing further tool calls.
+_Avoid_: Timeout, silent abort
+
+**Model Fallback**:
+The single-hop secondary route target attempted once when the primary provider fails; never chained and never used when identical to the primary.
+_Avoid_: Retry, failover cluster, provider chain
+
+**Model Catalog**:
+The provider-specific, operator-curated list of advertised models available for tier and fallback selection.
+_Avoid_: Global model registry, model marketplace
+
 **Social Core Context**:
 The direct cognitive context composed from core self, group identity, current social and self state, recent raw conversation, unresolved social threads, and the current burst.
 _Avoid_: Generic top-k RAG, prompt history as state
