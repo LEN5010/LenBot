@@ -28,7 +28,7 @@ async def test_gate_two_phase_commit_and_open_loop(tmp_path):
     scene_state = SceneState(scene_id="group:1", version=10)
     mailbox = EpisodeMailbox("ep_1", "group:1", 10)
 
-    # Pi outputs an action asking A for arrival time, plus a future task
+    # The agent outputs an action asking A for arrival time, plus a future task
     outcome = EpisodeOutcome(
         disposition=FinalDisposition.ACTION,
         decision_reason="Ask A arrival time and set checking task",

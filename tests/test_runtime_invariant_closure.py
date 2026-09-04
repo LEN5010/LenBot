@@ -11,7 +11,7 @@ from len_bot.actions.models import ActionItem, ActionType
 from len_bot.actions.queue import ActionQueue
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
-from len_bot.cognition.pi_core import PiAgentCore
+from len_bot.cognition.react_core import ReActAgentCore
 from len_bot.memory.models import MemoryProposal, MemoryCertainty, MemoryStatus
 from len_bot.memory.store import MemoryStore
 from len_bot.memory.gate import MemoryGate
@@ -356,7 +356,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     """
     P0-2 Failure Test:
     Proves that when a follow-up arrives while cognition is in flight:
-    1. PiAgentCore incorporates the follow-up instead of dropping it.
+    1. ReActAgentCore incorporates the follow-up instead of dropping it.
     2. If a follow-up arrives right at final completion before Gate, Gate detects
        mailbox.has_follow_up() and rejects the stale outcome (SILENCE) rather than
        sending the superseded answer.
@@ -369,7 +369,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     scene_id = "group:follow_up_race"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
 
-    # 1. Test PiAgentCore mock with follow-up arriving during execution
+    # 1. Test ReActAgentCore mock with follow-up arriving during execution
     mailbox = EpisodeMailbox(episode_id="ep_race", scene_id=scene_id, base_scene_version=1)
 
     async def mock_cognition(messages: list[dict[str, str]]) -> EpisodeOutcome:
@@ -396,13 +396,13 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
             message_proposals=[MessageProposal(content="直播8点开始")]
         )
 
-    core = PiAgentCore(config, mock_handler=mock_cognition)
+    core = ReActAgentCore(config, mock_handler=mock_cognition)
     outcome, _trace = await core.execute_episode(
         messages=[{"role": "user", "content": "帮我查直播"}],
         mailbox=mailbox
     )
 
-    # Verify that PiAgentCore detected mailbox.has_follow_up() and re-executed to answer BOTH!
+    # Verify that ReActAgentCore detected mailbox.has_follow_up() and re-executed to answer BOTH!
     assert outcome.disposition == FinalDisposition.ACTION
     assert "小明" in outcome.message_proposals[0].content
 

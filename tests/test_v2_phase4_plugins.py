@@ -183,7 +183,7 @@ async def test_plugin_permission_gating(tmp_path):
 @pytest.mark.asyncio
 async def test_goal7_plugin_crash_and_timeout_sandbox_isolation(tmp_path):
     """
-    Goal 7: Plugin crash or timeout is strictly isolated and never crashes the Runtime or PiAgentCore.
+    Goal 7: Plugin crash or timeout is strictly isolated and never crashes the Runtime or ReActAgentCore.
     """
     db_file = str(tmp_path / "goal7_fault.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)

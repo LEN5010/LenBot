@@ -48,7 +48,7 @@ class WebSearchToolPlugin(BasePlugin):
         super().__init__(manifest=PluginManifest(
             id="web_search_tool",
             name="实时联网认知检索",
-            description="Pi 主动调用的网页搜索与页面阅读工具（DuckDuckGo，免 API Key）。",
+            description="机器人主动调用的网页搜索与页面阅读工具（DuckDuckGo，免 API Key）。",
             version="1.0.0",
             plugin_type=PluginType.TOOL,
             permissions=[PluginPermission.REGISTER_TOOL],

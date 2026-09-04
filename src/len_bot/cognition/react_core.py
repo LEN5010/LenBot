@@ -1,3 +1,11 @@
+"""Legacy V3 ReAct episode loop, kept for boundary tests only.
+
+The production social path is ``SocialCognitionCore`` (ADR-0033/0034); this
+module survives because staleness/steering and plugin-isolation boundary
+tests exercise the harness through it. Renamed from ``PiAgentCore`` in
+ADR-0035 to drop an abandoned external-framework naming legacy.
+"""
+
 import json
 import logging
 import time
@@ -10,7 +18,7 @@ from len_bot.cognition.router import CognitionRouter, CognitiveTier
 
 logger = logging.getLogger(__name__)
 
-class PiAgentCore:
+class ReActAgentCore:
     def __init__(
         self,
         config: RuntimeConfig,
@@ -287,7 +295,7 @@ class PiAgentCore:
                 decision_reason="ReAct loop reached max steps without conclusion"
             ), trace
         except Exception as e:
-            logger.exception("PiAgentCore execution error: %s", e)
+            logger.exception("ReActAgentCore execution error: %s", e)
             return EpisodeOutcome(
                 disposition=FinalDisposition.SILENCE,
                 decision_reason=f"Error in LLM inference: {e}"

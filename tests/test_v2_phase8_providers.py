@@ -9,7 +9,7 @@ from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.events.models import Event, EventType
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
-from len_bot.cognition.pi_core import PiAgentCore
+from len_bot.cognition.react_core import ReActAgentCore
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.router import CognitiveTier
 
@@ -121,7 +121,7 @@ async def test_scenario_k_escalation_persona_continuity_and_metrics(tmp_path):
                                    client=SimpleNamespace(chat=SimpleNamespace(completions=fake_normal_completions)))
 
     metrics = RuntimeMetrics()
-    core = PiAgentCore(
+    core = ReActAgentCore(
         RuntimeConfig(bot_qq=1),
         registry=FakeRegistry(),
         metrics=metrics,
@@ -212,7 +212,7 @@ async def test_llm_error_recorded_in_provider_metrics(tmp_path):
                                    client=SimpleNamespace(chat=SimpleNamespace(completions=FailingCompletions())))
 
     metrics = RuntimeMetrics()
-    core = PiAgentCore(RuntimeConfig(bot_qq=1), registry=FailingRegistry(), metrics=metrics)
+    core = ReActAgentCore(RuntimeConfig(bot_qq=1), registry=FailingRegistry(), metrics=metrics)
     mailbox = EpisodeMailbox("ep_err", "group:x", 0)
     outcome, _trace = await core.execute_episode([{"role": "user", "content": "hi"}], mailbox)
 
