@@ -66,7 +66,8 @@ class TaskScheduler:
                 wake_match=p.get("wake_match"),
                 origin_episode_id=p.get("origin_episode_id"),
                 origin_stimulus_id=p.get("origin_stimulus_id"),
-                trigger_event_id=p.get("trigger_event_id")
+                trigger_event_id=p.get("trigger_event_id"),
+                origin_mode=p.get("origin_mode", "live")
             )
             if task.id not in self._known_task_ids:
                 self._known_task_ids.add(task.id)
@@ -208,7 +209,8 @@ class TaskScheduler:
                         payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {},
                         wake_match=p.get("wake_match"),
                         origin_episode_id=p.get("origin_episode_id"),
-                        origin_stimulus_id=p.get("origin_stimulus_id")
+                        origin_stimulus_id=p.get("origin_stimulus_id"),
+                        origin_mode=p.get("origin_mode", "live")
                     )
                     break
 

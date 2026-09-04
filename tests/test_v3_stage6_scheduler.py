@@ -135,3 +135,33 @@ async def test_promote_task_creates_rearmed_template(tmp_path):
     assert promoted["id"] in all_task_ids
 
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_sync_from_db_restores_shadow_origin_mode(tmp_path):
+    """V4 invariant: shadow-origin tasks must survive restart recovery and never revert to live-send."""
+    db_file = str(tmp_path / "shadow_recovery.db")
+    config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
+    runtime = AgentRuntime(config)
+    await runtime.start()
+    try:
+        now = time.time()
+        await runtime.event_store.create_task({
+            "id": "task_shadow_restart",
+            "scene_id": "group:shadow",
+            "description": "Shadow task created before restart",
+            "due_at": now + 3600.0,
+            "status": "pending",
+            "source_event_id": "episode:shadow",
+            "payload": {},
+            "created_at": now,
+            "origin_mode": "shadow",
+        })
+
+        # Simulate restart recovery / anti-drift re-sync
+        await runtime.scheduler._sync_from_db()
+
+        recovered = next(t for t in runtime.scheduler._heap if t.id == "task_shadow_restart")
+        assert recovered.origin_mode == "shadow"
+    finally:
+        await runtime.stop()
