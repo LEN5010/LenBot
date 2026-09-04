@@ -25,20 +25,20 @@ class ReflectionEngine:
 
     async def reflect_on_events(
         self, scene_id: str, events: list[Event]
-    ) -> tuple[Optional[EpisodeRecord], list[MemoryProposal], Optional[Any]]:
-        """Generates an L1 EpisodeRecord, L2 MemoryProposals, and an optional
-        deferred SocialWorldPatch without persisting (ADR-0038).
-
-        Tolerates legacy reflectors that return a 2-tuple.
+    ) -> tuple[Optional[EpisodeRecord], list[MemoryProposal], Optional[Any], Optional[Any]]:
+        """Generates an L1 EpisodeRecord, L2 MemoryProposals, an optional deferred
+        SocialWorldPatch, and an optional deferred task proposal without
+        persisting (ADR-0038 + amendment). Tolerates legacy reflectors that
+        return 2- or 3-tuples.
         """
         if not events:
-            return None, [], None
+            return None, [], None, None
 
         if self.llm_reflector:
             result = await self.llm_reflector(events)
-            if len(result) == 3:
-                return result[0], result[1], result[2]
-            return result[0], result[1], None
+            patch = result[2] if len(result) > 2 else None
+            deferred_task = result[3] if len(result) > 3 else None
+            return result[0], result[1], patch, deferred_task
         else:
             participants = list({e.actor_id for e in events if e.actor_id})
             combined = " ".join(e.raw_text for e in events if e.raw_text)
@@ -57,13 +57,13 @@ class ReflectionEngine:
                 tags=tags,
                 created_at=time.time()
             )
-            return episode_record, [], None
+            return episode_record, [], None, None
 
     async def run_micro_reflection(self, scene_id: str, events: list[Event]) -> Optional[EpisodeRecord]:
         """Runs micro-reflection when a conversation block has completed.
         If event_store is wired, commits atomically via commit_reflection_batch (ADR-0028).
         """
-        episode_record, proposals, _patch = await self.reflect_on_events(scene_id, events)
+        episode_record, proposals, _patch, _deferred_task = await self.reflect_on_events(scene_id, events)
         if episode_record is None:
             return None
 

@@ -65,6 +65,7 @@ class RuntimeMetrics:
             "cognition_deliberate_calls": 0,
             "style_slop_flags": 0,
             "style_retries": 0,
+            "deferred_tasks_committed": 0,
         }
 
     def record_latency(self, phase: str, seconds: float) -> None:
