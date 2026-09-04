@@ -450,6 +450,7 @@ class AgentRuntime:
                 episode_id=episode_id,
                 scene_id=scene_id,
                 base_scene_version=scene_state.version,
+                origin_stimulus_id=(burst.source_event_ids[0] if burst.source_event_ids else None),
             )
             mailbox.origin_mode = burst.origin_mode
             if not actor.acquire_episode_lease(episode_id, mailbox):
