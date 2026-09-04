@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from fastapi import FastAPI, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from len_bot.web.auth import get_current_user
@@ -67,6 +67,8 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
         async def spa_fallback(full_path: str):
             # The SPA shell is served publicly (login screen lives in it);
             # every /api route remains auth-gated.
+            if full_path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"detail": "接口不存在，请重启 LenBot 后再试"})
             candidate = dist_dir / full_path
             if full_path and candidate.is_file():
                 return FileResponse(candidate)

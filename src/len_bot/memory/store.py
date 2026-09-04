@@ -125,6 +125,37 @@ class MemoryStore:
             created_at=row[7]
         )
 
+    async def get_episode_in_scopes(
+        self,
+        episode_id: str,
+        allowed_scopes: list[str],
+    ) -> Optional[EpisodeRecord]:
+        """Read one episode while enforcing its scene boundary in SQL."""
+        if not allowed_scopes:
+            return None
+        placeholders = ",".join("?" for _ in allowed_scopes)
+        cursor = await self._db.execute(
+            f"""
+            SELECT id, scene_id, title, summary, source_event_ids, participants, tags, created_at
+            FROM episodes
+            WHERE id = ? AND scene_id IN ({placeholders});
+            """,
+            [episode_id, *allowed_scopes],
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return EpisodeRecord(
+            id=row[0],
+            scene_id=row[1],
+            title=row[2],
+            summary=row[3],
+            source_event_ids=json.loads(row[4]),
+            participants=json.loads(row[5]),
+            tags=json.loads(row[6]),
+            created_at=row[7],
+        )
+
     async def get_episodes(self, scene_id: str, limit: int = 10) -> list[EpisodeRecord]:
         cursor = await self._db.execute(
             "SELECT id, scene_id, title, summary, source_event_ids, participants, tags, created_at FROM episodes WHERE scene_id = ? ORDER BY created_at DESC LIMIT ?;",
@@ -389,4 +420,3 @@ class MemoryStore:
             ))
             await self._db.commit()
             return new_item
-

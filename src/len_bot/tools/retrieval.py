@@ -278,11 +278,12 @@ class RetrievalToolkit:
                 if not self.memory_store:
                     return "未配置经历库。"
                 episode_id = arguments.get("episode_id", "")
-                ep = await self.memory_store.get_episode(episode_id)
+                ep = await self.memory_store.get_episode_in_scopes(
+                    episode_id,
+                    self.allowed_scopes,
+                )
                 if not ep:
-                    return f"未找到经历记录 {episode_id}。"
-                if ep.scene_id not in self.allowed_scopes:
-                    return "该经历属于非公开场景，无权查阅。"
+                    return f"在当前可用范围内未找到经历记录 {episode_id}。"
                 return (
                     f"【经历: {ep.title}】 (ID: {ep.id})\n"
                     f"时间: {ep.created_at} | 参与者: {', '.join(ep.participants)}\n"

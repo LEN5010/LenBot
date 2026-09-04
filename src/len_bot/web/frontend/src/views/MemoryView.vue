@@ -73,10 +73,10 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
     </div>
 
     <div class="toolbar filter-bar">
-      <input v-model="filters.subject" placeholder="过滤主体 如 user:1001..." />
-      <input v-model="filters.scope" placeholder="过滤场景 如 group:123..." />
+      <input v-model="filters.subject" placeholder="按成员编号筛选，例如 user:1001" />
+      <input v-model="filters.scope" placeholder="按群聊编号筛选，例如 group:123" />
       <select v-model="filters.status">
-        <option value="">全部信念状态</option>
+        <option value="">全部状态</option>
         <option value="active">正在使用</option>
         <option value="superseded">已被更新</option>
         <option value="refuted">已作废</option>
@@ -93,12 +93,12 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
           <tr>
             <th>关于谁</th>
             <th>记忆类型</th>
-            <th>主题</th>
+            <th>记忆事项</th>
             <th>记住的内容</th>
             <th>可信程度</th>
             <th>使用范围</th>
             <th>状态</th>
-            <th>证据链溯源</th>
+            <th>依据</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -136,7 +136,7 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
             </td>
           </tr>
           <tr v-if="!memories.length">
-            <td colspan="9" class="muted" style="text-align: center; padding: 24px;">暂无匹配的社会记忆信念</td>
+            <td colspan="9" class="muted" style="text-align: center; padding: 24px;">暂无匹配的记忆</td>
           </tr>
         </tbody>
       </table>
@@ -151,11 +151,11 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
       <table>
         <thead>
           <tr>
-            <th>信念状态</th>
-            <th>演化断言</th>
-            <th>确定性</th>
-            <th>生效安全域</th>
-            <th>沉淀时间</th>
+            <th>状态</th>
+            <th>当时记住的内容</th>
+            <th>可信程度</th>
+            <th>使用范围</th>
+            <th>记录时间</th>
           </tr>
         </thead>
         <tbody>

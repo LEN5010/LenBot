@@ -104,12 +104,22 @@ class AgentRuntime:
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
+        self._direct_retry_counts: dict[str, int] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def update_bot_identity(self, bot_qq: int) -> None:
+        """Apply the identity reported by the connected OneBot implementation."""
+        self.config.bot_qq = bot_qq
+        self.bot_actor_id = f"user:{bot_qq}"
+        self.action_queue.bot_actor_id = self.bot_actor_id
+        self.scene_manager.bot_actor_id = self.bot_actor_id
+        for actor in self.scene_manager._actors.values():
+            actor.bot_actor_id = self.bot_actor_id
 
     async def start(self) -> None:
         await self.event_store.initialize()
@@ -118,17 +128,29 @@ class AgentRuntime:
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
         self.runtime_gate.memory_gate = self.memory_gate
 
+        saved_onebot = await self.event_store.get_dynamic_config("onebot_config")
+        if saved_onebot:
+            for field in (
+                "onebot_connection_mode",
+                "onebot_action_transport",
+                "onebot_ws_url",
+                "onebot_http_url",
+                "onebot_access_token",
+                "ws_host",
+                "ws_port",
+            ):
+                if field in saved_onebot:
+                    setattr(self.config, field, saved_onebot[field])
+
         # Load dynamic configurations from database if present
         saved_persona = await self.event_store.get_dynamic_config("persona_config")
         if saved_persona:
             self.config.identity_name = saved_persona.get("identity_name", self.config.identity_name)
             self.config.identity_persona = saved_persona.get("identity_persona", self.config.identity_persona)
-            self.config.bot_qq = saved_persona.get("bot_qq", self.config.bot_qq)
-            self.bot_actor_id = f"user:{self.config.bot_qq}"
-            self.action_queue.bot_actor_id = self.bot_actor_id
-            self.scene_manager.bot_actor_id = self.bot_actor_id
-            for actor in self.scene_manager._actors.values():
-                actor.bot_actor_id = self.bot_actor_id
+            self.config.conversation_style = saved_persona.get(
+                "conversation_style", self.config.conversation_style
+            )
+            self.update_bot_identity(saved_persona.get("bot_qq", self.config.bot_qq))
 
         # Provider Registry (ADR-0020): load persisted providers+routing; if absent,
         # ONE-TIME migrate the legacy single-provider model_config, then persist.
@@ -381,7 +403,10 @@ class AgentRuntime:
 
     def _queue_social_cognition(self, burst: Stimulus) -> None:
         scene_id = burst.scene_id
-        self._social_pending[scene_id] = burst
+        pending = self._social_pending.get(scene_id)
+        self._social_pending[scene_id] = (
+            self._merge_social_bursts(pending, burst) if pending else burst
+        )
         if scene_id not in self._social_tasks:
             self._start_social_task(scene_id)
 
@@ -452,7 +477,10 @@ class AgentRuntime:
                 )
                 if not accepted:
                     self.metrics.inc_social("stale_outcomes_rejected")
-                    self._social_pending.setdefault(scene_id, burst)
+                    pending = self._social_pending.get(scene_id)
+                    self._social_pending[scene_id] = (
+                        self._merge_social_bursts(burst, pending) if pending else burst
+                    )
                     await self._save_social_trace(
                         burst=burst,
                         episode_id=episode_id,
@@ -462,6 +490,8 @@ class AgentRuntime:
                         gate_decision=None,
                     )
                     continue
+
+                self._direct_retry_counts.pop("|".join(burst.source_event_ids), None)
 
                 outcome = result.to_episode_outcome(scene_id, through_event_rowid=through_event_rowid)
                 gate_decision = await actor.submit_proposal(
@@ -503,8 +533,56 @@ class AgentRuntime:
                         "source_event_ids": burst.source_event_ids,
                     },
                 )
+                retry_key = "|".join(burst.source_event_ids)
+                if (burst.has_mention_bot or burst.has_reply_bot) and self._direct_retry_counts.get(retry_key, 0) < 1:
+                    self._direct_retry_counts[retry_key] = 1
+                    pending = self._social_pending.get(scene_id)
+                    self._social_pending[scene_id] = (
+                        self._merge_social_bursts(burst, pending) if pending else burst
+                    )
+                    logger.info("Direct OneBot request retained for one retry on scene %s", scene_id)
+                else:
+                    self._direct_retry_counts.pop(retry_key, None)
             finally:
                 actor.release_episode_lease(episode_id)
+
+    @staticmethod
+    def _merge_social_bursts(earlier: Stimulus, later: Stimulus) -> Stimulus:
+        chat_types = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
+        if not all(event.event_type in chat_types for event in [*earlier.events, *later.events]):
+            return later
+
+        events = []
+        seen_ids: set[str] = set()
+        for event in [*earlier.events, *later.events]:
+            if event.id not in seen_ids:
+                seen_ids.add(event.id)
+                events.append(event)
+
+        actor_ids = {event.actor_id for event in events}
+        if len(actor_ids) > 1:
+            combined_text = "\n".join(
+                f"{event.actor_id}: {event.raw_text}" for event in events if event.raw_text
+            )
+        else:
+            combined_text = "\n".join(event.raw_text for event in events if event.raw_text)
+
+        return Stimulus(
+            scene_id=later.scene_id,
+            stimulus_type=(
+                StimulusType.SOCIAL_MESSAGE_BURST
+                if len(events) > 1
+                else later.stimulus_type
+            ),
+            source_event_ids=[event.id for event in events],
+            actor_id=later.actor_id,
+            combined_text=combined_text,
+            has_mention_bot=earlier.has_mention_bot or later.has_mention_bot,
+            has_reply_bot=earlier.has_reply_bot or later.has_reply_bot,
+            origin_mode=later.origin_mode,
+            timestamp=later.timestamp,
+            events=events,
+        )
 
     async def _is_evidence_free_next_wake(self, burst: Stimulus) -> bool:
         """Whether a next-wake TASK_DUE has no newer human/plugin social evidence."""
