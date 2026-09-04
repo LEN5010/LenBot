@@ -29,6 +29,7 @@ class PiAgentCore:
                 id="default",
                 base_url=config.openai_base_url,
                 api_key=config.openai_api_key,
+                models=list(dict.fromkeys([config.default_model, config.deliberate_model])),
             )
             seed_routing = RoutingConfig(
                 normal=RouteTarget(provider_id="default", model=config.default_model),

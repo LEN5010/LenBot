@@ -6,7 +6,7 @@ from len_bot.cognition.router import CognitiveTier
 from len_bot.web.app import create_app
 
 @pytest.mark.asyncio
-async def test_dashboard_auth_and_management(tmp_path):
+async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
     db_file = str(tmp_path / "dashboard_test.db")
     config = RuntimeConfig(
         db_path=db_file,
@@ -74,11 +74,28 @@ async def test_dashboard_auth_and_management(tmp_path):
         })
         assert provider_post.status_code == 200
 
+        async def fake_models(provider_id):
+            assert provider_id == "openai-main"
+            return ["gpt-4o", "gpt-4o-mini"]
+
+        monkeypatch.setattr(runtime.provider_registry, "list_models", fake_models)
+        models_get = await client.get("/api/models/providers/openai-main/models", headers=headers)
+        assert models_get.status_code == 200
+        assert models_get.json()["models"] == ["gpt-4o", "gpt-4o-mini"]
+        models_save = await client.post(
+            "/api/models/providers/openai-main/models",
+            headers=headers,
+            json={"models": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        assert models_save.status_code == 200
+
         routing_post = await client.post("/api/models/routing", headers=headers, json={
             "normal_provider_id": "openai-main",
             "normal_model": "gpt-4o-mini",
             "deliberate_provider_id": "openai-main",
-            "deliberate_model": "gpt-4o"
+            "deliberate_model": "gpt-4o",
+            "fallback_provider_id": "default",
+            "fallback_model": "deepseek-chat",
         })
         assert routing_post.status_code == 200
 
@@ -86,6 +103,7 @@ async def test_dashboard_auth_and_management(tmp_path):
         normal_res = runtime.provider_registry.resolve(CognitiveTier.NORMAL)
         assert normal_res.model == "gpt-4o-mini"
         assert normal_res.provider_id == "openai-main"
+        assert runtime.provider_registry.resolve_fallback().provider_id == "default"
 
         # API key never echoed back
         providers_after = (await client.get("/api/models/providers", headers=headers)).json()
@@ -99,6 +117,7 @@ async def test_dashboard_auth_and_management(tmp_path):
         normal2 = runtime2.provider_registry.resolve(CognitiveTier.NORMAL)
         assert normal2.model == "gpt-4o-mini" and normal2.provider_id == "openai-main"
         assert normal2.client.base_url.host == "api.openai.com"
+        assert runtime2.provider_registry.resolve_fallback().model == "deepseek-chat"
         await runtime2.stop()
 
         # Routing metrics endpoint exists

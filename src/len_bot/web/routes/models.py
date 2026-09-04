@@ -8,7 +8,7 @@ write-only and never echoed back.
 import time
 from typing import Optional
 from fastapi import APIRouter, Request, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from len_bot.cognition.providers import ProviderConfig, RouteTarget, RoutingConfig
 from len_bot.cognition.router import CognitiveTier
 from len_bot.web.auth import get_current_user
@@ -23,6 +23,7 @@ class ProviderUpsertRequest(BaseModel):
     api_key: Optional[str] = None  # omit on update to keep the existing key
     enabled: bool = True
     timeout_seconds: float = 60.0
+    models: Optional[list[str]] = None
 
 
 class RoutingUpdateRequest(BaseModel):
@@ -30,6 +31,14 @@ class RoutingUpdateRequest(BaseModel):
     normal_model: str
     deliberate_provider_id: str
     deliberate_model: str
+    fallback_provider_id: Optional[str] = None
+    fallback_model: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_fallback_pair(self):
+        if bool(self.fallback_provider_id) != bool(self.fallback_model):
+            raise ValueError("回退供应商和回退模型必须同时设置")
+        return self
 
 
 async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: RoutingConfig) -> None:
@@ -57,6 +66,11 @@ async def upsert_provider(req: ProviderUpsertRequest, request: Request, user: st
         api_key=(req.api_key.strip() if req.api_key else (existing.api_key if existing else "")),
         enabled=req.enabled,
         timeout_seconds=req.timeout_seconds,
+        models=(
+            sorted({model.strip() for model in req.models if model.strip()})
+            if req.models is not None
+            else (existing.models if existing else [])
+        ),
     )
     providers[new_provider.id] = new_provider
     routing = RoutingConfig(**snap["routing"]) if snap.get("routing") else RoutingConfig(
@@ -67,7 +81,46 @@ async def upsert_provider(req: ProviderUpsertRequest, request: Request, user: st
         await _persist_and_apply(runtime, list(providers.values()), routing)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"success": True, "message": f"Provider '{new_provider.id}' saved (hot-applied)"}
+    return {"success": True, "message": f"供应商“{new_provider.id}”已保存并生效"}
+
+
+@router.get("/providers/{provider_id}/models")
+async def fetch_provider_models(
+    provider_id: str,
+    request: Request,
+    user: str = Depends(get_current_user),
+):
+    runtime = request.app.state.runtime
+    try:
+        models = await runtime.provider_registry.list_models(provider_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"获取模型失败：{error}")
+    return {"provider_id": provider_id, "models": models}
+
+
+class ProviderModelsUpdateRequest(BaseModel):
+    models: list[str]
+
+
+@router.post("/providers/{provider_id}/models")
+async def save_provider_models(
+    provider_id: str,
+    req: ProviderModelsUpdateRequest,
+    request: Request,
+    user: str = Depends(get_current_user),
+):
+    runtime = request.app.state.runtime
+    snapshot = runtime.provider_registry.export()
+    providers = [ProviderConfig(**provider) for provider in snapshot.get("providers", [])]
+    provider = next((item for item in providers if item.id == provider_id), None)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"未找到供应商“{provider_id}”")
+    provider.models = sorted({model.strip() for model in req.models if model.strip()})
+    routing = RoutingConfig(**snapshot["routing"])
+    await _persist_and_apply(runtime, providers, routing)
+    return {"success": True, "message": "可选模型已保存", "models": provider.models}
 
 
 @router.get("/routing")
@@ -87,12 +140,17 @@ async def update_routing(req: RoutingUpdateRequest, request: Request, user: str 
     routing = RoutingConfig(
         normal=RouteTarget(provider_id=req.normal_provider_id, model=req.normal_model.strip()),
         deliberate=RouteTarget(provider_id=req.deliberate_provider_id, model=req.deliberate_model.strip()),
+        fallback=(
+            RouteTarget(provider_id=req.fallback_provider_id, model=req.fallback_model.strip())
+            if req.fallback_provider_id and req.fallback_model
+            else None
+        ),
     )
     try:
         await _persist_and_apply(runtime, providers, routing)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"success": True, "message": "Routing updated (hot-applied)"}
+    return {"success": True, "message": "模型选择已保存并立即生效"}
 
 
 class ModelTestRequest(BaseModel):

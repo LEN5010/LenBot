@@ -25,6 +25,10 @@ class ProviderConfig(BaseModel):
     api_key: str = Field(default="", description="Write-only; never echoed back by the API")
     enabled: bool = True
     timeout_seconds: float = 60.0
+    models: list[str] = Field(
+        default_factory=list,
+        description="Models selected from the provider's advertised catalog",
+    )
 
 
 class RouteTarget(BaseModel):
@@ -35,6 +39,7 @@ class RouteTarget(BaseModel):
 class RoutingConfig(BaseModel):
     normal: RouteTarget
     deliberate: RouteTarget
+    fallback: RouteTarget | None = None
 
 
 @dataclass
@@ -64,9 +69,14 @@ class ProviderRegistry:
             if p.id in seen:
                 raise ValueError(f"Duplicate provider id: {p.id}")
             seen.add(p.id)
-        for target in (routing.normal, routing.deliberate):
+        targets = [routing.normal, routing.deliberate]
+        if routing.fallback is not None:
+            targets.append(routing.fallback)
+        for target in targets:
             if target.provider_id not in seen:
                 raise ValueError(f"Route references unknown provider: {target.provider_id}")
+            if not target.model.strip():
+                raise ValueError("Route model cannot be empty")
 
         async with self._lock:
             new_providers = {p.id: p for p in provider_list}
@@ -77,9 +87,14 @@ class ProviderRegistry:
                     self._clients.pop(pid, None)
             self._providers = new_providers
             self._routing = routing
-        logger.info("ProviderRegistry updated: %d provider(s), normal=%s/%s deliberate=%s/%s",
+        fallback = (
+            f"{routing.fallback.provider_id}/{routing.fallback.model}"
+            if routing.fallback
+            else "disabled"
+        )
+        logger.info("ProviderRegistry updated: %d provider(s), normal=%s/%s deliberate=%s/%s fallback=%s",
                     len(provider_list), routing.normal.provider_id, routing.normal.model,
-                    routing.deliberate.provider_id, routing.deliberate.model)
+                    routing.deliberate.provider_id, routing.deliberate.model, fallback)
 
     def resolve(self, tier: CognitiveTier) -> RouteResolution:
         if self._routing is None:
@@ -99,6 +114,43 @@ class ProviderRegistry:
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
         return RouteResolution(provider_id=provider.id, model=target.model, client=client)
+
+    def resolve_fallback(self) -> RouteResolution | None:
+        if self._routing is None or self._routing.fallback is None:
+            return None
+        target = self._routing.fallback
+        provider = self._providers.get(target.provider_id)
+        if provider is None or not provider.enabled:
+            return None
+        client = self._clients.get(provider.id)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=provider.api_key or "missing",
+                base_url=provider.base_url,
+                timeout=provider.timeout_seconds,
+            )
+            self._clients[provider.id] = client
+            self._fingerprints[provider.id] = _connection_fingerprint(provider)
+        return RouteResolution(provider_id=provider.id, model=target.model, client=client)
+
+    async def list_models(self, provider_id: str) -> list[str]:
+        """Read the provider's OpenAI-compatible model catalog without persisting it."""
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            raise LookupError(f"Provider '{provider_id}' not found")
+        if not provider.enabled:
+            raise LookupError(f"Provider '{provider_id}' is disabled")
+        client = self._clients.get(provider.id)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=provider.api_key or "missing",
+                base_url=provider.base_url,
+                timeout=provider.timeout_seconds,
+            )
+            self._clients[provider.id] = client
+            self._fingerprints[provider.id] = _connection_fingerprint(provider)
+        response = await client.models.list()
+        return sorted({str(item.id) for item in response.data if getattr(item, "id", None)})
 
     def has_live_provider(self) -> bool:
         """Returns True if normal routing has an enabled provider with a valid API key (not keyless)."""
