@@ -7,7 +7,18 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from len_bot.cognition.persona import (
+    render_identity_block,
+    render_register_block,
+    render_voice_examples_block,
+)
 from len_bot.cognition.providers import ProviderRegistry
+from len_bot.cognition.projection import (
+    estimate_tokens,
+    pack_recent_chat,
+    project_event,
+    project_onebot_text,
+)
 from len_bot.cognition.router import CognitionRouter, CognitiveTier
 from len_bot.cognition.session import GroupAgentSession, SocialCognitionResult
 from len_bot.config import RuntimeConfig
@@ -25,15 +36,15 @@ class SocialCoreContextAssembler:
         raw_events: list[Event],
         active_open_loops: list[dict[str, Any]],
         pending_next_wake: dict[str, Any] | None = None,
+        voice_examples: list[dict] | None = None,
     ) -> list[dict[str, str]]:
         active_open_loop_ids = [item["id"] for item in active_open_loops]
 
+        # ADR-0038: layered persona — identity core block (stable prefix),
+        # contract, then per-call adaptive context in the user message.
         system_content = (
-            "【CORE SELF】\n"
-            f"你的名字是：{self.config.identity_name}\n"
-            f"{self.config.identity_persona}\n"
-            f"你的说话风格：{self.config.conversation_style}\n\n"
-            "【SOCIAL COGNITION CONTRACT】\n"
+            render_identity_block(self.config)
+            + "\n【SOCIAL COGNITION CONTRACT】\n"
             "你是持续存在于群聊中的同一个社会成员。先理解新事件如何改变当前社会场景，再决定是否说话。\n"
             "SILENCE 是正常且重要的结果：看懂但没有自然插话位置时保持沉默。\n"
             "不要依赖关键词决定话题延续；结合人物、前文、群体互动和你刚才的行为判断。\n"
@@ -100,12 +111,16 @@ class SocialCoreContextAssembler:
         )
         recent_chat = self._pack_recent_chat(raw_events, input_budget)
         chat_text = "\n".join(recent_chat) if recent_chat else "(暂无近期原始对话)"
+        register_block = render_register_block(session)
+        examples_block = render_voice_examples_block(voice_examples or [])
         user_content = (
             "【CURRENT SOCIAL STATE】\n"
             f"{situation_json}\n\n"
-            "【RECENT RAW CONVERSATION】\n"
+            + register_block
+            + "【RECENT RAW CONVERSATION】\n"
             f"{chat_text}\n\n"
-            "【CURRENT BURST】\n"
+            + examples_block
+            + "【CURRENT BURST】\n"
             f"{projected_burst}\n"
             f"SourceEventIDs: {burst.source_event_ids}\n"
             f"MentionBot: {burst.has_mention_bot} | ReplyBot: {burst.has_reply_bot}\n\n"
@@ -120,61 +135,18 @@ class SocialCoreContextAssembler:
         ]
 
     def _pack_recent_chat(self, raw_events: list[Event], token_budget: int) -> list[str]:
-        selected: list[str] = []
-        used = 0
-        for event in reversed(raw_events):
-            if not event.raw_text:
-                continue
-            line = self._project_event(event)
-            cost = self._estimate_tokens(line) + 1
-            if used + cost > token_budget:
-                break
-            selected.append(line)
-            used += cost
-        selected.reverse()
-        return selected
+        return pack_recent_chat(raw_events, token_budget, self.config.bot_qq)
 
     def _project_event(self, event: Event) -> str:
-        sender = event.payload.get("sender") or {}
-        display_name = sender.get("card") or sender.get("nickname")
-        actor = "你(Bot)" if event.actor_id == f"user:{self.config.bot_qq}" else (display_name or event.actor_id)
-        onebot_message_id = event.payload.get("message_id")
-        message_ref = (
-            f"EventID={event.id} OneBotMessageID={onebot_message_id}"
-            if onebot_message_id is not None
-            else f"EventID={event.id}"
-        )
-        return f"[{message_ref}] {actor}({event.actor_id}): {self._project_onebot_text(event.raw_text)}"
+        return project_event(event, self.config.bot_qq)
 
     @staticmethod
     def _project_onebot_text(text: str) -> str:
-        labels = {
-            "image": "图片",
-            "record": "语音",
-            "video": "视频",
-            "face": "表情",
-            "reply": "回复消息",
-            "at": "提及",
-        }
-
-        def replace(match: re.Match[str]) -> str:
-            cq_type = match.group(1)
-            payload = match.group(2) or ""
-            label = labels.get(cq_type, f"CQ:{cq_type}")
-            if cq_type == "at":
-                qq_match = re.search(r"(?:^|,)qq=([^,]+)", payload)
-                return f"[提及 QQ {qq_match.group(1)}]" if qq_match else "[提及成员]"
-            if cq_type == "reply":
-                id_match = re.search(r"(?:^|,)id=([^,]+)", payload)
-                return f"[回复消息 {id_match.group(1)}]" if id_match else "[回复消息]"
-            return f"[{label}]"
-
-        return re.sub(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]", replace, text)
+        return project_onebot_text(text)
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        cjk = sum(1 for char in text if "\u3400" <= char <= "\u9fff")
-        return cjk + math.ceil((len(text) - cjk) / 4)
+        return estimate_tokens(text)
 
 
 class SocialCognitionCore:
@@ -202,6 +174,7 @@ class SocialCognitionCore:
         toolkit: Any | None = None,
         max_steps: int = 5,
         max_tool_calls: int = 6,
+        voice_examples: list[dict] | None = None,
     ) -> tuple[SocialCognitionResult, dict[str, Any]]:
         messages = self.context_assembler.assemble(
             session=session,
@@ -209,6 +182,7 @@ class SocialCognitionCore:
             raw_events=raw_events,
             active_open_loops=active_open_loops,
             pending_next_wake=pending_next_wake,
+            voice_examples=voice_examples,
         )
         if self.mock_handler:
             result = await self.mock_handler(messages)
@@ -242,6 +216,8 @@ class SocialCognitionCore:
                 )
                 if used_fallback:
                     self.metrics.inc_social("model_fallbacks")
+                if tier == CognitiveTier.DELIBERATE:
+                    self.metrics.inc_social("cognition_deliberate_calls")
                 if force_final:
                     self.metrics.inc_social("retrieval_forced_finals")
 
