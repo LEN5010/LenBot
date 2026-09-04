@@ -1,7 +1,7 @@
 """Built-in plugin registry (ADR-0021).
 
-Discovery = this explicit registry: V2 ships exactly two real plugins
-(one Sensor + one Tool). Configuration and enable flags persist in the
+Discovery = this explicit registry: three real plugins (one Sensor,
+two Tools). Configuration and enable flags persist in the
 `plugins_state` dynamic config; loading happens at AgentRuntime.start().
 """
 

@@ -102,10 +102,32 @@ OneBot / Plugin / Scheduler Event
 | [`0009`](docs/adr/0009-deterministic-task-scheduler.md) | **Deterministic Task Scheduler** | 基于最小堆与数据库巡检的无模型定时引擎，杜绝意图虚构 |
 | [`0010`](docs/adr/0010-agentic-history-retrieval-tools.md) | **Agentic History Retrieval Tools** | 拒绝全量注入与向量 RAG，由 Agent 自主按需调起检索工具 |
 | [`0011`](docs/adr/0011-four-tier-memory-and-evidence-gate.md) | **Four-Tier Memory & Evidence Gate** | 建立四层记忆体系与强证据链检验，冲突采用 superseded 软淘汰 |
-| [`0012`](docs/adr/0012-agency-initiative-and-model-routing.md) | **Agency, Initiative & Model Routing** | 发言预算动态抑制抗话痨，显式兴趣打分，ReAct 工具结果驱动动态升阶 |
+| [`0012`](docs/adr/0012-agency-initiative-and-model-routing.md) | **Agency, Initiative & Model Routing** | 发言预算动态抑制抗话痨，显式兴趣打分，ReAct 工具结果驱动动态升阶（预算/兴趣模型已随 V4 Stage 3 删除，升阶路由保留） |
+| [`0013`](docs/adr/0013-atomic-proposal-commit-transaction.md) | **Atomic Proposal Commit Transaction** | 全部持久化变更在单一 SQLite 事务内提交或整体回滚，外部副作用仅在提交成功后执行 |
+| [`0014`](docs/adr/0014-social-behavior-participation-threads-and-interim-context.md) | **Social Behavior & Participation Threads** | 已废弃 — ParticipationThread 机制由 GroupAgentSession + Social Core 取代（ADR-0032/0033），EpisodeMailbox 时效机制保留 |
+| [`0015`](docs/adr/0015-semantic-memory-hierarchy-slot-superseding-and-scope-guard.md) | **Semantic Memory & Scope Guard** | 槽位 superseding 软淘汰与 SQL 层隐私边界（visibility 列后被 ADR-0024 移除，scope 为唯一边界） |
+| [`0016`](docs/adr/0016-plugin-runtime-isolation-and-sensory-decoupling.md) | **Plugin Runtime Isolation** | 插件沙箱、工具超时保护、异常拦截与出站动作拦截器 |
+| [`0017`](docs/adr/0017-control-plane-operational-cockpit-and-dynamic-configuration.md) | **Operational Cockpit & Dynamic Config** | /api/cockpit 安全干预、动态配置热更新与 SQLite 持久化 |
+| [`0018`](docs/adr/0018-condition-bound-obligations-and-ambient-items.md) | **Condition-Bound Obligations & Ambient Items** | wake_event_type 条件绑定义务、LIVE_* 插件事实直达 Social Core（AmbientStore 后由 retained_attention 取代） |
+| [`0019`](docs/adr/0019-quiet-window-reflection-cursor-and-typed-social-memory.md) | **Quiet-Window Reflection & Typed Memory** | 反思游标、MemoryKind 规范枚举、证据范围校验与维护心跳衰减 |
+| [`0020`](docs/adr/0020-provider-registry-and-routing-metrics.md) | **Provider Registry & Routing Metrics** | 多提供商 tier 路由、热更新、一次性迁移与全量调用指标 |
+| [`0021`](docs/adr/0021-plugin-discovery-lifecycle-health-and-real-plugins.md) | **Plugin Discovery, Lifecycle & Real Plugins** | 内建插件注册表、健康追踪与插件状态持久化 |
+| [`0022`](docs/adr/0022-control-plane-query-service-trace-and-replay-lab.md) | **Query Service, Trace & Replay Lab** | RuntimeQueryService 唯一读门面、traces 决策链路与确定性回放 |
+| [`0023`](docs/adr/0023-shadow-mode.md) | **Shadow Mode** | 零社交事实的“只记录不发送”灰度验证与 would-send 记录 |
+| [`0024`](docs/adr/0024-strict-memory-scope-and-safe-promotion.md) | **Strict Memory Scope & Safe Promotion** | visibility 移除、scope 唯一边界、global-safe 安全晋升与 decision_reason |
+| [`0025`](docs/adr/0025-proposal-contract-and-social-state-authority.md) | **Proposal Contract & Social State Authority** | GateDecision.accepted、记忆写入统一与开环解析的原子范围保证（类型化社交状态契约后被移除） |
+| [`0026`](docs/adr/0026-interim-staleness-gate-and-event-filtering.md) | **Interim Staleness Gate & Event Filtering** | EpisodeMailbox 事件过滤、RuntimeGate 时效拒绝与人类消息计数 |
+| [`0027`](docs/adr/0027-participation-lifecycle-and-attention-continuation.md) | **Participation Lifecycle & Attention Continuation** | 已废弃 — 由 Social Core 在 GroupAgentSession 状态内判断（ADR-0032/0033） |
+| [`0028`](docs/adr/0028-reflection-wiring-batch-cursor-and-atomic-commit.md) | **Reflection Wiring, Batch Cursor & Atomic Commit** | LLMReflector 生产接线、无跳过批量游标与 commit_reflection_batch 原子提交 |
+| [`0029`](docs/adr/0029-condition-bound-wake-match-and-durable-task-claim.md) | **Condition-Bound Wake Match & Durable Task Claim** | wake_match 精确匹配、exactly-once 任务认领与 promote_task 晋升 API |
+| [`0030`](docs/adr/0030-plugin-lifecycle-tool-reservation-and-ssrf-guard.md) | **Plugin Lifecycle, Tool Reservation & SSRF Guard** | RESERVED_CORE_TOOLS 防工具遮蔽、生命周期钩子与集中式 SSRF 网络策略 |
+| [`0031`](docs/adr/0031-control-plane-social-hot-reload-shadow-annotations-and-adapter-robustness.md) | **Shadow Annotations & OneBot Hardening** | 影子标注持久化与准确率统计、OneBot 自环丢弃、引用回复与有界重连退避 |
 | [`0032`](docs/adr/0032-group-agent-session-and-scene-bursts.md) | **Group Agent Session & Scene Bursts** | 持久化每个 scene 的工作社会状态，以纯时间 burst 保留多人对话顺序 |
 | [`0033`](docs/adr/0033-social-cognition-core-shadow-contract.md) | **Social Cognition Shadow Contract** | 严格结构化认知结果、intentional silence 与无副作用 Shadow 提交路径 |
 | [`0034`](docs/adr/0034-social-core-production-and-durable-ambient-wake.md) | **Social Core Production & Ambient Wake** | 唯一 Social Core 生产路径与 Runtime 所有的 durable NextWake |
+| [`0035`](docs/adr/0035-agentic-memory-retrieval-and-provider-fallback.md) | **Agentic Memory Retrieval & Provider Fallback** | Social Core 有界 ReAct 工具循环、强制收敛、工具错误回灌与单跳回退路由 |
+| [`0036`](docs/adr/0036-onebot-link-modes-and-action-transport.md) | **OneBot Link Modes & Action Transport** | 单事件链路双向模式、显式选择发送通道、禁止跨通道重试 |
+| [`0037`](docs/adr/0037-context-budget-and-direct-cognition-preemption.md) | **Token-Budgeted Context & Direct Cognition Preemption** | 200K 令牌预算的模型侧投影滚动与在途推理的确定性抢占 |
 
 更多设计理念与领域名词见 [`CONTEXT.md`](CONTEXT.md) 与面向开发代理的指导原则 [`AGENTS.md`](AGENTS.md)。
 
@@ -135,27 +157,28 @@ uv run pytest -v
 * **默认初始账密**：`admin` / `lenbot123`
 * **支持功能**：
   * **Bento 全局概览**：实时 Uptime、事件总数、活跃场景、未决 Open Loops、记忆信念数。
-  * **WebSocket 管理**：OneBot 反向连接状态监控、远端客户端 IP、延迟检测与强制断连。
-  * **模型提供商配置**：Base URL、API Key（脱敏）、Normal 与 Deliberate 阶层模型切换、1-token 延迟测速 (Ping)。
-  * **人格与社交参数**：Bot QQ 与称呼修改、系统人格 Prompt 实时保存、敏感关键词、发言冷却、基础发言预算与兴趣主题权重滑块。
-  * **插件中心（预留框架）**：支持扩展感官插件启停切换与参数抽屉预览。
+  * **场景 / Trace / 事件日志**：场景列表、社交决策链路追踪（burst → Social Core → Gate → 持久效果 → 动作，含检索工具调用计数）、事件查询与运行日志。
+  * **WebSocket / OneBot 管理**：反向接入与主动连接两种模式、发送通道（WebSocket / HTTP）选择、连接状态监控、远端客户端 IP、延迟检测与强制断连。
+  * **模型提供商配置**：多提供商 Base URL、API Key（脱敏）、`/v1/models` 模型目录在线拉取、Normal / Deliberate / 回退三类用途路由、连接测试。
+  * **人格设置**：Bot QQ 与称呼修改、系统人格 Prompt 与对话风格实时保存。
+  * **插件中心**：内建插件（B 站直播传感器、B 站内容工具、网页搜索工具）启停切换与参数抽屉预览。
+  * **Shadow 模式与人工标注**：只记录不发送的影子运行，TP/FP/TN/FN 人工评价与准确率统计。
   * **安全设置**：PBKDF2-HMAC-SHA256 加盐密码安全修改。
 
 ### 5. 接入真实 QQ 机器人（OneBot v11）
-本系统内置反向 WebSocket 服务端，兼容 Lagrange.Core、NapCat、LLOneBot 等主流 OneBot 实现：
+本系统内置 OneBot v11 链路，兼容 Lagrange.Core、NapCat、LLOneBot 等主流实现；支持反向接入（本地开 WebSocket 服务端等客户端连入）与主动连接（运行时连向客户端）两种模式（ADR-0036）。
 
-1. **配置环境变量**（或在 `RuntimeConfig` 中指定）：
+1. **配置**：代码只读取以下三个环境变量（也可改用 `RuntimeConfig` 同名字段），其余配置项均由控制台持久化管理：
    ```bash
-   export BOT_QQ=12345678
    export OPENAI_API_KEY="sk-..."
    export OPENAI_BASE_URL="https://api.deepseek.com/v1" # 或 OpenAI / Claude
-   export ONEBOT_WS_HOST="0.0.0.0"
-   export ONEBOT_WS_PORT="8080"
+   export ONEBOT_ACCESS_TOKEN="..."                     # 可选；控制台填写后只写不回显
    ```
-2. **OneBot 客户端配置**：
+   注意：`OPENAI_*` 仅作为首次启动迁移到 `provider_config` 的种子，之后请在控制台“模型”页管理提供商。OneBot 连接模式（`onebot_connection_mode`）、监听地址与端口（`ws_host` / `ws_port`）、发送通道（`onebot_action_transport`）等均可通过 `RuntimeConfig` 字段或控制台设置；Bot QQ 会由 OneBot `self_id` 自动校正。
+2. **OneBot 客户端配置**（默认反向接入模式）：
    在 Lagrange / NapCat 中配置反向 WebSocket 连接地址为：
    `ws://127.0.0.1:8080`
-3. **启动持久运行时**：
+3. **启动持久运行时**（推荐 `uv run len-bot`，等价于以下装配，见 `src/len_bot/__init__.py`）：
    ```python
    import asyncio
    from len_bot.config import RuntimeConfig
@@ -165,8 +188,13 @@ uv run pytest -v
    async def main():
        config = RuntimeConfig()
        runtime = AgentRuntime(config)
-       adapter = OneBotAdapter(config, on_event=runtime.receive_event)
+       adapter = OneBotAdapter(
+           config,
+           on_event=runtime.receive_event,
+           on_self_id=runtime.update_bot_identity,  # 由 OneBot self_id 校正 Bot QQ
+       )
        runtime.action_queue.send_adapter = adapter.send_action
+       runtime._onebot_adapter = adapter  # 控制台 WebSocket 管理接口依赖该引用
 
        await runtime.start()
        await adapter.start()
