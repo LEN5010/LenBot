@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
+from len_bot.cognition.models import TaskProposal
 from len_bot.cognition.session import SocialWorldPatch
 from len_bot.events.models import Event
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryCertainty
@@ -37,14 +38,17 @@ _REFLECT_SYSTEM_PROMPT = (
     "   mood/activity 一句话；open_topics 只开真正活跃的新话题，id 必须是 topic:<某个真实事件ID>；\n"
     "   close_topic_ids 只填确认已经结束的旧话题 id；social_dynamics_add 是新的群体互动模式观察；\n"
     "   group_identity 只在确有证据时更新。\n"
+    "4. 一个 deferred_task（可省略）：只有当记录中有明确证据表明 Bot 已经答应过某件事\n"
+    "   （如\"叫我起床\"\"提醒我\"\"到点喊我\"）且该承诺还没有任何对应安排时才提出。\n"
+    "   description 写清楚要做什么、对谁；delay_hours 用小数估算距现在多少小时。\n"
     "禁止给人贴人格标签（如\"内向\"），禁止无证据推断敏感属性。\n"
     "只输出一个 JSON 对象，不要输出其他文本：\n"
     '{"title": "...", "summary": "...", "tags": ["..."], '
     '"memory_proposals": [{"subject": "user:123", "kind": "preference", "key": "...", '
     '"value": "...", "certainty": "tentative|likely|strong|explicit", '
     '"human_readable_assertion": "..."}], '
-    '"social_world_patch": {"mood": "...", "open_topics": [{"id": "topic:<事件ID>", '
-    '"subject": "...", "context": "..."}], "close_topic_ids": [], "social_dynamics_add": []}}'
+    '"social_world_patch": {...}, '
+    '"deferred_task": {"description": "明早九点叫木水起床", "delay_hours": 9.5}}'
 )
 
 
@@ -65,7 +69,7 @@ class LLMReflector:
             raise ValueError(f"Reflector output has no JSON object: {text[:120]}")
         return json.loads(text[start:end + 1])
 
-    async def __call__(self, events: list[Event]) -> tuple[EpisodeRecord, list[MemoryProposal], SocialWorldPatch | None]:
+    async def __call__(self, events: list[Event]) -> tuple[EpisodeRecord, list[MemoryProposal], SocialWorldPatch | None, TaskProposal | None]:
         window = events[-self.max_events:]
         event_ids = [e.id for e in window]
         participants = sorted({e.actor_id for e in window if e.actor_id})
@@ -113,7 +117,29 @@ class LLMReflector:
                 logger.warning("Skipping malformed memory proposal from reflector: %s (%s)", mp, e)
 
         patch = self._parse_patch(parsed.get("social_world_patch"), event_ids)
-        return episode, proposals, patch
+        deferred_task = self._parse_deferred_task(parsed.get("deferred_task"))
+        return episode, proposals, patch, deferred_task
+
+    def _parse_deferred_task(self, data: Any) -> TaskProposal | None:
+        """ADR-0038 amendment: an unfulfilled promise detected in the reflected
+        range becomes a DEFERRED task proposal; the RuntimeGate keeps all
+        execution authority (Invariant 4 refined, not weakened)."""
+        if not isinstance(data, dict):
+            return None
+        description = str(data.get("description") or "").strip()
+        if not description:
+            return None
+        try:
+            delay_hours = data.get("delay_hours")
+            delay_seconds = max(0.0, float(delay_hours) * 3600.0) if delay_hours is not None else None
+            return TaskProposal(
+                description=description[:200],
+                delay_seconds=delay_seconds,
+                payload={"source": "quiet_window_reflection"},
+            )
+        except Exception as e:
+            logger.warning("Dropping malformed deferred_task from reflector: %s", e)
+            return None
 
     def _parse_patch(self, data: Any, event_ids: list[str]) -> SocialWorldPatch | None:
         """Merge-only deferred patch; invalid shapes are dropped, never fatal."""

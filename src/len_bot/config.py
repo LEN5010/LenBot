@@ -43,8 +43,8 @@ class RuntimeConfig(BaseModel):
         description="Maximum estimated FAST input context (identity + register + recent chat)",
     )
     fast_max_output_tokens: int = Field(
-        default=300,
-        description="Completion cap for the FAST one-shot decision",
+        default=600,
+        description="Completion cap for the FAST one-shot decision (raised after production truncation)",
     )
     voice_example_count: int = Field(
         default=3,

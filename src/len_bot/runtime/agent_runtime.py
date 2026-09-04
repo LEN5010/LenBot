@@ -10,7 +10,7 @@ from len_bot.events.store import EventStore
 from len_bot.events.builder import BurstAssembler
 from len_bot.scenes.manager import SceneManager
 from len_bot.cognition.mailbox import EpisodeMailbox
-from len_bot.cognition.models import FinalDisposition
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, TaskProposal
 from len_bot.actions.models import ActionItem
 from len_bot.actions.queue import ActionQueue
 from len_bot.runtime.gate import RuntimeGate, GateDecision
@@ -120,6 +120,11 @@ class AgentRuntime:
         self._social_inference_scenes: set[str] = set()
         self._direct_retry_counts: dict[str, int] = {}
         self._style_retry_counts: dict[str, int] = {}
+        # ADR-0038: scenes whose interrupted/stale run was FULL-depth cognition;
+        # the merged re-run keeps FULL so the deeper judgement is not lost to a
+        # FAST downgrade (production finding: "?/何意味" answer died in the merge).
+        self._stale_full_scenes: set[str] = set()
+        self._social_route_in_flight: dict[str, str] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -377,7 +382,7 @@ class AgentRuntime:
 
             new_cursor_rowid = max(int(e.metadata.get("_rowid", 0)) for e in events)
 
-            episode_record, proposals, world_patch = await self.reflection_engine.reflect_on_events(scene_id, events)
+            episode_record, proposals, world_patch, deferred_task = await self.reflection_engine.reflect_on_events(scene_id, events)
             if episode_record is not None:
                 # ADR-0028, §10.2: Atomic Reflection Batch Commit
                 await self.event_store.commit_reflection_batch(
@@ -393,6 +398,10 @@ class AgentRuntime:
                 # event path after the episode record is durable.
                 if world_patch is not None:
                     await self._submit_deferred_patch(scene_id, world_patch)
+                # ADR-0038 amendment: an unfulfilled promise detected in the
+                # reflected range becomes a task PROPOSAL through the RuntimeGate.
+                if deferred_task is not None:
+                    await self._commit_deferred_task(scene_id, deferred_task)
 
                 # If there are more unreflected events, reflect on the next batch immediately
                 remaining = await self.event_store.get_unreflected_events(scene_id, after_rowid=new_cursor_rowid, limit=1)
@@ -448,6 +457,9 @@ class AgentRuntime:
                 self._social_pending[scene_id],
             )
             logger.info("Direct social event preempting in-flight cognition on scene %s", scene_id)
+            if self._social_route_in_flight.get(scene_id) == "full":
+                # ADR-0038: a preempted FULL cognition keeps FULL depth on the merged re-run.
+                self._stale_full_scenes.add(scene_id)
             task.cancel()
         if scene_id not in self._social_tasks:
             self._start_social_task(scene_id)
@@ -505,7 +517,15 @@ class AgentRuntime:
                     try:
                         # ADR-0038: FAST one-shot path for casual social bursts;
                         # TASK_DUE / tool synthesis bursts go straight to FULL.
-                        if self._route_cognition(burst) == "fast":
+                        # A scene whose previous FULL run was preempted/stale keeps
+                        # FULL depth for the merged re-run (one-shot).
+                        route = (
+                            "full"
+                            if scene_id in self._stale_full_scenes
+                            else self._route_cognition(burst)
+                        )
+                        self._stale_full_scenes.discard(scene_id)
+                        if route == "fast":
                             try:
                                 fast_result, core_trace = await self._run_fast_cognition(
                                     scene_id=scene_id,
@@ -537,6 +557,7 @@ class AgentRuntime:
                                 self.metrics.inc_social("cognition_fast_to_full")
                                 fast_result = None
                         if fast_result is None:
+                            self._social_route_in_flight[scene_id] = "full"
                             self.metrics.inc_social("cognition_full_calls")
                             self.metrics.record_latency("burst_to_request", time.monotonic() - cognition_started)
                             result, full_trace = await self.social_core.execute(
@@ -557,6 +578,7 @@ class AgentRuntime:
                             core_trace = full_trace
                     finally:
                         self._social_inference_scenes.discard(scene_id)
+                        self._social_route_in_flight.pop(scene_id, None)
                 self.metrics.inc_social("social_cognition")
                 self._record_model_latency(core_trace)
 
@@ -587,6 +609,9 @@ class AgentRuntime:
                     )
                 if not accepted:
                     self.metrics.inc_social("stale_outcomes_rejected")
+                    if fast_result is None:
+                        # A stale FULL result means the merged re-run should stay FULL.
+                        self._stale_full_scenes.add(scene_id)
                     pending = self._social_pending.get(scene_id)
                     self._social_pending[scene_id] = (
                         self._merge_social_bursts(burst, pending) if pending else burst
@@ -794,6 +819,46 @@ class AgentRuntime:
             metadata={"source": "quiet_window_reflection"},
         )
         await self.receive_event(event)
+
+    async def _commit_deferred_task(self, scene_id: str, task_proposal: TaskProposal) -> None:
+        """ADR-0038 amendment: reflection may PROPOSE deferred tasks (unfulfilled
+        promises like "叫我起床"); the RuntimeGate keeps all execution authority
+        and the atomic task path stays the only scheduling truth (Invariant 4
+        refined, not weakened — reflection still executes nothing itself)."""
+        try:
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            mailbox = EpisodeMailbox(
+                episode_id=f"reflect_{uuid.uuid4().hex[:10]}",
+                scene_id=scene_id,
+                base_scene_version=actor.state.version,
+            )
+            task_proposal.payload = {
+                **task_proposal.payload,
+                "kind": "deferred_reflection_task",
+            }
+            task_proposal.origin_episode_id = mailbox.episode_id
+            outcome = EpisodeOutcome(
+                disposition=FinalDisposition.SILENCE,
+                decision_reason="[reflection] deferred task proposal from quiet-window reflection",
+                task_proposals=[task_proposal],
+            )
+            decision = await self.runtime_gate.evaluate_and_commit(
+                outcome=outcome,
+                mailbox=mailbox,
+                current_scene_state=actor.state,
+            )
+            committed = decision.committed_proposal
+            count = len(committed.committed_tasks) if committed else 0
+            if count:
+                self.metrics.inc_social("deferred_tasks_committed", count)
+                logger.info(
+                    "Reflection deferred task committed on scene %s: %s",
+                    scene_id, task_proposal.description,
+                )
+            else:
+                logger.info("Reflection deferred task not committed on scene %s: %s", scene_id, decision.reason)
+        except Exception as error:
+            logger.warning("Deferred reflection task failed on scene %s: %s", scene_id, error)
 
     @staticmethod
     def _merge_social_bursts(earlier: Stimulus, later: Stimulus) -> Stimulus:

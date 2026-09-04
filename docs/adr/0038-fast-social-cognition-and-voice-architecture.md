@@ -2,6 +2,39 @@
 
 - Status: Accepted
 - Date: 2026-09-05
+- Amendment: 2026-09-05 — production feedback fixes (see §9)
+
+## Amendment §9 — Production Feedback Fixes (2026-09-05 first live run)
+
+Four fixes from the first production run on a real group:
+
+1. **FAST multi-message autonomy.** FAST's contract previously nudged "最多两条";
+   production showed it ignoring one person when two waited on it in the same
+   burst. The contract now lets the model choose the message count itself (a
+   real group member sprays short messages), explicitly permits replying to
+   multiple people in one burst, and requires prioritizing responses to the
+   bot's own recent messages (追问/质疑/吐槽 on what the bot just said must not
+   be ignored). Optional message fields are omitted rather than echoed as nulls.
+2. **FAST output truncation.** `fast_max_output_tokens` raised 300→600 after
+   two completions were cut mid-JSON (`EOF while parsing a list`) by null-field
+   echo, forcing needless FULL escalations.
+3. **Stale/preempted FULL re-runs keep FULL depth.** A FULL result rejected by
+   the observation-cursor staleness gate (or preempted by a direct mention) had
+   its merged re-run routed fresh — occasionally downgrading to FAST and losing
+   the deeper judgement (production case: a queued answer to "？何意味" died in
+   the merge). The runtime now remembers FULL depth for exactly one re-run via
+   `_stale_full_scenes`.
+4. **Unfulfilled promises become deferred task proposals (Invariant 4
+   refined).** "叫我起床" + "好" produced social confirmation but no
+   scheduling — the bot would break its promise. The quiet-window reflector now
+   additionally proposes a `deferred_task` (description + delay_hours, evidence
+   being the reflected range); the runtime commits it through
+   `RuntimeGate.evaluate_and_commit` and the atomic task path, so reflection
+   still executes nothing itself — it PROPOSES, the gate keeps all authority.
+   This is also the lawful entry channel for future autonomous behaviour
+   (heartbeats, self-initiated exploration): cognitive/reflective processes
+   propose; the gate validates and commits.
+
 
 ## Context
 
