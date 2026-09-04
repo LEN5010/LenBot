@@ -91,10 +91,12 @@ class SocialCognitionCore:
         registry: ProviderRegistry,
         metrics: Any = None,
         mock_handler: Callable[[list[dict[str, str]]], Awaitable[SocialCognitionResult]] | None = None,
+        router: CognitionRouter | None = None,
     ):
         self.registry = registry
         self.metrics = metrics
         self.mock_handler = mock_handler
+        self.router = router or CognitionRouter()
         self.context_assembler = SocialCoreContextAssembler(config)
 
     async def execute(
@@ -106,6 +108,7 @@ class SocialCognitionCore:
         pending_next_wake: dict[str, Any] | None = None,
         toolkit: Any | None = None,
         max_steps: int = 5,
+        max_tool_calls: int = 6,
     ) -> tuple[SocialCognitionResult, dict[str, Any]]:
         messages = self.context_assembler.assemble(
             session=session,
@@ -116,19 +119,21 @@ class SocialCognitionCore:
         )
         if self.mock_handler:
             result = await self.mock_handler(messages)
-            return SocialCognitionResult.model_validate(result), {"mode": "mock", "steps": []}
+            return SocialCognitionResult.model_validate(result), {"mode": "mock", "steps": [], "escalations": []}
 
         working_messages: list[dict[str, Any]] = list(messages)
         tools = toolkit.get_tool_definitions() if toolkit else None
-        router = CognitionRouter()
         tier = CognitiveTier.NORMAL
         trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
+        tool_calls_used = 0
 
         for step in range(max_steps):
+            force_final = step == max_steps - 1 or tool_calls_used >= max_tool_calls
             response, resolution, used_fallback, latency = await self._call_model(
                 tier=tier,
                 messages=working_messages,
                 tools=tools,
+                tool_choice="none" if force_final and tools else None,
             )
             usage = getattr(response, "usage", None)
             if self.metrics:
@@ -142,6 +147,8 @@ class SocialCognitionCore:
                 )
                 if used_fallback:
                     self.metrics.inc_social("model_fallbacks")
+                if force_final:
+                    self.metrics.inc_social("retrieval_forced_finals")
 
             message = response.choices[0].message
             step_trace: dict[str, Any] = {
@@ -150,6 +157,10 @@ class SocialCognitionCore:
                 "provider_id": resolution.provider_id,
                 "model": resolution.model,
                 "fallback": used_fallback,
+                "forced_final": force_final,
+                "latency_ms": round(latency * 1000),
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
                 "tool_calls": [],
             }
             trace["steps"].append(step_trace)
@@ -157,42 +168,103 @@ class SocialCognitionCore:
             if getattr(message, "tool_calls", None):
                 if toolkit is None:
                     raise ValueError("Social Core requested a tool without a retrieval toolkit")
-                working_messages.append(message.model_dump())
+                if force_final:
+                    raise RuntimeError("Social Core ignored forced final decision")
+                # Minimal assistant echo: echoing the full SDK message carries
+                # provider-specific null fields (refusal/function_call/annotations)
+                # that some OpenAI-compatible endpoints reject with 400 — exactly
+                # when a fallback vendor is in play.
+                working_messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments or "{}",
+                            },
+                        }
+                        for tool_call in message.tool_calls
+                    ],
+                })
                 for tool_call in message.tool_calls:
-                    arguments = json.loads(tool_call.function.arguments or "{}")
-                    tool_result = await toolkit.execute(tool_call.function.name, arguments)
-                    working_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_result,
-                    })
-                    step_trace["tool_calls"].append({
-                        "name": tool_call.function.name,
-                        "arguments": arguments,
-                        "result_preview": tool_result[:300],
-                    })
-                    reason = router.should_escalate(tier, step + 1, tool_result)
-                    if reason:
-                        tier = CognitiveTier.DELIBERATE
-                        trace["escalations"].append({"step": step, "reason": reason})
+                    arguments: Any = {}
+                    error_name, error_message = "", ""
+                    try:
+                        arguments = json.loads(tool_call.function.arguments or "{}")
+                        if not isinstance(arguments, dict):
+                            error_name = "invalid_arguments"
+                            error_message = "tool arguments must decode to a JSON object"
+                    except (json.JSONDecodeError, TypeError) as decode_error:
+                        error_name = "invalid_arguments"
+                        error_message = str(decode_error)
+
+                    tool_result: str | None = None
+                    if not error_name:
+                        try:
+                            outcome = await toolkit.execute(tool_call.function.name, arguments)
+                            tool_result = outcome if isinstance(outcome, str) else str(outcome)
+                        except Exception as tool_failure:
+                            error_name = type(tool_failure).__name__
+                            error_message = str(tool_failure)
+
+                    if error_name:
+                        error_payload = json.dumps(
+                            {"error": error_name, "message": error_message},
+                            ensure_ascii=False,
+                        )
+                        working_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": error_payload,
+                        })
+                        step_trace["tool_calls"].append({
+                            "name": tool_call.function.name,
+                            "arguments": arguments,
+                            "error": error_message,
+                            "result_preview": error_payload[:300],
+                        })
                         if self.metrics:
-                            self.metrics.record_escalation(reason)
+                            self.metrics.inc_social("retrieval_tool_errors")
+                    else:
+                        working_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_result,
+                        })
+                        step_trace["tool_calls"].append({
+                            "name": tool_call.function.name,
+                            "arguments": arguments,
+                            "result_preview": tool_result[:300],
+                        })
+                        if self.metrics:
+                            self.metrics.inc_social("retrieval_tool_calls")
+                        reason = self.router.should_escalate(tier, step + 1, tool_result)
+                        if reason:
+                            tier = CognitiveTier.DELIBERATE
+                            trace["escalations"].append({"step": step, "reason": reason})
+                            if self.metrics:
+                                self.metrics.record_escalation(reason)
+                    tool_calls_used += 1
                 continue
 
             return self._parse_result(message.content or ""), trace
 
-        raise RuntimeError("Social Core reached the retrieval step limit without a final decision")
+        raise RuntimeError("Social Core loop exited without decision")
 
     async def _call_model(
         self,
         tier: CognitiveTier,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        tool_choice: str | None = None,
     ) -> tuple[Any, Any, bool, float]:
         primary = self.registry.resolve(tier)
         try:
             started = time.monotonic()
-            response = await self._create_completion(primary, messages, tools)
+            response = await self._create_completion(primary, messages, tools, tool_choice)
             return response, primary, False, time.monotonic() - started
         except Exception as error:
             if self.metrics:
@@ -205,7 +277,7 @@ class SocialCognitionCore:
                 raise
             started = time.monotonic()
             try:
-                response = await self._create_completion(fallback, messages, tools)
+                response = await self._create_completion(fallback, messages, tools, tool_choice)
             except Exception as fallback_error:
                 if self.metrics:
                     self.metrics.record_error(
@@ -218,7 +290,7 @@ class SocialCognitionCore:
             return response, fallback, True, time.monotonic() - started
 
     @staticmethod
-    async def _create_completion(resolution, messages, tools):
+    async def _create_completion(resolution, messages, tools, tool_choice=None):
         kwargs: dict[str, Any] = {
             "model": resolution.model,
             "messages": messages,
@@ -227,6 +299,8 @@ class SocialCognitionCore:
         }
         if tools:
             kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
         return await resolution.client.chat.completions.create(**kwargs)
 
     @staticmethod

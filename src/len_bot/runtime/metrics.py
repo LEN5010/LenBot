@@ -50,6 +50,9 @@ class RuntimeMetrics:
             "openloops_resolved": 0,
             "obligations_fulfilled": 0,
             "model_fallbacks": 0,
+            "retrieval_tool_calls": 0,
+            "retrieval_tool_errors": 0,
+            "retrieval_forced_finals": 0,
         }
 
     def _route(self, tier: str, provider_id: str, model: str) -> RouteStats:
