@@ -40,6 +40,15 @@ OneBot / Plugin / Scheduler Event
 
 ---
 
+## V5 迁移状态(ADR-0038:Natural Social Cognition & Low-Latency Conversation)
+
+- **FAST/FULL 双速认知**已落地:普通群聊 burst 走一次小模型 FAST 调用(`silence / speak / full`),不再默认执行完整社会世界重建;`TASK_DUE`、工具综合类 burst 结构性直达 FULL;FAST 无法处理时确定性升级 FULL,绝不瞎编、绝不丢 burst。
+- **分层人格**已替代"两段静态字符串":Identity Core(可观察行为倾向,控制台可编辑)+ Adaptive Self State + Group Register(每群真实消息的节奏统计,只作风格语境)+ Dynamic Voice Exemplars(LRU 轮换的历史声音示例,`/api/voice/exemplars` 可维护)。
+- **回复与长期认知解耦**:FAST 只提交即时状态(游标、开环、连击计数);群体情绪/话题/身份演化由静默窗口 Reflection 生成 merge-only SocialWorldPatch,经标准事件路径延迟合并,因果一致性由 SceneActor 单写者保证。
+- **Anti-slop 守卫**与**全链路延迟指标**上线:本地重复/模板检测(最多一次纠正性重试),`event→burst→request→model→gate` 各阶段 p50/p95 与 FAST/FULL 路由计数全部进入 `/api/models/metrics`。
+
+---
+
 ## V4 迁移状态
 
 - Stage 1 已完成：`StimulusBuilder` 已由按 scene 保序、无语义判断的 `BurstAssembler` 替代；`GroupAgentSession` 与 Event、`SceneState` 在同一事务提交并支持重启恢复。
@@ -128,6 +137,7 @@ OneBot / Plugin / Scheduler Event
 | [`0035`](docs/adr/0035-agentic-memory-retrieval-and-provider-fallback.md) | **Agentic Memory Retrieval & Provider Fallback** | Social Core 有界 ReAct 工具循环、强制收敛、工具错误回灌与单跳回退路由 |
 | [`0036`](docs/adr/0036-onebot-link-modes-and-action-transport.md) | **OneBot Link Modes & Action Transport** | 单事件链路双向模式、显式选择发送通道、禁止跨通道重试 |
 | [`0037`](docs/adr/0037-context-budget-and-direct-cognition-preemption.md) | **Token-Budgeted Context & Direct Cognition Preemption** | 200K 令牌预算的模型侧投影滚动与在途推理的确定性抢占 |
+| [`0038`](docs/adr/0038-fast-social-cognition-and-voice-architecture.md) | **Fast/Full Cognition Split & Voice Architecture** | 一次调用的 FAST 社会认知、分层人格(Group Register/声音示例)与延迟合并的长期认知 |
 
 更多设计理念与领域名词见 [`CONTEXT.md`](CONTEXT.md) 与面向开发代理的指导原则 [`AGENTS.md`](AGENTS.md)。
 
