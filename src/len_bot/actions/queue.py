@@ -55,9 +55,13 @@ class ActionQueue:
                     try:
                         action = await self.action_interceptor(action)
                     except Exception as e:
-                        logger.error("Error in action_interceptor: %s", e)
+                        # Safety components must fail closed: drop the unsanitized action.
+                        logger.error("Error in action_interceptor, dropping action: %s", e)
+                        self._queue.task_done()
+                        continue
                     if action is None:
                         logger.info("Action blocked/dropped by action interceptor.")
+                        self._queue.task_done()
                         continue
 
                 # ADR-0023 & ADR-0029: Shadow Mode or shadow-origin action:

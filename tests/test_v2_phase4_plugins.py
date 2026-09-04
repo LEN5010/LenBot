@@ -6,6 +6,8 @@ from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.events.models import Event, EventType
 from len_bot.actions.models import ActionItem, ActionType
+from len_bot.actions.queue import ActionQueue
+from len_bot.events.store import EventStore
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -266,3 +268,55 @@ async def test_action_interceptor_filtering(tmp_path):
     assert "[安全脱敏]:用户电话13800000000" in sent_messages[1]
 
     await runtime.stop()
+
+@pytest.mark.asyncio
+async def test_action_interceptor_exception_fails_closed(tmp_path):
+    """Interceptor crash must drop the unsanitized action (fail closed) and drain the queue."""
+    db_file = str(tmp_path / "interceptor_fail_closed.db")
+    store = EventStore(db_file)
+    await store.initialize()
+
+    sent_messages: list[str] = []
+    async def mock_adapter(action: ActionItem) -> bool:
+        sent_messages.append(action.content)
+        return True
+
+    async def crashing_interceptor(action: ActionItem) -> Optional[ActionItem]:
+        raise RuntimeError("Simulated interceptor crash")
+
+    queue = ActionQueue(store, send_adapter=mock_adapter, action_interceptor=crashing_interceptor)
+    await queue.start()
+    try:
+        queue.enqueue(ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:test", content="未脱敏内容"))
+        await asyncio.wait_for(queue._queue.join(), timeout=1.0)
+
+        assert sent_messages == []
+    finally:
+        await queue.stop()
+        await store.close()
+
+@pytest.mark.asyncio
+async def test_action_interceptor_drop_drains_queue(tmp_path):
+    """Interceptor returning None must block the action without hanging queue.join()."""
+    db_file = str(tmp_path / "interceptor_drop.db")
+    store = EventStore(db_file)
+    await store.initialize()
+
+    sent_messages: list[str] = []
+    async def mock_adapter(action: ActionItem) -> bool:
+        sent_messages.append(action.content)
+        return True
+
+    async def blocking_interceptor(action: ActionItem) -> Optional[ActionItem]:
+        return None
+
+    queue = ActionQueue(store, send_adapter=mock_adapter, action_interceptor=blocking_interceptor)
+    await queue.start()
+    try:
+        queue.enqueue(ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:test", content="违禁内容"))
+        await asyncio.wait_for(queue._queue.join(), timeout=1.0)
+
+        assert sent_messages == []
+    finally:
+        await queue.stop()
+        await store.close()
