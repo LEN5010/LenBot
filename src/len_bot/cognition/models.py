@@ -12,9 +12,19 @@ class MessageProposal(BaseModel):
     expect_reply: bool = Field(default=False, description="Whether this message expects an answer from a specific user")
     reply_target: Optional[str] = Field(default=None, description="Actor ID expected to respond (e.g. user:123)")
     reply_intent: Optional[str] = Field(default=None, description="Topic or intent of expected answer")
+    task_ref: str | None = None
+    fulfils_task_id: str | None = None
 
 class TaskProposal(BaseModel):
-    description: str = Field(description="Goal or purpose of the scheduled future task")
+    operation: str = "create"
+    task_id: str | None = None
+    proposal_id: str | None = None
+    due_at: float | None = None
+    requester_id: str | None = None
+    target_actor_id: str | None = None
+    source_event_ids: list[str] = Field(default_factory=list)
+    result: str | None = None
+    description: str = ""
     delay_seconds: Optional[float] = Field(
         default=None,
         description="Seconds from now until task is due. Omit for condition-bound tasks."

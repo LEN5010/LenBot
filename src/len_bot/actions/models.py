@@ -15,3 +15,4 @@ class ActionItem(BaseModel):
     reply_to: Optional[str] = None
     associated_open_loop: Optional[dict[str, Any]] = None
     origin_mode: str = "live"
+    fulfils_task_id: str | None = None

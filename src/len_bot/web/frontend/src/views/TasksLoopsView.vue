@@ -5,6 +5,10 @@ import { api, fmtTime } from '../api.js'
 const tasks = ref([])
 const loops = ref([])
 const error = ref('')
+const editing = ref(null)
+const editTime = ref('')
+const editDescription = ref('')
+const editable = status => ['pending', 'claimed', 'processing', 'result_ready', 'review_required'].includes(status)
 
 onMounted(load)
 async function load() {
@@ -18,8 +22,10 @@ async function load() {
 
 async function cancelTask(id) {
   if (!confirm('确认取消该任务？')) return
-  await api(`/api/cockpit/tasks/${id}/cancel`, { method: 'POST' })
-  await load()
+  try {
+    await api(`/api/cockpit/tasks/${id}/cancel`, { method: 'POST' })
+    await load()
+  } catch (e) { error.value = e.message }
 }
 
 async function triggerTask(id) {
@@ -38,8 +44,25 @@ async function resolveLoop(id) {
   await load()
 }
 
+function startEdit(task) {
+  editing.value = task
+  editDescription.value = task.description
+  const date = new Date(task.due_at * 1000)
+  editTime.value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+async function saveEdit() {
+  try {
+    await api('/api/cockpit/tasks/' + editing.value.id + '/update', {method: 'POST', body: JSON.stringify({
+      due_at: new Date(editTime.value).getTime()/1000, description: editDescription.value,
+    })})
+    editing.value = null
+    await load()
+  } catch (e) { error.value = e.message }
+}
 function taskStatus(value) {
-  return value === 'pending' ? '等待中' : value === 'claimed' ? '执行中' : value === 'completed' ? '已完成' : value === 'cancelled' ? '已取消' : value
+  return ({pending: '等待开始', claimed: '已领取', processing: '正在处理', result_ready: '已有结果',
+    awaiting_delivery: '等待发送确认', completed: '已兑现', cancelled: '已取消', failed: '失败',
+    delivery_unknown: '发送结果不确定，不会自动重发', review_required: '需要重新核对', shadow_observed: '试运行已记录，未真实履约'})[value] || '需要核对'
 }
 </script>
 
@@ -57,6 +80,13 @@ function taskStatus(value) {
 
     <p v-if="error" class="tag bad">{{ error }}</p>
 
+    <form v-if="editing" class="panel" @submit.prevent="saveEdit">
+      <h2>修改要做的事</h2>
+      <label>事情内容<input v-model="editDescription" required /></label>
+      <label>执行时间（当前浏览器时区）<input type="datetime-local" v-model="editTime" required /></label>
+      <button class="primary">保存修改</button>
+      <button type="button" @click="editing = null">返回</button>
+    </form>
     <!-- Scheduled Tasks Panel -->
     <div class="panel">
       <div class="panel-header">
@@ -78,10 +108,10 @@ function taskStatus(value) {
           <tr v-for="t in tasks" :key="t.id">
             <td>{{ fmtTime(t.due_at) }}</td>
             <td><code>{{ t.scene_id }}</code></td>
-            <td class="highlight">{{ t.description }}</td>
+            <td class="highlight">{{ t.description }}<p class="muted" v-if="t.payload?.result">结果：{{ t.payload.result }}</p><p class="tag bad" v-if="t.payload?.error">{{ t.payload.error }}</p></td>
             <td>
               <span v-if="t.wake_event_type" class="tag warn">
-                {{ t.wake_event_type }}
+                {{ ({LIVE_STARTED: '直播开始', LIVE_ENDED: '直播结束', TOOL_COMPLETED: '工具返回'})[t.wake_event_type] || '指定事件发生' }}
               </span>
               <span v-else class="muted">仅定时到期</span>
             </td>
@@ -91,12 +121,12 @@ function taskStatus(value) {
               </span>
             </td>
             <td>
-              <div class="action-btn-group" v-if="t.status === 'pending'">
-                <button class="small-btn primary" @click="triggerTask(t.id)">立即触发</button>
-                <button class="small-btn" v-if="t.wake_event_type" @click="promoteTask(t.id)">解除条件</button>
+              <div class="action-btn-group" v-if="editable(t.status)">
+                <button v-if="t.status === 'pending'" class="small-btn primary" @click="triggerTask(t.id)">立即触发</button>
+                <button class="small-btn" @click="startEdit(t)">修改</button>
                 <button class="small-btn danger" @click="cancelTask(t.id)">取消</button>
               </div>
-              <span v-else class="muted">已经结束</span>
+              <span v-else class="muted">—</span>
             </td>
           </tr>
           <tr v-if="!tasks.length">

@@ -4,7 +4,9 @@ import { api, fmtTime } from '../api.js'
 
 const me = ref(null)
 const onebot = ref(null)
-const persona = ref({ identity_name: '', identity_persona: '', conversation_style: '' })
+const exemplars = ref([])
+const example = ref({content: "", context: "", scene_id: ""})
+const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '' })
 const onebotForm = ref({
   connection_mode: 'forward_ws', action_transport: 'websocket',
   ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
@@ -19,11 +21,13 @@ const error = ref('')
 onMounted(load)
 async function load() {
   try {
+    exemplars.value = (await api("/api/voice/exemplars")).exemplars
     me.value = await api('/api/auth/me')
     const personaRes = await api('/api/settings/persona')
     persona.value = {
       identity_name: personaRes.identity_name,
       identity_persona: personaRes.identity_persona,
+      identity_core: personaRes.identity_core,
       conversation_style: personaRes.conversation_style || '',
     }
     const onebotRes = await api('/api/websocket/status')
@@ -48,6 +52,21 @@ async function load() {
   }
 }
 
+async function saveExample() {
+  try {
+    await api('/api/voice/exemplars', {method: 'POST', body: JSON.stringify(example.value)})
+    example.value = {content: '', context: '', scene_id: ''}
+    await load()
+  } catch (e) { error.value = e.message }
+}
+async function changeExample(item, remove = false) {
+  if (remove && !confirm('删除这条表达样例？')) return
+  try {
+    await api(remove ? '/api/voice/exemplars/' + item.id : '/api/voice/exemplars/toggle',
+      {method: remove ? 'DELETE' : 'POST', body: remove ? undefined : JSON.stringify({example_id: item.id, enabled: !item.enabled})})
+    await load()
+  } catch (e) { error.value = e.message }
+}
 async function savePersona() {
   error.value = ''
   message.value = ''
@@ -187,10 +206,32 @@ async function changePassword() {
           <textarea v-model="persona.identity_persona" rows="5" placeholder="例如：嘴有点损但没有恶意，熟人面前话多，对比赛和直播很感兴趣……"></textarea>
           <small>写性格、兴趣、价值倾向，以及它在群里的常见角色。</small>
         </label>
+        <label class="wide">遇事时的行为倾向
+          <textarea v-model="persona.identity_core" rows="5" placeholder="例如：先弄清楚大家在聊什么；熟人遇到困难会记在心里；不确定就直说。"></textarea>
+          <small>这是贯穿聊天、查资料和履约的核心人格。</small>
+        </label>
         <label class="wide">希望它怎么说话
           <textarea v-model="persona.conversation_style" rows="4" placeholder="例如：短句、口语化，可以接梗，不写长篇解释，不用客服腔……"></textarea>
           <small>这里只控制表达习惯，不会绕过运行时安全和发送限制。</small>
         </label>
+      </div>
+    </div>
+
+    <div class="panel persona-panel">
+      <h2>表达样例</h2>
+      <p class="muted">给它几句你喜欢的说法。样例用于参考语气，不会被当成真实聊天或记忆。</p>
+      <form class="persona-fields" @submit.prevent="saveExample">
+        <label>当时的语境<input v-model="example.context" placeholder="例如：群友代码又出错了" /></label>
+        <label>群聊范围<input v-model="example.scene_id" placeholder="留空适用于所有群；或填 group:群号" /></label>
+        <label class="wide">理想的说法<textarea required v-model="example.content" rows="2"></textarea></label>
+        <button class="primary">添加样例</button>
+      </form>
+      <div v-for="item in exemplars" :key="item.id" class="kv">
+        <span>{{ item.context || '通用表达' }} → {{ item.content }} <small class="muted">{{ item.scene_id || '所有群' }}</small></span>
+        <div class="action-btn-group">
+          <button @click="changeExample(item)">{{ item.enabled ? '停用' : '启用' }}</button>
+          <button class="danger" @click="changeExample(item, true)">删除</button>
+        </div>
       </div>
     </div>
 

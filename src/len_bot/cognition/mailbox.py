@@ -21,6 +21,7 @@ class EpisodeMailbox:
         self.base_scene_version = base_scene_version
         # ADR-0029: burst event that triggered this episode; attached to dependent open loops.
         self.origin_stimulus_id = origin_stimulus_id
+        self.origin_mode = "live"
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self._interim_events: list[Event] = []
         self._unconsumed_follow_ups: list[Event] = []
@@ -39,14 +40,7 @@ class EpisodeMailbox:
 
         self._interim_events.append(event)
         
-        # Check for urgent cancellation/steering keywords
-        urgent_cancel_keywords = ["不用了", "不用查了", "算了", "取消", "闭嘴", "停"]
-        if any(k in event.raw_text for k in urgent_cancel_keywords):
-            self._cancelled = True
-            self._cancellation_reason = f"User '{event.actor_id}' requested cancellation: {event.raw_text}"
-        elif event.is_mention_bot or event.is_reply_bot or event.event_type == EventType.PRIVATE_MESSAGE_RECEIVED:
-            self._unconsumed_follow_ups.append(event)
-        
+        # Natural-language intent belongs to cognition; only cancel() has authority.
         self._queue.put_nowait(event)
 
     def cancel(self, reason: str = "Explicitly cancelled") -> None:

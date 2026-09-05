@@ -168,7 +168,7 @@ class OneBotAdapter:
             return False
         except Exception as e:
             logger.error("Failed sending OneBot action: %s", e)
-            return False
+            raise  # ActionQueue records an ambiguous delivery; never retry another transport.
         finally:
             self._pending_requests.pop(echo, None)
 
@@ -187,7 +187,7 @@ class OneBotAdapter:
             return False
         except Exception as error:
             logger.error("Failed sending OneBot HTTP action: %s", error)
-            return False
+            raise
 
     async def test_http_connection(self) -> dict:
         url = f"{self.config.onebot_http_url.rstrip('/')}/get_status"

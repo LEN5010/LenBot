@@ -6,14 +6,17 @@ immutable — plus token estimation and newest-first budgeted packing.
 """
 
 import math
+import json
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from len_bot.events.models import Event
+from len_bot.events.models import Event, EventType
 
 
 def project_onebot_text(text: str) -> str:
     labels = {
-        "image": "图片",
+        "image": "图片：尚未解析",
         "record": "语音",
         "video": "视频",
         "face": "表情",
@@ -46,12 +49,18 @@ def project_event(event: Event, bot_qq: int | str) -> str:
         if onebot_message_id is not None
         else f"EventID={event.id}"
     )
-    return f"[{message_ref}] {actor}({event.actor_id}): {project_onebot_text(event.raw_text)}"
+    text = project_onebot_text(event.raw_text)
+    if event.event_type in {EventType.REFLECTION_RECORDED, EventType.TASK_REVIEW, EventType.TASK_DUE, EventType.TOOL_COMPLETED}:
+        text += "\n运行时事项（反思内容仍是待核对提案）：" + json.dumps(
+            {k: v for k, v in event.payload.items() if k not in {"raw_text", "content"}}, ensure_ascii=False)
+    return f"[{datetime.fromtimestamp(event.timestamp, ZoneInfo('Asia/Shanghai')).isoformat()} {event.event_type.value} {message_ref}] {actor}({event.actor_id}): {text}"
 
 
 def estimate_tokens(text: str) -> int:
     cjk = sum(1 for char in text if "\u3400" <= char <= "\u9fff")
-    return cjk + math.ceil((len(text) - cjk) / 4)
+    # Deliberately approximate: CJK segmentation varies by provider. Actual usage
+    # is recorded beside this estimate on every model step.
+    return math.ceil(cjk * 1.5 + (len(text) - cjk) / 3)
 
 
 def pack_recent_chat(raw_events: list[Event], token_budget: int, bot_qq: int | str) -> list[str]:

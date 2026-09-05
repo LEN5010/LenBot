@@ -1,5 +1,14 @@
 # AGENTS.md - Developer & Agent Engineering Guide
 
+## 当前实施基线（2026-09-06，ADR-0040）
+
+以下旧版章节中 FAST/FULL、直接 @ 抢占、反思直接提任务及完整世界快照的描述已被 ADR-0040 取代。
+生产入口只有 SocialCognitionCore；工具结果和新增事件留在同一有界回合，SceneActor 校验观察游标，Gate 原子提交增量状态和任务。
+任务到期不是履约；真实 MESSAGE_SENT 才确认提醒完成，发送不确定不自动重发，Shadow 仅记录 shadow_observed。
+反思只提交记忆、版本化补丁及待核对事项，游标与内部事件同事务持久化。旧范围会一次性重新反思核对，不能自动补发过期提醒。
+ReplayLab 使用隔离数据库运行生产 Actor/Burst/Core/Gate/Scheduler/Shadow Queue；真实模型模式缺少配置或调用失败必须报告失败。
+当前是可上机试运行的实施提交，不代表真实群聊自然度验收完成。ADR-0039 未实施；后续应继续同步下方历史描述并完善实群验收。
+
 > **Persistent Social Agent Bot Harness (len_bot)**  
 > *A long-running, socially persistent agent runtime with temporal awareness, episodic memory, and deterministic execution gating.*
 

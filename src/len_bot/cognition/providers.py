@@ -37,10 +37,7 @@ class RouteTarget(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    fast: RouteTarget | None = Field(
-        default=None,
-        description="ADR-0038: low-latency FAST social cognition route; resolves to `normal` when unset",
-    )
+
     normal: RouteTarget
     deliberate: RouteTarget
     fallback: RouteTarget | None = None
@@ -74,8 +71,6 @@ class ProviderRegistry:
                 raise ValueError(f"Duplicate provider id: {p.id}")
             seen.add(p.id)
         targets = [routing.normal, routing.deliberate]
-        if routing.fast is not None:
-            targets.append(routing.fast)
         if routing.fallback is not None:
             targets.append(routing.fallback)
         for target in targets:
@@ -107,9 +102,6 @@ class ProviderRegistry:
             raise LookupError("No provider routing configured")
         if tier == CognitiveTier.DELIBERATE:
             target = self._routing.deliberate
-        elif tier == CognitiveTier.FAST:
-            # ADR-0038: FAST degrades to the normal model when no fast route is set.
-            target = self._routing.fast or self._routing.normal
         else:
             target = self._routing.normal
         provider = self._providers.get(target.provider_id)

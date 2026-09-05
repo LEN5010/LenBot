@@ -33,19 +33,6 @@ class RuntimeConfig(BaseModel):
         description="Context-window reserve for the structured cognition result",
     )
 
-    # V5 FAST social cognition (ADR-0038)
-    fast_cognition_enabled: bool = Field(
-        default=True,
-        description="Route casual social bursts through the one-shot FAST path before FULL",
-    )
-    fast_context_window_tokens: int = Field(
-        default=6_000,
-        description="Maximum estimated FAST input context (identity + register + recent chat)",
-    )
-    fast_max_output_tokens: int = Field(
-        default=600,
-        description="Completion cap for the FAST one-shot decision (raised after production truncation)",
-    )
     voice_example_count: int = Field(
         default=3,
         description="Dynamic voice exemplars injected per cognition call (ADR-0038 §5)",

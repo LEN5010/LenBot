@@ -29,6 +29,9 @@ class TaskScheduler:
 
     async def start(self) -> None:
         self._running = True
+        await self.event_store.recover_task_execution()
+        for event in await self.event_store.pending_runtime_events():
+            await self.emit_event(event)
         await self._sync_from_db()
         self._worker_task = asyncio.create_task(self._scheduler_loop())
         logger.info("TaskScheduler started with %d pending tasks", len(self._heap))
@@ -61,8 +64,10 @@ class TaskScheduler:
             self._wake_event.set()
 
     async def _sync_from_db(self) -> None:
-        now = time.time()
+        now = self.event_store.clock()
         pending = await self.event_store.get_pending_tasks()
+        self._heap.clear()
+        self._known_task_ids.clear()
         for p in pending:
             task = TaskItem(
                 id=p["id"],
@@ -85,14 +90,16 @@ class TaskScheduler:
                 heapq.heappush(self._heap, task)
 
     async def _scheduler_loop(self) -> None:
-        last_sweep = time.time()
+        last_sweep = self.event_store.clock()
         while self._running:
             try:
-                now = time.time()
+                now = self.event_store.clock()
 
                 # Periodic anti-drift sync
                 if now - last_sweep >= self.sweep_interval:
                     await self._sync_from_db()
+                    for event in await self.event_store.pending_runtime_events():
+                        await self.emit_event(event)
                     last_sweep = now
 
                 if not self._heap:
@@ -122,21 +129,24 @@ class TaskScheduler:
                 logger.exception("Error in scheduler loop: %s", e)
                 await asyncio.sleep(1.0)
 
+    async def run_due(self, now: float) -> int:
+        """Drive the same durable claims explicitly when replay owns the clock."""
+        await self._sync_from_db()
+        count = 0
+        while self._heap and self._heap[0].due_at <= now:
+            task = heapq.heappop(self._heap)
+            self._known_task_ids.discard(task.id)
+            count += bool(await self._emit_task_due(task, now))
+        return count
+
     async def _emit_task_due(
         self,
         task: TaskItem,
         now: float,
         trigger_event_id: str = "",
-        skip_claim: bool = False
-    ) -> None:
+    ) -> bool:
         """Emit immutable TASK_DUE Event (ADR-0009 & ADR-0018 & ADR-0029).
         Durable task claim is enforced before emitting TASK_DUE."""
-        if not skip_claim:
-            claimed = await self.event_store.claim_task(task.id, trigger_event_id=trigger_event_id or f"timer:{now}")
-            if not claimed:
-                logger.info("Task %s was already claimed by another worker; skipping TASK_DUE emit", task.id)
-                return
-
         event = Event(
             event_type=EventType.TASK_DUE,
             scene_id=task.scene_id,
@@ -144,15 +154,19 @@ class TaskScheduler:
             timestamp=now,
             payload={
                 "task_id": task.id,
+                "trigger_event_id": trigger_event_id,
                 "raw_text": task.description,
                 "description": task.description,
                 "payload": task.payload,
                 "origin_mode": getattr(task, "origin_mode", "live"),
             }
         )
+        if not await self.event_store.claim_task_event(task.id, task.scene_id, event):
+            return False
         logger.info("Task due! Triggering task %s (%s) for scene %s (origin=%s)",
                     task.id, task.description, task.scene_id, getattr(task, "origin_mode", "live"))
         await self.emit_event(event)
+        return True
 
     async def on_event(self, event: Event) -> list[str]:
         """ADR-0018 & ADR-0029: fire condition-bound obligations matching a committed event.
@@ -181,13 +195,11 @@ class TaskScheduler:
             self._known_task_ids.discard(task.id)
             self._heap = [t for t in self._heap if t.id != task.id]
             heapq.heapify(self._heap)
-            claimed = await self.event_store.claim_task(task.id, trigger_event_id=event.id)
-            if claimed:
+            if await self._emit_task_due(task, self.event_store.clock(), trigger_event_id=event.id):
                 fired_ids.append(task.id)
-                await self._emit_task_due(task, time.time(), trigger_event_id=event.id, skip_claim=True)
 
         if fired_ids and self.metrics:
-            self.metrics.inc_social("obligations_fulfilled", len(fired_ids))
+            self.metrics.inc_social("tasks_started", len(fired_ids))
         return fired_ids
 
     async def cancel_task(self, task_id: str) -> bool:
@@ -215,7 +227,7 @@ class TaskScheduler:
                         id=p["id"],
                         scene_id=p["scene_id"],
                         description=p["description"],
-                        due_at=time.time(),
+                        due_at=self.event_store.clock(),
                         status=TaskStatus.PENDING,
                         payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {},
                         wake_match=p.get("wake_match"),
@@ -232,27 +244,7 @@ class TaskScheduler:
         self._heap = [t for t in self._heap if t.id != task_id]
         heapq.heapify(self._heap)
 
-        claimed = await self.event_store.claim_task(target_task.id, trigger_event_id="manual:trigger_now")
-        if not claimed:
-            return False
-
-        now = time.time()
-        event = Event(
-            event_type=EventType.TASK_DUE,
-            scene_id=target_task.scene_id,
-            actor_id="system:scheduler",
-            timestamp=now,
-            payload={
-                "task_id": target_task.id,
-                "raw_text": target_task.description,
-                "description": target_task.description,
-                "payload": target_task.payload,
-                "origin_mode": getattr(target_task, "origin_mode", "live"),
-            }
-        )
-        logger.info("Task %s triggered manually now", task_id)
-        await self.emit_event(event)
-        return True
+        return await self._emit_task_due(target_task, self.event_store.clock(), trigger_event_id="manual:trigger_now")
 
     async def promote_task(self, task_id: str) -> Optional[dict]:
         """ADR-0029, §23.4: Promotes/duplicates task as a renewed template task with live origin."""
@@ -272,7 +264,7 @@ class TaskScheduler:
             id=new_id,
             scene_id=row[1],
             description=f"[Promoted] {row[2]}",
-            due_at=time.time() + 86400.0,
+            due_at=self.event_store.clock() + 86400.0,
             status=TaskStatus.PENDING,
             source_event_id=f"promoted:{task_id}",
             payload=payload_data,

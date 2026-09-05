@@ -17,6 +17,9 @@ class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
 
+    async def list_voice_examples(self, scene_id=None):
+        return await self.runtime.event_store.list_voice_examples(scene_id)
+
     # ---------- Overview ----------
 
     async def overview(self) -> dict:
@@ -202,6 +205,13 @@ class RuntimeQueryService:
              "payload": json.loads(r[5]) if r[5] else {}, "created_at": r[6], "wake_event_type": r[7]}
             for r in rows
         ]
+
+    async def get_task(self, task_id: str) -> dict | None:
+        cursor = await self.runtime.event_store._db.execute(
+            "SELECT id,scene_id,description,due_at,status,payload,wake_event_type FROM tasks WHERE id=?", (task_id,))
+        row = await cursor.fetchone()
+        return dict(id=row[0], scene_id=row[1], description=row[2], due_at=row[3], status=row[4],
+                    payload=json.loads(row[5]), wake_event_type=row[6]) if row else None
 
     async def list_open_loops(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
         sql = "SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at FROM open_loops"

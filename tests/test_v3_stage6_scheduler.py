@@ -64,7 +64,7 @@ async def test_condition_bound_wake_match_exact_dict(tmp_path):
     # Check task 1 status in database
     cursor = await runtime.event_store._db.execute("SELECT status, trigger_event_id FROM tasks WHERE id = ?;", ("task_room_111",))
     row = await cursor.fetchone()
-    assert row[0] in ("claimed", "triggered")
+    assert row[0] in ("claimed", "processing")
     assert row[1] == "ev_live_111"
 
     await runtime.stop()

@@ -31,8 +31,6 @@ class RoutingUpdateRequest(BaseModel):
     normal_model: str
     deliberate_provider_id: str
     deliberate_model: str
-    fast_provider_id: Optional[str] = None
-    fast_model: Optional[str] = None
     fallback_provider_id: Optional[str] = None
     fallback_model: Optional[str] = None
 
@@ -40,8 +38,6 @@ class RoutingUpdateRequest(BaseModel):
     def validate_optional_pairs(self):
         if bool(self.fallback_provider_id) != bool(self.fallback_model):
             raise ValueError("回退供应商和回退模型必须同时设置")
-        if bool(self.fast_provider_id) != bool(self.fast_model):
-            raise ValueError("FAST 供应商和 FAST 模型必须同时设置")
         return self
 
 
@@ -124,8 +120,6 @@ async def save_provider_models(
     routing = RoutingConfig(**snapshot["routing"])
     selected_models = {model.strip() for model in req.models if model.strip()}
     route_targets = [routing.normal, routing.deliberate]
-    if routing.fast is not None:
-        route_targets.append(routing.fast)
     if routing.fallback is not None:
         route_targets.append(routing.fallback)
     active_models = {
@@ -159,11 +153,6 @@ async def update_routing(req: RoutingUpdateRequest, request: Request, user: str 
     routing = RoutingConfig(
         normal=RouteTarget(provider_id=req.normal_provider_id, model=req.normal_model.strip()),
         deliberate=RouteTarget(provider_id=req.deliberate_provider_id, model=req.deliberate_model.strip()),
-        fast=(
-            RouteTarget(provider_id=req.fast_provider_id, model=req.fast_model.strip())
-            if req.fast_provider_id and req.fast_model
-            else None
-        ),
         fallback=(
             RouteTarget(provider_id=req.fallback_provider_id, model=req.fallback_model.strip())
             if req.fallback_provider_id and req.fallback_model
