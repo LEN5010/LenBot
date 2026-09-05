@@ -26,6 +26,7 @@ class TaskScheduler:
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
         self._known_task_ids: set[str] = set()
+        self.jobs_enabled_probe = lambda: True
 
     async def start(self) -> None:
         self._running = True
@@ -147,6 +148,8 @@ class TaskScheduler:
     ) -> bool:
         """Emit immutable TASK_DUE Event (ADR-0009 & ADR-0018 & ADR-0029).
         Durable task claim is enforced before emitting TASK_DUE."""
+        if task.payload.get("kind") == "agent_job" and not self.jobs_enabled_probe():
+            return False
         event = Event(
             event_type=EventType.TASK_DUE,
             scene_id=task.scene_id,

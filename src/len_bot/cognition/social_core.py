@@ -42,6 +42,7 @@ class SocialCoreContextAssembler:
         pending_next_wake: dict[str, Any] | None = None,
         voice_examples: list[dict] | None = None,
         tasks: list[dict] | None = None,
+        jobs: list[dict] | None = None,
         now: float | None = None,
     ) -> list[dict[str, str]]:
         active_open_loop_ids = [item["id"] for item in active_open_loops]
@@ -64,6 +65,9 @@ class SocialCoreContextAssembler:
             "记忆修订使用 memory_candidates：upsert 写入；refute 指定一个 target_memory_ids 撤销；supersede 指定旧ID并提供同一人物/类型的新认识，可合并不同key。reason 和 evidence 说明为什么改。没有ID时先 query_memory，不要只在嘴上说划掉。\n"
             "角色资料、表达示例和你自己的猜测不是群聊事实证据；你重复说过也不算新证据。无法确认就保留不确定性，不给群友强加习惯。\n"
             "【执行契约】\n"
+            "较长的信息查询可用 job_proposals 创建独立工作：create 提供 proposal_id、goal、constraints_add、source_event_ids，可把本轮 result_ids 移交避免重查。不是每个问题都要创建工作。\n"
+            "工作在后台继续时你仍参与对话。只有与该工作有关的补充才 revise；取消用 cancel，中断核对后用 resume；均引用真实 job_id 和 expected_revision。修订不重置预算，结果摘要不是原始证据。\n"
+            "是否先接话、告知有用进展或回答追问由你判断，不固定播报步骤。工作相关回复携带 job_id 和 job_revision；只有结果已就绪才能用 fulfils_task_id 确认交付。创建确认仍用 task_ref 引用 proposal_id。\n"
             "你只有提案权，发送、调度、记忆修改都必须由 RuntimeGate 提交。明确行动请求不能只回好；不能把计划、尝试或查询到信息当成已经执行。\n"
             "任务创建提供 proposal_id 和 source_event_ids；确认消息的 task_ref 引用该 proposal_id。修改取消使用真实 task_id。履约消息 fulfils_task_id 引用已有任务；查询任务先 operation=result 保存结果。\n"
             "due_at 是按当前时区换算的 Unix 秒，优先绝对时间，不清楚先问，不把过期承诺重新解释为从现在再等几小时。\n"
@@ -78,6 +82,8 @@ class SocialCoreContextAssembler:
         situation = {
             "current_time": datetime.fromtimestamp(time.time() if now is None else now, ZoneInfo("Asia/Shanghai")).isoformat(),
             "tasks": tasks or [],
+            "information_jobs": jobs or [],
+            "information_jobs_enabled": self.config.jobs_enabled,
             "group_identity": session.group_identity.model_dump(mode="json"),
             "social_world_state": session.social_world.model_dump(mode="json"),
             "self_social_state": session.self_social_state.model_dump(mode="json"),
@@ -203,6 +209,7 @@ class SocialCognitionCore:
         max_tool_calls: int = 6,
         voice_examples: list[dict] | None = None,
         tasks: list[dict] | None = None,
+        jobs: list[dict] | None = None,
         observe: Callable | None = None,
         commit: Callable | None = None,
         now: float | None = None,
@@ -215,7 +222,7 @@ class SocialCognitionCore:
             active_open_loops=active_open_loops,
             pending_next_wake=pending_next_wake,
             voice_examples=voice_examples,
-            tasks=tasks, now=now,
+            tasks=tasks, jobs=jobs, now=now,
         )
         working_messages: list[dict[str, Any]] = list(messages)
         tools = list(toolkit.get_tool_definitions()) if toolkit else []
@@ -497,9 +504,12 @@ class SocialCognitionCore:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | None = None,
         attempts: list | None = None,
+        before_attempt=None,
     ) -> tuple[Any, Any, bool, float]:
         primary = self.registry.resolve(tier)
         call_started = time.monotonic()
+        if before_attempt:
+            await before_attempt()
         try:
             started = time.monotonic()
             response = await self._create_completion(primary, messages, tools, tool_choice)
@@ -520,6 +530,8 @@ class SocialCognitionCore:
             ):
                 raise
             started = time.monotonic()
+            if before_attempt:
+                await before_attempt()
             try:
                 response = await self._create_completion(fallback, messages, tools, tool_choice)
             except Exception as fallback_error:

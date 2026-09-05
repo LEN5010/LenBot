@@ -32,6 +32,12 @@ class RuntimeConfig(BaseModel):
         default=8_000,
         description="Context-window reserve for the structured cognition result",
     )
+    jobs_enabled: bool = Field(default_factory=lambda: os.getenv("JOBS_ENABLED", "true").lower() in {"true", "1", "yes"})
+    job_max_steps: int = Field(default=16, ge=1)
+    job_max_tool_calls: int = Field(default=24, ge=1)
+    job_max_seconds: float = Field(default=300.0, gt=0)
+    job_context_tokens: int = Field(default=64000, ge=4000)
+    job_max_concurrent: int = Field(default=2, ge=1)
 
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(

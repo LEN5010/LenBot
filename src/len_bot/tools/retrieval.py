@@ -203,6 +203,9 @@ class RetrievalToolkit:
                 if not caps["deferred"] or name in self.discovered_tools:
                     tools.append(tool)
         tools.extend([
+            {"type": "function", "function": {"name": "query_jobs",
+                "description": "查询本场景的信息工作、当前目标版本、进展及结果；不改变工作。",
+                "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}}}},
             {"type": "function", "function": {"name": "tool_search",
                 "description": "按名称或描述发现可用工具，发现后可在后续步骤调用。",
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
@@ -226,7 +229,7 @@ class RetrievalToolkit:
         if self.plugin_host and self.plugin_host.has_tool(name):
             return self.plugin_host.tool_capabilities(name)["read_only"]
         return name in {"search_messages", "read_context", "query_timeline", "query_person_history",
-                        "query_memory", "inspect_episode", "tool_search", "read_tool_result"}
+                        "query_memory", "inspect_episode", "tool_search", "read_tool_result", "query_jobs"}
 
     async def execute_many(self, calls):
         """Parallelize read-only groups; preserve ordering around unknown effects."""
@@ -291,7 +294,7 @@ class RetrievalToolkit:
             result = ToolResult.normalize(await self._execute_raw(name, arguments))
             if not (self.plugin_host and self.plugin_host.has_tool(name)):
                 result.evidence_kind = "retrieval"
-            result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result)
+            result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result, background_work=self.read_only_only)
             self.result_ids.append(result.result_id)
             if self.on_observation:
                 await self.on_observation(event)
@@ -303,6 +306,10 @@ class RetrievalToolkit:
 
     async def _execute_raw(self, tool_name: str, arguments: dict[str, Any]):
         try:
+            if tool_name == "query_jobs":
+                job_id = arguments.get("job_id")
+                result = await self.event_store.get_job(job_id, self.default_scene_id) if job_id else await self.event_store.list_jobs(self.default_scene_id)
+                return ToolResult(status="ok" if result else "no_results", content=json.dumps(result, ensure_ascii=False), evidence_kind="retrieval")
             if self.plugin_host and self.plugin_host.has_tool(tool_name):
                 return await self.plugin_host.execute_tool(tool_name, arguments)
 

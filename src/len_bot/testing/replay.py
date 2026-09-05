@@ -34,11 +34,15 @@ async def drain(runtime):
         running = list(runtime._social_tasks.values())
         if running:
             await asyncio.gather(*running)
+        await runtime.scheduler.run_due(runtime.clock())
+        job_tasks = list(runtime.job_runner._tasks.values())
+        if job_tasks:
+            await asyncio.gather(*job_tasks)
         await runtime.action_queue._queue.join()
         for actor in list(runtime.scene_manager._actors.values()):
             await actor._queue.join()
         await asyncio.sleep(0)  # deliver task-done callbacks, not a wall-clock delay
-        if not runtime._social_tasks and not runtime._social_pending and not runtime.burst_assembler._buffers:
+        if not runtime._social_tasks and not runtime._social_pending and not runtime.burst_assembler._buffers and not runtime.job_runner._tasks:
             return
     raise RuntimeError("Replay did not quiesce")
 
