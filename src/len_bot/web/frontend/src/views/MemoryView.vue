@@ -153,6 +153,7 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
           <tr>
             <th>状态</th>
             <th>当时记住的内容</th>
+            <th>为什么修订</th>
             <th>可信程度</th>
             <th>使用范围</th>
             <th>记录时间</th>
@@ -164,6 +165,9 @@ function scopeLabel(value) { return value === 'global-safe' ? '跨群可用' : '
               <span class="tag" :class="m.status === 'active' ? 'ok' : 'warn'">{{ statusLabel(m.status) }}</span>
             </td>
             <td class="assertion-cell">{{ m.human_readable_assertion }}</td>
+            <td>{{ m.revision_reason || '—' }}
+              <details v-if="m.revision_evidence?.length"><summary>纠正证据</summary>{{ m.revision_evidence.join('、') }}</details>
+            </td>
             <td>{{ certaintyLabel(m.certainty) }}</td>
             <td>{{ scopeLabel(m.scope) }}</td>
             <td>{{ fmtTime(m.created_at) }}</td>

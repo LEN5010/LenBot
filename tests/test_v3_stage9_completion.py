@@ -6,6 +6,7 @@ Tests:
 3. Promote Task: Promoted task has origin_mode="live" and clears wake conditions.
 4. Core tool reservation: inspect_episode cannot be shadowed by plugins.
 """
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 
 import asyncio
 import time
@@ -86,7 +87,7 @@ async def test_shadow_origin_isolation_prevents_live_send(tmp_path):
 
     async def mock_adapter(action):
         sent_actions.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_shadow_recorder(action):
         would_send_actions.append(action)

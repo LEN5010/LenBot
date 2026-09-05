@@ -11,6 +11,10 @@ from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
 
 logger = logging.getLogger(__name__)
 
+class ReflectionConflictError(ValueError):
+    """A newer cursor or understanding requires a fresh quiet-window read."""
+
+
 class EventStore:
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
@@ -197,8 +201,41 @@ class EventStore:
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_voice_exemplars_scene ON voice_exemplars(scene_id, enabled);")
+        voice_columns = await (await self._db.execute("PRAGMA table_info(voice_exemplars)")).fetchall()
+        if "source" not in {row[1] for row in voice_columns}:
+            await self._db.execute("ALTER TABLE voice_exemplars ADD COLUMN source TEXT NOT NULL DEFAULT 'operator'")
 
         await self._db.commit()
+
+        await self._migrate_person_names()
+
+    async def _migrate_person_names(self) -> None:
+        """One-time factual rebuild before actors start; never infer preferred names."""
+        if await self.get_dynamic_config("person_names_v2") is not None:
+            return
+        async with self._write_lock:
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = await (await self._db.execute(
+                    "SELECT scene_id,state_json FROM group_agent_sessions")).fetchall()
+                for scene_id, raw in rows:
+                    data = json.loads(raw)
+                    for actor_id, person in data.get("working_persons", {}).items():
+                        for field in ("nickname", "card"):
+                            source = await (await self._db.execute(
+                                "SELECT json_extract(payload, ?) FROM events WHERE scene_id=? AND actor_id=? "
+                                "AND json_type(payload, ?)='text' ORDER BY rowid DESC LIMIT 1",
+                                (f"$.sender.{field}", scene_id, actor_id, f"$.sender.{field}"),
+                            )).fetchone()
+                            person[field] = source[0] if source else None
+                    await self._db.execute("UPDATE group_agent_sessions SET state_json=? WHERE scene_id=?",
+                                           (json.dumps(data, ensure_ascii=False), scene_id))
+                await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
+                                       ("person_names_v2", '{"applied":true}', self.clock()))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     async def get_dashboard_user(self, username: str) -> Optional[dict[str, Any]]:
         if not self._db:
@@ -428,6 +465,40 @@ class EventStore:
 
             await self._db.commit()
 
+    async def project_reply_context(self, scene_id: str, events: list[Event]) -> list[Event]:
+        """Attach read-only, scene-scoped quote facts to copies, never raw history."""
+        refs = {str(e.payload["reply_to_message_id"]) for e in events if e.payload.get("reply_to_message_id") is not None}
+        if not refs:
+            return events
+        cursor = await self._db.execute(
+            "SELECT id, actor_id, payload FROM events WHERE scene_id=? AND "
+            "CAST(json_extract(payload, '$.message_id') AS TEXT) IN (" + ",".join("?" for _ in refs) + ")",
+            (scene_id, *sorted(refs)),
+        )
+        quotes = {}
+        for event_id, actor_id, payload_json in await cursor.fetchall():
+            payload = json.loads(payload_json)
+            quotes[str(payload["message_id"])] = {
+                "event_id": event_id, "actor_id": actor_id,
+                "text": payload.get("raw_text") or payload.get("content", ""),
+            }
+        projected = []
+        for event in events:
+            item = event.model_copy(deep=True)
+            ref = item.payload.get("reply_to_message_id")
+            if ref is not None:
+                item.metadata["quote_context"] = quotes.get(str(ref), {"missing": True})
+            projected.append(item)
+        return projected
+
+    async def own_sent_message_ids(self, actor_id: str, limit: int = 1000) -> list[str]:
+        cursor = await self._db.execute(
+            "SELECT json_extract(payload, '$.message_id') FROM events "
+            "WHERE event_type = ? AND actor_id = ? AND json_extract(payload, '$.message_id') IS NOT NULL "
+            "ORDER BY rowid DESC LIMIT ?", (EventType.MESSAGE_SENT.value, actor_id, limit),
+        )
+        return [str(row[0]) for row in reversed(await cursor.fetchall())]
+
     async def get_recent_events(self, scene_id: str, limit: int = 50) -> list[Event]:
         """Return the latest scene events in their authoritative commit order."""
         if not self._db:
@@ -528,6 +599,13 @@ class EventStore:
         async with self._write_lock:
             try:
                 # 1. Insert EpisodeRecord
+                await self._db.execute("BEGIN IMMEDIATE")
+                if review_event is not None and "social_revision" in review_event.payload:
+                    state = await (await self._db.execute(
+                        "SELECT json_extract(state_json,'$.social_revision') FROM group_agent_sessions WHERE scene_id=?",
+                        (scene_id,))).fetchone()
+                    if state is not None and (state[0] or 0) != review_event.payload["social_revision"]:
+                        raise ReflectionConflictError("Reflection understanding changed before commit; reread current state")
                 if episode_record.scene_id != scene_id or not episode_record.source_event_ids:
                     raise ValueError("Reflection episode must have same-scene source evidence")
                 source_ids = set(episode_record.source_event_ids)
@@ -542,7 +620,7 @@ class EventStore:
                     cursor = await self._db.execute("SELECT last_event_rowid FROM reflection_cursors WHERE scene_id=?", (scene_id,))
                     current = await cursor.fetchone()
                     if (current[0] if current else 0) != expected_cursor_rowid:
-                        raise ValueError("Reflection cursor changed during inference")
+                        raise ReflectionConflictError("Reflection cursor changed during inference")
                 if review_event is not None:
                     if review_event.scene_id != scene_id or review_event.event_type != EventType.REFLECTION_RECORDED:
                         raise ValueError("Invalid reflection envelope")
@@ -574,6 +652,9 @@ class EventStore:
                     committed_memories.append(mem_item)
 
                 if review_event is not None:
+                    review_event.payload["memory_receipts"] = [
+                        await self._memory_receipt(mp, item) for mp, item in zip(proposals, committed_memories)
+                    ]
                     await self._db.execute(
                         "INSERT INTO pending_runtime_events VALUES (?, ?, ?)",
                         (review_event.id, scene_id, review_event.model_dump_json()),
@@ -594,6 +675,9 @@ class EventStore:
 
                 await self._db.commit()
                 return episode_record, committed_memories
+            except ReflectionConflictError:
+                await self._db.rollback()
+                raise
             except Exception as e:
                 await self._db.rollback()
                 raise ValueError(f"Failed to commit reflection batch for scene {scene_id}, transaction rolled back: {e}") from e
@@ -708,6 +792,7 @@ class EventStore:
         self,
         reference_ids: set[str],
         scene_id: str,
+        through_event_rowid: int | None = None,
     ) -> bool:
         """Validate retrieved event/episode references against the SQL scope boundary."""
         if not reference_ids:
@@ -718,14 +803,19 @@ class EventStore:
         ids = list(reference_ids)
         placeholders = ",".join("?" for _ in ids)
         event_cursor = await self._db.execute(
-            f"SELECT id FROM events WHERE scene_id = ? AND id IN ({placeholders})",
-            [scene_id, *ids],
-        )
-        episode_cursor = await self._db.execute(
-            f"SELECT id FROM episodes WHERE scene_id = ? AND id IN ({placeholders})",
-            [scene_id, *ids],
+            f"SELECT id FROM events WHERE scene_id = ? AND id IN ({placeholders}) AND (? IS NULL OR rowid<=?)",
+            [scene_id, *ids, through_event_rowid, through_event_rowid],
         )
         found = {row[0] for row in await event_cursor.fetchall()}
+        if found == reference_ids:
+            return True
+        episode_cursor = await self._db.execute(
+            f"""SELECT id FROM episodes WHERE scene_id = ? AND id IN ({placeholders})
+                AND NOT EXISTS (SELECT 1 FROM json_each(source_event_ids) AS source
+                    WHERE NOT EXISTS (SELECT 1 FROM events WHERE events.id=source.value
+                        AND events.scene_id=episodes.scene_id AND (? IS NULL OR events.rowid<=?)))""",
+            [scene_id, *ids, through_event_rowid, through_event_rowid],
+        )
         found.update(row[0] for row in await episode_cursor.fetchall())
         return found == reference_ids
 
@@ -1034,6 +1124,63 @@ class EventStore:
     # ADR-0038 §5: curated bot voice exemplars
     # ------------------------------------------------------------------
 
+    async def preview_diana_persona(self) -> dict:
+        import hashlib
+        from len_bot.cognition.diana import PERSONA, PRESET_ID, LEGACY_PRESET_ID, LEGACY_PERSONA, LEGACY_EXAMPLES
+        current = await self.get_dynamic_config("persona_config") or {}
+        applied = await self.get_dynamic_config(PRESET_ID) is not None
+        examples = await self.list_voice_examples()
+        fields = []
+        for key, desired in PERSONA.items():
+            previous = current.get(key)
+            update = not applied and (previous is None or previous == LEGACY_PERSONA[key])
+            fields.append({"key": key, "current": previous, "next": desired if update else previous,
+                           "action": "update" if update and previous != desired else
+                                     "preserve" if previous != desired else "unchanged"})
+        legacy = {f"{LEGACY_PRESET_ID}:{i}": (context, content)
+                  for i, (context, content) in enumerate(LEGACY_EXAMPLES)}
+        disable = [item["id"] for item in examples if item["id"] in legacy
+                   and (item["context"], item["content"]) == legacy[item["id"]]]
+        token = hashlib.sha256(json.dumps([current, examples, applied], sort_keys=True,
+                                         ensure_ascii=False).encode()).hexdigest()
+        return {"preset_id": PRESET_ID, "applied": applied, "fields": fields,
+                "disable_example_ids": disable, "example_count": 12, "preview_token": token}
+
+    async def apply_diana_persona(self, bot_qq: int, expected_token: str | None = None) -> bool:
+        """Explicit, atomic preset migration. Preserve edits; never run on startup."""
+        from len_bot.cognition.diana import EXAMPLES, PRESET_ID
+        async with self._write_lock:
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                preview = await self.preview_diana_persona()
+                if expected_token is not None and expected_token != preview["preview_token"]:
+                    raise ValueError("配置已变化，请重新预览后应用")
+                if preview["applied"]:
+                    await self._db.rollback()
+                    return False
+                now = self.clock()
+                config = await self.get_dynamic_config("persona_config") or {}
+                config.update({field["key"]: field["next"] for field in preview["fields"]})
+                config["bot_qq"] = bot_qq
+                await self._db.execute(
+                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+                    ("persona_config", json.dumps(config, ensure_ascii=False), now),
+                )
+                await self._db.executemany("UPDATE voice_exemplars SET enabled=0 WHERE id=?",
+                                          [(mid,) for mid in preview["disable_example_ids"]])
+                await self._db.executemany(
+                    "INSERT INTO voice_exemplars(id,scene_id,context,content,tag,created_at,source) VALUES(?,?,?,?,?,?,?)",
+                    [(f"{PRESET_ID}:{i}", "", context, content, "嘉然", now, "operator")
+                     for i, (context, content) in enumerate(EXAMPLES)],
+                )
+                await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
+                                       (PRESET_ID, '{"applied":true}', now))
+                await self._db.commit()
+                return True
+            except BaseException:
+                await self._db.rollback()
+                raise
+
     async def add_voice_example(
         self,
         scene_id: str,
@@ -1060,6 +1207,7 @@ class EventStore:
             "context": context,
             "content": content,
             "tag": tag,
+            "source": "operator",
             "enabled": True,
             "use_count": 0,
             "last_used_at": 0.0,
@@ -1072,12 +1220,12 @@ class EventStore:
             raise RuntimeError("Database not initialized")
         if scene_id is None:
             cursor = await self._db.execute(
-                "SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at FROM voice_exemplars ORDER BY created_at DESC;"
+                "SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source FROM voice_exemplars ORDER BY created_at DESC;"
             )
         else:
             cursor = await self._db.execute(
                 """
-                SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at
+                SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source
                 FROM voice_exemplars
                 WHERE scene_id IN (?, '')
                 ORDER BY created_at DESC;
@@ -1096,6 +1244,7 @@ class EventStore:
                 "use_count": r[6],
                 "last_used_at": r[7],
                 "created_at": r[8],
+                "source": r[9],
             }
             for r in rows
         ]
@@ -1122,40 +1271,23 @@ class EventStore:
             await self._db.commit()
         return cursor.rowcount > 0
 
-    async def select_voice_examples(self, scene_id: str, limit: int) -> list[dict[str, Any]]:
-        """ADR-0038 §5: LRU rotation — least-recently-used enabled exemplars first.
-
-        Bumps use_count/last_used_at for the picked rows so the same batch is
-        not injected repeatedly.
-        """
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        if limit <= 0:
-            return []
-        cursor = await self._db.execute(
-            """
-            SELECT id, scene_id, context, content, tag FROM voice_exemplars
-            WHERE enabled = 1 AND scene_id IN (?, '')
-            ORDER BY last_used_at ASC, use_count ASC, created_at DESC
-            LIMIT ?;
-            """,
-            (scene_id, limit),
-        )
-        rows = await cursor.fetchall()
-        if not rows:
-            return []
-        now = self.clock()
-        picked = [
-            {"id": r[0], "scene_id": r[1], "context": r[2], "content": r[3], "tag": r[4]}
-            for r in rows
-        ]
+    async def update_voice_example(self, example_id: str, *, scene_id: str, content: str, context: str, tag: str) -> bool:
         async with self._write_lock:
-            await self._db.executemany(
-                "UPDATE voice_exemplars SET use_count = use_count + 1, last_used_at = ? WHERE id = ?;",
-                [(now, item["id"]) for item in picked],
+            cursor = await self._db.execute(
+                "UPDATE voice_exemplars SET scene_id=?,content=?,context=?,tag=?,source='operator' WHERE id=?",
+                (scene_id, content, context, tag, example_id),
             )
             await self._db.commit()
-        return picked
+        return cursor.rowcount == 1
+
+    async def select_voice_examples(self, scene_id: str) -> list[dict[str, Any]]:
+        """All enabled operator examples, stable order; reading never changes selection."""
+        cursor = await self._db.execute(
+            """SELECT id,scene_id,context,content,tag,source FROM voice_exemplars
+               WHERE enabled=1 AND scene_id IN (?, '') ORDER BY scene_id,id""", (scene_id,),
+        )
+        return [dict(zip(("id", "scene_id", "context", "content", "tag", "source"), row))
+                for row in await cursor.fetchall()]
 
     async def create_task(self, task_data: dict[str, Any]) -> None:
         """P0.1: Dedicated write authority for tasks under write_lock."""
@@ -1384,6 +1516,14 @@ class EventStore:
 
         async with self._write_lock:
             try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                if scene_commit is not None:
+                    perception = scene_commit["event"].payload["result"]["perception"]
+                    references = {mid for update in [*perception.get("person_updates", []),
+                                                     *perception.get("relationship_updates", [])]
+                                  for mid in update.get("memory_ids_add", [])}
+                    if references and not await self.memory_references_readable(references, scene_id):
+                        raise ValueError("Working memory references changed or are outside readable scope")
                 # 1. Validate evidence integrity for all memory proposals upfront
                 for mp in memory_proposals:
                     mp.scope = scene_id
@@ -1569,6 +1709,13 @@ class EventStore:
                         raise ValueError("Task is not ready for fulfilment")
 
                 if scene_commit is not None:
+                    from len_bot.cognition.session import GroupAgentSession, GroupAgentSessionReducer
+                    session = GroupAgentSession.model_validate(scene_commit["group_session_data"])
+                    receipts = [await self._memory_receipt(mp, item)
+                                for mp, item in zip(memory_proposals, committed_memories)]
+                    GroupAgentSessionReducer.apply_memory_receipts(session, receipts)
+                    scene_commit["group_session_data"] = session.model_dump()
+                    scene_commit["event"].payload["memory_receipts"] = receipts
                     await self._write_scene_event(**scene_commit)
 
                 # 5. Commit all mutations atomically in one transaction!
@@ -1577,6 +1724,25 @@ class EventStore:
             except BaseException:
                 await self._db.rollback()
                 raise
+
+    async def _memory_receipt(self, proposal: MemoryProposal, item: MemoryItem) -> dict:
+        replaced = await (await self._db.execute(
+            """WITH RECURSIVE replaced(id) AS (
+                   SELECT id FROM memories WHERE scope=? AND superseded_by=?
+                   UNION SELECT m.id FROM memories m JOIN replaced r ON m.superseded_by=r.id WHERE m.scope=?
+               ) SELECT id FROM replaced""", (item.scope, item.id, item.scope),
+        )).fetchall()
+        return {"id": item.id, "subject": item.subject, "kind": item.kind.value, "key": item.key,
+                "value": item.value, "status": item.status.value, "operation": proposal.operation,
+                "reason": proposal.reason, "evidence": proposal.evidence,
+                "target_memory_ids": list(dict.fromkeys(proposal.target_memory_ids + [r[0] for r in replaced]))}
+
+    async def memory_references_readable(self, memory_ids: set[str], scene_id: str) -> bool:
+        cursor = await self._db.execute(
+            f"SELECT COUNT(*) FROM memories WHERE scope IN (?, 'global-safe') AND status='active' AND id IN ({','.join('?' for _ in memory_ids)})",
+            [scene_id, *memory_ids],
+        )
+        return (await cursor.fetchone())[0] == len(memory_ids)
 
     async def scene_tasks(self, scene_id: str) -> list[dict]:
         cursor = await self._db.execute(

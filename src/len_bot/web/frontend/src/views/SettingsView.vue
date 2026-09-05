@@ -5,8 +5,11 @@ import { api, fmtTime } from '../api.js'
 const me = ref(null)
 const onebot = ref(null)
 const exemplars = ref([])
+const editingExample = ref(null)
+const presetPreview = ref(null)
+const personaLabels = {identity_name: '机器人名字', identity_persona: '身份背景', identity_core: '性格与相处方式', character_context: '角色资料与梗', conversation_style: '说话方式'}
 const example = ref({content: "", context: "", scene_id: ""})
-const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '' })
+const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '', character_context: '' })
 const onebotForm = ref({
   connection_mode: 'forward_ws', action_transport: 'websocket',
   ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
@@ -28,6 +31,7 @@ async function load() {
       identity_name: personaRes.identity_name,
       identity_persona: personaRes.identity_persona,
       identity_core: personaRes.identity_core,
+      character_context: personaRes.character_context || '',
       conversation_style: personaRes.conversation_style || '',
     }
     const onebotRes = await api('/api/websocket/status')
@@ -54,10 +58,16 @@ async function load() {
 
 async function saveExample() {
   try {
-    await api('/api/voice/exemplars', {method: 'POST', body: JSON.stringify(example.value)})
+    await api('/api/voice/exemplars' + (editingExample.value ? '/' + editingExample.value : ''),
+      {method: editingExample.value ? 'PUT' : 'POST', body: JSON.stringify(example.value)})
+    editingExample.value = null
     example.value = {content: '', context: '', scene_id: ''}
     await load()
   } catch (e) { error.value = e.message }
+}
+function editExample(item) {
+  editingExample.value = item.id
+  example.value = {content: item.content, context: item.context, scene_id: item.scene_id || '', tag: item.tag}
 }
 async function changeExample(item, remove = false) {
   if (remove && !confirm('删除这条表达样例？')) return
@@ -80,6 +90,20 @@ async function savePersona() {
   } catch (e) {
     error.value = e.message
   }
+}
+
+async function previewDiana() {
+  try { presetPreview.value = await api('/api/settings/persona/diana') }
+  catch (e) { error.value = e.message }
+}
+async function applyDiana() {
+  try {
+    const result = await api('/api/settings/persona/diana', {method: 'POST',
+      body: JSON.stringify({preview_token: presetPreview.value.preview_token})})
+    message.value = result.message
+    presetPreview.value = null
+    await load()
+  } catch (e) { error.value = e.message }
 }
 
 async function saveOneBot(showSuccess = true) {
@@ -197,18 +221,33 @@ async function changePassword() {
           <p class="muted">这里写的是机器人长期稳定的性格，不需要填写技术提示词。</p>
         </div>
         <button class="primary" @click="savePersona">保存并立即生效</button>
+        <button @click="previewDiana">预览新版嘉然人格</button>
+      </div>
+      <div v-if="presetPreview" class="panel">
+        <h3>{{ presetPreview.applied ? '已应用过新版，后续编辑不会被覆盖' : '确认更新内容' }}</h3>
+        <p class="muted">已保存的人工修改会保留。停用 {{ presetPreview.disable_example_ids.length }} 条未修改的旧预设样例，添加 12 组新样例；不删除聊天、任务或记忆。尚未保存的表单修改不参与比较。</p>
+        <details v-for="field in presetPreview.fields" :key="field.key">
+          <summary>{{ personaLabels[field.key] }} · {{ field.action === 'update' ? '更新' : field.action === 'preserve' ? '保留人工修改' : '保持不变' }}</summary>
+          <p style="white-space: pre-wrap">原内容：{{ field.current || '未设置' }}</p>
+          <p style="white-space: pre-wrap">应用后：{{ field.next }}</p>
+        </details>
+        <button v-if="!presetPreview.applied" class="primary" @click="applyDiana">确认应用</button>
+        <button @click="presetPreview = null">关闭预览</button>
       </div>
       <div class="persona-fields">
         <label>机器人名字
           <input v-model="persona.identity_name" placeholder="例如：Len" />
         </label>
-        <label class="wide">它是一个怎样的人
+        <label class="wide">身份背景
           <textarea v-model="persona.identity_persona" rows="5" placeholder="例如：嘴有点损但没有恶意，熟人面前话多，对比赛和直播很感兴趣……"></textarea>
           <small>写性格、兴趣、价值倾向，以及它在群里的常见角色。</small>
         </label>
-        <label class="wide">遇事时的行为倾向
+        <label class="wide">性格与相处方式
           <textarea v-model="persona.identity_core" rows="5" placeholder="例如：先弄清楚大家在聊什么；熟人遇到困难会记在心里；不确定就直说。"></textarea>
           <small>这是贯穿聊天、查资料和履约的核心人格。</small>
+        </label>
+        <label class="wide">角色资料与梗
+          <textarea v-model="persona.character_context" rows="8" placeholder="角色背景、梗的语境与资料日期；不是群聊记忆"></textarea>
         </label>
         <label class="wide">希望它怎么说话
           <textarea v-model="persona.conversation_style" rows="4" placeholder="例如：短句、口语化，可以接梗，不写长篇解释，不用客服腔……"></textarea>
@@ -219,16 +258,18 @@ async function changePassword() {
 
     <div class="panel persona-panel">
       <h2>表达样例</h2>
-      <p class="muted">给它几句你喜欢的说法。样例用于参考语气，不会被当成真实聊天或记忆。</p>
+      <p class="muted">启用的全局及本群样例按固定顺序提供，不轮换抽取。它们只示范语气，不是真实聊天或记忆。</p>
       <form class="persona-fields" @submit.prevent="saveExample">
-        <label>当时的语境<input v-model="example.context" placeholder="例如：群友代码又出错了" /></label>
+        <label>前文与语境<textarea v-model="example.context" rows="3" placeholder="写清楚是谁在和谁说话"></textarea></label>
         <label>群聊范围<input v-model="example.scene_id" placeholder="留空适用于所有群；或填 group:群号" /></label>
         <label class="wide">理想的说法<textarea required v-model="example.content" rows="2"></textarea></label>
-        <button class="primary">添加样例</button>
+        <button class="primary">{{ editingExample ? '保存修改' : '添加样例' }}</button>
+        <button v-if="editingExample" type="button" @click="editingExample = null; example = {content: '', context: '', scene_id: ''}">取消编辑</button>
       </form>
       <div v-for="item in exemplars" :key="item.id" class="kv">
         <span>{{ item.context || '通用表达' }} → {{ item.content }} <small class="muted">{{ item.scene_id || '所有群' }}</small></span>
         <div class="action-btn-group">
+          <button @click="editExample(item)">编辑</button>
           <button @click="changeExample(item)">{{ item.enabled ? '停用' : '启用' }}</button>
           <button class="danger" @click="changeExample(item, true)">删除</button>
         </div>

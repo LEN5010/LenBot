@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import pytest
 import asyncio
 import time
@@ -34,7 +35,7 @@ async def test_trace_captures_full_causal_chain(tmp_path):
 
     async def mock_send(item):
         sent_actions.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_social_core(messages):
         stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
@@ -208,7 +209,7 @@ async def test_shadow_mode_records_without_sending(tmp_path):
 
     async def mock_send(item):
         sent_actions.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_social_core(messages):
         stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]

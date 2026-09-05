@@ -64,7 +64,9 @@ async def test_fulfilment_waits_for_actual_delivery(tmp_path, delivery, status):
         await release.wait()
         if delivery == "unknown":
             raise TimeoutError("connection lost after write")
-        return delivery == "ok"
+        from len_bot.actions.models import DeliveryResult, DeliveryStatus
+        return DeliveryResult(status=DeliveryStatus.SENT if delivery == "ok" else DeliveryStatus.REJECTED,
+                              transport="test")
     async def core(messages):
         return social_result(reason="履约", content="该起床了", fulfils_task_id=task.id)
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")), send_adapter=send, mock_social_handler=core)
