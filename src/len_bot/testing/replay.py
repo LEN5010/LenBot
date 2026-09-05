@@ -221,6 +221,7 @@ class ReplayLab:
                     await advance(source.timestamp)
                     event = source.model_copy(deep=True)
                     event.metadata.pop("_rowid", None)
+                    event.metadata["replay_input"] = True
                     if event.event_type == EventType.MESSAGE_SENT:
                         if self.delivery_mode == "simulated":
                             continue
@@ -250,6 +251,10 @@ class ReplayLab:
                 self.last_observations = [item for scene in self.last_sessions
                     for item in await runtime.event_store.list_tool_observations(scene, 500)]
                 failures = [trace for trace in self.last_traces if trace["kind"] in {"social_cognition_error", "agent_job_error"}]
+                try:
+                    vision_configured = bool(runtime.provider_registry.resolve_vision())
+                except (LookupError, AttributeError):
+                    vision_configured = False
                 self.last_run = {"model_mode": self.model_mode,
                     "tool_mode": self.tool_mode, "delivery_mode": self.delivery_mode,
                     "completed": not failures and len(fired) == len(self.injections),
@@ -257,7 +262,8 @@ class ReplayLab:
                     "checkpoint_counts": dict(counts), "human_response_to_candidate": None,
                     "failure_count": len(failures), "capabilities": ["tools", "interleaving"]
                         + (["jobs"] if getattr(runtime, "job_runner", None) else [])
-                        + (["media"] if getattr(runtime, "media_service", None) else [])}
+                        + (["media"] if getattr(runtime, "media_service", None) else [])
+                        + (["vision"] if vision_configured else [])}
                 rows = []
                 for entry in reversed(self.last_traces):
                     p = entry["payload"]

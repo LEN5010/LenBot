@@ -54,7 +54,7 @@ async def validate_memory_proposal(
                 detail = await (await db.execute("SELECT payload FROM events WHERE id=? AND scene_id=?", (ev_id, scene_id))).fetchone()
                 if not json.loads(detail[0]).get("independent_evidence"):
                     raise ValueError("Derived tool output is not independent memory evidence")
-            if row[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW", "AGENT_JOB_FINISHED", "AGENT_JOB_PROGRESS", "AGENT_JOB_CHECKPOINT", "AGENT_JOB_CONTROL", "OPERATOR_ACTION"}:
+            if row[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW", "AGENT_JOB_FINISHED", "AGENT_JOB_PROGRESS", "AGENT_JOB_CHECKPOINT", "AGENT_JOB_CONTROL", "OPERATOR_ACTION", "REPLY_FEEDBACK_LABELLED"}:
                 raise ValueError("Model output is not independent memory evidence")
             raw_evidence.append(ev_id)
             continue
@@ -68,7 +68,7 @@ async def validate_memory_proposal(
         for source in sources:
             cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (source, scene_id))
             original = await cursor.fetchone()
-            if not original or original[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW", "AGENT_JOB_FINISHED", "AGENT_JOB_PROGRESS", "AGENT_JOB_CHECKPOINT", "AGENT_JOB_CONTROL", "OPERATOR_ACTION"}:
+            if not original or original[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW", "AGENT_JOB_FINISHED", "AGENT_JOB_PROGRESS", "AGENT_JOB_CHECKPOINT", "AGENT_JOB_CONTROL", "OPERATOR_ACTION", "REPLY_FEEDBACK_LABELLED"}:
                 raise ValueError("Episode evidence must resolve to original observations in this scene")
             if original[0] == "TOOL_OBSERVATION_RECORDED":
                 detail = await (await db.execute("SELECT payload FROM events WHERE id=? AND scene_id=?", (source, scene_id))).fetchone()

@@ -225,12 +225,14 @@ async function changePassword() {
       </div>
       <div v-if="presetPreview" class="panel">
         <h3>{{ presetPreview.applied ? '已应用过新版，后续编辑不会被覆盖' : '确认更新内容' }}</h3>
-        <p class="muted">已保存的人工修改会保留。停用 {{ presetPreview.disable_example_ids.length }} 条未修改的旧预设样例，添加 12 组新样例；不删除聊天、任务或记忆。尚未保存的表单修改不参与比较。</p>
+        <p class="muted">已保存的人工修改会保留。停用 {{ presetPreview.disable_example_ids.length }} 条未修改的旧预设样例，添加 {{ presetPreview.example_count }} 组新样例；不删除聊天、任务或记忆。尚未保存的表单修改不参与比较。</p>
         <details v-for="field in presetPreview.fields" :key="field.key">
           <summary>{{ personaLabels[field.key] }} · {{ field.action === 'update' ? '更新' : field.action === 'preserve' ? '保留人工修改' : '保持不变' }}</summary>
           <p style="white-space: pre-wrap">原内容：{{ field.current || '未设置' }}</p>
           <p style="white-space: pre-wrap">应用后：{{ field.next }}</p>
         </details>
+        <details><summary>查看表达样例</summary><p v-for="item in presetPreview.examples" :key="item.id" style="white-space:pre-wrap">{{ item.context }}
+→ {{ item.content }}</p></details>
         <button v-if="!presetPreview.applied" class="primary" @click="applyDiana">确认应用</button>
         <button @click="presetPreview = null">关闭预览</button>
       </div>

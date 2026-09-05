@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Optional, Callable, Awaitable
 from len_bot.actions.models import ActionItem, DeliveryResult, DeliveryStatus
 from len_bot.events.models import Event, EventType
@@ -26,6 +27,7 @@ class ActionQueue:
         self._delivery_slots = asyncio.Semaphore(4)
         self._failed_batches = set()
         self._attempted = set()
+        self._enqueued_at = {}
         self.checkpoint = None
         self.simulated = False
         self.pacing = False
@@ -55,8 +57,10 @@ class ActionQueue:
         self._scene_workers.clear()
         self._scene_queues.clear()
         self._failed_batches.clear()
+        self._enqueued_at.clear()
 
     def enqueue(self, action):
+        self._enqueued_at[action.id] = time.monotonic()
         self._queue.put_nowait(action)
 
     async def _emit(self, event, associated_open_loop=None):
@@ -122,6 +126,8 @@ class ActionQueue:
                 return await self._reject(action, str(error))
             if self._shadow(action):
                 return await self._record_shadow(action)
+            send_started = time.monotonic()
+            queue_ms = round((send_started-self._enqueued_at.get(action.id, send_started))*1000, 2)
             try:
                 if self.send_adapter:
                     self._attempted.add(action.id)
@@ -130,6 +136,7 @@ class ActionQueue:
                     delivery = DeliveryResult(status=DeliveryStatus.NOT_SENT, transport="none", error="未配置发送适配器")
             except Exception as error:
                 delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter", error_code=type(error).__name__, error="发送适配器异常，结果不确定")
+        send_ms = round((time.monotonic()-send_started)*1000, 2)
         success = delivery.status == DeliveryStatus.SENT
         event = Event(event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
@@ -137,6 +144,7 @@ class ActionQueue:
             payload={**self._payload(action), "origin_mode": "simulated" if self.simulated else action.origin_mode,
                 "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN, "error": delivery.error,
                 "delivery_status": delivery.status.value, "transport": delivery.transport,
+                "queue_ms": queue_ms, "send_ms": send_ms,
                 "error_code": delivery.error_code, "message_id": delivery.message_id,
                 "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
                     if action.source_started_at is not None else None})
@@ -175,6 +183,7 @@ class ActionQueue:
                 logger.exception("Action processing failed for %s; unconfirmed delivery requires review", action.id)
             finally:
                 self._attempted.discard(action.id)
+                self._enqueued_at.pop(action.id, None)
                 if action.batch_id and action.batch_index == action.batch_size-1:
                     self._failed_batches.discard(action.batch_id)
                 queue.task_done()

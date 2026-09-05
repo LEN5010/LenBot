@@ -17,6 +17,9 @@ class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
 
+    async def reply_feedback(self, scene_id):
+        return await self.runtime.event_store.reply_feedback(scene_id)
+
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
 

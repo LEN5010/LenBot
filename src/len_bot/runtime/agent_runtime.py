@@ -587,6 +587,24 @@ class AgentRuntime:
                             + "\n结合这些变化继续判断，保留已有工具结果；之前拟出的回复尚未发送。")
 
                 async def commit(result, trace):
+                    nonlocal observed
+                    # The model has already read these tool receipts. A final
+                    # continuation may not absorb another human request, but
+                    # must acknowledge its own observations before strict commit.
+                    known_observations = set()
+                    for result_id in retrieval.result_ids:
+                        observation = await self.event_store.read_tool_observation(result_id, [scene_id])
+                        if observation:
+                            known_observations.add(observation.observation_event_id)
+                    for event in await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000):
+                        if event.event_type == EventType.MEDIA_UPDATED:
+                            continue  # Bookkeeping does not change social input.
+                        if event.id not in known_observations:
+                            break  # Never jump over unread input, even to acknowledge a tool.
+                        observed = event.metadata["_rowid"]
+                        if event.id not in source_ids:
+                            source_ids.append(event.id)
+                        trace["acknowledged_tool_observations"] = trace.get("acknowledged_tool_observations", 0) + 1
                     trace["through_event_rowid"] = observed
                     trace["social_revision"] = social_revision
                     deferred = await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000)
