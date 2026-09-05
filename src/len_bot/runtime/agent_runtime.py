@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
@@ -35,6 +36,17 @@ from len_bot.media.service import MediaService
 
 logger = logging.getLogger(__name__)
 
+
+def _is_shadow_input(event: Event) -> bool:
+    # Task/work origins carry authority; delivery receipts are only history.
+    return event.metadata.get("delivery_origin") == "shadow" or (
+        event.event_type in {EventType.TASK_DUE, EventType.TASK_REVIEW,
+                             EventType.AGENT_JOB_FINISHED, EventType.AGENT_JOB_PROGRESS,
+                             EventType.REFLECTION_RECORDED}
+        and event.payload.get("origin_mode") == "shadow"
+    )
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -57,7 +69,8 @@ class AgentRuntime:
 
         self.plugin_host = PluginHost(runtime=self)
 
-        self.shadow_mode = False
+        self.shadow_mode = True
+        self.allowed_scenes = {"group:126300994"}
         self.shadow_would_send_log: deque[dict] = deque(maxlen=500)
         self.action_queue = ActionQueue(
             event_store=self.event_store,
@@ -116,6 +129,8 @@ class AgentRuntime:
         self._social_tasks: dict[str, asyncio.Task] = {}
         self.job_runner = InformationJobRunner(self)
         self.media_service = MediaService(self)
+        self.action_queue.scene_shadow_probe = self.is_scene_shadow
+        self.runtime_gate.scene_shadow_probe = self.is_scene_shadow
         self.action_queue.pacing = config.message_pacing
         self.action_queue.validate_before_send = self.validate_outbound_action
         self.runtime_gate.jobs_enabled_probe = lambda: self.config.jobs_enabled
@@ -233,6 +248,8 @@ class AgentRuntime:
         if saved_shadow:
             self.shadow_mode = bool(saved_shadow.get("enabled", False))
 
+        saved_scenes = await self.event_store.get_dynamic_config("delivery_scenes")
+        self.allowed_scenes = set(saved_scenes["scene_ids"])
         self._running = True
         restored_scenes = await self.event_store.recover_social_work()
         await self.action_queue.start()
@@ -267,9 +284,23 @@ class AgentRuntime:
 
     async def set_shadow_mode(self, enabled: bool) -> None:
         """ADR-0023: hot-toggle Shadow Mode and persist the flag."""
-        self.shadow_mode = bool(enabled)
-        await self.event_store.save_dynamic_config("shadow_config", {"enabled": self.shadow_mode})
+        async with self.config_update_lock:
+            if enabled:
+                self.shadow_mode = True
+            await self.event_store.save_dynamic_config("shadow_config", {"enabled": bool(enabled)})
+            self.shadow_mode = bool(enabled)
         logger.info("Shadow Mode %s", "ENABLED (no physical sends)" if enabled else "disabled")
+
+    def is_scene_shadow(self, scene_id: str) -> bool:
+        return not self.action_queue.simulated and scene_id not in self.allowed_scenes
+
+    async def set_delivery_scenes(self, scene_ids: list[str]) -> None:
+        if any(not re.fullmatch(r"group:[1-9][0-9]*", scene) for scene in scene_ids):
+            raise ValueError("实发群名单必须是有效的 QQ 群号")
+        scenes = set(scene_ids)
+        async with self.config_update_lock:
+            await self.event_store.save_dynamic_config("delivery_scenes", {"scene_ids": sorted(scenes)})
+            self.allowed_scenes = scenes
 
     async def _record_shadow_action(self, action: ActionItem) -> None:
         """Shadow recorder: 'what WOULD have been sent' — observation only, no social fact."""
@@ -342,6 +373,8 @@ class AgentRuntime:
 
     async def receive_event(self, event: Event) -> None:
         """Entrypoint for all inbound events. Dispatches to SceneActor (single commit authority)."""
+        if self.shadow_mode or self.is_scene_shadow(event.scene_id):
+            event.metadata["delivery_origin"] = "shadow"
         await self.scene_manager.dispatch_event(event)
 
     async def commit_tool_observation(self, event: Event) -> None:
@@ -486,6 +519,8 @@ class AgentRuntime:
                 )
             )
             return
+        if self.shadow_mode or self.is_scene_shadow(burst.scene_id):
+            burst.origin_mode = "shadow"
         self._queue_social_cognition(burst)
 
     def _queue_social_cognition(self, burst: Stimulus) -> None:
@@ -536,6 +571,10 @@ class AgentRuntime:
                 raw_events = await self.event_store.get_recent_events(scene_id, limit=12_000)
                 raw_events = [e for e in raw_events if e.metadata.get("_rowid", 0) <= observed]
                 raw_events = await self.event_store.project_reply_context(scene_id, raw_events)
+                if any(e.metadata.get("_rowid", 0) > session.last_cognized_event_rowid
+                       and _is_shadow_input(e)
+                       for e in raw_events):
+                    mailbox.origin_mode = "shadow"
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
                 pending_wake = await self.event_store.get_pending_next_wake(scene_id)
                 tasks = await self.event_store.scene_tasks(scene_id)
@@ -574,6 +613,8 @@ class AgentRuntime:
                     events = [e for e in events if e.metadata.get("_rowid", 0) <= target]
                     events = await self.event_store.project_reply_context(scene_id, events)
                     observed = target
+                    if any(_is_shadow_input(e) for e in events):
+                        mailbox.origin_mode = "shadow"
                     source_ids.extend(e.id for e in events if e.id not in source_ids)
                     mailbox.fetch_unseen_interim_events()
                     mailbox.consume_follow_ups()
@@ -613,7 +654,7 @@ class AgentRuntime:
                         result.future_attention = None
                     decision = await actor.commit_cognitive_turn(
                         result, observed, source_ids,
-                        "shadow" if self.shadow_mode or burst.origin_mode == "shadow" else "live",
+                        "shadow" if self.shadow_mode or self.is_scene_shadow(scene_id) or mailbox.origin_mode == "shadow" else "live",
                         episode_id, mailbox, self.runtime_gate, social_revision=social_revision,
                     )
                     if decision is False:

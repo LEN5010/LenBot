@@ -155,6 +155,7 @@ class BurstAssembler:
             has_mention_bot=any(event.is_mention_bot for event in events),
             has_reply_bot=any(event.is_reply_bot for event in events),
             timestamp=events[-1].timestamp,
+            origin_mode="shadow" if any(e.metadata.get("delivery_origin")=="shadow" for e in events) else "live",
             events=events,
         )
 
@@ -171,7 +172,7 @@ class BurstAssembler:
             source_event_ids=[event.id],
             actor_id=event.actor_id,
             combined_text=event.raw_text,
-            origin_mode=event.payload.get("origin_mode", "live"),
+            origin_mode="shadow" if event.metadata.get("delivery_origin")=="shadow" else event.payload.get("origin_mode", "live"),
             timestamp=event.timestamp,
             events=[event],
         )

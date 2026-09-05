@@ -1,4 +1,5 @@
 """ADR-0040 task commits, delivery ambiguity and durable recovery."""
+from delivery_support import allow_fake_delivery
 import asyncio
 import pytest
 from len_bot.config import RuntimeConfig
@@ -26,6 +27,7 @@ async def pending(rt):
 async def test_missing_task_reference_blocks_acknowledgement(tmp_path):
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")))
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     try:
         decision = await proposal(rt, messages=[MessageProposal(content="好，到点叫你", task_ref="missing")])
         assert not decision.accepted
@@ -38,13 +40,17 @@ async def test_missing_task_reference_blocks_acknowledgement(tmp_path):
 async def test_update_cancel_scoped_and_no_partial_commit(tmp_path):
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")))
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1', 'group:2')
     try:
         task = await pending(rt)
         wrong = await proposal(rt, [TaskProposal(operation="cancel", task_id=task.id)], scene="group:2")
         assert not wrong.accepted
         changed = rt.clock()+3600
+        await rt.set_shadow_mode(True)
         assert (await proposal(rt, [TaskProposal(operation="update", task_id=task.id, due_at=changed)])).accepted
         assert (await rt.event_store.get_pending_tasks())[0]["due_at"] == changed
+        await rt.set_shadow_mode(False)
+        assert (await rt.event_store.scene_tasks("group:1"))[0]["origin_mode"] == "shadow"
         bad = await proposal(rt, [TaskProposal(operation="cancel", task_id=task.id),
                                  TaskProposal(operation="cancel", task_id="missing")])
         assert not bad.accepted
@@ -71,6 +77,7 @@ async def test_fulfilment_waits_for_actual_delivery(tmp_path, delivery, status):
         return social_result(reason="履约", content="该起床了", fulfils_task_id=task.id)
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")), send_adapter=send, mock_social_handler=core)
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
     try:
         task = await pending(rt)
@@ -96,6 +103,7 @@ async def test_claim_and_due_event_survive_crash(tmp_path):
     config = RuntimeConfig(db_path=str(tmp_path/"restart.db"))
     rt = AgentRuntime(config, mock_social_handler=lambda messages: asyncio.sleep(0, result=social_result(reason="核对")))
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
     task = await pending(rt)
     due = Event(event_type=EventType.TASK_DUE, scene_id="group:1", actor_id="system:scheduler", payload={"task_id":task.id})
@@ -117,6 +125,7 @@ async def test_claim_and_due_event_survive_crash(tmp_path):
 async def test_incomplete_delivery_never_auto_resends_after_restart(tmp_path):
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"uncertain.db")))
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
     try:
         task = await pending(rt)

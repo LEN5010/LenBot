@@ -94,6 +94,7 @@ class ActionQueue:
             await self.shadow_recorder(action)
         await self._emit(Event(event_type=EventType.ACTION_SHADOWED, scene_id=action.scene_id,
             actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
+            metadata={"simulated": self.simulated},
             payload={**self._payload(action), "origin_mode": "shadow"}))
         return True
 
