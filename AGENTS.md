@@ -1,9 +1,12 @@
 # AGENTS.md - Developer & Agent Engineering Guide
 
-## 当前实施基线（2026-09-06，ADR-0040）
+## 当前实施基线（2026-09-06，ADR-0040/0041/0042）
 
 以下旧版章节中 FAST/FULL、直接 @ 抢占、反思直接提任务及完整世界快照的描述已被 ADR-0040 取代。
-生产入口只有 SocialCognitionCore；工具结果和新增事件留在同一有界回合，SceneActor 校验观察游标，Gate 原子提交增量状态和任务。
+生产入口只有 SocialCognitionCore；最终最多续接一次。普通聊天按实际读取截点提交，任务和 OpenLoop 严格核对最新输入；SceneActor 校验执行权与 social_revision，Gate 原子提交。DeliveryResult 区分 sent/not_sent/rejected/unknown，缺适配器不能算发送成功。
+ADR-0042 允许最终续接在剩余预算内使用工具；不足三个模型步骤或没有工具额度时不吸收新请求，留给下一轮。每轮五个模型步骤、六次工具执行，格式修复计入步骤。
+账号昵称、群名片由事件更新；偏好称呼和有证据的相处反馈属于增量理解。列表使用添加/移除，省略不清空。记忆 upsert/refute/supersede 与工作状态、真实 ID 回执及回复在同一 Gate 事务提交，冲突回滚不能发送确认。
+启用的全局/本群表达样例按固定顺序全部提供，不再按使用次数轮换。新版嘉然预设由面板预览后显式应用，保留人工编辑；启动不覆盖人格。
 任务到期不是履约；真实 MESSAGE_SENT 才确认提醒完成，发送不确定不自动重发，Shadow 仅记录 shadow_observed。
 反思只提交记忆、版本化补丁及待核对事项，游标与内部事件同事务持久化。旧范围会一次性重新反思核对，不能自动补发过期提醒。
 ReplayLab 使用隔离数据库运行生产 Actor/Burst/Core/Gate/Scheduler/Shadow Queue；真实模型模式缺少配置或调用失败必须报告失败。
@@ -49,14 +52,13 @@ src/len_bot/
 ├── cognition/           # Ephemeral cognitive execution
 │   ├── mailbox.py       # EpisodeMailbox (in-flight steering & cancellation)
 │   ├── models.py        # EpisodeOutcome, MessageProposal, TaskProposal, FinalDisposition
-│   ├── fast_core.py     # FastSocialCognition (one-shot SILENCE/SPEAK/FULL; ADR-0038)
 │   ├── persona.py       # Layered persona blocks (identity core / self state / register / exemplars)
 │   ├── projection.py    # Shared model-facing CQ projection + token budgeting
 │   ├── react_core.py    # ReActAgentCore (legacy V3 ReAct loop; kept for boundary tests only)
-│   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing incl. fast)
+│   ├── providers.py     # ProviderRegistry (multi-provider config & tier routing normal/deliberate/fallback)
 │   ├── router.py        # CognitionRouter (Normal <-> Deliberate escalation)
-│   ├── session.py       # GroupAgentSession, Social/FastCognitionResult + session reducer
-│   └── social_core.py   # SocialCognitionCore (FULL path) + direct working-context assembly
+│   ├── session.py       # GroupAgentSession, SocialCognitionResult + session reducer
+│   └── social_core.py   # SocialCognitionCore (unified path) + direct working-context assembly
 ├── events/              # Immutable event bus & raw storage
 │   ├── builder.py       # BurstAssembler (scene event coalescing; no social judgement)
 │   ├── models.py        # Event, EventType, Stimulus, StimulusType
@@ -69,7 +71,7 @@ src/len_bot/
 │   ├── store.py         # MemoryStore (episodes, memories, reflection cursors)
 │   └── writes.py        # Unified memory proposal validation & transactional resolution
 ├── runtime/             # Core persistent runtime
-│   ├── agent_runtime.py # AgentRuntime coordinator (FAST/FULL routing, ADR-0038)
+│   ├── agent_runtime.py # AgentRuntime coordinator (bounded continuation, ADR-0041)
 │   ├── gate.py          # RuntimeGate (staleness gate, two-phase commit)
 │   ├── metrics.py       # RuntimeMetrics (routing + social counters + latency phases)
 │   └── style_guard.py   # Local anti-slop detector (duplicates/openers/n-grams)
@@ -122,9 +124,7 @@ Every scene (group chat or private chat) has a dedicated `SceneActor` coroutine 
 - An in-flight episode attaches an `EpisodeMailbox` to the actor to receive steering events.
 
 ### Step-Boundary Steering (ADR-0002)
-The `EpisodeMailbox` API (`is_cancelled()`, `consume_follow_ups()`, `fetch_unseen_interim_events()`) carries steering signals into an in-flight episode:
-- If a user sends "算了/不用了/别查了", `SteeringType.CANCEL` is recorded and cognition aborts early with `FinalDisposition.SILENCE`.
-- Only the legacy `ReActAgentCore` (boundary tests) polls the mailbox at step boundaries; the production `SocialCognitionCore` relies on the SceneActor observation-cursor check plus `RuntimeGate`'s commit-time staleness rejection instead (ADR-0026/0035).
+Human inputs steer cognition at tool boundaries and at most once after a final draft. Explicit runtime cancellation always blocks commit; natural-language intent belongs to Social Core. Ordinary @ does not destroy ongoing tool work.
 
 ### Ambient ExecutionScope (ADR-0006)
 All retrieval tools (`search_messages`, `read_context`, `query_timeline`, `query_person_history`, `query_memory`, `inspect_episode`) take `allowed_scopes: list[str]`.
@@ -146,6 +146,13 @@ Epistemic beliefs follow strict evidence-based provenance and semantic slot supe
 - L2 beliefs store evidence event IDs; slot conflicts (`subject`, `kind`, `key`, `scope`) update previous records to `SUPERSEDED` pointing to `superseded_by` rather than erasing history.
 - Privacy boundaries (`ExecutionScope`) are rigidly enforced at SQL layer (`WHERE scope IN ({placeholders})`; the `visibility` column was fully removed by ADR-0024); private chat secrets can never be retrieved or leaked into public groups.
 - Exponential temporal decay sweeper discounts stale unreinforced tentative beliefs while access frequency reinforces enduring knowledge.
+
+### Revisable Understanding (ADR-0042)
+
+- `MemoryChange` is the shared cognition/reflection contract. `refute` targets one active memory; `supersede` may merge several active same-subject/same-kind keys. Revisions preserve original evidence plus revision reason/evidence, and default retrieval excludes retired records.
+- `RuntimeGate` commits revisions, sparse session updates and memory receipts atomically. `SceneActor` publishes the returned session only after commit. It validates evidence scope/cutoff; working memory references are rechecked inside the write transaction.
+- Initial context, continuation and retrieval show account ID, nickname, card, message/event IDs and explicit quote context. Preferred address never follows card refresh. A one-time pre-actor migration restores the two factual names from raw events, without guessing preferred address.
+- Reflection compares `social_revision` and its cursor before any batch write; a conflict rolls back episode, memories and cursor and rearms the existing quiet window. Delayed envelopes cannot reapply old summaries, patches or memory receipts; they return to cognition for rechecking instead.
 
 ### Plugin Runtime Isolation & Sensory Decoupling (ADR-0016)
 Plugin capabilities are managed via `PluginHost` sandboxing:
@@ -185,7 +192,7 @@ Cross-time social continuity for promises and retained interests:
 ### Control Plane Query Service, Trace & Replay Lab (ADR-0022)
 - `RuntimeQueryService` is the only read facade for web routes — no route touches `runtime.*._db`, `_actors` or `_plugins`; interventions keep their authority paths (loop resolve goes through `OpenLoopManager`).
 - `traces` table stores per-burst `social_cognition` chain rows (burst → Social Core → decision → gate → durable effects → actions): the "why did the bot speak/stay silent" question is answerable from the Trace view.
-- Metrics/social endpoints, filtered event queries, and an in-memory log ring (`GET /api/logs`) complete observability. `ReplayLab` deterministically replays a recorded window through the pure `GroupAgentSession` reducer + the runtime's `SocialCognitionCore` (Replay Lab, Policy view via `POST /api/replay`).
+- Metrics/social endpoints, filtered event queries, and an in-memory log ring (`GET /api/logs`) complete observability. `ReplayLab` deterministically replays a recorded window through the production Actor/Burst/Core/Gate/Scheduler/Shadow Queue (Replay Lab, Policy view via `POST /api/replay`).
 - The Vue 3 + Vite frontend (`web/frontend/`, builds to `web/static/dist/`) implements the ten-view information architecture; CORS wildcard+credentials was removed.
 
 ### Shadow Mode (ADR-0023)
@@ -205,9 +212,7 @@ Cross-time social continuity for promises and retained interests:
 - Open loops resolve under atomic `WHERE id=? AND scene_id=? AND status='active'` guarantees.
 
 ### Semantic Staleness Gate & Interim Filtering (ADR-0026)
-- `EpisodeMailbox` only accepts human chat events (`GROUP_MESSAGE_RECEIVED`, `PRIVATE_MESSAGE_RECEIVED`), filtering out internal state and sensor facts.
-- Multi-step cognition checks `mailbox.has_unseen_interim()` at step boundaries (now only in the legacy `ReActAgentCore`); in the production Social Core path, `RuntimeGate` re-checks unseen interim human events at commit time and fails closed to `SILENCE`.
-- `RuntimeGate` rejects stale outcomes where interim human events were not incorporated, tracking `stale_outcomes_rejected`.
+ADR-0041 supersedes the production global-freshness rule. Ordinary chat may commit at its actual read cutoff; task and OpenLoop operations require strict freshness. Actor checks social_revision and lease ownership; late events remain pending, never marked read by clearing mailbox.
 
 ### Participation Lifecycle & Attention Continuation (ADR-0027)
 **Superseded** — the `ParticipationThread` fade/close lifecycle and the attention continuation rules were removed with the V3 attention module; participation and thread continuity are judged by the `SocialCognitionCore` inside `GroupAgentSession` state (ADR-0032/0033).
@@ -244,7 +249,7 @@ Cross-time social continuity for promises and retained interests:
 
 ### Social Cognition Core Contract (ADR-0033)
 - Every valid burst enters the `SocialCognitionCore`, which sees the `GroupAgentSession`, token-budgeted projected raw events, the ordered burst, and active open loops — no generic top-k memory injection.
-- The strict `SocialCognitionResult` carries perception + full `SocialWorldState` snapshot, `SelfSocialState` update, exactly one `speak`/`silence` decision, and typed proposals. `silence` forbids messages; `speak` requires one.
+- The strict `SocialCognitionResult` carries perception + sparse `SocialWorldPatch`, `SelfSocialState` update, exactly one `speak`/`silence` decision, and typed proposals. `silence` forbids messages; `speak` requires one.
 - Social inference runs outside `SceneActor`; the actor validates the observation cursor and evidence IDs, then atomically commits `SOCIAL_COGNITION_RECORDED` + updated session, or rejects stale results. The LLM never writes session state directly.
 
 ### Durable Ambient Wake (ADR-0034)
@@ -261,16 +266,10 @@ Cross-time social continuity for promises and retained interests:
 - The legacy boundary-test loop `PiAgentCore` is renamed `ReActAgentCore` (`cognition/react_core.py`) — the "Pi" name referenced an abandoned external-framework plan and never matched any dependency. The informal "V4 Stage 4" name for this batch is retired; ADR-0032 reserves Stage 4 for session context rollover.
 
 ### Token-Budgeted Context and Direct Preemption (ADR-0037)
-- CQ media payloads are compacted only in the model-facing projection; raw events remain immutable. Recent raw conversation rolls over from the oldest edge only after the 200K-token input budget is reached.
-- A direct mention/reply may cancel an older same-scene model call while it is still in inference, because that result is already guaranteed to fail freshness. Scene commits, Gate evaluation, and action delivery are never preempted.
+The 200K context budget includes state, tools and output reserve. Projection preserves complete raw events when rolling out oldest history. Direct @ preemption was removed by ADR-0040; tool results remain in the same bounded turn.
 
 ### Fast/Full Cognition Split & Voice Architecture (ADR-0038)
-- `FastSocialCognition` (`cognition/fast_core.py`) is the production entry for casual social bursts: ONE small-model call (`fast` tier, degrades to `normal` when unset) that outputs `silence`, `speak` with final short messages, or `full`. Routing is structural only — `TASK_DUE`/tool-completion bursts go straight to FULL; no keyword/relevance rules exist anywhere.
-- FAST's contract is deliberately unexpressive: no world/person/relationship updates, no memory candidates, no task proposals. Its commit path (`SceneActor.submit_fast_cognition`) enforces the same observation-cursor staleness contract and emits `SOCIAL_COGNITION_RECORDED` with `payload.kind == "fast"`; `GroupAgentSessionReducer.apply_fast_cognition` advances immediate state only. An unrecoverable FAST failure escalates to FULL — never to a hallucinated reply or a dropped burst.
-- Persona is layered, not two static strings: Identity Core (observable behavioural tendencies, `identity_core`, editable via Control Plane) + adaptive self state + per-scene **Group Register** (deterministic reducer stats over human messages: lengths/fragments/punctuation/emoji/questions/short reactions — style context only, never a decision input) + **Dynamic Voice Exemplars** (`voice_exemplars` table, `GET/POST /api/voice/exemplars`, LRU rotation with use-count bumping — style imitation, never verbatim reuse).
-- Deferred cognition: the quiet-window reflector additionally proposes a merge-only `SocialWorldPatch` (mood/topics/dynamics/group identity, topic ids grounded in real event ids) applied through the standard `SOCIAL_COGNITION_RECORDED` event path so the SceneActor stays the single session writer. FULL results continue to replace the world snapshot wholesale.
-- Anti-slop: `runtime/style_guard.py` is a local detector (exact duplicates, repeated openers, repeated n-grams) recording `style_slop_flags` and triggering at most one corrective FAST retry per burst (`style_retries`). No per-reply LLM critic.
-- Metrics: `bursts_total`, `cognition_fast_calls/speak/silence/to_full`, `cognition_full_calls`, `cognition_deliberate_calls`, plus latency percentiles per phase (`event_to_burst`, `burst_to_request`, `model_total`, `gate`) in `metrics.snapshot().latency`.
+Superseded by ADR-0040/0041/0042. No FAST production path or style-retry pipeline remains. One Social Core carries identity, character reference, social state and stable operator-authored voice examples. Examples are not evidence of past speech. Normal/deliberate routing remains operator-configured; identical provider/model targets are not logged as a real model upgrade.
 
 ---
 

@@ -33,11 +33,6 @@ class RuntimeConfig(BaseModel):
         description="Context-window reserve for the structured cognition result",
     )
 
-    voice_example_count: int = Field(
-        default=3,
-        description="Dynamic voice exemplars injected per cognition call (ADR-0038 §5)",
-    )
-    
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(
         default=150.0,
@@ -57,6 +52,7 @@ class RuntimeConfig(BaseModel):
     # Identity (ADR-0038: layered persona — identity core + style line + adaptive
     # self state + group register + voice exemplars, not two static strings)
     identity_name: str = "Len"
+    character_context: str = ""
     identity_core: str = (
         "行为倾向(可观察):\n"
         "- 熟人面前随意直接,常用短句和吐槽;对陌生人客气但保持距离,不主动套近乎。\n"

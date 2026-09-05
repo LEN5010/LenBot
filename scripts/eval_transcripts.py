@@ -55,7 +55,7 @@ async def _build_social_core(config: RuntimeConfig, scripted: bool, provider_db:
             row = db.execute("SELECT value_json FROM runtime_dynamic_configs WHERE key='persona_config'").fetchone()
             if row:
                 for key, value in json.loads(row[0]).items():
-                    if key in {"identity_name", "identity_core", "identity_persona", "conversation_style", "bot_qq"}:
+                    if key in {"identity_name", "identity_core", "identity_persona", "conversation_style", "character_context", "bot_qq"}:
                         setattr(config, key, value)
     elif not scripted:
         seed_provider = ProviderConfig(
@@ -118,7 +118,12 @@ async def main():
     social_core, scripted = await _build_social_core(config, args.scripted, args.provider_db)
     print(f"Social Core mode: {'scripted (offline)' if scripted else 'live provider'}")
 
-    lab = ReplayLab(config=config, social_core=social_core, tool_mode=args.tools)
+    examples = []
+    if args.provider_db:
+        with sqlite3.connect(Path(args.provider_db).resolve().as_uri() + "?mode=ro", uri=True) as db:
+            examples = [dict(zip(("scene_id", "content", "context", "tag"), row)) for row in db.execute(
+                "SELECT scene_id,content,context,tag FROM voice_exemplars WHERE enabled=1")]
+    lab = ReplayLab(config=config, social_core=social_core, tool_mode=args.tools, voice_examples=examples)
     results = await lab.run(events, until=args.until)
 
     out_data = {

@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 
@@ -224,9 +225,9 @@ async def test_next_wake_recovers_fires_in_shadow_and_cannot_self_renew(tmp_path
 
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def wake_core(_messages):
         return cognition_result(

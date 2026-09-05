@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import pytest
 import asyncio
 import time
@@ -212,9 +213,9 @@ async def test_atomic_proposal_commit_success_and_external_distribution(tmp_path
     db_file = str(tmp_path / "atomic_success.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     sent_items: list[ActionItem] = []
-    async def mock_send(item: ActionItem) -> bool:
+    async def mock_send(item: ActionItem) -> DeliveryResult:
         sent_items.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     runtime = AgentRuntime(config, send_adapter=mock_send)
     await runtime.start()

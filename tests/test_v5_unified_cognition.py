@@ -1,4 +1,5 @@
 """ADR-0040: one social processor, continuous inputs, deterministic authority."""
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import pytest
 from len_bot.config import RuntimeConfig
@@ -21,7 +22,7 @@ async def test_one_core_commits_speech_or_intentional_silence(tmp_path, content)
         return social_result(reason="看懂后自主决定", content=content)
     async def send(action):
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"one.db")), send_adapter=send, mock_social_handler=core)
     await rt.start()
     try:
@@ -46,7 +47,7 @@ async def test_multi_message_and_expected_reply_still_use_delivery_confirmation(
     async def send(action):
         entered.set()
         await release.wait()
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"reply.db")), send_adapter=send, mock_social_handler=core)
     await rt.start()
     try:
@@ -96,8 +97,9 @@ async def test_only_model_requests_deliberate():
     toolkit = _Toolkit()
     core = SocialCognitionCore(RuntimeConfig(), registry)
     _, trace = await core.execute(GroupAgentSession(scene_id="group:memory"), _burst(), [], [], toolkit=toolkit)
-    assert [t.value for t in registry.tiers] == ["normal", "deliberate"]
+    assert [t.value for t in registry.tiers] == ["normal", "normal", "deliberate", "normal"]
     assert trace["escalations"][0]["reason"] == "model_requested"
+    assert trace["escalations"][0]["actual_model_changed"] is False
     assert toolkit.calls == []
 
 @pytest.mark.asyncio

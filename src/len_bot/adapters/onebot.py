@@ -9,7 +9,7 @@ import httpx
 import websockets
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
-from len_bot.actions.models import ActionItem, ActionType
+from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class OneBotAdapter:
         self._last_error = None
         if self.config.onebot_connection_mode == "forward_ws":
             self._client_task = asyncio.create_task(self._forward_connection_loop())
-            logger.info("OneBot forward WebSocket connector started for %s", self.config.onebot_ws_url)
+            logger.info("OneBot forward WebSocket connector started")
             return
         self._server = await websockets.serve(
             self._handle_connection,
@@ -48,6 +48,10 @@ class OneBotAdapter:
             ping_timeout=20,
         )
         logger.info("OneBot reverse WebSocket server started on ws://%s:%s", self.config.ws_host, self.config.ws_port)
+
+    def restore_own_message_ids(self, message_ids: list[str]) -> None:
+        self._own_message_ids.clear()
+        self._own_message_ids.extend(message_ids)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -131,19 +135,19 @@ class OneBotAdapter:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self._last_error = str(error)
-                logger.warning("OneBot forward WebSocket connection failed: %s", error)
+                self._last_error = type(error).__name__
+                logger.warning("OneBot forward WebSocket connection failed: %s", self._last_error)
             if not self._stopping:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 30.0)
 
-    async def send_action(self, action: ActionItem) -> bool:
+    async def send_action(self, action: ActionItem) -> DeliveryResult:
         """Sends action to connected OneBot client via JSON-RPC."""
         if self.config.onebot_action_transport == "http":
             return await self._send_http_action(action)
         if not self._active_ws:
             logger.warning("Cannot send action: No OneBot client connected")
-            return False
+            return DeliveryResult(status=DeliveryStatus.NOT_SENT, transport="websocket", error="OneBot 未连接，请求未发出")
 
         self._echo_counter += 1
         echo = f"echo_{self._echo_counter}"
@@ -161,33 +165,52 @@ class OneBotAdapter:
         try:
             await self._active_ws.send(json.dumps(payload))
             res = await asyncio.wait_for(fut, timeout=10.0)
-            if self._response_ok(res):
-                self._remember_own_message(res)
-                return True
-            logger.warning("OneBot WebSocket action rejected: status=%s retcode=%s", res.get("status"), res.get("retcode"))
-            return False
+            return self._delivery_response(res, "websocket")
         except Exception as e:
-            logger.error("Failed sending OneBot action: %s", e)
-            raise  # ActionQueue records an ambiguous delivery; never retry another transport.
+            return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="websocket",
+                                  error_code=type(e).__name__, error="请求已进入发送阶段，但未取得可靠确认")
         finally:
             self._pending_requests.pop(echo, None)
 
-    async def _send_http_action(self, action: ActionItem) -> bool:
+    async def _send_http_action(self, action: ActionItem) -> DeliveryResult:
         endpoint, params = self._action_payload(action)
         url = f"{self.config.onebot_http_url.rstrip('/')}/{endpoint}"
         try:
             async with httpx.AsyncClient(timeout=10.0, headers=self._auth_headers()) as client:
                 response = await client.post(url, json=params)
-                response.raise_for_status()
+                if not response.is_success:
+                    return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="http",
+                                          error_code=str(response.status_code), error="HTTP 返回异常状态，无法确认消息是否发送")
                 data = response.json()
-            if self._response_ok(data):
-                self._remember_own_message(data)
-                return True
-            logger.warning("OneBot HTTP action rejected: status=%s retcode=%s", data.get("status"), data.get("retcode"))
-            return False
+            return self._delivery_response(data, "http")
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:
+            return DeliveryResult(status=DeliveryStatus.NOT_SENT, transport="http",
+                                  error_code=type(error).__name__, error="HTTP 连接未建立，请求未发出")
         except Exception as error:
-            logger.error("Failed sending OneBot HTTP action: %s", error)
-            raise
+            return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="http",
+                                  error_code=type(error).__name__, error="HTTP 请求未取得可靠发送确认")
+
+    def _delivery_response(self, data: dict, transport: str) -> DeliveryResult:
+        if self._response_ok(data):
+            self._remember_own_message(data)
+            message_id = (data.get("data") or {}).get("message_id")
+            return DeliveryResult(status=DeliveryStatus.SENT, transport=transport,
+                                  message_id=str(message_id) if message_id is not None else None)
+        # Only an explicit protocol failure is a known rejection; async/malformed
+        # responses do not prove that a visible message was not delivered.
+        status = DeliveryStatus.REJECTED if data.get("status") == "failed" else DeliveryStatus.UNKNOWN
+        wording = str(data.get("wording") or data.get("message") or "OneBot 未返回成功确认")
+        token = self.config.onebot_access_token.strip()
+        if token:
+            wording = wording.replace(token, "[已隐藏]")
+        wording = re.sub(r"https?://\S+|wss?://\S+", "[地址已隐藏]", wording)
+        wording = re.sub(r"(?i)Bearer\s+\S+", "Bearer [已隐藏]", wording)
+        result = DeliveryResult(status=status, transport=transport,
+                                error_code=str(data["retcode"]) if "retcode" in data else None,
+                                error=wording[:500])
+        self._last_error = result.error
+        logger.warning("OneBot delivery %s: %s", result.status.value, result.error)
+        return result
 
     async def test_http_connection(self) -> dict:
         url = f"{self.config.onebot_http_url.rstrip('/')}/get_status"

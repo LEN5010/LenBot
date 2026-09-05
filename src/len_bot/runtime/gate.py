@@ -48,6 +48,7 @@ class GateDecision:
         self.actions_enqueued = actions_enqueued
         self.committed_proposal = committed_proposal
         self.accepted = accepted
+        self.action_ids: list[str] = []
 
 class RuntimeGate:
     def __init__(
@@ -75,6 +76,7 @@ class RuntimeGate:
         current_scene_state: SceneState,
         proposal_commit: Optional[ProposalCommit] = None,
         scene_commit: dict | None = None,
+        bounded_chat: bool = False,
     ) -> GateDecision:
         if proposal_commit is None:
             proposal_commit = ProposalCommit(
@@ -93,12 +95,12 @@ class RuntimeGate:
                 self.metrics.inc_social("cancellations_honored")
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
 
-        if mailbox.has_follow_up():
+        if mailbox.has_follow_up() and not bounded_chat:
             logger.info("Gate rejected response due to pending follow-up superseding this outcome")
             return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome", accepted=False)
 
         # ADR-0026 / §8.2: Gate last window check: if unread interim events arrived, reject as stale
-        if mailbox.has_unseen_interim():
+        if mailbox.has_unseen_interim() and not bounded_chat:
             logger.info("Gate rejected response due to unread interim events (semantic staleness)")
             if self.metrics:
                 self.metrics.inc_social("stale_outcomes_rejected")
@@ -237,6 +239,7 @@ class RuntimeGate:
             if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
                 action_origin = "shadow"
             action = ActionItem(
+                source_started_at=mailbox.source_started_at,
                 id=action_ids[index],
                 fulfils_task_id=msg.fulfils_task_id,
                 action_type=action_type,
@@ -249,9 +252,11 @@ class RuntimeGate:
             self.action_queue.enqueue(action)
             actions_count += 1
 
-        return GateDecision(
+        decision = GateDecision(
             FinalDisposition.ACTION,
             f"Approved {actions_count} message proposals",
             actions_enqueued=actions_count,
             committed_proposal=committed_proposal
         )
+        decision.action_ids = action_ids
+        return decision

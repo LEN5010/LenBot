@@ -51,6 +51,11 @@ function engagementLabel(value) {
 function traceLabel(value) {
   return value === 'social_cognition_error' ? '处理失败' : '社交判断'
 }
+function deliveryLabel(event) {
+  if (event.event_type === 'ACTION_SHADOWED') return '仅试运行，未发送'
+  return {sent: '已送达', not_sent: '未发出', rejected: '接口拒绝', unknown: '结果不确定'}[event.payload.delivery_status]
+    || (event.event_type === 'MESSAGE_SENT' ? '已送达' : '旧记录缺少详细原因')
+}
 </script>
 
 <template>
@@ -132,8 +137,48 @@ function traceLabel(value) {
           </div>
           <div class="kv">
             <span class="k">还没聊完的事</span>
-            <span class="v">{{ detail.social_world?.open_threads?.map(t => t.summary).join(' / ') || '—' }}</span>
+            <span class="v">{{ detail.social_world?.open_threads?.filter(t => t.status !== 'resolved').map(t => t.unresolved || t.summary).join(' / ') || '—' }}</span>
           </div>
+        </div>
+      </div>
+
+      <div class="grid cards">
+        <div class="panel">
+          <h2>现在怎样称呼大家</h2>
+          <div v-for="p in detail.working_persons" :key="p.actor_id" class="kv">
+            <div><strong>{{ p.preferred_name || p.card || p.nickname || p.display_name || '尚未确认称呼' }}</strong>
+              <p class="muted">昵称：{{ p.nickname || '未知' }} · 群名片：{{ p.card || '未设置' }}</p>
+              <p>{{ p.recent_context.join('；') }}</p>
+              <details><summary>来源与账号</summary><code>{{ p.actor_id }}</code><p>{{ p.recent_event_ids.join('、') }}</p></details>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>最近收到的反馈</h2>
+          <p v-for="feedback in detail.self_social_state?.recent_feedback" :key="feedback">{{ feedback }}</p>
+          <p v-if="!detail.self_social_state?.recent_feedback?.length" class="muted">暂未记录明确反馈</p>
+          <h3>相处方式</h3>
+          <p v-for="r in detail.working_relationships" :key="r.actor_id">{{ detail.working_persons[r.actor_id]?.preferred_name || detail.working_persons[r.actor_id]?.display_name || r.actor_id }}：{{ r.patterns.join('；') }}</p>
+        </div>
+        <div class="panel">
+          <h2>最近修订的认识</h2>
+          <div v-for="m in detail.recent_memory_changes" :key="m.id" class="kv">
+            <div><span class="tag">{{ m.operation === 'refute' ? '已撤销' : m.operation === 'supersede' ? '已替代旧认识' : '已记住' }}</span>
+              <p>{{ m.value }}</p><p class="muted">{{ m.reason }}</p>
+              <details><summary>证据详情</summary><code>{{ m.id }}</code><p>{{ m.evidence.join('、') }}</p></details>
+            </div>
+          </div>
+          <p v-if="!detail.recent_memory_changes?.length" class="muted">暂无修订记录</p>
+        </div>
+        <div class="panel">
+          <h2>消息是否送达</h2>
+          <div v-for="e in detail.recent_deliveries" :key="e.id" class="kv">
+            <div><span class="tag" :class="e.event_type === 'MESSAGE_SEND_FAILED' ? 'bad' : 'ok'">{{ deliveryLabel(e) }}</span>
+              <p>{{ e.payload.content }}</p><p class="muted">{{ e.payload.error }}</p>
+              <details><summary>发送详情</summary><p>{{ new Date(e.timestamp * 1000).toLocaleString() }}</p><code>{{ e.payload.action_id }}</code></details>
+            </div>
+          </div>
+          <p v-if="!detail.recent_deliveries?.length" class="muted">暂无发送记录</p>
         </div>
       </div>
 
@@ -155,7 +200,7 @@ function traceLabel(value) {
                 <span class="tag" :class="t.kind === 'social_cognition_error' ? 'bad' : 'ok'">{{ traceLabel(t.kind) }}</span>
               </td>
               <td>{{ t.payload.result?.perception?.summary || t.payload.error || '—' }}</td>
-              <td>{{ t.payload.result?.decision?.action === 'speak' ? '准备发言' : t.payload.result?.decision?.action === 'silence' ? '选择沉默' : '未完成' }}</td>
+              <td>{{ t.payload.result?.decision?.action === 'speak' ? '准备发言' : t.payload.result?.decision?.action === 'silence' ? '选择沉默' : '未完成' }}<p class="muted">{{ t.payload.result?.decision?.reason || t.payload.gate?.reason }}</p></td>
             </tr>
             <tr v-if="!detail.timeline?.length">
               <td colspan="4" class="muted" style="text-align: center; padding: 20px;">该场景暂无行为链路记录</td>

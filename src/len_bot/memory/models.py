@@ -1,6 +1,6 @@
 from enum import StrEnum
-from typing import Any, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Optional, Literal
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 import uuid
 import time
 
@@ -53,6 +53,8 @@ class MemoryItem(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     status: MemoryStatus = MemoryStatus.ACTIVE
     superseded_by: Optional[str] = None
+    revision_reason: str = ""
+    revision_evidence: list[str] = Field(default_factory=list)
     access_count: int = 0
     last_accessed_at: Optional[float] = None
     decay_score: float = 1.0
@@ -60,13 +62,32 @@ class MemoryItem(BaseModel):
     created_at: float = Field(default_factory=time.time)
     last_confirmed_at: float = Field(default_factory=time.time)
 
-class MemoryProposal(BaseModel):
-    subject: str
-    kind: MemoryKind
-    key: str
-    value: str
+class MemoryChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["upsert", "refute", "supersede"] = "upsert"
+    target_memory_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+    subject: str = ""
+    kind: MemoryKind = MemoryKind.FACT
+    key: str = ""
+    value: str = ""
     temporal: str = "recent"
-    certainty: MemoryCertainty = MemoryCertainty.LIKELY
-    scope: str = Field(default="", description="Scope injected authoritatively by runtime")
+    certainty: MemoryCertainty = MemoryCertainty.TENTATIVE
     evidence: list[str]
-    human_readable_assertion: str
+    human_readable_assertion: str = ""
+
+    @model_validator(mode="after")
+    def revision_shape(self):
+        if self.operation == "upsert" and self.target_memory_ids:
+            raise ValueError("Use supersede or refute to revise memory IDs")
+        if self.operation != "upsert" and (not self.target_memory_ids or not self.reason.strip()):
+            raise ValueError("Memory revision requires target_memory_ids and reason")
+        if self.operation == "refute" and len(self.target_memory_ids) != 1:
+            raise ValueError("Each refute proposal targets one memory")
+        if len(set(self.target_memory_ids)) != len(self.target_memory_ids):
+            raise ValueError("Duplicate memory revision targets")
+        return self
+
+
+class MemoryProposal(MemoryChange):
+    scope: str = Field(default="", description="Scope injected authoritatively by runtime")

@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 
@@ -64,9 +65,9 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
     sent: list[ActionItem] = []
     prompts: list[str] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(messages):
         prompt = messages[-1]["content"]
@@ -232,9 +233,9 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
     calls = 0
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(messages):
         nonlocal calls
@@ -281,9 +282,9 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
 async def test_runtime_gate_keeps_only_hard_anti_loop_ceiling(tmp_path):
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(_messages):
         return result(summary="仍想发言", reason="有内容可说", content="第五句")

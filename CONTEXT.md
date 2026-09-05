@@ -1,12 +1,31 @@
 # Persistent Social Agent Runtime - Ubiquitous Domain Language (CONTEXT.md)
 
-Current implementation: ADR-0040 supersedes the FAST/FULL split. One Social Core proposes sparse updates and task operations; SceneActor and RuntimeGate own the atomic commit. In-flight event incorporation preserves completed tool work. Task delivery confirmation, ambiguous sends, and shadow observation are distinct states. Reflection produces review items, never executable tasks. Real-provider/group evaluation remains pending; the attempted local replay failed on provider connectivity. ADR-0039 remains unimplemented.
 
 A persistent runtime environment for autonomous social agents that maintains temporal continuity, social relationships, and execution state across scenes, treating LLMs strictly as ephemeral cognitive executors.
 
 ---
 
 ## 1. World & Observation
+
+**Preferred Address**:
+A participant's scene-local preferred form of address, supported by their conversation rather than inferred from account nickname or group card alone.
+_Avoid_: Account identity, inferred real name
+
+**Memory Revision**:
+An evidence-backed correction that refutes an existing belief or replaces it while preserving the original and its provenance.
+_Avoid_: Erasing history, verbal acknowledgement
+
+**Observed Cutoff**:
+The last scene event actually read by a cognitive turn. Later messages remain pending, even when that turn's ordinary chat response is accepted.
+_Avoid_: Latest event, assumed understanding
+
+**Social Revision**:
+The version of the agent's interpreted social understanding, distinct from newly observed message facts.
+_Avoid_: Message counter, scene activity
+
+**Delivery Result**:
+The factual outcome of an outbound attempt: confirmed sent, not sent, explicitly rejected, or uncertain. Only confirmed sent establishes visible participation.
+_Avoid_: Boolean success, assumed delivery
 
 **Event**:
 An immutable, historical record of a factual occurrence in the external world or within the runtime (e.g., `GROUP_MESSAGE_RECEIVED`, `TASK_DUE`, `MESSAGE_SENT`).
@@ -79,14 +98,6 @@ _Avoid_: Model switcher, prompt dispatcher
 **Retrieval Tool Loop**:
 The bounded ReAct loop inside Social Cognition Core through which the model may call history and memory retrieval tools on demand before producing its structured decision.
 _Avoid_: Auto-RAG, per-message memory injection, agent framework
-
-**Fast Social Cognition**:
-The one-shot low-latency cognition call for casual social bursts that decides silence, speaks final short messages, or escalates to full cognition — nothing else.
-_Avoid_: Classifier, attention filter, cheap model substitute for judgement
-
-**Full Cognition**:
-The complete Social Cognition Core episode with agentic retrieval, world-model rebuild, and typed proposals, used for complex, tool-bound, or escalated bursts.
-_Avoid_: Slow mode, retry path, optional luxury
 
 **Tool Budget**:
 The deterministic per-episode ceiling on retrieval tool executions (`max_tool_calls`); exhausting it, or reaching the last loop step, forces a final decision via `tool_choice="none"`.
@@ -229,20 +240,12 @@ Per-scene factual statistics of how the group actually chats (message length, fr
 _Avoid_: Style rule engine, accommodation enforcer, vocabulary copier
 
 **Voice Exemplar**:
-A curated record of the bot's own past expression used as rotating few-shot style material; selection is least-recently-used per scene and never copied verbatim into replies.
-_Avoid_: Fixed few-shot block, template reply, training data claim
-
-**Immediate State**:
-The strictly consistent state a FAST result commits in the current event chain: observation cursor, bot's own message facts, open loops, consecutive-message counters, staleness, and gate authority.
-_Avoid_: Cached reply state, lazy write, eventually-consistent side effects
+A curated, operator-authored example with conversational context, used as a stable reference for expression. It is not evidence of a real conversation or a response to copy verbatim.
+_Avoid_: Past speech claim, template reply, training data claim
 
 **Deferred Cognition**:
-Long-horizon social understanding (group mood, topic evolution, identity) proposed by quiet-window reflection as a merge-only patch applied through the lawful event path after the fact.
+Long-horizon social understanding proposed by quiet-window reflection. It can revise earlier beliefs, while newer understanding takes precedence over an outdated reflection.
 _Avoid_: Second cognition agent, blocking pre-send work, wholesale world rewrite
-
-**Style Guard**:
-A purely local anti-slop detector over the bot's recent messages (duplicates, repeated openers, repeated n-grams) that feeds metrics and permits at most one corrective retry.
-_Avoid_: LLM critic, output censorship, sampler-only fix
 
 ---
 
@@ -253,7 +256,7 @@ A deterministic anti-loop and spam safety limit that rejects extreme output patt
 _Avoid_: Social judgement, participation heuristic
 
 **Monologue Prevention**:
-A hard budget barrier that forbids unsolicited proactive initiative when the bot has already sent two or more consecutive messages without human intervention.
+A hard safety ceiling on extreme consecutive output without human intervention, not a judgement of normal social timing.
 _Avoid_: Spam check, flood gate
 
 **Retained Attention**:
@@ -263,10 +266,6 @@ _Avoid_: Reminder, pending reply, hidden task
 **Projected Social Context**:
 A model-facing view of immutable OneBot events that replaces transport-only CQ payloads with compact semantic markers and rolls out the oldest raw messages only when the configured token budget is reached.
 _Avoid_: Raw-history rewrite, summary-only context, fixed message-count window
-
-**Direct Cognition Preemption**:
-Deterministic cancellation of an in-flight model call when a newer direct mention or reply in the same scene makes its result necessarily stale; the SceneActor, Gate, and action commit paths are never interrupted.
-_Avoid_: Attention heuristic, priority classifier, bypass response
 
 ---
 

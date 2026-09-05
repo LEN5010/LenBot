@@ -141,7 +141,10 @@ async def test_item3_message_sent_and_open_loop_atomic_commit(tmp_path):
     """
     db_file = str(tmp_path / "atomic_open_loop.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
-    runtime = AgentRuntime(config)
+    from len_bot.actions.models import DeliveryResult, DeliveryStatus
+    async def send(action):
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+    runtime = AgentRuntime(config, send_adapter=send)
     await runtime.start()
 
     scene_id = "group:atomic_loop"

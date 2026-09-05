@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Optional, Callable, Awaitable
-from len_bot.actions.models import ActionItem, ActionType
+from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
 
@@ -12,7 +12,7 @@ class ActionQueue:
     def __init__(
         self,
         event_store: EventStore,
-        send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
+        send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
         on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None,
         bot_actor_id: str = "system:action_queue",
         action_interceptor: Optional[Callable[[ActionItem], Awaitable[Optional[ActionItem]]]] = None,
@@ -89,20 +89,27 @@ class ActionQueue:
             ))
             return
 
-        unknown = False
-        error_text = ""
         try:
-            success = await self.send_adapter(action) if self.send_adapter else True
+            delivery = await self.send_adapter(action) if self.send_adapter else DeliveryResult(
+                status=DeliveryStatus.NOT_SENT, transport="none", error="未配置发送适配器",
+            )
         except Exception as error:
-            success, unknown = False, True
-            error_text = str(error)
+            delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter",
+                                      error_code=type(error).__name__, error="发送适配器异常，结果不确定")
+        success = delivery.status == DeliveryStatus.SENT
         event = Event(
             event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
             payload={
                 "action_id": action.id, "raw_text": action.content, "content": action.content,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
-                "delivery_unknown": unknown, "error": error_text if unknown else ("" if success else "发送接口明确拒绝"),
+                "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN,
+                "error": delivery.error, "delivery_status": delivery.status.value,
+                "transport": delivery.transport, "error_code": delivery.error_code,
+                "message_id": delivery.message_id,
+                "source_started_at": action.source_started_at,
+                "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
+                    if action.source_started_at is not None else None,
             },
         )
         if success and action.associated_open_loop:

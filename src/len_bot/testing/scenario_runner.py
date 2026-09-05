@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 from typing import Optional, Callable, Awaitable
@@ -21,9 +22,9 @@ class ScenarioRunner:
             mock_social_handler=mock_social_handler,
         )
 
-    async def _mock_send_adapter(self, action: ActionItem) -> bool:
+    async def _mock_send_adapter(self, action: ActionItem) -> DeliveryResult:
         self.sent_actions.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def setup(self) -> None:
         await self.runtime.start()

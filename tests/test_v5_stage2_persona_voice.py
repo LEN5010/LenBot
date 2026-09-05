@@ -104,7 +104,7 @@ def test_reducer_applies_deferred_patch_event_through_lawful_path():
         scene_id="group:e",
         actor_id="system:reflection",
         payload={
-            "base_version": 0,
+            "social_revision": 0,
             "patch": {"mood": "安静", "social_dynamics_add": ["夜聊"]},
         },
     )
@@ -122,7 +122,7 @@ def test_reducer_applies_deferred_patch_event_through_lawful_path():
 
 
 @pytest.mark.asyncio
-async def test_voice_exemplar_store_lru_rotation(tmp_path):
+async def test_voice_exemplar_selection_is_stable_and_read_only(tmp_path):
     store = EventStore(str(tmp_path / "voice.db"))
     await store.initialize()
     try:
@@ -130,15 +130,14 @@ async def test_voice_exemplar_store_lru_rotation(tmp_path):
         second = await store.add_voice_example("group:v", "？")
         await store.add_voice_example("", "你最好是在开玩笑")  # global
 
-        picked = await store.select_voice_examples("group:v", 2)
-        # Ties break newest-first: the two most recently added exemplars win.
-        assert {item["id"] for item in picked} == {second["id"], picked[0]["id"]}
-        assert first["id"] not in [item["id"] for item in picked]
+        picked = await store.select_voice_examples("group:v")
+        assert len(picked) == 3
+        assert first["id"] in [item["id"] for item in picked]
         assert any(item["content"] == "你最好是在开玩笑" for item in picked)
 
-        # LRU: the untouched oldest exemplar rotates in on the next call.
-        picked_again = await store.select_voice_examples("group:v", 2)
-        assert first["id"] in [item["id"] for item in picked_again]
+        picked_again = await store.select_voice_examples("group:v")
+        assert picked_again == picked
+        assert all(item["use_count"] == 0 for item in await store.list_voice_examples())
 
         await store.set_voice_example_enabled(second["id"], False)
         listed = await store.list_voice_examples("group:v")

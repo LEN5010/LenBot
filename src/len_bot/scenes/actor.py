@@ -50,8 +50,10 @@ class SocialCognitionCommitCommand:
         source_event_ids: list[str],
         mode: str,
         gate_context: tuple | None = None,
+        social_revision: int | None = None,
     ):
         self.gate_context = gate_context
+        self.social_revision = social_revision
         self.result = result
         self.through_event_rowid = through_event_rowid
         self.source_event_ids = source_event_ids
@@ -216,8 +218,10 @@ class SceneActor:
                 if event.event_type == EventType.TASK_DUE and event.payload.get("task_id"):
                     event.metadata["obsolete_task_wake"] = not await self.event_store.task_due_is_current(event)
                 if event.event_type == EventType.REFLECTION_RECORDED:
+                    event.metadata["reflection_stale"] = event.payload.get("social_revision") != self.group_session.social_revision
                     event.metadata["needs_review"] = bool(event.payload.get("review_items")) or (
-                        bool(event.payload.get("patch")) and event.payload.get("base_version") != self.group_session.version
+                        event.metadata["reflection_stale"]
+                        and any(event.payload.get(key) for key in ("patch", "episode_summary", "memory_receipts"))
                     )
                 # 1. Pure functional state reduction to candidate state (never mutates self.state)
                 candidate_state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
@@ -263,21 +267,30 @@ class SceneActor:
                 self._queue.task_done()
 
     async def commit_cognitive_turn(self, result, through_event_rowid, source_event_ids,
-                                    mode, episode_id, mailbox, runtime_gate):
+                                    mode, episode_id, mailbox, runtime_gate, social_revision=None):
         cmd = SocialCognitionCommitCommand(
             result, through_event_rowid, source_event_ids, mode,
             (episode_id, mailbox, runtime_gate),
+            social_revision=social_revision,
         )
         self._queue.put_nowait(cmd)
         return await cmd.future
 
     async def _commit_social_cognition(self, item: SocialCognitionCommitCommand) -> bool:
-        if self.group_session.last_observed_event_rowid != item.through_event_rowid:
+        if item.social_revision is not None and self.group_session.social_revision != item.social_revision:
+            return False
+        bounded_chat = item.social_revision is not None and not item.result.requires_fresh_input()
+        if item.through_event_rowid > self.group_session.last_observed_event_rowid:
+            return False
+        if item.through_event_rowid < self.group_session.last_cognized_event_rowid:
+            return False
+        if not bounded_chat and self.group_session.last_observed_event_rowid != item.through_event_rowid:
             return False
 
-        known_event_ids = set(self.group_session.conversation_event_ids)
         referenced_event_ids = set(item.source_event_ids)
         referenced_event_ids.update(item.result.perception.world_patch.source_event_ids)
+        if item.result.self_state:
+            referenced_event_ids.update(item.result.self_state.source_event_ids)
         for thread in item.result.perception.world_patch.open_threads:
             referenced_event_ids.update(thread.source_event_ids)
         for expectation in item.result.perception.world_patch.latent_expectations:
@@ -292,12 +305,17 @@ class SceneActor:
             referenced_event_ids.update(item.result.future_attention.source_event_ids)
         for memory in item.result.memory_candidates:
             referenced_event_ids.update(memory.evidence)
-        historical_references = referenced_event_ids - known_event_ids
-        if historical_references and not await self.event_store.references_belong_to_scene(
-            historical_references,
+        memory_ids = {mid for update in [*item.result.perception.person_updates,
+                                        *item.result.perception.relationship_updates]
+                      for mid in update.memory_ids_add}
+        if memory_ids and not await self.event_store.memory_references_readable(memory_ids, self.scene_id):
+            raise ValueError("Working memory references outside readable scope")
+        if not await self.event_store.references_belong_to_scene(
+            referenced_event_ids,
             self.scene_id,
+            item.through_event_rowid,
         ):
-            raise ValueError("Social cognition references evidence outside the scene scope")
+            raise ValueError("Social cognition references evidence outside the scene scope or observation cutoff")
 
         cognition_event = Event(
             event_type=EventType.SOCIAL_COGNITION_RECORDED,
@@ -328,13 +346,16 @@ class SceneActor:
         )
         if item.gate_context is not None:
             episode_id, mailbox, runtime_gate = item.gate_context
+            if self._active_mailbox is not mailbox:
+                return False
             decision = await runtime_gate.evaluate_and_commit(
                 outcome=item.result.to_episode_outcome(self.scene_id, item.through_event_rowid, self.event_store.clock()),
                 mailbox=mailbox, current_scene_state=self.state, scene_commit=scene_commit,
+                bounded_chat=bounded_chat,
             )
             if decision.accepted:
                 self.state = candidate_state
-                self.group_session = candidate_session
+                self.group_session = GroupAgentSession.model_validate(scene_commit["group_session_data"])
             return decision
         await self.event_store.commit_scene_event(**scene_commit)
         self.state = candidate_state

@@ -31,7 +31,7 @@ async def test_deferred_patch_event_commits_through_scene_actor(tmp_path):
             actor_id="system:reflection",
             timestamp=__import__("time").time(),
             payload={
-                "base_version": runner.runtime.scene_manager.get_group_session(scene_id).version,
+                "social_revision": runner.runtime.scene_manager.get_group_session(scene_id).social_revision,
                 "patch": {
                     "mood": "放松",
                     "open_topics": [

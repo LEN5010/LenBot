@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import pytest
 import asyncio
 import time
@@ -17,9 +18,9 @@ async def test_gate_two_phase_commit_and_open_loop(tmp_path):
     await store.initialize()
 
     sent_actions: list[ActionItem] = []
-    async def mock_send(item: ActionItem) -> bool:
+    async def mock_send(item: ActionItem) -> DeliveryResult:
         sent_actions.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     action_queue = ActionQueue(store, send_adapter=mock_send)
     await action_queue.start()

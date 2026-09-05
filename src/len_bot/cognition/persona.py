@@ -2,7 +2,7 @@
 
 Identity is no longer two static strings: the prompt is composed from an
 Identity Core (long-term behavioural tendencies), a short style line, the
-adaptive self state, the per-scene group register, and rotating voice
+adaptive self state, the per-scene group register, and stable voice
 exemplars. The identity block is stable across calls, which keeps it a good
 prompt-caching prefix.
 """
@@ -20,6 +20,7 @@ def render_identity_block(config: RuntimeConfig) -> str:
         f"背景与性格:{config.identity_persona.strip()}\n"
         f"{config.identity_core.strip()}\n"
         f"语言风格:{config.conversation_style.strip()}\n"
+        f"【角色资料与梗：运营设定，不是群聊事实证据】\n{config.character_context.strip()}\n"
     )
 
 
@@ -56,7 +57,7 @@ def render_voice_examples_block(examples: list[dict]) -> str:
     if not lines:
         return ""
     return (
-        "【VOICE EXAMPLES】(你过去说得恰到好处的话,参考这种密度、语气和长度;不要照抄内容)\n"
+        "【VOICE EXAMPLES】(运营编写的表达参考，不是历史发言或记忆证据，不要照抄内容)\n"
         + "\n".join(lines)
         + "\n"
     )

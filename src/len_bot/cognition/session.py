@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from len_bot.cognition.projection import project_onebot_text
 from len_bot.events.models import Event, EventType
-from len_bot.memory.models import MemoryCertainty, MemoryKind
+from len_bot.memory.models import MemoryChange
 
 
 class SessionModel(BaseModel):
@@ -36,6 +36,9 @@ class SocialThreadState(SessionModel):
     status: SocialThreadStatus = SocialThreadStatus.ACTIVE
     participants: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(default_factory=list)
+    initiator_id: str | None = None
+    addressed_to: list[str] = Field(default_factory=list)
+    unresolved: str = ""
 
 
 class LatentExpectation(SessionModel):
@@ -64,6 +67,7 @@ class SelfSocialState(SessionModel):
     consecutive_bot_messages: int = 0
     human_messages_since_bot: int = 0
     recent_feedback: list[str] = Field(default_factory=list)
+    feedback_event_ids: list[str] = Field(default_factory=list)
 
 
 class GroupIdentity(SessionModel):
@@ -77,9 +81,13 @@ class GroupIdentity(SessionModel):
 class WorkingPersonModel(SessionModel):
     actor_id: str
     display_name: str | None = None
+    nickname: str | None = None
+    card: str | None = None
+    preferred_name: str | None = None
     group_role: str | None = None
     recent_context: list[str] = Field(default_factory=list)
     recent_event_ids: list[str] = Field(default_factory=list)
+    memory_ids: list[str] = Field(default_factory=list)
 
 
 class RelationshipModel(SessionModel):
@@ -87,6 +95,7 @@ class RelationshipModel(SessionModel):
     familiarity: str = "unknown"
     patterns: list[str] = Field(default_factory=list)
     recent_interaction_event_ids: list[str] = Field(default_factory=list)
+    memory_ids: list[str] = Field(default_factory=list)
 
 
 class RetainedAttentionItem(SessionModel):
@@ -157,23 +166,24 @@ class GroupRegisterState(SessionModel):
 
 class GroupIdentityPatch(SessionModel):
     familiarity: str | None = None
+    usual_role: str | None = None
     common_topics_add: list[str] = Field(default_factory=list)
+    common_topics_remove: list[str] = Field(default_factory=list)
     internal_expressions_add: list[str] = Field(default_factory=list)
+    internal_expressions_remove: list[str] = Field(default_factory=list)
     norms_add: list[str] = Field(default_factory=list)
+    norms_remove: list[str] = Field(default_factory=list)
 
 
 class SocialWorldPatch(SessionModel):
-    """ADR-0038: deferred, merge-only social-world proposal from quiet-window reflection.
-
-    Merge-only semantics keep it causally safe against a fresher FULL snapshot:
-    it can add or close topics and append dynamics, never wholesale replace.
-    """
+    """Sparse, revisable understanding. Actor validates its social revision."""
 
     mood: str | None = None
     activity: str | None = None
     open_topics: list[TopicState] = Field(default_factory=list)
     close_topic_ids: list[str] = Field(default_factory=list)
     social_dynamics_add: list[str] = Field(default_factory=list)
+    social_dynamics_remove: list[str] = Field(default_factory=list)
     group_identity: GroupIdentityPatch | None = None
     source_event_ids: list[str] = Field(default_factory=list)
     open_threads: list[SocialThreadState] = Field(default_factory=list)
@@ -187,24 +197,53 @@ class SocialDecisionAction(StrEnum):
 
 
 class SelfSocialStateUpdate(SessionModel):
-    engagement: str
-    social_position: str
-    current_interest: str
-    inclination_to_speak: str
-    recent_feedback: list[str] = Field(default_factory=list)
+    engagement: str | None = None
+    social_position: str | None = None
+    current_interest: str | None = None
+    inclination_to_speak: str | None = None
+    recent_feedback_add: list[str] = Field(default_factory=list)
+    recent_feedback_remove: list[str] = Field(default_factory=list)
+    source_event_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def feedback_evidence(self):
+        if (self.recent_feedback_add or self.recent_feedback_remove) and not self.source_event_ids:
+            raise ValueError("Interaction feedback needs source_event_ids")
+        return self
 
 
 class WorkingPersonUpdate(SessionModel):
     actor_id: str
-    recent_context: list[str] = Field(default_factory=list)
+    preferred_name: str | None = None
+    recent_context_add: list[str] = Field(default_factory=list)
+    recent_context_remove: list[str] = Field(default_factory=list)
+    memory_ids_add: list[str] = Field(default_factory=list)
+    memory_ids_remove: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def address_evidence(self):
+        if (self.preferred_name is not None or self.recent_context_add or self.recent_context_remove
+                or self.memory_ids_add or self.memory_ids_remove) and not self.source_event_ids:
+            raise ValueError("Person understanding needs source_event_ids")
+        return self
 
 
 class RelationshipUpdate(SessionModel):
     actor_id: str
-    familiarity: str
-    patterns: list[str] = Field(default_factory=list)
+    familiarity: str | None = None
+    patterns_add: list[str] = Field(default_factory=list)
+    patterns_remove: list[str] = Field(default_factory=list)
+    memory_ids_add: list[str] = Field(default_factory=list)
+    memory_ids_remove: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def relationship_evidence(self):
+        if (self.familiarity is not None or self.patterns_add or self.patterns_remove
+                or self.memory_ids_add or self.memory_ids_remove) and not self.source_event_ids:
+            raise ValueError("Relationship understanding needs source_event_ids")
+        return self
 
 
 class SocialPerception(SessionModel):
@@ -276,15 +315,7 @@ class SocialTaskProposal(SessionModel):
         return self
 
 
-class SocialMemoryCandidate(SessionModel):
-    subject: str
-    kind: MemoryKind
-    key: str
-    value: str
-    temporal: str = "recent"
-    certainty: MemoryCertainty = MemoryCertainty.LIKELY
-    evidence: list[str]
-    human_readable_assertion: str
+SocialMemoryCandidate = MemoryChange
 
 
 class RetainedAttentionProposal(SessionModel):
@@ -309,6 +340,10 @@ class SocialCognitionResult(SessionModel):
     retained_attention: list[RetainedAttentionProposal] = Field(default_factory=list)
     future_attention: NextWakeIntentProposal | None = None
     memory_candidates: list[SocialMemoryCandidate] = Field(default_factory=list)
+
+    def requires_fresh_input(self) -> bool:
+        return bool(self.task_proposals or self.future_attention or self.resolve_open_loop_ids
+                    or any(m.task_ref or m.fulfils_task_id or m.expect_reply for m in self.message_proposals))
 
     @model_validator(mode="after")
     def validate_decision_contract(self) -> "SocialCognitionResult":
@@ -371,6 +406,7 @@ class SocialCognitionResult(SessionModel):
 
 
 class GroupAgentSession(SessionModel):
+    social_revision: int = 0
     scene_id: str
     version: int = 0
     last_observed_event_rowid: int = 0
@@ -384,6 +420,7 @@ class GroupAgentSession(SessionModel):
     working_relationships: dict[str, RelationshipModel] = Field(default_factory=dict)
     retained_attention: list[RetainedAttentionItem] = Field(default_factory=list)
     recent_episode_summary: str | None = None
+    recent_memory_changes: list[dict] = Field(default_factory=list)
 
 
 class GroupAgentSessionReducer:
@@ -414,9 +451,12 @@ class GroupAgentSessionReducer:
         cls._prune_expired_retained(candidate, event.timestamp)
 
         if event.event_type == EventType.REFLECTION_RECORDED:
-            candidate.recent_episode_summary = event.payload.get("episode_summary", "")
-            if event.payload.get("base_version") == state.version and event.payload.get("patch"):
-                cls.apply_deferred_patch(candidate, SocialWorldPatch.model_validate(event.payload["patch"]))
+            if event.payload.get("social_revision") == state.social_revision:
+                candidate.recent_episode_summary = event.payload.get("episode_summary", "")
+                if event.payload.get("patch"):
+                    cls.apply_deferred_patch(candidate, SocialWorldPatch.model_validate(event.payload["patch"]))
+                cls.apply_memory_receipts(candidate, event.payload.get("memory_receipts", []))
+                candidate.social_revision += 1
             return candidate
 
         if event.event_type in cls._CONVERSATION_EVENT_TYPES:
@@ -443,7 +483,11 @@ class GroupAgentSessionReducer:
         if person is None:
             person = WorkingPersonModel(actor_id=event.actor_id)
 
-        display_name = sender.get("card") or sender.get("nickname")
+        if "nickname" in sender:
+            person.nickname = str(sender["nickname"])
+        if "card" in sender:
+            person.card = str(sender["card"])
+        display_name = person.card or person.nickname
         if display_name:
             person.display_name = str(display_name)
         if sender.get("role"):
@@ -475,33 +519,44 @@ class GroupAgentSessionReducer:
         candidate = state.model_copy(deep=True)
         candidate.version += 1
         candidate.last_cognized_event_rowid = through_event_rowid
+        candidate.social_revision += 1
         cls._prune_expired_retained(candidate, time.time() if now is None else now)
         cls.apply_deferred_patch(candidate, result.perception.world_patch)
 
         update = result.self_state
         self_state = candidate.self_social_state
         if update is not None:
-            self_state.engagement = update.engagement
-            self_state.social_position = update.social_position
-            self_state.current_interest = update.current_interest
-            self_state.inclination_to_speak = update.inclination_to_speak
-            self_state.recent_feedback = update.recent_feedback
+            for name in ("engagement", "social_position", "current_interest", "inclination_to_speak"):
+                if getattr(update, name) is not None:
+                    setattr(self_state, name, getattr(update, name))
+            self_state.recent_feedback = cls._update_list(self_state.recent_feedback,
+                update.recent_feedback_add, update.recent_feedback_remove)
+            self_state.feedback_event_ids = cls._update_list(self_state.feedback_event_ids, update.source_event_ids, [])
 
         for person_update in result.perception.person_updates:
             person = candidate.working_persons.get(person_update.actor_id)
             if person is None:
                 person = WorkingPersonModel(actor_id=person_update.actor_id)
-            person.recent_context = person_update.recent_context
-            person.recent_event_ids = person_update.source_event_ids
+            if person_update.preferred_name is not None:
+                person.preferred_name = person_update.preferred_name
+            person.recent_context = cls._update_list(person.recent_context,
+                person_update.recent_context_add, person_update.recent_context_remove)
+            person.memory_ids = cls._update_list(person.memory_ids,
+                person_update.memory_ids_add, person_update.memory_ids_remove)
+            person.recent_event_ids = list(dict.fromkeys(person.recent_event_ids + person_update.source_event_ids))
             candidate.working_persons[person_update.actor_id] = person
 
         for relationship_update in result.perception.relationship_updates:
-            candidate.working_relationships[relationship_update.actor_id] = RelationshipModel(
-                actor_id=relationship_update.actor_id,
-                familiarity=relationship_update.familiarity,
-                patterns=relationship_update.patterns,
-                recent_interaction_event_ids=relationship_update.source_event_ids,
-            )
+            relationship = candidate.working_relationships.get(relationship_update.actor_id) or RelationshipModel(actor_id=relationship_update.actor_id)
+            if relationship_update.familiarity is not None:
+                relationship.familiarity = relationship_update.familiarity
+            relationship.patterns = cls._update_list(relationship.patterns,
+                relationship_update.patterns_add, relationship_update.patterns_remove)
+            relationship.memory_ids = cls._update_list(relationship.memory_ids,
+                relationship_update.memory_ids_add, relationship_update.memory_ids_remove)
+            relationship.recent_interaction_event_ids = cls._update_list(
+                relationship.recent_interaction_event_ids, relationship_update.source_event_ids, [])
+            candidate.working_relationships[relationship.actor_id] = relationship
 
         candidate.retained_attention.extend(
             RetainedAttentionItem(
@@ -514,17 +569,32 @@ class GroupAgentSessionReducer:
         )
         return candidate
 
+    @staticmethod
+    def _update_list(current: list, additions: list, removals: list) -> list:
+        return list(dict.fromkeys([x for x in current if x not in removals] + additions))
+
+    @classmethod
+    def apply_memory_receipts(cls, state: GroupAgentSession, receipts: list[dict]) -> None:
+        """Runtime commit receipts are pointers to beliefs, not retrieved generic context."""
+        for receipt in receipts:
+            removed = receipt["target_memory_ids"]
+            state.recent_memory_changes = [item for item in state.recent_memory_changes
+                                           if item["id"] not in removed and item["id"] != receipt["id"]]
+            for entry in [*state.working_persons.values(), *state.working_relationships.values()]:
+                entry.memory_ids = [mid for mid in entry.memory_ids if mid not in removed]
+            person = state.working_persons.get(receipt["subject"])
+            if person is not None and receipt["status"] == "active":
+                person.memory_ids = cls._update_list(person.memory_ids, [receipt["id"]], [])
+            state.recent_memory_changes.append(receipt)
+        state.recent_memory_changes = state.recent_memory_changes[-20:]
+
     @classmethod
     def apply_deferred_patch(
         cls,
         state: GroupAgentSession,
         patch: SocialWorldPatch,
     ) -> GroupAgentSession:
-        """ADR-0038: merge a deferred reflection patch into the session.
-
-        Merge-only: add/close topics by id, append dynamics and identity facts,
-        never wholesale replace — a later FULL cognition snapshot stays authoritative.
-        """
+        """Apply an evidence-backed sparse patch after the actor's revision check."""
         world = state.social_world.model_copy(deep=True)
         if patch.mood is not None:
             world.mood = patch.mood
@@ -537,24 +607,22 @@ class GroupAgentSessionReducer:
             if topic_id in topics_by_id:
                 topics_by_id[topic_id].status = "closed"
         world.topics = list(topics_by_id.values())
-        for dynamic in patch.social_dynamics_add:
-            if dynamic not in world.social_dynamics:
-                world.social_dynamics.append(dynamic)
-        world.social_dynamics = world.social_dynamics[-20:]
+        world.social_dynamics = cls._update_list(world.social_dynamics,
+            patch.social_dynamics_add, patch.social_dynamics_remove)[-20:]
 
         identity = state.group_identity.model_copy(deep=True)
         if patch.group_identity is not None:
             if patch.group_identity.familiarity:
                 identity.familiarity = patch.group_identity.familiarity
+            if patch.group_identity.usual_role is not None:
+                identity.usual_role = patch.group_identity.usual_role
             for key, addition in (
                 ("common_topics", patch.group_identity.common_topics_add),
                 ("internal_expressions", patch.group_identity.internal_expressions_add),
                 ("norms", patch.group_identity.norms_add),
             ):
-                merged = list(getattr(identity, key))
-                for item in addition:
-                    if item not in merged:
-                        merged.append(item)
+                merged = cls._update_list(getattr(identity, key), addition,
+                    getattr(patch.group_identity, key + "_remove"))
                 setattr(identity, key, merged[-20:])
 
         threads = {item.id: item for item in world.open_threads}
