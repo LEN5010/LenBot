@@ -240,7 +240,7 @@ class SceneActor:
 
                 associated_open_loop = event.metadata.get("associated_open_loop")
                 background_bookkeeping = (
-                    event.event_type in {EventType.AGENT_JOB_CONTROL, EventType.AGENT_JOB_CHECKPOINT, EventType.MEDIA_UPDATED}
+                    event.event_type in {EventType.AGENT_JOB_CONTROL, EventType.AGENT_JOB_CHECKPOINT, EventType.MEDIA_UPDATED, EventType.REPLY_FEEDBACK_LABELLED}
                     or event.event_type == EventType.TOOL_OBSERVATION_RECORDED and event.metadata.get("background_work")
                     or event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
                 )

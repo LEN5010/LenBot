@@ -3,7 +3,7 @@
 Never import this material into scene memory or treat examples as past events.
 """
 
-PRESET_ID = "diana-v2"
+PRESET_ID = "diana-v3"
 LEGACY_PRESET_ID = "diana-v1"
 # One-time migration reference, never a second production persona path.
 LEGACY_PERSONA = {
@@ -60,3 +60,13 @@ EXAMPLES = [
     ("A：这个抹茶饼干挺好吃，就是贵。\nB：一盒就六块。", "六块饼干啊，我还以为六块钱，差点就心动了。"),
     ("A：我先去忙了，回头聊。", "好呀，回头聊。"),
 ]
+
+# Appended in a stable order; existing preview/apply preserves operator edits.
+EXAMPLES += [
+    ("A：网页能打开，程序请求却超时。\n已查到文档要求代理环境变量，尚未看到A的配置。", "先看程序有没有走代理。网页能开只能说明浏览器这边通；把请求的报错和代理配置贴一下，我接着看。"),
+    ("A问活动是否今天开始。两个来源日期不同，都未确认今年安排。", "还不能确认是今天。找到的两份安排时间对不上，需要今年的正式通知。"),
+    ("A：你引用的是去年的，我问今年。", "对，我把年份看错了。刚才那个日期不能用来判断今年。"),
+    ("前面排查的问题已解决。\nA：好了，我去吃饭。", "好，吃饭去吧。"),
+]
+
+EXAMPLE_IDS = [f"diana-v2:{i}" if i < 12 else f"diana-v3:{i}" for i in range(len(EXAMPLES))]

@@ -11,7 +11,7 @@
 | 3 交错回放 | test: add interleaved multi-turn agent evaluation | 完成 | 175 项回归；十二类脚本基线、面板模式选择、前端构建 |
 | 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 完成 | 182 项回归；查询中修订/取消、预算失败、恢复、进展及面板 API |
 | 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 完成（真实视觉验收待配置） | 188 项回归；图片/引用/scope/预算/混排/失败、公平性、面板实测 |
-| 6 互动质量 | feat: add conversational quality evaluation and reply feedback | 计划中 | 后续反馈、依据和模型对照 |
+| 6 互动质量 | feat: add conversational quality evaluation and reply feedback | 实现完成，行为待验收 | 192项回归、前端和面板；模型对照进行中，阶段7收齐结果 |
 | 7 真实验收 | test: record live agent acceptance and controlled rollout | 计划中 | 真实工具、Shadow、指定群实发 |
 
 每阶段检查相关测试和完整 pytest，前端变更构建并验证面板；文档同阶段提交，失败保留，提交不 push 或合并。
@@ -57,3 +57,13 @@ inspect_image 使用独立 routing.vision，不回退到文字模型；搜索图
 文字/图片segments为消息权威，旧content仍兼容；模型只能选择资产ID，适配器生成OneBot消息数组。ActionQueue每群保序，全局最多4个投递并发，后续片段按长度等待0.6–2秒；某片段失败/未知停止同组，队列join等待实际处理，发送前复查资产、工作版本和Shadow。
 
 已在临时数据库的浏览器面板验证工作修订版本、图片预览及未配置视觉提示，无OneBot连接。前端构建通过；回归曾与构建同时运行撞到临时资产目录缺失，最终按构建→回归顺序验证。真实视觉型号、真实群媒体验收仍待后续，不将模拟红图结果算真实模型通过。
+
+## 阶段 6 实现与复测
+
+Social Core 加强当前目标、最新约束和来源/未知的区分；继续只输出稀疏状态。diana-v3通过原有预览应用流程追加四组表达示例，不覆盖人工样例或人格。真实发送后的观察、引用关联和人工自然度通过独立表与事件保存，窗口默认5分钟/15条；无人回应未知，评测事件禁止充作独立记忆证据。QueryService读接口与“效果”面板已验证。
+
+十二类固定资料按主题更新，加入实际截图资产、多人账号和对候选的脚本引用，脚本输入显式标记。Flash/Pro保持同一冻结条件；完整提示、模型/工具/投递模式及失败保存。首轮报表将缺视觉路由错误传播到文字场景，已修复并保留initial-failure文件。对照发现最终续接工具观察未计入截点，已补确定性回归，确认自己读过的连续观察而不越过未读输入。未读链接却说看过的问题增加语义提示后专项复测。供应商429限流保留为失败，不用其他模型替代。
+
+[视觉探测](evaluation/runs/vision-provider-probe.json)对L目录中的Flash、Flash-0731、Pro、Pro-0813均发送真实生成数字PNG，四个均返回400且明确不支持图片。没有更换生产配置，图片理解验收待新增可用视觉型号。
+
+阶段6提交保存Flash/Pro中途快照（文件名interim）及首轮失败；第七阶段完成全量对照、针对已发现问题复测并生成汇总。此处不将中途样本计为已满足十二类三轮或人工自然度门槛。

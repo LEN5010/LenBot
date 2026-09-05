@@ -28,3 +28,9 @@ Shadow 不产生 MESSAGE_SENT，不把原群友反应算给候选。低活跃、
 ## 媒体操作
 
 模型页设置独立看图路由并使用“测试图片读取”；连接成功不代表所有图片理解准确。图片页上传PNG/JPEG/WEBP/GIF，填写描述、标签与范围并启停；global-safe仅用于允许各场景使用的运营素材。缓存目录是数据库同目录下的media，备份需与数据库一起进行。可用JOBS_ENABLED=false或MEDIA_ENABLED=false启动来停用对应能力，保留账目和文件。
+
+## 效果评阅与模型对照
+
+“效果”页选择场景查看真实发送ID及其后续原话；“引用此回复”是结构事实，“窗口内发言”不保证针对机器人。评追问、纠正或态度须关联具体原话；自然度单独标可接受/不可接受/未评，并记录理由。评价只追加，不把沉默算满意。人格页可预览新增四组表达样例再应用，人工编辑和启停保留。
+
+`uv run python scripts/eval_agent_cases.py --provider-db len_bot.db --model deepseek-v4-flash --repeats 3 --output /tmp/flash.json` 只读生产配置，在临时数据库运行，固定时间、场景、工具与样例。对照关闭跨模型fallback；未配置、限流、格式和提交失败全部保留。Pro用已保存目录里的型号替换，不写生产路由。`scripts/summarize_agent_eval.py` 汇总模型/工具耗时和用量；模拟送达的首条可见/工作/排队/发送延迟保持空值，实际发送在事件payload记录event_to_delivery_ms、queue_ms和send_ms。

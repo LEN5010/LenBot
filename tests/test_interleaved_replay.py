@@ -59,6 +59,29 @@ async def test_input_arrives_during_tool_then_affects_final():
 
 
 @pytest.mark.asyncio
+async def test_final_continuation_acknowledges_its_own_tool_receipt():
+    class ContinuationRegistry(Registry):
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls)==2:
+                response=NS(content=None,tool_calls=[NS(id="tool",function=NS(name="web_search",arguments='{"query":"public docs"}'))])
+            else:
+                result=social_result(reason="已有资料，询问需求",content="资料确认支持这个设置，你需要哪一项？",expect_reply=True,reply_target="user:1")
+                response=NS(content=result.model_dump_json(),tool_calls=None)
+            return NS(choices=[NS(message=response)],usage=None)
+    registry=ContinuationRegistry();config=RuntimeConfig(bot_qq=999)
+    lab=ReplayLab(config,SocialCognitionCore(config,registry),delivery_mode="simulated",strict=True,
+        tool_results={"web_search":str(ToolResult(content="公开设置说明",evidence_kind="external"))},
+        injections=[ReplayInjection("after_model",[message("late","先看文档再告诉我有哪些设置",1002)])])
+    await lab.run([message("first","等我补充")])
+    assert len(registry.calls)==3
+    assert lab.last_run["completed"]
+    assert len([e for e in lab.last_deliveries if e["event_type"]=="MESSAGE_SENT"])==1
+    cognition=next(t for t in lab.last_traces if t["kind"]=="social_cognition")
+    assert cognition["payload"]["cognition"]["acknowledged_tool_observations"]==1
+
+
+@pytest.mark.asyncio
 async def test_simulated_reply_is_next_turn_input_but_not_human_feedback():
     seen = []
     async def respond(messages):

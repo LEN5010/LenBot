@@ -40,7 +40,7 @@ class ScriptedRegistry:
 async def load_registry(args):
     config = RuntimeConfig(bot_qq=9999)
     if args.scripted:
-        return ScriptedRegistry(), config
+        return ScriptedRegistry(), config, []
     if not args.provider_db:
         raise ValueError("Real evaluation requires --provider-db")
     uri = Path(args.provider_db).resolve().as_uri() + "?mode=ro"
@@ -56,6 +56,8 @@ async def load_registry(args):
             raise ValueError("Comparison model must already be in the saved provider catalog")
         routing.normal = RouteTarget(provider_id=provider["id"], model=args.model)
         routing.deliberate = routing.normal.model_copy()
+    # A comparison must not silently fall back to a different model.
+    routing.fallback = None
     registry = ProviderRegistry()
     await registry.apply_update([ProviderConfig.model_validate(p) for p in saved["providers"]], routing)
     if not registry.has_live_provider():
@@ -63,14 +65,19 @@ async def load_registry(args):
     persona = json.loads(rows.get("persona_config", "{}"))
     config = config.model_copy(update={key: value for key, value in persona.items()
         if key in {"identity_name", "identity_persona", "identity_core", "conversation_style", "character_context"}})
-    return registry, config
+    with sqlite3.connect(uri, uri=True) as db:
+        examples = [dict(scene_id="", context=row[0], content=row[1], tag=row[2]) for row in db.execute(
+            "SELECT context,content,tag FROM voice_exemplars WHERE enabled=1 AND scene_id IN (?,?) ORDER BY scene_id,created_at,id", ("",args.source_scene))]
+    return registry, config, examples
 
 
 async def run(args):
-    registry, config = await load_registry(args)
-    suite = json.loads(Path(args.fixture).read_text())
+    registry, config, examples = await load_registry(args)
+    fixture_text = Path(args.fixture).read_text()
+    fixture_hash = hashlib.sha256(fixture_text.encode()).hexdigest()
+    suite = json.loads(fixture_text)
     config.bot_qq = suite["bot_qq"]
-    cases = [case for case in suite["cases"] if args.case in {"all", case["name"]}]
+    cases = [case for case in suite["cases"] if args.case == "all" or case["name"] in args.case.split(",")]
     if not cases:
         raise ValueError("Unknown case")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -83,17 +90,17 @@ async def run(args):
     output.parent.mkdir(parents=True, exist_ok=True)
     for case in cases:
         for repeat in range(args.repeats):
-            base = time.time()
-            def event(index, text, offset):
+            base = 1788681600.0  # Same time context for every model and repeat.
+            def event(index, text, offset, actor_id="user:1001", payload=None):
                 return Event(id=f"{case['name']}:{repeat}:{index}", scene_id=f"group:eval-{case['name']}",
-                    event_type=EventType.GROUP_MESSAGE_RECEIVED, actor_id="user:1001", timestamp=base+offset,
-                    payload={"message_id": str(index), "raw_text": text, "at_bot": True})
-            inputs = [event(i, item["text"], item["offset"]) for i, item in enumerate(case["messages"])]
-            injections = [ReplayInjection(item["checkpoint"], [event(f"injected-{i}", item["text"], item["offset"])], item["occurrence"])
+                    event_type=EventType.GROUP_MESSAGE_RECEIVED, actor_id=actor_id, timestamp=base+offset,
+                    payload={"message_id": str(index), "raw_text": text, "at_bot": True, **(payload or {})})
+            inputs = [event(i, item["text"], item["offset"], item.get("actor_id","user:1001"), item.get("payload")) for i, item in enumerate(case["messages"])]
+            injections = [ReplayInjection(item["checkpoint"], [event(f"injected-{i}", item["text"], item["offset"], item.get("actor_id","user:1001"), item.get("payload"))], item["occurrence"])
                           for i, item in enumerate(case["injections"])]
             lab = ReplayLab(config, SocialCognitionCore(config, registry), tool_mode=args.tool_mode,
                 tool_results={name: json.dumps(value, ensure_ascii=False) for name, value in case["tool_results"].items()},
-                delivery_mode="simulated", injections=injections, strict=True, max_model_calls=args.max_model_calls)
+                delivery_mode="simulated", voice_examples=examples, injections=injections, strict=True, max_model_calls=args.max_model_calls)
             started, rows, error = time.monotonic(), [], None
             try:
                 rows = await lab.run(inputs)
@@ -108,7 +115,8 @@ async def run(args):
             results.append(record)
             output.write_text(json.dumps({"schema_version": 1, "revision": revision,
                 "source_tree_sha256": source_hash.hexdigest(),
-                "model": args.model or "current", "model_mode": "mock" if args.scripted else "real",
+                "fixture_sha256": fixture_hash,
+                "voice_examples": examples, "model": args.model or "current", "model_mode": "mock" if args.scripted else "real",
                 "tool_mode": args.tool_mode, "config": {key: getattr(config, key) for key in
                     ("identity_name", "identity_persona", "identity_core", "conversation_style", "character_context")},
                 "notice": "完成只代表链路执行；脚本用户不是真实互动，assessment待人工评分。",
@@ -122,6 +130,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider-db")
     parser.add_argument("--model")
+    parser.add_argument("--source-scene", default="group:126300994")
     parser.add_argument("--scripted", action="store_true")
     parser.add_argument("--fixture", default=str(ROOT / "tests/fixtures/generic_agent_cases.json"))
     parser.add_argument("--case", default="all")

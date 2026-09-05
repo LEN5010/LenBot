@@ -24,6 +24,7 @@ class ToolResult(BaseModel):
     truncated: bool = False
     next_offset: int | None = None
     cached: bool = False
+    duration_ms: float | None = None
     coverage: str = "unknown"
     error_code: str | None = None
     evidence_kind: Literal["external", "retrieval", "model", "unknown"] = "unknown"

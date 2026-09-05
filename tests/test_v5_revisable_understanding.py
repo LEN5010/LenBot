@@ -239,8 +239,8 @@ async def test_preset_preview_preserves_manual_edits_and_rejects_stale_preview(t
         assert saved["identity_core"] == "我手写的性格"
         assert saved["conversation_style"] == PERSONA["conversation_style"]
         examples = await store.list_voice_examples()
-        assert len(examples) == 24
-        assert sum(bool(e["enabled"]) for e in examples) == 13
+        assert len(examples) == 28
+        assert sum(bool(e["enabled"]) for e in examples) == 17
         assert [e for e in examples if e["id"] == "diana-v1:0"][0]["content"] == "人工改的样例"
 
 

@@ -1,3 +1,4 @@
+import time
 import json
 import logging
 import asyncio
@@ -301,7 +302,9 @@ class RetrievalToolkit:
                 return self._cache[key].model_copy(update={"cached": True}).page()
             if self.checkpoint:
                 await self.checkpoint("before_tool", {"scene_id": self.default_scene_id, "name": name, "arguments": arguments})
+            started = time.monotonic()
             result = ToolResult.normalize(await self._execute_raw(name, arguments))
+            result.duration_ms = round((time.monotonic()-started)*1000, 2)
             if not (self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind == "unknown":
                 result.evidence_kind = "retrieval"
             result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result, background_work=self.read_only_only)

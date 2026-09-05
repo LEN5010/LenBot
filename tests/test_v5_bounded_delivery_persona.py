@@ -105,12 +105,12 @@ async def test_diana_application_is_atomic_idempotent_and_preserves_edits(tmp_pa
         assert await store.apply_diana_persona(3684366985)
         config = await store.get_dynamic_config("persona_config")
         assert config["identity_name"] == "嘉然" and config["bot_qq"] == 3684366985
-        assert len(await store.list_voice_examples()) == 12
+        assert len(await store.list_voice_examples()) == 16
         config["identity_core"] = "人工改过"
         await store.save_dynamic_config("persona_config", config)
         assert not await store.apply_diana_persona(3684366985)
         assert (await store.get_dynamic_config("persona_config"))["identity_core"] == "人工改过"
-        assert len(await store.list_voice_examples()) == 12
+        assert len(await store.list_voice_examples()) == 16
     finally:
         await store.close()
 
