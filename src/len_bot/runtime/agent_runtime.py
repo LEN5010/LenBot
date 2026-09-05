@@ -44,6 +44,7 @@ class AgentRuntime:
         self.clock = clock
         self.config = config
         self.mock_social_handler = mock_social_handler
+        self.evaluation_hook = None
         self.bot_actor_id = f"user:{config.bot_qq}"
         
         self.event_store = EventStore(config.db_path, clock=clock)
@@ -431,7 +432,7 @@ class AgentRuntime:
     async def _on_action_event(self, event: Event) -> None:
         """Called by ActionQueue on MESSAGE_SENT or MESSAGE_SEND_FAILED."""
         if event.event_type == EventType.MESSAGE_SENT:
-            self.metrics.inc_social("visible_messages")
+            self.metrics.inc_social("simulated_messages" if event.metadata.get("simulated") else "visible_messages")
         await self.scene_manager.dispatch_event(event)
 
     async def _on_burst(self, burst: Stimulus) -> None:
@@ -512,6 +513,7 @@ class AgentRuntime:
                     plugin_host=self.plugin_host,
                     bot_qq=self.config.bot_qq,
                     on_observation=self.commit_tool_observation,
+                    checkpoint=self.evaluation_hook,
                 )
 
                 async def observe():
