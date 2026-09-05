@@ -11,6 +11,7 @@ from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
+from len_bot.runtime.reply_feedback import ReplyFeedbackStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class ReflectionConflictError(ValueError):
     """A newer cursor or understanding requires a fresh quiet-window read."""
 
 
-class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFeedbackStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -32,6 +33,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         await self.initialize_observations()
         await self.initialize_jobs()
         await self.initialize_media()
+        await self.initialize_reply_feedback()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -977,6 +979,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
         )
         event_rowid = int(event_cursor.lastrowid)
+        await self.observe_reply_in_transaction(event)
 
         # 2. Insert FTS5
         text = event.raw_text
@@ -1134,7 +1137,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
     async def preview_diana_persona(self) -> dict:
         import hashlib
-        from len_bot.cognition.diana import PERSONA, PRESET_ID, LEGACY_PRESET_ID, LEGACY_PERSONA, LEGACY_EXAMPLES
+        from len_bot.cognition.diana import PERSONA, PRESET_ID, LEGACY_PRESET_ID, LEGACY_PERSONA, LEGACY_EXAMPLES, EXAMPLES, EXAMPLE_IDS
         current = await self.get_dynamic_config("persona_config") or {}
         applied = await self.get_dynamic_config(PRESET_ID) is not None
         examples = await self.list_voice_examples()
@@ -1152,11 +1155,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         token = hashlib.sha256(json.dumps([current, examples, applied], sort_keys=True,
                                          ensure_ascii=False).encode()).hexdigest()
         return {"preset_id": PRESET_ID, "applied": applied, "fields": fields,
-                "disable_example_ids": disable, "example_count": 12, "preview_token": token}
+                "disable_example_ids": disable, "example_count": sum(eid not in {item["id"] for item in examples} for eid in EXAMPLE_IDS), "examples": [{"id": eid, "context": value[0], "content": value[1]} for eid, value in zip(EXAMPLE_IDS, EXAMPLES)], "preview_token": token}
 
     async def apply_diana_persona(self, bot_qq: int, expected_token: str | None = None) -> bool:
         """Explicit, atomic preset migration. Preserve edits; never run on startup."""
-        from len_bot.cognition.diana import EXAMPLES, PRESET_ID
+        from len_bot.cognition.diana import EXAMPLES, PRESET_ID, EXAMPLE_IDS
         async with self._write_lock:
             await self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -1177,8 +1180,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 await self._db.executemany("UPDATE voice_exemplars SET enabled=0 WHERE id=?",
                                           [(mid,) for mid in preview["disable_example_ids"]])
                 await self._db.executemany(
-                    "INSERT INTO voice_exemplars(id,scene_id,context,content,tag,created_at,source) VALUES(?,?,?,?,?,?,?)",
-                    [(f"{PRESET_ID}:{i}", "", context, content, "嘉然", now, "operator")
+                    "INSERT INTO voice_exemplars(id,scene_id,context,content,tag,created_at,source) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                    [(EXAMPLE_IDS[i], "", context, content, "嘉然", now, "operator")
                      for i, (context, content) in enumerate(EXAMPLES)],
                 )
                 await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
