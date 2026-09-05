@@ -16,6 +16,7 @@ const routingForm = ref({
   normal_provider_id: '', normal_model: '',
   deliberate_provider_id: '', deliberate_model: '',
   fallback_provider_id: '', fallback_model: '',
+  vision_provider_id: '', vision_model: '',
 })
 const providerForm = ref({ id: '', base_url: '', api_key: '', enabled: true, timeout_seconds: 60 })
 
@@ -37,6 +38,8 @@ async function load() {
         deliberate_model: data.value.routing.deliberate.model,
         fallback_provider_id: data.value.routing.fallback?.provider_id || '',
         fallback_model: data.value.routing.fallback?.model || '',
+        vision_provider_id: data.value.routing.vision?.provider_id || '',
+        vision_model: data.value.routing.vision?.model || '',
       }
     }
   } catch (e) { error.value = e.message }
@@ -49,7 +52,7 @@ function routeChanged(tier) {
   const modelKey = `${tier}_model`
   const choices = choicesFor(routingForm.value[providerKey])
   if (!choices.includes(routingForm.value[modelKey])) routingForm.value[modelKey] = choices[0] || ''
-  if (tier === 'fallback' && !routingForm.value.fallback_provider_id) routingForm.value.fallback_model = ''
+  if (['fallback', 'vision'].includes(tier) && !routingForm.value[providerKey]) routingForm.value[modelKey] = ''
 }
 
 async function saveProvider() {
@@ -105,7 +108,7 @@ async function testRoute(tier) {
   const model = routingForm.value[`${tier}_model`]
   try {
     testResult.value = await api('/api/models/test', {
-      method: 'POST', body: JSON.stringify({ provider_id: providerId, model }),
+      method: 'POST', body: JSON.stringify({ provider_id: providerId, model, image_test: tier === 'vision' }),
     })
   } catch (e) { error.value = e.message }
 }
@@ -118,7 +121,7 @@ function tierName(tier) { return tier === 'deliberate' ? '思考模式' : '普�
     <div class="toolbar">
       <div class="page-title">
         <h1>模型设置</h1>
-        <p class="muted">添加接口、选择可用模型，然后指定聊天、思考和故障回退模型。</p>
+        <p class="muted">添加接口，分别选择聊天、思考、故障回退和看图模型。</p>
       </div>
       <button @click="load">刷新</button>
     </div>
@@ -207,10 +210,17 @@ function tierName(tier) { return tier === 'deliberate' ? '思考模式' : '普�
           <label>模型<select v-model="routingForm.fallback_model" :disabled="!routingForm.fallback_provider_id"><option v-for="model in choicesFor(routingForm.fallback_provider_id)" :key="model" :value="model">{{ model }}</option></select></label>
           <button class="small-btn" :disabled="!routingForm.fallback_model" @click="testRoute('fallback')">测试连接</button>
         </article>
+        <article class="route-card">
+          <div class="route-heading"><span class="route-icon blue">图</span><div><strong>看图模型</strong><p>单独配置图片理解，未配置时不会猜图</p></div></div>
+          <label>供应商<select v-model="routingForm.vision_provider_id" @change="routeChanged('vision')"><option value="">暂不配置看图</option><option v-for="p in data.providers" :key="p.id" :value="p.id">{{ p.id }}</option></select></label>
+          <label>模型<select v-model="routingForm.vision_model" :disabled="!routingForm.vision_provider_id"><option v-for="model in choicesFor(routingForm.vision_provider_id)" :key="model" :value="model">{{ model }}</option></select></label>
+          <button class="small-btn" :disabled="!routingForm.vision_model" @click="testRoute('vision')">测试图片读取</button>
+        </article>
       </div>
 
       <p v-if="testResult" :class="testResult.success ? 'notice success' : 'notice error'">
-        {{ testResult.success ? `连接成功，耗时 ${testResult.latency_ms} 毫秒` : `连接失败：${testResult.error}` }}
+        {{ testResult.success ? `测试成功，耗时 ${testResult.latency_ms} 毫秒` : `测试未通过：${testResult.error || testResult.response || '没有有效回复'}` }}
+        <span v-if="testResult.test === 'image_reading'"> · 图中数字 {{ testResult.expected }}，模型返回 {{ testResult.response }}</span>
       </p>
     </section>
 

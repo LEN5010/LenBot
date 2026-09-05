@@ -28,7 +28,7 @@ Actor 不等待模型，Gate 保持原子性和送达边界。独立工作方案
 
 ## 当前限制
 
-阶段 2 已实现结构化工具观察、通用正文读取、资料分页和工具发现；阶段 4 已接入独立工作；媒体理解与发送节奏尚待后续阶段。既有真实模型五例显示纠错和依据不稳定。限制随实施更新，不因批准计划而视为解决。
+阶段 2 已实现结构化工具观察、通用正文读取、资料分页和工具发现；阶段 4 已接入独立工作；阶段 5 已接入媒体与发送节奏；真实视觉与实群自然度仍待验收。既有真实模型五例显示纠错和依据不稳定。限制随实施更新，不因批准计划而视为解决。
 
 工具执行在 scoped RetrievalToolkit 中包装为 ToolResult。只读外部调用支持同轮去重和刷新；本地历史/记忆查询保持新鲜。长资料保存在 tool_observations，通过结果 ID 与场景读取；TOOL_OBSERVATION_RECORDED 不触发新的社会轮次。原始外部观察与派生检索内容通过 evidence_kind 区分。
 
@@ -39,3 +39,7 @@ ReplayLab 复用生产 Actor/Burst/Core/Gate/Queue，六类 checkpoint 支持模
 ## 信息工作
 
 Social Core → JobProposal → Actor/Gate → tasks/agent_jobs 原子提交 → Scheduler持久认领 → InformationJobRunner。执行器的步骤/观察事件保留账目但不推进社会输入截点；AGENT_JOB_PROGRESS/FINISHED 回到普通 Social Core。工作结果与发送完成分开，版本校验覆盖提案提交和实际发送。恢复时 processing 转 review_required，显式resume复用资料和预算，不重放发送。
+
+## 图片与投递
+
+原始图片登记随Event事务，缓存/运营更新形成MEDIA_UPDATED事件；模型只获得资产ID，通过scope读取。MediaService负责受控IO、校验及独立视觉路由，不直接发送。视觉模型解释与原始图片证据分开。出站segments经Gate校验、运营拦截、资源准备后由OneBot编码为数组。队列按scene保序，跨scene独立，失败/未知中止同组片段，发送前重新验证资产与工作状态。

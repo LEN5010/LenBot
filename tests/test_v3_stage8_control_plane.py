@@ -143,7 +143,7 @@ async def test_onebot_http_action_uses_bearer_token_and_records_sent_message(mon
     assert calls == [{
         "headers": {"Authorization": "Bearer test-token"},
         "url": "http://127.0.0.1:13000/send_group_msg",
-        "json": {"message": "[CQ:reply,id=99]测试消息", "group_id": 456},
+        "json": {"message": [{"type": "reply", "data": {"id": "99"}}, {"type": "text", "data": {"text": "测试消息"}}], "group_id": 456},
     }]
     assert list(adapter._own_message_ids) == ["7788"]
 
@@ -241,7 +241,7 @@ async def test_onebot_websocket_action_correlates_echo_and_records_message_id():
     assert sent.status == "sent"
     assert payloads == [{
         "action": "send_private_msg",
-        "params": {"message": "你好", "user_id": 456},
+        "params": {"message": [{"type": "text", "data": {"text": "你好"}}], "user_id": 456},
         "echo": "echo_1",
     }]
     assert list(adapter._own_message_ids) == ["8899"]

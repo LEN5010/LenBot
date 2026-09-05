@@ -25,6 +25,7 @@ class RetrievalToolkit:
         on_observation=None,
         read_only_only: bool = False,
         checkpoint=None,
+        media_service=None,
     ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
@@ -35,6 +36,8 @@ class RetrievalToolkit:
         self.on_observation = on_observation
         self.read_only_only = read_only_only
         self.checkpoint = checkpoint
+        self.media_service = media_service
+        self.before_nested_model = None
         self.discovered_tools: set[str] = set()
         self.result_ids: list[str] = []
         self._cache: dict[str, ToolResult] = {}
@@ -214,6 +217,13 @@ class RetrievalToolkit:
                 "parameters": {"type": "object", "properties": {"result_id": {"type": "string"},
                     "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["result_id"]}}},
         ])
+        if self.media_service and self.media_service.runtime.config.media_enabled:
+            tools.extend([
+                {"type": "function", "function": {"name": "inspect_image", "description": "实际查看本群或获准素材图片，按问题返回解释和不确定项；需要独立视觉模型。",
+                    "parameters": {"type": "object", "properties": {"asset_id": {"type": "string"}, "question": {"type": "string"}}, "required": ["asset_id"]}}},
+                {"type": "function", "function": {"name": "search_media", "description": "按描述/标签查找可用图片asset_id；默认只找运营维护的表情，可不选择任何图片。",
+                    "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "curated_only": {"type": "boolean"}}}}},
+            ])
         for tool in tools:
             # This wrapper option is consumed before calling legacy plugin handlers.
             if tool["function"]["name"] not in {"tool_search", "read_tool_result"}:
@@ -229,7 +239,7 @@ class RetrievalToolkit:
         if self.plugin_host and self.plugin_host.has_tool(name):
             return self.plugin_host.tool_capabilities(name)["read_only"]
         return name in {"search_messages", "read_context", "query_timeline", "query_person_history",
-                        "query_memory", "inspect_episode", "tool_search", "read_tool_result", "query_jobs"}
+                        "query_memory", "inspect_episode", "tool_search", "read_tool_result", "query_jobs", "inspect_image", "search_media"}
 
     async def execute_many(self, calls):
         """Parallelize read-only groups; preserve ordering around unknown effects."""
@@ -292,7 +302,7 @@ class RetrievalToolkit:
             if self.checkpoint:
                 await self.checkpoint("before_tool", {"scene_id": self.default_scene_id, "name": name, "arguments": arguments})
             result = ToolResult.normalize(await self._execute_raw(name, arguments))
-            if not (self.plugin_host and self.plugin_host.has_tool(name)):
+            if not (self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind == "unknown":
                 result.evidence_kind = "retrieval"
             result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result, background_work=self.read_only_only)
             self.result_ids.append(result.result_id)
@@ -306,6 +316,16 @@ class RetrievalToolkit:
 
     async def _execute_raw(self, tool_name: str, arguments: dict[str, Any]):
         try:
+            if tool_name == "inspect_image":
+                if not self.media_service:
+                    return ToolResult(status="unsupported", content="媒体服务未配置")
+                return await self.media_service.inspect(str(arguments.get("asset_id", "")), self.default_scene_id,
+                    str(arguments.get("question", "")), self.before_nested_model)
+            if tool_name == "search_media":
+                assets = await self.event_store.list_media([self.default_scene_id, "global-safe"],
+                    query=str(arguments.get("query", "")), curated_only=bool(arguments.get("curated_only", True)))
+                records = [{"asset_id": asset["id"], **{key: asset[key] for key in ("scope", "source_event_id", "description", "tags")}} for asset in assets]
+                return ToolResult(status="ok" if records else "no_results", content=json.dumps(records, ensure_ascii=False), evidence_kind="retrieval")
             if tool_name == "query_jobs":
                 job_id = arguments.get("job_id")
                 result = await self.event_store.get_job(job_id, self.default_scene_id) if job_id else await self.event_store.list_jobs(self.default_scene_id)

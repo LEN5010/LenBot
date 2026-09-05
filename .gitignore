@@ -36,6 +36,7 @@ htmlcov/
 *.db-journal
 *.db-wal
 *.db-shm
+/media/
 
 # IDE / OS
 .DS_Store

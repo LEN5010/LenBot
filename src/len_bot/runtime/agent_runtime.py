@@ -31,6 +31,7 @@ from len_bot.runtime.style_guard import StyleGuard
 from len_bot.plugins import PluginHost
 from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.runtime.job_runner import InformationJobRunner
+from len_bot.media.service import MediaService
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class AgentRuntime:
         self.config = config
         self.mock_social_handler = mock_social_handler
         self.evaluation_hook = None
+        self.config_update_lock = asyncio.Lock()
         self.bot_actor_id = f"user:{config.bot_qq}"
         
         self.event_store = EventStore(config.db_path, clock=clock)
@@ -62,7 +64,7 @@ class AgentRuntime:
             send_adapter=send_adapter,
             on_action_event=self._on_action_event,
             bot_actor_id=self.bot_actor_id,
-            action_interceptor=self.plugin_host.intercept_action,
+            action_interceptor=self.prepare_outbound_action,
             shadow_probe=lambda: self.shadow_mode,
             shadow_recorder=self._record_shadow_action
         )
@@ -113,6 +115,9 @@ class AgentRuntime:
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
         self.job_runner = InformationJobRunner(self)
+        self.media_service = MediaService(self)
+        self.action_queue.pacing = config.message_pacing
+        self.action_queue.validate_before_send = self.validate_outbound_action
         self.runtime_gate.jobs_enabled_probe = lambda: self.config.jobs_enabled
         self.scheduler.jobs_enabled_probe = lambda: self.config.jobs_enabled
 
@@ -178,6 +183,8 @@ class AgentRuntime:
             route_targets = [routing.normal, routing.deliberate]
             if routing.fallback is not None:
                 route_targets.append(routing.fallback)
+            if routing.vision is not None:
+                route_targets.append(routing.vision)
             for target in route_targets:
                 provider = by_id.get(target.provider_id)
                 if provider is not None and target.model not in provider.models:
@@ -280,6 +287,14 @@ class AgentRuntime:
         self._running = False
         await self.burst_assembler.close()
         self._social_pending.clear()
+        for actor in self.scene_manager._actors.values():
+            if actor._active_mailbox:
+                actor._active_mailbox.cancel("Runtime stopping")
+        social_tasks = list(self._social_tasks.values())
+        for task in social_tasks:
+            task.cancel()
+        if social_tasks:
+            await asyncio.gather(*social_tasks, return_exceptions=True)
         for timer in self._reflection_timers.values():
             timer.cancel()
         self._reflection_timers.clear()
@@ -299,6 +314,7 @@ class AgentRuntime:
         await self.job_runner.stop()
         await self.plugin_host.unload_all()
         await self.action_queue.stop()
+        await self.media_service.close()
         for actor in list(self.scene_manager._actors.values()):
             await actor._queue.join()
         await self.scene_manager.stop()
@@ -335,6 +351,15 @@ class AgentRuntime:
         await actor._queue.join()
         if not await self.event_store.event_exists(event.id, event.scene_id):
             raise RuntimeError("Tool observation could not be committed")
+
+    async def prepare_outbound_action(self, action):
+        action = await self.plugin_host.intercept_action(action)
+        return await self.media_service.prepare_action(action) if action else None
+
+    async def validate_outbound_action(self, action):
+        for segment in action.segments:
+            if segment.type == "image" and (not self.config.media_enabled or await self.event_store.get_media(segment.asset_id, [action.scene_id, "global-safe"]) is None):
+                raise ValueError("图片已停用或不在本场景中")
 
     async def _on_scene_event_committed(self, state, event: Event) -> None:
         """Invoked by SceneActor AFTER Event and SceneState are atomically committed in SQLite."""
@@ -523,6 +548,7 @@ class AgentRuntime:
                     bot_qq=self.config.bot_qq,
                     on_observation=self.commit_tool_observation,
                     checkpoint=self.evaluation_hook,
+                    media_service=self.media_service,
                 )
 
                 async def observe():

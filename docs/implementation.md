@@ -10,7 +10,7 @@
 | 2 通用工具 | feat: add structured tool observations and generic retrieval | 完成 | 171 项回归；HTML/文本/JSON、压缩、重定向、分页、scope、并发 |
 | 3 交错回放 | test: add interleaved multi-turn agent evaluation | 完成 | 175 项回归；十二类脚本基线、面板模式选择、前端构建 |
 | 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 完成 | 182 项回归；查询中修订/取消、预算失败、恢复、进展及面板 API |
-| 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 计划中 | 视觉、资产、分段、回执、公平性 |
+| 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 完成（真实视觉验收待配置） | 188 项回归；图片/引用/scope/预算/混排/失败、公平性、面板实测 |
 | 6 互动质量 | feat: add conversational quality evaluation and reply feedback | 计划中 | 后续反馈、依据和模型对照 |
 | 7 真实验收 | test: record live agent acceptance and controlled rollout | 计划中 | 真实工具、Shadow、指定群实发 |
 
@@ -47,3 +47,13 @@
 后台步骤和原始工具观察不抢占社会读取截点；进展/结果事件才回到社会理解。report_progress 需已有资料引用并受30秒记录冷却约束，仍由 Social Core 判断说不说。只有含真实 job_id/job_revision 的就绪结果才能关联交付，队列发送前再次检查取消/版本。模型摘要和进展不能成为独立记忆证据。SDK隐式重试关闭；工作主/备模型尝试都消耗额度。
 
 新增工作面板查看/修订/停止/恢复及资料分页；HTTP读经 QueryService，控制操作先记录运营事件再走Gate。七项新增工作测试覆盖事务失败、旧版本结果、重复完成、在途补充和取消、重启与主备调用预算；前端构建通过。真实模型工作判断尚待阶段6/7验证。
+
+## 阶段 5 实现
+
+原始 OneBot segments 保留，入站图片与 source Event 同事务登记为 scene-scoped media_assets。图片按需获取、限10MB/20MP、Pillow验证、哈希缓存；不读取任意本地路径。资产和预览须通过鉴权及scope查询。运营上传的素材可明确选global-safe，群内图不会自动晋升。MEDIA_ENABLED=false停用模型媒体能力和图片发送。
+
+inspect_image 使用独立 routing.vision，不回退到文字模型；搜索图片/表情使用search_media。视觉解释属于model证据类型，保留原图事件，不能作为独立记忆证据；动图只分析首帧并明确标注。视觉实际调用、主备模型尝试和格式修复共用认知模型额度，保留最终回应步骤。模型页提供真实数字图片读取测试。
+
+文字/图片segments为消息权威，旧content仍兼容；模型只能选择资产ID，适配器生成OneBot消息数组。ActionQueue每群保序，全局最多4个投递并发，后续片段按长度等待0.6–2秒；某片段失败/未知停止同组，队列join等待实际处理，发送前复查资产、工作版本和Shadow。
+
+已在临时数据库的浏览器面板验证工作修订版本、图片预览及未配置视觉提示，无OneBot连接。前端构建通过；回归曾与构建同时运行撞到临时资产目录缺失，最终按构建→回归顺序验证。真实视觉型号、真实群媒体验收仍待后续，不将模拟红图结果算真实模型通过。

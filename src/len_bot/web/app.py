@@ -17,6 +17,7 @@ from len_bot.web.routes.plugins import router as plugins_router
 from len_bot.web.routes.cockpit import router as cockpit_router
 from len_bot.web.routes.replay import router as replay_router
 from len_bot.web.routes.voice import router as voice_router
+from len_bot.web.routes.media import router as media_router
 
 def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     app = FastAPI(
@@ -55,6 +56,7 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     app.include_router(cockpit_router)
     app.include_router(replay_router)
     app.include_router(voice_router)
+    app.include_router(media_router)
 
     @app.get("/api/logs")
     async def get_logs(level: str | None = None, limit: int = 200, user: str = Depends(get_current_user)):

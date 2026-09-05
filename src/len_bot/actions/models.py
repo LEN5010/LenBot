@@ -2,6 +2,7 @@ from enum import StrEnum
 from typing import Optional, Any
 from pydantic import BaseModel, Field
 import uuid
+from len_bot.media.models import MessageSegment
 
 class DeliveryStatus(StrEnum):
     SENT = "sent"
@@ -27,6 +28,11 @@ class ActionItem(BaseModel):
     action_type: ActionType
     scene_id: str
     content: str
+    segments: list[MessageSegment] = Field(default_factory=list)
+    resolved_images: dict[str, str] = Field(default_factory=dict, exclude=True)
+    batch_id: str | None = None
+    batch_index: int = 0
+    batch_size: int = 1
     reply_to: Optional[str] = None
     associated_open_loop: Optional[dict[str, Any]] = None
     origin_mode: str = "live"

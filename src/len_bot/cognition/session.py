@@ -258,8 +258,12 @@ class SocialDecision(SessionModel):
     reason: str
 
 
+from len_bot.media.models import MessageSegment, normalize_message_body
+
+
 class SocialMessageProposal(SessionModel):
-    content: str
+    content: str = ""
+    segments: list[MessageSegment] = Field(default_factory=list)
     reply_to: str | None = Field(
         default=None,
         description="OneBot message_id to quote; never use a LenBot Event ID",
@@ -271,6 +275,10 @@ class SocialMessageProposal(SessionModel):
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None
+
+    @model_validator(mode="after")
+    def normalize_body(self):
+        return normalize_message_body(self)
 
     @field_validator("reply_to", mode="before")
     @classmethod

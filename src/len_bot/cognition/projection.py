@@ -51,10 +51,14 @@ def project_event(event: Event, bot_qq: int | str) -> str:
         else f"EventID={event.id}"
     )
     text = project_onebot_text(event.raw_text)
+    if event.metadata.get("media"):
+        text += "\n图片引用（需要时用 inspect_image 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
     quote = event.metadata.get("quote_context")
     if quote is not None:
         text += "\n引用原话：" + ("本群历史中未找到，不能猜测作者或内容" if quote.get("missing") else
             f"{quote['actor_id']} EventID={quote['event_id']}: {project_onebot_text(quote['text'])}")
+        if quote.get("media"):
+            text += "\n引用图片：" + json.dumps(quote["media"], ensure_ascii=False)
     if event.event_type == EventType.MESSAGE_SEND_FAILED:
         text += "\n发送未确认：" + event.payload.get("error", "旧记录缺少详细原因")
     if event.metadata.get("reflection_stale"):

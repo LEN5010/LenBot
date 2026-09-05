@@ -355,10 +355,10 @@ async def test_three_message_delivery_order_with_partial_unknown_does_not_retry(
             assert (await commit(actor, store, queue, result, [event.id])).accepted
             await queue._queue.join()
             await actor._queue.join()
-            assert sent == ["第一条", "第二条", "第三条"]
+            assert sent == ["第一条", "第二条"]
             events = await store.get_recent_events(actor.scene_id)
             deliveries = [e for e in events if e.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED}]
-            assert [e.payload["delivery_status"] for e in deliveries] == ["sent", "unknown", "sent"]
+            assert [e.payload["delivery_status"] for e in deliveries] == ["sent", "unknown", "not_sent"]
         finally:
             await queue.stop()
 

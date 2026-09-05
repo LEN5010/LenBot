@@ -17,6 +17,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "httpx>=0.28.0",
     "trafilatura>=2.2.0",
+    "pillow>=11.0",
 ]
 
 [project.scripts]
