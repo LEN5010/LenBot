@@ -12,10 +12,15 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
+import asyncio
+import json
+import trafilatura
 
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.plugins.net_policy import validate_url
+from len_bot.tools.http import fetch_public
+from len_bot.tools.results import ToolResult, ToolSource
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,7 @@ class WebSearchToolPlugin(BasePlugin):
             name="实时联网认知检索",
             description="机器人需要补充资料时主动使用的网页搜索与页面阅读工具，无需单独配置密钥。",
             version="1.0.0",
+            timeout_seconds=20.0,
             plugin_type=PluginType.TOOL,
             permissions=[PluginPermission.REGISTER_TOOL],
             config_schema={
@@ -63,7 +69,7 @@ class WebSearchToolPlugin(BasePlugin):
         self._client = httpx.AsyncClient(
             timeout=15.0,
             headers={"User-Agent": USER_AGENT},
-            follow_redirects=True,
+            follow_redirects=False,
         )
 
     async def on_load(self, context: PluginContext) -> None:
@@ -78,10 +84,11 @@ class WebSearchToolPlugin(BasePlugin):
                 "required": ["query"]
             },
             handler=self._web_search,
+            read_only=True,
         )
         context.register_tool(
             name="read_page",
-            description="读取网页正文文本：输入 URL，返回截断后的页面文字内容。",
+            description="读取通用网页、文本或JSON，返回来源与正文。长内容以结果ID调用 read_tool_result 续读；不支持需登录或仅脚本渲染的内容。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -90,15 +97,16 @@ class WebSearchToolPlugin(BasePlugin):
                 "required": ["url"]
             },
             handler=self._read_page,
+            read_only=True,
         )
 
     async def on_unload(self) -> None:
         await self._client.aclose()
 
-    async def _web_search(self, args: dict[str, Any]) -> str:
+    async def _web_search(self, args: dict[str, Any]) -> ToolResult:
         query = str(args.get("query", "")).strip()
         if not query:
-            return "Error: web_search requires a 'query' argument."
+            return ToolResult.failure("web_search requires a 'query' argument.", "invalid_arguments")
         max_results = int(self.manifest.config.get("max_results", 5))
 
         resp = await self._client.get(DDG_HTML_URL, params={"q": query})
@@ -108,33 +116,57 @@ class WebSearchToolPlugin(BasePlugin):
         anchors = _RESULT_ANCHOR.findall(html)
         snippets = [_strip_tags(s) for s in _RESULT_SNIPPET.findall(html)]
 
-        lines = []
+        lines, sources = [], []
         for idx, (href, title_html) in enumerate(anchors[:max_results]):
             title = _strip_tags(title_html)
             url = _resolve_ddg_href(href)
             snippet = snippets[idx] if idx < len(snippets) else ""
             lines.append(f"{idx + 1}. {title}\n   URL: {url}\n   摘要: {snippet}")
+            sources.append(ToolSource(url=url, title=title))
         if not lines:
-            return "未搜索到相关结果。"
-        return "\n".join(lines)
+            empty = "result--no-result" in html or "No results found" in html
+            return ToolResult(status="no_results" if empty else "unsupported",
+                              content="检索没有返回结果，不能推断现实不存在。" if empty else "搜索服务未返回可解析结果，可能需要交互验证。",
+                              error_code=None if empty else "search_unavailable", evidence_kind="external")
+        return ToolResult(content="\n".join(lines), sources=sources, evidence_kind="external", coverage="search_snippets")
 
-    async def _read_page(self, args: dict[str, Any]) -> str:
+    async def _read_page(self, args: dict[str, Any]) -> ToolResult:
         url = str(args.get("url", "")).strip()
         if not url.startswith(("http://", "https://")):
-            return "Error: read_page requires an absolute http(s) URL."
+            return ToolResult.failure("read_page requires an absolute http(s) URL.", "invalid_arguments")
 
         # SSRF Guard (ADR-0030, §21.4)
         allowed, reason = validate_url(url)
         if not allowed:
             logger.warning("SSRF blocked read_page attempt for %s: %s", url, reason)
-            return f"[安全拦截: 目标地址受限 - {reason}]"
+            return ToolResult.failure(f"安全拦截: 目标地址受限 - {reason}", "blocked")
 
         try:
-            resp = await self._client.get(url)
-            resp.raise_for_status()
-            text = _strip_tags(resp.text)
-            if not text:
-                return "页面无可提取文本。"
-            return text[:3000]
+            final_url, headers, body = await fetch_public(self._client, url)
+            media_type = headers.get("content-type", "").split(";")[0].lower()
+            # aiter_bytes already decoded Content-Encoding; retain charset only.
+            decoded = httpx.Response(200, headers={"content-type": headers.get("content-type", "")}, content=body).text
+            source = ToolSource(url=final_url)
+            if media_type in {"application/json", "text/json"} or media_type.endswith("+json"):
+                content = json.dumps(json.loads(decoded), ensure_ascii=False, indent=2)
+            elif media_type in {"text/plain", "text/markdown", "text/csv"}:
+                content = decoded
+            elif media_type in {"text/html", "application/xhtml+xml", ""}:
+                extracted = await asyncio.to_thread(trafilatura.bare_extraction, decoded, url=final_url,
+                    include_links=True, include_tables=True, include_comments=True, with_metadata=True)
+                if not extracted or not extracted.text or not extracted.text.strip():
+                    return ToolResult(status="unsupported", content="未提取到正文；可能需登录或脚本渲染，不能据此判定页面事实。",
+                                      sources=[source], error_code="body_unavailable", evidence_kind="external")
+                # Markdown preserves links and paragraph boundaries in the model-facing body.
+                content = await asyncio.to_thread(trafilatura.extract, decoded, url=final_url,
+                    output_format="markdown", include_links=True, include_tables=True, include_comments=True)
+                content = content or extracted.text
+                source.title = extracted.title or ""
+                source.published_at = extracted.date
+            else:
+                return ToolResult(status="unsupported", content=f"尚未支持的内容类型: {media_type}", sources=[source], error_code="content_type")
+            if not content.strip():
+                return ToolResult(status="no_results", content="资源内容为空，事实仍未确认。", sources=[source], evidence_kind="external")
+            return ToolResult(content=content, sources=[source], evidence_kind="external", coverage="retrieved_document")
         except Exception as e:
-            return f"读取页面失败: {e}"
+            return ToolResult.failure(f"读取页面失败: {e}", type(e).__name__)

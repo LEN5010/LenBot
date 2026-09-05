@@ -69,7 +69,7 @@ async def test_read_page_returns_security_blocked_on_ssrf():
     """ADR-0030, §21.4: read_page tool safely intercepts SSRF and returns blocked message."""
     plugin = WebSearchToolPlugin()
     res = await plugin._read_page({"url": "http://127.0.0.1:9090/admin"})
-    assert "[安全拦截" in res
+    assert res.status == "error" and res.error_code == "blocked"
     assert "目标地址受限" in res
 
     await plugin.on_unload()

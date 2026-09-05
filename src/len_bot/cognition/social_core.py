@@ -26,6 +26,7 @@ from len_bot.cognition.router import CognitionRouter, CognitiveTier
 from len_bot.cognition.session import GroupAgentSession, SocialCognitionResult
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, Stimulus
+from len_bot.tools.results import ToolResult
 
 
 class SocialCoreContextAssembler:
@@ -246,6 +247,9 @@ class SocialCognitionCore:
             return True
 
         for step in range(max_steps):
+            if toolkit and step:
+                # Discovery changes subsequent requests without restarting the episode.
+                tools = list(toolkit.get_tool_definitions()) + [tool for tool in tools if tool["function"]["name"] == "request_deliberate"]
             if not final_followup and max_steps - step >= 3 and tool_calls_used < max_tool_calls:
                 await incorporate()
             self._fit_context(working_messages, tools, trace)
@@ -329,6 +333,18 @@ class SocialCognitionCore:
                         for tool_call in message.tool_calls
                     ],
                 })
+                prefetched = {}
+                if hasattr(toolkit, "execute_many"):
+                    eligible = []
+                    for call in message.tool_calls[:max(0, max_tool_calls - tool_calls_used)]:
+                        try:
+                            args = json.loads(call.function.arguments or "{}")
+                        except (ValueError, TypeError):
+                            continue
+                        if isinstance(args, dict) and call.function.name != "request_deliberate":
+                            eligible.append((call.id, call.function.name, args))
+                    fetched = await toolkit.execute_many([(name, args) for _, name, args in eligible])
+                    prefetched = {entry[0]: result for entry, result in zip(eligible, fetched)}
                 for tool_call in message.tool_calls:
                     arguments: Any = {}
                     error_name, error_message = "", ""
@@ -355,8 +371,17 @@ class SocialCognitionCore:
                                 trace["escalations"].append({"step": step, "reason": "model_requested", "actual_model_changed": changed})
                                 outcome = "已切换深度模型，继续当前事项。" if changed else "两个档位配置的是同一模型，未改变模型。继续当前事项，不要重复切换。"
                             else:
-                                outcome = await toolkit.execute(tool_call.function.name, arguments)
+                                if tool_call.id in prefetched:
+                                    outcome = prefetched[tool_call.id]
+                                    if isinstance(outcome, Exception):
+                                        raise outcome
+                                else:
+                                    outcome = await toolkit.execute(tool_call.function.name, arguments)
                             tool_result = outcome if isinstance(outcome, str) else str(outcome)
+                            structured = ToolResult.normalize(tool_result)
+                            if structured.status in {"error", "unsupported"}:
+                                error_name = structured.error_code or structured.status
+                                error_message = structured.content
                         except Exception as tool_failure:
                             error_name = type(tool_failure).__name__
                             error_message = str(tool_failure)

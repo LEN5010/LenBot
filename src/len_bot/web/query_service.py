@@ -20,6 +20,13 @@ class RuntimeQueryService:
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
 
+    async def tool_results(self, scene_id, limit=100):
+        return await self.runtime.event_store.list_tool_observations(scene_id, limit)
+
+    async def tool_result(self, scene_id, result_id, offset=0):
+        result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
+        return result.page(offset).model_dump() if result else None
+
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona()
 

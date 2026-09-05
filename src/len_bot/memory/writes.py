@@ -50,6 +50,10 @@ async def validate_memory_proposal(
         cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (ev_id, scene_id))
         row = await cursor.fetchone()
         if row:
+            if row[0] == "TOOL_OBSERVATION_RECORDED":
+                detail = await (await db.execute("SELECT payload FROM events WHERE id=? AND scene_id=?", (ev_id, scene_id))).fetchone()
+                if not json.loads(detail[0]).get("independent_evidence"):
+                    raise ValueError("Derived tool output is not independent memory evidence")
             if row[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
                 raise ValueError("Model output is not independent memory evidence")
             raw_evidence.append(ev_id)
@@ -66,6 +70,10 @@ async def validate_memory_proposal(
             original = await cursor.fetchone()
             if not original or original[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
                 raise ValueError("Episode evidence must resolve to original observations in this scene")
+            if original[0] == "TOOL_OBSERVATION_RECORDED":
+                detail = await (await db.execute("SELECT payload FROM events WHERE id=? AND scene_id=?", (source, scene_id))).fetchone()
+                if not json.loads(detail[0]).get("independent_evidence"):
+                    raise ValueError("Episode cannot launder derived tool output into evidence")
         if not sources:
             raise ValueError("Episode has no source evidence")
         raw_evidence.extend(sources)
