@@ -29,6 +29,16 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     app.state.runtime = runtime
     runtime.query_service = RuntimeQueryService(runtime)
 
+    @app.middleware("http")
+    async def serialize_data_controls(request, call_next):
+        # Reset must finish after earlier edits/downloads and before later ones.
+        writes_data = request.method not in {"GET", "HEAD", "OPTIONS"}
+        loads_media = request.url.path.startswith("/api/media/") and request.url.path.endswith("/file")
+        if request.url.path.startswith("/api/") and (writes_data or loads_media):
+            async with runtime.control_plane_lock:
+                return await call_next(request)
+        return await call_next(request)
+
     log_ring = LogRingBuffer(capacity=1000)
     logging.getLogger("len_bot").addHandler(log_ring)
     logging.getLogger("len_bot").setLevel(logging.INFO)
