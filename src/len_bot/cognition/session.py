@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Literal
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -175,19 +176,14 @@ class SocialWorldPatch(SessionModel):
     social_dynamics_add: list[str] = Field(default_factory=list)
     group_identity: GroupIdentityPatch | None = None
     source_event_ids: list[str] = Field(default_factory=list)
+    open_threads: list[SocialThreadState] = Field(default_factory=list)
+    latent_expectations: list[LatentExpectation] = Field(default_factory=list)
+    remove_expectation_ids: list[str] = Field(default_factory=list)
 
 
 class SocialDecisionAction(StrEnum):
     SILENCE = "silence"
     SPEAK = "speak"
-
-
-class FastDecisionAction(StrEnum):
-    """ADR-0038: FAST one-shot outcome — silence, speak-final, or escalate to FULL."""
-
-    SILENCE = "silence"
-    SPEAK = "speak"
-    FULL = "full"
 
 
 class SelfSocialStateUpdate(SessionModel):
@@ -213,7 +209,7 @@ class RelationshipUpdate(SessionModel):
 
 class SocialPerception(SessionModel):
     summary: str
-    world_state: SocialWorldState
+    world_patch: SocialWorldPatch = Field(default_factory=SocialWorldPatch)
     person_updates: list[WorkingPersonUpdate] = Field(default_factory=list)
     relationship_updates: list[RelationshipUpdate] = Field(default_factory=list)
 
@@ -232,6 +228,8 @@ class SocialMessageProposal(SessionModel):
     expect_reply: bool = False
     reply_target: str | None = None
     reply_intent: str | None = None
+    task_ref: str | None = None
+    fulfils_task_id: str | None = None
 
     @field_validator("reply_to", mode="before")
     @classmethod
@@ -240,11 +238,42 @@ class SocialMessageProposal(SessionModel):
 
 
 class SocialTaskProposal(SessionModel):
-    description: str
+    operation: Literal["create", "update", "cancel", "result", "fail"] = "create"
+    task_id: str | None = None
+    proposal_id: str | None = None
+    due_at: float | None = None
+    requester_id: str | None = None
+    target_actor_id: str | None = None
+    source_event_ids: list[str] = Field(default_factory=list)
+    result: str | None = None
+    description: str = ""
     delay_seconds: float | None = None
     wake_event_type: str | None = None
     wake_match: dict[str, object] | None = None
     payload: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("due_at", mode="before")
+    @classmethod
+    def absolute_time(cls, value):
+        if isinstance(value, str):
+            instant = datetime.fromisoformat(value)
+            if instant.tzinfo is None:
+                raise ValueError("due_at must include a timezone offset")
+            return instant.timestamp()
+        return value
+
+    @model_validator(mode="after")
+    def task_contract(self):
+        if self.payload.get("kind") == "next_wake":
+            raise ValueError("next_wake is reserved for future_attention")
+        if self.operation == "create":
+            if not self.proposal_id or not self.source_event_ids:
+                raise ValueError("Task creation requires proposal_id and source_event_ids")
+            if self.due_at is None and self.wake_event_type is None:
+                raise ValueError("Task requires absolute due_at or a wake event condition")
+        elif not self.task_id:
+            raise ValueError("Task operation requires a task_id")
+        return self
 
 
 class SocialMemoryCandidate(SessionModel):
@@ -272,7 +301,7 @@ class NextWakeIntentProposal(SessionModel):
 
 class SocialCognitionResult(SessionModel):
     perception: SocialPerception
-    self_state: SelfSocialStateUpdate
+    self_state: SelfSocialStateUpdate | None = None
     decision: SocialDecision
     message_proposals: list[SocialMessageProposal] = Field(default_factory=list)
     task_proposals: list[SocialTaskProposal] = Field(default_factory=list)
@@ -291,7 +320,7 @@ class SocialCognitionResult(SessionModel):
             raise ValueError("next_wake is reserved for future_attention")
         return self
 
-    def to_episode_outcome(self, scene_id: str, through_event_rowid: int):
+    def to_episode_outcome(self, scene_id: str, through_event_rowid: int, now: float | None = None):
         from len_bot.cognition.models import (
             EpisodeOutcome,
             FinalDisposition,
@@ -316,7 +345,7 @@ class SocialCognitionResult(SessionModel):
             task_proposals.append(
                 TaskProposal(
                     description=f"[next wake] {self.future_attention.reason}",
-                    delay_seconds=max(0.0, self.future_attention.wake_at - time.time()),
+                    delay_seconds=max(0.0, self.future_attention.wake_at - (time.time() if now is None else now)),
                     payload={
                         "kind": "next_wake",
                         "reason": self.future_attention.reason,
@@ -338,47 +367,6 @@ class SocialCognitionResult(SessionModel):
                 for candidate in self.memory_candidates
             ],
             resolve_open_loop_ids=self.resolve_open_loop_ids,
-        )
-
-
-class FastCognitionResult(SessionModel):
-    """ADR-0038: the one-shot FAST contract.
-
-    Deliberately unexpressive: no world/person/relationship updates, no memory
-    candidates, no task proposals — those belong to FULL cognition and to the
-    deferred reflection channel.
-    """
-
-    decision: FastDecisionAction
-    reason: str
-    messages: list[SocialMessageProposal] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_decision_contract(self) -> "FastCognitionResult":
-        if self.decision == FastDecisionAction.SPEAK and not self.messages:
-            raise ValueError("fast speak requires at least one message proposal")
-        if self.decision in (FastDecisionAction.SILENCE, FastDecisionAction.FULL) and self.messages:
-            raise ValueError("fast silence/full cannot contain message proposals")
-        return self
-
-    def to_episode_outcome(self, scene_id: str, through_event_rowid: int):
-        from len_bot.cognition.models import (
-            EpisodeOutcome,
-            FinalDisposition,
-            MessageProposal,
-        )
-
-        disposition = (
-            FinalDisposition.ACTION
-            if self.decision == FastDecisionAction.SPEAK
-            else FinalDisposition.SILENCE
-        )
-        return EpisodeOutcome(
-            disposition=disposition,
-            decision_reason=f"[fast] {self.reason}",
-            message_proposals=[
-                MessageProposal(**proposal.model_dump()) for proposal in self.messages
-            ],
         )
 
 
@@ -425,14 +413,11 @@ class GroupAgentSessionReducer:
         candidate.version += 1
         cls._prune_expired_retained(candidate, event.timestamp)
 
-        # ADR-0038: deferred merge-only social-world patches ride the standard
-        # event path so the SceneActor stays the single session writer.
-        if event.event_type == EventType.SOCIAL_COGNITION_RECORDED and event.payload.get("kind") == "deferred_patch":
-            try:
-                patch = SocialWorldPatch.model_validate(event.payload["patch"])
-            except Exception:
-                return candidate
-            return cls.apply_deferred_patch(candidate, patch)
+        if event.event_type == EventType.REFLECTION_RECORDED:
+            candidate.recent_episode_summary = event.payload.get("episode_summary", "")
+            if event.payload.get("base_version") == state.version and event.payload.get("patch"):
+                cls.apply_deferred_patch(candidate, SocialWorldPatch.model_validate(event.payload["patch"]))
+            return candidate
 
         if event.event_type in cls._CONVERSATION_EVENT_TYPES:
             candidate.conversation_event_ids.append(event.id)
@@ -485,20 +470,22 @@ class GroupAgentSessionReducer:
         state: GroupAgentSession,
         result: SocialCognitionResult,
         through_event_rowid: int,
+        now: float | None = None,
     ) -> GroupAgentSession:
         candidate = state.model_copy(deep=True)
         candidate.version += 1
         candidate.last_cognized_event_rowid = through_event_rowid
-        cls._prune_expired_retained(candidate, time.time())
-        candidate.social_world = result.perception.world_state
+        cls._prune_expired_retained(candidate, time.time() if now is None else now)
+        cls.apply_deferred_patch(candidate, result.perception.world_patch)
 
         update = result.self_state
         self_state = candidate.self_social_state
-        self_state.engagement = update.engagement
-        self_state.social_position = update.social_position
-        self_state.current_interest = update.current_interest
-        self_state.inclination_to_speak = update.inclination_to_speak
-        self_state.recent_feedback = update.recent_feedback
+        if update is not None:
+            self_state.engagement = update.engagement
+            self_state.social_position = update.social_position
+            self_state.current_interest = update.current_interest
+            self_state.inclination_to_speak = update.inclination_to_speak
+            self_state.recent_feedback = update.recent_feedback
 
         for person_update in result.perception.person_updates:
             person = candidate.working_persons.get(person_update.actor_id)
@@ -525,20 +512,6 @@ class GroupAgentSessionReducer:
             )
             for index, item in enumerate(result.retained_attention)
         )
-        return candidate
-
-    @classmethod
-    def apply_fast_cognition(
-        cls,
-        state: GroupAgentSession,
-        through_event_rowid: int,
-    ) -> GroupAgentSession:
-        """ADR-0038: FAST commits immediate state only — cursor advance and
-        retained-attention pruning. Subjective social world is deferred."""
-        candidate = state.model_copy(deep=True)
-        candidate.version += 1
-        candidate.last_cognized_event_rowid = through_event_rowid
-        cls._prune_expired_retained(candidate, time.time())
         return candidate
 
     @classmethod
@@ -584,6 +557,13 @@ class GroupAgentSessionReducer:
                         merged.append(item)
                 setattr(identity, key, merged[-20:])
 
+        threads = {item.id: item for item in world.open_threads}
+        threads.update({item.id: item for item in patch.open_threads})
+        world.open_threads = list(threads.values())
+        expectations = {item.id: item for item in world.latent_expectations
+                        if item.id not in patch.remove_expectation_ids}
+        expectations.update({item.id: item for item in patch.latent_expectations})
+        world.latent_expectations = list(expectations.values())
         state.social_world = world
         state.group_identity = identity
         return state

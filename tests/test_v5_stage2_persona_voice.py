@@ -14,7 +14,7 @@ from len_bot.cognition.session import (
     SocialWorldPatch,
     TopicState,
 )
-from len_bot.cognition.fast_core import FastContextAssembler
+from len_bot.testing.social import social_result
 from len_bot.cognition.social_core import SocialCoreContextAssembler
 from len_bot.events.models import Event, EventType, Stimulus, StimulusType
 from len_bot.events.store import EventStore
@@ -63,7 +63,7 @@ def test_apply_fast_cognition_advances_cursor_without_touching_social_world():
     session.social_world.mood = "热闹"
     session.last_cognized_event_rowid = 3
 
-    updated = GroupAgentSessionReducer.apply_fast_cognition(session, through_event_rowid=9)
+    updated = GroupAgentSessionReducer.apply_cognition(session, social_result(reason="state unchanged"), through_event_rowid=9)
 
     assert updated.last_cognized_event_rowid == 9
     assert updated.social_world.mood == "热闹"
@@ -100,11 +100,11 @@ def test_deferred_patch_merges_never_replaces():
 def test_reducer_applies_deferred_patch_event_through_lawful_path():
     session = GroupAgentSession(scene_id="group:e")
     event = Event(
-        event_type=EventType.SOCIAL_COGNITION_RECORDED,
+        event_type=EventType.REFLECTION_RECORDED,
         scene_id="group:e",
         actor_id="system:reflection",
         payload={
-            "kind": "deferred_patch",
+            "base_version": 0,
             "patch": {"mood": "安静", "social_dynamics_add": ["夜聊"]},
         },
     )
@@ -113,7 +113,7 @@ def test_reducer_applies_deferred_patch_event_through_lawful_path():
     assert updated.social_world.social_dynamics == ["夜聊"]
     # A malformed patch event must never crash the single-writer loop.
     bad = Event(
-        event_type=EventType.SOCIAL_COGNITION_RECORDED,
+        event_type=EventType.REFLECTION_RECORDED,
         scene_id="group:e",
         actor_id="system:reflection",
         payload={"kind": "deferred_patch", "patch": "not-a-dict"},
@@ -157,7 +157,7 @@ def test_fast_context_carries_persona_layers(tmp_path):
     session.group_register.observe(session.group_register, "草")
     session.self_social_state.engagement = "chatting"
 
-    assembler = FastContextAssembler(config)
+    assembler = SocialCoreContextAssembler(config)
     messages = assembler.assemble(
         session=session,
         burst=Stimulus(
@@ -175,8 +175,8 @@ def test_fast_context_carries_persona_layers(tmp_path):
     system = messages[0]["content"]
     user = messages[1]["content"]
     assert "【IDENTITY CORE】" in system and "行为倾向" in system
-    assert "silence" in system and "full" in system
-    assert "【ADAPTIVE SELF STATE】" in user and "chatting" in user
+    assert "SILENCE" in system or "silence" in system
+    assert "【CURRENT SOCIAL STATE】" in user and "chatting" in user
     assert "【GROUP REGISTER】" in user
     assert "loop_1" in user
     assert "怎么又是我" in user

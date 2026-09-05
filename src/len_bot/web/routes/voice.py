@@ -28,7 +28,7 @@ class VoiceExampleToggleRequest(BaseModel):
 @router.get("/exemplars")
 async def list_exemplars(scene_id: Optional[str] = None, request: Request = None, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    return {"exemplars": await runtime.event_store.list_voice_examples(scene_id)}
+    return {"exemplars": await runtime.query_service.list_voice_examples(scene_id)}
 
 
 @router.post("/exemplars")

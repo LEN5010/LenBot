@@ -8,7 +8,6 @@ import asyncio
 import pytest
 
 from len_bot.config import RuntimeConfig
-from len_bot.cognition.session import FastCognitionResult, FastDecisionAction
 from len_bot.events.models import Event, EventType
 from len_bot.testing.scenario_runner import ScenarioRunner
 from len_bot.testing.social import social_result
@@ -18,7 +17,7 @@ from len_bot.testing.social import social_result
 async def test_deferred_patch_event_commits_through_scene_actor(tmp_path):
     runner = ScenarioRunner(
         config=RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "t.db"), debounce_idle_ms=20, debounce_max_ms=50),
-        mock_fast_handler=lambda messages: _fast_silence(),
+        mock_social_handler=lambda messages: _silence(),
     )
     await runner.setup()
     scene_id = "group:d1"
@@ -27,12 +26,12 @@ async def test_deferred_patch_event_commits_through_scene_actor(tmp_path):
         await runner.settle(0.4)
 
         patch_event = Event(
-            event_type=EventType.SOCIAL_COGNITION_RECORDED,
+            event_type=EventType.REFLECTION_RECORDED,
             scene_id=scene_id,
             actor_id="system:reflection",
             timestamp=__import__("time").time(),
             payload={
-                "kind": "deferred_patch",
+                "base_version": runner.runtime.scene_manager.get_group_session(scene_id).version,
                 "patch": {
                     "mood": "放松",
                     "open_topics": [
@@ -55,8 +54,8 @@ async def test_deferred_patch_event_commits_through_scene_actor(tmp_path):
         await runner.teardown()
 
 
-async def _fast_silence():
-    return {"decision": FastDecisionAction.SILENCE, "reason": "deferred test", "messages": []}
+async def _silence():
+    return social_result(reason="deferred test")
 
 
 @pytest.mark.asyncio
@@ -74,14 +73,14 @@ async def test_quiet_window_reflection_applies_llm_world_patch(tmp_path):
             debounce_max_ms=50,
             reflection_quiet_window_seconds=999.0,  # auto-reflection must not consume the range
         ),
-        mock_fast_handler=lambda messages: _fast_silence(),
+        mock_social_handler=lambda messages: _silence(),
     )
     await runner.setup()
     scene_id = "group:d2"
 
     captured: dict = {}
 
-    async def stub_reflector(events):
+    async def stub_reflector(events, context=None):
         captured["event_ids"] = [e.id for e in events]
         episode = EpisodeRecord(
             scene_id=scene_id,
@@ -100,7 +99,7 @@ async def test_quiet_window_reflection_applies_llm_world_patch(tmp_path):
                 "context": "有人说把线上库删了",
             }],
         )
-        return episode, [], patch
+        return episode, [], patch, []
 
     try:
         await runner.step_message(scene_id, user_id=1001, text="删库跑路")
@@ -131,7 +130,7 @@ async def test_deterministic_reflection_proposes_no_patch(tmp_path):
             debounce_max_ms=50,
             reflection_quiet_window_seconds=0.2,
         ),
-        mock_fast_handler=lambda messages: _fast_silence(),
+        mock_social_handler=lambda messages: _silence(),
     )
     await runner.setup()
     scene_id = "group:d3"

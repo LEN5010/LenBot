@@ -61,14 +61,14 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file, debounce_idle_ms=20, debounce_max_ms=50)
 
     episode_1_started = asyncio.Event()
-    episode_1_cancelled = asyncio.Event()
+    release_first = asyncio.Event()
     episodes_executed: list[str] = []
     concurrent_overlap = False
 
     async def slow_social_core(messages: list[dict[str, str]]):
         nonlocal concurrent_overlap
-        user_prompt = messages[1]["content"]
-        in_flight = episode_1_started.is_set() and not episode_1_cancelled.is_set()
+        user_prompt = "\n".join(m["content"] for m in messages)
+        in_flight = episode_1_started.is_set() and not release_first.is_set()
         if in_flight and episodes_executed:
             # A second episode must never run while the first is still live.
             concurrent_overlap = True
@@ -76,9 +76,9 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
         if len(episodes_executed) == 1:
             episode_1_started.set()
             try:
-                await episode_1_cancelled.wait()
+                await release_first.wait()
             except asyncio.CancelledError:
-                episode_1_cancelled.set()
+                release_first.set()
                 raise
             return social_result(reason="stale first answer", content="Slow response")
         return social_result(reason="merged burst re-cognized after preemption")
@@ -108,7 +108,9 @@ async def test_p0_2_single_scene_episode_mutual_exclusion(tmp_path):
     # 3. A direct @Bot arrives in the SAME scene: ADR-0037 direct preemption.
     # The in-flight episode is cancelled; cognition restarts over the merged burst.
     await runner.step_message(scene_id, user_id=1003, text="@Bot 并发打断", at_bot=True)
-    await asyncio.wait_for(episode_1_cancelled.wait(), timeout=5.0)
+    await actor._queue.join()
+    assert not release_first.is_set()
+    release_first.set()
     await runner.settle(0.2)
 
     # Exactly two cognition calls, strictly sequential; the restarted episode
@@ -248,7 +250,7 @@ async def test_p0_4_scheduler_atomic_trigger_and_payload_roundtrip(tmp_path):
     async with runtime.event_store._db.execute("SELECT status FROM tasks WHERE id = ?;", (task_id,)) as cursor:
         row = await cursor.fetchone()
     assert row is not None
-    assert row[0] == "triggered"
+    assert row[0] == "processing"
 
     # 4. TASK_DUE event must exist in events table
     async with runtime.event_store._db.execute(

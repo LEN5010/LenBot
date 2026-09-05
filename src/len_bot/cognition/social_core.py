@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -37,6 +40,8 @@ class SocialCoreContextAssembler:
         active_open_loops: list[dict[str, Any]],
         pending_next_wake: dict[str, Any] | None = None,
         voice_examples: list[dict] | None = None,
+        tasks: list[dict] | None = None,
+        now: float | None = None,
     ) -> list[dict[str, str]]:
         active_open_loop_ids = [item["id"] for item in active_open_loops]
 
@@ -57,10 +62,20 @@ class SocialCoreContextAssembler:
             "resolve_open_loop_ids 只能填写 CURRENT SOCIAL STATE 的 active_open_loops 中真实存在的 id；没有匹配项时必须输出空数组。\n"
             "message_proposals.reply_to 只能填写 OneBotMessageID，绝不能填写 EventID；不需要引用回复时填 null。\n"
             "保持输出紧凑，只保留当前真正活跃的话题、人物更新和必要证据，避免重复复述整个聊天记录。\n"
-            "工具结果只是你的回忆材料，最终仍由你以同一个人格输出完整结构化认知。"
+            "工具结果回到你这里判断是否还有必要说，别人已经回答时可以沉默。"
+            "明确的提醒、查询、改时间、取消和追问进度必须处理，不能只回好。"
+            "创建任务给 proposal_id，确认消息 task_ref 引用它；修改取消填写真实 task_id。"
+            "履约消息 fulfils_task_id 指向已有任务；查询结果先用 operation=result 保存。"
+            "due_at 使用当前时区换算的 Unix 秒，优先绝对时间，不明确时先追问。"
+            "不要将已过时承诺重新按相对时间安排。source_event_ids 引用真实请求证据。"
+            "没有被@不等于无需回应：识别别人是否在接你的话、质疑你或隐式邀请。"
+            "不知道的时效事实主动查证，查询失败就承认未知；[图片]表示尚未识别的媒体。"
+            "需要更深处理时调用 request_deliberate，这只切换同一人格的能力。"
         )
 
         situation = {
+            "current_time": datetime.fromtimestamp(time.time() if now is None else now, ZoneInfo("Asia/Shanghai")).isoformat(),
+            "tasks": tasks or [],
             "group_identity": session.group_identity.model_dump(mode="json"),
             "social_world_state": session.social_world.model_dump(mode="json"),
             "self_social_state": session.self_social_state.model_dump(mode="json"),
@@ -99,7 +114,7 @@ class SocialCoreContextAssembler:
             f"MentionBot: {burst.has_mention_bot} | ReplyBot: {burst.has_reply_bot}\n\n"
             "【RUNTIME REFERENCE AUTHORITY】\n"
             f"允许关闭的 Runtime OpenLoop IDs: {json.dumps(active_open_loop_ids, ensure_ascii=False)}\n\n"
-            "输出一个 JSON 对象，必须严格符合以下 schema；social world 输出理解后的完整当前快照。\n"
+            "输出一个 JSON 对象，必须严格符合以下 schema；perception.world_patch 只输出发生变化的字段，未变化的省略。\n"
             f"{schema_json}"
         )
         input_budget = max(
@@ -107,7 +122,9 @@ class SocialCoreContextAssembler:
             self.config.social_context_window_tokens
             - self.config.social_output_reserve_tokens
             - self._estimate_tokens(system_content)
-            - self._estimate_tokens(fixed_user_content),
+            - self._estimate_tokens(fixed_user_content)
+            - estimate_tokens(render_register_block(session))
+            - estimate_tokens(render_voice_examples_block(voice_examples or [])),
         )
         recent_chat = self._pack_recent_chat(raw_events, input_budget)
         chat_text = "\n".join(recent_chat) if recent_chat else "(暂无近期原始对话)"
@@ -119,6 +136,7 @@ class SocialCoreContextAssembler:
             + register_block
             + "【RECENT RAW CONVERSATION】\n"
             f"{chat_text}\n\n"
+            + "【END RAW CONVERSATION】\n"
             + examples_block
             + "【CURRENT BURST】\n"
             f"{projected_burst}\n"
@@ -126,7 +144,7 @@ class SocialCoreContextAssembler:
             f"MentionBot: {burst.has_mention_bot} | ReplyBot: {burst.has_reply_bot}\n\n"
             "【RUNTIME REFERENCE AUTHORITY】\n"
             f"允许关闭的 Runtime OpenLoop IDs: {json.dumps(active_open_loop_ids, ensure_ascii=False)}\n\n"
-            "输出一个 JSON 对象，必须严格符合以下 schema；social world 输出理解后的完整当前快照。\n"
+            "输出一个 JSON 对象，必须严格符合以下 schema；perception.world_patch 只输出发生变化的字段，未变化的省略。\n"
             f"{schema_json}"
         )
         return [
@@ -175,6 +193,10 @@ class SocialCognitionCore:
         max_steps: int = 5,
         max_tool_calls: int = 6,
         voice_examples: list[dict] | None = None,
+        tasks: list[dict] | None = None,
+        observe: Callable | None = None,
+        commit: Callable | None = None,
+        now: float | None = None,
     ) -> tuple[SocialCognitionResult, dict[str, Any]]:
         messages = self.context_assembler.assemble(
             session=session,
@@ -183,20 +205,41 @@ class SocialCognitionCore:
             active_open_loops=active_open_loops,
             pending_next_wake=pending_next_wake,
             voice_examples=voice_examples,
+            tasks=tasks, now=now,
         )
-        if self.mock_handler:
-            result = await self.mock_handler(messages)
-            return SocialCognitionResult.model_validate(result), {"mode": "mock", "steps": [], "escalations": []}
-
         working_messages: list[dict[str, Any]] = list(messages)
-        tools = toolkit.get_tool_definitions() if toolkit else None
+        tools = list(toolkit.get_tool_definitions()) if toolkit else []
+        if toolkit:
+            tools.append({"type": "function", "function": {
+                "name": "request_deliberate", "description": "需要更深推理时切换能力，保持当前上下文",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }})
         tier = CognitiveTier.NORMAL
-        trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
+        trace: dict[str, Any] = {"mode": "mock" if self.mock_handler else "live", "path": "social", "steps": [], "escalations": [], "latency_ms": 0, "interim_batches": 0}
         tool_calls_used = 0
         contract_repairs = 0
         active_open_loop_ids = {item["id"] for item in active_open_loops}
 
+        async def incorporate() -> bool:
+            if observe is None:
+                return False
+            new_context = await observe()
+            if new_context is None:
+                return False
+            working_messages.append({"role": "user", "content": new_context})
+            trace["interim_batches"] += 1
+            return True
+
         for step in range(max_steps):
+            await incorporate()
+            self._fit_context(working_messages, tools, trace)
+            if self.mock_handler:
+                result = SocialCognitionResult.model_validate(await self.mock_handler(copy.deepcopy(working_messages)))
+                if await incorporate():
+                    continue
+                if commit is None or await commit(result, trace):
+                    return result, trace
+                continue
             force_final = step == max_steps - 1 or tool_calls_used >= max_tool_calls
             response, resolution, used_fallback, latency = await self._call_model(
                 tier=tier,
@@ -235,6 +278,9 @@ class SocialCognitionCore:
                 "tool_calls": [],
             }
             trace["steps"].append(step_trace)
+            trace["latency_ms"] += step_trace["latency_ms"]
+            step_trace["estimated_prompt_tokens"] = estimate_tokens(json.dumps(working_messages, ensure_ascii=False)) + estimate_tokens(json.dumps(tools, ensure_ascii=False))
+            step_trace["token_estimate_error"] = step_trace["prompt_tokens"] - step_trace["estimated_prompt_tokens"]
 
             if getattr(message, "tool_calls", None):
                 if toolkit is None:
@@ -275,7 +321,14 @@ class SocialCognitionCore:
                     tool_result: str | None = None
                     if not error_name:
                         try:
-                            outcome = await toolkit.execute(tool_call.function.name, arguments)
+                            if tool_calls_used >= max_tool_calls:
+                                raise ValueError("本回合工具预算已耗尽，请直接给出决定")
+                            if tool_call.function.name == "request_deliberate":
+                                tier = CognitiveTier.DELIBERATE
+                                trace["escalations"].append({"step": step, "reason": "model_requested"})
+                                outcome = "已切换深度能力，继续当前事项。"
+                            else:
+                                outcome = await toolkit.execute(tool_call.function.name, arguments)
                             tool_result = outcome if isinstance(outcome, str) else str(outcome)
                         except Exception as tool_failure:
                             error_name = type(tool_failure).__name__
@@ -312,12 +365,6 @@ class SocialCognitionCore:
                         })
                         if self.metrics:
                             self.metrics.inc_social("retrieval_tool_calls")
-                        reason = self.router.should_escalate(tier, step + 1, tool_result)
-                        if reason:
-                            tier = CognitiveTier.DELIBERATE
-                            trace["escalations"].append({"step": step, "reason": reason})
-                            if self.metrics:
-                                self.metrics.record_escalation(reason)
                     tool_calls_used += 1
                 continue
 
@@ -346,9 +393,34 @@ class SocialCognitionCore:
                 })
                 continue
 
-            return result, trace
+            working_messages.append({"role": "assistant", "content": content})
+            if await incorporate():
+                continue
+            if commit is None or await commit(result, trace):
+                return result, trace
 
-        raise RuntimeError("Social Core loop exited without decision")
+        raise RuntimeError("Cognition budget exhausted before a fresh decision could commit")
+
+    def _fit_context(self, messages, tools, trace):
+        """Only evict the oldest raw edge. Active state and completed tools stay."""
+        config = self.context_assembler.config
+        budget = config.social_context_window_tokens - config.social_output_reserve_tokens
+        overhead = estimate_tokens(json.dumps(tools, ensure_ascii=False))
+        total = estimate_tokens(json.dumps(messages, ensure_ascii=False)) + overhead
+        if total <= budget:
+            return
+        head, raw = messages[1]["content"].split("【RECENT RAW CONVERSATION】\n", 1)
+        raw, tail = raw.split("【END RAW CONVERSATION】\n", 1)
+        lines = raw.splitlines(keepends=True)
+        removed = 0
+        while lines and total > budget:
+            line = lines.pop(0)
+            total -= estimate_tokens(json.dumps(line, ensure_ascii=False))
+            removed += 1
+        messages[1]["content"] = head + "【RECENT RAW CONVERSATION】\n" + "".join(lines) + "【END RAW CONVERSATION】\n" + tail
+        trace["raw_lines_rolled_out"] = trace.get("raw_lines_rolled_out", 0) + removed
+        if estimate_tokens(json.dumps(messages, ensure_ascii=False)) + overhead > budget:
+            raise RuntimeError("Working state and tool results exceed context budget; input retained for next turn")
 
     async def _call_model(
         self,
@@ -389,7 +461,7 @@ class SocialCognitionCore:
     async def _create_completion(resolution, messages, tools, tool_choice=None):
         kwargs: dict[str, Any] = {
             "model": resolution.model,
-            "messages": messages,
+            "messages": copy.deepcopy(messages),
             "temperature": 0.4,
             "response_format": {"type": "json_object"},
         }

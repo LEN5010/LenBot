@@ -6,7 +6,14 @@ from pydantic import BaseModel, Field
 class TaskStatus(StrEnum):
     PENDING = "pending"
     CLAIMED = "claimed"
-    TRIGGERED = "triggered"
+    PROCESSING = "processing"
+    RESULT_READY = "result_ready"
+    AWAITING_DELIVERY = "awaiting_delivery"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DELIVERY_UNKNOWN = "delivery_unknown"
+    SHADOW_OBSERVED = "shadow_observed"
+    REVIEW_REQUIRED = "review_required"
     CANCELLED = "cancelled"
 
 class TaskItem(BaseModel):

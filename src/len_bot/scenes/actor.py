@@ -12,7 +12,6 @@ from len_bot.cognition.session import (
     GroupAgentSessionReducer,
     SocialCognitionResult,
 )
-from len_bot.cognition.session import FastCognitionResult
 from len_bot.runtime.gate import ProposalCommit
 
 logger = logging.getLogger(__name__)
@@ -50,29 +49,15 @@ class SocialCognitionCommitCommand:
         through_event_rowid: int,
         source_event_ids: list[str],
         mode: str,
+        gate_context: tuple | None = None,
     ):
+        self.gate_context = gate_context
         self.result = result
         self.through_event_rowid = through_event_rowid
         self.source_event_ids = source_event_ids
         self.mode = mode
         self.future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
 
-
-class FastCognitionCommitCommand:
-    """ADR-0038: FAST result commit — immediate state only, same cursor contract."""
-
-    def __init__(
-        self,
-        result: FastCognitionResult,
-        through_event_rowid: int,
-        source_event_ids: list[str],
-        mode: str,
-    ):
-        self.result = result
-        self.through_event_rowid = through_event_rowid
-        self.source_event_ids = source_event_ids
-        self.mode = mode
-        self.future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
 
 class SceneActor:
     def __init__(
@@ -89,7 +74,7 @@ class SceneActor:
         self.state: Optional[SceneState] = None
         self.group_session: Optional[GroupAgentSession] = None
         self._queue: asyncio.Queue[
-            Union[Event, ProposalCommitCommand, SocialCognitionCommitCommand, FastCognitionCommitCommand]
+            Union[Event, ProposalCommitCommand, SocialCognitionCommitCommand]
         ] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_mailbox: Optional[EpisodeMailbox] = None
@@ -185,22 +170,6 @@ class SceneActor:
         await self._queue.put(cmd)
         return await cmd.future
 
-    async def submit_fast_cognition(
-        self,
-        result: FastCognitionResult,
-        through_event_rowid: int,
-        source_event_ids: list[str],
-        mode: str = "shadow",
-    ) -> bool:
-        cmd = FastCognitionCommitCommand(
-            result=result,
-            through_event_rowid=through_event_rowid,
-            source_event_ids=source_event_ids,
-            mode=mode,
-        )
-        await self._queue.put(cmd)
-        return await cmd.future
-
     async def _process_loop(self) -> None:
         while self._running:
             try:
@@ -213,23 +182,6 @@ class SceneActor:
                     except Exception as error:
                         logger.exception(
                             "Error committing social cognition in SceneActor %s: %s",
-                            self.scene_id,
-                            error,
-                        )
-                        if not item.future.done():
-                            item.future.set_exception(error)
-                    finally:
-                        self._queue.task_done()
-                    continue
-
-                if isinstance(item, FastCognitionCommitCommand):
-                    try:
-                        accepted = await self._commit_fast_cognition(item)
-                        if not item.future.done():
-                            item.future.set_result(accepted)
-                    except Exception as error:
-                        logger.exception(
-                            "Error committing fast cognition in SceneActor %s: %s",
                             self.scene_id,
                             error,
                         )
@@ -258,6 +210,15 @@ class SceneActor:
                     continue
 
                 event: Event = item
+                if await self.event_store.event_exists(event.id, self.scene_id):
+                    self._queue.task_done()
+                    continue
+                if event.event_type == EventType.TASK_DUE and event.payload.get("task_id"):
+                    event.metadata["obsolete_task_wake"] = not await self.event_store.task_due_is_current(event)
+                if event.event_type == EventType.REFLECTION_RECORDED:
+                    event.metadata["needs_review"] = bool(event.payload.get("review_items")) or (
+                        bool(event.payload.get("patch")) and event.payload.get("base_version") != self.group_session.version
+                    )
                 # 1. Pure functional state reduction to candidate state (never mutates self.state)
                 candidate_state = SceneReducer.reduce(self.state, event, self.bot_actor_id)
                 candidate_session = GroupAgentSessionReducer.reduce(
@@ -301,39 +262,14 @@ class SceneActor:
                 logger.exception("Error processing event in SceneActor %s (in-memory state rolled back/untouched): %s", self.scene_id, e)
                 self._queue.task_done()
 
-    async def _commit_fast_cognition(self, item: FastCognitionCommitCommand) -> bool:
-        if self.group_session.last_observed_event_rowid != item.through_event_rowid:
-            return False
-
-        cognition_event = Event(
-            event_type=EventType.SOCIAL_COGNITION_RECORDED,
-            scene_id=self.scene_id,
-            actor_id="system:social_core",
-            timestamp=time.time(),
-            payload={
-                "kind": "fast",
-                "source_event_ids": item.source_event_ids,
-                "result": item.result.model_dump(mode="json"),
-            },
-            metadata={
-                "through_event_rowid": item.through_event_rowid,
-                "mode": item.mode,
-            },
+    async def commit_cognitive_turn(self, result, through_event_rowid, source_event_ids,
+                                    mode, episode_id, mailbox, runtime_gate):
+        cmd = SocialCognitionCommitCommand(
+            result, through_event_rowid, source_event_ids, mode,
+            (episode_id, mailbox, runtime_gate),
         )
-        candidate_state = SceneReducer.reduce(self.state, cognition_event, self.bot_actor_id)
-        candidate_session = GroupAgentSessionReducer.apply_fast_cognition(
-            self.group_session,
-            item.through_event_rowid,
-        )
-        await self.event_store.commit_scene_event(
-            event=cognition_event,
-            scene_state_data=candidate_state.model_dump(),
-            group_session_data=candidate_session.model_dump(),
-            advance_session_observation=False,
-        )
-        self.state = candidate_state
-        self.group_session = candidate_session
-        return True
+        self._queue.put_nowait(cmd)
+        return await cmd.future
 
     async def _commit_social_cognition(self, item: SocialCognitionCommitCommand) -> bool:
         if self.group_session.last_observed_event_rowid != item.through_event_rowid:
@@ -341,9 +277,10 @@ class SceneActor:
 
         known_event_ids = set(self.group_session.conversation_event_ids)
         referenced_event_ids = set(item.source_event_ids)
-        for thread in item.result.perception.world_state.open_threads:
+        referenced_event_ids.update(item.result.perception.world_patch.source_event_ids)
+        for thread in item.result.perception.world_patch.open_threads:
             referenced_event_ids.update(thread.source_event_ids)
-        for expectation in item.result.perception.world_state.latent_expectations:
+        for expectation in item.result.perception.world_patch.latent_expectations:
             referenced_event_ids.update(expectation.source_event_ids)
         for person in item.result.perception.person_updates:
             referenced_event_ids.update(person.source_event_ids)
@@ -366,7 +303,7 @@ class SceneActor:
             event_type=EventType.SOCIAL_COGNITION_RECORDED,
             scene_id=self.scene_id,
             actor_id="system:social_core",
-            timestamp=time.time(),
+            timestamp=self.event_store.clock(),
             payload={
                 "source_event_ids": item.source_event_ids,
                 "result": item.result.model_dump(mode="json"),
@@ -381,13 +318,25 @@ class SceneActor:
             self.group_session,
             item.result,
             item.through_event_rowid,
+            now=self.event_store.clock(),
         )
-        await self.event_store.commit_scene_event(
+        scene_commit = dict(
             event=cognition_event,
             scene_state_data=candidate_state.model_dump(),
             group_session_data=candidate_session.model_dump(),
             advance_session_observation=False,
         )
+        if item.gate_context is not None:
+            episode_id, mailbox, runtime_gate = item.gate_context
+            decision = await runtime_gate.evaluate_and_commit(
+                outcome=item.result.to_episode_outcome(self.scene_id, item.through_event_rowid, self.event_store.clock()),
+                mailbox=mailbox, current_scene_state=self.state, scene_commit=scene_commit,
+            )
+            if decision.accepted:
+                self.state = candidate_state
+                self.group_session = candidate_session
+            return decision
+        await self.event_store.commit_scene_event(**scene_commit)
         self.state = candidate_state
         self.group_session = candidate_session
         return True

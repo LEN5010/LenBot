@@ -5,7 +5,7 @@ from len_bot.cognition.session import (
     SocialDecisionAction,
     SocialMessageProposal,
     SocialPerception,
-    SocialWorldState,
+    SocialWorldPatch,
 )
 
 
@@ -24,7 +24,7 @@ def social_result(
         else []
     )
     return SocialCognitionResult(
-        perception=SocialPerception(summary=summary, world_state=SocialWorldState()),
+        perception=SocialPerception(summary=summary, world_patch=SocialWorldPatch()),
         self_state=SelfSocialStateUpdate(
             engagement="observing",
             social_position="observer",

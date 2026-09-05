@@ -17,6 +17,7 @@ def render_identity_block(config: RuntimeConfig) -> str:
     return (
         "【IDENTITY CORE】\n"
         f"名字:{config.identity_name}\n"
+        f"背景与性格:{config.identity_persona.strip()}\n"
         f"{config.identity_core.strip()}\n"
         f"语言风格:{config.conversation_style.strip()}\n"
     )

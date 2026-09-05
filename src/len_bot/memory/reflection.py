@@ -24,7 +24,7 @@ class ReflectionEngine:
         self.event_store = event_store
 
     async def reflect_on_events(
-        self, scene_id: str, events: list[Event]
+        self, scene_id: str, events: list[Event], context: dict | None = None
     ) -> tuple[Optional[EpisodeRecord], list[MemoryProposal], Optional[Any], Optional[Any]]:
         """Generates an L1 EpisodeRecord, L2 MemoryProposals, an optional deferred
         SocialWorldPatch, and an optional deferred task proposal without
@@ -35,10 +35,7 @@ class ReflectionEngine:
             return None, [], None, None
 
         if self.llm_reflector:
-            result = await self.llm_reflector(events)
-            patch = result[2] if len(result) > 2 else None
-            deferred_task = result[3] if len(result) > 3 else None
-            return result[0], result[1], patch, deferred_task
+            return await self.llm_reflector(events, context=context)
         else:
             participants = list({e.actor_id for e in events if e.actor_id})
             combined = " ".join(e.raw_text for e in events if e.raw_text)

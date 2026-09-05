@@ -100,7 +100,7 @@ class ReActAgentCore:
                 if unseen:
                     interim_texts = [
                         f"[{e.actor_id}]: {e.raw_text}"
-                        for e in unseen if e.raw_text and not e.is_mention_bot and not e.is_reply_bot
+                        for e in unseen if e.raw_text
                     ]
                     if interim_texts:
                         trace["interim_injections"] += 1
@@ -155,7 +155,7 @@ class ReActAgentCore:
                 unseen = mailbox.fetch_unseen_interim_events()
                 interim_texts = [
                     f"[{e.actor_id}]: {e.raw_text}"
-                    for e in unseen if e.raw_text and not e.is_mention_bot and not e.is_reply_bot
+                    for e in unseen if e.raw_text
                 ]
                 if interim_texts:
                     trace["interim_injections"] += 1
@@ -268,7 +268,7 @@ class ReActAgentCore:
                         late_unseen = mailbox.fetch_unseen_interim_events()
                         late_interim = [
                             f"[{e.actor_id}]: {e.raw_text}"
-                            for e in late_unseen if e.raw_text and not e.is_mention_bot and not e.is_reply_bot
+                            for e in late_unseen if e.raw_text
                         ]
                         if late_interim:
                             trace["interim_injections"] += 1

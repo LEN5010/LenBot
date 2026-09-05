@@ -123,7 +123,10 @@ async def test_llm_reflector_produces_evidence_gated_memories(tmp_path):
     )
 
     async def fake_create(**kwargs):
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reflector_output))])
+        import json
+        output = json.loads(reflector_output)
+        output["memory_proposals"][0]["evidence"] = [events[0].id]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
 
     fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
     reflector = LLMReflector(resolver=lambda: (fake_client, "test-model"))
@@ -279,4 +282,3 @@ async def test_decay_sweeper_runs_in_maintenance_loop(tmp_path):
     assert row[0] == MemoryStatus.FORGOTTEN.value
 
     await runtime.stop()
-

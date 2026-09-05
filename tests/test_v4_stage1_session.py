@@ -14,6 +14,7 @@ from len_bot.cognition.session import (
     SocialDecisionAction,
     SocialPerception,
     SocialWorldState,
+    SocialWorldPatch,
 )
 from len_bot.cognition.social_core import SocialCoreContextAssembler
 from len_bot.config import RuntimeConfig
@@ -217,7 +218,7 @@ def _silent_cognition_result(
     retained: list[RetainedAttentionProposal] | None = None,
 ) -> SocialCognitionResult:
     return SocialCognitionResult(
-        perception=SocialPerception(summary="understood", world_state=SocialWorldState()),
+        perception=SocialPerception(summary="understood", world_patch=SocialWorldPatch()),
         self_state=SelfSocialStateUpdate(
             engagement="observing",
             social_position="observer",

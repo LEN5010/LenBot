@@ -186,7 +186,9 @@ async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
         assert data["event_count"] >= 4
         assert len(data["runs"]) == 1
         rows = data["runs"][0]["rows"]
-        assert len(rows) >= 4
+        # Bursts, not individual messages, are the evaluation unit.
+        sources = {source for row in rows for source in row["trace"]["burst"]["source_event_ids"]}
+        assert len(sources) == 4
         assert all(row["decision"] == "silence" for row in rows)
         assert all(row["understanding"] == "understood replay event" for row in rows)
     finally:

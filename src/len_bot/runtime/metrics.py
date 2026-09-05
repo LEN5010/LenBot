@@ -50,22 +50,18 @@ class RuntimeMetrics:
             "stale_outcomes_rejected": 0,
             "followups_incorporated": 0,
             "openloops_resolved": 0,
-            "obligations_fulfilled": 0,
+            "tasks_started": 0,
+            "tasks_completed": 0,
             "model_fallbacks": 0,
             "retrieval_tool_calls": 0,
             "retrieval_tool_errors": 0,
             "retrieval_forced_finals": 0,
-            # ADR-0038: FAST/FULL routing + style metrics
             "bursts_total": 0,
-            "cognition_fast_calls": 0,
-            "cognition_fast_speak": 0,
-            "cognition_fast_silence": 0,
-            "cognition_fast_to_full": 0,
-            "cognition_full_calls": 0,
+            "cognition_attempts": 0,
+            "cognition_committed": 0,
+            "cognition_failed": 0,
+            "gate_rejected": 0,
             "cognition_deliberate_calls": 0,
-            "style_slop_flags": 0,
-            "style_retries": 0,
-            "deferred_tasks_committed": 0,
         }
 
     def record_latency(self, phase: str, seconds: float) -> None:
@@ -143,8 +139,5 @@ class RuntimeMetrics:
             "social": {
                 **self.social,
                 "visible_speech_ratio": round(visible / human, 4) if human else 0.0,
-                "fast_full_ratio": round(
-                    self.social.get("cognition_fast_calls", 0) / self.social.get("cognition_full_calls", 0), 4
-                ) if self.social.get("cognition_full_calls", 0) else None,
             },
         }

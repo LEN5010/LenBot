@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -23,8 +24,8 @@ from len_bot.memory.reflection import ReflectionEngine
 from len_bot.cognition.providers import ProviderConfig, ProviderRegistry, RouteTarget, RoutingConfig
 from len_bot.cognition.router import CognitiveTier
 from len_bot.cognition.social_core import SocialCognitionCore
-from len_bot.cognition.fast_core import FastSocialCognition
-from len_bot.cognition.session import FastCognitionResult, FastDecisionAction, SocialDecisionAction
+from len_bot.cognition.session import SocialDecisionAction
+from len_bot.cognition.projection import project_event
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.style_guard import StyleGuard
 from len_bot.plugins import PluginHost
@@ -38,14 +39,14 @@ class AgentRuntime:
         config: RuntimeConfig,
         send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
         mock_social_handler: Optional[Callable] = None,
-        mock_fast_handler: Optional[Callable] = None,
+        clock=time.time,
     ):
+        self.clock = clock
         self.config = config
         self.mock_social_handler = mock_social_handler
-        self.mock_fast_handler = mock_fast_handler
         self.bot_actor_id = f"user:{config.bot_qq}"
         
-        self.event_store = EventStore(config.db_path)
+        self.event_store = EventStore(config.db_path, clock=clock)
         self.memory_store: Optional[MemoryStore] = None
         self.memory_gate: Optional[MemoryGate] = None
         self.reflection_engine: Optional[ReflectionEngine] = None
@@ -89,6 +90,7 @@ class AgentRuntime:
         self.burst_assembler = BurstAssembler(
             config=config,
             on_burst=self._on_burst,
+            clock=clock,
         )
         self.provider_registry = ProviderRegistry()
         self.social_core = SocialCognitionCore(
@@ -97,15 +99,6 @@ class AgentRuntime:
             metrics=self.metrics,
             mock_handler=mock_social_handler,
         )
-        # ADR-0038: FAST one-shot social cognition + anti-slop style guard
-        self.fast_core = FastSocialCognition(
-            config=config,
-            registry=self.provider_registry,
-            metrics=self.metrics,
-            mock_handler=mock_fast_handler,
-        )
-        self.style_guard = StyleGuard()
-
         self._cognition_semaphore = asyncio.Semaphore(2)  # Max 2 concurrent episodes (§93)
         self._last_gate_decision: Optional[GateDecision] = None
         self._started_at = time.time()
@@ -114,17 +107,9 @@ class AgentRuntime:
         self._maintenance_task: Optional[asyncio.Task] = None
         self._background_tasks: set[asyncio.Task] = set()
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
+        self._reflecting_scenes: set[str] = set()
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
-        self._social_active_bursts: dict[str, Stimulus] = {}
-        self._social_inference_scenes: set[str] = set()
-        self._direct_retry_counts: dict[str, int] = {}
-        self._style_retry_counts: dict[str, int] = {}
-        # ADR-0038: scenes whose interrupted/stale run was FULL-depth cognition;
-        # the merged re-run keeps FULL so the deeper judgement is not lost to a
-        # FAST downgrade (production finding: "?/何意味" answer died in the merge).
-        self._stale_full_scenes: set[str] = set()
-        self._social_route_in_flight: dict[str, str] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -145,6 +130,7 @@ class AgentRuntime:
         await self.event_store.initialize()
         self.memory_store = MemoryStore(self.event_store._db, write_lock=self.event_store._write_lock)
         await self.memory_store.initialize()
+        await self.event_store.migrate_social_continuity()
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
         self.runtime_gate.memory_gate = self.memory_gate
 
@@ -179,12 +165,11 @@ class AgentRuntime:
         saved_providers = await self.event_store.get_dynamic_config("provider_config")
         if saved_providers and saved_providers.get("routing"):
             providers = [ProviderConfig(**p) for p in saved_providers.get("providers", [])]
+            catalog_migrated = "fast" in saved_providers["routing"]
+            saved_providers["routing"].pop("fast", None)
             routing = RoutingConfig(**saved_providers["routing"])
-            catalog_migrated = False
             by_id = {provider.id: provider for provider in providers}
             route_targets = [routing.normal, routing.deliberate]
-            if routing.fast is not None:
-                route_targets.append(routing.fast)
             if routing.fallback is not None:
                 route_targets.append(routing.fallback)
             for target in route_targets:
@@ -236,9 +221,13 @@ class AgentRuntime:
             self.shadow_mode = bool(saved_shadow.get("enabled", False))
 
         self._running = True
+        restored_scenes = await self.event_store.recover_social_work()
         await self.action_queue.start()
-        await self.scheduler.start()
         await self._load_builtin_plugins()
+        await self.scheduler.start()
+        for scene_id in restored_scenes:
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            self._schedule_quiet_window_reflection(actor.state)
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def _load_builtin_plugins(self) -> None:
@@ -285,8 +274,6 @@ class AgentRuntime:
         self._running = False
         await self.burst_assembler.close()
         self._social_pending.clear()
-        self._social_active_bursts.clear()
-        self._social_inference_scenes.clear()
         for timer in self._reflection_timers.values():
             timer.cancel()
         self._reflection_timers.clear()
@@ -303,9 +290,11 @@ class AgentRuntime:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         await self.scheduler.stop()
-        await self.scene_manager.stop()
         await self.plugin_host.unload_all()
         await self.action_queue.stop()
+        for actor in list(self.scene_manager._actors.values()):
+            await actor._queue.join()
+        await self.scene_manager.stop()
         await self.event_store.close()
 
     async def _maintenance_loop(self) -> None:
@@ -345,7 +334,7 @@ class AgentRuntime:
 
         # Quiet-window reflection (ADR-0019 §10.3): (re)arm the debounce timer —
         # reflection fires only after the scene stays quiet for a full window.
-        if self.reflection_engine and state:
+        if self.reflection_engine and state and event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT):
             self._schedule_quiet_window_reflection(state)
 
     def _schedule_quiet_window_reflection(self, state) -> None:
@@ -364,6 +353,9 @@ class AgentRuntime:
         self._reflection_timers[scene_id] = loop.call_later(delay, _fire)
 
     async def _quiet_window_reflect(self, scene_id: str) -> None:
+        if scene_id in self._reflecting_scenes:
+            return
+        self._reflecting_scenes.add(scene_id)
         try:
             if not (self.reflection_engine and self.memory_store and self.event_store):
                 return
@@ -382,26 +374,33 @@ class AgentRuntime:
 
             new_cursor_rowid = max(int(e.metadata.get("_rowid", 0)) for e in events)
 
-            episode_record, proposals, world_patch, deferred_task = await self.reflection_engine.reflect_on_events(scene_id, events)
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            base_version = actor.group_session.version
+            context = {"bot_qq": self.config.bot_qq, "social_world": actor.group_session.social_world.model_dump(),
+                       "tasks": await self.event_store.scene_tasks(scene_id)}
+            episode_record, proposals, world_patch, reviews = await self.reflection_engine.reflect_on_events(scene_id, events, context)
+            review_event = Event(
+                event_type=EventType.REFLECTION_RECORDED, scene_id=scene_id, actor_id="system:reflection",
+                payload={"base_version": base_version, "episode_summary": episode_record.summary if episode_record else "",
+                         "patch": world_patch.model_dump(mode="json") if world_patch else None,
+                         "review_items": [r.model_dump() for r in (reviews or [])],
+                         "raw_text": "反思核对：" + "; ".join(r.summary for r in (reviews or [])),
+                         "origin_mode": "shadow" if self.shadow_mode else "live"},
+            )
             if episode_record is not None:
                 # ADR-0028, §10.2: Atomic Reflection Batch Commit
                 await self.event_store.commit_reflection_batch(
                     scene_id=scene_id,
                     episode_record=episode_record,
                     proposals=proposals,
-                    new_cursor_rowid=new_cursor_rowid
+                    new_cursor_rowid=new_cursor_rowid,
+                    review_event=review_event,
+                    expected_cursor_rowid=cursor_rowid,
                 )
                 logger.info("Reflection batch committed on scene %s: cursor -> %s (%d events)",
                             scene_id, new_cursor_rowid, len(events))
 
-                # ADR-0038: deferred social-world cognition rides the standard
-                # event path after the episode record is durable.
-                if world_patch is not None:
-                    await self._submit_deferred_patch(scene_id, world_patch)
-                # ADR-0038 amendment: an unfulfilled promise detected in the
-                # reflected range becomes a task PROPOSAL through the RuntimeGate.
-                if deferred_task is not None:
-                    await self._commit_deferred_task(scene_id, deferred_task)
+                await self.receive_event(review_event)
 
                 # If there are more unreflected events, reflect on the next batch immediately
                 remaining = await self.event_store.get_unreflected_events(scene_id, after_rowid=new_cursor_rowid, limit=1)
@@ -409,6 +408,8 @@ class AgentRuntime:
                     self._spawn_background_task(self._quiet_window_reflect(scene_id))
         except Exception as e:
             logger.warning("Quiet-window reflection failed on scene %s: %s", scene_id, e)
+        finally:
+            self._reflecting_scenes.discard(scene_id)
 
     async def _on_action_event(self, event: Event) -> None:
         """Called by ActionQueue on MESSAGE_SENT or MESSAGE_SEND_FAILED."""
@@ -420,7 +421,6 @@ class AgentRuntime:
         """Every valid scene burst enters the Social Cognition Core."""
         if (
             self.social_core.mock_handler is None
-            and self.fast_core.mock_handler is None
             and not self.provider_registry.has_live_provider()
         ):
             self._spawn_background_task(
@@ -438,29 +438,12 @@ class AgentRuntime:
         self._queue_social_cognition(burst)
 
     def _queue_social_cognition(self, burst: Stimulus) -> None:
+        self.metrics.inc_social("bursts_total")
         scene_id = burst.scene_id
         pending = self._social_pending.get(scene_id)
         self._social_pending[scene_id] = (
             self._merge_social_bursts(pending, burst) if pending else burst
         )
-        task = self._social_tasks.get(scene_id)
-        active = self._social_active_bursts.get(scene_id)
-        if (
-            (burst.has_mention_bot or burst.has_reply_bot)
-            and active is not None
-            and scene_id in self._social_inference_scenes
-            and task is not None
-            and not task.done()
-        ):
-            self._social_pending[scene_id] = self._merge_social_bursts(
-                active,
-                self._social_pending[scene_id],
-            )
-            logger.info("Direct social event preempting in-flight cognition on scene %s", scene_id)
-            if self._social_route_in_flight.get(scene_id) == "full":
-                # ADR-0038: a preempted FULL cognition keeps FULL depth on the merged re-run.
-                self._stale_full_scenes.add(scene_id)
-            task.cancel()
         if scene_id not in self._social_tasks:
             self._start_social_task(scene_id)
 
@@ -477,243 +460,99 @@ class AgentRuntime:
     async def _run_social_cognition_loop(self, scene_id: str) -> None:
         while scene_id in self._social_pending:
             burst = self._social_pending.pop(scene_id)
-            self.metrics.inc_social("bursts_total")
-            self._social_active_bursts[scene_id] = burst
             actor = await self.scene_manager.get_or_create_actor(scene_id)
+            if burst.source_event_ids and all(
+                event.metadata.get("_rowid", 0) and
+                event.metadata["_rowid"] <= actor.group_session.last_cognized_event_rowid
+                for event in burst.events
+            ):
+                continue
+            self.metrics.inc_social("cognition_attempts")
             episode_id = f"social_{uuid.uuid4().hex[:12]}"
-            scene_state = actor.state
-            mailbox = EpisodeMailbox(
-                episode_id=episode_id,
-                scene_id=scene_id,
-                base_scene_version=scene_state.version,
-                origin_stimulus_id=(burst.source_event_ids[0] if burst.source_event_ids else None),
-            )
+            mailbox = EpisodeMailbox(episode_id, scene_id, actor.state.version,
+                                     origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
             mailbox.origin_mode = burst.origin_mode
             if not actor.acquire_episode_lease(episode_id, mailbox):
-                raise RuntimeError(f"Concurrent Social Core episode in scene {scene_id}")
-
+                raise RuntimeError(f"Concurrent social turn in {scene_id}")
+            observed = actor.group_session.last_observed_event_rowid
+            source_ids = list(burst.source_event_ids)
+            started = time.monotonic()
             try:
                 session = actor.group_session.model_copy(deep=True)
-                through_event_rowid = session.last_observed_event_rowid
-                cognition_started = time.monotonic()
-                self.metrics.record_latency("event_to_burst", max(0.0, time.time() - burst.timestamp))
                 raw_events = await self.event_store.get_recent_events(scene_id, limit=12_000)
+                raw_events = [e for e in raw_events if e.metadata.get("_rowid", 0) <= observed]
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
-                pending_next_wake = await self.event_store.get_pending_next_wake(scene_id)
+                pending_wake = await self.event_store.get_pending_next_wake(scene_id)
+                tasks = await self.event_store.scene_tasks(scene_id)
                 retrieval = RetrievalToolkit(
-                    event_store=self.event_store,
-                    allowed_scopes=[scene_id, "global-safe"],
-                    default_scene_id=scene_id,
-                    memory_store=self.memory_store,
+                    event_store=self.event_store, allowed_scopes=[scene_id, "global-safe"],
+                    memory_store=self.memory_store, default_scene_id=scene_id,
+                    plugin_host=self.plugin_host,
                 )
-                voice_examples = await self._select_voice_examples(scene_id)
 
-                fast_result: FastCognitionResult | None = None
-                fast_trace_stage: dict[str, Any] | None = None
-                core_trace: dict[str, Any] = {"mode": "live", "steps": [], "escalations": []}
+                async def observe():
+                    nonlocal observed
+                    if mailbox.is_cancelled():
+                        raise RuntimeError(mailbox.cancellation_reason())
+                    target = actor.group_session.last_observed_event_rowid
+                    if target == observed:
+                        return None
+                    current = actor.group_session.model_copy(deep=True)
+                    events = await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000)
+                    events = [e for e in events if e.metadata.get("_rowid", 0) <= target]
+                    observed = target
+                    source_ids.extend(e.id for e in events if e.id not in source_ids)
+                    mailbox.fetch_unseen_interim_events()
+                    mailbox.consume_follow_ups()
+                    return ("【新增已提交事件】\n" + "\n".join(project_event(e, self.config.bot_qq) for e in events)
+                            + "\n【当前工作状态】\n" + current.model_dump_json()
+                            + "\n【现有任务】\n" + json.dumps(await self.event_store.scene_tasks(scene_id), ensure_ascii=False)
+                            + "\n结合这些变化继续判断，保留已有工具结果；之前拟出的回复尚未发送。")
+
+                async def commit(result, trace):
+                    if result.future_attention and await self._is_evidence_free_next_wake(burst):
+                        result.future_attention = None
+                    decision = await actor.commit_cognitive_turn(
+                        result, observed, source_ids,
+                        "shadow" if self.shadow_mode or burst.origin_mode == "shadow" else "live",
+                        episode_id, mailbox, self.runtime_gate,
+                    )
+                    if decision is False:
+                        self.metrics.inc_social("stale_outcomes_rejected")
+                        trace["commit_races"] = trace.get("commit_races", 0) + 1
+                        return False
+                    self._last_gate_decision = decision
+                    self.metrics.inc_social("cognition_committed" if decision.accepted else "gate_rejected")
+                    if decision.actions_enqueued:
+                        self.metrics.inc_social("gate_action")
+                    await self._save_social_trace(burst, episode_id, trace, result, decision.accepted, decision)
+                    pending = self._social_pending.get(scene_id)
+                    if pending and set(pending.source_event_ids).issubset(source_ids):
+                        self._social_pending.pop(scene_id, None)
+                    return True
 
                 async with self._cognition_semaphore:
-                    self._social_inference_scenes.add(scene_id)
-                    try:
-                        # ADR-0038: FAST one-shot path for casual social bursts;
-                        # TASK_DUE / tool synthesis bursts go straight to FULL.
-                        # A scene whose previous FULL run was preempted/stale keeps
-                        # FULL depth for the merged re-run (one-shot).
-                        route = (
-                            "full"
-                            if scene_id in self._stale_full_scenes
-                            else self._route_cognition(burst)
-                        )
-                        self._stale_full_scenes.discard(scene_id)
-                        if route == "fast":
-                            try:
-                                fast_result, core_trace = await self._run_fast_cognition(
-                                    scene_id=scene_id,
-                                    session=session,
-                                    burst=burst,
-                                    raw_events=raw_events,
-                                    open_loops=open_loops,
-                                    voice_examples=voice_examples,
-                                    started=cognition_started,
-                                )
-                                if fast_result is not None and fast_result.decision == FastDecisionAction.FULL:
-                                    core_trace["escalated_to_full"] = True
-                                    self.metrics.inc_social("cognition_fast_to_full")
-                                    fast_trace_stage = core_trace
-                                    fast_result = None
-                            except Exception as fast_error:
-                                # Unrecoverable FAST failure escalates to FULL —
-                                # never to a hallucinated reply, never to a dropped burst.
-                                logger.warning(
-                                    "FAST cognition failed on %s; escalating to FULL: %s",
-                                    scene_id, fast_error,
-                                )
-                                core_trace = {
-                                    "mode": "live", "path": "fast",
-                                    "fast_error": str(fast_error)[:200],
-                                    "steps": [], "escalations": [],
-                                }
-                                fast_trace_stage = core_trace
-                                self.metrics.inc_social("cognition_fast_to_full")
-                                fast_result = None
-                        if fast_result is None:
-                            self._social_route_in_flight[scene_id] = "full"
-                            self.metrics.inc_social("cognition_full_calls")
-                            self.metrics.record_latency("burst_to_request", time.monotonic() - cognition_started)
-                            result, full_trace = await self.social_core.execute(
-                                session=session,
-                                burst=burst,
-                                raw_events=raw_events,
-                                active_open_loops=open_loops,
-                                pending_next_wake=pending_next_wake,
-                                toolkit=retrieval,
-                                voice_examples=voice_examples,
-                            )
-                            if fast_trace_stage is not None:
-                                # Keep the FAST stage visible in the FULL trace.
-                                full_trace["fast_stage"] = {
-                                    key: fast_trace_stage.get(key)
-                                    for key in ("path", "fast_error", "escalated_to_full", "provider_id", "model", "latency_ms")
-                                }
-                            core_trace = full_trace
-                    finally:
-                        self._social_inference_scenes.discard(scene_id)
-                        self._social_route_in_flight.pop(scene_id, None)
+                    result, trace = await self.social_core.execute(
+                        session, burst, raw_events, open_loops, pending_next_wake=pending_wake,
+                        toolkit=retrieval, tasks=tasks, observe=observe, commit=commit, now=self.clock(),
+                        voice_examples=await self._select_voice_examples(scene_id),
+                    )
                 self.metrics.inc_social("social_cognition")
-                self._record_model_latency(core_trace)
-
-                if fast_result is None:
-                    # ADR-0034: a next-wake TASK_DUE that saw no new human/plugin social
-                    # evidence since task creation must not renew itself.
-                    if result.future_attention is not None and await self._is_evidence_free_next_wake(burst):
-                        logger.info(
-                            "Next-wake renewal rejected on scene %s: no new external events since task creation",
-                            scene_id,
-                        )
-                        result.future_attention = None
-
-                mode = "shadow" if self.shadow_mode else "live"
-                if fast_result is not None:
-                    accepted = await actor.submit_fast_cognition(
-                        result=fast_result,
-                        through_event_rowid=through_event_rowid,
-                        source_event_ids=burst.source_event_ids,
-                        mode=mode,
-                    )
-                else:
-                    accepted = await actor.submit_social_cognition(
-                        result=result,
-                        through_event_rowid=through_event_rowid,
-                        source_event_ids=burst.source_event_ids,
-                        mode=mode,
-                    )
-                if not accepted:
-                    self.metrics.inc_social("stale_outcomes_rejected")
-                    if fast_result is None:
-                        # A stale FULL result means the merged re-run should stay FULL.
-                        self._stale_full_scenes.add(scene_id)
-                    pending = self._social_pending.get(scene_id)
-                    self._social_pending[scene_id] = (
-                        self._merge_social_bursts(burst, pending) if pending else burst
-                    )
-                    await self._save_social_trace(
-                        burst=burst,
-                        episode_id=episode_id,
-                        core_trace=core_trace,
-                        result=fast_result if fast_result is not None else result,
-                        session_commit_accepted=False,
-                        gate_decision=None,
-                    )
-                    continue
-
-                self._direct_retry_counts.pop("|".join(burst.source_event_ids), None)
-                self._style_retry_counts.pop("|".join(burst.source_event_ids), None)
-
-                commit_result = fast_result if fast_result is not None else result
-                outcome = commit_result.to_episode_outcome(scene_id, through_event_rowid=through_event_rowid)
-                gate_started = time.monotonic()
-                gate_decision = await actor.submit_proposal(
-                    episode_id=episode_id,
-                    outcome=outcome,
-                    mailbox=mailbox,
-                    runtime_gate=self.runtime_gate,
-                )
-                self.metrics.record_latency("gate", time.monotonic() - gate_started)
-                self._last_gate_decision = gate_decision
-
-                if fast_result is not None:
-                    spoke = fast_result.decision == FastDecisionAction.SPEAK
-                else:
-                    spoke = result.decision.action == SocialDecisionAction.SPEAK
-                if spoke:
-                    self.metrics.inc_social("social_would_speak")
-                else:
-                    self.metrics.inc_social("intentional_silence")
-                if gate_decision.disposition == FinalDisposition.ACTION:
-                    self.metrics.inc_social("gate_action")
-                    if not burst.has_mention_bot and not burst.has_reply_bot:
-                        self.metrics.inc_social(
-                            "unsolicited_visible_messages",
-                            gate_decision.actions_enqueued,
-                        )
-                    if fast_result is not None:
-                        for message in fast_result.messages:
-                            self.style_guard.observe(scene_id, message.content)
-                    else:
-                        for message in result.message_proposals:
-                            self.style_guard.observe(scene_id, message.content)
-
-                await self._save_social_trace(
-                    burst=burst,
-                    episode_id=episode_id,
-                    core_trace=core_trace,
-                    result=commit_result,
-                    session_commit_accepted=True,
-                    gate_decision=gate_decision,
-                )
+                self.metrics.inc_social("social_would_speak" if result.decision.action == SocialDecisionAction.SPEAK else "intentional_silence")
+                self._record_model_latency(trace)
+                self.metrics.record_latency("cognition_total", time.monotonic() - started)
             except Exception as error:
-                logger.exception("Social cognition failed on %s: %s", scene_id, error)
+                self.metrics.inc_social("cognition_failed")
+                logger.exception("Social cognition failed on %s", scene_id)
                 await self.event_store.save_trace(
-                    kind="social_cognition_error",
-                    scene_id=scene_id,
-                    ref_id=burst.id,
-                    payload={
-                        "error": str(error),
-                        "source_event_ids": burst.source_event_ids,
-                    },
+                    kind="social_cognition_error", scene_id=scene_id, ref_id=episode_id,
+                    payload={"error": str(error), "source_event_ids": source_ids,
+                             "observed_rowid": observed, "elapsed_ms": round((time.monotonic()-started)*1000)},
                 )
-                retry_key = "|".join(burst.source_event_ids)
-                if (burst.has_mention_bot or burst.has_reply_bot) and self._direct_retry_counts.get(retry_key, 0) < 1:
-                    self._direct_retry_counts[retry_key] = 1
-                    pending = self._social_pending.get(scene_id)
-                    self._social_pending[scene_id] = (
-                        self._merge_social_bursts(burst, pending) if pending else burst
-                    )
-                    logger.info("Direct OneBot request retained for one retry on scene %s", scene_id)
-                else:
-                    self._direct_retry_counts.pop(retry_key, None)
+                # The durable uncognized cursor retains input for recovery or the next burst.
+                # Do not immediately spin on an exhausted turn in a continuously busy scene.
             finally:
-                if self._social_active_bursts.get(scene_id) is burst:
-                    self._social_active_bursts.pop(scene_id, None)
-                self._social_inference_scenes.discard(scene_id)
                 actor.release_episode_lease(episode_id)
-
-    def _route_cognition(self, burst: Stimulus) -> str:
-        """ADR-0038: structural depth routing — never a social judgement.
-
-        `fast` for human chat bursts; `full` when FAST is disabled, when no FAST
-        handler is available in mock mode, or for system-originated bursts that
-        need planning/tool synthesis (TASK_DUE, tool completions).
-        """
-        if not self.config.fast_cognition_enabled or self.fast_core is None:
-            return "full"
-        if self.social_core.mock_handler is not None and self.fast_core.mock_handler is None:
-            return "full"
-        if burst.stimulus_type == StimulusType.PROACTIVE_TASK:
-            return "full"
-        if any(event.event_type == EventType.TOOL_COMPLETED for event in burst.events):
-            return "full"
-        return "fast"
 
     async def _select_voice_examples(self, scene_id: str) -> list[dict[str, Any]]:
         try:
@@ -724,82 +563,6 @@ class AgentRuntime:
             logger.debug("Voice exemplar selection skipped on %s: %s", scene_id, error)
             return []
 
-    async def _run_fast_cognition(
-        self,
-        scene_id: str,
-        session,
-        burst: Stimulus,
-        raw_events,
-        open_loops,
-        voice_examples: list[dict[str, Any]],
-        started: float,
-    ) -> tuple[FastCognitionResult, dict[str, Any]]:
-        self.metrics.inc_social("cognition_fast_calls")
-        self.metrics.record_latency("burst_to_request", time.monotonic() - started)
-        fast_result, trace = await self.fast_core.execute(
-            session=session,
-            burst=burst,
-            raw_events=raw_events,
-            active_open_loops=open_loops,
-            voice_examples=voice_examples,
-        )
-        if fast_result.decision == FastDecisionAction.SPEAK:
-            self.metrics.inc_social("cognition_fast_speak")
-            fast_result = await self._style_guard_retry(
-                scene_id=scene_id,
-                burst=burst,
-                session=session,
-                raw_events=raw_events,
-                open_loops=open_loops,
-                voice_examples=voice_examples,
-                fast_result=fast_result,
-                trace=trace,
-            )
-        elif fast_result.decision == FastDecisionAction.SILENCE:
-            self.metrics.inc_social("cognition_fast_silence")
-        return fast_result, trace
-
-    async def _style_guard_retry(
-        self,
-        scene_id: str,
-        burst: Stimulus,
-        session,
-        raw_events,
-        open_loops,
-        voice_examples: list[dict[str, Any]],
-        fast_result: FastCognitionResult,
-        trace: dict[str, Any],
-    ) -> FastCognitionResult:
-        """ADR-0038 §7: at most one corrective FAST retry on a strong anomaly."""
-        content = fast_result.messages[0].content if fast_result.messages else ""
-        signal = self.style_guard.evaluate(scene_id, content)
-        if not signal.strong_anomaly:
-            return fast_result
-        self.metrics.inc_social("style_slop_flags")
-        retry_key = "|".join(burst.source_event_ids)
-        if self._style_retry_counts.get(retry_key, 0) >= 1:
-            return fast_result
-        self._style_retry_counts[retry_key] = 1
-        self.metrics.inc_social("style_retries")
-        correction = (
-            f"你刚才的输出被风格守卫标记({signal.describe()}),与你最近的发言太像。"
-            "换一种更自然的说法:更短、更随意,或者完全换一个反应。仍然只输出符合约定的 JSON。"
-        )
-        try:
-            retry_result, _retry_trace = await self.fast_core.execute(
-                session=session,
-                burst=burst,
-                raw_events=raw_events,
-                active_open_loops=open_loops,
-                voice_examples=voice_examples,
-                correction=correction,
-            )
-        except Exception as error:
-            logger.warning("Style retry failed on %s, keeping original: %s", scene_id, error)
-            return fast_result
-        trace["style_retry"] = True
-        return retry_result
-
     def _record_model_latency(self, core_trace: dict[str, Any]) -> None:
         total_ms = sum(step.get("latency_ms", 0) for step in core_trace.get("steps", []))
         if not total_ms and core_trace.get("latency_ms"):
@@ -807,65 +570,8 @@ class AgentRuntime:
         if total_ms:
             self.metrics.record_latency("model_total", total_ms / 1000.0)
 
-    async def _submit_deferred_patch(self, scene_id: str, patch) -> None:
-        """ADR-0038: deferred reflection patch enters through the standard event
-        path so the SceneActor stays the single session writer."""
-        event = Event(
-            event_type=EventType.SOCIAL_COGNITION_RECORDED,
-            scene_id=scene_id,
-            actor_id="system:reflection",
-            timestamp=time.time(),
-            payload={"kind": "deferred_patch", "patch": patch.model_dump(mode="json")},
-            metadata={"source": "quiet_window_reflection"},
-        )
-        await self.receive_event(event)
-
-    async def _commit_deferred_task(self, scene_id: str, task_proposal: TaskProposal) -> None:
-        """ADR-0038 amendment: reflection may PROPOSE deferred tasks (unfulfilled
-        promises like "叫我起床"); the RuntimeGate keeps all execution authority
-        and the atomic task path stays the only scheduling truth (Invariant 4
-        refined, not weakened — reflection still executes nothing itself)."""
-        try:
-            actor = await self.scene_manager.get_or_create_actor(scene_id)
-            mailbox = EpisodeMailbox(
-                episode_id=f"reflect_{uuid.uuid4().hex[:10]}",
-                scene_id=scene_id,
-                base_scene_version=actor.state.version,
-            )
-            task_proposal.payload = {
-                **task_proposal.payload,
-                "kind": "deferred_reflection_task",
-            }
-            task_proposal.origin_episode_id = mailbox.episode_id
-            outcome = EpisodeOutcome(
-                disposition=FinalDisposition.SILENCE,
-                decision_reason="[reflection] deferred task proposal from quiet-window reflection",
-                task_proposals=[task_proposal],
-            )
-            decision = await self.runtime_gate.evaluate_and_commit(
-                outcome=outcome,
-                mailbox=mailbox,
-                current_scene_state=actor.state,
-            )
-            committed = decision.committed_proposal
-            count = len(committed.committed_tasks) if committed else 0
-            if count:
-                self.metrics.inc_social("deferred_tasks_committed", count)
-                logger.info(
-                    "Reflection deferred task committed on scene %s: %s",
-                    scene_id, task_proposal.description,
-                )
-            else:
-                logger.info("Reflection deferred task not committed on scene %s: %s", scene_id, decision.reason)
-        except Exception as error:
-            logger.warning("Deferred reflection task failed on scene %s: %s", scene_id, error)
-
     @staticmethod
     def _merge_social_bursts(earlier: Stimulus, later: Stimulus) -> Stimulus:
-        chat_types = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
-        if not all(event.event_type in chat_types for event in [*earlier.events, *later.events]):
-            return later
-
         events = []
         seen_ids: set[str] = set()
         for event in [*earlier.events, *later.events]:
@@ -893,7 +599,7 @@ class AgentRuntime:
             combined_text=combined_text,
             has_mention_bot=earlier.has_mention_bot or later.has_mention_bot,
             has_reply_bot=earlier.has_reply_bot or later.has_reply_bot,
-            origin_mode=later.origin_mode,
+            origin_mode="shadow" if "shadow" in (earlier.origin_mode, later.origin_mode) else "live",
             timestamp=later.timestamp,
             events=events,
         )
@@ -939,7 +645,7 @@ class AgentRuntime:
                 "source_event_ids": burst.source_event_ids,
             },
             "cognition": core_trace,
-            "path": core_trace.get("path", "full"),
+            "path": core_trace.get("path", "social"),
             "result": result.model_dump(mode="json"),
             "session_commit_accepted": session_commit_accepted,
             "gate": (

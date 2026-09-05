@@ -1,5 +1,7 @@
 # Persistent Social Agent Runtime - Ubiquitous Domain Language (CONTEXT.md)
 
+Current implementation: ADR-0040 supersedes the FAST/FULL split. One Social Core proposes sparse updates and task operations; SceneActor and RuntimeGate own the atomic commit. In-flight event incorporation preserves completed tool work. Task delivery confirmation, ambiguous sends, and shadow observation are distinct states. Reflection produces review items, never executable tasks. Real-provider/group evaluation remains pending; the attempted local replay failed on provider connectivity. ADR-0039 remains unimplemented.
+
 A persistent runtime environment for autonomous social agents that maintains temporal continuity, social relationships, and execution state across scenes, treating LLMs strictly as ephemeral cognitive executors.
 
 ---

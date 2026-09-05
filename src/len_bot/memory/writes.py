@@ -44,18 +44,32 @@ async def validate_memory_proposal(
         raise ValueError("Memory proposal must contain at least one evidence event ID")
     mp.evidence = list(dict.fromkeys(mp.evidence))
 
-    # 5. Evidence provenance check: must exist in this scene's events OR episodes
+    # 5. An episode is an index into original observations, not independent evidence.
+    raw_evidence = []
     for ev_id in mp.evidence:
-        cursor = await db.execute("""
-            SELECT 1 FROM events WHERE id = ? AND scene_id = ?
-            UNION
-            SELECT 1 FROM episodes WHERE id = ? AND scene_id = ?;
-        """, (ev_id, scene_id, ev_id, scene_id))
+        cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (ev_id, scene_id))
         row = await cursor.fetchone()
-        if not row:
+        if row:
+            if row[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
+                raise ValueError("Model output is not independent memory evidence")
+            raw_evidence.append(ev_id)
+            continue
+        cursor = await db.execute("SELECT source_event_ids FROM episodes WHERE id=? AND scene_id=?", (ev_id, scene_id))
+        episode = await cursor.fetchone()
+        if not episode:
             raise ValueError(
                 f"Evidence integrity check failed: Memory evidence '{ev_id}' does not belong to scene '{scene_id}' (provenance check failed)"
             )
+        sources = json.loads(episode[0])
+        for source in sources:
+            cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (source, scene_id))
+            original = await cursor.fetchone()
+            if not original or original[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
+                raise ValueError("Episode evidence must resolve to original observations in this scene")
+        if not sources:
+            raise ValueError("Episode has no source evidence")
+        raw_evidence.extend(sources)
+    mp.evidence = list(dict.fromkeys(raw_evidence))
 
 
 async def commit_memory_proposal_core(
@@ -89,11 +103,12 @@ async def commit_memory_proposal_core(
         if old_val == mp.value:
             # Value unchanged: confirm and merge evidence
             merged_evidence = list(dict.fromkeys(old_evidence + mp.evidence))
+            confirmed_at = now if set(mp.evidence) - set(old_evidence) else old_lcat
             await db.execute("""
                 UPDATE memories
                 SET last_confirmed_at = ?, evidence = ?, human_readable_assertion = ?
                 WHERE id = ?;
-            """, (now, json.dumps(merged_evidence, ensure_ascii=False), mp.human_readable_assertion, old_id))
+            """, (confirmed_at, json.dumps(merged_evidence, ensure_ascii=False), mp.human_readable_assertion, old_id))
             return MemoryItem(
                 id=old_id,
                 subject=old_subj,
@@ -107,7 +122,7 @@ async def commit_memory_proposal_core(
                 status=MemoryStatus.ACTIVE,
                 human_readable_assertion=mp.human_readable_assertion,
                 created_at=old_cat,
-                last_confirmed_at=now
+                last_confirmed_at=confirmed_at
             )
         else:
             # Value conflict: supersede previous memory and create new active record

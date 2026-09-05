@@ -5,14 +5,13 @@ from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.actions.models import ActionItem
-from len_bot.cognition.session import SocialCognitionResult, FastCognitionResult
+from len_bot.cognition.session import SocialCognitionResult
 
 class ScenarioRunner:
     def __init__(
         self,
         config: RuntimeConfig,
         mock_social_handler: Optional[Callable[[list[dict[str, str]]], Awaitable[SocialCognitionResult]]] = None,
-        mock_fast_handler: Optional[Callable[[list[dict[str, str]]], Awaitable[FastCognitionResult]]] = None,
     ):
         self.config = config
         self.sent_actions: list[ActionItem] = []
@@ -20,7 +19,6 @@ class ScenarioRunner:
             config=config,
             send_adapter=self._mock_send_adapter,
             mock_social_handler=mock_social_handler,
-            mock_fast_handler=mock_fast_handler,
         )
 
     async def _mock_send_adapter(self, action: ActionItem) -> bool:
