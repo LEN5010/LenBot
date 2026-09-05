@@ -23,13 +23,19 @@ class ReflectionEngine:
         self.llm_reflector = llm_reflector
         self.event_store = event_store
 
-    async def reflect_on_events(self, scene_id: str, events: list[Event]) -> tuple[Optional[EpisodeRecord], list[MemoryProposal]]:
-        """Generates an L1 EpisodeRecord and L2 MemoryProposal list without persisting."""
+    async def reflect_on_events(
+        self, scene_id: str, events: list[Event], context: dict | None = None
+    ) -> tuple[Optional[EpisodeRecord], list[MemoryProposal], Optional[Any], Optional[Any]]:
+        """Generates an L1 EpisodeRecord, L2 MemoryProposals, an optional deferred
+        SocialWorldPatch, and an optional deferred task proposal without
+        persisting (ADR-0038 + amendment). Tolerates legacy reflectors that
+        return 2- or 3-tuples.
+        """
         if not events:
-            return None, []
+            return None, [], None, None
 
         if self.llm_reflector:
-            return await self.llm_reflector(events)
+            return await self.llm_reflector(events, context=context)
         else:
             participants = list({e.actor_id for e in events if e.actor_id})
             combined = " ".join(e.raw_text for e in events if e.raw_text)
@@ -48,13 +54,13 @@ class ReflectionEngine:
                 tags=tags,
                 created_at=time.time()
             )
-            return episode_record, []
+            return episode_record, [], None, None
 
     async def run_micro_reflection(self, scene_id: str, events: list[Event]) -> Optional[EpisodeRecord]:
         """Runs micro-reflection when a conversation block has completed.
         If event_store is wired, commits atomically via commit_reflection_batch (ADR-0028).
         """
-        episode_record, proposals = await self.reflect_on_events(scene_id, events)
+        episode_record, proposals, _patch, _deferred_task = await self.reflect_on_events(scene_id, events)
         if episode_record is None:
             return None
 

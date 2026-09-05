@@ -1,107 +1,79 @@
-"""LLM Reflector (ADR-0019 §10.5): turns an unreflected event range into an
-L1 EpisodeRecord plus evidence-backed L2 MemoryProposals.
-
-The reflector is a cognition-tier consumer: it only PROPOSES memories; the
-MemoryGate / atomic commit chain remains the sole write authority (Invariant E).
-Evidence integrity is enforced downstream — every proposal here cites the full
-reflected event range, all of which provably exist in the scene scope.
-"""
-
+"""Reflection proposes evidence-backed beliefs and review items, never tasks."""
 import json
-import logging
-import re
 import time
-from typing import Any, Callable
-
-from openai import AsyncOpenAI
-
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Callable
+from pydantic import Field
+from len_bot.cognition.session import SessionModel, SocialWorldPatch, SocialMemoryCandidate
+from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event
-from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryCertainty
+from len_bot.memory.models import EpisodeRecord, MemoryProposal
 
-logger = logging.getLogger(__name__)
 
-_REFLECT_SYSTEM_PROMPT = (
-    "你是一个社交记忆反思器。给你一段群聊/私聊的原始事件记录（带事件ID），"
-    "请产出：\n"
-    "1. 一个 EpisodeRecord：这次社交互动的简短压缩记录。\n"
-    "2. 若干 MemoryProposal：只有当记录中有明确证据支撑时才提出，必须是 typed 的社会记忆，\n"
-    "   kind 只能是：preference / habit / relationship / fact / group_norm / topic_interest / recurring_role / social_pattern。\n"
-    "   subject 用 user:QQ号 / group:群号 / bot-in-group:群号。例如：\n"
-    "   - 某人经常组织活动 → recurring_role\n"
-    "   - 某人对某话题兴趣高 → topic_interest\n"
-    "   - 群里晚上活跃 → group_norm\n"
-    "   - Bot 在该群常参与某类话题 → social_pattern\n"
-    "禁止给人贴人格标签（如\"内向\"），禁止无证据推断敏感属性。\n"
-    "只输出一个 JSON 对象，不要输出其他文本：\n"
-    '{"title": "...", "summary": "...", "tags": ["..."], '
-    '"memory_proposals": [{"subject": "user:123", "kind": "preference", "key": "...", '
-    '"value": "...", "certainty": "tentative|likely|strong|explicit", '
-    '"human_readable_assertion": "..."}]}'
-)
+class ReviewItem(SessionModel):
+    summary: str
+    source_event_ids: list[str]
+
+
+class ReflectionOutput(SessionModel):
+    title: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    memory_proposals: list[SocialMemoryCandidate] = Field(default_factory=list)
+    social_world_patch: SocialWorldPatch | None = None
+    review_items: list[ReviewItem] = Field(default_factory=list)
 
 
 class LLMReflector:
-    def __init__(self, resolver: Callable[[], tuple[AsyncOpenAI, str]], max_events: int = 30):
-        # ADR-0020: route resolved lazily per reflection so provider hot-swaps apply.
+    def __init__(self, resolver: Callable, max_events: int = 30):
         self.resolver = resolver
         self.max_events = max_events
 
-    def _extract_json(self, raw: str) -> dict[str, Any]:
-        text = raw.strip()
-        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
-        if fence:
-            text = fence.group(1)
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError(f"Reflector output has no JSON object: {text[:120]}")
-        return json.loads(text[start:end + 1])
-
-    async def __call__(self, events: list[Event]) -> tuple[EpisodeRecord, list[MemoryProposal]]:
+    async def __call__(self, events: list[Event], context: dict | None = None):
         window = events[-self.max_events:]
+        if not window:
+            raise ValueError("Reflection requires events")
+        context = context or {}
         event_ids = [e.id for e in window]
-        participants = sorted({e.actor_id for e in window if e.actor_id})
-        transcript = "\n".join(
-            f"[{e.id}] ({time.strftime('%m-%d %H:%M', time.localtime(e.timestamp))}) {e.actor_id}: {e.raw_text}"
-            for e in window
-            if e.raw_text
-        ) or "(无文本内容)"
-
+        transcript = "\n".join(project_event(e, context.get("bot_qq", "")) for e in window)
         client, model = self.resolver()
         response = await client.chat.completions.create(
-            model=model,
+            model=model, temperature=0.2, response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": _REFLECT_SYSTEM_PROMPT},
-                {"role": "user", "content": f"场景事件记录：\n{transcript}"},
+                {"role": "system", "content": (
+                    "从原始事件理解群体、人物和关系，形成有证据的记忆和增量社会状态。"
+                    "原文引用优于旧摘要；不要将 Bot 自己的猜测当作事实证据。"
+                    "只有未安排或冲突的承诺才提出 review_items，绝不能安排任务或承诺执行。"
+                    "结合现有任务核对是否已安排；过期事项只记录待核对，不改成从现在开始等待。"
+                    "topic id 使用 topic:真实事件ID；关闭话题只能引用当前状态存在的 ID。"
+                    "每条记忆和核对事项引用本批真实事件，省略未变化字段，只输出符合 schema 的 JSON。\n"
+                    + json.dumps(ReflectionOutput.model_json_schema(), ensure_ascii=False)
+                )},
+                {"role": "user", "content": json.dumps({
+                    "now": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                    "context": context, "events": transcript,
+                }, ensure_ascii=False)},
             ],
-            temperature=0.2,
         )
-        raw = response.choices[0].message.content or ""
-        parsed = self._extract_json(raw)
-
+        parsed = ReflectionOutput.model_validate_json(response.choices[0].message.content or "")
+        known = set(event_ids)
+        for evidence in ([m.evidence for m in parsed.memory_proposals]
+                         + [r.source_event_ids for r in parsed.review_items]):
+            if not evidence or not set(evidence).issubset(known):
+                raise ValueError("Reflection evidence must belong to this batch")
+        patch = parsed.social_world_patch
+        if patch:
+            known_topics = {t["id"] for t in context.get("social_world", {}).get("topics", [])}
+            if any(t.id.removeprefix("topic:") not in known and t.id not in known_topics for t in patch.open_topics):
+                raise ValueError("Reflection topic lacks evidence")
+            if not set(patch.close_topic_ids).issubset(known_topics):
+                raise ValueError("Reflection closes unknown topic")
+            patch.source_event_ids = event_ids
         episode = EpisodeRecord(
-            scene_id=window[0].scene_id if window else "",
-            title=str(parsed.get("title") or "对话记录")[:100],
-            summary=str(parsed.get("summary") or "")[:500],
-            source_event_ids=event_ids,
-            participants=participants,
-            tags=[str(t) for t in parsed.get("tags", [])][:10],
-            created_at=time.time(),
+            scene_id=window[0].scene_id, title=parsed.title, summary=parsed.summary,
+            source_event_ids=event_ids, participants=sorted({e.actor_id for e in window}),
+            tags=parsed.tags, created_at=time.time(),
         )
-
-        proposals: list[MemoryProposal] = []
-        for mp in parsed.get("memory_proposals", []):
-            try:
-                proposals.append(MemoryProposal(
-                    subject=str(mp["subject"]),
-                    kind=str(mp["kind"]),
-                    key=str(mp["key"]),
-                    value=str(mp["value"]),
-                    certainty=MemoryCertainty(mp.get("certainty", "tentative")),
-                    evidence=list(event_ids),
-                    human_readable_assertion=str(mp.get("human_readable_assertion") or mp["value"]),
-                ))
-            except Exception as e:
-                logger.warning("Skipping malformed memory proposal from reflector: %s (%s)", mp, e)
-
-        return episode, proposals
+        memories = [MemoryProposal(**m.model_dump()) for m in parsed.memory_proposals]
+        return episode, memories, patch, parsed.review_items

@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import pytest
 import asyncio
 import time
@@ -34,7 +35,7 @@ async def test_trace_captures_full_causal_chain(tmp_path):
 
     async def mock_send(item):
         sent_actions.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_social_core(messages):
         stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
@@ -186,7 +187,9 @@ async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
         assert data["event_count"] >= 4
         assert len(data["runs"]) == 1
         rows = data["runs"][0]["rows"]
-        assert len(rows) >= 4
+        # Bursts, not individual messages, are the evaluation unit.
+        sources = {source for row in rows for source in row["trace"]["burst"]["source_event_ids"]}
+        assert len(sources) == 4
         assert all(row["decision"] == "silence" for row in rows)
         assert all(row["understanding"] == "understood replay event" for row in rows)
     finally:
@@ -206,7 +209,7 @@ async def test_shadow_mode_records_without_sending(tmp_path):
 
     async def mock_send(item):
         sent_actions.append(item)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_social_core(messages):
         stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]

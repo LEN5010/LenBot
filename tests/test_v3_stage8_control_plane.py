@@ -84,10 +84,6 @@ async def test_onebot_adapter_drops_self_echo_and_extracts_reply():
     assert user_event.payload["message_id"] == 1002
     assert user_event.payload["reply_to_message_id"] == "54321"
 
-    # Ring buffer recorded the reply link
-    assert len(adapter._reply_cache) == 1
-    assert adapter._reply_cache[-1] == ("1002", "54321")
-
     adapter._own_message_ids.append("54321")
     reply_event = adapter._normalize_event({
         "post_type": "message",
@@ -105,6 +101,7 @@ async def test_onebot_http_action_uses_bearer_token_and_records_sent_message(mon
     calls = []
 
     class FakeResponse:
+        is_success = True
         def raise_for_status(self):
             return None
 
@@ -142,7 +139,7 @@ async def test_onebot_http_action_uses_bearer_token_and_records_sent_message(mon
         reply_to="99",
     ))
 
-    assert sent is True
+    assert sent.status == "sent"
     assert calls == [{
         "headers": {"Authorization": "Bearer test-token"},
         "url": "http://127.0.0.1:13000/send_group_msg",
@@ -241,7 +238,7 @@ async def test_onebot_websocket_action_correlates_echo_and_records_message_id():
         content="你好",
     ))
 
-    assert sent is True
+    assert sent.status == "sent"
     assert payloads == [{
         "action": "send_private_msg",
         "params": {"message": "你好", "user_id": 456},

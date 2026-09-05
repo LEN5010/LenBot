@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded in part by ADR-0034 — 2026-09-04
+Superseded in part by ADR-0034 — 2026-09-04. The "up to 80 recent raw conversation events" window was later replaced by ADR-0037's token-budgeted projection (`social_context_window_tokens`, fetched window up to 12,000 events).
 
 ## Context
 

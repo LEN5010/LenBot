@@ -3,6 +3,8 @@ import logging
 from typing import Any, Optional
 from len_bot.events.store import EventStore
 from len_bot.memory.store import MemoryStore
+from len_bot.events.models import Event
+from len_bot.cognition.projection import project_event
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +17,24 @@ class RetrievalToolkit:
         allowed_scopes: list[str],
         default_scene_id: str,
         memory_store: Optional[MemoryStore] = None,
-        plugin_host: Optional[Any] = None
+        plugin_host: Optional[Any] = None,
+        bot_qq: int | str = "",
     ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
         self.default_scene_id = default_scene_id
         self.memory_store = memory_store
         self.plugin_host = plugin_host
+        self.bot_qq = bot_qq
+
+    async def _project_rows(self, rows: list[dict]) -> list[str]:
+        events = [Event.model_validate(row) for row in rows]
+        projected = {}
+        for scene_id in dict.fromkeys(event.scene_id for event in events):
+            enriched = await self.event_store.project_reply_context(
+                scene_id, [event for event in events if event.scene_id == scene_id])
+            projected.update({event.id: project_event(event, self.bot_qq) for event in enriched})
+        return [projected[event.id] for event in events]
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         tools = [
@@ -143,7 +156,7 @@ class RetrievalToolkit:
                             },
                             "include_history": {
                                 "type": "boolean",
-                                "description": "是否包含已被新记忆覆盖（superseded）的过往历史信念，默认 false。"
+                                "description": "是否包含已撤销（refuted）或被替代（superseded）的历史信念及其纠正证据，默认 false。"
                             }
                         }
                     }
@@ -171,17 +184,6 @@ class RetrievalToolkit:
             tools.extend(self.plugin_host.get_tool_definitions())
         return tools
 
-    @staticmethod
-    def _with_complexity_signal(formatted: list[str], high_hit_count: int = 8) -> str:
-        """ADR-0020: real producer for the [COMPLEXITY: HIGH] escalation signal —
-        a large evidence set implies deep comparison work for cognition."""
-        if not formatted:
-            return "未找到匹配的历史消息。"
-        body = "\n".join(formatted)
-        if len(formatted) >= high_hit_count:
-            body += "\n[COMPLEXITY: HIGH]"
-        return body
-
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
         try:
             if self.plugin_host and self.plugin_host.has_tool(tool_name):
@@ -195,11 +197,8 @@ class RetrievalToolkit:
                     allowed_scopes=self.allowed_scopes,
                     limit=limit
                 )
-                formatted = [
-                    f"[{r['id']}] {r['actor_id']} (at {r['timestamp']}): {r['payload'].get('raw_text', '')}"
-                    for r in rows
-                ]
-                return self._with_complexity_signal(formatted)
+                formatted = await self._project_rows(rows)
+                return "\n".join(formatted) if formatted else "未找到匹配的历史消息。"
 
             elif tool_name == "read_context":
                 event_id = arguments.get("event_id", "")
@@ -211,10 +210,7 @@ class RetrievalToolkit:
                     after=after,
                     allowed_scopes=self.allowed_scopes
                 )
-                formatted = [
-                    f"[{r['id']}] {r['actor_id']} (at {r['timestamp']}): {r['payload'].get('raw_text', '')}"
-                    for r in rows
-                ]
+                formatted = await self._project_rows(rows)
                 return "\n".join(formatted) if formatted else f"未找到该事件 {event_id} 或其上下文。"
 
             elif tool_name == "query_timeline":
@@ -228,10 +224,7 @@ class RetrievalToolkit:
                     allowed_scopes=self.allowed_scopes,
                     limit=limit
                 )
-                formatted = [
-                    f"[{r['id']}] {r['actor_id']} (at {r['timestamp']}): {r['payload'].get('raw_text', '')}"
-                    for r in rows
-                ]
+                formatted = await self._project_rows(rows)
                 return "\n".join(formatted) if formatted else "该时间段内无历史记录。"
 
             elif tool_name == "query_person_history":
@@ -242,10 +235,7 @@ class RetrievalToolkit:
                     allowed_scopes=self.allowed_scopes,
                     limit=limit
                 )
-                formatted = [
-                    f"[{r['id']}] (at {r['timestamp']}): {r['payload'].get('raw_text', '')}"
-                    for r in rows
-                ]
+                formatted = await self._project_rows(rows)
                 return "\n".join(formatted) if formatted else f"未找到用户 {actor_id} 的历史发言。"
 
             elif tool_name == "query_memory":
@@ -271,6 +261,7 @@ class RetrievalToolkit:
                     formatted.append(
                         f"[{m.id}] {status_tag} [{m.kind.upper()}] {m.subject} -> {m.key}: {m.value} "
                         f"(certainty: {m.certainty.value}, assertion: {m.human_readable_assertion}{history_tag})"
+                        f" 原始证据EventIDs={m.evidence} 修订原因={m.revision_reason} 修订证据={m.revision_evidence}"
                     )
                 return "\n".join(formatted) if formatted else "未找到匹配的认识信念记忆。"
 

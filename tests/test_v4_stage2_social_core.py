@@ -9,7 +9,7 @@ from len_bot.cognition.session import (
     SocialDecisionAction,
     SocialPerception,
     SocialMessageProposal,
-    SocialWorldState,
+    SocialWorldPatch,
     TopicState,
 )
 from len_bot.config import RuntimeConfig
@@ -21,7 +21,7 @@ def silent_result(summary: str = "understood") -> SocialCognitionResult:
     return SocialCognitionResult(
         perception=SocialPerception(
             summary=summary,
-            world_state=SocialWorldState(),
+            world_patch=SocialWorldPatch(),
         ),
         self_state=SelfSocialStateUpdate(
             engagement="observing",
@@ -45,10 +45,10 @@ async def test_social_core_shadow_updates_session_without_sending(tmp_path):
         return SocialCognitionResult(
             perception=SocialPerception(
                 summary="大家仍在等今晚的直播",
-                world_state=SocialWorldState(
+                world_patch=SocialWorldPatch(
                     mood="casual",
                     activity="active",
-                    topics=[
+                    open_topics=[
                         TopicState(
                             id="topic_live",
                             subject="今晚直播",
@@ -119,7 +119,7 @@ def test_social_cognition_result_rejects_silence_with_message():
         SocialCognitionResult(
             perception=SocialPerception(
                 summary="understood",
-                world_state=SocialWorldState(),
+                world_patch=SocialWorldPatch(),
             ),
             self_state=SelfSocialStateUpdate(
                 engagement="observing",

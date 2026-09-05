@@ -29,7 +29,7 @@ async def validate_memory_proposal(
     mp.scope = scene_id
 
     # 2. Key validation
-    if not mp.key or not mp.key.strip():
+    if mp.operation != "refute" and (not mp.key.strip() or not mp.subject.strip() or not mp.value.strip()):
         raise ValueError("Memory proposal key cannot be empty")
 
     # 3. Kind validation
@@ -44,125 +44,120 @@ async def validate_memory_proposal(
         raise ValueError("Memory proposal must contain at least one evidence event ID")
     mp.evidence = list(dict.fromkeys(mp.evidence))
 
-    # 5. Evidence provenance check: must exist in this scene's events OR episodes
+    # 5. An episode is an index into original observations, not independent evidence.
+    raw_evidence = []
     for ev_id in mp.evidence:
-        cursor = await db.execute("""
-            SELECT 1 FROM events WHERE id = ? AND scene_id = ?
-            UNION
-            SELECT 1 FROM episodes WHERE id = ? AND scene_id = ?;
-        """, (ev_id, scene_id, ev_id, scene_id))
+        cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (ev_id, scene_id))
         row = await cursor.fetchone()
-        if not row:
+        if row:
+            if row[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
+                raise ValueError("Model output is not independent memory evidence")
+            raw_evidence.append(ev_id)
+            continue
+        cursor = await db.execute("SELECT source_event_ids FROM episodes WHERE id=? AND scene_id=?", (ev_id, scene_id))
+        episode = await cursor.fetchone()
+        if not episode:
             raise ValueError(
                 f"Evidence integrity check failed: Memory evidence '{ev_id}' does not belong to scene '{scene_id}' (provenance check failed)"
             )
+        sources = json.loads(episode[0])
+        for source in sources:
+            cursor = await db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (source, scene_id))
+            original = await cursor.fetchone()
+            if not original or original[0] in {"SOCIAL_COGNITION_RECORDED", "REFLECTION_RECORDED", "ACTION_SHADOWED", "TASK_REVIEW"}:
+                raise ValueError("Episode evidence must resolve to original observations in this scene")
+        if not sources:
+            raise ValueError("Episode has no source evidence")
+        raw_evidence.extend(sources)
+    mp.evidence = list(dict.fromkeys(raw_evidence))
+    if mp.operation != "refute":
+        originals = await (await db.execute(
+            f"SELECT event_type,actor_id FROM events WHERE scene_id=? AND id IN ({','.join('?' for _ in raw_evidence)})",
+            [scene_id, *raw_evidence],
+        )).fetchall()
+        if all(kind in {"MESSAGE_SENT", "MESSAGE_SEND_FAILED"} and actor != mp.subject for kind, actor in originals):
+            raise ValueError("Bot speech is not independent evidence about another person")
 
 
 async def commit_memory_proposal_core(
     db: aiosqlite.Connection,
     mp: MemoryProposal,
     scene_id: str,
-    now: Optional[float] = None
+    now: Optional[float] = None,
 ) -> MemoryItem:
-    """Executes semantic slot conflict resolution and stores memory via pure SQL.
-    
-    Does NOT call commit(), enabling use inside any enclosing transaction.
-    Always forces mp.scope = scene_id.
-    """
+    """Apply one validated change inside the caller's transaction; never commit here."""
     mp.scope = scene_id
-    if now is None:
-        now = time.time()
+    now = time.time() if now is None else now
 
-    kind_val = mp.kind.value if isinstance(mp.kind, MemoryKind) else str(mp.kind)
+    async def load(memory_id: str) -> MemoryItem:
+        cursor = await db.execute("SELECT * FROM memories WHERE id=? AND scope=?", (memory_id, scene_id))
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("Memory revision target does not belong to this scene")
+        data = dict(zip((column[0] for column in cursor.description), row))
+        data["evidence"] = json.loads(data["evidence"])
+        data["revision_evidence"] = json.loads(data["revision_evidence"])
+        item = MemoryItem.model_validate(data)
+        if item.status != MemoryStatus.ACTIVE:
+            raise ValueError("Memory revision conflict: target is no longer active")
+        return item
 
-    cursor = await db.execute("""
-        SELECT id, subject, kind, key, value, temporal, certainty, scope, evidence, status, human_readable_assertion, created_at, last_confirmed_at
-        FROM memories
-        WHERE subject = ? AND kind = ? AND key = ? AND scope = ? AND status = 'active'
-        ORDER BY created_at DESC LIMIT 1;
-    """, (mp.subject, kind_val, mp.key, scene_id))
-    row = await cursor.fetchone()
-
-    if row:
-        old_id, old_subj, old_kind, old_key, old_val, old_temp, old_cert, old_scope, old_ev_json, old_stat, old_assert, old_cat, old_lcat = row
-        old_evidence = json.loads(old_ev_json) if old_ev_json else []
-        if old_val == mp.value:
-            # Value unchanged: confirm and merge evidence
-            merged_evidence = list(dict.fromkeys(old_evidence + mp.evidence))
-            await db.execute("""
-                UPDATE memories
-                SET last_confirmed_at = ?, evidence = ?, human_readable_assertion = ?
-                WHERE id = ?;
-            """, (now, json.dumps(merged_evidence, ensure_ascii=False), mp.human_readable_assertion, old_id))
-            return MemoryItem(
-                id=old_id,
-                subject=old_subj,
-                kind=old_kind,
-                key=old_key,
-                value=old_val,
-                temporal=old_temp,
-                certainty=MemoryCertainty(old_cert),
-                scope=old_scope,
-                evidence=merged_evidence,
-                status=MemoryStatus.ACTIVE,
-                human_readable_assertion=mp.human_readable_assertion,
-                created_at=old_cat,
-                last_confirmed_at=now
-            )
-        else:
-            # Value conflict: supersede previous memory and create new active record
-            new_mem_id = f"mem_{uuid.uuid4().hex[:10]}"
-            await db.execute("""
-                UPDATE memories SET status = 'superseded', superseded_by = ? WHERE id = ?;
-            """, (new_mem_id, old_id))
-            evidence_json = json.dumps(mp.evidence, ensure_ascii=False)
-            await db.execute("""
-                INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?);
-            """, (
-                new_mem_id, mp.subject, kind_val, mp.key, mp.value, mp.temporal,
-                mp.certainty.value if hasattr(mp.certainty, "value") else str(mp.certainty),
-                scene_id, evidence_json, mp.human_readable_assertion, now, now
-            ))
-            return MemoryItem(
-                id=new_mem_id,
-                subject=mp.subject,
-                kind=mp.kind,
-                key=mp.key,
-                value=mp.value,
-                temporal=mp.temporal,
-                certainty=mp.certainty,
-                scope=scene_id,
-                evidence=mp.evidence,
-                status=MemoryStatus.ACTIVE,
-                human_readable_assertion=mp.human_readable_assertion,
-                created_at=now,
-                last_confirmed_at=now
-            )
-    else:
-        # No prior slot conflict: insert new active memory
-        new_mem_id = f"mem_{uuid.uuid4().hex[:10]}"
-        evidence_json = json.dumps(mp.evidence, ensure_ascii=False)
-        await db.execute("""
-            INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope, evidence, status, human_readable_assertion, created_at, last_confirmed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?);
-        """, (
-            new_mem_id, mp.subject, kind_val, mp.key, mp.value, mp.temporal,
-            mp.certainty.value if hasattr(mp.certainty, "value") else str(mp.certainty),
-            scene_id, evidence_json, mp.human_readable_assertion, now, now
-        ))
-        return MemoryItem(
-            id=new_mem_id,
-            subject=mp.subject,
-            kind=mp.kind,
-            key=mp.key,
-            value=mp.value,
-            temporal=mp.temporal,
-            certainty=mp.certainty,
-            scope=scene_id,
-            evidence=mp.evidence,
-            status=MemoryStatus.ACTIVE,
-            human_readable_assertion=mp.human_readable_assertion,
-            created_at=now,
-            last_confirmed_at=now
+    async def retire(item: MemoryItem, status: MemoryStatus, replacement_id: str | None):
+        cursor = await db.execute(
+            """UPDATE memories SET status=?, superseded_by=?, revision_reason=?, revision_evidence=?
+               WHERE id=? AND scope=? AND status='active'""",
+            (status.value, replacement_id, mp.reason or "后续认识替代同一语义槽位",
+             json.dumps(mp.evidence, ensure_ascii=False), item.id, scene_id),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Memory revision conflict: target changed")
+
+    targets = [await load(memory_id) for memory_id in mp.target_memory_ids]
+    if mp.operation == "refute":
+        old = targets[0]
+        await retire(old, MemoryStatus.REFUTED, None)
+        return old.model_copy(update={"status": MemoryStatus.REFUTED,
+                                     "revision_reason": mp.reason, "revision_evidence": mp.evidence})
+
+    if any(item.subject != mp.subject or item.kind != mp.kind for item in targets):
+        raise ValueError("Supersede must preserve subject and kind; refute and create to correct a person")
+
+    cursor = await db.execute(
+        """SELECT id FROM memories WHERE scope=? AND subject=? AND kind=? AND key=?
+           AND status='active' ORDER BY created_at DESC LIMIT 1""",
+        (scene_id, mp.subject, mp.kind.value, mp.key),
+    )
+    slot = await cursor.fetchone()
+    if mp.operation == "supersede":
+        if slot and slot[0] not in mp.target_memory_ids:
+            raise ValueError("Replacement slot is occupied by a memory not included in targets")
+    elif slot:
+        old = await load(slot[0])
+        if old.value == mp.value:
+            evidence = list(dict.fromkeys(old.evidence + mp.evidence))
+            confirmed_at = now if set(mp.evidence) - set(old.evidence) else old.last_confirmed_at
+            await db.execute(
+                "UPDATE memories SET evidence=?,last_confirmed_at=? WHERE id=? AND scope=? AND status='active'",
+                (json.dumps(evidence, ensure_ascii=False), confirmed_at, old.id, scene_id),
+            )
+            return old.model_copy(update={"evidence": evidence, "last_confirmed_at": confirmed_at})
+        targets = [old]
+
+    item = MemoryItem(
+        subject=mp.subject, kind=mp.kind, key=mp.key, value=mp.value,
+        temporal=mp.temporal, certainty=mp.certainty, scope=scene_id, evidence=mp.evidence,
+        human_readable_assertion=mp.human_readable_assertion or mp.value,
+        created_at=now, last_confirmed_at=now,
+    )
+    for old in targets:
+        await retire(old, MemoryStatus.SUPERSEDED, item.id)
+    await db.execute(
+        """INSERT INTO memories
+           (id,subject,kind,key,value,temporal,certainty,scope,evidence,status,
+            human_readable_assertion,created_at,last_confirmed_at)
+           VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?)""",
+        (item.id, item.subject, item.kind.value, item.key, item.value, item.temporal,
+         item.certainty.value, scene_id, json.dumps(item.evidence, ensure_ascii=False),
+         item.human_readable_assertion, now, now),
+    )
+    return item

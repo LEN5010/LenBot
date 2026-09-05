@@ -1,5 +1,9 @@
 # ADR-0018: Condition-Bound Obligations & Ambient Retained Items
 
+## Status
+
+Partially superseded by ADR-0032/ADR-0033 — 2026-09-05. The separate `AmbientStore` was removed: retained soft state lives in `GroupAgentSession.retained_attention`, proposed by the Social Core and pruned on lawful commits. `PLUGIN_FACT` events enter the Social Core directly with no attention prefilter. The condition-bound obligation half (`wake_event_type`, `TASK_DUE` wake matching) remains active, refined by ADR-0029/ADR-0034.
+
 ## Context
 
 V2 计划 Phase 3(Persistent Social Continuity)要求闭合 Goal 4/5/6/7:

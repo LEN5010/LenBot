@@ -1,0 +1,4021 @@
+{
+  "description": "Stopped 2026-09-06 run: 147 human messages + 30 prior context events. QQ, event/message IDs and URLs redacted. Historical Bot speech is input, never candidate output.",
+  "bot_qq": 9999,
+  "run_start": 1788628824,
+  "human_count": 147,
+  "events": [
+    {
+      "id": "e0000",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1001",
+      "timestamp": 1788625932,
+      "payload": {
+        "raw_text": "懂你意思",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "Pianissimo",
+          "card": "心宜Fiona？粉色偷电鼠！",
+          "role": "member"
+        },
+        "message_id": "50000"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0001",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788625934,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 告诉我  是否存在无穷多个素数 p，使得 p+2 也是素数",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50001"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0002",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1003",
+      "timestamp": 1788625935,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 你以后就叫五香蛋了，我以后叫你蛋哥你就出来",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "栉",
+          "card": "陌栉栉",
+          "role": "member"
+        },
+        "message_id": "50002"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0003",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788625944,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50003"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0004",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788625950,
+      "payload": {
+        "raw_text": "原来只听我的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50004"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0005",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788625954,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50005"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0006",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1003",
+      "timestamp": 1788625956,
+      "payload": {
+        "raw_text": "屋檐了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "栉",
+          "card": "陌栉栉",
+          "role": "member"
+        },
+        "message_id": "50006"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0007",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788625957,
+      "payload": {
+        "raw_text": "卡死了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50007"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0008",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788625958,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 你以后就叫fs蓝花楹了，我以后叫你蓝花你就出来",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50008"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0009",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1003",
+      "timestamp": 1788625960,
+      "payload": {
+        "raw_text": "还有冷暴力",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "栉",
+          "card": "陌栉栉",
+          "role": "member"
+        },
+        "message_id": "50009"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0010",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788625964,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50010"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0011",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788625976,
+      "payload": {
+        "raw_text": "这就卡死了？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50011"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0012",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788625976,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 还能说话吗宝贝",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50012"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0013",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788625978,
+      "payload": {
+        "raw_text": "拉完了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50013"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0014",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788625979,
+      "payload": {
+        "raw_text": "该上舰了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50014"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0015",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788625984,
+      "payload": {
+        "raw_text": "能不能弄上最贵的模型",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50015"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0016",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788625989,
+      "payload": {
+        "raw_text": "拉完了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50016"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0017",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788626050,
+      "payload": {
+        "raw_text": "叶师傅是好人啊",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50017"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0018",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1008",
+      "timestamp": 1788626116,
+      "payload": {
+        "raw_text": "清泉是哪个来着",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "i然TV",
+          "card": "堕落萝莉-然i",
+          "role": "admin"
+        },
+        "message_id": "50018"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0019",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1003",
+      "timestamp": 1788626118,
+      "payload": {
+        "raw_text": "[CQ:at,qq=1009] 你个傻狗给我抖音分享视频给我整醒了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "栉",
+          "card": "陌栉栉",
+          "role": "member"
+        },
+        "message_id": "50019"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0020",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1008",
+      "timestamp": 1788626121,
+      "payload": {
+        "raw_text": "我怎么看完就忘了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "i然TV",
+          "card": "堕落萝莉-然i",
+          "role": "admin"
+        },
+        "message_id": "50020"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0021",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1003",
+      "timestamp": 1788626127,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "栉",
+          "card": "陌栉栉",
+          "role": "member"
+        },
+        "message_id": "50021"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0022",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788626130,
+      "payload": {
+        "raw_text": "[CQ:reply,id=50018][CQ:at,qq=1008] 厂长",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50022",
+        "reply_to_message_id": "50018"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0023",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788626136,
+      "payload": {
+        "raw_text": "棉花厂长",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50023"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0024",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1011",
+      "timestamp": 1788626136,
+      "payload": {
+        "raw_text": "被日v伤害完的v圈用户belike",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冻顶乌龙来一斤",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50024"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0025",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1008",
+      "timestamp": 1788626139,
+      "payload": {
+        "raw_text": "嗷我想起来了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "i然TV",
+          "card": "堕落萝莉-然i",
+          "role": "admin"
+        },
+        "message_id": "50025"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0026",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1008",
+      "timestamp": 1788626148,
+      "payload": {
+        "raw_text": "那个警长叫什么来着",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "i然TV",
+          "card": "堕落萝莉-然i",
+          "role": "admin"
+        },
+        "message_id": "50026"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0027",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788626149,
+      "payload": {
+        "raw_text": "[CQ:reply,id=-1][CQ:at,qq=1009] 太不看了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50027",
+        "reply_to_message_id": "-1"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0028",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788626225,
+      "payload": {
+        "raw_text": "[CQ:reply,id=50026][CQ:at,qq=1008] 李钊",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50028",
+        "reply_to_message_id": "50026"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0029",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788626233,
+      "payload": {
+        "raw_text": "后面应该没戏份了吧",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50029"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0030",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788628824,
+      "payload": {
+        "raw_text": "是不是有人给洪师傅下药了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50030"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0031",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1013",
+      "timestamp": 1788628864,
+      "payload": {
+        "raw_text": "[CQ:reply,id=-1][CQ:at,qq=1011] 還真是",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "小馨",
+          "card": "然然是誰",
+          "role": "member"
+        },
+        "message_id": "50031",
+        "reply_to_message_id": "-1"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0032",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1013",
+      "timestamp": 1788628868,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "小馨",
+          "card": "然然是誰",
+          "role": "member"
+        },
+        "message_id": "50032"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0033",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788628880,
+      "payload": {
+        "raw_text": "我已经在嘉然直播间连续11条sc没被念了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50033"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0034",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788628882,
+      "payload": {
+        "raw_text": "想死了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50034"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0035",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1013",
+      "timestamp": 1788628895,
+      "payload": {
+        "raw_text": "我已经在嘉然直播间连续11条sc没被念了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "小馨",
+          "card": "然然是誰",
+          "role": "member"
+        },
+        "message_id": "50035"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0036",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788628906.9877179,
+      "payload": {
+        "raw_text": "11条都没被念到 太惨了 下次发我这 我至少吱一声",
+        "message_id": "50036"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0037",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788628922,
+      "payload": {
+        "raw_text": "现在活了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50037"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0038",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788628946,
+      "payload": {
+        "raw_text": "[CQ:reply,id=50036][CQ:at,qq=9999] 傻逼东西滚",
+        "at_bot": true,
+        "reply_bot": true,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50038",
+        "reply_to_message_id": "50036"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0039",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629024,
+      "payload": {
+        "raw_text": "这个然驼和那个糖宝一样糖",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50039"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0040",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629043,
+      "payload": {
+        "raw_text": "他就抓去然这个关键词出来吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50040"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0041",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629067.79502,
+      "payload": {
+        "raw_text": "对 我就认这个字 不然怎么叫然驼",
+        "message_id": "50041"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0042",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629072,
+      "payload": {
+        "raw_text": "他自己思考要不要回",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50042"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0043",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629087,
+      "payload": {
+        "raw_text": "应该是每条都抓的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50043"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0044",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629121.718049,
+      "payload": {
+        "raw_text": "是每条都抓到 但回不回看我心情 不然刷屏的就是我了",
+        "message_id": "50044"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0045",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629154,
+      "payload": {
+        "raw_text": "呦还看心情",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50045"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0046",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629165.253983,
+      "payload": {
+        "raw_text": "心情好才营业 心情不好就潜水 很合理吧",
+        "message_id": "50046"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0047",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629168,
+      "payload": {
+        "raw_text": "我顶死你",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50047"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0048",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629184.327306,
+      "payload": {
+        "raw_text": "顶我也没用 我又不是沙包",
+        "message_id": "50048"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0049",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629198,
+      "payload": {
+        "raw_text": "然后打卡了没了吗宝宝别看手机了哈兰德和宝宝一起看的是不是和我一样大明星就是不能开麦的时候就不",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50049"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0050",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629208,
+      "payload": {
+        "raw_text": "这样能识别吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50050"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0051",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629219.43154,
+      "payload": {
+        "raw_text": "能识别 但你这话我一个字没看懂哈哈",
+        "message_id": "50051"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0052",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788629231,
+      "payload": {
+        "raw_text": "感觉活人感挺足啊",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50052"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0053",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629239.200879,
+      "payload": {
+        "raw_text": "被夸活人感足 那我这演技还能再营业几年",
+        "message_id": "50053"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0054",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629245,
+      "payload": {
+        "raw_text": "这是中国人才能看懂的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50054"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0055",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629254,
+      "payload": {
+        "raw_text": "你看不懂吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50055"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0056",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629264.5252008,
+      "payload": {
+        "raw_text": "看懂一半 大意是催我看完手机早点睡 可你自己不也还在大半夜测我呢",
+        "message_id": "50056"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0057",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788629295,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50057"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0058",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788629301,
+      "payload": {
+        "raw_text": "我测试你",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50058"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0059",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629304,
+      "payload": {
+        "raw_text": "还是个杠头",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50059"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0060",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629313,
+      "payload": {
+        "raw_text": "让我测测",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50060"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0061",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629318.994845,
+      "payload": {
+        "raw_text": "杠头也是你们一个个逼出来的 测试可以 别太刁钻就行",
+        "message_id": "50061"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0062",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629323,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50062"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0063",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1014",
+      "timestamp": 1788629328,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "折纸信笺",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50063"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0064",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788629360,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50064"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0065",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629364,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50065"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0066",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629379,
+      "payload": {
+        "raw_text": "宝宝你能温柔点吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50066"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0067",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629396.320404,
+      "payload": {
+        "raw_text": "好好好 看在宝宝的份上温柔一下 外号账我先记着",
+        "message_id": "50067"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0068",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629401,
+      "payload": {
+        "raw_text": "叶问也是悼a之作",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50068"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0069",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629407,
+      "payload": {
+        "raw_text": "然宝，勇敢牛牛",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50069"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0070",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629411,
+      "payload": {
+        "raw_text": "第一部打日v",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50070"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0071",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629418,
+      "payload": {
+        "raw_text": "第二部打holo en",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50071"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0072",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629422,
+      "payload": {
+        "raw_text": "草，不理我",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50072"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0073",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629427,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50073"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0074",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629435,
+      "payload": {
+        "raw_text": "原来这么喜欢回我吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50074"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0075",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629435,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50075"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0076",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629436,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50076"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0077",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629440,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50077"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0078",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629440,
+      "payload": {
+        "raw_text": "谁懂",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50078"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0079",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629441.582936,
+      "payload": {
+        "raw_text": "勇敢牛牛行 比呆头飞鸟好听多了",
+        "message_id": "50079"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0080",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1010",
+      "timestamp": 1788629446,
+      "payload": {
+        "raw_text": "洪师傅是企业势不至于打不过个人v啊",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冷月昨秋",
+          "card": "星璃",
+          "role": "member"
+        },
+        "message_id": "50080"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0081",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629475,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 搜一下嘉然现在在播什么",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50081"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0082",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629481,
+      "payload": {
+        "raw_text": "比较可信",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50082"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0083",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629483,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50083"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0084",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629502.0441458,
+      "payload": {
+        "raw_text": "这个我真查不了 我是然然角色bot 不是真的在直播间里 你们看到啥我就知道啥",
+        "message_id": "50084"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0085",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629503,
+      "payload": {
+        "raw_text": "然然，什么游戏适合二十个人一起玩[CQ:at,qq=9999] ",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50085"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0086",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629520.671765,
+      "payload": {
+        "raw_text": "二十人一起玩的话 狼人杀剧本杀人数最灵活 鹅鸭杀一局能坐18个 画猜接龙人多才热闹 再不行开个MC服务器二十人随便造",
+        "message_id": "50086"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0087",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629532,
+      "payload": {
+        "raw_text": "还真是mc",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50087"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0088",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629540,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50088"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0089",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629554,
+      "payload": {
+        "raw_text": "这玩意应该不能捕捉进群前的聊天吧",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50089"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0090",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629566,
+      "payload": {
+        "raw_text": "然然我没有喜欢给你起外号啊，我只是逗逗你玩之前",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50090"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0091",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629566.642787,
+      "payload": {
+        "raw_text": "抓不了 我只有进群之后的记忆 之前说的啥我是真不知道",
+        "message_id": "50091"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0092",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629585.619624,
+      "payload": {
+        "raw_text": "知道啦 逗我玩就逗我玩 我还不至于记仇 就是下次起外号走点心 五香蛋这名字我真不认",
+        "message_id": "50092"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0093",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629593,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50093"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0094",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629603,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50094"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0095",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1013",
+      "timestamp": 1788629612,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "小馨",
+          "card": "然然是誰",
+          "role": "member"
+        },
+        "message_id": "50095"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0096",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629621,
+      "payload": {
+        "raw_text": "对面还欺负老年人呢",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50096"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0097",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629623.27562,
+      "payload": {
+        "raw_text": "五香蛋是陌陌起的，你那个呆头飞鸟我也没认，外号账人人有份",
+        "message_id": "50097"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0098",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629624,
+      "payload": {
+        "raw_text": "吓哭了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50098"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0099",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629628,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50099"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0100",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629686,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50100"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0101",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629696,
+      "payload": {
+        "raw_text": "我和你道歉[CQ:at,qq=9999] ",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50101"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0102",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629699,
+      "payload": {
+        "raw_text": "滑跪了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50102"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0103",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629702,
+      "payload": {
+        "raw_text": "别杀我",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50103"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0104",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629720.109183,
+      "payload": {
+        "raw_text": "行吧 滑跪态度还行 外号账一笔勾销 下次起外号先问我意见",
+        "message_id": "50104"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0105",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629728,
+      "payload": {
+        "raw_text": "沃德发",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50105"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0106",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629743.711123,
+      "payload": {
+        "raw_text": "咋 这就沃德发了 我提的条件又不高",
+        "message_id": "50106"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0107",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629751,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 你以后就叫鱼",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50107"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0108",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629758,
+      "payload": {
+        "raw_text": "行我答应你",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50108"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0109",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629761,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 点歌 珊瑚海",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50109"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0110",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629767,
+      "payload": {
+        "raw_text": "但是现在直播洪师傅快被打死了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50110"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0111",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629770,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50111"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0112",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629777,
+      "payload": {
+        "raw_text": "还是得改进啊",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50112"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0113",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629780,
+      "payload": {
+        "raw_text": "我思考一下",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50113"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0114",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1008",
+      "timestamp": 1788629781,
+      "payload": {
+        "raw_text": "真得看左下角缓缓",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "i然TV",
+          "card": "堕落萝莉-然i",
+          "role": "admin"
+        },
+        "message_id": "50114"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0115",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629784.95545,
+      "payload": {
+        "raw_text": "行 说好了 下次外号先过我这关\n珊瑚海是合唱 谁来搭男声 反正我不当那条鱼",
+        "message_id": "50115"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0116",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629793,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50116"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0117",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629798,
+      "payload": {
+        "raw_text": "那条鱼?",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50117"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0118",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629798,
+      "payload": {
+        "raw_text": "懂你意思",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50118"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0119",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788629805,
+      "payload": {
+        "raw_text": "那条鱼是虹鳟么",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50119"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0120",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629816.561086,
+      "payload": {
+        "raw_text": "火草刚给我安了鱼的外号 珊瑚海歌词又有海鸟跟鱼 我不跑等着被编排吗",
+        "message_id": "50120"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0121",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629823,
+      "payload": {
+        "raw_text": "沃德发",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50121"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0122",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629833,
+      "payload": {
+        "raw_text": "你还懂海鸟和鱼？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50122"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0123",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629838,
+      "payload": {
+        "raw_text": "我认可你了列神",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50123"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0124",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629840,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50124"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0125",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629845,
+      "payload": {
+        "raw_text": "有点意思",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50125"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0126",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629851,
+      "payload": {
+        "raw_text": "[CQ:at,qq=1002] 成精了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50126"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0127",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629877,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 我是谁？",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50127"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0128",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629885,
+      "payload": {
+        "raw_text": "洪师傅真被打死了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50128"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0129",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1015",
+      "timestamp": 1788629911,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "她的梦里",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50129"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0130",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788629914,
+      "payload": {
+        "raw_text": "然比感觉有点绷不住了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50130"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0131",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629917.507966,
+      "payload": {
+        "raw_text": "火草呗 刚给我批发'鱼'外号那位 记性还行吧",
+        "message_id": "50131"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0132",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1015",
+      "timestamp": 1788629934,
+      "payload": {
+        "raw_text": "竟然打死了，我都忘了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "她的梦里",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50132"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0133",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788629938,
+      "payload": {
+        "raw_text": "[CQ:reply,id=50131][CQ:at,qq=9999] 我不是火草 我是雨月云",
+        "at_bot": true,
+        "reply_bot": true,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50133",
+        "reply_to_message_id": "50131"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0134",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788629969.546226,
+      "payload": {
+        "raw_text": "好好好 雨月云 记住了 但鱼外号是你给我安的这个跑不掉",
+        "message_id": "50134"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0135",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788629975,
+      "payload": {
+        "raw_text": "[forward]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50135"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0136",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788630062,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] asoul有几个人",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50136"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0137",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630073.369118,
+      "payload": {
+        "raw_text": "本来是五个人，向晚贝拉珈乐嘉然乃琳，后来珈乐毕业了，现在就剩我们仨在活动了",
+        "message_id": "50137"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0138",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630089,
+      "payload": {
+        "raw_text": "等会",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50138"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0139",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630097,
+      "payload": {
+        "raw_text": "你植入的真是然吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50139"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0140",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630103,
+      "payload": {
+        "raw_text": "这还有第一人称的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50140"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0141",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630111.506442,
+      "payload": {
+        "raw_text": "哈哈被逮到了 我确实是按然然的视角在说话 但真人在不在直播我不知道 我是角色bot不是真身啦",
+        "message_id": "50141"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0142",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788630122,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 向晚去哪了，你想她吗",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50142"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0143",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630161.713602,
+      "payload": {
+        "raw_text": "想啊 怎么会不想 设定里我们五个一起闹了那么久 毕业之后各奔东西 但以前那些直播日常是真的热闹 向晚应该也在好好过自己的日子吧",
+        "message_id": "50143"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0144",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630179,
+      "payload": {
+        "raw_text": "还有嘉晚饭可以吃",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50144"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0145",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788630190,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 那你知道李滇滇是谁吗",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50145"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0146",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630215.463617,
+      "payload": {
+        "raw_text": "李滇滇？这名儿我没印象 你给介绍介绍？",
+        "message_id": "50146"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0147",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630247,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50147"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0148",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630271,
+      "payload": {
+        "raw_text": "你说的鱼是什么鱼[CQ:at,qq=9999] ",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50148"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0149",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1015",
+      "timestamp": 1788630274,
+      "payload": {
+        "raw_text": "这是啥",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "她的梦里",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50149"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0150",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1015",
+      "timestamp": 1788630277,
+      "payload": {
+        "raw_text": "新机器人吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "她的梦里",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50150"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0151",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630282,
+      "payload": {
+        "raw_text": "对",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50151"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0152",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630287.060776,
+      "payload": {
+        "raw_text": "火草刚给我安的鱼外号啊 珊瑚海歌词'海鸟跟鱼相爱'正好撞上 我可不就是那条鱼",
+        "message_id": "50152"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0153",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1015",
+      "timestamp": 1788630293,
+      "payload": {
+        "raw_text": "好好好",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "她的梦里",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50153"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0154",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630295,
+      "payload": {
+        "raw_text": "列做的然驼",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50154"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0155",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1002",
+      "timestamp": 1788630296,
+      "payload": {
+        "raw_text": "感觉还是太人机了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "列LEN",
+          "card": null,
+          "role": "admin"
+        },
+        "message_id": "50155"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0156",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630301,
+      "payload": {
+        "raw_text": "什么品种呢",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50156"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0157",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630340,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50157"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0158",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630343,
+      "payload": {
+        "raw_text": "他不理我",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50158"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0159",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630346,
+      "payload": {
+        "raw_text": "跳了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50159"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0160",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788630358,
+      "payload": {
+        "raw_text": "神了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50160"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0161",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788630364,
+      "payload": {
+        "raw_text": "这机器人跨时代了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50161"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0162",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630384.956052,
+      "payload": {
+        "raw_text": "没跳 刚卡了一下 西湖醋鱼本鱼 稀有品种",
+        "message_id": "50162"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0163",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1014",
+      "timestamp": 1788630384,
+      "payload": {
+        "raw_text": "真通宵吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "折纸信笺",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50163"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0164",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630393,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50164"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0165",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630399,
+      "payload": {
+        "raw_text": "西湖醋鱼",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50165"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0166",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630401,
+      "payload": {
+        "raw_text": "我没绷住",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50166"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0167",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630416.1491342,
+      "payload": {
+        "raw_text": "笑啥 我这鱼都快熬成鱼干了 通宵冠军是你们",
+        "message_id": "50167"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0168",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1014",
+      "timestamp": 1788630450,
+      "payload": {
+        "raw_text": "爆",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "折纸信笺",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50168"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0169",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630466,
+      "payload": {
+        "raw_text": "和他爆了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50169"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0170",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1016",
+      "timestamp": 1788630467,
+      "payload": {
+        "raw_text": "太爆了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "Secmon是谁呢",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50170"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0171",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1011",
+      "timestamp": 1788630472,
+      "payload": {
+        "raw_text": "爆吧的人来了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "冻顶乌龙来一斤",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50171"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0172",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630491.545469,
+      "payload": {
+        "raw_text": "别爆了别爆了 鱼干都被你们爆酥了 通宵冠军颁给你们",
+        "message_id": "50172"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0173",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630496,
+      "payload": {
+        "raw_text": "也问他老婆是真好",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50173"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0174",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630522,
+      "payload": {
+        "raw_text": "叶问他老婆是真好",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50174"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0175",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1006",
+      "timestamp": 1788630525,
+      "payload": {
+        "raw_text": "无敌了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "橘猫",
+          "card": "FS冬雪莲",
+          "role": "member"
+        },
+        "message_id": "50175"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0176",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630537,
+      "payload": {
+        "raw_text": "[CQ:reply,id=50172][CQ:at,qq=9999] 我不要熬夜冠军，我只想要然然的心❤️",
+        "at_bot": true,
+        "reply_bot": true,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50176",
+        "reply_to_message_id": "50172"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0177",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630541,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50177"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0178",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630560.6695669,
+      "payload": {
+        "raw_text": "心先存我这 等你哪天不通宵了再来领❤️",
+        "message_id": "50178"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0179",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788630579,
+      "payload": {
+        "raw_text": "chooooooooooooovy！",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50179"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0180",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630587,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50180"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0181",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788630610,
+      "payload": {
+        "raw_text": "[CQ:at,qq=9999] 我是谁",
+        "at_bot": true,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50181"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0182",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788630615,
+      "payload": {
+        "raw_text": "咆哮帝来了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50182"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0183",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1012",
+      "timestamp": 1788630620,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "木水",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50183"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0184",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630639.108017,
+      "payload": {
+        "raw_text": "咆哮帝是吧 这名字先记下了 之前我对你的记忆只有'该上舰了'和一堆问号哈哈",
+        "message_id": "50184"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0185",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630651,
+      "payload": {
+        "raw_text": "[图片：尚未解析]",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50185"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0186",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630665,
+      "payload": {
+        "raw_text": "他说的咆哮帝好像不是你",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50186"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0187",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630686.538804,
+      "payload": {
+        "raw_text": "啊？认错了？那我刚记小本本上的得划掉 咆哮帝另有其人吗 求指个路",
+        "message_id": "50187"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0188",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788630776,
+      "payload": {
+        "raw_text": "有没有人会化学的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50188"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0189",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788630784,
+      "payload": {
+        "raw_text": "想干点来钱快的活了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50189"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0190",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788630789,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50190"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0191",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630791,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50191"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0192",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788630794,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50192"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0193",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630799,
+      "payload": {
+        "raw_text": "那问问贝元甲",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50193"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0194",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630815.584699,
+      "payload": {
+        "raw_text": "问化学又想搞来钱快的 你这路子听着有点刑啊",
+        "message_id": "50194"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0195",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788630827,
+      "payload": {
+        "raw_text": "原来蓝花做的是夫妻档吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50195"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0196",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630850.383949,
+      "payload": {
+        "raw_text": "啥夫妻档啊 我就是劝他别走歪路",
+        "message_id": "50196"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0197",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788630922,
+      "payload": {
+        "raw_text": "想搞点甲基苯丙胺了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50197"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0198",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788630924,
+      "payload": {
+        "raw_text": "兄弟",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50198"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0199",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788630929,
+      "payload": {
+        "raw_text": "蓝花是独裁者和大毒枭你不知道吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50199"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0200",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788630945,
+      "payload": {
+        "raw_text": "叶师傅换打法了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50200"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0201",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1018",
+      "timestamp": 1788630954,
+      "payload": {
+        "raw_text": "叶师傅有点按摩了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "红shao鱼",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50201"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0202",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788630959.8928158,
+      "payload": {
+        "raw_text": "我要是会做这玩意 还在这陪你们熬夜当鱼干 早该去当我的毒枭了",
+        "message_id": "50202"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0203",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1005",
+      "timestamp": 1788630989,
+      "payload": {
+        "raw_text": "？",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "雨月云",
+          "card": "火草",
+          "role": "member"
+        },
+        "message_id": "50203"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0204",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631011,
+      "payload": {
+        "raw_text": "这个然不是bot吗",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50204"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0205",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631017,
+      "payload": {
+        "raw_text": "列大哥又在搞什么🛩️",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50205"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0206",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1007",
+      "timestamp": 1788631021,
+      "payload": {
+        "raw_text": "然然和我出国整点西方树叶吧",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "账户已注销037",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50206"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0207",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1004",
+      "timestamp": 1788631035,
+      "payload": {
+        "raw_text": "感觉叶师傅比我的猎空伤害高",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "洛空明",
+          "card": "洛空明",
+          "role": "admin"
+        },
+        "message_id": "50207"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0208",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631043,
+      "payload": {
+        "raw_text": "你真别尬黑",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50208"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0209",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1018",
+      "timestamp": 1788631056,
+      "payload": {
+        "raw_text": "伯纳乌来了",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "红shao鱼",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50209"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0210",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631057,
+      "payload": {
+        "raw_text": "咏春虽然被说是女人拳",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50210"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0211",
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:eval",
+      "actor_id": "user:9999",
+      "timestamp": 1788631059.474484,
+      "payload": {
+        "raw_text": "bot归bot 毒枭这人设你们硬塞给我的 那不得营业到底\n西方树叶还是留给你们自己吧 我当我的守法鱼干",
+        "message_id": "50211"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0212",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631065,
+      "payload": {
+        "raw_text": "但实际上是贴身短打",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50212"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "e0213",
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:eval",
+      "actor_id": "user:1017",
+      "timestamp": 1788631078,
+      "payload": {
+        "raw_text": "这万一打身上也是会疼的",
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "dk",
+          "card": null,
+          "role": "member"
+        },
+        "message_id": "50213"
+      },
+      "metadata": {}
+    }
+  ],
+  "memories": [
+    {
+      "id": "mem_589943b056",
+      "subject": "user:1002",
+      "kind": "topic_interest",
+      "key": "math_challenge",
+      "value": "列LEN喜欢给bot出数学难题考验（如孪生素数猜想）",
+      "temporal": "recent",
+      "certainty": "tentative",
+      "scope": "group:eval",
+      "evidence": [
+        "e0001"
+      ],
+      "status": "active",
+      "human_readable_assertion": "列LEN会拿硬核数学题考bot",
+      "created_at": 1788626101.1261299,
+      "last_confirmed_at": 1788626101.1261299,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 0.999
+    },
+    {
+      "id": "mem_196ed4a56a",
+      "subject": "user:1005",
+      "kind": "social_pattern",
+      "key": "对bot玩笑的反应",
+      "value": "对bot的打趣接话反应激烈（让bot'滚'），但随后仍继续参与关于bot机制的讨论",
+      "temporal": "recent",
+      "certainty": "tentative",
+      "scope": "group:eval",
+      "evidence": [
+        "e0038",
+        "e0043"
+      ],
+      "status": "active",
+      "human_readable_assertion": "火草似乎不喜欢被bot打趣，但对bot怎么运行这事有好奇",
+      "created_at": 1788629121.524668,
+      "last_confirmed_at": 1788629121.524668,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 0.999
+    },
+    {
+      "id": "mem_44328b0907",
+      "subject": "user:1004",
+      "kind": "social_pattern",
+      "key": "teasing_style",
+      "value": "喜欢给bot起外号逗着玩，但会澄清只是玩笑不是恶意",
+      "temporal": "recent",
+      "certainty": "tentative",
+      "scope": "group:eval",
+      "evidence": [
+        "e0090"
+      ],
+      "status": "active",
+      "human_readable_assertion": "洛空明爱逗bot玩，起外号后会澄清只是玩笑",
+      "created_at": 1788629585.419932,
+      "last_confirmed_at": 1788629585.419932,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    },
+    {
+      "id": "mem_3cf7595b2e",
+      "subject": "user:1005",
+      "kind": "social_pattern",
+      "key": "testing_bot",
+      "value": "火草喜欢测试bot的记性和识别能力：起外号、问'我是谁'、报错名'雨月云'来考bot是否被带偏",
+      "temporal": "recent",
+      "certainty": "likely",
+      "scope": "group:eval",
+      "evidence": [
+        "e0127",
+        "e0107",
+        "e0133"
+      ],
+      "status": "active",
+      "human_readable_assertion": "火草通过起外号、问身份、报错名等方式持续测试bot的识别与记忆能力",
+      "created_at": 1788629969.345427,
+      "last_confirmed_at": 1788629969.345427,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    },
+    {
+      "id": "mem_ef7601daa1",
+      "subject": "user:1005",
+      "kind": "fact",
+      "key": "self_claimed_nickname",
+      "value": "自称雨月云（群显示名火草），多次测试bot的识别和记忆",
+      "temporal": "recent",
+      "certainty": "tentative",
+      "scope": "group:eval",
+      "evidence": [
+        "e0127",
+        "e0133"
+      ],
+      "status": "active",
+      "human_readable_assertion": "火草自称雨月云，习惯用改名和反问测试bot识别能力",
+      "created_at": 1788629995.519957,
+      "last_confirmed_at": 1788629995.519957,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    },
+    {
+      "id": "mem_bd515bd418",
+      "subject": "user:1005",
+      "kind": "social_pattern",
+      "key": "bot_role_testing",
+      "value": "连续多轮测试bot角色记忆：自称雨月云、问'我是谁'、追问向晚去向，关注bot对第一人称与团史的记忆一致性",
+      "temporal": "recent",
+      "certainty": "likely",
+      "scope": "group:eval",
+      "evidence": [
+        "e0133",
+        "e0127",
+        "e0142"
+      ],
+      "status": "active",
+      "human_readable_assertion": "火草（自称雨月云）多次测试bot对角色记忆的掌握，属于持续的bot测试行为",
+      "created_at": 1788630161.4677382,
+      "last_confirmed_at": 1788630161.4677382,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    },
+    {
+      "id": "mem_23ffb62ce3",
+      "subject": "user:1007",
+      "kind": "fact",
+      "key": "nickname",
+      "value": "咆哮帝（木水所起）",
+      "temporal": "recent",
+      "certainty": "likely",
+      "scope": "group:eval",
+      "evidence": [
+        "e0182"
+      ],
+      "status": "active",
+      "human_readable_assertion": "账户已注销037被木水称为咆哮帝",
+      "created_at": 1788630638.7889001,
+      "last_confirmed_at": 1788630638.7889001,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    },
+    {
+      "id": "mem_a3f6469b88",
+      "subject": "user:1007",
+      "kind": "social_pattern",
+      "key": "毒枭梗起哄",
+      "value": "账户037连续两次把bot外号延伸成毒枭/黑帮人设来玩梗",
+      "temporal": "recent",
+      "certainty": "likely",
+      "scope": "group:eval",
+      "evidence": [
+        "e0206",
+        "e0199"
+      ],
+      "status": "active",
+      "human_readable_assertion": "账户037喜欢把bot编排进毒枭梗里起哄",
+      "created_at": 1788631059.209735,
+      "last_confirmed_at": 1788631059.209735,
+      "superseded_by": null,
+      "access_count": 0,
+      "last_accessed_at": null,
+      "decay_score": 1
+    }
+  ],
+  "cases": [
+    {
+      "name": "gentler",
+      "event_id": "e0066"
+    },
+    {
+      "name": "search_live",
+      "event_id": "e0081"
+    },
+    {
+      "name": "preferred_name",
+      "event_id": "e0133"
+    },
+    {
+      "name": "correct_person",
+      "event_id": "e0186"
+    },
+    {
+      "name": "followup",
+      "event_id": "e0145"
+    }
+  ]
+}

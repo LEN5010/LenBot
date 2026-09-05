@@ -165,11 +165,8 @@ async def test_scenario_k_escalation_persona_continuity_and_metrics(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_retrieval_tools_emit_complexity_marker(tmp_path):
-    """
-    ADR-0020: [COMPLEXITY: HIGH] has a real producer — retrieval tools append the
-    marker when the evidence set is large, feeding the escalation heuristic.
-    """
+async def test_retrieval_returns_facts_without_complexity_heuristic(tmp_path):
+    """The Social Core judges whether retrieved material needs deeper reasoning."""
     db_file = str(tmp_path / "marker.db")
     runtime = AgentRuntime(RuntimeConfig(bot_qq=1, db_path=db_file))
     await runtime.start()
@@ -194,7 +191,8 @@ async def test_retrieval_tools_emit_complexity_marker(tmp_path):
         default_scene_id=scene_id
     )
     result = await toolkit.execute("search_messages", {"query": "直播"})
-    assert "[COMPLEXITY: HIGH]" in result
+    assert "[COMPLEXITY: HIGH]" not in result
+    assert "直播相关历史消息" in result
 
     await runtime.stop()
 

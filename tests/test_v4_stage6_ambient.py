@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 
@@ -15,6 +16,7 @@ from len_bot.cognition.session import (
     SocialPerception,
     SocialTaskProposal,
     SocialWorldState,
+    SocialWorldPatch,
 )
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
@@ -29,7 +31,7 @@ def cognition_result(
     wake_after: float = 300.0,
 ) -> SocialCognitionResult:
     return SocialCognitionResult(
-        perception=SocialPerception(summary="understood", world_state=SocialWorldState()),
+        perception=SocialPerception(summary="understood", world_patch=SocialWorldPatch()),
         self_state=SelfSocialStateUpdate(
             engagement="participating" if content else "observing",
             social_position="participant" if content else "observer",
@@ -124,7 +126,7 @@ async def test_next_wake_commits_as_authoritative_task_and_context_projection(tm
 def test_generic_task_cannot_claim_reserved_next_wake_kind():
     with pytest.raises(ValidationError, match="reserved for future_attention"):
         SocialCognitionResult(
-            perception=SocialPerception(summary="understood", world_state=SocialWorldState()),
+            perception=SocialPerception(summary="understood", world_patch=SocialWorldPatch()),
             self_state=SelfSocialStateUpdate(
                 engagement="observing",
                 social_position="observer",
@@ -223,9 +225,9 @@ async def test_next_wake_recovers_fires_in_shadow_and_cannot_self_renew(tmp_path
 
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def wake_core(_messages):
         return cognition_result(
@@ -257,7 +259,7 @@ async def test_next_wake_recovers_fires_in_shadow_and_cannot_self_renew(tmp_path
         "SELECT status FROM tasks WHERE id = ?;",
         (task_id,),
     )
-    assert (await cursor.fetchone())[0] == "triggered"
+    assert (await cursor.fetchone())[0] == "processing"
     await second.stop()
 
 

@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 
@@ -12,7 +13,7 @@ from len_bot.cognition.session import (
     SocialMessageProposal,
     SocialPerception,
     SocialTaskProposal,
-    SocialWorldState,
+    SocialWorldPatch,
     TopicState,
 )
 from len_bot.config import RuntimeConfig
@@ -24,7 +25,7 @@ def result(
     *,
     summary: str,
     reason: str,
-    world: SocialWorldState | None = None,
+    world: SocialWorldPatch | None = None,
     content: str | None = None,
     tasks: list[SocialTaskProposal] | None = None,
 ) -> SocialCognitionResult:
@@ -32,7 +33,7 @@ def result(
     return SocialCognitionResult(
         perception=SocialPerception(
             summary=summary,
-            world_state=world or SocialWorldState(),
+            world_patch=world or SocialWorldPatch(),
         ),
         self_state=SelfSocialStateUpdate(
             engagement="participating" if content else "observing",
@@ -64,9 +65,9 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
     sent: list[ActionItem] = []
     prompts: list[str] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(messages):
         prompt = messages[-1]["content"]
@@ -76,8 +77,8 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
                 summary="A 在问今晚是否直播",
                 reason="明确询问",
                 content="应该播",
-                world=SocialWorldState(
-                    topics=[TopicState(id="live", subject="今晚直播", participants=["user:A"])]
+                world=SocialWorldPatch(
+                    open_topics=[TopicState(id="live", subject="今晚直播", participants=["user:A"])]
                 ),
             )
         assert '"subject": "今晚直播"' in prompt
@@ -85,8 +86,8 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
             summary="没有关键词，但这是对今晚直播迟迟未开的自然延续",
             reason="顺着刚才的话题接一句",
             content="确实有点晚了",
-            world=SocialWorldState(
-                topics=[TopicState(id="live", subject="今晚直播", participants=["user:A"])]
+            world=SocialWorldPatch(
+                open_topics=[TopicState(id="live", subject="今晚直播", participants=["user:A"])]
             ),
         )
 
@@ -129,10 +130,10 @@ async def test_fast_human_banter_is_understood_then_intentionally_silent(tmp_pat
         return result(
             summary="A 和 B 正在高速互相接梗",
             reason="看懂了，但没有自然插话位置",
-            world=SocialWorldState(
+            world=SocialWorldPatch(
                 mood="playful",
                 activity="active",
-                social_dynamics=["A 和 B 正在互相接梗"],
+                social_dynamics_add=["A 和 B 正在互相接梗"],
             ),
         )
 
@@ -171,7 +172,7 @@ async def test_explicit_action_proposal_reaches_deterministic_task_commit(tmp_pa
             summary="用户明确要求十分钟后提醒",
             reason="明确行动请求需要确认",
             content="行，十分钟后叫你",
-            tasks=[SocialTaskProposal(description="提醒用户回来", delay_seconds=600)],
+            tasks=[SocialTaskProposal(description="提醒用户回来", due_at=time.time()+600, proposal_id="wake", source_event_ids=[request_event.id])],
         )
 
     runtime = AgentRuntime(
@@ -180,12 +181,13 @@ async def test_explicit_action_proposal_reaches_deterministic_task_commit(tmp_pa
     )
     await runtime.start()
     scene_id = "group:task"
-    await runtime.receive_event(Event(
+    request_event = Event(
         event_type=EventType.GROUP_MESSAGE_RECEIVED,
         scene_id=scene_id,
         actor_id="user:A",
         payload={"raw_text": "@Bot 十分钟后叫我", "at_bot": True},
-    ))
+    )
+    await runtime.receive_event(request_event)
     await wait_for_cognition(runtime, scene_id)
 
     tasks = await runtime.event_store.get_pending_tasks()
@@ -231,9 +233,9 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
     calls = 0
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(messages):
         nonlocal calls
@@ -267,11 +269,12 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
     ))
     await asyncio.sleep(0.05)
     release_first.set()
-    await wait_for_cognition(runtime, scene_id, 2)
+    await wait_for_cognition(runtime, scene_id)
 
     assert calls >= 2
     assert sent == []
-    assert runtime.metrics.social["stale_outcomes_rejected"] >= 1
+    traces = await runtime.event_store.query_traces(scene_id=scene_id, kind="social_cognition")
+    assert traces[0]["payload"]["cognition"]["interim_batches"] >= 1
     await runtime.stop()
 
 
@@ -279,9 +282,9 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
 async def test_runtime_gate_keeps_only_hard_anti_loop_ceiling(tmp_path):
     sent: list[ActionItem] = []
 
-    async def send(action: ActionItem) -> bool:
+    async def send(action: ActionItem) -> DeliveryResult:
         sent.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def social_core(_messages):
         return result(summary="仍想发言", reason="有内容可说", content="第五句")

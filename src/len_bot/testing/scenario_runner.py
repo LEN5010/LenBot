@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import time
 from typing import Optional, Callable, Awaitable
@@ -11,19 +12,19 @@ class ScenarioRunner:
     def __init__(
         self,
         config: RuntimeConfig,
-        mock_social_handler: Optional[Callable[[list[dict[str, str]]], Awaitable[SocialCognitionResult]]] = None
+        mock_social_handler: Optional[Callable[[list[dict[str, str]]], Awaitable[SocialCognitionResult]]] = None,
     ):
         self.config = config
         self.sent_actions: list[ActionItem] = []
         self.runtime = AgentRuntime(
             config=config,
             send_adapter=self._mock_send_adapter,
-            mock_social_handler=mock_social_handler
+            mock_social_handler=mock_social_handler,
         )
 
-    async def _mock_send_adapter(self, action: ActionItem) -> bool:
+    async def _mock_send_adapter(self, action: ActionItem) -> DeliveryResult:
         self.sent_actions.append(action)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def setup(self) -> None:
         await self.runtime.start()

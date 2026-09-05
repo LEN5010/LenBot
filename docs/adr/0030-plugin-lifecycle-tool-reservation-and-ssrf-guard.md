@@ -1,5 +1,9 @@
 # ADR-0030: Plugin Lifecycle Hooks, Core Tool Namespace Reservation, and SSRF Network Policy
 
+## Status
+
+Accepted — implementation notes 2026-09-05: the registration API is `PluginHost.register_plugin_tool(...)`; `RESERVED_CORE_TOOLS` also includes `inspect_episode` (ADR-0035); SSRF-blocked tool responses return the structured string `[安全拦截: 目标地址受限 - {reason}]` instead of raising.
+
 ## Context
 
 In V2:

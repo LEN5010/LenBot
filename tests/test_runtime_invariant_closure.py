@@ -141,7 +141,10 @@ async def test_item3_message_sent_and_open_loop_atomic_commit(tmp_path):
     """
     db_file = str(tmp_path / "atomic_open_loop.db")
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
-    runtime = AgentRuntime(config)
+    from len_bot.actions.models import DeliveryResult, DeliveryStatus
+    async def send(action):
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+    runtime = AgentRuntime(config, send_adapter=send)
     await runtime.start()
 
     scene_id = "group:atomic_loop"
@@ -199,15 +202,15 @@ def test_item4_follow_up_steering():
     )
     mailbox.post(follow_up)
 
-    assert mailbox.has_follow_up() is True
+    assert mailbox.has_unseen_interim() is True
     # Non-destructive query: does not consume or drop follow-ups
-    assert mailbox.has_follow_up() is True
+    assert mailbox.has_unseen_interim() is True
 
     # Consumed exclusively by cognition
-    events = mailbox.consume_follow_ups()
+    events = mailbox.fetch_unseen_interim_events()
     assert len(events) == 1
     assert "顺便看看今天嘉宾是谁" in events[0].raw_text
-    assert mailbox.has_follow_up() is False
+    assert mailbox.has_unseen_interim() is False
 
 @pytest.mark.asyncio
 async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_path):
@@ -358,7 +361,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     Proves that when a follow-up arrives while cognition is in flight:
     1. ReActAgentCore incorporates the follow-up instead of dropping it.
     2. If a follow-up arrives right at final completion before Gate, Gate detects
-       mailbox.has_follow_up() and rejects the stale outcome (SILENCE) rather than
+       mailbox.has_unseen_interim() and rejects the stale outcome (SILENCE) rather than
        sending the superseded answer.
     """
     db_file = str(tmp_path / "follow_up_race.db")
@@ -402,7 +405,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
         mailbox=mailbox
     )
 
-    # Verify that ReActAgentCore detected mailbox.has_follow_up() and re-executed to answer BOTH!
+    # Verify that ReActAgentCore detected mailbox.has_unseen_interim() and re-executed to answer BOTH!
     assert outcome.disposition == FinalDisposition.ACTION
     assert "小明" in outcome.message_proposals[0].content
 
@@ -426,7 +429,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     gate_decision = await runtime.runtime_gate.evaluate_and_commit(stale_outcome, race_mailbox, actor.state)
     # Must reject stale outcome with SILENCE!
     assert gate_decision.disposition == FinalDisposition.SILENCE
-    assert "pending follow-up" in gate_decision.reason.lower() or "supersede" in gate_decision.reason.lower()
+    assert "unread interim" in gate_decision.reason.lower()
     # No action enqueued!
     assert gate_decision.actions_enqueued == 0
 
@@ -491,4 +494,3 @@ async def test_p0_2_scene_actor_serialization_and_zero_scheduler_leak_on_cancell
 
     actor.release_episode_lease(episode_id)
     await runtime.stop()
-

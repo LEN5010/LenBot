@@ -77,6 +77,11 @@ class MemoryStore:
             # ADR-0019: canonical MemoryKind values. Legacy free-form 'pattern' folds
             # into 'social_pattern' (one-time data migration, not a dual semantic).
             await self._db.execute("UPDATE memories SET kind = 'social_pattern' WHERE kind = 'pattern';")
+            columns = {r[1] for r in await (await self._db.execute("PRAGMA table_info(memories)")).fetchall()}
+            for name, declaration in (("revision_reason", "TEXT NOT NULL DEFAULT ''"),
+                                      ("revision_evidence", "TEXT NOT NULL DEFAULT '[]'")):
+                if name not in columns:
+                    await self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {declaration}")
 
             # Reflection cursor (ADR-0019 §10.4): per-scene last reflected event rowid.
             await self._db.execute("""
@@ -247,10 +252,11 @@ class MemoryStore:
         placeholders = ",".join("?" for _ in allowed_scopes)
 
         # Strict SQL boundary: scope IN ({placeholders}) only (ADR-0024 & ADR-0006)
-        status_clause = "status IN ('active', 'superseded')" if include_superseded else "status = 'active'"
+        status_clause = "status IN ('active', 'superseded', 'refuted')" if include_superseded else "status = 'active'"
         sql = f"""
             SELECT id, subject, kind, key, value, temporal, certainty, scope, evidence, status,
-                   superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at
+                   superseded_by, access_count, last_accessed_at, decay_score, human_readable_assertion, created_at, last_confirmed_at,
+                   revision_reason, revision_evidence
             FROM memories
             WHERE {status_clause} AND scope IN ({placeholders})
         """
@@ -281,7 +287,8 @@ class MemoryStore:
                 evidence=json.loads(r[8]), status=MemoryStatus(r[9]),
                 superseded_by=r[10], access_count=r[11] or 0, last_accessed_at=r[12],
                 decay_score=r[13] if r[13] is not None else 1.0,
-                human_readable_assertion=r[14], created_at=r[15], last_confirmed_at=r[16]
+                human_readable_assertion=r[14], created_at=r[15], last_confirmed_at=r[16],
+                revision_reason=r[17], revision_evidence=json.loads(r[18])
             )
             for r in rows
         ]

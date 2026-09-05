@@ -153,6 +153,26 @@ class PluginHost:
             status.state = "error"
             logger.error("Plugin '%s' error state: %s", plugin_id, error)
 
+    def has_plugin(self, plugin_id: str) -> bool:
+        """ADR-0022: public membership check so routes never touch `_plugins` directly."""
+        return plugin_id in self._plugins
+
+    def get_plugin_config(self, plugin_id: str) -> dict[str, Any]:
+        """Merged config view: manifest defaults overlaid with the current config."""
+        plugin = self._plugins.get(plugin_id)
+        if plugin is None:
+            raise KeyError(plugin_id)
+        merged = dict(plugin.manifest.default_config)
+        merged.update(plugin.manifest.config)
+        return merged
+
+    def set_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Merge a partial config onto defaults + current; unspecified keys keep their values."""
+        merged = self.get_plugin_config(plugin_id)
+        merged.update(config)
+        self._plugins[plugin_id].manifest.config = merged
+        return dict(merged)
+
     def status_snapshot(self) -> list[dict[str, Any]]:
         """Control Plane view: real registry only — no mock entries (ADR-0021)."""
         out = []

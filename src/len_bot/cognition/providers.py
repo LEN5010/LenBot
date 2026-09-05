@@ -37,6 +37,7 @@ class RouteTarget(BaseModel):
 
 
 class RoutingConfig(BaseModel):
+
     normal: RouteTarget
     deliberate: RouteTarget
     fallback: RouteTarget | None = None
@@ -99,7 +100,10 @@ class ProviderRegistry:
     def resolve(self, tier: CognitiveTier) -> RouteResolution:
         if self._routing is None:
             raise LookupError("No provider routing configured")
-        target = self._routing.deliberate if tier == CognitiveTier.DELIBERATE else self._routing.normal
+        if tier == CognitiveTier.DELIBERATE:
+            target = self._routing.deliberate
+        else:
+            target = self._routing.normal
         provider = self._providers.get(target.provider_id)
         if provider is None or not provider.enabled:
             raise LookupError(f"Provider '{target.provider_id}' is missing or disabled")

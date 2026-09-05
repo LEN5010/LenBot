@@ -1,10 +1,31 @@
 # Persistent Social Agent Runtime - Ubiquitous Domain Language (CONTEXT.md)
 
+
 A persistent runtime environment for autonomous social agents that maintains temporal continuity, social relationships, and execution state across scenes, treating LLMs strictly as ephemeral cognitive executors.
 
 ---
 
 ## 1. World & Observation
+
+**Preferred Address**:
+A participant's scene-local preferred form of address, supported by their conversation rather than inferred from account nickname or group card alone.
+_Avoid_: Account identity, inferred real name
+
+**Memory Revision**:
+An evidence-backed correction that refutes an existing belief or replaces it while preserving the original and its provenance.
+_Avoid_: Erasing history, verbal acknowledgement
+
+**Observed Cutoff**:
+The last scene event actually read by a cognitive turn. Later messages remain pending, even when that turn's ordinary chat response is accepted.
+_Avoid_: Latest event, assumed understanding
+
+**Social Revision**:
+The version of the agent's interpreted social understanding, distinct from newly observed message facts.
+_Avoid_: Message counter, scene activity
+
+**Delivery Result**:
+The factual outcome of an outbound attempt: confirmed sent, not sent, explicitly rejected, or uncertain. Only confirmed sent establishes visible participation.
+_Avoid_: Boolean success, assumed delivery
 
 **Event**:
 An immutable, historical record of a factual occurrence in the external world or within the runtime (e.g., `GROUP_MESSAGE_RECEIVED`, `TASK_DUE`, `MESSAGE_SENT`).
@@ -210,6 +231,22 @@ _Avoid_: Delete, in-place update
 A background cognitive consolidation job triggered after a conversation quiets down, transforming raw events into L1 episodes and proposing L2 social beliefs.
 _Avoid_: Auto-summary, offline cleanup
 
+**Identity Core**:
+The stable, long-term layer of the persona expressed as observable behavioural tendencies (how it treats friends versus strangers, when it is serious or dismissive, its humour and conflict style).
+_Avoid_: Static prompt string, adjective list, mood simulator
+
+**Group Register**:
+Per-scene factual statistics of how the group actually chats (message length, fragmentation, punctuation, emoji, questions, common short reactions), rendered as style context only and never consulted by decisions.
+_Avoid_: Style rule engine, accommodation enforcer, vocabulary copier
+
+**Voice Exemplar**:
+A curated, operator-authored example with conversational context, used as a stable reference for expression. It is not evidence of a real conversation or a response to copy verbatim.
+_Avoid_: Past speech claim, template reply, training data claim
+
+**Deferred Cognition**:
+Long-horizon social understanding proposed by quiet-window reflection. It can revise earlier beliefs, while newer understanding takes precedence over an outdated reflection.
+_Avoid_: Second cognition agent, blocking pre-send work, wholesale world rewrite
+
 ---
 
 ## 5. Proactive Agency & Safety
@@ -219,12 +256,16 @@ A deterministic anti-loop and spam safety limit that rejects extreme output patt
 _Avoid_: Social judgement, participation heuristic
 
 **Monologue Prevention**:
-A hard budget barrier that forbids unsolicited proactive initiative when the bot has already sent two or more consecutive messages without human intervention.
+A hard safety ceiling on extreme consecutive output without human intervention, not a judgement of normal social timing.
 _Avoid_: Spam check, flood gate
 
 **Retained Attention**:
 A scene-local cognitive note that something remains interesting without creating a task or requiring an immediate visible action.
 _Avoid_: Reminder, pending reply, hidden task
+
+**Projected Social Context**:
+A model-facing view of immutable OneBot events that replaces transport-only CQ payloads with compact semantic markers and rolls out the oldest raw messages only when the configured token budget is reached.
+_Avoid_: Raw-history rewrite, summary-only context, fixed message-count window
 
 ---
 

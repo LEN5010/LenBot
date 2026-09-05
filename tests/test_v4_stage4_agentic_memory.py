@@ -12,6 +12,7 @@ from len_bot.cognition.session import (
     SocialDecisionAction,
     SocialPerception,
     SocialWorldState,
+    SocialWorldPatch,
 )
 from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.config import RuntimeConfig
@@ -23,7 +24,7 @@ def _silent_result(reason: str) -> SocialCognitionResult:
     return SocialCognitionResult(
         perception=SocialPerception(
             summary="结合长期记忆理解了当前话题",
-            world_state=SocialWorldState(),
+            world_patch=SocialWorldPatch(),
         ),
         self_state=SelfSocialStateUpdate(
             engagement="observing",
@@ -193,7 +194,7 @@ async def test_social_core_uses_configured_fallback_after_primary_provider_failu
 
 
 @pytest.mark.asyncio
-async def test_tool_payload_escalates_to_deliberate_on_same_message_flow():
+async def test_long_tool_payload_does_not_force_deliberate():
     completions = _Completions([_tool_response(), _final_response("结合长记忆判断这是老问题")])
     registry = _Registry(completions)
     toolkit = _Toolkit(result_text="旧项目反复构建失败的记录。" * 120)
@@ -212,8 +213,8 @@ async def test_tool_payload_escalates_to_deliberate_on_same_message_flow():
     )
 
     assert result.decision.reason == "结合长记忆判断这是老问题"
-    assert registry.tiers == [CognitiveTier.NORMAL, CognitiveTier.DELIBERATE]
-    assert trace["escalations"][0]["reason"].startswith("tool_payload_length")
+    assert registry.tiers == [CognitiveTier.NORMAL, CognitiveTier.NORMAL]
+    assert trace["escalations"] == []
     assert any(m["role"] == "tool" for m in completions.calls[1]["messages"])
 
 

@@ -35,7 +35,7 @@ class RoutingUpdateRequest(BaseModel):
     fallback_model: Optional[str] = None
 
     @model_validator(mode="after")
-    def validate_fallback_pair(self):
+    def validate_optional_pairs(self):
         if bool(self.fallback_provider_id) != bool(self.fallback_model):
             raise ValueError("回退供应商和回退模型必须同时设置")
         return self

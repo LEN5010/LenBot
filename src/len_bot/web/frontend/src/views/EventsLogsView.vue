@@ -83,7 +83,9 @@ async function load() {
             <td><span class="tag">{{ eventLabel(e.event_type) }}</span></td>
             <td><code>{{ e.scene_id }}</code></td>
             <td><code>{{ e.actor_id }}</code></td>
-            <td class="payload-cell">{{ e.payload?.raw_text || e.payload?.content || '—' }}</td>
+            <td class="payload-cell">{{ e.payload?.raw_text || e.payload?.content || '—' }}
+              <p v-if="e.event_type === 'MESSAGE_SEND_FAILED'" class="tag bad">{{ e.payload?.delivery_status ? e.payload.error : '旧记录缺少详细原因' }} {{ e.payload?.error_code || '' }}</p>
+            </td>
           </tr>
           <tr v-if="!events.length">
             <td colspan="5" class="muted" style="text-align: center; padding: 24px;">暂无匹配的事实事件</td>
