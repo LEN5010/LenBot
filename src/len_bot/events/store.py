@@ -9,6 +9,7 @@ from len_bot.events.models import Event, EventType
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
+from len_bot.runtime.job_store import JobStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class ReflectionConflictError(ValueError):
     """A newer cursor or understanding requires a fresh quiet-window read."""
 
 
-class EventStore(ObservationStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -28,6 +29,7 @@ class EventStore(ObservationStoreMixin):
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
+        await self.initialize_jobs()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -1495,6 +1497,9 @@ class EventStore(ObservationStoreMixin):
         deliveries: dict[str, str] | None = None,
         acknowledgements: dict[str, str] | None = None,
         scene_commit: dict | None = None,
+        job_proposals=None,
+        job_messages=None,
+        origin_mode="live",
     ) -> tuple[list[Any], list[str], list[Any]]:
         """
         V2 Atomic Proposal Commit (ADR-0003 & ADR-0011 Closure):
@@ -1553,8 +1558,11 @@ class EventStore(ObservationStoreMixin):
                         )
 
                 # 2. Insert Tasks
-                proposal_tasks = {}
+                job_tasks, proposal_tasks = await self.apply_job_proposals_in_transaction(job_proposals or [], scene_id, episode_id, origin_mode)
+                committed_tasks.extend(job_tasks)
                 for tp in task_proposals:
+                    if tp.payload.get("kind") == "agent_job":
+                        raise ValueError("Use typed job_proposals for information work")
                     if tp.operation not in {"create", "update", "cancel", "result", "fail"}:
                         raise ValueError("Unknown task operation")
                     if tp.source_event_ids:
@@ -1576,6 +1584,8 @@ class EventStore(ObservationStoreMixin):
                         if existing is None:
                             raise ValueError("Task not found in this scene")
                         status, payload, due_at = existing[0], json.loads(existing[1]), existing[2]
+                        if payload.get("kind") == "agent_job":
+                            raise ValueError("Use versioned job controls for information work")
                         if status not in {"pending", "claimed", "processing", "review_required", "result_ready"}:
                             raise ValueError("Task no longer editable")
                         if tp.operation == "update":
@@ -1698,6 +1708,11 @@ class EventStore(ObservationStoreMixin):
                     mem_item = await commit_memory_proposal_core(self._db, mp, scene_id, now=now)
                     committed_memories.append(mem_item)
 
+                for message in job_messages or []:
+                    if message.job_id:
+                        await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
+                    elif message.fulfils_task_id and await self.get_job(message.fulfils_task_id, scene_id):
+                        raise ValueError("Job delivery requires job_id and job_revision")
                 for task_id, action_id in (deliveries or {}).items():
                     cursor = await self._db.execute(
                         """UPDATE tasks SET status='awaiting_delivery',

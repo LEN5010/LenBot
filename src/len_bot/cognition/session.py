@@ -269,6 +269,8 @@ class SocialMessageProposal(SessionModel):
     reply_intent: str | None = None
     task_ref: str | None = None
     fulfils_task_id: str | None = None
+    job_id: str | None = None
+    job_revision: int | None = None
 
     @field_validator("reply_to", mode="before")
     @classmethod
@@ -305,6 +307,8 @@ class SocialTaskProposal(SessionModel):
     def task_contract(self):
         if self.payload.get("kind") == "next_wake":
             raise ValueError("next_wake is reserved for future_attention")
+        if self.payload.get("kind") == "agent_job":
+            raise ValueError("agent_job is reserved for job_proposals")
         if self.operation == "create":
             if not self.proposal_id or not self.source_event_ids:
                 raise ValueError("Task creation requires proposal_id and source_event_ids")
@@ -330,20 +334,24 @@ class NextWakeIntentProposal(SessionModel):
     source_event_ids: list[str]
 
 
+from len_bot.cognition.jobs import JobProposal
+
+
 class SocialCognitionResult(SessionModel):
     perception: SocialPerception
     self_state: SelfSocialStateUpdate | None = None
     decision: SocialDecision
     message_proposals: list[SocialMessageProposal] = Field(default_factory=list)
     task_proposals: list[SocialTaskProposal] = Field(default_factory=list)
+    job_proposals: list[JobProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
     retained_attention: list[RetainedAttentionProposal] = Field(default_factory=list)
     future_attention: NextWakeIntentProposal | None = None
     memory_candidates: list[SocialMemoryCandidate] = Field(default_factory=list)
 
     def requires_fresh_input(self) -> bool:
-        return bool(self.task_proposals or self.future_attention or self.resolve_open_loop_ids
-                    or any(m.task_ref or m.fulfils_task_id or m.expect_reply for m in self.message_proposals))
+        return bool(self.task_proposals or self.job_proposals or self.future_attention or self.resolve_open_loop_ids
+                    or any(m.task_ref or m.fulfils_task_id or m.expect_reply or m.job_id for m in self.message_proposals))
 
     @model_validator(mode="after")
     def validate_decision_contract(self) -> "SocialCognitionResult":
@@ -397,6 +405,7 @@ class SocialCognitionResult(SessionModel):
                 for proposal in self.message_proposals
             ],
             task_proposals=task_proposals,
+            job_proposals=self.job_proposals,
             memory_proposals=[
                 MemoryProposal(scope=scene_id, **candidate.model_dump())
                 for candidate in self.memory_candidates

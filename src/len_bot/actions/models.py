@@ -31,3 +31,5 @@ class ActionItem(BaseModel):
     associated_open_loop: Optional[dict[str, Any]] = None
     origin_mode: str = "live"
     fulfils_task_id: str | None = None
+    job_id: str | None = None
+    job_revision: int | None = None

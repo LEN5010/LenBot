@@ -68,6 +68,7 @@ class RuntimeGate:
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
         self.next_wake_min_interval_seconds = next_wake_min_interval_seconds
+        self.jobs_enabled_probe = lambda: True
 
     async def evaluate_and_commit(
         self,
@@ -144,7 +145,9 @@ class RuntimeGate:
                 tp.delay_seconds = self.next_wake_min_interval_seconds
 
         # Resolve references before any transaction or visible acknowledgement.
-        proposal_ids = [tp.proposal_id for tp in outcome.task_proposals if tp.proposal_id]
+        if not self.jobs_enabled_probe() and any(p.operation in {"create", "resume"} for p in outcome.job_proposals):
+            return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
+        proposal_ids = [tp.proposal_id for tp in [*outcome.task_proposals, *outcome.job_proposals] if tp.proposal_id]
         if len(proposal_ids) != len(set(proposal_ids)):
             return GateDecision(FinalDisposition.SILENCE, "Duplicate task proposal references", accepted=False)
         action_ids = [str(uuid.uuid4()) for _ in outcome.message_proposals]
@@ -158,6 +161,8 @@ class RuntimeGate:
                     return GateDecision(FinalDisposition.SILENCE, "One acknowledgement per task proposal", accepted=False)
                 acknowledgements[message.task_ref] = action_ids[index]
             if message.fulfils_task_id:
+                if message.job_id and message.job_id != message.fulfils_task_id:
+                    return GateDecision(FinalDisposition.SILENCE, "Job reply cannot fulfil another task", accepted=False)
                 if message.fulfils_task_id in deliveries:
                     return GateDecision(FinalDisposition.SILENCE, "One fulfilment message per task", accepted=False)
                 deliveries[message.fulfils_task_id] = action_ids[index]
@@ -173,6 +178,9 @@ class RuntimeGate:
                 deliveries=deliveries,
                 acknowledgements=acknowledgements,
                 scene_commit=scene_commit,
+                job_proposals=outcome.job_proposals,
+                job_messages=outcome.message_proposals,
+                origin_mode=curr_origin,
             )
             if resolved_loops and self.metrics:
                 self.metrics.inc_social("openloops_resolved", len(resolved_loops))
@@ -199,7 +207,7 @@ class RuntimeGate:
         if self.scheduler and committed_tasks:
             for item in committed_tasks:
                 self.scheduler.schedule_task(item)
-        if self.scheduler and outcome.task_proposals:
+        if self.scheduler and (outcome.task_proposals or outcome.job_proposals):
             await self.scheduler._sync_from_db()
             self.scheduler._wake_event.set()
 
@@ -214,7 +222,7 @@ class RuntimeGate:
         # 5. External Side-Effect Distribution (ActionQueue): enqueue message actions with dependent Open Loops
         actions_count = 0
         now = self.event_store.clock()
-        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries else {}
+        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries or outcome.job_proposals else {}
         for index, msg in enumerate(outcome.message_proposals):
             associated_loop = None
             if msg.expect_reply and msg.reply_target:
@@ -238,6 +246,12 @@ class RuntimeGate:
             action_origin = "shadow" if (curr_origin == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
             if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
                 action_origin = "shadow"
+            job_id, job_revision = msg.job_id, msg.job_revision
+            if msg.task_ref:
+                task = next((row for row in task_rows.values() if row["payload"].get("proposal_id") == msg.task_ref), None)
+                if task and task["payload"].get("kind") == "agent_job":
+                    job = await self.event_store.get_job(task["id"], current_scene_state.scene_id)
+                    job_id, job_revision = job["id"], job["revision"]
             action = ActionItem(
                 source_started_at=mailbox.source_started_at,
                 id=action_ids[index],
@@ -247,7 +261,8 @@ class RuntimeGate:
                 content=msg.content,
                 reply_to=msg.reply_to,
                 associated_open_loop=associated_loop,
-                origin_mode=action_origin
+                origin_mode=action_origin,
+                job_id=job_id, job_revision=job_revision,
             )
             self.action_queue.enqueue(action)
             actions_count += 1

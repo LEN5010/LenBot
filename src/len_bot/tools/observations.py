@@ -14,10 +14,10 @@ class ObservationStoreMixin:
             result_json TEXT NOT NULL, created_at REAL NOT NULL)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tool_observations_scene ON tool_observations(scene_id,created_at)")
 
-    async def save_tool_observation(self, scene_id, tool_name, arguments, result: ToolResult):
+    async def save_tool_observation(self, scene_id, tool_name, arguments, result: ToolResult, *, background_work=False):
         result = result.model_copy(update={"result_id": uuid.uuid4().hex, "observation_event_id": uuid.uuid4().hex})
         event = Event(id=result.observation_event_id, event_type=EventType.TOOL_OBSERVATION_RECORDED,
-                      scene_id=scene_id, actor_id="system:tools", timestamp=self.clock(), payload={
+                      scene_id=scene_id, actor_id="system:tools", timestamp=self.clock(), metadata={"background_work": background_work}, payload={
                           "result_id": result.result_id, "tool_name": tool_name,
                           "status": result.status, "sources": [s.model_dump() for s in result.sources],
                           "independent_evidence": result.evidence_kind == "external" and result.status in {"ok", "partial"},

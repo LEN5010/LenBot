@@ -1,6 +1,7 @@
 from enum import StrEnum
 from typing import Optional, Any
 from pydantic import BaseModel, Field
+from len_bot.cognition.jobs import JobProposal
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
@@ -14,6 +15,8 @@ class MessageProposal(BaseModel):
     reply_intent: Optional[str] = Field(default=None, description="Topic or intent of expected answer")
     task_ref: str | None = None
     fulfils_task_id: str | None = None
+    job_id: str | None = None
+    job_revision: int | None = None
 
 class TaskProposal(BaseModel):
     operation: str = "create"
@@ -53,5 +56,6 @@ class EpisodeOutcome(BaseModel):
     decision_reason: str = Field(description="Brief structured reason explaining the decision (e.g. peer already answered)")
     message_proposals: list[MessageProposal] = Field(default_factory=list)
     task_proposals: list[TaskProposal] = Field(default_factory=list)
+    job_proposals: list[JobProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)

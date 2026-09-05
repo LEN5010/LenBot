@@ -59,7 +59,9 @@ def project_event(event: Event, bot_qq: int | str) -> str:
         text += "\n发送未确认：" + event.payload.get("error", "旧记录缺少详细原因")
     if event.metadata.get("reflection_stale"):
         text += "\n这份反思读取的是旧版本理解，尚未应用；记忆回执是当时的结果，使用前需核对当前 query_memory，不能覆盖新认识。"
-    if event.event_type in {EventType.REFLECTION_RECORDED, EventType.TASK_REVIEW, EventType.TASK_DUE, EventType.TOOL_COMPLETED}:
+    if event.metadata.get("obsolete_job_result"):
+        text += "\n这是旧目标的工作事件，当前版本已变更或取消，不能用它确认当前交付。"
+    if event.event_type in {EventType.REFLECTION_RECORDED, EventType.TASK_REVIEW, EventType.TASK_DUE, EventType.TOOL_COMPLETED, EventType.AGENT_JOB_FINISHED, EventType.AGENT_JOB_PROGRESS}:
         text += "\n运行时事项（反思内容仍是待核对提案）：" + json.dumps(
             {k: v for k, v in event.payload.items() if k not in {"raw_text", "content"}}, ensure_ascii=False)
     return f"[{datetime.fromtimestamp(event.timestamp, ZoneInfo('Asia/Shanghai')).isoformat()} {event.event_type.value} {message_ref}] {actor}({event.actor_id}){names}: {text}"

@@ -80,6 +80,15 @@ class ActionQueue:
             ))
             return
 
+        if action.job_id:
+            try:
+                await self.event_store.validate_job_message(action.scene_id, action.job_id, action.job_revision, bool(action.fulfils_task_id))
+            except ValueError as error:
+                await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
+                    actor_id=self.bot_actor_id, payload={"action_id": action.id, "fulfils_task_id": action.fulfils_task_id,
+                        "error": str(error), "delivery_status": "rejected", "delivery_unknown": False}))
+                return
+
         shadow = bool(self.shadow_probe and self.shadow_probe()) or action.origin_mode == "shadow"
         if shadow:
             if self.shadow_recorder:

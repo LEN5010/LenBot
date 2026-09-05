@@ -9,7 +9,7 @@
 | 1 当前文档 | docs: establish current architecture and staged agent plan | 完成 | 引用检查，运行行为未变 |
 | 2 通用工具 | feat: add structured tool observations and generic retrieval | 完成 | 171 项回归；HTML/文本/JSON、压缩、重定向、分页、scope、并发 |
 | 3 交错回放 | test: add interleaved multi-turn agent evaluation | 完成 | 175 项回归；十二类脚本基线、面板模式选择、前端构建 |
-| 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 计划中 | 原子性、版本、取消、预算、恢复 |
+| 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 完成 | 182 项回归；查询中修订/取消、预算失败、恢复、进展及面板 API |
 | 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 计划中 | 视觉、资产、分段、回执、公平性 |
 | 6 互动质量 | feat: add conversational quality evaluation and reply feedback | 计划中 | 后续反馈、依据和模型对照 |
 | 7 真实验收 | test: record live agent acceptance and controlled rollout | 计划中 | 真实工具、Shadow、指定群实发 |
@@ -39,3 +39,11 @@
 十二类跨主题输入与交错点位于 tests/fixtures/generic_agent_cases.json；[脚本基线](evaluation/runs/generic-stage3-scripted.json) 保存输入模型的消息、工具、观察、状态、回执、源码树哈希和失败字段。脚本结果仅证明链路；jobs/media 仍显式列为未支持，assessment 为 null，不计自然度通过。
 
 命令：`uv run python scripts/eval_agent_cases.py --scripted --repeats 1 --output /tmp/agent-scripted.json`。真实模型去掉 --scripted 并指定 --provider-db；--model 只接受保存目录中的型号，--tool-mode real 单独运行真实工具。每个案例的模型调用默认上限 100，失败和未触发交错点令运行未完成。面板可分别选择工具模式和隔离投递模式，失败不显示推演成功。
+
+## 阶段 4 实现
+
+工作详情 agent_jobs 与 tasks 使用同一 ID，任务表是调度/送达状态权威。JobProposal(create/revise/cancel/resume) 与 Session、记忆、确认消息在 Gate 同事务提交；任务通用 payload 不能冒充工作类型。执行器独立并发、只读、不会写记忆或发送；目标版本、已消耗模型/工具/时间及资料引用持久化。默认 16/24/300s/64K，每群一个、全局两个；JOBS_ENABLED=false 可停用新工作执行。
+
+后台步骤和原始工具观察不抢占社会读取截点；进展/结果事件才回到社会理解。report_progress 需已有资料引用并受30秒记录冷却约束，仍由 Social Core 判断说不说。只有含真实 job_id/job_revision 的就绪结果才能关联交付，队列发送前再次检查取消/版本。模型摘要和进展不能成为独立记忆证据。SDK隐式重试关闭；工作主/备模型尝试都消耗额度。
+
+新增工作面板查看/修订/停止/恢复及资料分页；HTTP读经 QueryService，控制操作先记录运营事件再走Gate。七项新增工作测试覆盖事务失败、旧版本结果、重复完成、在途补充和取消、重启与主备调用预算；前端构建通过。真实模型工作判断尚待阶段6/7验证。

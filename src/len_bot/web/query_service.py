@@ -27,6 +27,13 @@ class RuntimeQueryService:
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
         return result.page(offset).model_dump() if result else None
 
+    async def jobs(self, scene_id=None):
+        return await self.runtime.event_store.list_jobs(scene_id)
+
+    async def job(self, job_id):
+        task = await self.get_task(job_id)
+        return await self.runtime.event_store.get_job(job_id, task["scene_id"]) if task else None
+
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona()
 

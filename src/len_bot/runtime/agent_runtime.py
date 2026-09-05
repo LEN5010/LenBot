@@ -30,6 +30,7 @@ from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.style_guard import StyleGuard
 from len_bot.plugins import PluginHost
 from len_bot.tools.retrieval import RetrievalToolkit
+from len_bot.runtime.job_runner import InformationJobRunner
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,9 @@ class AgentRuntime:
         self._reflecting_scenes: set[str] = set()
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
+        self.job_runner = InformationJobRunner(self)
+        self.runtime_gate.jobs_enabled_probe = lambda: self.config.jobs_enabled
+        self.scheduler.jobs_enabled_probe = lambda: self.config.jobs_enabled
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -292,6 +296,7 @@ class AgentRuntime:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         await self.scheduler.stop()
+        await self.job_runner.stop()
         await self.plugin_host.unload_all()
         await self.action_queue.stop()
         for actor in list(self.scene_manager._actors.values()):
@@ -336,7 +341,10 @@ class AgentRuntime:
         if event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED) and event.actor_id != self.bot_actor_id:
             self.metrics.inc_social("human_messages")
 
-        await self.burst_assembler.ingest(event)
+        await self.job_runner.on_event(event)
+        is_job_due = event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
+        if not is_job_due:
+            await self.burst_assembler.ingest(event)
 
         # Condition-bound obligations (ADR-0018): fire tasks whose wake_event_type
         # matches this committed event. Firing takes the standard TASK_DUE path.
@@ -506,6 +514,7 @@ class AgentRuntime:
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
                 pending_wake = await self.event_store.get_pending_next_wake(scene_id)
                 tasks = await self.event_store.scene_tasks(scene_id)
+                jobs = await self.event_store.list_jobs(scene_id)
                 last_task_context = json.dumps(tasks, ensure_ascii=False)
                 retrieval = RetrievalToolkit(
                     event_store=self.event_store, allowed_scopes=[scene_id, "global-safe"],
@@ -548,6 +557,7 @@ class AgentRuntime:
                     return ("【新增已提交事件】\n" + "\n".join(project_event(e, self.config.bot_qq) for e in events)
                             + social_change
                             + task_change
+                            + "\n【当前信息工作】\n" + json.dumps(await self.event_store.list_jobs(scene_id), ensure_ascii=False)
                             + "\n结合这些变化继续判断，保留已有工具结果；之前拟出的回复尚未发送。")
 
                 async def commit(result, trace):
@@ -579,7 +589,7 @@ class AgentRuntime:
                 async with self._cognition_semaphore:
                     result, trace = await self.social_core.execute(
                         session, burst, raw_events, open_loops, pending_next_wake=pending_wake,
-                        toolkit=retrieval, tasks=tasks, observe=observe, commit=commit, now=self.clock(),
+                        toolkit=retrieval, tasks=tasks, jobs=jobs, observe=observe, commit=commit, now=self.clock(),
                         voice_examples=await self._select_voice_examples(scene_id), trace_sink=trace,
                     )
                 self.metrics.inc_social("social_cognition")

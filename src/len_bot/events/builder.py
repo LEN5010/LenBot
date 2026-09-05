@@ -28,6 +28,8 @@ class BurstAssembler:
         EventType.LIVE_STARTED,
         EventType.LIVE_ENDED,
         EventType.TOOL_COMPLETED,
+        EventType.AGENT_JOB_FINISHED,
+        EventType.AGENT_JOB_PROGRESS,
         EventType.USER_JOINED,
     }
 
@@ -46,6 +48,8 @@ class BurstAssembler:
     async def ingest(self, event: Event) -> None:
         now = self.clock()
         if event.metadata.get("obsolete_task_wake"):
+            return
+        if event.metadata.get("obsolete_job_result"):
             return
         if event.event_type == EventType.REFLECTION_RECORDED and not event.metadata.get('needs_review'):
             return

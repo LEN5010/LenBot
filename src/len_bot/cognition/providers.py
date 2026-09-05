@@ -114,6 +114,7 @@ class ProviderRegistry:
                 api_key=provider.api_key or "missing",
                 base_url=provider.base_url,
                 timeout=provider.timeout_seconds,
+                max_retries=0,
             )
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
@@ -132,6 +133,7 @@ class ProviderRegistry:
                 api_key=provider.api_key or "missing",
                 base_url=provider.base_url,
                 timeout=provider.timeout_seconds,
+                max_retries=0,
             )
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
@@ -150,6 +152,7 @@ class ProviderRegistry:
                 api_key=provider.api_key or "missing",
                 base_url=provider.base_url,
                 timeout=provider.timeout_seconds,
+                max_retries=0,
             )
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
