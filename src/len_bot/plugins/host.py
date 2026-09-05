@@ -31,7 +31,7 @@ RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
     "query_tasks",
     "query_retention",
     "inspect_episode",
-    "tool_search", "read_tool_result", "inspect_image", "search_media",
+    "tool_search", "read_tool_result", "inspect_image", "search_media", "query_jobs",
 })
 
 

@@ -7,6 +7,7 @@ from len_bot.events.models import Event, EventType
 from len_bot.memory.models import MemoryStatus
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.cognition.jobs import JobProposal
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -84,6 +85,40 @@ async def inject_scene_event(
 @router.get("/tasks")
 async def list_tasks(request: Request, status: Optional[str] = None, user: str = Depends(get_current_user)):
     return await _service(request).list_tasks(status=status)
+
+
+@router.get("/jobs")
+async def jobs(request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    return await _service(request).jobs(scene_id)
+
+
+class JobControlRequest(BaseModel):
+    expected_revision: int
+    goal: str | None = None
+    constraints_add: list[str] = []
+    constraints_remove: list[str] = []
+
+
+@router.post("/jobs/{job_id}/{operation}")
+async def control_job(job_id: str, operation: str, req: JobControlRequest, request: Request, user: str = Depends(get_current_user)):
+    if operation not in {"cancel", "revise", "resume"}:
+        raise HTTPException(400, "未知工作操作")
+    runtime = request.app.state.runtime
+    job = await _service(request).job(job_id)
+    if not job:
+        raise HTTPException(404, "工作不存在")
+    event = Event(event_type=EventType.OPERATOR_ACTION, scene_id=job["scene_id"], actor_id=f"operator:{user}",
+        payload={"operation": operation, "job_id": job_id})
+    await runtime.commit_tool_observation(event)
+    actor = await runtime.scene_manager.get_or_create_actor(job["scene_id"])
+    mailbox = EpisodeMailbox(f"operator:{event.id}", job["scene_id"], actor.state.version)
+    proposal = JobProposal(operation=operation, job_id=job_id, expected_revision=req.expected_revision,
+        goal=req.goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove, source_event_ids=[event.id])
+    decision = await actor.submit_proposal(mailbox.episode_id, EpisodeOutcome(disposition=FinalDisposition.SILENCE,
+        decision_reason="运营修改信息工作", job_proposals=[proposal]), mailbox, runtime.runtime_gate)
+    if not decision.accepted:
+        raise HTTPException(409, decision.reason)
+    return {"success": True, "job": await _service(request).job(job_id)}
 
 
 @router.post("/tasks/{task_id}/cancel")

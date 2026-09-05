@@ -217,6 +217,10 @@ class SceneActor:
                     continue
                 if event.event_type == EventType.TASK_DUE and event.payload.get("task_id"):
                     event.metadata["obsolete_task_wake"] = not await self.event_store.task_due_is_current(event)
+                if event.event_type in {EventType.AGENT_JOB_FINISHED, EventType.AGENT_JOB_PROGRESS}:
+                    job = await self.event_store.get_job(event.payload.get("job_id"), self.scene_id)
+                    valid_states = {"result_ready"} if event.event_type == EventType.AGENT_JOB_FINISHED else {"processing", "result_ready"}
+                    event.metadata["obsolete_job_result"] = not job or job["revision"] != event.payload.get("job_revision") or job["status"] not in valid_states
                 if event.event_type == EventType.REFLECTION_RECORDED:
                     event.metadata["reflection_stale"] = event.payload.get("social_revision") != self.group_session.social_revision
                     event.metadata["needs_review"] = bool(event.payload.get("review_items")) or (
@@ -235,6 +239,11 @@ class SceneActor:
                     task_id_to_trigger = event.payload.get("task_id")
 
                 associated_open_loop = event.metadata.get("associated_open_loop")
+                background_bookkeeping = (
+                    event.event_type in {EventType.AGENT_JOB_CONTROL, EventType.AGENT_JOB_CHECKPOINT}
+                    or event.event_type == EventType.TOOL_OBSERVATION_RECORDED and event.metadata.get("background_work")
+                    or event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
+                )
 
                 # 3. P0-1: Atomically persist Event, FTS, Task triggered status, OpenLoop, and SceneState
                 # Persist first!
@@ -244,10 +253,12 @@ class SceneActor:
                     task_id_to_trigger=task_id_to_trigger,
                     associated_open_loop=associated_open_loop,
                     group_session_data=candidate_session.model_dump(),
+                    advance_session_observation=not background_bookkeeping,
                 )
 
                 # 4. Publish state ONLY after database commit succeeds!
-                candidate_session.last_observed_event_rowid = event_rowid
+                if not background_bookkeeping:
+                    candidate_session.last_observed_event_rowid = event_rowid
                 self.state = candidate_state
                 self.group_session = candidate_session
 
@@ -305,6 +316,8 @@ class SceneActor:
             referenced_event_ids.update(item.result.future_attention.source_event_ids)
         for memory in item.result.memory_candidates:
             referenced_event_ids.update(memory.evidence)
+        for job in item.result.job_proposals:
+            referenced_event_ids.update(job.source_event_ids)
         memory_ids = {mid for update in [*item.result.perception.person_updates,
                                         *item.result.perception.relationship_updates]
                       for mid in update.memory_ids_add}
