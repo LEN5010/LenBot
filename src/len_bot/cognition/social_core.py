@@ -187,6 +187,7 @@ class SocialCognitionCore:
         self.registry = registry
         self.metrics = metrics
         self.mock_handler = mock_handler
+        self.checkpoint = None
         self.router = router or CognitionRouter()
         self.context_assembler = SocialCoreContextAssembler(config)
 
@@ -253,8 +254,13 @@ class SocialCognitionCore:
             if not final_followup and max_steps - step >= 3 and tool_calls_used < max_tool_calls:
                 await incorporate()
             self._fit_context(working_messages, tools, trace)
+            if self.checkpoint:
+                await self.checkpoint("before_model", {"scene_id": session.scene_id, "step": step,
+                    "messages": copy.deepcopy(working_messages), "tools": copy.deepcopy(tools)})
             if self.mock_handler:
                 result = SocialCognitionResult.model_validate(await self.mock_handler(copy.deepcopy(working_messages)))
+                if self.checkpoint:
+                    await self.checkpoint("after_model", {"scene_id": session.scene_id, "step": step, "result": result.model_dump(mode="json")})
                 working_messages.append({"role": "assistant", "content": result.model_dump_json(exclude_none=True)})
                 if not final_followup and max_steps - step - 1 >= 3 and tool_calls_used < max_tool_calls and await incorporate():
                     working_messages[-1]["content"] += "\n最后一次吸收新增消息，观察截点已固定。保留已有工具结果，剩余预算内完成必要查询后决定；之前草稿未发送。"
@@ -290,6 +296,11 @@ class SocialCognitionCore:
                     self.metrics.inc_social("retrieval_forced_finals")
 
             message = response.choices[0].message
+            if self.checkpoint:
+                await self.checkpoint("after_model", {"scene_id": session.scene_id, "step": step,
+                    "content": message.content, "tool_calls": [
+                        {"name": call.function.name, "arguments": call.function.arguments}
+                        for call in (getattr(message, "tool_calls", None) or [])]})
             step_trace: dict[str, Any] = {
                 "step": step,
                 "tier": tier.value,

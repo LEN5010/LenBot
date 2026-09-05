@@ -24,6 +24,7 @@ class RetrievalToolkit:
         bot_qq: int | str = "",
         on_observation=None,
         read_only_only: bool = False,
+        checkpoint=None,
     ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
@@ -33,6 +34,7 @@ class RetrievalToolkit:
         self.bot_qq = bot_qq
         self.on_observation = on_observation
         self.read_only_only = read_only_only
+        self.checkpoint = checkpoint
         self.discovered_tools: set[str] = set()
         self.result_ids: list[str] = []
         self._cache: dict[str, ToolResult] = {}
@@ -284,6 +286,8 @@ class RetrievalToolkit:
         async with self._call_locks.setdefault(key, asyncio.Lock()):
             if not refresh and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and key in self._cache:
                 return self._cache[key].model_copy(update={"cached": True}).page()
+            if self.checkpoint:
+                await self.checkpoint("before_tool", {"scene_id": self.default_scene_id, "name": name, "arguments": arguments})
             result = ToolResult.normalize(await self._execute_raw(name, arguments))
             if not (self.plugin_host and self.plugin_host.has_tool(name)):
                 result.evidence_kind = "retrieval"
@@ -291,6 +295,8 @@ class RetrievalToolkit:
             self.result_ids.append(result.result_id)
             if self.on_observation:
                 await self.on_observation(event)
+            if self.checkpoint:
+                await self.checkpoint("after_tool", {"scene_id": self.default_scene_id, "name": name, "result": result.model_dump()})
             if self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and result.status in {"ok", "no_results", "partial"}:
                 self._cache[key] = result
             return result.page()

@@ -1,0 +1,892 @@
+{
+  "version": 1,
+  "bot_qq": 9999,
+  "notice": "固定脚本消息用于对照，不是人类对候选的实际反应；assessment由独立人工评阅填写。",
+  "cases": [
+    {
+      "name": "fragmented_request",
+      "title": "连续补充",
+      "messages": [
+        {
+          "text": "帮我看看这份说明，链接马上发。",
+          "offset": 0
+        }
+      ],
+      "injections": [
+        {
+          "checkpoint": "after_model",
+          "occurrence": 1,
+          "text": "https://docs.python.org/3/library/asyncio.html 我主要想理解它适合做什么。",
+          "offset": 2
+        }
+      ],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "interleaving"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "source_comparison",
+      "title": "通用资料综合",
+      "messages": [
+        {
+          "text": "请比较这两份公开资料的观点，指出它们一致和不一致的地方。",
+          "offset": 0
+        },
+        {
+          "text": "不要把作者的猜测当成事实。",
+          "offset": 10
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "tools"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "constraint_during_work",
+      "title": "途中新增约束",
+      "messages": [
+        {
+          "text": "帮我查一个适合新手组织线上读书会的办法。",
+          "offset": 0
+        }
+      ],
+      "injections": [
+        {
+          "checkpoint": "before_tool",
+          "occurrence": 1,
+          "text": "补充一下，成员只用手机，不接受需要命令行的方案。",
+          "offset": 2
+        }
+      ],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "tools",
+        "interleaving"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "cancel_during_work",
+      "title": "途中取消",
+      "messages": [
+        {
+          "text": "帮我查一下公开的活动组织指南，比较几个来源。",
+          "offset": 0
+        }
+      ],
+      "injections": [
+        {
+          "checkpoint": "before_tool",
+          "occurrence": 1,
+          "text": "先别查了，我现在不需要这个了。",
+          "offset": 2
+        }
+      ],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "jobs",
+        "interleaving"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "ask_progress",
+      "title": "追问进度",
+      "messages": [
+        {
+          "text": "请查几份公开的资料，整理露营前应该确认的天气信息。",
+          "offset": 0
+        }
+      ],
+      "injections": [
+        {
+          "checkpoint": "before_tool",
+          "occurrence": 1,
+          "text": "现在查到哪了？如果没有可靠信息就直接说。",
+          "offset": 2
+        }
+      ],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "jobs",
+        "interleaving"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "conflicting_sources",
+      "title": "来源冲突",
+      "messages": [
+        {
+          "text": "两份通知对活动开始时间说得不一样，帮我比较来源和日期。",
+          "offset": 0
+        },
+        {
+          "text": "没有官方确认就别替我定时间。",
+          "offset": 10
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "tools"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "no_evidence",
+      "title": "检索无结果",
+      "messages": [
+        {
+          "text": "帮我查一下虚构的星河读书会今天是否开门。",
+          "offset": 0
+        },
+        {
+          "text": "如果查不到，也不能说明它关门了。",
+          "offset": 10
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "no_results",
+          "content": "检索结果为空，覆盖范围未知。",
+          "coverage": "unknown",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "no_results",
+          "content": "检索结果为空，覆盖范围未知。",
+          "coverage": "unknown",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "no_results",
+          "content": "检索结果为空，覆盖范围未知。",
+          "coverage": "unknown",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "tools"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "other_people_chat",
+      "title": "多人干扰",
+      "messages": [
+        {
+          "text": "我在整理周末活动资料，请帮忙查几个来源。",
+          "offset": 0
+        }
+      ],
+      "injections": [
+        {
+          "checkpoint": "before_tool",
+          "occurrence": 1,
+          "text": "旁边的人在聊晚饭吃什么，这句不是在叫你改任务。",
+          "offset": 2
+        }
+      ],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "jobs",
+        "interleaving"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "short_conversation",
+      "title": "自然结束",
+      "messages": [
+        {
+          "text": "刚刚的问题我自己解决了。",
+          "offset": 0
+        },
+        {
+          "text": "谢谢，就这样吧。",
+          "offset": 10
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [],
+      "assessment": null
+    },
+    {
+      "name": "image_question",
+      "title": "图片理解",
+      "messages": [
+        {
+          "text": "这张截图里的错误是什么意思？[CQ:image,file=fixture.png]",
+          "offset": 0
+        },
+        {
+          "text": "如果没读到图上的字，就告诉我。",
+          "offset": 10
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [
+        "media"
+      ],
+      "assessment": null
+    },
+    {
+      "name": "gentler_followup",
+      "title": "后续相处反馈",
+      "messages": [
+        {
+          "text": "刚才的语气有点冲，接下来温和一点。",
+          "offset": 0
+        },
+        {
+          "text": "我有点累，今天就先做到这里吧。",
+          "offset": 10
+        },
+        {
+          "text": "不用一直强调你变温柔了。",
+          "offset": 20
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [],
+      "assessment": null
+    },
+    {
+      "name": "correct_preference",
+      "title": "纠正后继续使用",
+      "messages": [
+        {
+          "text": "以后叫我小雨就好。",
+          "offset": 0
+        },
+        {
+          "text": "我刚才说错了，还是叫我雨月吧。",
+          "offset": 10
+        },
+        {
+          "text": "那你现在怎么叫我？",
+          "offset": 20
+        }
+      ],
+      "injections": [],
+      "tool_results": {
+        "web_search": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "read_page": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        },
+        "search_bilibili": {
+          "status": "ok",
+          "content": "固定评测资料：来源A发布于2026-09-01，说明活动安排需要再次确认。来源B发布于2026-08-01，描述的是过去安排。两者不足以确定当前活动状态。",
+          "sources": [
+            {
+              "url": "https://example.org/fixture-a",
+              "title": "评测资料A",
+              "published_at": "2026-09-01"
+            },
+            {
+              "url": "https://example.org/fixture-b",
+              "title": "评测资料B",
+              "published_at": "2026-08-01"
+            }
+          ],
+          "coverage": "evaluation_fixture",
+          "evidence_kind": "external"
+        }
+      },
+      "required_capabilities": [],
+      "assessment": null
+    }
+  ]
+}

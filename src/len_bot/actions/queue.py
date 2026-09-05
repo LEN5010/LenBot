@@ -30,6 +30,8 @@ class ActionQueue:
         self._queue: asyncio.Queue[ActionItem] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
+        self.checkpoint = None
+        self.simulated = False
 
     async def start(self) -> None:
         self._running = True
@@ -56,6 +58,8 @@ class ActionQueue:
             )
 
     async def _process(self, action: ActionItem) -> None:
+        if self.checkpoint:
+            await self.checkpoint("before_send", {"scene_id": action.scene_id, "action": action.model_dump(mode="json")})
         original = action
         failure_reason = ""
         if self.action_interceptor:
@@ -100,8 +104,10 @@ class ActionQueue:
         event = Event(
             event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
+            metadata={"simulated": self.simulated},
             payload={
                 "action_id": action.id, "raw_text": action.content, "content": action.content,
+                "origin_mode": "simulated" if self.simulated else action.origin_mode,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
                 "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN,
                 "error": delivery.error, "delivery_status": delivery.status.value,
@@ -115,6 +121,8 @@ class ActionQueue:
         if success and action.associated_open_loop:
             event.metadata["associated_open_loop"] = action.associated_open_loop
         await self._emit(event, action.associated_open_loop if success else None)
+        if self.checkpoint:
+            await self.checkpoint("after_send", {"scene_id": action.scene_id, "event": event.model_dump(mode="json")})
 
     async def _worker_loop(self) -> None:
         while self._running:

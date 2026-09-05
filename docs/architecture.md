@@ -31,3 +31,7 @@ Actor 不等待模型，Gate 保持原子性和送达边界。独立工作方案
 阶段 2 已实现结构化工具观察、通用正文读取、资料分页和工具发现；尚无独立工作、媒体理解与发送节奏。既有真实模型五例显示纠错和依据不稳定。限制随实施更新，不因批准计划而视为解决。
 
 工具执行在 scoped RetrievalToolkit 中包装为 ToolResult。只读外部调用支持同轮去重和刷新；本地历史/记忆查询保持新鲜。长资料保存在 tool_observations，通过结果 ID 与场景读取；TOOL_OBSERVATION_RECORDED 不触发新的社会轮次。原始外部观察与派生检索内容通过 evidence_kind 区分。
+
+## 交错评测
+
+ReplayLab 复用生产 Actor/Burst/Core/Gate/Queue，六类 checkpoint 支持模型、工具与发送前后注入输入。模拟送达只使用临时数据库和虚拟适配器，事件标 simulated，指标不计 visible_messages；生产 Shadow 没有 MESSAGE_SENT。模型、工具、投递模式独立，所有 prompt/观察/失败可导出。历史 Bot 输出不是新候选，脚本后续输入不是实际人类反馈。

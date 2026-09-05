@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 1 当前文档 | docs: establish current architecture and staged agent plan | 完成 | 引用检查，运行行为未变 |
 | 2 通用工具 | feat: add structured tool observations and generic retrieval | 完成 | 171 项回归；HTML/文本/JSON、压缩、重定向、分页、scope、并发 |
-| 3 交错回放 | test: add interleaved multi-turn agent evaluation | 计划中 | 工具期间输入，隔离发送，失败记录 |
+| 3 交错回放 | test: add interleaved multi-turn agent evaluation | 完成 | 175 项回归；十二类脚本基线、面板模式选择、前端构建 |
 | 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 计划中 | 原子性、版本、取消、预算、恢复 |
 | 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 计划中 | 视觉、资产、分段、回执、公平性 |
 | 6 互动质量 | feat: add conversational quality evaluation and reply feedback | 计划中 | 后续反馈、依据和模型对照 |
@@ -33,3 +33,9 @@
 ## 阶段 2 实测
 
 2026-09-06：Python asyncio 文档（3660 字）、Trafilatura API 文档（30294 字）、普通 GitHub issue 页面（3906 字）均由同一通用读取路径获得正文。首次抽测发现压缩体二次解码，已修复并补回归；没有增加站点判断。真实搜索结果与正文均不代表模型已正确综合。ToolResult/ToolSource、read_tool_result、tool_search 和只读能力元数据已接线；旧字符串插件结果保持内容但标记 coverage=unknown。观察与待投递事件同事务保存，模型/检索派生内容不能充作独立记忆证据。控制面板查询经 QueryService 的 tool-results 接口。
+
+## 阶段 3 基线
+
+十二类跨主题输入与交错点位于 tests/fixtures/generic_agent_cases.json；[脚本基线](evaluation/runs/generic-stage3-scripted.json) 保存输入模型的消息、工具、观察、状态、回执、源码树哈希和失败字段。脚本结果仅证明链路；jobs/media 仍显式列为未支持，assessment 为 null，不计自然度通过。
+
+命令：`uv run python scripts/eval_agent_cases.py --scripted --repeats 1 --output /tmp/agent-scripted.json`。真实模型去掉 --scripted 并指定 --provider-db；--model 只接受保存目录中的型号，--tool-mode real 单独运行真实工具。每个案例的模型调用默认上限 100，失败和未触发交错点令运行未完成。面板可分别选择工具模式和隔离投递模式，失败不显示推演成功。

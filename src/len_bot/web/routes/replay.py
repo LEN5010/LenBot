@@ -1,6 +1,6 @@
 """Replay Lab API (ADR-0022): deterministic offline replay of a recorded window."""
 
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 from len_bot.testing.replay import ReplayLab
@@ -14,16 +14,17 @@ class ReplayRequest(BaseModel):
     since: Optional[float] = None
     until: Optional[float] = None
     limit: int = 300
+    tool_mode: Literal["mock", "real"] = "mock"
+    delivery_mode: Literal["shadow", "simulated"] = "shadow"
 
 
 @router.post("")
 async def replay_scene(req: ReplayRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    events = await runtime.event_store.query_timeline(
+    events = await runtime.query_service.query_events(
         scene_id=req.scene_id,
-        start_time=req.since or 0.0,
-        end_time=req.until or 1e18,
-        allowed_scopes=[req.scene_id],
+        since=req.since,
+        until=req.until,
         limit=req.limit,
     )
     # query_timeline returns dicts; convert back to Event for the pure reducer
@@ -40,10 +41,11 @@ async def replay_scene(req: ReplayRequest, request: Request, user: str = Depends
         for e in events
     ]
 
-    lab = ReplayLab(runtime.config, runtime.social_core)
+    lab = ReplayLab(runtime.config, runtime.social_core, tool_mode=req.tool_mode, delivery_mode=req.delivery_mode)
     rows = await lab.run(event_objs)
     runs = [{
         "policy": "社交认知核心",
+        "execution": lab.last_run,
         "rows": rows,
         "summary": {
             "cognition": len(rows),

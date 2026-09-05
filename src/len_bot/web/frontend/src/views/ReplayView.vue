@@ -8,6 +8,8 @@ const until = ref('')
 const runs = ref([])
 const busy = ref(false)
 const error = ref('')
+const toolMode = ref('mock')
+const deliveryMode = ref('shadow')
 
 async function run() {
   error.value = ''
@@ -17,6 +19,8 @@ async function run() {
       scene_id: sceneId.value,
       since: since.value ? Number(since.value) : null,
       until: until.value ? Number(until.value) : null,
+      tool_mode: toolMode.value,
+      delivery_mode: deliveryMode.value,
     }
     const res = await api('/api/replay', { method: 'POST', body: JSON.stringify(body) })
     runs.value = res.runs
@@ -51,6 +55,8 @@ function decisionLabel(value) { return value === 'speak' ? '准备发言' : valu
         <input v-model="sceneId" placeholder="群聊标识，例如 group:123" style="min-width: 240px" />
         <input v-model="since" placeholder="开始时间，可不填" />
         <input v-model="until" placeholder="结束时间，可不填" />
+        <select v-model="toolMode"><option value="mock">固定工具观测</option><option value="real">真实只读查询</option></select>
+        <select v-model="deliveryMode"><option value="shadow">只看候选</option><option value="simulated">隔离模拟送达</option></select>
         <button class="primary" :disabled="busy || !sceneId" @click="run">
           {{ busy ? '正在回放…' : '开始回放' }}
         </button>
@@ -64,7 +70,7 @@ function decisionLabel(value) { return value === 'speak' ? '准备发言' : valu
           <h2>{{ run.policy }} 回放报告</h2>
           <p class="muted">认知 {{ run.summary.cognition }} 次 · 主动静默 {{ run.summary.silence }} 次 · 拟发言 {{ run.summary.would_speak }} 次</p>
         </div>
-        <span class="tag ok">推演完成</span>
+        <span class="tag" :class="run.execution?.completed ? 'ok' : 'bad'">{{ run.execution?.completed ? '链路完成，行为待评阅' : '回放失败或未完成' }}</span>
       </div>
 
       <table>
