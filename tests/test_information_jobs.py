@@ -1,4 +1,5 @@
 import asyncio
+from delivery_support import allow_fake_delivery
 import json
 from types import SimpleNamespace as NS
 
@@ -26,6 +27,7 @@ async def quiet(messages):
 async def setup_runtime(tmp_path, **config):
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999, **config), mock_social_handler=quiet, clock=lambda: 1000)
     await rt.start()
+    await allow_fake_delivery(rt, 'group:jobs')
     await rt.scheduler.stop()
     rt.job_runner.running = False
     source = Event(id="source", event_type=EventType.OPERATOR_ACTION, scene_id="group:jobs", actor_id="operator:test", timestamp=1000)
@@ -33,16 +35,17 @@ async def setup_runtime(tmp_path, **config):
     return rt
 
 
-async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_revision=None, fulfils_task_id=None):
+async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_revision=None, fulfils_task_id=None, origin_mode="live"):
     actor = await rt.scene_manager.get_or_create_actor("group:jobs")
     mailbox = EpisodeMailbox("unit-job", actor.scene_id, actor.state.version)
+    mailbox.origin_mode = origin_mode
     assert actor.acquire_episode_lease(mailbox.episode_id, mailbox)
     result = social_result(reason="测试工作提案", content=content, task_ref=task_ref, job_id=job_id,
                            job_revision=job_revision, fulfils_task_id=fulfils_task_id)
     result.job_proposals = [proposal] if proposal else []
     try:
         return await actor.commit_cognitive_turn(result, actor.group_session.last_observed_event_rowid,
-            ["source"], "live", mailbox.episode_id, mailbox, rt.runtime_gate,
+            ["source"], origin_mode, mailbox.episode_id, mailbox, rt.runtime_gate,
             social_revision=actor.group_session.social_revision)
     finally:
         actor.release_episode_lease(mailbox.episode_id)
@@ -67,12 +70,14 @@ async def test_job_creation_and_ack_rollback_together(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_revision_keeps_budget_and_rejects_old_result_and_send(tmp_path):
+async def test_revision_keeps_shadow_origin_budget_and_rejects_old_result_and_send(tmp_path):
     rt = await setup_runtime(tmp_path)
     try:
-        decision = await submit(rt, create())
+        assert not rt.shadow_mode and not rt.is_scene_shadow("group:jobs")
+        decision = await submit(rt, create(), origin_mode="shadow")
         assert decision.accepted
         job = (await rt.event_store.list_jobs("group:jobs"))[0]
+        assert job["origin_mode"] == "shadow"
         await rt.scheduler.run_due(1000)
         await rt.scene_manager._actors["group:jobs"]._queue.join()
         event = await rt.event_store.job_checkpoint(job["id"], job["scene_id"], 1, model_steps=2, tool_calls=3, limits=(16, 24, 300))
@@ -82,6 +87,7 @@ async def test_revision_keeps_budget_and_rejects_old_result_and_send(tmp_path):
         assert (await submit(rt, change)).accepted
         revised = await rt.event_store.get_job(job["id"], job["scene_id"])
         assert (revised["revision"], revised["model_steps"], revised["tool_calls"]) == (2, 2, 3)
+        assert revised["origin_mode"] == "shadow"
         assert await rt.event_store.complete_job(job["id"], job["scene_id"], 1, JobResult(status="completed", summary="旧结果")) is None
         ready = await rt.event_store.complete_job(job["id"], job["scene_id"], 2, JobResult(status="completed", summary="新结果"))
         assert ready
@@ -118,8 +124,12 @@ async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path
         await drain(second)
         recovered = await second.event_store.get_job(job["id"], job["scene_id"])
         assert recovered["status"] == "review_required" and recovered["model_steps"] == 2
+        assert recovered["origin_mode"] == "live"
+        await second.set_shadow_mode(True)
         assert (await submit(second, JobProposal(operation="resume", job_id=job["id"], expected_revision=1, source_event_ids=["source"]))).accepted
-        assert (await second.event_store.get_job(job["id"], job["scene_id"]))["model_steps"] == 2
+        await second.set_shadow_mode(False)
+        resumed = await second.event_store.get_job(job["id"], job["scene_id"])
+        assert resumed["model_steps"] == 2 and resumed["origin_mode"] == "shadow"
     finally:
         await second.stop()
 
@@ -184,6 +194,7 @@ async def test_work_can_be_revised_while_social_core_keeps_responding(tmp_path):
         return social_result(reason="继续等待资料")
     rt.social_core.mock_handler = social
     await rt.start()
+    await allow_fake_delivery(rt, 'group:work')
     registry, plugin = WorkRegistry(), SlowDocumentPlugin()
     rt.provider_registry = registry
     await rt.plugin_host.load_plugin(plugin)

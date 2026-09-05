@@ -10,11 +10,9 @@ import MemoryView from './views/MemoryView.vue'
 import ModelsView from './views/ModelsView.vue'
 import PluginsView from './views/PluginsView.vue'
 import EventsLogsView from './views/EventsLogsView.vue'
-import ReplayView from './views/ReplayView.vue'
 import SettingsView from './views/SettingsView.vue'
 import JobsView from './views/JobsView.vue'
 import MediaView from './views/MediaView.vue'
-import FeedbackView from './views/FeedbackView.vue'
 
 const NAV = [
   { id: 'overview', label: '概览', icon: '⌂', comp: OverviewView },
@@ -27,8 +25,6 @@ const NAV = [
   { id: 'models', label: '模型', icon: '✦', comp: ModelsView },
   { id: 'plugins', label: '能力', icon: '＋', comp: PluginsView },
   { id: 'events', label: '记录', icon: '≡', comp: EventsLogsView },
-  { id: 'feedback', label: '效果', icon: '♡', comp: FeedbackView },
-  { id: 'replay', label: '回放', icon: '↺', comp: ReplayView },
   { id: 'settings', label: '设置', icon: '⚙', comp: SettingsView },
 ]
 

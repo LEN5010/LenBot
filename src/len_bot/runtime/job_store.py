@@ -102,8 +102,9 @@ class JobStoreMixin:
             await self._db.execute("""UPDATE agent_jobs SET revision=?,goal=?,constraints_json=?,source_event_ids_json=?,result_ids_json=?,result_json=NULL,updated_at=? WHERE id=? AND scene_id=?""",
                 (revision, goal, json.dumps(constraints, ensure_ascii=False), json.dumps(source_ids), json.dumps(result_ids), self.clock(), job_id, scene_id))
             await self._db.execute("""UPDATE tasks SET status=?,due_at=?,description=?,
+                origin_mode=CASE WHEN ?='shadow' THEN 'shadow' ELSE origin_mode END,
                 payload=json_remove(payload,'$.result','$.delivery_action_id','$.delivery_event_id') WHERE id=? AND scene_id=?""",
-                (status, self.clock(), goal, job_id, scene_id))
+                (status, self.clock(), goal, origin_mode, job_id, scene_id))
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
 

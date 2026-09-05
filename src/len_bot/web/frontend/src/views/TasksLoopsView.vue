@@ -62,7 +62,7 @@ async function saveEdit() {
 function taskStatus(value) {
   return ({pending: '等待开始', claimed: '已领取', processing: '正在处理', result_ready: '已有结果',
     awaiting_delivery: '等待发送确认', completed: '已兑现', cancelled: '已取消', failed: '失败',
-    delivery_unknown: '发送结果不确定，不会自动重发', review_required: '需要重新核对', shadow_observed: '试运行已记录，未真实履约'})[value] || '需要核对'
+    delivery_unknown: '发送结果不确定，不会自动重发', review_required: '需要重新核对', shadow_observed: '仅观察已记录，未真实履约'})[value] || '需要核对'
 }
 </script>
 

@@ -51,3 +51,7 @@ node_modules/
 
 # Exception: the built control plane is served by FastAPI and versioned
 !src/len_bot/web/static/dist/
+
+# Local trial state and recovery copies
+/.backups/
+/.runtime/

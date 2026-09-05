@@ -17,9 +17,6 @@ class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    async def reply_feedback(self, scene_id):
-        return await self.runtime.event_store.reply_feedback(scene_id)
-
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
 
@@ -338,5 +335,6 @@ class RuntimeQueryService:
     def shadow_would_send(self, limit: int = 100) -> list[dict]:
         return list(self.runtime.shadow_would_send_log)[-limit:][::-1]
 
-    async def list_shadow_annotations(self, scene_id: Optional[str] = None, limit: int = 100) -> list[dict]:
-        return await self.runtime.event_store.get_shadow_annotations(scene_id=scene_id, limit=limit)
+    def delivery_settings(self) -> dict:
+        return {"enabled": self.runtime.shadow_mode,
+                "allowed_scenes": sorted(self.runtime.allowed_scenes)}

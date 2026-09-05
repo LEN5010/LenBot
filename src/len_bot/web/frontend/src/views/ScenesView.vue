@@ -25,21 +25,6 @@ async function openDetail(sceneId) {
   }
 }
 
-async function injectEvent() {
-  if (!detail.value) return
-  const text = prompt('请输入注入事件的模拟消息内容:')
-  if (!text) return
-  try {
-    await api(`/api/cockpit/scenes/${encodeURIComponent(detail.value.scene_id)}/inject`, {
-      method: 'POST',
-      body: JSON.stringify({ raw_text: text, actor_id: 'user:admin' }),
-    })
-    await openDetail(detail.value.scene_id)
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
 function activityLabel(value) {
   return value === 'HIGH' ? '很活跃' : value === 'MEDIUM' ? '有消息' : '安静'
 }
@@ -52,7 +37,7 @@ function traceLabel(value) {
   return value === 'social_cognition_error' ? '处理失败' : '社交判断'
 }
 function deliveryLabel(event) {
-  if (event.event_type === 'ACTION_SHADOWED') return '仅试运行，未发送'
+  if (event.event_type === 'ACTION_SHADOWED') return '仅观察，未发送'
   return {sent: '已送达', not_sent: '未发出', rejected: '接口拒绝', unknown: '结果不确定'}[event.payload.delivery_status]
     || (event.event_type === 'MESSAGE_SENT' ? '已送达' : '旧记录缺少详细原因')
 }
@@ -115,9 +100,6 @@ function deliveryLabel(event) {
             <h2>场景详情 · <code>{{ detail.scene_id }}</code></h2>
             <p class="muted">机器人{{ engagementLabel(detail.self_social_state?.engagement) }}，最近有 {{ detail.participants?.length || 0 }} 位成员参与</p>
           </div>
-          <button class="primary" @click="injectEvent">
-            <span>模拟一条消息</span>
-          </button>
         </div>
 
         <div class="detail-grid">
