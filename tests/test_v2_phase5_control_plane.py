@@ -11,9 +11,9 @@ from len_bot.scheduler.models import TaskItem, TaskStatus
 from len_bot.memory.models import MemoryItem, MemoryCertainty, MemoryStatus
 
 @pytest.mark.asyncio
-async def test_cockpit_scene_inspection_and_injection(tmp_path):
+async def test_cockpit_scene_inspection(tmp_path):
     """
-    Goal 8: Scene inspection and manual admin event injection.
+    Goal 8: Inspect the actual scene state.
     """
     db_file = str(tmp_path / "cockpit_scene.db")
     config = RuntimeConfig(
@@ -58,20 +58,6 @@ async def test_cockpit_scene_inspection_and_injection(tmp_path):
         detail = detail_res.json()
         assert detail["scene_id"] == scene_id
         assert "user:member1" in detail["participants"]
-
-        # 3. Inject manual event
-        inject_res = await client.post(
-            f"/api/cockpit/scenes/{scene_id}/inject",
-            headers=headers,
-            json={"actor_id": "user:admin", "raw_text": "管理员通知：今晚进行服务器维护"}
-        )
-        assert inject_res.status_code == 200
-        assert inject_res.json()["success"] is True
-        await asyncio.sleep(0.1)
-
-        # Verify injection reached SceneActor state
-        updated_detail = await client.get(f"/api/cockpit/scenes/{scene_id}", headers=headers)
-        assert "user:admin" in updated_detail.json()["participants"]
 
     await runtime.stop()
 

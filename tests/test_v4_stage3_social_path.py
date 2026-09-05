@@ -1,4 +1,5 @@
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
+from delivery_support import allow_fake_delivery
 import asyncio
 import time
 
@@ -97,6 +98,7 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:continuity')
     scene_id = "group:continuity"
 
     await runtime.receive_event(Event(
@@ -147,6 +149,7 @@ async def test_fast_human_banter_is_understood_then_intentionally_silent(tmp_pat
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:banter')
     scene_id = "group:banter"
     for actor, text in [("user:A", "你又来"), ("user:B", "经典"), ("user:A", "少来")]:
         await runtime.receive_event(Event(
@@ -180,6 +183,7 @@ async def test_explicit_action_proposal_reaches_deterministic_task_commit(tmp_pa
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:task')
     scene_id = "group:task"
     request_event = Event(
         event_type=EventType.GROUP_MESSAGE_RECEIVED,
@@ -211,6 +215,7 @@ async def test_plugin_fact_enters_social_core_without_attention_prefilter(tmp_pa
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:plugin')
     scene_id = "group:plugin"
     await runtime.receive_event(Event(
         event_type=EventType.LIVE_STARTED,
@@ -253,6 +258,7 @@ async def test_stale_social_result_is_not_sent_and_latest_context_is_recognized(
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:stale')
     scene_id = "group:stale"
     await runtime.receive_event(Event(
         event_type=EventType.GROUP_MESSAGE_RECEIVED,
@@ -295,6 +301,7 @@ async def test_runtime_gate_keeps_only_hard_anti_loop_ceiling(tmp_path):
         mock_social_handler=social_core,
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:ceiling')
     scene_id = "group:ceiling"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
     actor.state.consecutive_bot_messages = 4

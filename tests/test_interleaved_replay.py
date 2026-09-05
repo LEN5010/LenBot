@@ -2,7 +2,6 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
-import httpx
 
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
@@ -11,9 +10,6 @@ from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.testing.replay import ReplayLab, ReplayInjection, ReplayFailure
 from len_bot.testing.social import social_result
 from len_bot.tools.results import ToolResult
-from len_bot.runtime.agent_runtime import AgentRuntime
-from len_bot.testing.replay import drain
-from len_bot.web.app import create_app
 
 
 def message(eid, text, timestamp=1000):
@@ -82,7 +78,7 @@ async def test_final_continuation_acknowledges_its_own_tool_receipt():
 
 
 @pytest.mark.asyncio
-async def test_simulated_reply_is_next_turn_input_but_not_human_feedback():
+async def test_simulated_reply_is_next_turn_input():
     seen = []
     async def respond(messages):
         seen.append(json.dumps(messages, ensure_ascii=False))
@@ -91,7 +87,6 @@ async def test_simulated_reply_is_next_turn_input_but_not_human_feedback():
     lab = ReplayLab(RuntimeConfig(bot_qq=999), core, delivery_mode="simulated", strict=True)
     await lab.run([message("one", "这样叫我"), message("two", "还记得吗", 1010)])
     assert "MESSAGE_SENT" in seen[-1] and "记下这个说法" in seen[-1]
-    assert lab.last_run["human_response_to_candidate"] is None
 
 
 @pytest.mark.asyncio
@@ -107,25 +102,3 @@ async def test_shadow_does_not_forge_sent_and_failed_live_run_is_reported():
         await broken.run([message("two", "你好")])
     assert broken.last_run["completed"] is False
     assert any(trace["kind"] == "social_cognition_error" for trace in broken.last_traces)
-
-
-@pytest.mark.asyncio
-async def test_panel_can_select_isolated_delivery_mode(tmp_path):
-    async def respond(messages):
-        return social_result(reason="panel fixture", content="面板回放候选")
-    runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "panel.db"), bot_qq=999), mock_social_handler=respond)
-    await runtime.start()
-    try:
-        await runtime.set_shadow_mode(True)
-        event = message("panel-input", "你好", runtime.clock())
-        await runtime.receive_event(event)
-        await drain(runtime)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(runtime)), base_url="http://test") as client:
-            assert (await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})).status_code == 200
-            response = await client.post("/api/replay", json={"scene_id": event.scene_id, "delivery_mode": "simulated", "tool_mode": "mock"})
-            assert response.status_code == 200
-            execution = response.json()["runs"][0]["execution"]
-            assert execution["completed"] and execution["delivery_mode"] == "simulated"
-            assert runtime.shadow_mode  # Isolated mode must not change the host runtime.
-    finally:
-        await runtime.stop()

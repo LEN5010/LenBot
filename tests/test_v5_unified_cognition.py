@@ -1,4 +1,5 @@
 """ADR-0040: one social processor, continuous inputs, deterministic authority."""
+from delivery_support import allow_fake_delivery
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import asyncio
 import pytest
@@ -25,6 +26,7 @@ async def test_one_core_commits_speech_or_intentional_silence(tmp_path, content)
         return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"one.db")), send_adapter=send, mock_social_handler=core)
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     try:
         await rt.receive_event(event())
         await drain(rt)
@@ -50,6 +52,7 @@ async def test_multi_message_and_expected_reply_still_use_delivery_confirmation(
         return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"reply.db")), send_adapter=send, mock_social_handler=core)
     await rt.start()
+    await allow_fake_delivery(rt, 'group:1')
     try:
         await rt.receive_event(event())
         await entered.wait()

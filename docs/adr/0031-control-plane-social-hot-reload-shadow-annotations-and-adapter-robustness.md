@@ -2,7 +2,7 @@
 
 ## Status
 
-Partially superseded — 2026-09-05. §1's `monitored_keywords` / `AttentionEngine` hot-reload was removed with the V3 attention module. §2 and §3 remain active; note that `GET /api/cockpit/shadow-annotations` supports a `scene_id` filter only (no label filter), and the planned message-ID→reply-ID ring was removed as dead code — quote replies use the OneBot message id that the cognition context already exposes (`OneBotMessageID=`), while reply-bot detection relies on the bot's own sent-ID ring.
+Partially superseded — 2026-09-06. §1's `monitored_keywords` / `AttentionEngine` hot-reload was removed with the V3 attention module. §2's annotation storage, APIs and scoring UI have been removed from the operating workflow. §3's OneBot behavior remains relevant: quote replies use the message id exposed to cognition (`OneBotMessageID=`), while reply-bot detection relies on the bot's own sent-ID ring; the proposed message-ID→reply-ID ring was removed as dead code. The following records the historical decision; current behavior is documented in [architecture](../architecture.md).
 
 ## Context
 

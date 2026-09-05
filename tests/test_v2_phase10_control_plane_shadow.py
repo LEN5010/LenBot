@@ -1,4 +1,5 @@
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
+from delivery_support import allow_fake_delivery
 import pytest
 import asyncio
 import time
@@ -8,7 +9,6 @@ from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.web.app import create_app
 from len_bot.events.models import Event, EventType
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.testing.social import social_result
 
 
@@ -45,6 +45,7 @@ async def test_trace_captures_full_causal_chain(tmp_path):
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:trace')
     app = create_app(runtime)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -87,6 +88,7 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
         mock_social_handler=mock_social_core
     )
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:chain')
     app = create_app(runtime)
     transport = ASGITransport(app=app)
     client = AsyncClient(transport=transport, base_url="http://test")
@@ -140,61 +142,6 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
     await runtime.stop()
 
 
-@pytest.mark.asyncio
-async def test_replay_lab_dispositions_and_policy_compare(tmp_path):
-    """
-    Replay Lab sends each recorded social event through the same Social Core.
-    """
-    # Mock cognition keeps the ingestion path fully offline (no LLM, no network)
-    async def mock_social_core(messages):
-        return social_result(reason="offline replay", summary="understood replay event")
-
-    runtime = AgentRuntime(
-        RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "replay.db")),
-        mock_social_handler=mock_social_core
-    )
-    await runtime.start()
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    client = AsyncClient(transport=transport, base_url="http://test")
-    login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-    assert "session_token" in login.cookies
-    headers = {}
-    try:
-        scene_id = "group:replay"
-        t0 = time.time()
-        corpus = [
-            ("user:A", "今天中午吃啥", False),
-            ("user:B", "火锅吧", False),
-            ("user:A", "@Bot 你呢", True),
-            ("user:B", "今晚Major决赛看吗", False),
-        ]
-        for i, (actor, text, at_bot) in enumerate(corpus):
-            await runtime.receive_event(Event(
-                event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
-                actor_id=actor, timestamp=t0 + i * 5,
-                payload={"raw_text": text, "at_bot": at_bot}
-            ))
-        await asyncio.sleep(0.3)
-
-        res = await client.post("/api/replay", headers=headers, json={
-            "scene_id": scene_id,
-            "since": t0 - 1,
-            "until": t0 + 100,
-        })
-        assert res.status_code == 200
-        data = res.json()
-        assert data["event_count"] >= 4
-        assert len(data["runs"]) == 1
-        rows = data["runs"][0]["rows"]
-        # Bursts, not individual messages, are the evaluation unit.
-        sources = {source for row in rows for source in row["trace"]["burst"]["source_event_ids"]}
-        assert len(sources) == 4
-        assert all(row["decision"] == "silence" for row in rows)
-        assert all(row["understanding"] == "understood replay event" for row in rows)
-    finally:
-        await client.aclose()
-        await runtime.stop()
 
 
 @pytest.mark.asyncio
@@ -221,6 +168,7 @@ async def test_shadow_mode_records_without_sending(tmp_path):
 
     runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:shadow', 'group:shadow2')
     await runtime.set_shadow_mode(True)
 
     scene_id = "group:shadow"

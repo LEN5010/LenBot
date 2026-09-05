@@ -1,5 +1,9 @@
 # ADR-0022: Control Plane Query Service, Trace & Replay Lab
 
+## 当前状态
+
+部分取代（2026-09-06）。QueryService、真实 trace、事件与运行日志继续使用；第 4 节的日常回放 API 和第 5 节的 Replay 页面已删除。ReplayLab 仅供内部确定性测试，当前认知路径和面板职责见 [当前架构](../architecture.md)。下文保留当时决策，不是当前操作要求。
+
 ## Context
 
 V2 计划 Phase 7(Control Plane)与 §三十七 工程原则。核实的现状:

@@ -28,7 +28,8 @@
 | OpenLoop | 经确认送达后激活的社会期待，不是后台工作队列 |
 | DeliveryResult | sent/not_sent/rejected/unknown 四种事实结果，unknown 不自动重发 |
 | Shadow | 只记录候选，没有物理发送和社会送达事实 |
-| Simulated Delivery | 隔离评测中的虚拟回执，不能计为真实人类互动 |
+| 实发群名单 | 运营明确允许实发的群；只有名单内且全局 Shadow 关闭时才能实际发送，无消息数或评分门槛 |
+| Simulated Delivery | 隔离测试中的虚拟回执，不是真实送达或真实人类互动 |
 | Reflection | 提出认识、版本化补丁和核对事项，无任务或发送权 |
 | ExecutionScope | SQL/存储层约束的允许场景集合，不能由模型扩大 |
 | OneBot Link / Transport | 唯一事件连接及显式选择的发送通道，不作跨通道重试 |

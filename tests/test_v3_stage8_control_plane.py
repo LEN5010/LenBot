@@ -2,56 +2,10 @@ import pytest
 import asyncio
 import json
 import time
-from httpx import AsyncClient, ASGITransport
 from len_bot.config import RuntimeConfig
-from len_bot.runtime.agent_runtime import AgentRuntime
-from len_bot.web.app import create_app
 from len_bot.adapters.onebot import OneBotAdapter
 from len_bot.actions.models import ActionItem, ActionType
 
-@pytest.mark.asyncio
-async def test_shadow_annotations_crud_and_metrics(tmp_path):
-    """ADR-0031, §23.3: Shadow annotations are persisted in SQLite and queried with precision/accuracy."""
-    db_file = str(tmp_path / "shadow_ann.db")
-    config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
-    runtime = AgentRuntime(config)
-    await runtime.start()
-
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        login_res = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        assert login_res.status_code == 200
-
-        # 1. Post TP annotation
-        r1 = await client.post("/api/cockpit/shadow-annotations", json={
-            "scene_id": "group:test_ann",
-            "stimulus_id": "stim_1",
-            "label": "TP",
-            "comment": "Bot rightly wanted to speak"
-        })
-        assert r1.status_code == 200
-
-        # 2. Post FP annotation
-        r2 = await client.post("/api/cockpit/shadow-annotations", json={
-            "scene_id": "group:test_ann",
-            "stimulus_id": "stim_2",
-            "label": "FP",
-            "comment": "Bot should have stayed silent"
-        })
-        assert r2.status_code == 200
-
-        # 3. Query annotations
-        query_res = await client.get("/api/cockpit/shadow-annotations")
-        assert query_res.status_code == 200
-        data = query_res.json()
-        assert len(data["annotations"]) == 2
-        assert data["stats"]["TP"] == 1
-        assert data["stats"]["FP"] == 1
-        assert data["total"] == 2
-        assert data["precision"] == 0.5
-
-    await runtime.stop()
 
 
 @pytest.mark.asyncio

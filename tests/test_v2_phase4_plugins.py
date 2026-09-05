@@ -1,4 +1,5 @@
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
+from delivery_support import allow_fake_delivery
 import pytest
 import asyncio
 import time
@@ -131,6 +132,7 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file, debounce_idle_ms=50, debounce_max_ms=100)
     runtime = AgentRuntime(config, send_adapter=mock_adapter, mock_social_handler=mock_social_core)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:lottery_scene')
 
     # Load sensory plugin
     lottery_plugin = LotterySensoryPlugin()
@@ -158,6 +160,7 @@ async def test_plugin_permission_gating(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'g1')
 
     unprivileged = UnprivilegedPlugin()
     await runtime.plugin_host.load_plugin(unprivileged)
@@ -190,6 +193,7 @@ async def test_goal7_plugin_crash_and_timeout_sandbox_isolation(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:resilience')
 
     faulty_plugin = FaultyToolPlugin()
     await runtime.plugin_host.load_plugin(faulty_plugin)
@@ -244,6 +248,7 @@ async def test_action_interceptor_filtering(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config, send_adapter=mock_adapter)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:test')
 
     filter_plugin = SafetyFilterPlugin()
     await runtime.plugin_host.load_plugin(filter_plugin)

@@ -11,7 +11,6 @@ from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
-from len_bot.runtime.reply_feedback import ReplyFeedbackStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ class ReflectionConflictError(ValueError):
     """A newer cursor or understanding requires a fresh quiet-window read."""
 
 
-class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFeedbackStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -33,7 +32,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
         await self.initialize_observations()
         await self.initialize_jobs()
         await self.initialize_media()
-        await self.initialize_reply_feedback()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -181,19 +179,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_scene ON traces(scene_id, created_at);")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_kind ON traces(kind, created_at);")
 
-        # ADR-0031: shadow would-send evaluation annotations
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS shadow_annotations (
-                id TEXT PRIMARY KEY,
-                stimulus_id TEXT,
-                scene_id TEXT NOT NULL,
-                label TEXT NOT NULL,
-                comment TEXT,
-                created_at REAL NOT NULL
-            );
-        """)
-        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_shadow_annotations_scene ON shadow_annotations(scene_id, created_at);")
-
         # ADR-0038 §5: curated bot voice exemplars (scene_id='' means global)
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS voice_exemplars (
@@ -215,7 +200,32 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
 
         await self._db.commit()
 
+        await self._remove_evaluation_storage()
         await self._migrate_person_names()
+
+    async def _remove_evaluation_storage(self) -> None:
+        """Retire evaluation projections once, without touching raw scene history."""
+        if await self.get_dynamic_config("evaluation_removed_v1") is not None:
+            return
+        async with self._write_lock:
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                for table in ("rollout_evaluations", "rollout_candidate_reviews",
+                              "reply_followups", "reply_feedback_labels",
+                              "reply_observations", "shadow_annotations"):
+                    await self._db.execute(f"DROP TABLE IF EXISTS {table}")
+                await self._db.execute(
+                    "DELETE FROM runtime_dynamic_configs WHERE key IN ('delivery_policy','vision_acceptance')")
+                await self._db.execute(
+                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO NOTHING",
+                    ("delivery_scenes", '{"scene_ids":["group:126300994"]}', self.clock()))
+                await self._db.execute(
+                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
+                    ("evaluation_removed_v1", '{"applied":true}', self.clock()))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     async def _migrate_person_names(self) -> None:
         """One-time factual rebuild before actors start; never infer preferred names."""
@@ -358,66 +368,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
         rows = await cursor.fetchall()
         return [
             {"id": r[0], "kind": r[1], "scene_id": r[2], "ref_id": r[3], "payload": json.loads(r[4]), "created_at": r[5]}
-            for r in rows
-        ]
-
-    async def save_shadow_annotation(self, annotation: dict[str, Any]) -> dict[str, Any]:
-        """ADR-0031, §23.3: Persists a shadow would-send evaluation annotation."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        import uuid
-        ann_id = annotation.get("id") or f"sa_{uuid.uuid4().hex[:10]}"
-        now = annotation.get("created_at", time.time())
-        async with self._write_lock:
-            await self._db.execute(
-                """
-                INSERT INTO shadow_annotations (id, stimulus_id, scene_id, label, comment, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    label = excluded.label,
-                    comment = excluded.comment;
-                """,
-                (
-                    ann_id,
-                    annotation.get("stimulus_id"),
-                    annotation["scene_id"],
-                    annotation["label"],
-                    annotation.get("comment", ""),
-                    now
-                )
-            )
-            await self._db.commit()
-        return {
-            "id": ann_id,
-            "stimulus_id": annotation.get("stimulus_id"),
-            "scene_id": annotation["scene_id"],
-            "label": annotation["label"],
-            "comment": annotation.get("comment", ""),
-            "created_at": now
-        }
-
-    async def get_shadow_annotations(self, scene_id: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
-        """ADR-0031, §23.3: Returns shadow would-send annotations."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        sql = "SELECT id, stimulus_id, scene_id, label, comment, created_at FROM shadow_annotations"
-        params: list[Any] = []
-        if scene_id:
-            sql += " WHERE scene_id = ?"
-            params.append(scene_id)
-        sql += " ORDER BY created_at DESC LIMIT ?;"
-        params.append(limit)
-        cursor = await self._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "stimulus_id": r[1],
-                "scene_id": r[2],
-                "label": r[3],
-                "comment": r[4],
-                "created_at": r[5]
-            }
             for r in rows
         ]
 
@@ -979,7 +929,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
             (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp, payload_str, metadata_str)
         )
         event_rowid = int(event_cursor.lastrowid)
-        await self.observe_reply_in_transaction(event)
 
         # 2. Insert FTS5
         text = event.raw_text
@@ -1611,8 +1560,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ReplyFee
                             status = "result_ready"
                             payload["result"] = tp.result
                         await self._db.execute(
-                            "UPDATE tasks SET status=?,due_at=?,description=CASE WHEN ?='' THEN description ELSE ? END,payload=? WHERE id=? AND scene_id=?",
-                            (status, due_at, tp.description, tp.description, json.dumps(payload, ensure_ascii=False), tp.task_id, scene_id),
+                            "UPDATE tasks SET status=?,due_at=?,description=CASE WHEN ?='' THEN description ELSE ? END,payload=?,"
+                            "origin_mode=CASE WHEN ?='shadow' THEN 'shadow' ELSE origin_mode END WHERE id=? AND scene_id=?",
+                            (status, due_at, tp.description, tp.description, json.dumps(payload, ensure_ascii=False), tp.origin_mode, tp.task_id, scene_id),
                         )
                         continue
                     if not tp.description.strip():

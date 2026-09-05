@@ -1,4 +1,5 @@
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
+from delivery_support import allow_fake_delivery
 import pytest
 import asyncio
 import time
@@ -33,6 +34,7 @@ async def test_atomic_proposal_commit_all_or_nothing_on_evidence_failure(tmp_pat
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:atomic_test')
 
     scene_id = "group:atomic_test"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
@@ -137,6 +139,7 @@ async def test_atomic_proposal_commit_all_or_nothing_on_database_error(tmp_path)
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:db_err_test')
 
     scene_id = "group:db_err_test"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
@@ -219,6 +222,7 @@ async def test_atomic_proposal_commit_success_and_external_distribution(tmp_path
 
     runtime = AgentRuntime(config, send_adapter=mock_send)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:atomic_success')
 
     scene_id = "group:atomic_success"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)

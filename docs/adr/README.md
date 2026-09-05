@@ -2,6 +2,8 @@
 
 当前执行说明见 [架构](../architecture.md)。旧决策按其后续 ADR 解读，不作为新功能已实施的证明。
 
+2026-09-06 已移除日常回放、人工评分、报告导入与实发准入门槛；0022、0023、0031 的相关段落仅作为历史决策保留，当前操作见 [运行手册](../operations.md)。
+
 0007、0014、0027、0038 的现行有效原则已迁入架构；0039 草案被 0043 替代。原文在 Git 历史中保留。
 
 - [Materialized State Tables in SQLite with Transactional Dual-Write](0001-materialized-state-in-sqlite.md)

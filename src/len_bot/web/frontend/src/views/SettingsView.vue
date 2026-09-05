@@ -15,8 +15,8 @@ const onebotForm = ref({
   ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
   host: '127.0.0.1', port: 8080, access_token: '',
 })
-const shadow = ref({ enabled: false, would_send: [] })
-const annotations = ref({ annotations: [], stats: { TP: 0, FP: 0, TN: 0, FN: 0 }, total: 0, accuracy: 0, precision: 0 })
+const shadow = ref(null)
+const allowedGroups = ref('')
 const form = ref({ current_password: '', new_password: '' })
 const message = ref('')
 const error = ref('')
@@ -46,11 +46,8 @@ async function load() {
       access_token: '',
     }
     const shadowRes = await api('/api/cockpit/shadow')
-    shadow.value.enabled = !!shadowRes.enabled
-    shadow.value.would_send = shadowRes.would_send || []
-
-    const annRes = await api('/api/cockpit/shadow-annotations')
-    annotations.value = annRes
+    shadow.value = shadowRes
+    allowedGroups.value = shadowRes.allowed_scenes.map(scene => scene.replace(/^group:/, '')).join('\n')
   } catch (e) {
     error.value = e.message
   }
@@ -150,29 +147,30 @@ async function toggleShadow() {
     })
     shadow.value.enabled = res.shadow_mode
     message.value = res.shadow_mode
-      ? '试运行已开启，机器人不会真实发送消息'
-      : '试运行已关闭，机器人将开始真实发送消息'
+      ? '已开启仅观察，机器人不会真实发送消息'
+      : '已关闭仅观察，机器人可向名单内的群真实发送消息'
     await load()
   } catch (e) {
     error.value = e.message
   }
 }
 
-async function annotate(item, label) {
-  const comment = prompt(`可以补充一句评价：`)
-  if (comment === null) return
+async function saveAllowedGroups() {
+  error.value = ''
+  message.value = ''
+  const groups = [...new Set(allowedGroups.value.split(/[,，\s]+/).filter(Boolean))]
+  if (groups.some(group => !/^[1-9]\d*$/.test(group))) {
+    error.value = '请填写有效的 QQ 群号，多个群号用逗号或换行分隔'
+    return
+  }
   try {
-    await api('/api/cockpit/shadow-annotations', {
+    const res = await api('/api/cockpit/shadow/scenes', {
       method: 'POST',
-      body: JSON.stringify({
-        scene_id: item.scene_id,
-        stimulus_id: item.stimulus_id,
-        label,
-        comment
-      })
+      body: JSON.stringify({ scene_ids: groups.map(group => 'group:' + group) }),
     })
-    message.value = '评价已保存'
-    await load()
+    shadow.value.allowed_scenes = res.allowed_scenes
+    allowedGroups.value = res.allowed_scenes.map(scene => scene.replace(/^group:/, '')).join('\n')
+    message.value = '允许实发的群已保存'
   } catch (e) {
     error.value = e.message
   }
@@ -326,73 +324,24 @@ async function changePassword() {
       </div>
     </div>
 
-    <div class="panel">
+    <div v-if="shadow" class="panel">
       <div class="panel-header">
         <div>
-          <h2>试运行模式</h2>
-          <p class="muted">开启后机器人照常观察和思考，但不会向 QQ 发送任何消息。</p>
+          <h2>仅观察（Shadow）</h2>
+          <p class="muted">开启时照常观察和思考，但不会真实发送。关闭后仅允许向下方名单内的群发送，名单外始终仅观察。</p>
         </div>
-        <button :class="shadow.enabled ? 'danger' : 'primary'" @click="toggleShadow">
-          {{ shadow.enabled ? '关闭试运行，开始真实发送' : '开启试运行，不真实发送' }}
+        <button :class="shadow.enabled ? 'primary' : 'danger'" @click="toggleShadow">
+          {{ shadow.enabled ? '关闭仅观察' : '开启仅观察' }}
         </button>
       </div>
-
-      <!-- Bento Stats: Shadow Accuracy & Precision -->
-      <div class="bento-grid" style="margin: 16px 0;">
-        <div class="bento-card bento-col-3">
-          <div class="bento-badge">🎯 评测总样本数</div>
-          <div class="bento-hero-stat">{{ annotations.total }}<span class="unit">条</span></div>
-          <div class="bento-desc">人工已复核标注决策数</div>
-        </div>
-        <div class="bento-card bento-col-3">
-          <div class="bento-badge">整体判断正确率</div>
-          <div class="bento-hero-stat">{{ (annotations.accuracy * 100).toFixed(1) }}<span class="unit">%</span></div>
-          <div class="bento-desc">说话和沉默判断正确的比例</div>
-        </div>
-        <div class="bento-card bento-col-3">
-          <div class="bento-badge">发言合适率</div>
-          <div class="bento-hero-stat">{{ (annotations.precision * 100).toFixed(1) }}<span class="unit">%</span></div>
-          <div class="bento-desc">已经发言的内容中，适合开口的比例</div>
-        </div>
-        <div class="bento-card bento-col-3">
-          <div class="bento-badge">人工评价分布</div>
-          <div class="kv" style="padding: 2px 0;"><span class="k">合适发言</span><span class="v ok-text">{{ annotations.stats.TP }}</span></div>
-          <div class="kv" style="padding: 2px 0;"><span class="k">不当插嘴</span><span class="v bad-text">{{ annotations.stats.FP }}</span></div>
-          <div class="kv" style="padding: 2px 0;"><span class="k">正确沉默</span><span class="v">{{ annotations.stats.TN }}</span></div>
-          <div class="kv" style="padding: 2px 0;"><span class="k">错过参与</span><span class="v warn-text">{{ annotations.stats.FN }}</span></div>
-        </div>
-      </div>
-
-      <!-- Would-send Log Table -->
-      <h3 style="margin: 18px 0 10px;">机器人原本想发送的消息</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>推演时间</th>
-            <th>会话场景</th>
-            <th>拟发送消息内容</th>
-            <th>预期回复</th>
-            <th>人工打标评测</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(w, i) in shadow.would_send" :key="i">
-            <td>{{ fmtTime(w.timestamp) }}</td>
-            <td><code>{{ w.scene_id }}</code></td>
-            <td class="content-cell">{{ w.content }}</td>
-            <td><code>{{ w.reply_target || '—' }}</code></td>
-            <td>
-              <div class="action-btn-group">
-                <button class="small-btn ok-btn" @click="annotate(w, 'TP')">这句合适</button>
-                <button class="small-btn bad-btn" @click="annotate(w, 'FP')">不该插嘴</button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!shadow.would_send.length">
-            <td colspan="5" class="muted" style="text-align: center; padding: 20px;">暂无拟发送记录</td>
-          </tr>
-        </tbody>
-      </table>
+      <p><span class="tag" :class="shadow.enabled ? 'warn' : 'ok'">{{ shadow.enabled ? '当前：仅观察' : '当前：名单内允许实发' }}</span></p>
+      <form class="form-vertical delivery-form" @submit.prevent="saveAllowedGroups">
+        <label>允许实发的群
+          <textarea v-model="allowedGroups" rows="3" placeholder="126300994"></textarea>
+          <small class="muted">填写 QQ 群号，多个群号用逗号或换行分隔。留空表示所有群都仅观察。</small>
+        </label>
+        <button class="primary">保存群名单</button>
+      </form>
     </div>
 
     <div class="panel" v-if="me" style="margin-top: 24px;">
@@ -455,38 +404,14 @@ async function changePassword() {
   color: var(--text-soft);
 }
 
-.slider-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.delivery-form {
+  margin-top: 16px;
 }
-
-.bento-col-3 {
-  grid-column: span 3;
+.delivery-form button {
+  align-self: flex-start;
 }
-
-@media (max-width: 1080px) {
-  .bento-col-3 {
-    grid-column: span 6;
-  }
-}
-@media (max-width: 600px) {
-  .bento-col-3 {
-    grid-column: span 12;
-  }
-}
-
-.unit {
-  font-size: 1.05rem;
-  font-weight: 500;
-  color: var(--muted);
-  margin-left: 4px;
-}
-
-.content-cell {
-  color: var(--text);
-  font-weight: 500;
-  max-width: 320px;
+.delivery-form textarea {
+  resize: vertical;
 }
 
 .connection-mode-grid {
@@ -580,43 +505,10 @@ async function changePassword() {
   gap: 6px;
 }
 
-.small-btn {
-  padding: 3px 8px;
-  font-size: 0.78rem;
-}
-
-.ok-btn {
-  background: var(--ok-bg);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: var(--ok);
-}
-.ok-btn:hover {
-  background: rgba(16, 185, 129, 0.25);
-}
-
-.bad-btn {
-  background: var(--bad-bg);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: var(--bad);
-}
-.bad-btn:hover {
-  background: rgba(239, 68, 68, 0.25);
-}
-
 .highlight {
   color: var(--accent-strong);
   font-weight: 500;
 }
-.ok-text {
-  color: var(--ok);
-}
-.warn-text {
-  color: var(--warn);
-}
-.bad-text {
-  color: var(--bad);
-}
-
 .password-change-box {
   background: rgba(239, 246, 255, 0.66);
   border: 1px solid var(--border);

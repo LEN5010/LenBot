@@ -12,12 +12,6 @@ from len_bot.cognition.jobs import JobProposal
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
 
-class EventInjectionRequest(BaseModel):
-    actor_id: str = "user:admin"
-    raw_text: str
-    event_type: str = "GROUP_MESSAGE_RECEIVED"
-
-
 class MemoryActionRequest(BaseModel):
     reason: Optional[str] = None
 
@@ -54,32 +48,6 @@ async def list_scenes(request: Request, user: str = Depends(get_current_user)):
 @router.get("/scenes/{scene_id}")
 async def get_scene_detail(scene_id: str, request: Request, user: str = Depends(get_current_user)):
     return await _service(request).scene_detail(scene_id)
-
-
-@router.post("/scenes/{scene_id}/inject")
-async def inject_scene_event(
-    scene_id: str,
-    req: EventInjectionRequest,
-    request: Request,
-    user: str = Depends(get_current_user)
-):
-    """Manually injects an event into SceneActor and EventBus for manual testing / intervention."""
-    runtime = request.app.state.runtime
-    try:
-        etype = EventType(req.event_type)
-    except ValueError:
-        etype = EventType.GROUP_MESSAGE_RECEIVED
-
-    now = time.time()
-    event = Event(
-        event_type=etype,
-        scene_id=scene_id,
-        actor_id=req.actor_id,
-        timestamp=now,
-        payload={"raw_text": req.raw_text}
-    )
-    await runtime.receive_event(event)
-    return {"success": True, "event_id": event.id, "scene_id": scene_id}
 
 
 @router.get("/tasks")
@@ -263,7 +231,7 @@ async def list_traces(
 async def shadow_log(request: Request, limit: int = 100, user: str = Depends(get_current_user)):
     service = _service(request)
     return {
-        "enabled": request.app.state.runtime.shadow_mode,
+        **service.delivery_settings(),
         "would_send": service.shadow_would_send(limit=limit)
     }
 
@@ -275,55 +243,15 @@ async def shadow_toggle(req: ShadowToggleRequest, request: Request, user: str = 
     return {"success": True, "shadow_mode": runtime.shadow_mode}
 
 
-class ShadowAnnotationRequest(BaseModel):
-    id: Optional[str] = None
-    stimulus_id: Optional[str] = None
-    scene_id: str
-    label: str  # TP, FP, TN, FN
-    comment: Optional[str] = None
+class DeliveryScenesRequest(BaseModel):
+    scene_ids: list[str]
 
 
-@router.post("/shadow-annotations")
-async def create_shadow_annotation(
-    req: ShadowAnnotationRequest,
-    request: Request,
-    user: str = Depends(get_current_user)
-):
+@router.post("/shadow/scenes")
+async def delivery_scenes(req: DeliveryScenesRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    label = req.label.upper().strip()
-    if label not in ("TP", "FP", "TN", "FN"):
-        raise HTTPException(status_code=400, detail="Label must be one of: TP, FP, TN, FN")
-    res = await runtime.event_store.save_shadow_annotation({
-        "id": req.id,
-        "stimulus_id": req.stimulus_id,
-        "scene_id": req.scene_id,
-        "label": label,
-        "comment": req.comment
-    })
-    return {"success": True, "annotation": res}
-
-
-@router.get("/shadow-annotations")
-async def list_shadow_annotations(
-    request: Request,
-    scene_id: Optional[str] = None,
-    limit: int = 100,
-    user: str = Depends(get_current_user)
-):
-    service = _service(request)
-    items = await service.list_shadow_annotations(scene_id=scene_id, limit=limit)
-    stats = {"TP": 0, "FP": 0, "TN": 0, "FN": 0}
-    for item in items:
-        lbl = item.get("label")
-        if lbl in stats:
-            stats[lbl] += 1
-    total = sum(stats.values())
-    accuracy = (stats["TP"] + stats["TN"]) / total if total > 0 else 0.0
-    precision = stats["TP"] / (stats["TP"] + stats["FP"]) if (stats["TP"] + stats["FP"]) > 0 else 0.0
-    return {
-        "annotations": items,
-        "stats": stats,
-        "total": total,
-        "accuracy": round(accuracy, 4),
-        "precision": round(precision, 4)
-    }
+    try:
+        await runtime.set_delivery_scenes(req.scene_ids)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"allowed_scenes": _service(request).delivery_settings()["allowed_scenes"]}

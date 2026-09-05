@@ -1,4 +1,5 @@
 import pytest
+from delivery_support import allow_fake_delivery
 import asyncio
 import time
 from len_bot.config import RuntimeConfig
@@ -26,6 +27,7 @@ async def test_item1_unified_write_authority_and_no_commit_bypass(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:1')
 
     # Verify write lock is shared
     assert runtime.event_store._write_lock is runtime.memory_store.write_lock
@@ -101,6 +103,7 @@ async def test_item2_gate_freshness_silence_check_and_toctou(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:1')
 
     gate = runtime.runtime_gate
     mailbox = EpisodeMailbox(episode_id="ep_test", scene_id="group:1", base_scene_version=1)
@@ -146,6 +149,7 @@ async def test_item3_message_sent_and_open_loop_atomic_commit(tmp_path):
         return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
     runtime = AgentRuntime(config, send_adapter=send)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:atomic_loop')
 
     scene_id = "group:atomic_loop"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
@@ -238,6 +242,7 @@ async def test_item6_reducer_and_track_annotation_and_evidence_integrity(tmp_pat
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:A', 'group:reducer_test')
 
     # Append one real event to group:A
     ev_a = Event(
@@ -297,6 +302,7 @@ async def test_p0_1_transaction_failure_rollback_preserves_state(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:p0_rollback')
 
     scene_id = "group:p0_rollback"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
@@ -368,6 +374,7 @@ async def test_p0_2_follow_up_during_cognition_prevents_stale_outcome(tmp_path):
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:follow_up_race')
 
     scene_id = "group:follow_up_race"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
@@ -447,6 +454,7 @@ async def test_p0_2_scene_actor_serialization_and_zero_scheduler_leak_on_cancell
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config)
     await runtime.start()
+    await allow_fake_delivery(runtime, 'group:zero_leak')
 
     scene_id = "group:zero_leak"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)

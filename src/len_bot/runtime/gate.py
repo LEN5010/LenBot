@@ -67,6 +67,7 @@ class RuntimeGate:
         self.memory_gate = memory_gate
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
+        self.scene_shadow_probe = None
         self.next_wake_min_interval_seconds = next_wake_min_interval_seconds
         self.jobs_enabled_probe = lambda: True
 
@@ -127,7 +128,9 @@ class RuntimeGate:
 
         # ADR-0021 & ADR-0029: Origin Mode Tracking (live vs shadow)
         curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
-        if curr_origin == "shadow" or mailbox.origin_mode == "shadow":
+        if mailbox.origin_mode == "shadow" or (self.scene_shadow_probe and self.scene_shadow_probe(current_scene_state.scene_id)):
+            curr_origin = "shadow"
+        if curr_origin == "shadow":
             for tp in proposal_commit.outcome.task_proposals:
                 tp.origin_mode = "shadow"
 
