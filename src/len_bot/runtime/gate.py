@@ -48,6 +48,7 @@ class GateDecision:
         self.actions_enqueued = actions_enqueued
         self.committed_proposal = committed_proposal
         self.accepted = accepted
+        self.action_ids: list[str] = []
 
 class RuntimeGate:
     def __init__(
@@ -73,7 +74,9 @@ class RuntimeGate:
         outcome: EpisodeOutcome,
         mailbox: EpisodeMailbox,
         current_scene_state: SceneState,
-        proposal_commit: Optional[ProposalCommit] = None
+        proposal_commit: Optional[ProposalCommit] = None,
+        scene_commit: dict | None = None,
+        bounded_chat: bool = False,
     ) -> GateDecision:
         if proposal_commit is None:
             proposal_commit = ProposalCommit(
@@ -92,21 +95,12 @@ class RuntimeGate:
                 self.metrics.inc_social("cancellations_honored")
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
 
-        if mailbox.has_follow_up():
+        if mailbox.has_follow_up() and not bounded_chat:
             logger.info("Gate rejected response due to pending follow-up superseding this outcome")
             return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome", accepted=False)
 
-        interim_events = mailbox.get_interim_events()
-        cancel_keywords = ["不用了", "不用查了", "算了", "闭嘴", "别发了", "取消", "停"]
-        for ie in interim_events:
-            if any(ck in ie.raw_text for ck in cancel_keywords):
-                logger.info("Gate rejected response due to interim cancellation: %s", ie.raw_text)
-                if self.metrics:
-                    self.metrics.inc_social("cancellations_honored")
-                return GateDecision(FinalDisposition.SILENCE, f"Gate rejected due to interim cancellation: {ie.raw_text}", accepted=False)
-
         # ADR-0026 / §8.2: Gate last window check: if unread interim events arrived, reject as stale
-        if mailbox.has_unseen_interim():
+        if mailbox.has_unseen_interim() and not bounded_chat:
             logger.info("Gate rejected response due to unread interim events (semantic staleness)")
             if self.metrics:
                 self.metrics.inc_social("stale_outcomes_rejected")
@@ -132,7 +126,7 @@ class RuntimeGate:
 
         # ADR-0021 & ADR-0029: Origin Mode Tracking (live vs shadow)
         curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
-        if curr_origin == "shadow":
+        if curr_origin == "shadow" or mailbox.origin_mode == "shadow":
             for tp in proposal_commit.outcome.task_proposals:
                 tp.origin_mode = "shadow"
 
@@ -149,6 +143,25 @@ class RuntimeGate:
                 )
                 tp.delay_seconds = self.next_wake_min_interval_seconds
 
+        # Resolve references before any transaction or visible acknowledgement.
+        proposal_ids = [tp.proposal_id for tp in outcome.task_proposals if tp.proposal_id]
+        if len(proposal_ids) != len(set(proposal_ids)):
+            return GateDecision(FinalDisposition.SILENCE, "Duplicate task proposal references", accepted=False)
+        action_ids = [str(uuid.uuid4()) for _ in outcome.message_proposals]
+        deliveries = {}
+        acknowledgements = {}
+        for index, message in enumerate(outcome.message_proposals):
+            if message.task_ref and message.task_ref not in proposal_ids:
+                return GateDecision(FinalDisposition.SILENCE, "Acknowledgement has no task proposal", accepted=False)
+            if message.task_ref:
+                if message.task_ref in acknowledgements:
+                    return GateDecision(FinalDisposition.SILENCE, "One acknowledgement per task proposal", accepted=False)
+                acknowledgements[message.task_ref] = action_ids[index]
+            if message.fulfils_task_id:
+                if message.fulfils_task_id in deliveries:
+                    return GateDecision(FinalDisposition.SILENCE, "One fulfilment message per task", accepted=False)
+                deliveries[message.fulfils_task_id] = action_ids[index]
+
         # 2. Authoritative Database Commit (Tasks, Open Loops, Memories) - All-or-Nothing Atomic Transaction
         try:
             committed_tasks, resolved_loops, committed_mems = await self.event_store.commit_proposal_transaction(
@@ -156,7 +169,10 @@ class RuntimeGate:
                 scene_id=proposal_commit.scene_id,
                 task_proposals=proposal_commit.outcome.task_proposals,
                 resolve_open_loop_ids=proposal_commit.outcome.resolve_open_loop_ids,
-                memory_proposals=proposal_commit.outcome.memory_proposals
+                memory_proposals=proposal_commit.outcome.memory_proposals,
+                deliveries=deliveries,
+                acknowledgements=acknowledgements,
+                scene_commit=scene_commit,
             )
             if resolved_loops and self.metrics:
                 self.metrics.inc_social("openloops_resolved", len(resolved_loops))
@@ -183,6 +199,9 @@ class RuntimeGate:
         if self.scheduler and committed_tasks:
             for item in committed_tasks:
                 self.scheduler.schedule_task(item)
+        if self.scheduler and outcome.task_proposals:
+            await self.scheduler._sync_from_db()
+            self.scheduler._wake_event.set()
 
         # 4. Check if model explicitly chose SILENCE
         if outcome.disposition == FinalDisposition.SILENCE:
@@ -194,8 +213,9 @@ class RuntimeGate:
 
         # 5. External Side-Effect Distribution (ActionQueue): enqueue message actions with dependent Open Loops
         actions_count = 0
-        now = time.time()
-        for msg in outcome.message_proposals:
+        now = self.event_store.clock()
+        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries else {}
+        for index, msg in enumerate(outcome.message_proposals):
             associated_loop = None
             if msg.expect_reply and msg.reply_target:
                 associated_loop = {
@@ -204,6 +224,7 @@ class RuntimeGate:
                     "target_actor_id": msg.reply_target,
                     "intent": msg.reply_intent or "general_response",
                     "source_event_id": "", # Will be filled by SceneActor on MESSAGE_SENT
+                    "source_stimulus_id": getattr(mailbox, "origin_stimulus_id", None),
                     "status": "active",
                     "created_at": now,
                     "expires_at": now + 86400.0 # 24h TTL
@@ -215,7 +236,12 @@ class RuntimeGate:
                 else ActionType.SEND_GROUP_MESSAGE
             )
             action_origin = "shadow" if (curr_origin == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
+            if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
+                action_origin = "shadow"
             action = ActionItem(
+                source_started_at=mailbox.source_started_at,
+                id=action_ids[index],
+                fulfils_task_id=msg.fulfils_task_id,
                 action_type=action_type,
                 scene_id=current_scene_state.scene_id,
                 content=msg.content,
@@ -226,9 +252,11 @@ class RuntimeGate:
             self.action_queue.enqueue(action)
             actions_count += 1
 
-        return GateDecision(
+        decision = GateDecision(
             FinalDisposition.ACTION,
             f"Approved {actions_count} message proposals",
             actions_enqueued=actions_count,
             committed_proposal=committed_proposal
         )
+        decision.action_ids = action_ids
+        return decision

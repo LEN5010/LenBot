@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -6,12 +7,12 @@ from collections import deque
 from typing import Optional, Callable, Awaitable, Any
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType, Stimulus, StimulusType
-from len_bot.events.store import EventStore
+from len_bot.events.store import EventStore, ReflectionConflictError
 from len_bot.events.builder import BurstAssembler
 from len_bot.scenes.manager import SceneManager
 from len_bot.cognition.mailbox import EpisodeMailbox
-from len_bot.cognition.models import FinalDisposition
-from len_bot.actions.models import ActionItem
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, TaskProposal
+from len_bot.actions.models import ActionItem, DeliveryResult
 from len_bot.actions.queue import ActionQueue
 from len_bot.runtime.gate import RuntimeGate, GateDecision
 from len_bot.scheduler.engine import TaskScheduler
@@ -24,7 +25,9 @@ from len_bot.cognition.providers import ProviderConfig, ProviderRegistry, RouteT
 from len_bot.cognition.router import CognitiveTier
 from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.cognition.session import SocialDecisionAction
+from len_bot.cognition.projection import project_event
 from len_bot.runtime.metrics import RuntimeMetrics
+from len_bot.runtime.style_guard import StyleGuard
 from len_bot.plugins import PluginHost
 from len_bot.tools.retrieval import RetrievalToolkit
 
@@ -34,14 +37,16 @@ class AgentRuntime:
     def __init__(
         self,
         config: RuntimeConfig,
-        send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
+        send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
         mock_social_handler: Optional[Callable] = None,
+        clock=time.time,
     ):
+        self.clock = clock
         self.config = config
         self.mock_social_handler = mock_social_handler
         self.bot_actor_id = f"user:{config.bot_qq}"
         
-        self.event_store = EventStore(config.db_path)
+        self.event_store = EventStore(config.db_path, clock=clock)
         self.memory_store: Optional[MemoryStore] = None
         self.memory_gate: Optional[MemoryGate] = None
         self.reflection_engine: Optional[ReflectionEngine] = None
@@ -85,6 +90,7 @@ class AgentRuntime:
         self.burst_assembler = BurstAssembler(
             config=config,
             on_burst=self._on_burst,
+            clock=clock,
         )
         self.provider_registry = ProviderRegistry()
         self.social_core = SocialCognitionCore(
@@ -93,7 +99,6 @@ class AgentRuntime:
             metrics=self.metrics,
             mock_handler=mock_social_handler,
         )
-
         self._cognition_semaphore = asyncio.Semaphore(2)  # Max 2 concurrent episodes (§93)
         self._last_gate_decision: Optional[GateDecision] = None
         self._started_at = time.time()
@@ -102,9 +107,9 @@ class AgentRuntime:
         self._maintenance_task: Optional[asyncio.Task] = None
         self._background_tasks: set[asyncio.Task] = set()
         self._reflection_timers: dict[str, asyncio.TimerHandle] = {}
+        self._reflecting_scenes: set[str] = set()
         self._social_pending: dict[str, Stimulus] = {}
         self._social_tasks: dict[str, asyncio.Task] = {}
-        self._direct_retry_counts: dict[str, int] = {}
 
     def _spawn_background_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -125,6 +130,7 @@ class AgentRuntime:
         await self.event_store.initialize()
         self.memory_store = MemoryStore(self.event_store._db, write_lock=self.event_store._write_lock)
         await self.memory_store.initialize()
+        await self.event_store.migrate_social_continuity()
         self.memory_gate = MemoryGate(self.memory_store, self.event_store)
         self.runtime_gate.memory_gate = self.memory_gate
 
@@ -145,7 +151,10 @@ class AgentRuntime:
         # Load dynamic configurations from database if present
         saved_persona = await self.event_store.get_dynamic_config("persona_config")
         if saved_persona:
+            self.config.character_context = saved_persona.get("character_context", "")
             self.config.identity_name = saved_persona.get("identity_name", self.config.identity_name)
+            if saved_persona.get("identity_core"):
+                self.config.identity_core = saved_persona["identity_core"]
             self.config.identity_persona = saved_persona.get("identity_persona", self.config.identity_persona)
             self.config.conversation_style = saved_persona.get(
                 "conversation_style", self.config.conversation_style
@@ -157,8 +166,9 @@ class AgentRuntime:
         saved_providers = await self.event_store.get_dynamic_config("provider_config")
         if saved_providers and saved_providers.get("routing"):
             providers = [ProviderConfig(**p) for p in saved_providers.get("providers", [])]
+            catalog_migrated = "fast" in saved_providers["routing"]
+            saved_providers["routing"].pop("fast", None)
             routing = RoutingConfig(**saved_providers["routing"])
-            catalog_migrated = False
             by_id = {provider.id: provider for provider in providers}
             route_targets = [routing.normal, routing.deliberate]
             if routing.fallback is not None:
@@ -212,9 +222,13 @@ class AgentRuntime:
             self.shadow_mode = bool(saved_shadow.get("enabled", False))
 
         self._running = True
+        restored_scenes = await self.event_store.recover_social_work()
         await self.action_queue.start()
-        await self.scheduler.start()
         await self._load_builtin_plugins()
+        await self.scheduler.start()
+        for scene_id in restored_scenes:
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            self._schedule_quiet_window_reflection(actor.state)
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def _load_builtin_plugins(self) -> None:
@@ -277,9 +291,11 @@ class AgentRuntime:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         await self.scheduler.stop()
-        await self.scene_manager.stop()
         await self.plugin_host.unload_all()
         await self.action_queue.stop()
+        for actor in list(self.scene_manager._actors.values()):
+            await actor._queue.join()
+        await self.scene_manager.stop()
         await self.event_store.close()
 
     async def _maintenance_loop(self) -> None:
@@ -319,7 +335,7 @@ class AgentRuntime:
 
         # Quiet-window reflection (ADR-0019 §10.3): (re)arm the debounce timer —
         # reflection fires only after the scene stays quiet for a full window.
-        if self.reflection_engine and state:
+        if self.reflection_engine and state and event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT):
             self._schedule_quiet_window_reflection(state)
 
     def _schedule_quiet_window_reflection(self, state) -> None:
@@ -338,6 +354,9 @@ class AgentRuntime:
         self._reflection_timers[scene_id] = loop.call_later(delay, _fire)
 
     async def _quiet_window_reflect(self, scene_id: str) -> None:
+        if scene_id in self._reflecting_scenes:
+            return
+        self._reflecting_scenes.add(scene_id)
         try:
             if not (self.reflection_engine and self.memory_store and self.event_store):
                 return
@@ -356,24 +375,50 @@ class AgentRuntime:
 
             new_cursor_rowid = max(int(e.metadata.get("_rowid", 0)) for e in events)
 
-            episode_record, proposals = await self.reflection_engine.reflect_on_events(scene_id, events)
+            actor = await self.scene_manager.get_or_create_actor(scene_id)
+            social_revision = actor.group_session.social_revision
+            context = {"bot_qq": self.config.bot_qq, "social_world": actor.group_session.social_world.model_dump(),
+                       "self_social_state": actor.group_session.self_social_state.model_dump(),
+                       "working_persons": {k: v.model_dump() for k, v in actor.group_session.working_persons.items()},
+                       "working_relationships": {k: v.model_dump() for k, v in actor.group_session.working_relationships.items()},
+                       "recent_memory_changes": actor.group_session.recent_memory_changes,
+                       "tasks": await self.event_store.scene_tasks(scene_id)}
+            episode_record, proposals, world_patch, reviews = await self.reflection_engine.reflect_on_events(scene_id, events, context)
+            review_event = Event(
+                event_type=EventType.REFLECTION_RECORDED, scene_id=scene_id, actor_id="system:reflection",
+                payload={"social_revision": social_revision, "episode_summary": episode_record.summary if episode_record else "",
+                         "patch": world_patch.model_dump(mode="json") if world_patch else None,
+                         "review_items": [r.model_dump() for r in (reviews or [])],
+                         "raw_text": "反思核对：" + "; ".join(r.summary for r in (reviews or [])),
+                         "origin_mode": "shadow" if self.shadow_mode else "live"},
+            )
             if episode_record is not None:
                 # ADR-0028, §10.2: Atomic Reflection Batch Commit
                 await self.event_store.commit_reflection_batch(
                     scene_id=scene_id,
                     episode_record=episode_record,
                     proposals=proposals,
-                    new_cursor_rowid=new_cursor_rowid
+                    new_cursor_rowid=new_cursor_rowid,
+                    review_event=review_event,
+                    expected_cursor_rowid=cursor_rowid,
                 )
                 logger.info("Reflection batch committed on scene %s: cursor -> %s (%d events)",
                             scene_id, new_cursor_rowid, len(events))
+
+                await self.receive_event(review_event)
 
                 # If there are more unreflected events, reflect on the next batch immediately
                 remaining = await self.event_store.get_unreflected_events(scene_id, after_rowid=new_cursor_rowid, limit=1)
                 if remaining:
                     self._spawn_background_task(self._quiet_window_reflect(scene_id))
+        except ReflectionConflictError:
+            state = self.scene_manager.get_scene_state(scene_id)
+            if state:
+                self._schedule_quiet_window_reflection(state)
         except Exception as e:
             logger.warning("Quiet-window reflection failed on scene %s: %s", scene_id, e)
+        finally:
+            self._reflecting_scenes.discard(scene_id)
 
     async def _on_action_event(self, event: Event) -> None:
         """Called by ActionQueue on MESSAGE_SENT or MESSAGE_SEND_FAILED."""
@@ -402,6 +447,7 @@ class AgentRuntime:
         self._queue_social_cognition(burst)
 
     def _queue_social_cognition(self, burst: Stimulus) -> None:
+        self.metrics.inc_social("bursts_total")
         scene_id = burst.scene_id
         pending = self._social_pending.get(scene_id)
         self._social_pending[scene_id] = (
@@ -424,134 +470,136 @@ class AgentRuntime:
         while scene_id in self._social_pending:
             burst = self._social_pending.pop(scene_id)
             actor = await self.scene_manager.get_or_create_actor(scene_id)
+            if burst.source_event_ids and all(
+                event.metadata.get("_rowid", 0) and
+                event.metadata["_rowid"] <= actor.group_session.last_cognized_event_rowid
+                for event in burst.events
+            ):
+                continue
+            self.metrics.inc_social("cognition_attempts")
             episode_id = f"social_{uuid.uuid4().hex[:12]}"
-            scene_state = actor.state
-            mailbox = EpisodeMailbox(
-                episode_id=episode_id,
-                scene_id=scene_id,
-                base_scene_version=scene_state.version,
-            )
+            mailbox = EpisodeMailbox(episode_id, scene_id, actor.state.version,
+                                     origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
             mailbox.origin_mode = burst.origin_mode
+            mailbox.source_started_at = min((event.timestamp for event in burst.events), default=self.clock())
             if not actor.acquire_episode_lease(episode_id, mailbox):
-                raise RuntimeError(f"Concurrent Social Core episode in scene {scene_id}")
-
+                raise RuntimeError(f"Concurrent social turn in {scene_id}")
+            observed = actor.group_session.last_observed_event_rowid
+            social_revision = actor.group_session.social_revision
+            source_ids = list(burst.source_event_ids)
+            started = time.monotonic()
+            trace = {}
             try:
                 session = actor.group_session.model_copy(deep=True)
-                through_event_rowid = session.last_observed_event_rowid
-                raw_events = await self.event_store.get_recent_events(scene_id, limit=100)
+                raw_events = await self.event_store.get_recent_events(scene_id, limit=12_000)
+                raw_events = [e for e in raw_events if e.metadata.get("_rowid", 0) <= observed]
+                raw_events = await self.event_store.project_reply_context(scene_id, raw_events)
                 open_loops = await self.event_store.get_active_open_loops(scene_id)
-                pending_next_wake = await self.event_store.get_pending_next_wake(scene_id)
+                pending_wake = await self.event_store.get_pending_next_wake(scene_id)
+                tasks = await self.event_store.scene_tasks(scene_id)
+                last_task_context = json.dumps(tasks, ensure_ascii=False)
                 retrieval = RetrievalToolkit(
-                    event_store=self.event_store,
-                    allowed_scopes=[scene_id, "global-safe"],
-                    default_scene_id=scene_id,
-                    memory_store=self.memory_store,
+                    event_store=self.event_store, allowed_scopes=[scene_id, "global-safe"],
+                    memory_store=self.memory_store, default_scene_id=scene_id,
+                    plugin_host=self.plugin_host,
+                    bot_qq=self.config.bot_qq,
                 )
+
+                async def observe():
+                    nonlocal observed, social_revision, last_task_context
+                    if mailbox.is_cancelled():
+                        raise RuntimeError(mailbox.cancellation_reason())
+                    target = actor.group_session.last_observed_event_rowid
+                    if target == observed:
+                        return None
+                    current = actor.group_session.model_copy(deep=True)
+                    social_change = ""
+                    if social_revision != current.social_revision:
+                        social_change = "\n【更新后的社会理解】\n" + json.dumps({
+                            "world": current.social_world.model_dump(mode="json"),
+                            "self": current.self_social_state.model_dump(mode="json"),
+                            "persons": {key: value.model_dump(mode="json") for key, value in current.working_persons.items()},
+                            "relationships": {key: value.model_dump(mode="json") for key, value in current.working_relationships.items()},
+                            "memory_changes": current.recent_memory_changes,
+                            "episode_summary": current.recent_episode_summary,
+                        }, ensure_ascii=False)
+                    social_revision = current.social_revision
+                    events = await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000)
+                    events = [e for e in events if e.metadata.get("_rowid", 0) <= target]
+                    events = await self.event_store.project_reply_context(scene_id, events)
+                    observed = target
+                    source_ids.extend(e.id for e in events if e.id not in source_ids)
+                    mailbox.fetch_unseen_interim_events()
+                    mailbox.consume_follow_ups()
+                    task_context = json.dumps(await self.event_store.scene_tasks(scene_id), ensure_ascii=False)
+                    task_change = "\n【现有任务变化】\n" + task_context if task_context != last_task_context else ""
+                    last_task_context = task_context
+                    return ("【新增已提交事件】\n" + "\n".join(project_event(e, self.config.bot_qq) for e in events)
+                            + social_change
+                            + task_change
+                            + "\n结合这些变化继续判断，保留已有工具结果；之前拟出的回复尚未发送。")
+
+                async def commit(result, trace):
+                    trace["through_event_rowid"] = observed
+                    trace["social_revision"] = social_revision
+                    deferred = await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000)
+                    trace["deferred_event_count"] = len(deferred)
+                    if result.future_attention and await self._is_evidence_free_next_wake(burst):
+                        result.future_attention = None
+                    decision = await actor.commit_cognitive_turn(
+                        result, observed, source_ids,
+                        "shadow" if self.shadow_mode or burst.origin_mode == "shadow" else "live",
+                        episode_id, mailbox, self.runtime_gate, social_revision=social_revision,
+                    )
+                    if decision is False:
+                        self.metrics.inc_social("stale_outcomes_rejected")
+                        trace["commit_races"] = trace.get("commit_races", 0) + 1
+                        return False
+                    self._last_gate_decision = decision
+                    self.metrics.inc_social("cognition_committed" if decision.accepted else "gate_rejected")
+                    if decision.actions_enqueued:
+                        self.metrics.inc_social("gate_action")
+                    await self._save_social_trace(burst, episode_id, trace, result, decision.accepted, decision)
+                    pending = self._social_pending.get(scene_id)
+                    if pending and set(pending.source_event_ids).issubset(source_ids):
+                        self._social_pending.pop(scene_id, None)
+                    return True
 
                 async with self._cognition_semaphore:
-                    result, core_trace = await self.social_core.execute(
-                        session=session,
-                        burst=burst,
-                        raw_events=raw_events,
-                        active_open_loops=open_loops,
-                        pending_next_wake=pending_next_wake,
-                        toolkit=retrieval,
+                    result, trace = await self.social_core.execute(
+                        session, burst, raw_events, open_loops, pending_next_wake=pending_wake,
+                        toolkit=retrieval, tasks=tasks, observe=observe, commit=commit, now=self.clock(),
+                        voice_examples=await self._select_voice_examples(scene_id), trace_sink=trace,
                     )
                 self.metrics.inc_social("social_cognition")
-
-                # ADR-0034: a next-wake TASK_DUE that saw no new human/plugin social
-                # evidence since task creation must not renew itself.
-                if result.future_attention is not None and await self._is_evidence_free_next_wake(burst):
-                    logger.info(
-                        "Next-wake renewal rejected on scene %s: no new external events since task creation",
-                        scene_id,
-                    )
-                    result.future_attention = None
-
-                mode = "shadow" if self.shadow_mode else "live"
-                accepted = await actor.submit_social_cognition(
-                    result=result,
-                    through_event_rowid=through_event_rowid,
-                    source_event_ids=burst.source_event_ids,
-                    mode=mode,
-                )
-                if not accepted:
-                    self.metrics.inc_social("stale_outcomes_rejected")
-                    pending = self._social_pending.get(scene_id)
-                    self._social_pending[scene_id] = (
-                        self._merge_social_bursts(burst, pending) if pending else burst
-                    )
-                    await self._save_social_trace(
-                        burst=burst,
-                        episode_id=episode_id,
-                        core_trace=core_trace,
-                        result=result,
-                        session_commit_accepted=False,
-                        gate_decision=None,
-                    )
-                    continue
-
-                self._direct_retry_counts.pop("|".join(burst.source_event_ids), None)
-
-                outcome = result.to_episode_outcome(scene_id, through_event_rowid=through_event_rowid)
-                gate_decision = await actor.submit_proposal(
-                    episode_id=episode_id,
-                    outcome=outcome,
-                    mailbox=mailbox,
-                    runtime_gate=self.runtime_gate,
-                )
-                self._last_gate_decision = gate_decision
-
-                if result.decision.action == SocialDecisionAction.SILENCE:
-                    self.metrics.inc_social("intentional_silence")
-                else:
-                    self.metrics.inc_social("social_would_speak")
-                if gate_decision.disposition == FinalDisposition.ACTION:
-                    self.metrics.inc_social("gate_action")
-                    if not burst.has_mention_bot and not burst.has_reply_bot:
-                        self.metrics.inc_social(
-                            "unsolicited_visible_messages",
-                            gate_decision.actions_enqueued,
-                        )
-
-                await self._save_social_trace(
-                    burst=burst,
-                    episode_id=episode_id,
-                    core_trace=core_trace,
-                    result=result,
-                    session_commit_accepted=True,
-                    gate_decision=gate_decision,
-                )
+                self.metrics.inc_social("social_would_speak" if result.decision.action == SocialDecisionAction.SPEAK else "intentional_silence")
+                self._record_model_latency(trace)
+                self.metrics.record_latency("cognition_total", time.monotonic() - started)
             except Exception as error:
-                logger.exception("Social cognition failed on %s: %s", scene_id, error)
+                self.metrics.inc_social("cognition_failed")
+                logger.exception("Social cognition failed on %s", scene_id)
                 await self.event_store.save_trace(
-                    kind="social_cognition_error",
-                    scene_id=scene_id,
-                    ref_id=burst.id,
-                    payload={
-                        "error": str(error),
-                        "source_event_ids": burst.source_event_ids,
-                    },
+                    kind="social_cognition_error", scene_id=scene_id, ref_id=episode_id,
+                    payload={"error": str(error), "cognition": trace, "source_event_ids": source_ids,
+                             "observed_rowid": observed, "elapsed_ms": round((time.monotonic()-started)*1000)},
                 )
-                retry_key = "|".join(burst.source_event_ids)
-                if (burst.has_mention_bot or burst.has_reply_bot) and self._direct_retry_counts.get(retry_key, 0) < 1:
-                    self._direct_retry_counts[retry_key] = 1
-                    pending = self._social_pending.get(scene_id)
-                    self._social_pending[scene_id] = (
-                        self._merge_social_bursts(burst, pending) if pending else burst
-                    )
-                    logger.info("Direct OneBot request retained for one retry on scene %s", scene_id)
-                else:
-                    self._direct_retry_counts.pop(retry_key, None)
+                # The durable uncognized cursor retains input for recovery or the next burst.
+                # Do not immediately spin on an exhausted turn in a continuously busy scene.
             finally:
                 actor.release_episode_lease(episode_id)
 
+    async def _select_voice_examples(self, scene_id: str) -> list[dict[str, Any]]:
+        return await self.event_store.select_voice_examples(scene_id)
+
+    def _record_model_latency(self, core_trace: dict[str, Any]) -> None:
+        total_ms = sum(step.get("latency_ms", 0) for step in core_trace.get("steps", []))
+        if not total_ms and core_trace.get("latency_ms"):
+            total_ms = core_trace["latency_ms"]
+        if total_ms:
+            self.metrics.record_latency("model_total", total_ms / 1000.0)
+
     @staticmethod
     def _merge_social_bursts(earlier: Stimulus, later: Stimulus) -> Stimulus:
-        chat_types = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
-        if not all(event.event_type in chat_types for event in [*earlier.events, *later.events]):
-            return later
-
         events = []
         seen_ids: set[str] = set()
         for event in [*earlier.events, *later.events]:
@@ -579,7 +627,7 @@ class AgentRuntime:
             combined_text=combined_text,
             has_mention_bot=earlier.has_mention_bot or later.has_mention_bot,
             has_reply_bot=earlier.has_reply_bot or later.has_reply_bot,
-            origin_mode=later.origin_mode,
+            origin_mode="shadow" if "shadow" in (earlier.origin_mode, later.origin_mode) else "live",
             timestamp=later.timestamp,
             events=events,
         )
@@ -625,6 +673,7 @@ class AgentRuntime:
                 "source_event_ids": burst.source_event_ids,
             },
             "cognition": core_trace,
+            "path": core_trace.get("path", "social"),
             "result": result.model_dump(mode="json"),
             "session_commit_accepted": session_commit_accepted,
             "gate": (
@@ -642,6 +691,7 @@ class AgentRuntime:
                 "memories": [memory.id for memory in committed.committed_memories] if committed else [],
             },
             "actions_enqueued": gate_decision.actions_enqueued if gate_decision else 0,
+            "action_ids": gate_decision.action_ids if gate_decision else [],
             "shadow": self.shadow_mode,
         }
         await self.event_store.save_trace(

@@ -1,3 +1,4 @@
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 import pytest
 import asyncio
 import time
@@ -114,9 +115,9 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
     db_file = str(tmp_path / "goal6_plugins.db")
     sent_messages = []
 
-    async def mock_adapter(action: ActionItem) -> bool:
+    async def mock_adapter(action: ActionItem) -> DeliveryResult:
         sent_messages.append(action.content)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def mock_social_core(messages):
         last_msg = messages[-1]["content"] if messages else ""
@@ -236,9 +237,9 @@ async def test_action_interceptor_filtering(tmp_path):
     db_file = str(tmp_path / "action_filter.db")
     sent_messages = []
 
-    async def mock_adapter(action: ActionItem) -> bool:
+    async def mock_adapter(action: ActionItem) -> DeliveryResult:
         sent_messages.append(action.content)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file)
     runtime = AgentRuntime(config, send_adapter=mock_adapter)
@@ -277,9 +278,9 @@ async def test_action_interceptor_exception_fails_closed(tmp_path):
     await store.initialize()
 
     sent_messages: list[str] = []
-    async def mock_adapter(action: ActionItem) -> bool:
+    async def mock_adapter(action: ActionItem) -> DeliveryResult:
         sent_messages.append(action.content)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def crashing_interceptor(action: ActionItem) -> Optional[ActionItem]:
         raise RuntimeError("Simulated interceptor crash")
@@ -303,9 +304,9 @@ async def test_action_interceptor_drop_drains_queue(tmp_path):
     await store.initialize()
 
     sent_messages: list[str] = []
-    async def mock_adapter(action: ActionItem) -> bool:
+    async def mock_adapter(action: ActionItem) -> DeliveryResult:
         sent_messages.append(action.content)
-        return True
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
     async def blocking_interceptor(action: ActionItem) -> Optional[ActionItem]:
         return None

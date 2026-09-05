@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from len_bot.web.auth import get_current_user
 from len_bot.events.models import Event, EventType
 from len_bot.memory.models import MemoryStatus
+from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
+from len_bot.cognition.mailbox import EpisodeMailbox
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -71,9 +73,33 @@ async def list_tasks(request: Request, status: Optional[str] = None, user: str =
 
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str, request: Request, user: str = Depends(get_current_user)):
+    return await _edit_task(request, task_id, TaskProposal(operation="cancel", task_id=task_id))
+
+
+class TaskUpdateRequest(BaseModel):
+    due_at: float
+    description: str = ""
+
+
+async def _edit_task(request, task_id, proposal):
     runtime = request.app.state.runtime
-    success = await runtime.scheduler.cancel_task(task_id)
-    return {"success": success, "task_id": task_id}
+    task = await _service(request).get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="未找到这个任务")
+    actor = await runtime.scene_manager.get_or_create_actor(task["scene_id"])
+    mailbox = EpisodeMailbox(f"operator:{task_id}", task["scene_id"], actor.state.version)
+    decision = await actor.submit_proposal(mailbox.episode_id, EpisodeOutcome(
+        disposition=FinalDisposition.SILENCE, decision_reason="管理员修改任务",
+        task_proposals=[proposal]), mailbox, runtime.runtime_gate)
+    if not decision.accepted:
+        raise HTTPException(status_code=409, detail="任务未修改：" + decision.reason)
+    return {"success": True, "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/update")
+async def update_task(task_id: str, req: TaskUpdateRequest, request: Request, user: str = Depends(get_current_user)):
+    return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id,
+                                                         due_at=req.due_at, description=req.description))
 
 
 @router.post("/tasks/{task_id}/trigger_now")
@@ -251,4 +277,3 @@ async def list_shadow_annotations(
         "accuracy": round(accuracy, 4),
         "precision": round(precision, 4)
     }
-

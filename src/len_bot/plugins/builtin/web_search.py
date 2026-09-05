@@ -15,7 +15,6 @@ import httpx
 
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
-from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.plugins.net_policy import validate_url
 
 logger = logging.getLogger(__name__)
@@ -117,8 +116,7 @@ class WebSearchToolPlugin(BasePlugin):
             lines.append(f"{idx + 1}. {title}\n   URL: {url}\n   摘要: {snippet}")
         if not lines:
             return "未搜索到相关结果。"
-        # Marker semantics shared with retrieval tools (ADR-0020)
-        return RetrievalToolkit._with_complexity_signal(lines, high_hit_count=max_results)
+        return "\n".join(lines)
 
     async def _read_page(self, args: dict[str, Any]) -> str:
         url = str(args.get("url", "")).strip()

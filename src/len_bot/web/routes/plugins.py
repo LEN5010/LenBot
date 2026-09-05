@@ -31,7 +31,7 @@ async def list_plugins(request: Request, user: str = Depends(get_current_user)):
 @router.post("/toggle")
 async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    if req.plugin_id not in runtime.plugin_host._plugins:
+    if not runtime.plugin_host.has_plugin(req.plugin_id):
         raise HTTPException(status_code=404, detail="Plugin not found")
     if req.enabled:
         await runtime.plugin_host.enable_plugin(req.plugin_id)
@@ -44,13 +44,10 @@ async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = 
 @router.post("/config")
 async def save_plugin_config(req: PluginConfigRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    plugin = runtime.plugin_host._plugins.get(req.plugin_id)
-    if plugin is None:
+    try:
+        # Merge onto defaults so a partial form submit keeps unspecified defaults
+        config = runtime.plugin_host.set_plugin_config(req.plugin_id, req.config)
+    except KeyError:
         raise HTTPException(status_code=404, detail="Plugin not found")
-    # Merge onto defaults so a partial form submit keeps unspecified defaults
-    merged = dict(plugin.manifest.default_config)
-    merged.update(plugin.manifest.config)
-    merged.update(req.config)
-    plugin.manifest.config = merged
     await runtime.save_plugin_state()
-    return {"success": True, "plugin_id": req.plugin_id, "config": plugin.manifest.config}
+    return {"success": True, "plugin_id": req.plugin_id, "config": config}

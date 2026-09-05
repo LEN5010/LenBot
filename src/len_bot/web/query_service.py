@@ -17,6 +17,12 @@ class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
 
+    async def list_voice_examples(self, scene_id=None):
+        return await self.runtime.event_store.list_voice_examples(scene_id)
+
+    async def preview_diana_persona(self):
+        return await self.runtime.event_store.preview_diana_persona()
+
     # ---------- Overview ----------
 
     async def overview(self) -> dict:
@@ -147,6 +153,11 @@ class RuntimeQueryService:
                 key: value.model_dump(mode="json")
                 for key, value in (session.working_persons.items() if session else [])
             },
+            "working_relationships": {key: value.model_dump(mode="json")
+                                      for key, value in (session.working_relationships.items() if session else [])},
+            "recent_memory_changes": session.recent_memory_changes if session else [],
+            "recent_deliveries": [event for event in await self.query_events(scene_id=scene_id, limit=80)
+                                  if event["event_type"] in {"MESSAGE_SENT", "MESSAGE_SEND_FAILED", "ACTION_SHADOWED"}][:12],
         }
 
     # ---------- Events / Tasks / Loops / Memories ----------
@@ -203,6 +214,13 @@ class RuntimeQueryService:
             for r in rows
         ]
 
+    async def get_task(self, task_id: str) -> dict | None:
+        cursor = await self.runtime.event_store._db.execute(
+            "SELECT id,scene_id,description,due_at,status,payload,wake_event_type FROM tasks WHERE id=?", (task_id,))
+        row = await cursor.fetchone()
+        return dict(id=row[0], scene_id=row[1], description=row[2], due_at=row[3], status=row[4],
+                    payload=json.loads(row[5]), wake_event_type=row[6]) if row else None
+
     async def list_open_loops(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
         sql = "SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at FROM open_loops"
         params: list = []
@@ -228,7 +246,8 @@ class RuntimeQueryService:
     ) -> list[dict]:
         sql = """
             SELECT id, subject, kind, key, value, certainty, scope, status,
-                   superseded_by, evidence, human_readable_assertion, created_at, last_confirmed_at
+                   superseded_by, evidence, human_readable_assertion, created_at, last_confirmed_at,
+                   revision_reason, revision_evidence
             FROM memories WHERE 1=1
         """
         params: list = []
@@ -249,57 +268,28 @@ class RuntimeQueryService:
             {"id": r[0], "subject": r[1], "kind": r[2], "key": r[3], "value": r[4],
              "certainty": r[5], "scope": r[6], "status": r[7],
              "superseded_by": r[8], "evidence": json.loads(r[9]) if r[9] else [],
-             "human_readable_assertion": r[10], "created_at": r[11], "last_confirmed_at": r[12]}
+             "human_readable_assertion": r[10], "created_at": r[11], "last_confirmed_at": r[12],
+             "revision_reason": r[13], "revision_evidence": json.loads(r[14])}
             for r in rows
         ]
 
     async def memory_chain(self, memory_id: str) -> list[dict]:
-        """Superseded-chain traversal: walk back to the root ancestor, then follow
-        superseded_by forward — the full belief evolution, oldest first."""
-        store = self.runtime.memory_store
-        columns = ("id, subject, kind, key, value, certainty, scope, status, "
-                   "superseded_by, evidence, human_readable_assertion, created_at")
-
-        async def fetch(mem_id: str) -> Optional[dict]:
-            cursor = await store._db.execute(
-                f"SELECT {columns} FROM memories WHERE id = ?;", (mem_id,)
-            )
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "id": row[0], "subject": row[1], "kind": row[2], "key": row[3], "value": row[4],
-                "certainty": row[5], "scope": row[6], "status": row[7],
-                "superseded_by": row[8], "evidence": json.loads(row[9]) if row[9] else [],
-                "human_readable_assertion": row[10], "created_at": row[11],
-            }
-
-        # 1. Walk backward (who did this memory supersede?) to find the root
-        current = await fetch(memory_id)
-        if not current:
-            return []
-        while True:
-            cursor = await store._db.execute(
-                "SELECT id FROM memories WHERE superseded_by = ? ORDER BY created_at ASC LIMIT 1;",
-                (current["id"],)
-            )
-            row = await cursor.fetchone()
-            if not row:
-                break
-            ancestor = await fetch(row[0])
-            if not ancestor:
-                break
-            current = ancestor
-
-        # 2. Walk forward via superseded_by from the root
-        chain = []
-        seen = set()
-        node = current
-        while node and node["id"] not in seen:
-            seen.add(node["id"])
-            chain.append(node)
-            node = await fetch(node["superseded_by"]) if node["superseded_by"] else None
-        return chain
+        """Include every merged predecessor, not just the first old semantic key."""
+        cursor = await self.runtime.memory_store._db.execute(
+            """WITH RECURSIVE chain(id, scope, superseded_by) AS (
+                   SELECT id,scope,superseded_by FROM memories WHERE id=?
+                   UNION
+                   SELECT m.id,m.scope,m.superseded_by FROM memories m JOIN chain c
+                     ON m.scope=c.scope AND (m.id=c.superseded_by OR m.superseded_by=c.id)
+               )
+               SELECT m.* FROM memories m JOIN chain c ON m.id=c.id
+               ORDER BY m.created_at,m.id""", (memory_id,))
+        columns = [column[0] for column in cursor.description]
+        items = [dict(zip(columns, row)) for row in await cursor.fetchall()]
+        for item in items:
+            item["evidence"] = json.loads(item["evidence"])
+            item["revision_evidence"] = json.loads(item["revision_evidence"])
+        return items
 
     # ---------- Trace / Metrics / Plugins / Shadow ----------
 
