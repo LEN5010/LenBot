@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Optional, Callable, Awaitable
-from len_bot.actions.models import ActionItem, ActionType
+from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
 
@@ -12,7 +12,7 @@ class ActionQueue:
     def __init__(
         self,
         event_store: EventStore,
-        send_adapter: Optional[Callable[[ActionItem], Awaitable[bool]]] = None,
+        send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
         on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None,
         bot_actor_id: str = "system:action_queue",
         action_interceptor: Optional[Callable[[ActionItem], Awaitable[Optional[ActionItem]]]] = None,
@@ -47,91 +47,84 @@ class ActionQueue:
     def enqueue(self, action: ActionItem) -> None:
         self._queue.put_nowait(action)
 
+    async def _emit(self, event: Event, associated_open_loop=None) -> None:
+        if self.on_action_event:
+            await self.on_action_event(event)
+        else:
+            await self.event_store.commit_scene_event(
+                event=event, scene_state_data={}, associated_open_loop=associated_open_loop,
+            )
+
+    async def _process(self, action: ActionItem) -> None:
+        original = action
+        failure_reason = ""
+        if self.action_interceptor:
+            try:
+                action = await self.action_interceptor(action)
+                if action is None:
+                    failure_reason = "发送被安全检查阻止"
+            except Exception as error:
+                failure_reason = f"发送检查失败：{error}"
+                action = None
+        if action is None:
+            await self._emit(Event(
+                event_type=EventType.MESSAGE_SEND_FAILED, scene_id=original.scene_id,
+                actor_id=self.bot_actor_id, timestamp=self.event_store.clock(), payload={
+                    "action_id": original.id, "fulfils_task_id": original.fulfils_task_id,
+                    "error": failure_reason, "delivery_unknown": False,
+                },
+            ))
+            return
+
+        shadow = bool(self.shadow_probe and self.shadow_probe()) or action.origin_mode == "shadow"
+        if shadow:
+            if self.shadow_recorder:
+                await self.shadow_recorder(action)
+            await self._emit(Event(
+                event_type=EventType.ACTION_SHADOWED, scene_id=action.scene_id,
+                actor_id=self.bot_actor_id, payload={
+                    "action_id": action.id, "fulfils_task_id": action.fulfils_task_id,
+                    "content": action.content, "origin_mode": "shadow",
+                },
+            ))
+            return
+
+        try:
+            delivery = await self.send_adapter(action) if self.send_adapter else DeliveryResult(
+                status=DeliveryStatus.NOT_SENT, transport="none", error="未配置发送适配器",
+            )
+        except Exception as error:
+            delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter",
+                                      error_code=type(error).__name__, error="发送适配器异常，结果不确定")
+        success = delivery.status == DeliveryStatus.SENT
+        event = Event(
+            event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
+            scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
+            payload={
+                "action_id": action.id, "raw_text": action.content, "content": action.content,
+                "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
+                "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN,
+                "error": delivery.error, "delivery_status": delivery.status.value,
+                "transport": delivery.transport, "error_code": delivery.error_code,
+                "message_id": delivery.message_id,
+                "source_started_at": action.source_started_at,
+                "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
+                    if action.source_started_at is not None else None,
+            },
+        )
+        if success and action.associated_open_loop:
+            event.metadata["associated_open_loop"] = action.associated_open_loop
+        await self._emit(event, action.associated_open_loop if success else None)
+
     async def _worker_loop(self) -> None:
         while self._running:
+            action = await self._queue.get()
             try:
-                action = await self._queue.get()
-                if self.action_interceptor:
-                    try:
-                        action = await self.action_interceptor(action)
-                    except Exception as e:
-                        # Safety components must fail closed: drop the unsanitized action.
-                        logger.error("Error in action_interceptor, dropping action: %s", e)
-                        self._queue.task_done()
-                        continue
-                    if action is None:
-                        logger.info("Action blocked/dropped by action interceptor.")
-                        self._queue.task_done()
-                        continue
-
-                # ADR-0023 & ADR-0029: Shadow Mode or shadow-origin action:
-                # Recorded instead of physically sent to prevent shadow-generated tasks from live-sending.
-                is_shadow_env = bool(self.shadow_probe and self.shadow_probe())
-                is_shadow_origin = getattr(action, "origin_mode", "live") == "shadow"
-                if is_shadow_env or is_shadow_origin:
-                    if self.shadow_recorder:
-                        try:
-                            await self.shadow_recorder(action)
-                        except Exception as rec_err:
-                            logger.error("Shadow recorder failed: %s", rec_err)
-                    logger.info("[SHADOW] Would send on scene %s (env=%s, origin=%s): %s",
-                                action.scene_id, is_shadow_env, action.origin_mode, action.content[:80])
-                    self._queue.task_done()
-                    continue
-
-                success = True
-                if self.send_adapter:
-                    try:
-                        success = await self.send_adapter(action)
-                    except Exception as e:
-                        logger.error("Failed sending action via adapter: %s", e)
-                        success = False
-
-                now = time.time()
-                if success:
-                    # 1. Emit MESSAGE_SENT Event with canonical payload and actor_id
-                    sent_event = Event(
-                        event_type=EventType.MESSAGE_SENT,
-                        scene_id=action.scene_id,
-                        actor_id=self.bot_actor_id,
-                        timestamp=now,
-                        payload={
-                            "action_id": action.id,
-                            "raw_text": action.content,
-                            "content": action.content,
-                            "reply_to": action.reply_to
-                        }
-                    )
-
-                    # 2. Item 3: Attach associated Open Loop to sent_event metadata for atomic commit in SceneActor
-                    if action.associated_open_loop:
-                        sent_event.metadata["associated_open_loop"] = action.associated_open_loop
-
-                    # 3. Route to single commit authority (SceneActor)
-                    if self.on_action_event:
-                        await self.on_action_event(sent_event)
-                    else:
-                        await self.event_store.commit_scene_event(
-                            event=sent_event,
-                            scene_state_data={},
-                            associated_open_loop=action.associated_open_loop
-                        )
-                else:
-                    # Emit MESSAGE_SEND_FAILED Event
-                    fail_event = Event(
-                        event_type=EventType.MESSAGE_SEND_FAILED,
-                        scene_id=action.scene_id,
-                        actor_id=self.bot_actor_id,
-                        timestamp=now,
-                        payload={"action_id": action.id, "content": action.content, "raw_text": action.content}
-                    )
-                    if self.on_action_event:
-                        await self.on_action_event(fail_event)
-                    else:
-                        await self.event_store.append_event(fail_event)
-
-                self._queue.task_done()
+                await self._process(action)
             except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.exception("Error in ActionQueue worker: %s", e)
+                raise
+            except Exception:
+                # A failed confirmation stays awaiting_delivery and becomes unknown on recovery.
+                logger.exception("Action processing failed for %s", action.id)
+            finally:
+                self._queue.task_done()

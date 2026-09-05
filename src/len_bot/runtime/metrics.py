@@ -30,11 +30,13 @@ def _percentile(sorted_values: list[float], pct: float) -> Optional[float]:
 
 class RuntimeMetrics:
     MAX_ESCALATIONS = 100
+    LATENCY_WINDOW = 200
 
     def __init__(self):
         self._routes: dict[tuple[str, str, str], RouteStats] = {}
         self._provider_errors: dict[str, int] = {}
         self._escalations: Deque[tuple[float, str]] = deque(maxlen=self.MAX_ESCALATIONS)
+        self._latencies: dict[str, Deque[float]] = {}
         self.social: dict[str, int] = {
             "human_messages": 0,
             "social_cognition": 0,
@@ -48,12 +50,28 @@ class RuntimeMetrics:
             "stale_outcomes_rejected": 0,
             "followups_incorporated": 0,
             "openloops_resolved": 0,
-            "obligations_fulfilled": 0,
+            "tasks_started": 0,
+            "tasks_completed": 0,
             "model_fallbacks": 0,
             "retrieval_tool_calls": 0,
             "retrieval_tool_errors": 0,
             "retrieval_forced_finals": 0,
+            "bursts_total": 0,
+            "cognition_attempts": 0,
+            "cognition_committed": 0,
+            "cognition_failed": 0,
+            "gate_rejected": 0,
+            "cognition_deliberate_calls": 0,
         }
+
+    def record_latency(self, phase: str, seconds: float) -> None:
+        """ADR-0038 §8: production pipeline phase latency (event→burst, burst→request,
+        model_total, parse, gate, queue→send, end_to_end)."""
+        bucket = self._latencies.get(phase)
+        if bucket is None:
+            bucket = deque(maxlen=self.LATENCY_WINDOW)
+            self._latencies[phase] = bucket
+        bucket.append(max(0.0, seconds))
 
     def _route(self, tier: str, provider_id: str, model: str) -> RouteStats:
         key = (tier, provider_id, model)
@@ -104,11 +122,20 @@ class RuntimeMetrics:
             })
         visible = self.social.get("visible_messages", 0)
         human = self.social.get("human_messages", 0)
+        latency = {}
+        for phase, values in self._latencies.items():
+            ordered = sorted(values)
+            latency[phase] = {
+                "p50_s": _percentile(ordered, 50),
+                "p95_s": _percentile(ordered, 95),
+                "samples": len(ordered),
+            }
         return {
             "routes": routes,
             "provider_errors": dict(self._provider_errors),
             "escalation_total": len(self._escalations),
             "recent_escalation_reasons": [reason for _, reason in list(self._escalations)[-10:]],
+            "latency": latency,
             "social": {
                 **self.social,
                 "visible_speech_ratio": round(visible / human, 4) if human else 0.0,

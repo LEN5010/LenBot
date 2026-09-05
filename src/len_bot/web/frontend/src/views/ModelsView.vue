@@ -198,6 +198,7 @@ function tierName(tier) { return tier === 'deliberate' ? '思考模式' : '普�
           <label>供应商<select v-model="routingForm.deliberate_provider_id" @change="routeChanged('deliberate')"><option v-for="p in data.providers" :key="p.id" :value="p.id">{{ p.id }}</option></select></label>
           <label>模型<select v-model="routingForm.deliberate_model"><option v-for="model in choicesFor(routingForm.deliberate_provider_id)" :key="model" :value="model">{{ model }}</option></select></label>
           <button class="small-btn" :disabled="!routingForm.deliberate_model" @click="testRoute('deliberate')">测试连接</button>
+          <p v-if="routingForm.normal_provider_id === routingForm.deliberate_provider_id && routingForm.normal_model === routingForm.deliberate_model" class="muted">普通与思考模式当前使用同一模型，切换档位不会更换模型。</p>
         </article>
 
         <article class="route-card">

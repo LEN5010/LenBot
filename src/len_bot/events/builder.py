@@ -23,6 +23,8 @@ class BurstAssembler:
     }
     _IMMEDIATE_EVENT_TYPES = {
         EventType.TASK_DUE,
+        EventType.TASK_REVIEW,
+        EventType.REFLECTION_RECORDED,
         EventType.LIVE_STARTED,
         EventType.LIVE_ENDED,
         EventType.TOOL_COMPLETED,
@@ -33,15 +35,21 @@ class BurstAssembler:
         self,
         config: RuntimeConfig,
         on_burst: Callable[[Stimulus], Awaitable[None]],
+        clock=time.time,
     ):
+        self.clock = clock
         self.config = config
         self.on_burst = on_burst
         self._buffers: dict[str, BurstBuffer] = {}
         self._lock = asyncio.Lock()
 
     async def ingest(self, event: Event) -> None:
-        now = time.time()
-        if now - event.timestamp > self.config.max_ingest_lag_seconds:
+        now = self.clock()
+        if event.metadata.get("obsolete_task_wake"):
+            return
+        if event.event_type == EventType.REFLECTION_RECORDED and not event.metadata.get('needs_review'):
+            return
+        if event.event_type in self._CHAT_EVENT_TYPES and now - event.timestamp > self.config.max_ingest_lag_seconds:
             return
 
         bursts: list[Stimulus] = []

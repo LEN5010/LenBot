@@ -40,10 +40,11 @@ async def run_app():
         logger.info("Len Bot Dashboard running at http://%s:%d", config.dashboard_host, config.dashboard_port)
 
     await runtime.start()
+    adapter.restore_own_message_ids(await runtime.event_store.own_sent_message_ids(f"user:{config.bot_qq}"))
     await adapter.start()
 
     onebot_link = (
-        f"主动连接 {config.onebot_ws_url}"
+        "主动连接已配置的 WebSocket 服务"
         if config.onebot_connection_mode == "forward_ws"
         else f"等待接入 ws://{config.ws_host}:{config.ws_port}"
     )
