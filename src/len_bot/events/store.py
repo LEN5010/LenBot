@@ -255,6 +255,28 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 await self._db.rollback()
                 raise
 
+    async def reset_conversation_data(self, event: Event) -> dict[str, int]:
+        """Explicit operator reset; configuration and authored voice stay intact."""
+        tables = ("events_fts", "pending_runtime_events", "agent_jobs", "tool_observations",
+                  "media_assets", "traces", "reflection_cursors", "memories", "episodes",
+                  "open_loops", "tasks", "group_agent_sessions", "scene_states", "events")
+        async with self._write_lock:
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                counts = {}
+                for table in tables:
+                    counts[table] = (await (await self._db.execute(f"SELECT COUNT(*) FROM {table}")).fetchone())[0]
+                    await self._db.execute(f"DELETE FROM {table}")
+                await self._db.execute("UPDATE voice_exemplars SET use_count=0,last_used_at=0")
+                await self._db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)",
+                    (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp,
+                     json.dumps(event.payload), json.dumps(event.metadata)))
+                await self._db.commit()
+                return counts
+            except BaseException:
+                await self._db.rollback()
+                raise
+
     async def get_dashboard_user(self, username: str) -> Optional[dict[str, Any]]:
         if not self._db:
             raise RuntimeError("Database not initialized")

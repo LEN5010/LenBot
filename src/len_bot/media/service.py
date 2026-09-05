@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -57,6 +58,12 @@ class MediaService:
 
     async def close(self):
         await self._client.aclose()
+
+    async def reset_cache(self):
+        self._vision_cache.clear()
+        self._locks.clear()
+        if self.root.exists():
+            await asyncio.to_thread(shutil.rmtree, self.root)
 
     async def _store_bytes(self, data):
         try:

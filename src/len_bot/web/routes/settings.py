@@ -6,6 +6,13 @@ from len_bot.web.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+
+@router.post("/reset")
+async def reset_conversation_data(request: Request, user: str = Depends(get_current_user)):
+    result = await request.app.state.runtime.reset_conversation_data(user)
+    request.app.state.log_ring.clear()
+    return result
+
 class PersonaPresetRequest(BaseModel):
     preview_token: str
 

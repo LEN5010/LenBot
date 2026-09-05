@@ -60,6 +60,9 @@ class AgentRuntime:
         self.mock_social_handler = mock_social_handler
         self.evaluation_hook = None
         self.config_update_lock = asyncio.Lock()
+        self.control_plane_lock = asyncio.Lock()
+        self._reset_lock = asyncio.Lock()
+        self._ingest_lock = asyncio.Lock()
         self.bot_actor_id = f"user:{config.bot_qq}"
         
         self.event_store = EventStore(config.db_path, clock=clock)
@@ -315,6 +318,11 @@ class AgentRuntime:
         })
 
     async def stop(self) -> None:
+        await self._stop_conversation_workers()
+        await self.media_service.close()
+        await self.event_store.close()
+
+    async def _stop_conversation_workers(self) -> None:
         self._running = False
         await self.burst_assembler.close()
         self._social_pending.clear()
@@ -326,6 +334,7 @@ class AgentRuntime:
             task.cancel()
         if social_tasks:
             await asyncio.gather(*social_tasks, return_exceptions=True)
+        self._social_tasks.clear()
         for timer in self._reflection_timers.values():
             timer.cancel()
         self._reflection_timers.clear()
@@ -340,16 +349,47 @@ class AgentRuntime:
             t.cancel()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self._reflecting_scenes.clear()
 
         await self.scheduler.stop()
         await self.job_runner.stop()
         await self.plugin_host.unload_all()
         await self.action_queue.stop()
-        await self.media_service.close()
         for actor in list(self.scene_manager._actors.values()):
             await actor._queue.join()
         await self.scene_manager.stop()
-        await self.event_store.close()
+
+    async def reset_conversation_data(self, operator: str) -> dict:
+        async with self._reset_lock:
+            try:
+                async with self._ingest_lock:
+                    await self._stop_conversation_workers()
+                    try:
+                        event = Event(event_type=EventType.OPERATOR_ACTION, scene_id="system:settings",
+                            actor_id=f"operator:{operator}", timestamp=self.clock(), payload={"operation": "reset_conversation_data"})
+                        counts = await self.event_store.reset_conversation_data(event)
+                        await self.media_service.reset_cache()
+                        self.shadow_would_send_log.clear()
+                        self._last_gate_decision = None
+                        self.metrics = RuntimeMetrics()
+                        self.runtime_gate.metrics = self.metrics
+                        self.social_core.metrics = self.metrics
+                        self.scheduler.metrics = self.metrics
+                        if self._onebot_adapter:
+                            self._onebot_adapter.restore_own_message_ids([])
+                    finally:
+                        self.job_runner = InformationJobRunner(self)
+                        await self.action_queue.start()
+                        await self._load_builtin_plugins()
+                        self._running = True
+            finally:
+                # Recovery emits through receive_event; the ingress lock is released.
+                if self._running:
+                    await self.scheduler.start()
+                    self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+            logger.info("Conversation data reset by %s", operator)
+            return {"success": True, "cleared": counts}
 
     async def _maintenance_loop(self) -> None:
         """Periodic background heartbeat for durable open-loop and memory maintenance."""
@@ -373,9 +413,10 @@ class AgentRuntime:
 
     async def receive_event(self, event: Event) -> None:
         """Entrypoint for all inbound events. Dispatches to SceneActor (single commit authority)."""
-        if self.shadow_mode or self.is_scene_shadow(event.scene_id):
-            event.metadata["delivery_origin"] = "shadow"
-        await self.scene_manager.dispatch_event(event)
+        async with self._ingest_lock:
+            if self.shadow_mode or self.is_scene_shadow(event.scene_id):
+                event.metadata["delivery_origin"] = "shadow"
+            await self.scene_manager.dispatch_event(event)
 
     async def commit_tool_observation(self, event: Event) -> None:
         """Called outside the actor by tool executors; its envelope is already durable."""
@@ -396,6 +437,8 @@ class AgentRuntime:
 
     async def _on_scene_event_committed(self, state, event: Event) -> None:
         """Invoked by SceneActor AFTER Event and SceneState are atomically committed in SQLite."""
+        if not self._running:
+            return
         if event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED) and event.actor_id != self.bot_actor_id:
             self.metrics.inc_social("human_messages")
 
@@ -503,6 +546,8 @@ class AgentRuntime:
 
     async def _on_burst(self, burst: Stimulus) -> None:
         """Every valid scene burst enters the Social Cognition Core."""
+        if not self._running:
+            return
         if (
             self.social_core.mock_handler is None
             and not self.provider_registry.has_live_provider()
