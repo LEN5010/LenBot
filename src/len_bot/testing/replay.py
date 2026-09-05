@@ -1,10 +1,27 @@
 """Transcript replay through the production actor, core, gate and shadow queue."""
 import asyncio
 import tempfile
+import copy
+import json
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import Literal
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.cognition.social_core import SocialCognitionCore
+
+
+@dataclass
+class ReplayInjection:
+    checkpoint: Literal["before_model", "after_model", "before_tool", "after_tool", "before_send", "after_send"]
+    events: list[Event] = field(default_factory=list)
+    occurrence: int = 1
+
+
+class ReplayFailure(RuntimeError):
+    pass
 
 
 async def drain(runtime):
@@ -27,13 +44,21 @@ async def drain(runtime):
 
 
 class ReplayLab:
-    def __init__(self, config: RuntimeConfig, social_core, tool_mode="mock", tool_results=None, voice_examples=None):
+    def __init__(self, config: RuntimeConfig, social_core, tool_mode="mock", tool_results=None, voice_examples=None,
+                 delivery_mode="shadow", injections=None, strict=False, max_model_calls=200):
         if tool_mode not in ("mock", "real"):
             raise ValueError("tool_mode must be mock or real")
         self.config, self.social_core = config, social_core
         self.tool_mode = tool_mode
         self.tool_results = tool_results or {}
         self.voice_examples = voice_examples or []
+        if delivery_mode not in {"shadow", "simulated"}:
+            raise ValueError("Replay delivery must be shadow or simulated")
+        self.delivery_mode, self.injections, self.strict = delivery_mode, injections or [], strict
+        self.max_model_calls = max_model_calls
+        self.model_mode = "mock" if social_core.mock_handler or getattr(social_core.registry, "is_simulated", False) else "real"
+        self.last_checkpoints, self.last_deliveries, self.last_observations = [], [], []
+        self.last_run = {}
         self.last_metrics = {}
         self.last_tasks = []
         self.last_traces = []
@@ -50,6 +75,13 @@ class ReplayLab:
         if {e.id for e in history} & {e.id for e in ordered}:
             raise ValueError("History and evaluated events must be disjoint")
         clock_value = ordered[0].timestamp if ordered else 0.0
+        self.last_checkpoints, self.last_deliveries, self.last_observations = [], [], []
+        counts, fired = Counter(), set()
+        injected_ids = [event.id for injection in self.injections for event in injection.events]
+        if len(set(injected_ids)) != len(injected_ids) or set(injected_ids) & {e.id for e in [*ordered, *history]}:
+            raise ValueError("Injection event IDs must be unique and disjoint")
+        if any(injection.occurrence < 1 for injection in self.injections):
+            raise ValueError("Injection occurrence must be positive")
         with tempfile.TemporaryDirectory(prefix="lenbot-replay-") as directory:
             config = self.config.model_copy(update={
                 "db_path": directory + "/replay.db", "max_ingest_lag_seconds": float("inf"),
@@ -57,12 +89,39 @@ class ReplayLab:
             })
             async def forbidden_send(action):
                 raise AssertionError("Replay attempted physical delivery")
-            runtime = AgentRuntime(config, send_adapter=forbidden_send,
+            sent_count = 0
+            async def simulated_send(action):
+                nonlocal sent_count
+                sent_count += 1
+                return DeliveryResult(status=DeliveryStatus.SENT, transport="replay_simulated", message_id=f"sim-{sent_count}")
+            runtime = AgentRuntime(config, send_adapter=simulated_send if self.delivery_mode == "simulated" else forbidden_send,
                                    mock_social_handler=self.social_core.mock_handler,
                                    clock=lambda: clock_value)
             await runtime.start()
             try:
-                await runtime.set_shadow_mode(True)
+                await runtime.set_shadow_mode(self.delivery_mode == "shadow")
+                runtime.action_queue.simulated = self.delivery_mode == "simulated"
+                async def checkpoint(name, detail):
+                    nonlocal clock_value
+                    counts[name] += 1
+                    self.last_checkpoints.append({"checkpoint": name, "occurrence": counts[name], "time": clock_value, **copy.deepcopy(detail)})
+                    if name == "before_model" and counts[name] > self.max_model_calls:
+                        raise ReplayFailure("Evaluation model-call budget exhausted")
+                    for index, injection in enumerate(self.injections):
+                        if index in fired or injection.checkpoint != name or injection.occurrence != counts[name]:
+                            continue
+                        fired.add(index)
+                        for source in injection.events:
+                            event = source.model_copy(deep=True)
+                            clock_value = max(clock_value, event.timestamp)
+                            event.metadata["replay_injected"] = True
+                            event.metadata["_replay_checkpoint"] = name
+                            event.metadata.pop("_rowid", None)
+                            await runtime.receive_event(event)
+                            actor = await runtime.scene_manager.get_or_create_actor(event.scene_id)
+                            await actor._queue.join()
+                runtime.evaluation_hook = checkpoint
+                runtime.action_queue.checkpoint = checkpoint
                 for example in self.voice_examples:
                     await runtime.event_store.add_voice_example(
                         scene_id=example["scene_id"], content=example["content"],
@@ -74,9 +133,16 @@ class ReplayLab:
                     config, self.social_core.registry, metrics=runtime.metrics,
                     mock_handler=self.social_core.mock_handler,
                 )
+                runtime.social_core.checkpoint = checkpoint
                 if self.tool_mode == "mock":
                     async def mock_tool(name, arguments):
-                        return self.tool_results.get(name, "回放未提供这个工具的结果，请明确说明未知。")
+                        result = self.tool_results.get(name)
+                        if result is None:
+                            from len_bot.tools.results import ToolResult
+                            return str(ToolResult.failure("回放未提供这个工具的结果，事实未知。", "fixture_missing"))
+                        if isinstance(result, Exception):
+                            raise result
+                        return result
                     runtime.plugin_host.execute_tool = mock_tool
                 # Historical bot speech is input only, never a generated delivery
                 # or a response to this version. No cognition/metrics for the seed.
@@ -129,6 +195,7 @@ class ReplayLab:
                         actor.release_episode_lease(mailbox.episode_id)
                 async def advance(target):
                     nonlocal clock_value
+                    target = max(clock_value, target)
                     for _ in range(100):
                         tasks = await runtime.event_store.get_pending_tasks(max_due_at=target)
                         if not tasks:
@@ -149,6 +216,10 @@ class ReplayLab:
                     await advance(source.timestamp)
                     event = source.model_copy(deep=True)
                     event.metadata.pop("_rowid", None)
+                    if event.event_type == EventType.MESSAGE_SENT:
+                        if self.delivery_mode == "simulated":
+                            continue
+                        event.metadata["replay_historical"] = True
                     await runtime.receive_event(event)
                     actor = await runtime.scene_manager.get_or_create_actor(event.scene_id)
                     await actor._queue.join()
@@ -167,6 +238,21 @@ class ReplayLab:
                                       for scene, actor in runtime.scene_manager._actors.items()}
                 self.last_memories = [item.model_dump(mode="json") for item in
                     await runtime.memory_store.query_memories(list(self.last_sessions), include_superseded=True, limit=1000)]
+                self.last_deliveries = [event.model_dump(mode="json") for scene in self.last_sessions
+                    for event in await runtime.event_store.get_recent_events(scene, limit=12000)
+                    if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}
+                    and not event.metadata.get("replay_historical")]
+                self.last_observations = [item for scene in self.last_sessions
+                    for item in await runtime.event_store.list_tool_observations(scene, 500)]
+                failures = [trace for trace in self.last_traces if trace["kind"] in {"social_cognition_error", "agent_job_error"}]
+                self.last_run = {"model_mode": self.model_mode,
+                    "tool_mode": self.tool_mode, "delivery_mode": self.delivery_mode,
+                    "completed": not failures and len(fired) == len(self.injections),
+                    "unfired_injections": [i for i in range(len(self.injections)) if i not in fired],
+                    "checkpoint_counts": dict(counts), "human_response_to_candidate": None,
+                    "failure_count": len(failures), "capabilities": ["tools", "interleaving"]
+                        + (["jobs"] if getattr(runtime, "job_runner", None) else [])
+                        + (["media"] if getattr(runtime, "media_service", None) else [])}
                 rows = []
                 for entry in reversed(self.last_traces):
                     p = entry["payload"]
@@ -182,6 +268,14 @@ class ReplayLab:
                                       if p["gate"]["accepted"] else [],
                         "trace": p,
                     })
+                if self.strict and not self.last_run["completed"]:
+                    raise ReplayFailure("Replay incomplete; failures and checkpoints preserved")
                 return rows
+            except Exception as error:
+                self.last_traces = await runtime.event_store.query_traces(limit=10000)
+                self.last_run.update({"completed": False, "error": str(error),
+                    "model_mode": self.model_mode,
+                    "tool_mode": self.tool_mode, "delivery_mode": self.delivery_mode})
+                raise
             finally:
                 await runtime.stop()
