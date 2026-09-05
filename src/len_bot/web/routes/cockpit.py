@@ -29,6 +29,21 @@ def _service(request: Request):
     return request.app.state.runtime.query_service
 
 
+@router.get("/tool-results")
+async def tool_results(scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    return await _service(request).tool_results(scene_id)
+
+
+@router.get("/tool-results/{result_id}")
+async def tool_result(result_id: str, scene_id: str, request: Request, offset: int = 0, user: str = Depends(get_current_user)):
+    if offset < 0:
+        raise HTTPException(400, "offset must be nonnegative")
+    result = await _service(request).tool_result(scene_id, result_id, offset)
+    if result is None:
+        raise HTTPException(404, "未找到本场景的资料")
+    return result
+
+
 @router.get("/scenes")
 async def list_scenes(request: Request, user: str = Depends(get_current_user)):
     scenes = await _service(request).list_scenes()

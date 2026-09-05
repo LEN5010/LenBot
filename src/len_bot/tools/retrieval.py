@@ -1,10 +1,13 @@
 import json
 import logging
+import asyncio
+import copy
 from typing import Any, Optional
 from len_bot.events.store import EventStore
 from len_bot.memory.store import MemoryStore
 from len_bot.events.models import Event
 from len_bot.cognition.projection import project_event
+from len_bot.tools.results import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,8 @@ class RetrievalToolkit:
         memory_store: Optional[MemoryStore] = None,
         plugin_host: Optional[Any] = None,
         bot_qq: int | str = "",
+        on_observation=None,
+        read_only_only: bool = False,
     ):
         self.event_store = event_store
         self.allowed_scopes = allowed_scopes
@@ -26,6 +31,13 @@ class RetrievalToolkit:
         self.memory_store = memory_store
         self.plugin_host = plugin_host
         self.bot_qq = bot_qq
+        self.on_observation = on_observation
+        self.read_only_only = read_only_only
+        self.discovered_tools: set[str] = set()
+        self.result_ids: list[str] = []
+        self._cache: dict[str, ToolResult] = {}
+        self._call_locks: dict[str, asyncio.Lock] = {}
+        self._parallel = asyncio.Semaphore(3)
 
     async def _project_rows(self, rows: list[dict]) -> list[str]:
         events = [Event.model_validate(row) for row in rows]
@@ -181,10 +193,109 @@ class RetrievalToolkit:
             }
         ]
         if self.plugin_host:
-            tools.extend(self.plugin_host.get_tool_definitions())
+            for tool in self.plugin_host.get_tool_definitions():
+                name = tool["function"]["name"]
+                caps = self.plugin_host.tool_capabilities(name)
+                if self.read_only_only and not caps["read_only"]:
+                    continue
+                if not caps["deferred"] or name in self.discovered_tools:
+                    tools.append(tool)
+        tools.extend([
+            {"type": "function", "function": {"name": "tool_search",
+                "description": "按名称或描述发现可用工具，发现后可在后续步骤调用。",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+            {"type": "function", "function": {"name": "read_tool_result",
+                "description": "按 result_id 继续读取已取得资料；offset 使用上次 next_offset。",
+                "parameters": {"type": "object", "properties": {"result_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["result_id"]}}},
+        ])
+        for tool in tools:
+            # This wrapper option is consumed before calling legacy plugin handlers.
+            if tool["function"]["name"] not in {"tool_search", "read_tool_result"}:
+                tool["function"]["parameters"] = copy.deepcopy(tool["function"]["parameters"])
+                params = tool["function"]["parameters"]
+                params.setdefault("properties", {})["refresh"] = {"type": "boolean", "description": "重新获取，不复用本轮资料"}
         return tools
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        return str(await self.execute_result(tool_name, arguments))
+
+    def is_read_only(self, name: str) -> bool:
+        if self.plugin_host and self.plugin_host.has_tool(name):
+            return self.plugin_host.tool_capabilities(name)["read_only"]
+        return name in {"search_messages", "read_context", "query_timeline", "query_person_history",
+                        "query_memory", "inspect_episode", "tool_search", "read_tool_result"}
+
+    async def execute_many(self, calls):
+        """Parallelize read-only groups; preserve ordering around unknown effects."""
+        results, batch = [], []
+        async def run(name, arguments):
+            async with self._parallel:
+                try:
+                    return await self.execute(name, arguments)
+                except Exception as error:
+                    return error
+        for name, arguments in calls:
+            if self.is_read_only(name):
+                batch.append((name, arguments))
+            else:
+                results.extend(await asyncio.gather(*(run(*call) for call in batch)))
+                batch.clear()
+                results.append(await run(name, arguments))
+        results.extend(await asyncio.gather(*(run(*call) for call in batch)))
+        return results
+
+    async def import_results(self, result_ids):
+        """Transfer completed observations to a new job without repeating network work."""
+        for result_id in result_ids:
+            result = await self.event_store.read_tool_observation(result_id, [self.default_scene_id])
+            if result is None:
+                raise ValueError("Transferred result does not belong to this scene")
+            if result_id not in self.result_ids:
+                self.result_ids.append(result_id)
+            call = await self.event_store.tool_observation_call(result_id, self.default_scene_id)
+            if call and self.plugin_host and self.plugin_host.has_tool(call[0]) and self.is_read_only(call[0]) and result.status in {"ok", "no_results", "partial"}:
+                self._cache[json.dumps(list(call), ensure_ascii=False, sort_keys=True)] = result
+
+    async def execute_result(self, name, arguments):
+        arguments = dict(arguments)
+        if name == "read_tool_result":
+            result = await self.event_store.read_tool_observation(str(arguments.get("result_id", "")), self.allowed_scopes)
+            if result is None:
+                return ToolResult.failure("结果不存在或不在允许场景中", "not_found")
+            return result.page(int(arguments.get("offset", 0)), int(arguments.get("limit", 6000)))
+        if name == "tool_search":
+            query = str(arguments.get("query", "")).casefold().strip()
+            if not query:
+                return ToolResult.failure("query must not be empty", "invalid_arguments")
+            matches = []
+            for tool in self.plugin_host.get_tool_definitions() if self.plugin_host else []:
+                fn = tool["function"]
+                if self.read_only_only and not self.is_read_only(fn["name"]):
+                    continue
+                if query in (fn["name"] + " " + fn["description"]).casefold():
+                    matches.append(fn["name"])
+            self.discovered_tools.update(matches[:8])
+            return ToolResult(status="ok" if matches else "no_results", content=json.dumps(matches[:8], ensure_ascii=False), coverage="tool_catalog")
+        if self.read_only_only and not self.is_read_only(name):
+            return ToolResult.failure("工作执行器仅可使用声明为只读的工具", "capability_denied")
+        refresh = bool(arguments.pop("refresh", False))
+        key = json.dumps([name, arguments], ensure_ascii=False, sort_keys=True)
+        async with self._call_locks.setdefault(key, asyncio.Lock()):
+            if not refresh and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and key in self._cache:
+                return self._cache[key].model_copy(update={"cached": True}).page()
+            result = ToolResult.normalize(await self._execute_raw(name, arguments))
+            if not (self.plugin_host and self.plugin_host.has_tool(name)):
+                result.evidence_kind = "retrieval"
+            result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result)
+            self.result_ids.append(result.result_id)
+            if self.on_observation:
+                await self.on_observation(event)
+            if self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and result.status in {"ok", "no_results", "partial"}:
+                self._cache[key] = result
+            return result.page()
+
+    async def _execute_raw(self, tool_name: str, arguments: dict[str, Any]):
         try:
             if self.plugin_host and self.plugin_host.has_tool(tool_name):
                 return await self.plugin_host.execute_tool(tool_name, arguments)
@@ -198,7 +309,7 @@ class RetrievalToolkit:
                     limit=limit
                 )
                 formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else "未找到匹配的历史消息。"
+                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content="未找到匹配的历史消息。")
 
             elif tool_name == "read_context":
                 event_id = arguments.get("event_id", "")
@@ -211,7 +322,7 @@ class RetrievalToolkit:
                     allowed_scopes=self.allowed_scopes
                 )
                 formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else f"未找到该事件 {event_id} 或其上下文。"
+                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content=f"未找到该事件 {event_id} 或其上下文。")
 
             elif tool_name == "query_timeline":
                 start_time = float(arguments.get("start_time", 0))
@@ -240,7 +351,7 @@ class RetrievalToolkit:
 
             elif tool_name == "query_memory":
                 if not self.memory_store:
-                    return "未配置记忆库。"
+                    return ToolResult(status="unsupported", content="未配置记忆库。")
                 subject = arguments.get("subject")
                 kind = arguments.get("kind")
                 key = arguments.get("key")
@@ -263,11 +374,11 @@ class RetrievalToolkit:
                         f"(certainty: {m.certainty.value}, assertion: {m.human_readable_assertion}{history_tag})"
                         f" 原始证据EventIDs={m.evidence} 修订原因={m.revision_reason} 修订证据={m.revision_evidence}"
                     )
-                return "\n".join(formatted) if formatted else "未找到匹配的认识信念记忆。"
+                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content="未找到匹配的认识信念记忆。")
 
             elif tool_name == "inspect_episode":
                 if not self.memory_store:
-                    return "未配置经历库。"
+                    return ToolResult(status="unsupported", content="未配置经历库。")
                 episode_id = arguments.get("episode_id", "")
                 ep = await self.memory_store.get_episode_in_scopes(
                     episode_id,
@@ -283,7 +394,7 @@ class RetrievalToolkit:
                     f"引用原始事件数: {len(ep.source_event_ids)}"
                 )
 
-            return f"未知工具: {tool_name}"
+            return ToolResult.failure(f"未知工具: {tool_name}", "not_found")
         except Exception as e:
             logger.exception("Error executing tool %s: %s", tool_name, e)
-            return f"工具执行失败: {e}"
+            return ToolResult.failure(f"工具执行失败: {e}", type(e).__name__)

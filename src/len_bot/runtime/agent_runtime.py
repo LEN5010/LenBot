@@ -322,6 +322,14 @@ class AgentRuntime:
         """Entrypoint for all inbound events. Dispatches to SceneActor (single commit authority)."""
         await self.scene_manager.dispatch_event(event)
 
+    async def commit_tool_observation(self, event: Event) -> None:
+        """Called outside the actor by tool executors; its envelope is already durable."""
+        actor = await self.scene_manager.get_or_create_actor(event.scene_id)
+        actor.post_event(event)
+        await actor._queue.join()
+        if not await self.event_store.event_exists(event.id, event.scene_id):
+            raise RuntimeError("Tool observation could not be committed")
+
     async def _on_scene_event_committed(self, state, event: Event) -> None:
         """Invoked by SceneActor AFTER Event and SceneState are atomically committed in SQLite."""
         if event.event_type in (EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED) and event.actor_id != self.bot_actor_id:
@@ -503,6 +511,7 @@ class AgentRuntime:
                     memory_store=self.memory_store, default_scene_id=scene_id,
                     plugin_host=self.plugin_host,
                     bot_qq=self.config.bot_qq,
+                    on_observation=self.commit_tool_observation,
                 )
 
                 async def observe():

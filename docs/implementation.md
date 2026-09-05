@@ -7,7 +7,7 @@
 | 阶段 | 提交 | 状态 | 验证 |
 |---|---|---|---|
 | 1 当前文档 | docs: establish current architecture and staged agent plan | 完成 | 引用检查，运行行为未变 |
-| 2 通用工具 | feat: add structured tool observations and generic retrieval | 计划中 | 多格式、错误、分页、scope、并发 |
+| 2 通用工具 | feat: add structured tool observations and generic retrieval | 完成 | 171 项回归；HTML/文本/JSON、压缩、重定向、分页、scope、并发 |
 | 3 交错回放 | test: add interleaved multi-turn agent evaluation | 计划中 | 工具期间输入，隔离发送，失败记录 |
 | 4 独立工作 | feat: add runtime-owned information jobs and conversational steering | 计划中 | 原子性、版本、取消、预算、恢复 |
 | 5 媒体投递 | feat: add scoped media understanding and paced message delivery | 计划中 | 视觉、资产、分段、回执、公平性 |
@@ -29,3 +29,7 @@
 反馈观察真实发送后的 5 分钟或 15 条人类消息；无反馈是未知。自动评价不写人格/记忆/任务。隔离比较 L/Flash 与 L/Pro，不改变生产路由。
 
 真实验收与回退见 [运行手册](operations.md)。过时文档有效信息迁出后删除，旧失败和人格来源保留。
+
+## 阶段 2 实测
+
+2026-09-06：Python asyncio 文档（3660 字）、Trafilatura API 文档（30294 字）、普通 GitHub issue 页面（3906 字）均由同一通用读取路径获得正文。首次抽测发现压缩体二次解码，已修复并补回归；没有增加站点判断。真实搜索结果与正文均不代表模型已正确综合。ToolResult/ToolSource、read_tool_result、tool_search 和只读能力元数据已接线；旧字符串插件结果保持内容但标记 coverage=unknown。观察与待投递事件同事务保存，模型/检索派生内容不能充作独立记忆证据。控制面板查询经 QueryService 的 tool-results 接口。

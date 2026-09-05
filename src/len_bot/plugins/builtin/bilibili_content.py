@@ -6,6 +6,9 @@ Tools only return observation strings and never directly message users or trigge
 """
 
 import logging
+import json
+from urllib.parse import urlencode
+from len_bot.tools.results import ToolResult, ToolSource
 from typing import Any, Optional
 import httpx
 
@@ -27,6 +30,7 @@ class BilibiliContentPlugin(BasePlugin):
             name="哔哩哔哩内容查询工具",
             description="机器人需要时主动查询哔哩哔哩公开视频、搜索结果和用户动态。",
             version="1.0.0",
+            timeout_seconds=15.0,
             plugin_type=PluginType.TOOL,
             permissions=[PluginPermission.REGISTER_TOOL],
             config_schema={
@@ -64,6 +68,7 @@ class BilibiliContentPlugin(BasePlugin):
                 }
             },
             handler=self._get_video_info,
+            read_only=True, deferred=True,
         )
 
         context.register_tool(
@@ -78,6 +83,7 @@ class BilibiliContentPlugin(BasePlugin):
                 "required": ["keyword"]
             },
             handler=self._search_bilibili,
+            read_only=True, deferred=True,
         )
 
         context.register_tool(
@@ -91,6 +97,7 @@ class BilibiliContentPlugin(BasePlugin):
                 "required": ["mid"]
             },
             handler=self._get_dynamic_feed,
+            read_only=True, deferred=True,
         )
 
     async def on_unload(self) -> None:
@@ -98,113 +105,44 @@ class BilibiliContentPlugin(BasePlugin):
             await self._client.aclose()
             self._client = None
 
-    async def _get_video_info(self, args: dict[str, Any]) -> str:
-        bvid = str(args.get("bvid") or "").strip()
-        aid = args.get("aid")
-        if not bvid and not aid:
-            return "错误: get_video_info 需要提供 bvid 或 aid 参数。"
-
-        url = "https://api.bilibili.com/x/web-interface/view"
+    async def _query(self, url, params, *, content_key=None):
         allowed, reason = validate_url(url)
         if not allowed:
-            return f"[安全拦截: 请求受限 - {reason}]"
-
-        params = {}
-        if bvid:
-            params["bvid"] = bvid
-        if aid:
-            params["aid"] = aid
-
+            return ToolResult.failure(f"安全拦截: {reason}", "blocked")
+        source = ToolSource(url=url + "?" + urlencode(params))
         try:
-            resp = await self._client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            response = await self._client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
             if data.get("code") != 0:
-                return f"获取视频信息失败: {data.get('message', '未知错误')} (code={data.get('code')})"
+                return ToolResult.failure(f"B站接口返回错误: {data.get('message', '')}", str(data.get("code")))
+            payload = data.get("data") or {}
+            records = payload.get(content_key) if content_key else payload
+            if not records:
+                return ToolResult(status="no_results", content="接口未返回记录，不能推断现实不存在。", sources=[source], evidence_kind="external")
+            return ToolResult(content=json.dumps(payload, ensure_ascii=False), sources=[source], evidence_kind="external", coverage="api_response")
+        except Exception as error:
+            return ToolResult.failure(f"B站查询失败: {error}", type(error).__name__)
 
-            d = data.get("data", {})
-            owner = d.get("owner", {}).get("name", "未知")
-            stat = d.get("stat", {})
-            return (
-                f"【视频信息】\n"
-                f"标题: {d.get('title')}\n"
-                f"UP主: {owner}\n"
-                f"BV号: {d.get('bvid')}\n"
-                f"播放: {stat.get('view', 0)} · 弹幕: {stat.get('danmaku', 0)} · 点赞: {stat.get('like', 0)}\n"
-                f"简介: {d.get('desc', '')[:200]}"
-            )
-        except Exception as e:
-            logger.warning("Bilibili get_video_info error: %s", e)
-            return f"获取B站视频信息异常: {e}"
+    async def _get_video_info(self, args):
+        params = {key: args[key] for key in ("bvid", "aid") if args.get(key)}
+        if not params:
+            return ToolResult.failure("get_video_info 需要 bvid 或 aid", "invalid_arguments")
+        return await self._query("https://api.bilibili.com/x/web-interface/view", params)
 
-    async def _search_bilibili(self, args: dict[str, Any]) -> str:
+    async def _search_bilibili(self, args):
         keyword = str(args.get("keyword") or "").strip()
         if not keyword:
-            return "错误: search_bilibili 需要提供 keyword 参数。"
-        page_size = min(int(args.get("page_size", 5)), 10)
+            return ToolResult.failure("search_bilibili 需要 keyword", "invalid_arguments")
+        return await self._query("https://api.bilibili.com/x/web-interface/search/type", {
+            "search_type": "video", "keyword": keyword,
+            "page_size": min(max(1, int(args.get("page_size", 5))), 10),
+        }, content_key="result")
 
-        url = "https://api.bilibili.com/x/web-interface/search/type"
-        allowed, reason = validate_url(url)
-        if not allowed:
-            return f"[安全拦截: 请求受限 - {reason}]"
-
-        try:
-            resp = await self._client.get(url, params={
-                "search_type": "video",
-                "keyword": keyword,
-                "page_size": page_size
-            })
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("code") != 0:
-                return f"搜索B站视频失败: {data.get('message', '未知错误')} (需配置 SESSDATA 凭据)"
-
-            results = data.get("data", {}).get("result", [])
-            if not results:
-                return f"未搜索到关键词 '{keyword}' 的相关B站视频。"
-
-            lines = [f"B站搜索 '{keyword}' 结果:"]
-            for idx, item in enumerate(results[:page_size]):
-                title = str(item.get("title", "")).replace("<em class=\"keyword\">", "").replace("</em>", "")
-                author = item.get("author", "未知")
-                bvid = item.get("bvid", "")
-                play = item.get("play", 0)
-                lines.append(f"{idx + 1}. {title}\n   UP: {author} | 播放: {play} | https://www.bilibili.com/video/{bvid}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.warning("Bilibili search_bilibili error: %s", e)
-            return f"B站搜索异常: {e}"
-
-    async def _get_dynamic_feed(self, args: dict[str, Any]) -> str:
-        mid = args.get("mid")
-        if not mid:
-            return "错误: get_dynamic_feed 需要提供 mid 参数。"
-
-        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
-        allowed, reason = validate_url(url)
-        if not allowed:
-            return f"[安全拦截: 请求受限 - {reason}]"
-
-        sessdata = self.manifest.config.get("sessdata", "")
-        if not sessdata:
-            return "提示: 查询 UP 主动态需在插件配置中填入有效的 SESSDATA Cookie。"
-
-        try:
-            resp = await self._client.get(url, params={"host_mid": mid})
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("code") != 0:
-                return f"获取UP主动态失败: {data.get('message', '未知错误')}"
-
-            items = data.get("data", {}).get("items", [])
-            if not items:
-                return f"UP主 (UID: {mid}) 暂无公开动态。"
-
-            lines = [f"UP主 (UID: {mid}) 最近动态:"]
-            for idx, item in enumerate(items[:3]):
-                desc_text = item.get("modules", {}).get("module_dynamic", {}).get("desc", {}).get("text", "")
-                lines.append(f"{idx + 1}. {desc_text[:150]}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.warning("Bilibili get_dynamic_feed error: %s", e)
-            return f"获取UP主动态异常: {e}"
+    async def _get_dynamic_feed(self, args):
+        if not args.get("mid"):
+            return ToolResult.failure("get_dynamic_feed 需要 mid", "invalid_arguments")
+        if not self.manifest.config.get("sessdata"):
+            return ToolResult(status="unsupported", content="查询动态需要配置有效 SESSDATA；当前未查询。", error_code="credentials_missing")
+        return await self._query("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
+                                 {"host_mid": args["mid"]}, content_key="items")

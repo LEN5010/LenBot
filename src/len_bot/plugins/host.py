@@ -6,6 +6,7 @@ from typing import Any, Optional, Callable, Awaitable
 from len_bot.plugins.models import PluginManifest, PluginToolDefinition
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.actions.models import ActionItem
+from len_bot.tools.results import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
     "query_tasks",
     "query_retention",
     "inspect_episode",
+    "tool_search", "read_tool_result", "inspect_image", "search_media",
 })
 
 
@@ -51,7 +53,9 @@ class PluginHost:
         description: str,
         parameters: dict[str, Any],
         handler: Callable[[dict[str, Any]], Awaitable[str]],
-        timeout_seconds: float = 5.0
+        timeout_seconds: float = 5.0,
+        read_only: bool = False,
+        deferred: bool = False,
     ) -> None:
         if name in RESERVED_CORE_TOOLS:
             raise ValueError(
@@ -63,7 +67,7 @@ class PluginHost:
             description=description,
             parameters=parameters,
             handler=handler,
-            timeout_seconds=timeout_seconds
+            timeout_seconds=timeout_seconds, read_only=read_only, deferred=deferred,
         )
         logger.info("Plugin '%s' registered tool '%s'", plugin_id, name)
 
@@ -213,6 +217,10 @@ class PluginHost:
             if self._plugins.get(ptool.plugin_id) and self._plugins[ptool.plugin_id].manifest.enabled
         ]
 
+    def tool_capabilities(self, name: str) -> dict:
+        tool = self._tools.get(name)
+        return {"read_only": bool(tool and tool.read_only), "deferred": bool(tool and tool.deferred)}
+
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         defs = []
         for name, ptool in self._tools.items():
@@ -232,11 +240,11 @@ class PluginHost:
         """Fault-isolated tool execution with timeout guard (Goal 7)."""
         ptool = self._tools.get(tool_name)
         if not ptool:
-            return f"Error: Tool '{tool_name}' not found."
+            return str(ToolResult.failure(f"Tool '{tool_name}' not found.", "not_found"))
 
         plugin = self._plugins.get(ptool.plugin_id)
         if not plugin or not plugin.manifest.enabled:
-            return f"Error: Plugin '{ptool.plugin_id}' is disabled."
+            return str(ToolResult.failure(f"Plugin '{ptool.plugin_id}' is disabled.", "disabled"))
 
         try:
             self.record_plugin_run(ptool.plugin_id)
@@ -244,15 +252,15 @@ class PluginHost:
                 ptool.handler(arguments),
                 timeout=ptool.timeout_seconds
             )
-            return str(result)
+            return str(ToolResult.normalize(result))
         except asyncio.TimeoutError:
             self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' timed out after {ptool.timeout_seconds}s")
             logger.error("Tool '%s' from plugin '%s' timed out after %.1fs", tool_name, ptool.plugin_id, ptool.timeout_seconds)
-            return f"Error: Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s."
+            return str(ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout"))
         except Exception as e:
             self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' crashed: {type(e).__name__} ({e})")
             logger.exception("Tool '%s' from plugin '%s' crashed: %s", tool_name, ptool.plugin_id, e)
-            return f"Error: Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e})."
+            return str(ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__))
 
     async def intercept_action(self, action: ActionItem) -> Optional[ActionItem]:
         """Runs action through active interceptors in sequence with fault protection."""

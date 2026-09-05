@@ -30,7 +30,8 @@ async def test_bilibili_content_plugin_tools():
     context = MagicMock()
     registered_tools = {}
 
-    def mock_reg(name, description, parameters, handler):
+    def mock_reg(name, description, parameters, handler, **capabilities):
+        assert capabilities == {"read_only": True, "deferred": True}
         registered_tools[name] = handler
 
     context.register_tool = mock_reg
@@ -42,7 +43,7 @@ async def test_bilibili_content_plugin_tools():
 
     # 1. Test get_video_info without bvid/aid
     err = await registered_tools["get_video_info"]({})
-    assert "错误" in err
+    assert err.status == "error" and err.error_code == "invalid_arguments"
 
     # 2. Mock Bilibili view API response
     mock_resp = MagicMock()

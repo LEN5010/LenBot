@@ -8,6 +8,7 @@ from typing import Any, Optional
 from len_bot.events.models import Event, EventType
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
+from len_bot.tools.observations import ObservationStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class ReflectionConflictError(ValueError):
     """A newer cursor or understanding requires a fresh quiet-window read."""
 
 
-class EventStore:
+class EventStore(ObservationStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -26,6 +27,7 @@ class EventStore:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
+        await self.initialize_observations()
         
         # 1. Raw Event Store
         await self._db.execute("""

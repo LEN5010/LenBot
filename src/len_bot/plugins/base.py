@@ -28,7 +28,9 @@ class PluginContext:
         name: str,
         description: str,
         parameters: dict[str, Any],
-        handler: Callable[[dict[str, Any]], Awaitable[str]]
+        handler: Callable[[dict[str, Any]], Awaitable[Any]],
+        read_only: bool = False,
+        deferred: bool = False,
     ) -> None:
         """Tool Registration: registers an agentic tool for Cognition."""
         if not self.has_permission(PluginPermission.REGISTER_TOOL):
@@ -39,7 +41,9 @@ class PluginContext:
             description=description,
             parameters=parameters,
             handler=handler,
-            timeout_seconds=self.manifest.timeout_seconds
+            timeout_seconds=self.manifest.timeout_seconds,
+            read_only=read_only,
+            deferred=deferred,
         )
 
     def register_action_interceptor(

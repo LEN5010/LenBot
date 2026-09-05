@@ -38,3 +38,5 @@ class PluginToolDefinition(BaseModel):
     parameters: dict[str, Any]
     handler: Any  # Callable[[dict[str, Any]], Awaitable[str]]
     timeout_seconds: float = 5.0
+    read_only: bool = False
+    deferred: bool = False
