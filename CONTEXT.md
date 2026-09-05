@@ -1,280 +1,34 @@
-# Persistent Social Agent Runtime - Ubiquitous Domain Language (CONTEXT.md)
-
-
-A persistent runtime environment for autonomous social agents that maintains temporal continuity, social relationships, and execution state across scenes, treating LLMs strictly as ephemeral cognitive executors.
-
----
-
-## 1. World & Observation
-
-**Preferred Address**:
-A participant's scene-local preferred form of address, supported by their conversation rather than inferred from account nickname or group card alone.
-_Avoid_: Account identity, inferred real name
-
-**Memory Revision**:
-An evidence-backed correction that refutes an existing belief or replaces it while preserving the original and its provenance.
-_Avoid_: Erasing history, verbal acknowledgement
-
-**Observed Cutoff**:
-The last scene event actually read by a cognitive turn. Later messages remain pending, even when that turn's ordinary chat response is accepted.
-_Avoid_: Latest event, assumed understanding
-
-**Social Revision**:
-The version of the agent's interpreted social understanding, distinct from newly observed message facts.
-_Avoid_: Message counter, scene activity
-
-**Delivery Result**:
-The factual outcome of an outbound attempt: confirmed sent, not sent, explicitly rejected, or uncertain. Only confirmed sent establishes visible participation.
-_Avoid_: Boolean success, assumed delivery
-
-**Event**:
-An immutable, historical record of a factual occurrence in the external world or within the runtime (e.g., `GROUP_MESSAGE_RECEIVED`, `TASK_DUE`, `MESSAGE_SENT`).
-_Avoid_: Message, update, trigger
-
-**Conversation Burst**:
-An ordered group of committed events from one scene, assembled only by short arrival timing and retaining every source event reference.
-_Avoid_: Request, per-user batch, attention trigger
-
-**Burst Assembler**:
-A lightweight temporal assembler that creates conversation bursts without deciding topic, interest, social relevance, or whether cognition should run.
-_Avoid_: Attention engine, classifier, semantic batcher
-
-**Historical Ingestion Gate**:
-An ingress filter that admits delayed or reconnected historical events into the Event Store while suppressing stimulus generation to prevent attention flooding.
-_Avoid_: Message filter, deduplicator
-
-**OneBot Link**:
-The single runtime-owned bridge that receives OneBot events over WebSocket and delivers approved actions through the operator-selected OneBot transport.
-_Avoid_: Plugin connection, message sender, protocol session
-
-**OneBot Connection Mode**:
-Whether LenBot actively connects to a OneBot WebSocket or listens for a OneBot client to connect; both modes feed the same event normalization path.
-_Avoid_: Bot mode, server role, deployment type
-
-**OneBot Action Transport**:
-The explicitly selected protocol used for each approved outbound action (`websocket` or `http`), with no automatic cross-transport retry after an ambiguous send.
-_Avoid_: Fallback channel, redundant sender
-
-**Scene**:
-An isolated conversational or observational space (such as a group chat, private chat, or livestream monitor) possessing its own independent context, ordering, and social dynamics.
-_Avoid_: Channel, room, session, thread
-
-**Scene Actor**:
-A dedicated asynchronous worker coroutine consuming an isolated event queue for a single scene to serialize state mutations and route steering signals.
-_Avoid_: Event loop, thread, listener
-
-**Group Agent Session**:
-The durable working social state of the agent in one scene, restored across runtime restarts and never hidden solely inside model context.
-_Avoid_: LLM session, HTTP session, global conversation state
-
----
-
-## 2. Execution & Cognition
-
-**Persistent Runtime**:
-The enduring agent authority that owns identity, execution state, time awareness, scheduling, and side effects.
-_Avoid_: Bot framework, LLM wrapper, agent loop
-
-**Cognitive Episode**:
-A bounded, ephemeral reasoning process invoked by the runtime to interpret a stimulus and propose actions.
-_Avoid_: Session, chat thread, conversation loop
-
-**Episode Mailbox**:
-An isolated asynchronous channel per running episode that receives contextual events while cognition is in flight.
-_Avoid_: Event listener, input queue
-
-**Steering**:
-An in-flight redirection or cancellation signal injected into an active cognitive episode via its mailbox at step boundaries.
-_Avoid_: Interrupt, abort signal, event override
-
-**Cognitive Tier**:
-The operational capability level of the LLM invoked during an episode (`NORMAL` for everyday banter and standard tools, `DELIBERATE` for deep multi-step reasoning or high-complexity tool outputs).
-_Avoid_: Model size, prompt mode
-
-**Cognition Router**:
-The runtime orchestrator that selects the appropriate model tier and executes dynamic in-flight escalation based on tool result complexity or step depth.
-_Avoid_: Model switcher, prompt dispatcher
-
-**Retrieval Tool Loop**:
-The bounded ReAct loop inside Social Cognition Core through which the model may call history and memory retrieval tools on demand before producing its structured decision.
-_Avoid_: Auto-RAG, per-message memory injection, agent framework
-
-**Tool Budget**:
-The deterministic per-episode ceiling on retrieval tool executions (`max_tool_calls`); exhausting it, or reaching the last loop step, forces a final decision via `tool_choice="none"`.
-_Avoid_: Soft suggestion, retry limit
-
-**Forced Final**:
-A protocol enforcement step in which the retrieval tool loop demands a speak/silence decision from the model instead of allowing further tool calls.
-_Avoid_: Timeout, silent abort
-
-**Model Fallback**:
-The single-hop secondary route target attempted once when the primary provider fails; never chained and never used when identical to the primary.
-_Avoid_: Retry, failover cluster, provider chain
-
-**Model Catalog**:
-The provider-specific, operator-curated list of advertised models available for tier and fallback selection.
-_Avoid_: Global model registry, model marketplace
-
-**Social Core Context**:
-The direct cognitive context composed from core self, group identity, current social and self state, recent raw conversation, unresolved social threads, and the current burst.
-_Avoid_: Generic top-k RAG, prompt history as state
-
-**Proposal**:
-A candidate action, task, memory, or state modification produced by cognition, awaiting runtime validation before execution or commitment.
-_Avoid_: Command, tool call execution, direct action
-
-**Runtime Gate**:
-The authoritative decision boundary that validates and either commits or rejects proposals before any real-world side effect or state mutation occurs.
-_Avoid_: Guardrail, output filter, safety check
-
-**Response Staleness Gate**:
-A validation check within the Runtime Gate that evaluates whether interim scene events have invalidated an episode's proposed action.
-_Avoid_: Delay check, timeout
-
-**Two-Phase Proposal Commit**:
-A transactional gate mechanism where internal state proposals commit immediately, while interaction-dependent states (such as open loops expecting replies) commit only upon external action confirmation (`MESSAGE_SENT`).
-_Avoid_: Distributed commit, sync save
-
----
-
-## 3. Social & Temporal State
-
-**Social World State**:
-The agent's revisable understanding of current topics, social dynamics, open social threads, mood, and latent expectations in one scene.
-_Avoid_: Runtime rule flags, keyword topic map
-
-**Self Social State**:
-The agent's revisable understanding of its own recent participation, social position, interest, speaking inclination, and received feedback in one scene.
-_Avoid_: Speaking score, single budget number
-
-**Working Person Model**:
-Current scene-local knowledge about a participant needed for ongoing conversation, grounded in recent observations and durable memory.
-_Avoid_: User profile row, global identity record
-
-**Relationship Model**:
-Current scene-local knowledge of the agent's interaction history and communication patterns with a participant.
-_Avoid_: Person model, affinity score
-
-**Latent Expectation**:
-A non-obligatory expectation that a future condition may make an unresolved social matter worth reconsidering.
-_Avoid_: Task, timer, automatic notification
-
-**Next Wake Intent**:
-A cognition proposal to observe a scene again at a future time; the scheduler and runtime gate retain all authority to validate and commit it.
-_Avoid_: Model-owned timer, scheduled message
-
-**Pending Next Wake**:
-The single scene-scoped durable task created from an accepted Next Wake Intent; its committed due time and origin mode are the scheduling truth shown to cognition.
-_Avoid_: Session timer, model wake state, retained attention
-
-**Intentional Silence**:
-A successful cognition result in which the agent understood the event and chose not to participate.
-_Avoid_: Dropped event, ignored input, model failure
-
-**Open Loop**:
-An explicit, tracked social or task dependency that has been initiated but not yet concluded (e.g. waiting for user A to answer an inquiry).
-_Avoid_: Pending message, callback, promise
-
-**Task**:
-An explicit future execution intent with a defined target and trigger condition, managed deterministically by the runtime.
-_Avoid_: Reminder, cron job, delayed message
-
-**Task Scheduler**:
-A deterministic, priority min-heap time execution engine that wakes on scheduled deadlines to inject `TASK_DUE` events into the event bus without calling language models.
-_Avoid_: Cron daemon, timer loop
-
-**Execution Scope**:
-An authoritative security and privacy boundary injected by the runtime that rigidly restricts database and retrieval queries to permitted scenes and global items at the SQL layer.
-_Avoid_: Access control list, user role, filter param
-
-**Materialized State Table**:
-An authoritative, directly queryable database record reflecting the current state of runtime entities (scenes, tasks, open loops, memories), updated transactionally with events.
-_Avoid_: Cache, read model, in-memory store
-
-**Trigram FTS5 Index**:
-A native SQLite full-text search index tokenizing character triples without external segmentation dependencies, used for agentic history retrieval across CJK text.
-_Avoid_: Vector index, embedding store
-
----
-
-## 4. Epistemic Memory & Reflection
-
-**Memory**:
-An epistemic belief about the world, persons, or relationships formed from past episodes, possessing explicit provenance and certainty levels.
-_Avoid_: History, chat logs, vector embedding
-
-**Episode Record (L1)**:
-A structured experiential record of a past conversation block containing title, summary, participant list, semantic tags, and source event references.
-_Avoid_: Chat summary, archive
-
-**Memory Certainty**:
-A qualitative assessment of an epistemic belief's reliability (`tentative`, `likely`, `strong`, `explicit`).
-_Avoid_: Confidence float, probability score
-
-**Memory Provenance**:
-The verifiable causal audit chain linking every memory belief back to concrete source event IDs or episode IDs.
-_Avoid_: Memory reference, citation
-
-**Memory Gate**:
-An authoritative gatekeeper that validates evidence provenance, verifies scope bounds, and resolves semantic slot collisions before committing memories.
-_Avoid_: Memory updater, store writer
-
-**Semantic Slot**:
-A unique epistemic coordinate defined by `(subject, kind, key, scope)` representing a specific facet of an entity's state (e.g. user:1001 preference for hotpot).
-_Avoid_: Key-value pair, property
-
-**Memory Superseding**:
-A conflict resolution policy where newly confirmed contradictory beliefs supersede older records by setting their status to `superseded` rather than physically overwriting or deleting historical truth.
-_Avoid_: Delete, in-place update
-
-**Micro-Reflection**:
-A background cognitive consolidation job triggered after a conversation quiets down, transforming raw events into L1 episodes and proposing L2 social beliefs.
-_Avoid_: Auto-summary, offline cleanup
-
-**Identity Core**:
-The stable, long-term layer of the persona expressed as observable behavioural tendencies (how it treats friends versus strangers, when it is serious or dismissive, its humour and conflict style).
-_Avoid_: Static prompt string, adjective list, mood simulator
-
-**Group Register**:
-Per-scene factual statistics of how the group actually chats (message length, fragmentation, punctuation, emoji, questions, common short reactions), rendered as style context only and never consulted by decisions.
-_Avoid_: Style rule engine, accommodation enforcer, vocabulary copier
-
-**Voice Exemplar**:
-A curated, operator-authored example with conversational context, used as a stable reference for expression. It is not evidence of a real conversation or a response to copy verbatim.
-_Avoid_: Past speech claim, template reply, training data claim
-
-**Deferred Cognition**:
-Long-horizon social understanding proposed by quiet-window reflection. It can revise earlier beliefs, while newer understanding takes precedence over an outdated reflection.
-_Avoid_: Second cognition agent, blocking pre-send work, wholesale world rewrite
-
----
-
-## 5. Proactive Agency & Safety
-
-**Hard Speaking Ceiling**:
-A deterministic anti-loop and spam safety limit that rejects extreme output patterns without deciding normal social timing.
-_Avoid_: Social judgement, participation heuristic
-
-**Monologue Prevention**:
-A hard safety ceiling on extreme consecutive output without human intervention, not a judgement of normal social timing.
-_Avoid_: Spam check, flood gate
-
-**Retained Attention**:
-A scene-local cognitive note that something remains interesting without creating a task or requiring an immediate visible action.
-_Avoid_: Reminder, pending reply, hidden task
-
-**Projected Social Context**:
-A model-facing view of immutable OneBot events that replaces transport-only CQ payloads with compact semantic markers and rolls out the oldest raw messages only when the configured token budget is reached.
-_Avoid_: Raw-history rewrite, summary-only context, fixed message-count window
-
----
-
-## 6. Testing & Verification
-
-**Scenario Runner**:
-An offline test execution harness that feeds timestamped event traces into the runtime to assert deterministic state transitions, cognitive decisions, and gate outcomes.
-_Avoid_: Mock framework, integration test
-
-**Social Continuity Error**:
-A behavioral failure where the agent loses or misapplies scene context, speaker relationships, topic/thread identity, its own recent behavior, or conversational timing.
-_Avoid_: Wrong answer only, generic hallucination rate
+# 领域术语
+
+此文件只定义现行领域语言；运行路径见 [架构](docs/architecture.md)，实施状态见 [实施记录](docs/implementation.md)。
+
+| 术语 | 含义与边界 |
+|---|---|
+| Persistent Runtime | 持续存在的 Agent 权威，拥有时间、状态和行动生命周期 |
+| Event | 不可变的原始观察或内部事实，不等同于消息或模型结论 |
+| Scene | 群聊或私聊的隔离范围，也是检索和证据的权限边界 |
+| SceneActor | 场景事实与 Session 的单写者，不等待模型推理 |
+| Burst | 仅按到达时间聚合的一组有序场景事件 |
+| GroupAgentSession | 持久工作认识，不是模型聊天历史 |
+| Social Core | 解释社会场景、按需查询并提出行动的临时认知过程 |
+| Observed Cutoff | 该轮实际读到的事件截点，晚到输入保持未读 |
+| Social Revision | 社会理解版本，不是输入消息计数 |
+| Episode Lease / Mailbox | 一轮社会认知的执行权及步骤边界输入通道 |
+| Proposal / RuntimeGate | 候选更新及其权威事务边界，模型没有直接执行权 |
+| Cognitive Tier | normal/deliberate 能力路由，不是 FAST/FULL 双轨 |
+| Tool Budget / Forced Final | 模型和工具的硬额度，耗尽后必须收束，不假称完成 |
+| Tool Observation | 工具取得的原始资料或错误，不等于已证明的现实结论 |
+| Agent Job | 由 Runtime 管理的信息型工作，社会认知决定目标和表达，执行器只读工具并返回结果；实现状态见实施记录 |
+| Preferred Address | 从发言证据形成的场景称呼偏好，独立于昵称和群名片 |
+| Memory Revision | 有证据的撤销/替代，保留原认识及修订理由 |
+| Social World / Self State | 对话题、人际与自身参与的可修订认识，不是运行时规则 |
+| Retained Attention | 保留兴趣的软状态，不能自动生成任务 |
+| Future Attention / Next Wake | 认知提出的未来观察意图，经 Gate 变成持久调度任务 |
+| Task | 有来源、目标和触发条件的执行义务，到期不等于履约 |
+| OpenLoop | 经确认送达后激活的社会期待，不是后台工作队列 |
+| DeliveryResult | sent/not_sent/rejected/unknown 四种事实结果，unknown 不自动重发 |
+| Shadow | 只记录候选，没有物理发送和社会送达事实 |
+| Simulated Delivery | 隔离评测中的虚拟回执，不能计为真实人类互动 |
+| Reflection | 提出认识、版本化补丁和核对事项，无任务或发送权 |
+| ExecutionScope | SQL/存储层约束的允许场景集合，不能由模型扩大 |
+| OneBot Link / Transport | 唯一事件连接及显式选择的发送通道，不作跨通道重试 |
