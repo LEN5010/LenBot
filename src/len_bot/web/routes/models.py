@@ -9,7 +9,7 @@ import time
 from typing import Optional
 from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, model_validator
-from len_bot.cognition.providers import ProviderConfig, RouteTarget, RoutingConfig
+from len_bot.cognition.providers import ProviderConfig, RouteTarget, RoutingConfig, ProviderRegistry
 from len_bot.cognition.router import CognitiveTier
 from len_bot.web.auth import get_current_user
 
@@ -33,17 +33,24 @@ class RoutingUpdateRequest(BaseModel):
     deliberate_model: str
     fallback_provider_id: Optional[str] = None
     fallback_model: Optional[str] = None
+    vision_provider_id: Optional[str] = None
+    vision_model: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_optional_pairs(self):
         if bool(self.fallback_provider_id) != bool(self.fallback_model):
             raise ValueError("回退供应商和回退模型必须同时设置")
+        if bool(self.vision_provider_id) != bool(self.vision_model):
+            raise ValueError("视觉供应商和模型必须同时设置")
         return self
 
 
 async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: RoutingConfig) -> None:
-    await runtime.provider_registry.apply_update(providers, routing)
-    await runtime.event_store.save_dynamic_config("provider_config", runtime.provider_registry.export())
+    async with runtime.config_update_lock:
+        candidate = ProviderRegistry()
+        await candidate.apply_update(providers, routing)
+        await runtime.event_store.save_dynamic_config("provider_config", candidate.export())
+        await runtime.provider_registry.apply_update(providers, routing)
 
 
 @router.get("/providers")
@@ -122,6 +129,8 @@ async def save_provider_models(
     route_targets = [routing.normal, routing.deliberate]
     if routing.fallback is not None:
         route_targets.append(routing.fallback)
+    if routing.vision is not None:
+        route_targets.append(routing.vision)
     active_models = {
         target.model
         for target in route_targets
@@ -158,6 +167,9 @@ async def update_routing(req: RoutingUpdateRequest, request: Request, user: str 
             if req.fallback_provider_id and req.fallback_model
             else None
         ),
+        vision=(RouteTarget(provider_id=req.vision_provider_id, model=req.vision_model.strip())
+                if req.vision_provider_id and req.vision_model else None)
+            if "vision_provider_id" in req.model_fields_set else RoutingConfig.model_validate(snap["routing"]).vision,
     )
     try:
         await _persist_and_apply(runtime, providers, routing)
@@ -169,6 +181,7 @@ async def update_routing(req: RoutingUpdateRequest, request: Request, user: str 
 class ModelTestRequest(BaseModel):
     provider_id: str
     model: str
+    image_test: bool = False
 
 
 @router.post("/test")
@@ -180,21 +193,34 @@ async def test_model_connection(req: ModelTestRequest, request: Request, user: s
         raise HTTPException(status_code=404, detail=f"未找到供应商“{req.provider_id}”")
 
     from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url, timeout=30.0)
+    client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url, timeout=30.0, max_retries=0)
     start_t = time.time()
     try:
+        content = "这是连接测试，请只回复：连接正常"
+        if req.image_test:
+            import base64, io
+            from PIL import Image, ImageDraw, ImageFont
+            picture = Image.new("RGB", (240, 120), "white")
+            ImageDraw.Draw(picture).text((30, 15), "37", fill="black", font=ImageFont.load_default(size=72))
+            buffer = io.BytesIO()
+            picture.save(buffer, format="PNG")
+            content = [{"type": "text", "text": "读出图中的两位数字，只返回数字。"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()}}]
         completion = await client.chat.completions.create(
             model=req.model,
-            messages=[{"role": "user", "content": "这是连接测试，请只回复：连接正常"}],
-            max_tokens=10,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=128 if req.image_test else 10,
             temperature=0.1
         )
         latency_ms = int((time.time() - start_t) * 1000)
         reply = completion.choices[0].message.content or ""
-        return {"success": True, "latency_ms": latency_ms, "response": reply.strip(), "model": req.model}
+        return {"success": reply.strip() == "37" if req.image_test else True, "latency_ms": latency_ms, "response": reply.strip(), "model": req.model,
+                "test": "image_reading" if req.image_test else "connection", "expected": "37" if req.image_test else None}
     except Exception as e:
         latency_ms = int((time.time() - start_t) * 1000)
         return {"success": False, "latency_ms": latency_ms, "error": str(e)}
+    finally:
+        await client.close()
 
 
 @router.get("/metrics")

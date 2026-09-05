@@ -38,6 +38,8 @@ class RuntimeConfig(BaseModel):
     job_max_seconds: float = Field(default=300.0, gt=0)
     job_context_tokens: int = Field(default=64000, ge=4000)
     job_max_concurrent: int = Field(default=2, ge=1)
+    media_enabled: bool = Field(default_factory=lambda: os.getenv("MEDIA_ENABLED", "true").lower() in {"true", "1", "yes"})
+    message_pacing: bool = True
 
     # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
     reflection_quiet_window_seconds: float = Field(
