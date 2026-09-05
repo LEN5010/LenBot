@@ -28,3 +28,6 @@ class LogRingBuffer(logging.Handler):
         if level:
             rows = [r for r in rows if r["level"] == level.upper()]
         return rows[:limit]
+
+    def clear(self) -> None:
+        self.buffer.clear()
