@@ -13,6 +13,7 @@ import EventsLogsView from './views/EventsLogsView.vue'
 import ReplayView from './views/ReplayView.vue'
 import SettingsView from './views/SettingsView.vue'
 import JobsView from './views/JobsView.vue'
+import MediaView from './views/MediaView.vue'
 
 const NAV = [
   { id: 'overview', label: '概览', icon: '⌂', comp: OverviewView },
@@ -20,6 +21,7 @@ const NAV = [
   { id: 'trace', label: '动态', icon: '↗', comp: TraceView },
   { id: 'tasks', label: '计划', icon: '◷', comp: TasksLoopsView },
   { id: 'jobs', label: '工作', icon: '⌕', comp: JobsView },
+  { id: 'media', label: '图片', icon: '▧', comp: MediaView },
   { id: 'memory', label: '记忆', icon: '◇', comp: MemoryView },
   { id: 'models', label: '模型', icon: '✦', comp: ModelsView },
   { id: 'plugins', label: '能力', icon: '＋', comp: PluginsView },

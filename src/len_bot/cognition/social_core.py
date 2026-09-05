@@ -73,6 +73,7 @@ class SocialCoreContextAssembler:
             "due_at 是按当前时区换算的 Unix 秒，优先绝对时间，不清楚先问，不把过期承诺重新解释为从现在再等几小时。\n"
             "社会话题 open_threads 和 Runtime OpenLoop 不同。resolve_open_loop_ids 只允许使用 active_open_loops 中的真实ID；reply_to 只用 OneBotMessageID，不用 EventID。\n"
             "当轮决定 silence 不带消息；speak 可带一至三条各自有意义的消息，不机械拆句、不强制短句或无标点。任务确认和履约各自只能关联一条消息。\n"
+            "图片需要时通过 inspect_image 实际查看；未配置/失败时不能猜图。发送图片使用 segments 的 image 类型和获准 asset_id，文字用 text 类型；不要自己拼CQ码、路径或URL。表情先查 search_media，适合才用，不强制配图。\n"
             "所有理解更新省略未变化字段；列表用 *_add / *_remove。原始证据引用真实 EventID；别为填满schema重复世界状态。summary 和 reason 是简短内部记录，不要写进群聊回复。\n"
             "最简沉默：{\"perception\":{\"summary\":\"两人在接梗\"},\"decision\":{\"action\":\"silence\",\"reason\":\"没有自然插话位置\"}}\n"
             "最简发言：{\"perception\":{\"summary\":\"A说事情处理好了\"},\"decision\":{\"action\":\"speak\",\"reason\":\"回应A\"},\"message_proposals\":[{\"content\":\"那就好呀\"}]}\n"
@@ -242,7 +243,23 @@ class SocialCognitionCore:
         tool_calls_used = 0
         contract_repairs = 0
         final_followup = False
+        model_steps_used = 0
         active_open_loop_ids = {item["id"] for item in active_open_loops}
+
+        async def charge_model():
+            nonlocal model_steps_used
+            if model_steps_used >= max_steps:
+                raise RuntimeError("Model-step budget exhausted")
+            model_steps_used += 1
+            trace["model_calls_used"] = model_steps_used
+
+        async def charge_nested_model():
+            if max_steps - model_steps_used <= 1:
+                raise ValueError("视觉调用额度不足，需保留最终回应步骤")
+            await charge_model()
+
+        if toolkit is not None:
+            toolkit.before_nested_model = charge_nested_model
 
         async def incorporate() -> bool:
             if observe is None:
@@ -255,21 +272,25 @@ class SocialCognitionCore:
             return True
 
         for step in range(max_steps):
+            remaining_steps = max_steps - model_steps_used
+            if remaining_steps <= 0:
+                break
             if toolkit and step:
                 # Discovery changes subsequent requests without restarting the episode.
                 tools = list(toolkit.get_tool_definitions()) + [tool for tool in tools if tool["function"]["name"] == "request_deliberate"]
-            if not final_followup and max_steps - step >= 3 and tool_calls_used < max_tool_calls:
+            if not final_followup and remaining_steps >= 3 and tool_calls_used < max_tool_calls:
                 await incorporate()
             self._fit_context(working_messages, tools, trace)
             if self.checkpoint:
                 await self.checkpoint("before_model", {"scene_id": session.scene_id, "step": step,
                     "messages": copy.deepcopy(working_messages), "tools": copy.deepcopy(tools)})
             if self.mock_handler:
+                await charge_model()
                 result = SocialCognitionResult.model_validate(await self.mock_handler(copy.deepcopy(working_messages)))
                 if self.checkpoint:
                     await self.checkpoint("after_model", {"scene_id": session.scene_id, "step": step, "result": result.model_dump(mode="json")})
                 working_messages.append({"role": "assistant", "content": result.model_dump_json(exclude_none=True)})
-                if not final_followup and max_steps - step - 1 >= 3 and tool_calls_used < max_tool_calls and await incorporate():
+                if not final_followup and max_steps - model_steps_used >= 3 and tool_calls_used < max_tool_calls and await incorporate():
                     working_messages[-1]["content"] += "\n最后一次吸收新增消息，观察截点已固定。保留已有工具结果，剩余预算内完成必要查询后决定；之前草稿未发送。"
                     final_followup = True
                     trace["final_followups"] = 1
@@ -277,13 +298,14 @@ class SocialCognitionCore:
                 if commit is None or await commit(result, trace):
                     return result, trace
                 raise RuntimeError("Final decision rejected at commit boundary; input remains pending")
-            force_final = step == max_steps - 1 or tool_calls_used >= max_tool_calls
+            force_final = remaining_steps == 1 or tool_calls_used >= max_tool_calls
             response, resolution, used_fallback, latency = await self._call_model(
                 tier=tier,
                 messages=working_messages,
                 tools=tools,
                 tool_choice="none" if force_final and tools else None,
                 attempts=trace.setdefault("attempts", []),
+                before_attempt=charge_model,
             )
             usage = getattr(response, "usage", None)
             if self.metrics:
@@ -448,7 +470,7 @@ class SocialCognitionCore:
                         + ", ".join(sorted(invalid_loop_ids))
                     )
             except Exception as contract_error:
-                if contract_repairs >= 1 or step >= max_steps - 1:
+                if contract_repairs >= 1 or model_steps_used >= max_steps:
                     raise
                 contract_repairs += 1
                 trace.setdefault("contract_repairs", []).append({"step": step, "error": str(contract_error)})
@@ -465,7 +487,7 @@ class SocialCognitionCore:
                 continue
 
             working_messages.append({"role": "assistant", "content": content})
-            if not final_followup and max_steps - step - 1 >= 3 and tool_calls_used < max_tool_calls and await incorporate():
+            if not final_followup and max_steps - model_steps_used >= 3 and tool_calls_used < max_tool_calls and await incorporate():
                 working_messages[-1]["content"] += "\n最后一次吸收新增消息，观察截点已固定。保留已有工具结果，剩余预算内完成必要查询后决定；之前草稿未发送。"
                 final_followup = True
                 trace["final_followups"] = 1

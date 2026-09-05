@@ -234,8 +234,18 @@ class OneBotAdapter:
 
     def _action_payload(self, action: ActionItem) -> tuple[str, dict]:
         endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
-        msg_text = f"[CQ:reply,id={action.reply_to}]{action.content}" if action.reply_to else action.content
-        params = {"message": msg_text}
+        parts = [{"type": "reply", "data": {"id": str(action.reply_to)}}] if action.reply_to else []
+        if action.segments:
+            for segment in action.segments:
+                if segment.type == "text":
+                    parts.append({"type": "text", "data": {"text": segment.text}})
+                else:
+                    if segment.asset_id not in action.resolved_images:
+                        raise ValueError("Image asset has not been resolved by the runtime")
+                    parts.append({"type": "image", "data": {"file": action.resolved_images[segment.asset_id]}})
+        else:
+            parts.append({"type": "text", "data": {"text": action.content}})
+        params = {"message": parts}
         target_id = action.scene_id.split(":")[-1]
         if action.action_type == ActionType.SEND_GROUP_MESSAGE:
             params["group_id"] = int(target_id)
@@ -309,6 +319,21 @@ class OneBotAdapter:
 
         msg_type = data.get("message_type")
         raw_text = data.get("raw_message", "")
+        if not raw_text and isinstance(data.get("message"), list):
+            parts = []
+            for segment in data["message"]:
+                if not isinstance(segment, dict):
+                    continue
+                kind, detail = segment.get("type"), segment.get("data", {})
+                if kind == "text":
+                    parts.append(str(detail.get("text", "")))
+                elif kind == "at":
+                    parts.append(f"[CQ:at,qq={detail.get('qq', '')}]")
+                elif kind == "reply":
+                    parts.append(f"[CQ:reply,id={detail.get('id', '')}]")
+                else:
+                    parts.append("[图片]" if kind == "image" else f"[{kind}]")
+            raw_text = "".join(parts)
         msg_time = float(data.get("time", time.time()))
 
         if msg_type == "group":
@@ -365,7 +390,8 @@ class OneBotAdapter:
                 "raw_text": raw_text,
                 "at_bot": at_bot,
                 "reply_bot": reply_bot,
-                "sender": sender_snapshot
+                "sender": sender_snapshot,
+                "segments": data.get("message") if isinstance(data.get("message"), list) else None,
             }
         )
 

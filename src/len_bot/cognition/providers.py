@@ -41,6 +41,7 @@ class RoutingConfig(BaseModel):
     normal: RouteTarget
     deliberate: RouteTarget
     fallback: RouteTarget | None = None
+    vision: RouteTarget | None = None
 
 
 @dataclass
@@ -73,6 +74,8 @@ class ProviderRegistry:
         targets = [routing.normal, routing.deliberate]
         if routing.fallback is not None:
             targets.append(routing.fallback)
+        if routing.vision is not None:
+            targets.append(routing.vision)
         for target in targets:
             if target.provider_id not in seen:
                 raise ValueError(f"Route references unknown provider: {target.provider_id}")
@@ -135,6 +138,21 @@ class ProviderRegistry:
                 timeout=provider.timeout_seconds,
                 max_retries=0,
             )
+            self._clients[provider.id] = client
+            self._fingerprints[provider.id] = _connection_fingerprint(provider)
+        return RouteResolution(provider_id=provider.id, model=target.model, client=client)
+
+    def resolve_vision(self) -> RouteResolution:
+        if self._routing is None or self._routing.vision is None:
+            raise LookupError("未配置独立视觉模型")
+        target = self._routing.vision
+        provider = self._providers.get(target.provider_id)
+        if provider is None or not provider.enabled:
+            raise LookupError("视觉模型供应商不可用")
+        client = self._clients.get(provider.id)
+        if client is None:
+            client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url,
+                                 timeout=provider.timeout_seconds, max_retries=0)
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
         return RouteResolution(provider_id=provider.id, model=target.model, client=client)

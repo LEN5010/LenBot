@@ -78,6 +78,7 @@ class InformationJobRunner:
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
             read_only_only=True, checkpoint=runtime.evaluation_hook)
+        toolkit.media_service = runtime.media_service
         last_charge = time.monotonic()
         revision, messages, repairs = None, [], 0
         trace = {"job_id": job_id, "steps": [], "attempts": []}
@@ -104,6 +105,8 @@ class InformationJobRunner:
                 runtime.metrics.inc_social("jobs_finished")
                 return True
             return False
+
+        toolkit.before_nested_model = lambda: charge(revision, model_steps=1)
 
         try:
             while self.running and config.jobs_enabled:

@@ -1,14 +1,16 @@
 from enum import StrEnum
 from typing import Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
+from len_bot.media.models import MessageSegment, normalize_message_body
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
     ACTION = "ACTION"
 
 class MessageProposal(BaseModel):
-    content: str = Field(description="The natural language message to send")
+    content: str = Field(default="", description="Legacy text message; use segments for text/image combinations")
+    segments: list[MessageSegment] = Field(default_factory=list)
     reply_to: Optional[str] = Field(default=None, description="OneBot message_id to quote-reply")
     expect_reply: bool = Field(default=False, description="Whether this message expects an answer from a specific user")
     reply_target: Optional[str] = Field(default=None, description="Actor ID expected to respond (e.g. user:123)")
@@ -17,6 +19,10 @@ class MessageProposal(BaseModel):
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None
+
+    @model_validator(mode="after")
+    def normalize_body(self):
+        return normalize_message_body(self)
 
 class TaskProposal(BaseModel):
     operation: str = "create"

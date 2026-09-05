@@ -1,147 +1,181 @@
 import asyncio
 import logging
-import time
 from typing import Optional, Callable, Awaitable
-from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
+from len_bot.actions.models import ActionItem, DeliveryResult, DeliveryStatus
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
 
 logger = logging.getLogger(__name__)
 
+
 class ActionQueue:
-    def __init__(
-        self,
-        event_store: EventStore,
-        send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
-        on_action_event: Optional[Callable[[Event], Awaitable[None]]] = None,
-        bot_actor_id: str = "system:action_queue",
-        action_interceptor: Optional[Callable[[ActionItem], Awaitable[Optional[ActionItem]]]] = None,
-        shadow_probe: Optional[Callable[[], bool]] = None,
-        shadow_recorder: Optional[Callable[[ActionItem], Awaitable[None]]] = None
-    ):
-        self.event_store = event_store
-        self.send_adapter = send_adapter
-        self.on_action_event = on_action_event
-        self.bot_actor_id = bot_actor_id
+    """Per-scene ordering with bounded global delivery and batch failure semantics."""
+    def __init__(self, event_store: EventStore,
+                 send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
+                 on_action_event=None, bot_actor_id="system:action_queue", action_interceptor=None,
+                 shadow_probe=None, shadow_recorder=None):
+        self.event_store, self.send_adapter = event_store, send_adapter
+        self.on_action_event, self.bot_actor_id = on_action_event, bot_actor_id
         self.action_interceptor = action_interceptor
-        # ADR-0023 Shadow Mode: shadow_probe() True → record instead of send.
-        self.shadow_probe = shadow_probe
-        self.shadow_recorder = shadow_recorder
+        self.shadow_probe, self.shadow_recorder = shadow_probe, shadow_recorder
         self._queue: asyncio.Queue[ActionItem] = asyncio.Queue()
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_task = None
         self._running = False
+        self._scene_queues = {}
+        self._scene_workers = {}
+        self._delivery_slots = asyncio.Semaphore(4)
+        self._failed_batches = set()
+        self._attempted = set()
         self.checkpoint = None
         self.simulated = False
+        self.pacing = False
+        self.sleep = asyncio.sleep
+        self.validate_before_send = None
+        self.scene_shadow_probe = None
 
-    async def start(self) -> None:
+    async def start(self):
         self._running = True
         self._worker_task = asyncio.create_task(self._worker_loop())
 
-    async def stop(self) -> None:
+    async def stop(self):
         self._running = False
-        if self._worker_task:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
+        tasks = [task for task in [self._worker_task, *self._scene_workers.values()] if task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for queue in [self._queue, *self._scene_queues.values()]:
+            while not queue.empty():
+                action = queue.get_nowait()
+                try:
+                    await self._reject(action, "队列已停止，未发送", unknown=False)
+                finally:
+                    queue.task_done()
+                    if queue is not self._queue:
+                        self._queue.task_done()
+        self._scene_workers.clear()
+        self._scene_queues.clear()
+        self._failed_batches.clear()
 
-    def enqueue(self, action: ActionItem) -> None:
+    def enqueue(self, action):
         self._queue.put_nowait(action)
 
-    async def _emit(self, event: Event, associated_open_loop=None) -> None:
+    async def _emit(self, event, associated_open_loop=None):
         if self.on_action_event:
             await self.on_action_event(event)
         else:
-            await self.event_store.commit_scene_event(
-                event=event, scene_state_data={}, associated_open_loop=associated_open_loop,
-            )
+            await self.event_store.commit_scene_event(event=event, scene_state_data={}, associated_open_loop=associated_open_loop)
 
-    async def _process(self, action: ActionItem) -> None:
+    @staticmethod
+    def _payload(action):
+        return {"action_id": action.id, "raw_text": action.content, "content": action.content,
+                "segments": [segment.model_dump() for segment in action.segments],
+                "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
+                "job_id": action.job_id, "job_revision": action.job_revision,
+                "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
+                "source_started_at": action.source_started_at}
+
+    def _shadow(self, action):
+        return (action.origin_mode == "shadow" or bool(self.shadow_probe and self.shadow_probe())
+                or bool(self.scene_shadow_probe and self.scene_shadow_probe(action.scene_id)))
+
+    async def _reject(self, action, reason, *, unknown=False):
+        await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
+            actor_id=self.bot_actor_id, timestamp=self.event_store.clock(), metadata={"simulated": self.simulated},
+            payload={**self._payload(action), "error": reason, "delivery_unknown": unknown,
+                     "delivery_status": "unknown" if unknown else "not_sent"}))
+        return False
+
+    async def _record_shadow(self, action):
+        if self.shadow_recorder:
+            await self.shadow_recorder(action)
+        await self._emit(Event(event_type=EventType.ACTION_SHADOWED, scene_id=action.scene_id,
+            actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
+            payload={**self._payload(action), "origin_mode": "shadow"}))
+        return True
+
+    async def _validate(self, action):
+        if action.job_id:
+            await self.event_store.validate_job_message(action.scene_id, action.job_id, action.job_revision, bool(action.fulfils_task_id))
+        if self.validate_before_send:
+            await self.validate_before_send(action)
+
+    async def _process(self, action):
         if self.checkpoint:
             await self.checkpoint("before_send", {"scene_id": action.scene_id, "action": action.model_dump(mode="json")})
         original = action
-        failure_reason = ""
-        if self.action_interceptor:
-            try:
-                action = await self.action_interceptor(action)
-                if action is None:
-                    failure_reason = "发送被安全检查阻止"
-            except Exception as error:
-                failure_reason = f"发送检查失败：{error}"
-                action = None
-        if action is None:
-            await self._emit(Event(
-                event_type=EventType.MESSAGE_SEND_FAILED, scene_id=original.scene_id,
-                actor_id=self.bot_actor_id, timestamp=self.event_store.clock(), payload={
-                    "action_id": original.id, "fulfils_task_id": original.fulfils_task_id,
-                    "error": failure_reason, "delivery_unknown": False,
-                },
-            ))
-            return
-
-        if action.job_id:
-            try:
-                await self.event_store.validate_job_message(action.scene_id, action.job_id, action.job_revision, bool(action.fulfils_task_id))
-            except ValueError as error:
-                await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
-                    actor_id=self.bot_actor_id, payload={"action_id": action.id, "fulfils_task_id": action.fulfils_task_id,
-                        "error": str(error), "delivery_status": "rejected", "delivery_unknown": False}))
-                return
-
-        shadow = bool(self.shadow_probe and self.shadow_probe()) or action.origin_mode == "shadow"
-        if shadow:
-            if self.shadow_recorder:
-                await self.shadow_recorder(action)
-            await self._emit(Event(
-                event_type=EventType.ACTION_SHADOWED, scene_id=action.scene_id,
-                actor_id=self.bot_actor_id, payload={
-                    "action_id": action.id, "fulfils_task_id": action.fulfils_task_id,
-                    "content": action.content, "origin_mode": "shadow",
-                },
-            ))
-            return
-
+        if action.batch_id in self._failed_batches:
+            return await self._reject(action, "同组前一片段未确认送达，停止剩余片段")
         try:
-            delivery = await self.send_adapter(action) if self.send_adapter else DeliveryResult(
-                status=DeliveryStatus.NOT_SENT, transport="none", error="未配置发送适配器",
-            )
+            if self.action_interceptor:
+                action = await self.action_interceptor(action)
+            if action is None:
+                return await self._reject(original, "发送被检查阻止")
+            await self._validate(action)
         except Exception as error:
-            delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter",
-                                      error_code=type(error).__name__, error="发送适配器异常，结果不确定")
+            return await self._reject(original, f"发送检查失败：{error}")
+        if self._shadow(action):
+            return await self._record_shadow(action)
+        async with self._delivery_slots:
+            try:
+                await self._validate(action)
+            except Exception as error:
+                return await self._reject(action, str(error))
+            if self._shadow(action):
+                return await self._record_shadow(action)
+            try:
+                if self.send_adapter:
+                    self._attempted.add(action.id)
+                    delivery = await self.send_adapter(action)
+                else:
+                    delivery = DeliveryResult(status=DeliveryStatus.NOT_SENT, transport="none", error="未配置发送适配器")
+            except Exception as error:
+                delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter", error_code=type(error).__name__, error="发送适配器异常，结果不确定")
         success = delivery.status == DeliveryStatus.SENT
-        event = Event(
-            event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
+        event = Event(event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
-            metadata={"simulated": self.simulated},
-            payload={
-                "action_id": action.id, "raw_text": action.content, "content": action.content,
-                "origin_mode": "simulated" if self.simulated else action.origin_mode,
-                "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
-                "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN,
-                "error": delivery.error, "delivery_status": delivery.status.value,
-                "transport": delivery.transport, "error_code": delivery.error_code,
-                "message_id": delivery.message_id,
-                "source_started_at": action.source_started_at,
+            metadata={"simulated": self.simulated, "media": [{"asset_id": segment.asset_id, "type": "image"} for segment in action.segments if segment.type == "image"]},
+            payload={**self._payload(action), "origin_mode": "simulated" if self.simulated else action.origin_mode,
+                "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN, "error": delivery.error,
+                "delivery_status": delivery.status.value, "transport": delivery.transport,
+                "error_code": delivery.error_code, "message_id": delivery.message_id,
                 "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
-                    if action.source_started_at is not None else None,
-            },
-        )
+                    if action.source_started_at is not None else None})
         if success and action.associated_open_loop:
             event.metadata["associated_open_loop"] = action.associated_open_loop
         await self._emit(event, action.associated_open_loop if success else None)
+        self._attempted.discard(action.id)
         if self.checkpoint:
             await self.checkpoint("after_send", {"scene_id": action.scene_id, "event": event.model_dump(mode="json")})
+        return success
 
-    async def _worker_loop(self) -> None:
+    async def _worker_loop(self):
         while self._running:
             action = await self._queue.get()
+            queue = self._scene_queues.setdefault(action.scene_id, asyncio.Queue())
+            queue.put_nowait(action)
+            worker = self._scene_workers.get(action.scene_id)
+            if worker is None or worker.done():
+                worker = asyncio.create_task(self._scene_loop(action.scene_id, queue))
+                self._scene_workers[action.scene_id] = worker
+
+    async def _scene_loop(self, scene_id, queue):
+        while self._running:
+            action = await queue.get()
             try:
-                await self._process(action)
+                if self.pacing and action.batch_index > 0 and action.batch_id not in self._failed_batches:
+                    await self.sleep(min(2.0, max(0.6, len(action.content)/40.0)))
+                if not await self._process(action) and action.batch_id:
+                    self._failed_batches.add(action.batch_id)
             except asyncio.CancelledError:
+                await self._reject(action, "发送队列中断", unknown=action.id in self._attempted)
                 raise
             except Exception:
-                # A failed confirmation stays awaiting_delivery and becomes unknown on recovery.
-                logger.exception("Action processing failed for %s", action.id)
+                if action.batch_id:
+                    self._failed_batches.add(action.batch_id)
+                logger.exception("Action processing failed for %s; unconfirmed delivery requires review", action.id)
             finally:
+                self._attempted.discard(action.id)
+                if action.batch_id and action.batch_index == action.batch_size-1:
+                    self._failed_batches.discard(action.batch_id)
+                queue.task_done()
                 self._queue.task_done()

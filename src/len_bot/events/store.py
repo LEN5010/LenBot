@@ -10,6 +10,7 @@ from len_bot.memory.writes import validate_memory_proposal, commit_memory_propos
 from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
+from len_bot.media.store import MediaStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class ReflectionConflictError(ValueError):
     """A newer cursor or understanding requires a fresh quiet-window read."""
 
 
-class EventStore(ObservationStoreMixin, JobStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -30,6 +31,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin):
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
         await self.initialize_jobs()
+        await self.initialize_media()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -475,16 +477,17 @@ class EventStore(ObservationStoreMixin, JobStoreMixin):
         if not refs:
             return events
         cursor = await self._db.execute(
-            "SELECT id, actor_id, payload FROM events WHERE scene_id=? AND "
+            "SELECT id, actor_id, payload,metadata FROM events WHERE scene_id=? AND "
             "CAST(json_extract(payload, '$.message_id') AS TEXT) IN (" + ",".join("?" for _ in refs) + ")",
             (scene_id, *sorted(refs)),
         )
         quotes = {}
-        for event_id, actor_id, payload_json in await cursor.fetchall():
+        for event_id, actor_id, payload_json, metadata_json in await cursor.fetchall():
             payload = json.loads(payload_json)
             quotes[str(payload["message_id"])] = {
                 "event_id": event_id, "actor_id": actor_id,
                 "text": payload.get("raw_text") or payload.get("content", ""),
+                "media": json.loads(metadata_json).get("media", []),
             }
         projected = []
         for event in events:
@@ -961,6 +964,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin):
         advance_session_observation: bool = True,
     ) -> int:
         """Write inside the caller's locked transaction; no commit authority here."""
+        await self.register_event_media_in_transaction(event)
         payload_str = json.dumps(event.payload, ensure_ascii=False)
         metadata_str = json.dumps(event.metadata, ensure_ascii=False)
 
@@ -1709,6 +1713,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin):
                     committed_memories.append(mem_item)
 
                 for message in job_messages or []:
+                    for segment in message.segments:
+                        if segment.type == "image" and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
+                            raise ValueError("Message image is disabled or outside the scene")
                     if message.job_id:
                         await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
                     elif message.fulfils_task_id and await self.get_job(message.fulfils_task_id, scene_id):

@@ -34,6 +34,13 @@ class RuntimeQueryService:
         task = await self.get_task(job_id)
         return await self.runtime.event_store.get_job(job_id, task["scene_id"]) if task else None
 
+    async def media_assets(self, scene_id, query=""):
+        rows = await self.runtime.event_store.list_media(list(dict.fromkeys([scene_id, "global-safe"])), query=query, include_disabled=True)
+        return [{key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at")} for asset in rows]
+
+    async def media_file(self, asset_id, scene_id):
+        return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
+
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona()
 

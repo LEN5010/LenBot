@@ -90,6 +90,7 @@ class ReplayLab:
             config = self.config.model_copy(update={
                 "db_path": directory + "/replay.db", "max_ingest_lag_seconds": float("inf"),
                 "reflection_quiet_window_seconds": 1e9, "debounce_idle_ms": 1_000_000,
+                "message_pacing": False,
             })
             async def forbidden_send(action):
                 raise AssertionError("Replay attempted physical delivery")
