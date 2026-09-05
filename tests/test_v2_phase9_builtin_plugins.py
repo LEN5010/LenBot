@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import time
 import httpx
+from len_bot.tools.results import ToolResult
 from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.events.models import Event, EventType
@@ -141,7 +142,7 @@ async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
 
     monkeypatch.setattr(plugin._client, "get", failing_get)
     err_result = await runtime.plugin_host.execute_tool("web_search", {"query": "test"})
-    assert err_result.startswith("Error:")
+    assert ToolResult.model_validate_json(err_result).status == "error"
 
     # Health tracking recorded the crash
     status = {p["id"]: p for p in runtime.plugin_host.status_snapshot()}["web_search_tool"]
