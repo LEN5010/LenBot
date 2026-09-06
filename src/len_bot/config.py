@@ -14,24 +14,16 @@ class RuntimeConfig(BaseModel):
     onebot_access_token: str = Field(default_factory=lambda: os.getenv("ONEBOT_ACCESS_TOKEN", ""))
     db_path: str = Field(default="len_bot.db", description="Path to SQLite database")
     
-    # LLM Settings
-    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_base_url: str = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1"))
-    default_model: str = Field(default="deepseek-chat")
-    deliberate_model: str = Field(default="deepseek-reasoner")
-    
     # Ingestion & Debounce
     debounce_idle_ms: int = Field(default=800, description="Sliding idle window (ms)")
     debounce_max_ms: int = Field(default=2500, description="Max debounce wait cap (ms)")
     max_ingest_lag_seconds: int = Field(default=60, description="Events older than this skip stimulus")
-    social_context_window_tokens: int = Field(
-        default=200_000,
-        description="Maximum estimated Social Core input context before oldest raw messages roll out",
-    )
-    social_output_reserve_tokens: int = Field(
-        default=8_000,
-        description="Context-window reserve for the structured cognition result",
-    )
+    conversation_max_steps: int = Field(default=3, ge=1)
+    conversation_max_tool_calls: int = Field(default=6, ge=1)
+    conversation_context_tokens: int = Field(default=24_000, ge=4_000)
+    conversation_output_tokens: int = Field(default=4096, ge=256)
+    max_context_images: int = Field(default=6, ge=1, le=6)
+    work_output_tokens: int = Field(default=4096, ge=256)
     jobs_enabled: bool = Field(default_factory=lambda: os.getenv("JOBS_ENABLED", "true").lower() in {"true", "1", "yes"})
     job_max_steps: int = Field(default=16, ge=1)
     job_max_tool_calls: int = Field(default=24, ge=1)
