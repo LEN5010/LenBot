@@ -1,209 +1,149 @@
-"""Provider Registry (ADR-0020): multi-provider LLM configuration and tier routing.
-
-The registry is the single authority for "which client + which model serves this
-cognitive tier". Providers are OpenAI-compatible endpoints; client instances are
-created lazily and cached per provider until its connection settings change.
-"""
+"""Configured model profiles, resolved once for each cognitive run."""
 
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
-
-from len_bot.cognition.router import CognitiveTier
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
+ModelRole = Literal["conversation", "work"]
 
 
 class ProviderConfig(BaseModel):
     id: str
-    api_style: str = Field(default="openai", description="Only openai-compatible is supported in V2")
+    api_style: str = Field(default="openai", description="OpenAI-compatible chat completions")
     base_url: str
     api_key: str = Field(default="", description="Write-only; never echoed back by the API")
     enabled: bool = True
     timeout_seconds: float = 60.0
-    models: list[str] = Field(
-        default_factory=list,
-        description="Models selected from the provider's advertised catalog",
-    )
+    models: list[str] = Field(default_factory=list)
 
 
-class RouteTarget(BaseModel):
+class ModelProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     provider_id: str
     model: str
+    reasoning_effort: str | None = None
+
+    @field_validator("provider_id", "model")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Model profile provider and model must be nonempty")
+        return value.strip()
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def normalize_effort(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 class RoutingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    normal: RouteTarget
-    deliberate: RouteTarget
-    fallback: RouteTarget | None = None
-    vision: RouteTarget | None = None
+    conversation: ModelProfile
+    work: ModelProfile
 
 
-@dataclass
+@dataclass(frozen=True)
 class RouteResolution:
     provider_id: str
     model: str
     client: AsyncOpenAI
+    reasoning_effort: str | None = None
+    role: ModelRole = "conversation"
 
 
-def _connection_fingerprint(p: ProviderConfig) -> tuple:
-    return (p.api_style, p.base_url, p.api_key, p.timeout_seconds)
+def _connection_fingerprint(provider: ProviderConfig) -> tuple:
+    return (provider.api_style, provider.base_url, provider.api_key, provider.timeout_seconds)
 
 
 class ProviderRegistry:
     def __init__(self):
         self._providers: dict[str, ProviderConfig] = {}
-        self._routing: Optional[RoutingConfig] = None
+        self._routing: RoutingConfig | None = None
         self._clients: dict[str, AsyncOpenAI] = {}
         self._fingerprints: dict[str, tuple] = {}
         self._lock = asyncio.Lock()
 
-    async def apply_update(self, providers: list[ProviderConfig], routing: RoutingConfig) -> None:
-        """Hot-swap providers + routing (ADR-0020). Takes effect on the next resolve()."""
-        provider_list = list(providers)
-        seen = set()
-        for p in provider_list:
-            if p.id in seen:
-                raise ValueError(f"Duplicate provider id: {p.id}")
-            seen.add(p.id)
-        targets = [routing.normal, routing.deliberate]
-        if routing.fallback is not None:
-            targets.append(routing.fallback)
-        if routing.vision is not None:
-            targets.append(routing.vision)
-        for target in targets:
+    async def apply_update(self, providers: list[ProviderConfig], routing: RoutingConfig | None) -> None:
+        """Publish profiles for subsequent runs; existing resolutions stay frozen."""
+        provider_list = [provider.model_copy(deep=True) for provider in providers]
+        seen: set[str] = set()
+        for provider in provider_list:
+            if provider.id in seen:
+                raise ValueError(f"Duplicate provider id: {provider.id}")
+            if provider.api_style != "openai":
+                raise ValueError(f"Unsupported provider API style: {provider.api_style}")
+            seen.add(provider.id)
+        for target in (routing.conversation, routing.work) if routing is not None else ():
             if target.provider_id not in seen:
                 raise ValueError(f"Route references unknown provider: {target.provider_id}")
-            if not target.model.strip():
-                raise ValueError("Route model cannot be empty")
-
         async with self._lock:
-            new_providers = {p.id: p for p in provider_list}
-            # Drop cached clients whose connection settings changed or disappeared
-            for pid in list(self._clients.keys()):
-                cfg = new_providers.get(pid)
-                if cfg is None or _connection_fingerprint(cfg) != self._fingerprints.get(pid):
-                    self._clients.pop(pid, None)
+            new_providers = {provider.id: provider for provider in provider_list}
+            for provider_id in list(self._clients):
+                provider = new_providers.get(provider_id)
+                if provider is None or _connection_fingerprint(provider) != self._fingerprints.get(provider_id):
+                    # A running gateway owns its client until that run ends.
+                    self._clients.pop(provider_id)
+                    self._fingerprints.pop(provider_id, None)
             self._providers = new_providers
-            self._routing = routing
-        fallback = (
-            f"{routing.fallback.provider_id}/{routing.fallback.model}"
-            if routing.fallback
-            else "disabled"
-        )
-        logger.info("ProviderRegistry updated: %d provider(s), normal=%s/%s deliberate=%s/%s fallback=%s",
-                    len(provider_list), routing.normal.provider_id, routing.normal.model,
-                    routing.deliberate.provider_id, routing.deliberate.model, fallback)
-
-    def resolve(self, tier: CognitiveTier) -> RouteResolution:
-        if self._routing is None:
-            raise LookupError("No provider routing configured")
-        if tier == CognitiveTier.DELIBERATE:
-            target = self._routing.deliberate
+            self._routing = routing.model_copy(deep=True) if routing is not None else None
+        if routing is None:
+            logger.info("Providers updated: %d provider(s), model profiles not configured", len(provider_list))
         else:
-            target = self._routing.normal
-        provider = self._providers.get(target.provider_id)
-        if provider is None or not provider.enabled:
-            raise LookupError(f"Provider '{target.provider_id}' is missing or disabled")
+            logger.info("Model profiles updated: conversation=%s/%s work=%s/%s",
+                        routing.conversation.provider_id, routing.conversation.model,
+                        routing.work.provider_id, routing.work.model)
 
-        client = self._clients.get(provider.id)
-        if client is None:
-            client = AsyncOpenAI(
-                api_key=provider.api_key or "missing",
-                base_url=provider.base_url,
-                timeout=provider.timeout_seconds,
-                max_retries=0,
-            )
-            self._clients[provider.id] = client
-            self._fingerprints[provider.id] = _connection_fingerprint(provider)
-        return RouteResolution(provider_id=provider.id, model=target.model, client=client)
-
-    def resolve_fallback(self) -> RouteResolution | None:
-        if self._routing is None or self._routing.fallback is None:
-            return None
-        target = self._routing.fallback
-        provider = self._providers.get(target.provider_id)
+    def _client_for(self, provider_id: str) -> AsyncOpenAI:
+        provider = self._providers.get(provider_id)
         if provider is None or not provider.enabled:
-            return None
-        client = self._clients.get(provider.id)
-        if client is None:
-            client = AsyncOpenAI(
-                api_key=provider.api_key or "missing",
-                base_url=provider.base_url,
-                timeout=provider.timeout_seconds,
-                max_retries=0,
-            )
-            self._clients[provider.id] = client
-            self._fingerprints[provider.id] = _connection_fingerprint(provider)
-        return RouteResolution(provider_id=provider.id, model=target.model, client=client)
-
-    def resolve_vision(self) -> RouteResolution:
-        if self._routing is None or self._routing.vision is None:
-            raise LookupError("未配置独立视觉模型")
-        target = self._routing.vision
-        provider = self._providers.get(target.provider_id)
-        if provider is None or not provider.enabled:
-            raise LookupError("视觉模型供应商不可用")
+            raise LookupError(f"Provider '{provider_id}' is missing or disabled")
         client = self._clients.get(provider.id)
         if client is None:
             client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url,
                                  timeout=provider.timeout_seconds, max_retries=0)
             self._clients[provider.id] = client
             self._fingerprints[provider.id] = _connection_fingerprint(provider)
-        return RouteResolution(provider_id=provider.id, model=target.model, client=client)
+        return client
+
+    def resolve(self, role: ModelRole = "conversation") -> RouteResolution:
+        if self._routing is None:
+            raise LookupError("No model profiles configured")
+        if role not in ("conversation", "work"):
+            raise ValueError(f"Unknown model role: {role}")
+        profile = getattr(self._routing, role)
+        return RouteResolution(provider_id=profile.provider_id, model=profile.model,
+                               reasoning_effort=profile.reasoning_effort, role=role,
+                               client=self._client_for(profile.provider_id))
 
     async def list_models(self, provider_id: str) -> list[str]:
-        """Read the provider's OpenAI-compatible model catalog without persisting it."""
-        provider = self._providers.get(provider_id)
-        if provider is None:
-            raise LookupError(f"Provider '{provider_id}' not found")
-        if not provider.enabled:
-            raise LookupError(f"Provider '{provider_id}' is disabled")
-        client = self._clients.get(provider.id)
-        if client is None:
-            client = AsyncOpenAI(
-                api_key=provider.api_key or "missing",
-                base_url=provider.base_url,
-                timeout=provider.timeout_seconds,
-                max_retries=0,
-            )
-            self._clients[provider.id] = client
-            self._fingerprints[provider.id] = _connection_fingerprint(provider)
-        response = await client.models.list()
+        response = await self._client_for(provider_id).models.list()
         return sorted({str(item.id) for item in response.data if getattr(item, "id", None)})
 
     def has_live_provider(self) -> bool:
-        """Returns True if normal routing has an enabled provider with a valid API key (not keyless)."""
         if self._routing is None:
             return False
-        target_id = self._routing.normal.provider_id
-        provider = self._providers.get(target_id)
+        provider = self._providers.get(self._routing.conversation.provider_id)
         if provider is None or not provider.enabled:
             return False
-        api_key = (provider.api_key or "").strip()
-        return bool(api_key) and api_key != "missing"
+        key = provider.api_key.strip()
+        return bool(key) and key != "missing"
 
     def export(self) -> dict:
-        """Full state for persistence (including api_key — DB is the secret store)."""
-        return {
-            "providers": [p.model_dump() for p in self._providers.values()],
-            "routing": self._routing.model_dump() if self._routing else None,
-        }
+        return {"providers": [provider.model_dump() for provider in self._providers.values()],
+                "routing": self._routing.model_dump() if self._routing else None}
 
     def snapshot(self) -> dict:
-        """API-safe view: providers with masked key hints + routing."""
         providers = []
-        for p in self._providers.values():
-            data = p.model_dump()
+        for provider in self._providers.values():
+            data = provider.model_dump()
             key = data.pop("api_key", "")
             data["api_key_masked"] = (key[:3] + "..." + key[-4:]) if len(key) >= 8 else ("已设置" if key else "")
             providers.append(data)
-        return {
-            "providers": providers,
-            "routing": self._routing.model_dump() if self._routing else None,
-        }
+        return {"providers": providers, "routing": self._routing.model_dump() if self._routing else None}
