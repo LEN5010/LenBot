@@ -28,7 +28,7 @@
 
 媒体缓存位于数据库同目录的 `media`。`JOBS_ENABLED=false` 或 `MEDIA_ENABLED=false` 可停用对应能力，保留账目和文件。
 
-嘉然运营表情保存在 `media/library/diana/<情绪>/`，原图按情绪分类并登记描述和标签，模型通过 `search_media` 自主选择。检索支持组合词，例如“嘉然 开心”或“嘉然 疑惑”；选择图片后，仍由 Gate 和发送队列检查资产及当前发送配置。素材清单与本轮人格调整见 [嘉然表达与表情库](persona/diana/dialogue-and-stickers.md)。
+嘉然运营表情保存在 `media/library/diana/<情绪>/`，原图按情绪分类并登记描述和标签，模型通过 `search_media` 自主选择。检索支持空格分隔的组合词，例如“嘉然 开心”或“委屈 哼”，返回命中任一词的素材，按命中词数量排序；选择图片后，仍由 Gate 和发送队列检查资产及当前发送配置。素材清单与本轮人格调整见 [嘉然表达与表情库](persona/diana/dialogue-and-stickers.md)。
 
 ## 升级与历史记录
 
