@@ -30,7 +30,7 @@
 
 当前和引用图片直接进入同一次多模态对话请求，窗口内去重，最多六张、最长边 2048；额外图片可按需读取。动图只提供首帧，未装入和移出范围在 trace 中说明。下载受 10MB/20MP 和网络权限限制，读取图片不会隐藏调用另一个视觉模型。
 
-媒体文件在数据库同目录的 `media`；嘉然原图保留在 `media/library/diana/<情绪>/`。`JOBS_ENABLED=false` 或 `MEDIA_ENABLED=false` 可停用对应能力并保留账目和文件。素材与人格说明见[嘉然表达与表情库](persona/diana/dialogue-and-stickers.md)。
+媒体文件在数据库同目录的 `media`，按原始内容哈希保存；当前嘉然库为用户提供的 49 张图片，完整 GIF 也原样保存。`JOBS_ENABLED=false` 或 `MEDIA_ENABLED=false` 可停用对应能力并保留账目和文件。素材与人格说明见[嘉然表达与表情库](persona/diana/dialogue-and-stickers.md)。
 
 ## Reset、升级与回滚
 
