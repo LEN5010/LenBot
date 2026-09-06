@@ -52,7 +52,7 @@ def project_event(event: Event, bot_qq: int | str) -> str:
     )
     text = project_onebot_text(event.raw_text)
     if event.metadata.get("media"):
-        text += "\n图片引用（需要时用 inspect_image 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
+        text += "\n图片引用（需要时用 read_media 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
     if event.metadata.get("image_observations"):
         text += "\n已有图片观察（模型解读，保留原问题与来源）：" + json.dumps(event.metadata["image_observations"], ensure_ascii=False)
     quote = event.metadata.get("quote_context")
