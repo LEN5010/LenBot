@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import json
 from types import SimpleNamespace as NS
 
 import httpx
@@ -131,8 +132,17 @@ async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
             assert payload["message"][0]["type"] == "text" and "CQ:at" in payload["message"][0]["data"]["text"]
             assert payload["message"][1]["data"]["file"].startswith("base64://")
             assert "resolved_images" not in prepared.model_dump()
-            updated = await client.post(f"/api/media/{asset['id']}", json={"scope": "global-safe", "description": "暂停", "tags": [], "enabled": False})
+            partial = await rt.media_service.upload(picture(), "global-safe", "笑脸", ["开心"])
+            await rt.media_service.upload(picture(), "group:other", "本群素材", ["开心", "问候", "不存在"])
+            kit = RetrievalToolkit(rt.event_store, ["group:a", "global-safe"], "group:a",
+                                   media_service=rt.media_service, on_observation=rt.commit_tool_observation)
+            result = await kit.execute_result("search_media", {"query": "开心 问候 不存在"})
+            assert [item["asset_id"] for item in json.loads(result.content)] == [asset["id"], partial["id"]]
+            updated = await client.post(f"/api/media/{asset['id']}", json={"scope": "global-safe", "description": "暂停", "tags": ["开心", "问候"], "enabled": False})
             assert updated.status_code == 200
+            result = await kit.execute_result("search_media", {"query": "开心 问候 不存在"})
+            assert [item["asset_id"] for item in json.loads(result.content)] == [partial["id"]]
+            assert (await kit.execute_result("search_media", {"query": "完全没有这个标签"})).status == "no_results"
             with pytest.raises(ValueError):
                 await rt.validate_outbound_action(prepared)
     finally:
