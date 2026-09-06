@@ -18,6 +18,7 @@ class ToolResult(BaseModel):
     status: Literal["ok", "no_results", "partial", "error", "unsupported"] = "ok"
     content: str = ""
     sources: list[ToolSource] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
     fetched_at: float = Field(default_factory=time.time)
     result_id: str | None = None
     observation_event_id: str | None = None

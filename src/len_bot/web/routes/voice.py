@@ -6,18 +6,29 @@ scenes.
 """
 
 from fastapi import APIRouter, Request, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 from len_bot.web.auth import get_current_user
+from len_bot.media.models import MessageSegment, segment_text
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 
 class VoiceExampleCreateRequest(BaseModel):
-    content: str
-    context: str = ""
-    tag: str = ""
+    content: str = ""
+    segments: list[MessageSegment] | None = Field(default=None, max_length=20)
+    context: str = Field(default="", max_length=8000)
+    tag: str = Field(default="", max_length=200)
     scene_id: str = ""
+
+    @model_validator(mode="after")
+    def body(self):
+        if self.segments is None:
+            self.segments = [MessageSegment(type="text", text=self.content.strip())]
+        if not self.segments or not segment_text(self.segments).strip():
+            raise ValueError("样例需要文字或图片")
+        self.content = segment_text(self.segments)
+        return self
 
 
 class VoiceExampleToggleRequest(BaseModel):
@@ -34,22 +45,22 @@ async def list_exemplars(scene_id: Optional[str] = None, request: Request = None
 @router.post("/exemplars")
 async def create_exemplar(req: VoiceExampleCreateRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    content = req.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="内容不能为空")
-    example = await runtime.event_store.add_voice_example(
-        scene_id=req.scene_id.strip(),
-        content=content,
-        context=req.context.strip(),
-        tag=req.tag.strip(),
-    )
+    try:
+        example = await runtime.event_store.add_voice_example(
+            scene_id=req.scene_id.strip(), content=req.content, context=req.context.strip(), tag=req.tag.strip(),
+            segments=[part.model_dump(exclude_none=True) for part in req.segments])
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     return {"success": True, "exemplar": example}
 
 
 @router.post("/exemplars/toggle")
 async def toggle_exemplar(req: VoiceExampleToggleRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    updated = await runtime.event_store.set_voice_example_enabled(req.example_id, req.enabled)
+    try:
+        updated = await runtime.event_store.set_voice_example_enabled(req.example_id, req.enabled)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     if not updated:
         raise HTTPException(status_code=404, detail="未找到该示例")
     return {"success": True}
@@ -57,11 +68,12 @@ async def toggle_exemplar(req: VoiceExampleToggleRequest, request: Request, user
 
 @router.put("/exemplars/{example_id}")
 async def update_exemplar(example_id: str, req: VoiceExampleCreateRequest, request: Request, user: str = Depends(get_current_user)):
-    if not req.content.strip():
-        raise HTTPException(status_code=400, detail="内容不能为空")
-    updated = await request.app.state.runtime.event_store.update_voice_example(
-        example_id, scene_id=req.scene_id.strip(), content=req.content.strip(),
-        context=req.context.strip(), tag=req.tag.strip())
+    try:
+        updated = await request.app.state.runtime.event_store.update_voice_example(
+            example_id, scene_id=req.scene_id.strip(), content=req.content,
+            context=req.context.strip(), tag=req.tag.strip(), segments=[part.model_dump(exclude_none=True) for part in req.segments])
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     if not updated:
         raise HTTPException(status_code=404, detail="未找到该示例")
     return {"success": True}

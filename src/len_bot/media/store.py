@@ -7,6 +7,9 @@ from html import unescape
 from len_bot.events.models import Event, EventType
 
 
+PALETTE_UNCHANGED = object()
+
+
 def image_locators(event):
     segments = event.payload.get("segments")
     if isinstance(segments, list):
@@ -22,7 +25,7 @@ def image_locators(event):
 def _asset(row):
     if row is None:
         return None
-    data = dict(zip(["id", "scope", "source_event_id", "locator", "sha256", "mime_type", "path", "description", "tags", "enabled", "curated", "created_at"], row))
+    data = dict(zip(["id", "scope", "source_event_id", "locator", "sha256", "mime_type", "path", "description", "tags", "enabled", "curated", "created_at", "palette_order"], row))
     data["tags"] = json.loads(data["tags"])
     data["enabled"], data["curated"] = bool(data["enabled"]), bool(data["curated"])
     return data
@@ -34,7 +37,11 @@ class MediaStoreMixin:
             id TEXT PRIMARY KEY, scope TEXT NOT NULL, source_event_id TEXT NOT NULL,
             locator TEXT NOT NULL DEFAULT '', sha256 TEXT, mime_type TEXT, path TEXT,
             description TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
-            enabled INTEGER NOT NULL DEFAULT 1, curated INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)""")
+            enabled INTEGER NOT NULL DEFAULT 1, curated INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+            palette_order INTEGER CHECK(palette_order >= 0))""")
+        columns = await (await self._db.execute("PRAGMA table_info(media_assets)")).fetchall()
+        if "palette_order" not in {column[1] for column in columns}:
+            await self._db.execute("ALTER TABLE media_assets ADD COLUMN palette_order INTEGER CHECK(palette_order >= 0)")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_media_assets_scope ON media_assets(scope,created_at)")
 
     async def register_event_media_in_transaction(self, event):
@@ -61,6 +68,13 @@ class MediaStoreMixin:
         """Operator Reset keeps the files belonging to curated media."""
         return [row[0] for row in await (await self._db.execute(
             "SELECT path FROM media_assets WHERE curated=1 AND path IS NOT NULL")).fetchall()]
+
+    async def list_palette(self, scene_id: str):
+        """The operator's fixed palette, including only this scene and global-safe."""
+        rows = await (await self._db.execute("""SELECT * FROM media_assets
+            WHERE scope IN (?, 'global-safe') AND curated=1 AND enabled=1 AND palette_order IS NOT NULL
+            ORDER BY palette_order, created_at, id LIMIT 20""", (scene_id,))).fetchall()
+        return [_asset(row) for row in rows]
 
     async def list_media(self, allowed_scopes, *, query="", curated_only=False, include_disabled=False, limit=40):
         if not allowed_scopes:
@@ -105,13 +119,24 @@ class MediaStoreMixin:
                 raise
         return event
 
-    async def edit_media(self, asset_id, scope, description, tags, enabled):
+    async def edit_media(self, asset_id, scope, description, tags, enabled, *, palette_order=PALETTE_UNCHANGED):
+        if palette_order is not PALETTE_UNCHANGED and palette_order is not None:
+            if isinstance(palette_order, bool) or not isinstance(palette_order, int) or palette_order < 0:
+                raise ValueError("Palette order must be a nonnegative integer or null")
+        payload = {"asset_id": asset_id, "enabled": enabled, "description": description, "tags": tags}
+        if palette_order is not PALETTE_UNCHANGED:
+            payload["palette_order"] = palette_order
         event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scope, actor_id="operator:media", timestamp=self.clock(),
-            payload={"asset_id": asset_id, "enabled": enabled, "description": description, "tags": tags})
+            payload=payload)
         async with self._write_lock:
             try:
-                cursor = await self._db.execute("UPDATE media_assets SET description=?,tags_json=?,enabled=? WHERE id=? AND scope=? AND curated=1",
-                    (description, json.dumps(tags, ensure_ascii=False), int(enabled), asset_id, scope))
+                fields = "description=?,tags_json=?,enabled=?"
+                params = [description, json.dumps(tags, ensure_ascii=False), int(enabled)]
+                if palette_order is not PALETTE_UNCHANGED:
+                    fields += ",palette_order=?"
+                    params.append(palette_order)
+                cursor = await self._db.execute(f"UPDATE media_assets SET {fields} WHERE id=? AND scope=? AND curated=1",
+                    (*params, asset_id, scope))
                 if cursor.rowcount != 1:
                     raise ValueError("Curated media asset not found in selected scope")
                 await self._db.execute("INSERT INTO pending_runtime_events VALUES(?,?,?)", (event.id, scope, event.model_dump_json()))

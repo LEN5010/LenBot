@@ -1,5 +1,12 @@
-from typing import Literal
+from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class PreparedMediaContext(TypedDict):
+    """Transient pixels and their provenance; only the manifest belongs in traces."""
+
+    blocks: list[dict[str, Any]]
+    manifest: list[dict[str, Any]]
 
 
 class MessageSegment(BaseModel):

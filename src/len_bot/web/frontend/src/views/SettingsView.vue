@@ -8,7 +8,9 @@ const exemplars = ref([])
 const editingExample = ref(null)
 const presetPreview = ref(null)
 const personaLabels = {identity_name: '机器人名字', identity_persona: '身份背景', identity_core: '性格与相处方式', character_context: '角色资料与梗', conversation_style: '说话方式'}
-const example = ref({content: "", context: "", scene_id: ""})
+const emptyExample = () => ({ context: '', scene_id: '', tag: '', segments: [{ type: 'text', text: '' }] })
+const example = ref(emptyExample())
+const exampleMedia = ref([]), mediaQuery = ref(''), exampleSaving = ref(false)
 const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '', character_context: '' })
 const onebotForm = ref({
   connection_mode: 'forward_ws', action_transport: 'websocket',
@@ -29,6 +31,7 @@ onMounted(load)
 async function load() {
   try {
     exemplars.value = (await api("/api/voice/exemplars")).exemplars
+    await loadExampleMedia()
     me.value = await api('/api/auth/me')
     const personaRes = await api('/api/settings/persona')
     persona.value = {
@@ -58,24 +61,43 @@ async function load() {
 }
 
 async function saveExample() {
+  error.value = ''; exampleSaving.value = true
   try {
     await api('/api/voice/exemplars' + (editingExample.value ? '/' + editingExample.value : ''),
       {method: editingExample.value ? 'PUT' : 'POST', body: JSON.stringify(example.value)})
     editingExample.value = null
-    example.value = {content: '', context: '', scene_id: ''}
-    await load()
-  } catch (e) { error.value = e.message }
+    example.value = emptyExample()
+    message.value = '表达样例已保存'
+    exemplars.value = (await api('/api/voice/exemplars')).exemplars
+    await loadExampleMedia()
+  } catch (e) { error.value = e.message } finally { exampleSaving.value = false }
 }
 function editExample(item) {
   editingExample.value = item.id
-  example.value = {content: item.content, context: item.context, scene_id: item.scene_id || '', tag: item.tag}
+  example.value = { context: item.context, scene_id: item.scene_id || '', tag: item.tag, segments: item.segments.map(part => ({ ...part })) }
+  loadExampleMedia()
 }
+function cancelExample() { editingExample.value = null; example.value = emptyExample(); mediaQuery.value = ''; loadExampleMedia() }
+function addExamplePart(type) { example.value.segments.push(type === 'text' ? { type, text: '' } : { type, asset_id: '' }) }
+function changeExamplePart(index, type) { example.value.segments[index] = type === 'text' ? { type, text: '' } : { type, asset_id: '' } }
+function moveExamplePart(index, direction) {
+  const parts = example.value.segments, target = index + direction
+  if (target >= 0 && target < parts.length) [parts[index], parts[target]] = [parts[target], parts[index]]
+}
+async function loadExampleMedia() {
+  try {
+    const params = new URLSearchParams({ scene_id: example.value.scene_id.trim() || 'global-safe', query: mediaQuery.value })
+    exampleMedia.value = (await api('/api/media?' + params.toString())).filter(asset => asset.curated && asset.enabled)
+  } catch (e) { error.value = e.message }
+}
+function exampleImage(assetId, sceneId = '') { return `/api/media/${encodeURIComponent(assetId)}/file?scene_id=${encodeURIComponent(sceneId || 'global-safe')}` }
 async function changeExample(item, remove = false) {
   if (remove && !confirm('删除这条表达样例？')) return
   try {
     await api(remove ? '/api/voice/exemplars/' + item.id : '/api/voice/exemplars/toggle',
       {method: remove ? 'DELETE' : 'POST', body: remove ? undefined : JSON.stringify({example_id: item.id, enabled: !item.enabled})})
-    await load()
+    exemplars.value = (await api('/api/voice/exemplars')).exemplars
+    if (remove && editingExample.value === item.id) cancelExample()
   } catch (e) { error.value = e.message }
 }
 async function savePersona() {
@@ -251,9 +273,9 @@ async function resetConversationData() {
           <p style="white-space: pre-wrap">原内容：{{ field.current || '未设置' }}</p>
           <p style="white-space: pre-wrap">应用后：{{ field.next }}</p>
         </details>
-        <details><summary>查看表达样例</summary><p v-for="item in presetPreview.examples" :key="item.id" style="white-space:pre-wrap">{{ item.context }}
-→ {{ item.content }}</p></details>
-        <button v-if="!presetPreview.applied" class="primary" @click="applyDiana">确认应用</button>
+        <details><summary>查看表达样例</summary><article v-for="item in presetPreview.examples" :key="item.id" class="example-preview"><p class="example-context">{{ item.context }}</p><div class="example-body"><template v-for="(part, index) in item.segments" :key="index"><span v-if="part.type === 'text'">{{ part.text }}</span><img v-else :src="exampleImage(part.asset_id)" alt="预设表情样例" /></template></div><p v-if="item.missing_media_refs?.length" class="muted">{{ item.content }}</p></article></details>
+        <p v-if="presetPreview.missing_media?.length" class="notice error">固定目录缺少这些情绪的运营素材：{{ presetPreview.missing_media.join('、') }}。选入对应素材后重新预览。</p>
+        <button v-if="!presetPreview.applied" class="primary" :disabled="!!presetPreview.missing_media?.length" @click="applyDiana">确认应用</button>
         <button @click="presetPreview = null">关闭预览</button>
       </div>
       <div class="persona-fields">
@@ -280,16 +302,22 @@ async function resetConversationData() {
 
     <div class="panel persona-panel">
       <h2>表达样例</h2>
-      <p class="muted">启用的全局及本群样例按固定顺序提供，不轮换抽取。它们只示范语气，不是真实聊天或记忆。</p>
+      <p class="muted">启用的全局及本群样例按固定顺序提供，可使用文字、单图或图文混排。它们示范表达，不是真实聊天或记忆。</p>
       <form class="persona-fields" @submit.prevent="saveExample">
         <label>前文与语境<textarea v-model="example.context" rows="3" placeholder="写清楚是谁在和谁说话"></textarea></label>
         <label>群聊范围<input v-model="example.scene_id" placeholder="留空适用于所有群；或填 group:群号" /></label>
-        <label class="wide">理想的说法<textarea required v-model="example.content" rows="2"></textarea></label>
-        <button class="primary">{{ editingExample ? '保存修改' : '添加样例' }}</button>
-        <button v-if="editingExample" type="button" @click="editingExample = null; example = {content: '', context: '', scene_id: ''}">取消编辑</button>
+        <div class="wide"><div class="toolbar"><strong>理想表达</strong><button type="button" @click="addExamplePart('text')">添加文字</button><button type="button" @click="addExamplePart('image')">添加图片</button></div>
+          <div v-for="(part, index) in example.segments" :key="index" class="example-part"><div class="toolbar"><span class="muted">第 {{ index + 1 }} 段</span><select :value="part.type" @change="changeExamplePart(index, $event.target.value)"><option value="text">文字</option><option value="image">图片</option></select><button type="button" :disabled="index === 0" @click="moveExamplePart(index, -1)">上移</button><button type="button" :disabled="index === example.segments.length - 1" @click="moveExamplePart(index, 1)">下移</button><button type="button" @click="example.segments.splice(index, 1)">移除</button></div>
+            <textarea v-if="part.type === 'text'" v-model="part.text" rows="2" required placeholder="在这个语境下实际要说的话" />
+            <template v-else><select v-model="part.asset_id" required><option value="">选择当前范围内的运营素材</option><option v-if="part.asset_id && !exampleMedia.some(asset => asset.id === part.asset_id)" :value="part.asset_id">当前素材 · {{ part.asset_id }}</option><option v-for="asset in exampleMedia" :key="asset.id" :value="asset.id">{{ asset.description || asset.id }} · {{ asset.scope }}</option></select><img v-if="part.asset_id" class="example-image" :src="exampleImage(part.asset_id, example.scene_id)" alt="样例图片预览" /></template>
+          </div>
+          <div class="toolbar"><input v-model="mediaQuery" placeholder="素材描述或标签" /><button type="button" @click="loadExampleMedia">查找运营素材</button></div><p class="muted">全局样例只能使用 global-safe 运营素材。本群样例也可使用对应群的运营素材。</p>
+        </div>
+        <button class="primary" :disabled="exampleSaving || !example.segments.length">{{ exampleSaving ? '正在保存…' : editingExample ? '保存修改' : '添加样例' }}</button>
+        <button v-if="editingExample" type="button" @click="cancelExample">取消编辑</button>
       </form>
-      <div v-for="item in exemplars" :key="item.id" class="kv">
-        <span>{{ item.context || '通用表达' }} → {{ item.content }} <small class="muted">{{ item.scene_id || '所有群' }}</small></span>
+      <div v-for="item in exemplars" :key="item.id" class="example-row">
+        <div class="example-preview"><p class="example-context">{{ item.context || '通用表达' }}</p><div class="example-body"><template v-for="(part, index) in item.segments" :key="index"><span v-if="part.type === 'text'">{{ part.text }}</span><img v-else :src="exampleImage(part.asset_id, item.scene_id)" alt="运营表达样例" loading="lazy" /></template></div><small class="muted">{{ item.scene_id || '所有群' }} · {{ item.enabled ? '已启用' : '已停用' }}</small><p v-if="item.available === false" class="tag warn">{{ item.unavailable_reason }}</p></div>
         <div class="action-btn-group">
           <button @click="editExample(item)">编辑</button>
           <button @click="changeExample(item)">{{ item.enabled ? '停用' : '启用' }}</button>
@@ -549,6 +577,15 @@ async function resetConversationData() {
   border-radius: var(--radius-md);
   padding: 14px 16px;
 }
+.example-part { padding:14px;margin:12px 0;background:rgba(239,246,255,.6);border:1px solid var(--border);border-radius:12px }
+.example-part textarea,.example-part>select { width:100% }
+.example-image { display:block;max-width:100%;max-height:180px;object-fit:contain;margin-top:12px }
+.example-row { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:start;padding:18px 0;border-bottom:1px solid var(--border) }
+.example-context { white-space:pre-wrap;color:var(--muted);font-size:.86rem;line-height:1.6 }
+.example-body { display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;align-items:flex-start }
+.example-body span { flex-basis:100%;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;color:var(--text) }
+.example-body img { width:auto;max-width:160px;max-height:160px;object-fit:contain }
+.example-preview { min-width:0 }
 
 @media (max-width: 600px) {
   .connection-mode-grid, .connection-fields {
@@ -560,5 +597,6 @@ async function resetConversationData() {
   .connection-fields .wide {
     grid-column: auto;
   }
+  .example-row { grid-template-columns:1fr }
 }
 </style>

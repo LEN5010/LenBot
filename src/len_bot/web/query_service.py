@@ -44,6 +44,10 @@ class RuntimeQueryService:
     async def media_file(self, asset_id, scene_id):
         return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
 
+    def persona_settings(self):
+        return {key:getattr(self.runtime.config,key) for key in (
+            "character_context","identity_name","identity_core","identity_persona","conversation_style","bot_qq")}
+
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona()
 
@@ -289,6 +293,9 @@ class RuntimeQueryService:
 
     def plugins(self) -> list[dict]:
         return self.runtime.plugin_host.status_snapshot()
+
+    async def provider_models(self, provider_id):
+        return await self.runtime.provider_registry.list_models(provider_id)
 
     def providers(self) -> dict:
         return self.runtime.provider_registry.snapshot()

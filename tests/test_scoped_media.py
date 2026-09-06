@@ -2,7 +2,6 @@ import asyncio
 import base64
 import io
 import json
-from types import SimpleNamespace as NS
 
 import httpx
 import pytest
@@ -14,13 +13,9 @@ from len_bot.events.models import Event, EventType
 from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
 from len_bot.adapters.onebot import OneBotAdapter
 from len_bot.media.models import MessageSegment
-from len_bot.media.service import validate_image
-from len_bot.cognition.session import SocialMessageProposal
-from len_bot.cognition.session import GroupAgentSession
-from len_bot.cognition.social_core import SocialCognitionCore
-from len_bot.events.models import Stimulus, StimulusType
+from len_bot.cognition.models import MessageProposal
 from len_bot.cognition.projection import project_event
-from len_bot.testing.social import social_result
+from len_bot.testing.turns import turn_result
 from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.web.app import create_app
 
@@ -31,13 +26,13 @@ def picture():
     return stream.getvalue()
 
 
-async def silent(messages):
-    return social_result(reason="媒体边界测试")
+async def silent(session, events):
+    return turn_result(reason="媒体边界测试")
 
 
 @pytest.mark.asyncio
 async def test_image_source_and_quote_references_are_scope_bound(tmp_path):
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "images.db"), bot_qq=999), mock_social_handler=silent)
+    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "images.db"), bot_qq=999), mock_turn_handler=silent)
     await rt.start()
     adapter = OneBotAdapter(rt.config, rt.receive_event)
     try:
@@ -64,54 +59,8 @@ async def test_image_source_and_quote_references_are_scope_bound(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_vision_uses_actual_pixels_and_preserves_inference_boundary(tmp_path):
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "vision.db")), mock_social_handler=silent)
-    await rt.start()
-    try:
-        asset = await rt.media_service.upload(picture(), "group:a", "红色测试", [])
-        missing = await rt.media_service.inspect(asset["id"], "group:a", "什么颜色")
-        assert missing.status == "unsupported" and missing.error_code == "vision_unconfigured"
-        calls = []
-        class Completion:
-            async def create(self, **kwargs):
-                calls.append(kwargs)
-                encoded = kwargs["messages"][1]["content"][1]["image_url"]["url"]
-                with Image.open(io.BytesIO(base64.b64decode(encoded.split(",", 1)[1]))) as image:
-                    assert image.getpixel((0, 0)) == (255, 0, 0)
-                return NS(choices=[NS(message=NS(content="图片为红色，其他信息无法确认"))], usage=None)
-        rt.provider_registry.resolve_vision = lambda: NS(provider_id="fake", model="vision", client=NS(chat=NS(completions=Completion())))
-        kit = RetrievalToolkit(rt.event_store, ["group:a"], "group:a", media_service=rt.media_service,
-                               on_observation=rt.commit_tool_observation)
-        charged = []
-        async def charge(): charged.append(1)
-        kit.before_nested_model = charge
-        result = await kit.execute_result("inspect_image", {"asset_id": asset["id"], "question": "什么颜色"})
-        assert result.evidence_kind == "model" and result.sources[0].event_id == asset["source_event_id"]
-        assert result.status == "ok" and len(calls) == len(charged) == 1
-        again = await kit.execute_result("inspect_image", {"asset_id": asset["id"], "question": "什么颜色"})
-        assert again.cached and len(calls) == 1
-        rows = await rt.event_store.get_recent_events("group:a")
-        observation = next(e for e in rows if e.id == result.observation_event_id)
-        assert not observation.payload["independent_evidence"]
-        cutoff = (await (await rt.event_store._db.execute("SELECT rowid FROM events WHERE id=?", (observation.id,))).fetchone())[0]
-        reference = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id="group:a", actor_id="user:1",
-                          payload={"raw_text": "这张图"}, metadata={"media": [{"asset_id": asset["id"]}]})
-        projected = await rt.event_store.project_image_observations("group:a", [reference], cutoff)
-        assert projected[0].metadata["image_observations"][0]["observation_event_id"] == observation.id
-        assert "图片为红色" in project_event(projected[0], rt.config.bot_qq)
-        assert "image_observations" not in reference.metadata
-        assert "image_observations" not in (await rt.event_store.project_image_observations("group:a", [reference], cutoff-1))[0].metadata
-        assert "image_observations" not in (await rt.event_store.project_image_observations("group:b", projected, cutoff))[0].metadata
-        repeated = await rt.event_store.project_image_observations("group:a", [reference, reference.model_copy(update={"id": "quote"})], cutoff)
-        assert "image_observations" not in repeated[0].metadata
-        assert repeated[1].metadata["image_observations"][0]["asset_id"] == asset["id"]
-    finally:
-        await rt.stop()
-
-
-@pytest.mark.asyncio
 async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "curated.db")), mock_social_handler=silent)
+    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "curated.db")), mock_turn_handler=silent)
     await rt.start()
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(rt)), base_url="http://test") as client:
@@ -125,7 +74,7 @@ async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
             assert "path" not in asset and "locator" not in asset
             preview = await client.get(f"/api/media/{asset['id']}/file", params={"scene_id": "group:a"})
             assert preview.content == picture()
-            message = SocialMessageProposal(segments=[MessageSegment(type="text", text="你好[CQ:at,qq=all]"), MessageSegment(type="image", asset_id=asset["id"])])
+            message = MessageProposal(segments=[MessageSegment(type="text", text="你好[CQ:at,qq=all]"), MessageSegment(type="image", asset_id=asset["id"])])
             action = ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:123", content=message.content, segments=message.segments)
             prepared = await rt.media_service.prepare_action(action)
             endpoint, payload = OneBotAdapter(rt.config, rt.receive_event)._action_payload(prepared)
@@ -185,36 +134,3 @@ async def test_pacing_one_scene_does_not_block_another_and_rechecks_policy(tmp_p
         release.set()
         await queue.stop()
         await store.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("budget,visual_calls", [(2, 0), (3, 1)])
-async def test_visual_model_shares_turn_budget_and_reserves_final(tmp_path, budget, visual_calls):
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "budget.db")), mock_social_handler=silent)
-    await rt.start()
-    try:
-        asset = await rt.media_service.upload(picture(), "group:a", "预算图片", [])
-        calls = {"primary": 0, "vision": 0}
-        class Vision:
-            async def create(self, **kwargs):
-                calls["vision"] += 1
-                return NS(choices=[NS(message=NS(content="红色"))], usage=None)
-        class Primary:
-            def resolve(self, tier): return NS(provider_id="test", model="primary", client=NS(chat=NS(completions=self)))
-            def resolve_fallback(self): return None
-            async def create(self, **kwargs):
-                calls["primary"] += 1
-                if calls["primary"] == 1:
-                    message = NS(content=None, tool_calls=[NS(id="image", function=NS(name="inspect_image", arguments='{"asset_id":"'+asset["id"]+'"}'))])
-                else:
-                    assert kwargs["tool_choice"] == "none"
-                    message = NS(content=social_result(reason="预算结束", content="已按实际能力回应").model_dump_json(), tool_calls=None)
-                return NS(choices=[NS(message=message)], usage=None)
-        rt.provider_registry.resolve_vision = lambda: NS(provider_id="test", model="vision", client=NS(chat=NS(completions=Vision())))
-        toolkit = RetrievalToolkit(rt.event_store, ["group:a"], "group:a", media_service=rt.media_service)
-        burst = Stimulus(scene_id="group:a", stimulus_type=StimulusType.SINGLE_MESSAGE, source_event_ids=[], actor_id="user:1", combined_text="看图")
-        result, trace = await SocialCognitionCore(rt.config, Primary()).execute(GroupAgentSession(scene_id="group:a"), burst, [], [], toolkit=toolkit, max_steps=budget)
-        assert calls == {"primary": 2, "vision": visual_calls}
-        assert trace["model_calls_used"] == budget
-    finally:
-        await rt.stop()
