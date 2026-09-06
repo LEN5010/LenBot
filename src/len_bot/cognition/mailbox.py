@@ -76,5 +76,13 @@ class EpisodeMailbox:
         self._cursor = len(self._interim_events)
         return unseen
 
+    def acknowledge_through(self, through_rowid: int) -> None:
+        """Acknowledge only contiguous events actually included in model input."""
+        while self._cursor < len(self._interim_events):
+            rowid = self._interim_events[self._cursor].metadata.get("_rowid")
+            if rowid is None or rowid > through_rowid:
+                break
+            self._cursor += 1
+
     def get_interim_events(self) -> list[Event]:
         return list(self._interim_events)

@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Optional
 from len_bot.events.models import Event, EventType
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
-from len_bot.memory.models import EpisodeRecord, MemoryProposal, MemoryItem
+from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
@@ -27,6 +27,12 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
+        retired = await (await self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('group_agent_sessions','scene_states','episodes')"
+        )).fetchall()
+        if retired:
+            await self.close()
+            raise RuntimeError("旧会话结构需要先停机备份并执行获准的 VNext Reset")
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
@@ -74,27 +80,13 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 );
             """)
 
-        # 3. Materialized State Tables (ADR-0001)
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS scene_states (
-                scene_id TEXT PRIMARY KEY,
-                version INTEGER NOT NULL,
-                state_json TEXT NOT NULL,
-                updated_at REAL NOT NULL
-            );
-        """)
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS scene_sessions (
+            scene_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+            last_observed_event_rowid INTEGER NOT NULL, last_cognized_event_rowid INTEGER NOT NULL,
+            state_json TEXT NOT NULL, updated_at REAL NOT NULL)""")
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS reflection_cursors (
+            scene_id TEXT PRIMARY KEY, last_event_rowid INTEGER NOT NULL, updated_at REAL NOT NULL)""")
 
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS group_agent_sessions (
-                scene_id TEXT PRIMARY KEY,
-                version INTEGER NOT NULL,
-                last_observed_event_rowid INTEGER NOT NULL,
-                last_cognized_event_rowid INTEGER NOT NULL,
-                state_json TEXT NOT NULL,
-                updated_at REAL NOT NULL
-            );
-        """)
-        
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS open_loops (
                 id TEXT PRIMARY KEY,
@@ -190,76 +182,31 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 enabled INTEGER NOT NULL DEFAULT 1,
                 use_count INTEGER NOT NULL DEFAULT 0,
                 last_used_at REAL NOT NULL DEFAULT 0,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                segments_json TEXT NOT NULL DEFAULT '[]'
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_voice_exemplars_scene ON voice_exemplars(scene_id, enabled);")
         voice_columns = await (await self._db.execute("PRAGMA table_info(voice_exemplars)")).fetchall()
         if "source" not in {row[1] for row in voice_columns}:
             await self._db.execute("ALTER TABLE voice_exemplars ADD COLUMN source TEXT NOT NULL DEFAULT 'operator'")
+        if "segments_json" not in {row[1] for row in voice_columns}:
+            await self._db.execute("ALTER TABLE voice_exemplars ADD COLUMN segments_json TEXT NOT NULL DEFAULT '[]'")
+            await self._db.execute("""UPDATE voice_exemplars
+                SET segments_json=json_array(json_object('type','text','text',content)) WHERE content!=''""")
 
         await self._db.commit()
 
-        await self._remove_evaluation_storage()
-        await self._migrate_person_names()
-
-    async def _remove_evaluation_storage(self) -> None:
-        """Retire evaluation projections once, without touching raw scene history."""
-        if await self.get_dynamic_config("evaluation_removed_v1") is not None:
-            return
-        async with self._write_lock:
-            await self._db.execute("BEGIN IMMEDIATE")
-            try:
-                for table in ("rollout_evaluations", "rollout_candidate_reviews",
-                              "reply_followups", "reply_feedback_labels",
-                              "reply_observations", "shadow_annotations"):
-                    await self._db.execute(f"DROP TABLE IF EXISTS {table}")
-                await self._db.execute(
-                    "DELETE FROM runtime_dynamic_configs WHERE key IN ('delivery_policy','vision_acceptance')")
-                await self._db.execute(
-                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO NOTHING",
-                    ("delivery_scenes", '{"scene_ids":["group:126300994"]}', self.clock()))
-                await self._db.execute(
-                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
-                    ("evaluation_removed_v1", '{"applied":true}', self.clock()))
-                await self._db.commit()
-            except BaseException:
-                await self._db.rollback()
-                raise
-
-    async def _migrate_person_names(self) -> None:
-        """One-time factual rebuild before actors start; never infer preferred names."""
-        if await self.get_dynamic_config("person_names_v2") is not None:
-            return
-        async with self._write_lock:
-            await self._db.execute("BEGIN IMMEDIATE")
-            try:
-                rows = await (await self._db.execute(
-                    "SELECT scene_id,state_json FROM group_agent_sessions")).fetchall()
-                for scene_id, raw in rows:
-                    data = json.loads(raw)
-                    for actor_id, person in data.get("working_persons", {}).items():
-                        for field in ("nickname", "card"):
-                            source = await (await self._db.execute(
-                                "SELECT json_extract(payload, ?) FROM events WHERE scene_id=? AND actor_id=? "
-                                "AND json_type(payload, ?)='text' ORDER BY rowid DESC LIMIT 1",
-                                (f"$.sender.{field}", scene_id, actor_id, f"$.sender.{field}"),
-                            )).fetchone()
-                            person[field] = source[0] if source else None
-                    await self._db.execute("UPDATE group_agent_sessions SET state_json=? WHERE scene_id=?",
-                                           (json.dumps(data, ensure_ascii=False), scene_id))
-                await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
-                                       ("person_names_v2", '{"applied":true}', self.clock()))
-                await self._db.commit()
-            except BaseException:
-                await self._db.rollback()
-                raise
+        await self._db.execute(
+            "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO NOTHING",
+            ("delivery_scenes", '{"scene_ids":["group:126300994"]}', self.clock()))
+        await self._db.commit()
 
     async def reset_conversation_data(self, event: Event) -> dict[str, int]:
         """Explicit operator reset; configuration and authored voice stay intact."""
         tables = ("events_fts", "pending_runtime_events", "agent_jobs", "tool_observations",
-                  "media_assets", "traces", "reflection_cursors", "memories", "episodes",
-                  "open_loops", "tasks", "group_agent_sessions", "scene_states", "events")
+                  "media_assets", "traces", "reflection_cursors", "memories",
+                  "open_loops", "tasks", "scene_sessions", "events")
         async with self._write_lock:
             await self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -406,7 +353,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         (task_count,) = await c2.fetchone()
         c3 = await self._db.execute("SELECT COUNT(*) FROM open_loops WHERE status = 'active';")
         (loop_count,) = await c3.fetchone()
-        c4 = await self._db.execute("SELECT COUNT(*) FROM scene_states;")
+        c4 = await self._db.execute("SELECT COUNT(*) FROM scene_sessions;")
         (scene_count,) = await c4.fetchone()
         return {
             "total_events": event_count,
@@ -449,21 +396,21 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
             await self._db.commit()
 
-    async def project_reply_context(self, scene_id: str, events: list[Event]) -> list[Event]:
+    async def project_reply_context(self, scene_id: str, events: list[Event], through_rowid=None) -> list[Event]:
         """Attach read-only, scene-scoped quote facts to copies, never raw history."""
         refs = {str(e.payload["reply_to_message_id"]) for e in events if e.payload.get("reply_to_message_id") is not None}
         if not refs:
             return events
         cursor = await self._db.execute(
-            "SELECT id, actor_id, payload,metadata FROM events WHERE scene_id=? AND "
+            "SELECT id, actor_id, payload,metadata,rowid FROM events WHERE scene_id=? AND (? IS NULL OR rowid<=?) AND "
             "CAST(json_extract(payload, '$.message_id') AS TEXT) IN (" + ",".join("?" for _ in refs) + ")",
-            (scene_id, *sorted(refs)),
+            (scene_id, through_rowid, through_rowid, *sorted(refs)),
         )
         quotes = {}
-        for event_id, actor_id, payload_json, metadata_json in await cursor.fetchall():
+        for event_id, actor_id, payload_json, metadata_json, rowid in await cursor.fetchall():
             payload = json.loads(payload_json)
             quotes[str(payload["message_id"])] = {
-                "event_id": event_id, "actor_id": actor_id,
+                "event_id": event_id, "actor_id": actor_id, "rowid": rowid,
                 "text": payload.get("raw_text") or payload.get("content", ""),
                 "media": json.loads(metadata_json).get("media", []),
             }
@@ -484,38 +431,14 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         )
         return [str(row[0]) for row in reversed(await cursor.fetchall())]
 
-    async def get_recent_events(self, scene_id: str, limit: int = 50) -> list[Event]:
-        """Return the latest scene events in their authoritative commit order."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        
-        cursor = await self._db.execute(
-            """
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload, metadata
-            FROM (
-                SELECT rowid, id, event_type, scene_id, actor_id, timestamp, payload, metadata
-                FROM events
-                WHERE scene_id = ?
-                ORDER BY rowid DESC
-                LIMIT ?
-            )
-            ORDER BY rowid ASC;
-            """,
-            (scene_id, limit)
-        )
-        rows = await cursor.fetchall()
-        events = []
-        for r in rows:
-            events.append(Event(
-                id=r[0],
-                event_type=EventType(r[1]),
-                scene_id=r[2],
-                actor_id=r[3],
-                timestamp=r[4],
-                payload=json.loads(r[5]),
-                metadata=json.loads(r[6])
-            ))
-        return events
+    async def get_recent_events(self, scene_id, limit=50, through_rowid=None):
+        cursor=await self._db.execute("""
+            SELECT rowid,id,event_type,scene_id,actor_id,timestamp,payload,metadata FROM (
+                SELECT rowid,* FROM events WHERE scene_id=? AND (? IS NULL OR rowid<=?)
+                ORDER BY rowid DESC LIMIT ?) ORDER BY rowid""",
+            (scene_id,through_rowid,through_rowid,limit))
+        return [Event(id=r[1],event_type=r[2],scene_id=r[3],actor_id=r[4],timestamp=r[5],
+            payload=json.loads(r[6]),metadata={**json.loads(r[7]),'_rowid':r[0]}) for r in await cursor.fetchall()]
 
     async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200, event_types: list[EventType] | None = None) -> list[Event]:
         """ADR-0019 §10.4: events after a reflection cursor, in immutable write order.
@@ -562,353 +485,118 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                          EventType.USER_JOINED, EventType.MESSAGE_SEND_FAILED])
 
     async def commit_reflection_batch(
-        self,
-        scene_id: str,
-        episode_record: EpisodeRecord,
-        proposals: list[MemoryProposal],
-        new_cursor_rowid: int,
-        review_event: Event | None = None,
-        expected_cursor_rowid: int | None = None,
-    ) -> tuple[EpisodeRecord, list[MemoryItem]]:
-        """ADR-0028, §10.2: Atomic Reflection Batch Commit.
-        Executes within a single SQLite transaction under _write_lock:
-        1. INSERT EpisodeRecord into episodes.
-        2. Validate & commit each MemoryProposal via validate_memory_proposal & commit_memory_proposal_core
-           with forced scope = scene_id.
-        3. Upsert reflection_cursors with new_cursor_rowid.
-        Any failure rolls back the entire batch: no episode, no memories, and cursor remains unchanged.
-        """
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-
+        self, scene_id, proposals, source_event_ids, new_cursor_rowid, review_event,
+        expected_cursor_rowid, expected_revision, scene_state_data, *, bot_actor_id,
+    ):
+        """Actor-owned reflection: beliefs, receipt, factual session and cursor commit together."""
         async with self._write_lock:
             try:
-                # 1. Insert EpisodeRecord
                 await self._db.execute("BEGIN IMMEDIATE")
-                if review_event is not None and "social_revision" in review_event.payload:
-                    state = await (await self._db.execute(
-                        "SELECT json_extract(state_json,'$.social_revision') FROM group_agent_sessions WHERE scene_id=?",
-                        (scene_id,))).fetchone()
-                    if state is not None and (state[0] or 0) != review_event.payload["social_revision"]:
-                        raise ReflectionConflictError("Reflection understanding changed before commit; reread current state")
-                if episode_record.scene_id != scene_id or not episode_record.source_event_ids:
-                    raise ValueError("Reflection episode must have same-scene source evidence")
-                source_ids = set(episode_record.source_event_ids)
-                placeholders = ",".join("?" for _ in source_ids)
-                evidence = await self._db.execute(
-                    f"SELECT id,rowid FROM events WHERE scene_id=? AND id IN ({placeholders})",
-                    [scene_id, *source_ids])
-                observed = await evidence.fetchall()
-                if len(observed) != len(source_ids) or new_cursor_rowid != max(row[1] for row in observed):
-                    raise ValueError("Reflection cursor must end at its real source evidence")
-                if expected_cursor_rowid is not None:
-                    cursor = await self._db.execute("SELECT last_event_rowid FROM reflection_cursors WHERE scene_id=?", (scene_id,))
-                    current = await cursor.fetchone()
-                    if (current[0] if current else 0) != expected_cursor_rowid:
-                        raise ReflectionConflictError("Reflection cursor changed during inference")
-                if review_event is not None:
-                    if review_event.scene_id != scene_id or review_event.event_type != EventType.REFLECTION_RECORDED:
-                        raise ValueError("Invalid reflection envelope")
-                    for item in review_event.payload.get("review_items", []):
-                        if not item["source_event_ids"] or not set(item["source_event_ids"]).issubset(source_ids):
-                            raise ValueError("Review item lacks reflected evidence")
+                current = await (await self._db.execute(
+                    "SELECT json_extract(state_json,'$.knowledge_revision') FROM scene_sessions WHERE scene_id=?",
+                    (scene_id,))).fetchone()
+                if (current[0] if current else 0) != expected_revision:
+                    raise ReflectionConflictError("认识版本已变化")
+                cursor = await (await self._db.execute(
+                    "SELECT last_event_rowid FROM reflection_cursors WHERE scene_id=?", (scene_id,))).fetchone()
+                if (cursor[0] if cursor else 0) != expected_cursor_rowid:
+                    raise ReflectionConflictError("反思读取截点已变化")
+                if not source_event_ids or not await self.references_belong_to_scene(set(source_event_ids), scene_id, new_cursor_rowid):
+                    raise ValueError("Reflection needs readable original sources")
+                last = await (await self._db.execute(
+                    "SELECT max(rowid) FROM events WHERE scene_id=? AND id IN (SELECT value FROM json_each(?))",
+                    (scene_id, json.dumps(source_event_ids)))).fetchone()
+                if last[0] != new_cursor_rowid:
+                    raise ValueError("Reflection cutoff must match its last source")
+                if review_event.scene_id != scene_id or review_event.event_type != EventType.REFLECTION_RECORDED:
+                    raise ValueError("Invalid reflection receipt")
+                for item in review_event.payload.get("review_items", []):
+                    refs = item.get("source_event_ids", [])
+                    if not refs or not set(refs).issubset(source_event_ids):
+                        raise ValueError("Review item needs reflected sources")
+                committed = []
+                for proposal in proposals:
+                    await validate_memory_proposal(self._db, proposal, scene_id, new_cursor_rowid, bot_actor_id=bot_actor_id)
+                    committed.append(await commit_memory_proposal_core(
+                        self._db, proposal, scene_id, now=self.clock(), revision_event_id=review_event.id))
+                review_event.payload["memory_receipts"] = [
+                    await self._memory_receipt(proposal, item) for proposal, item in zip(proposals, committed)]
+                rowid = await self._write_scene_event(review_event, scene_state_data,
+                    advance_session_observation=bool(review_event.payload.get("review_items")))
                 await self._db.execute(
-                    """
-                    INSERT INTO episodes (id, scene_id, title, summary, source_event_ids, participants, tags, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        episode_record.id,
-                        episode_record.scene_id,
-                        episode_record.title,
-                        episode_record.summary,
-                        json.dumps(episode_record.source_event_ids, ensure_ascii=False),
-                        json.dumps(episode_record.participants, ensure_ascii=False),
-                        json.dumps(episode_record.tags, ensure_ascii=False),
-                        episode_record.created_at,
-                    ),
-                )
-
-                # 2. Validate and commit all MemoryProposals
-                committed_memories: list[MemoryItem] = []
-                for mp in proposals:
-                    await validate_memory_proposal(self._db, mp, scene_id)
-                    mem_item = await commit_memory_proposal_core(self._db, mp, scene_id)
-                    committed_memories.append(mem_item)
-
-                if review_event is not None:
-                    review_event.payload["memory_receipts"] = [
-                        await self._memory_receipt(mp, item) for mp, item in zip(proposals, committed_memories)
-                    ]
-                    await self._db.execute(
-                        "INSERT INTO pending_runtime_events VALUES (?, ?, ?)",
-                        (review_event.id, scene_id, review_event.model_dump_json()),
-                    )
-
-                # 3. Advance reflection_cursors
-                now = self.clock()
-                await self._db.execute(
-                    """
-                    INSERT INTO reflection_cursors (scene_id, last_event_rowid, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(scene_id) DO UPDATE SET
-                        last_event_rowid = excluded.last_event_rowid,
-                        updated_at = excluded.updated_at;
-                    """,
-                    (scene_id, new_cursor_rowid, now),
-                )
-
+                    "INSERT INTO reflection_cursors VALUES(?,?,?) ON CONFLICT(scene_id) DO UPDATE SET last_event_rowid=excluded.last_event_rowid,updated_at=excluded.updated_at",
+                    (scene_id, new_cursor_rowid, self.clock()))
                 await self._db.commit()
-                return episode_record, committed_memories
-            except ReflectionConflictError:
-                await self._db.rollback()
-                raise
-            except Exception as e:
-                await self._db.rollback()
-                raise ValueError(f"Failed to commit reflection batch for scene {scene_id}, transaction rolled back: {e}") from e
+                return committed, rowid
             except BaseException:
                 await self._db.rollback()
                 raise
 
-    async def search_messages(self, query: str, allowed_scopes: list[str], limit: int = 20) -> list[dict[str, Any]]:
-        """ADR-0006: Execution Scope enforced strictly at SQL query layer."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        if not allowed_scopes:
-            return []
+    @staticmethod
+    def _retrieval_event(row):
+        return {"id": row[0], "event_type": row[1], "scene_id": row[2], "actor_id": row[3],
+                "timestamp": row[4], "payload": json.loads(row[5]), "metadata": {**json.loads(row[7]), "_rowid": row[6]}}
 
+    async def search_messages(self, query, allowed_scopes, limit=20, through_rowid=None):
+        if not allowed_scopes: return []
         placeholders = ",".join("?" for _ in allowed_scopes)
-        # SQLite trigram requires query length >= 3 for MATCH
-        if len(query) >= 3:
-            match_clause = "f.content MATCH ?"
-            query_param = query
-        else:
-            match_clause = "f.content LIKE ?"
-            query_param = f"%{query}%"
+        # FTS input is literal text; quotes/operators from chat cannot alter the query.
+        clause = "f.content MATCH ?" if len(query) >= 3 else "f.content LIKE ?"
+        term = '"' + query.replace('"', '""') + '"' if len(query) >= 3 else f"%{query}%"
+        cursor = await self._db.execute(f"""
+            SELECT e.id,e.event_type,e.scene_id,e.actor_id,e.timestamp,e.payload,e.rowid,e.metadata
+            FROM events_fts f JOIN events e ON f.event_id=e.id
+            WHERE {clause} AND e.scene_id IN ({placeholders})
+              AND (? IS NULL OR e.rowid<=?) ORDER BY e.rowid DESC LIMIT ?""",
+            [term,*allowed_scopes,through_rowid,through_rowid,max(1,min(limit,50))])
+        return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
-        sql = f"""
-            SELECT e.id, e.event_type, e.scene_id, e.actor_id, e.timestamp, e.payload
-            FROM events_fts f
-            JOIN events e ON f.event_id = e.id
-            WHERE {match_clause}
-              AND e.scene_id IN ({placeholders})
-            ORDER BY e.timestamp DESC
-            LIMIT ?;
-        """
-        params = [query_param, *allowed_scopes, limit]
-        cursor = await self._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "event_type": r[1],
-                "scene_id": r[2],
-                "actor_id": r[3],
-                "timestamp": r[4],
-                "payload": json.loads(r[5]),
-            }
-            for r in rows
-        ]
+    async def read_context(self, event_id, before=3, after=3, allowed_scopes=None, through_rowid=None):
+        if not allowed_scopes: return []
+        placeholders=",".join("?" for _ in allowed_scopes)
+        target=await (await self._db.execute(f"""
+            SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
+            WHERE id=? AND scene_id IN ({placeholders}) AND (? IS NULL OR rowid<=?)""",
+            [event_id,*allowed_scopes,through_rowid,through_rowid])).fetchone()
+        if not target: return []
+        rows=[]
+        for operator,order,limit in (("<","DESC",before),(">","ASC",after)):
+            cursor=await self._db.execute(f"""
+                SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
+                WHERE scene_id=? AND rowid {operator} ? AND (? IS NULL OR rowid<=?)
+                ORDER BY rowid {order} LIMIT ?""",[target[2],target[6],through_rowid,through_rowid,max(0,min(limit,25))])
+            rows.extend(await cursor.fetchall())
+        return [self._retrieval_event(r) for r in sorted([*rows,target],key=lambda r:r[6])]
 
-    async def read_context(
-        self,
-        event_id: str,
-        before: int = 3,
-        after: int = 3,
-        allowed_scopes: Optional[list[str]] = None
-    ) -> list[dict[str, Any]]:
-        """Reads surrounding events around a specific event, respecting allowed scopes."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        if not allowed_scopes:
-            return []
+    async def references_belong_to_scene(self, reference_ids, scene_id, through_event_rowid=None):
+        if not reference_ids: return True
+        ids=list(reference_ids);placeholders=",".join("?" for _ in ids)
+        cursor=await self._db.execute(f"""SELECT id FROM events WHERE scene_id=?
+            AND id IN ({placeholders}) AND (? IS NULL OR rowid<=?)""",
+            [scene_id,*ids,through_event_rowid,through_event_rowid])
+        return {r[0] for r in await cursor.fetchall()} == set(reference_ids)
 
-        placeholders = ",".join("?" for _ in allowed_scopes)
-        # 1. Fetch target event
-        target_sql = f"""
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload
-            FROM events
-            WHERE id = ? AND scene_id IN ({placeholders});
-        """
-        cursor = await self._db.execute(target_sql, [event_id, *allowed_scopes])
-        target_row = await cursor.fetchone()
-        if not target_row:
-            return []
+    async def query_timeline(self, scene_id, start_time, end_time, allowed_scopes=None, limit=20, through_rowid=None):
+        if not allowed_scopes or scene_id not in allowed_scopes: return []
+        cursor=await self._db.execute("""
+            SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
+            WHERE scene_id=? AND timestamp>=? AND timestamp<=? AND (? IS NULL OR rowid<=?)
+            ORDER BY rowid LIMIT ?""",[scene_id,start_time,end_time,through_rowid,through_rowid,max(1,min(limit,50))])
+        return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
-        t_id, t_etype, t_scene, t_actor, t_time, t_payload = target_row
-        target_dict = {
-            "id": t_id, "event_type": t_etype, "scene_id": t_scene,
-            "actor_id": t_actor, "timestamp": t_time, "payload": json.loads(t_payload)
-        }
+    async def query_person_history(self, actor_id, allowed_scopes=None, limit=15, through_rowid=None):
+        if not allowed_scopes: return []
+        placeholders=",".join("?" for _ in allowed_scopes)
+        cursor=await self._db.execute(f"""
+            SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
+            WHERE actor_id=? AND scene_id IN ({placeholders}) AND (? IS NULL OR rowid<=?)
+            ORDER BY rowid DESC LIMIT ?""",[actor_id,*allowed_scopes,through_rowid,through_rowid,max(1,min(limit,50))])
+        return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
-        # 2. Fetch before events
-        before_sql = f"""
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload
-            FROM events
-            WHERE scene_id = ? AND timestamp < ?
-            ORDER BY timestamp DESC
-            LIMIT ?;
-        """
-        b_cursor = await self._db.execute(before_sql, [t_scene, t_time, before])
-        b_rows = await b_cursor.fetchall()
-        before_list = [
-            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
-            for r in reversed(b_rows)
-        ]
-
-        # 3. Fetch after events
-        after_sql = f"""
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload
-            FROM events
-            WHERE scene_id = ? AND timestamp > ?
-            ORDER BY timestamp ASC
-            LIMIT ?;
-        """
-        a_cursor = await self._db.execute(after_sql, [t_scene, t_time, after])
-        a_rows = await a_cursor.fetchall()
-        after_list = [
-            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
-            for r in a_rows
-        ]
-
-        return before_list + [target_dict] + after_list
-
-    async def references_belong_to_scene(
-        self,
-        reference_ids: set[str],
-        scene_id: str,
-        through_event_rowid: int | None = None,
-    ) -> bool:
-        """Validate retrieved event/episode references against the SQL scope boundary."""
-        if not reference_ids:
-            return True
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-
-        ids = list(reference_ids)
-        placeholders = ",".join("?" for _ in ids)
-        event_cursor = await self._db.execute(
-            f"SELECT id FROM events WHERE scene_id = ? AND id IN ({placeholders}) AND (? IS NULL OR rowid<=?)",
-            [scene_id, *ids, through_event_rowid, through_event_rowid],
-        )
-        found = {row[0] for row in await event_cursor.fetchall()}
-        if found == reference_ids:
-            return True
-        episode_cursor = await self._db.execute(
-            f"""SELECT id FROM episodes WHERE scene_id = ? AND id IN ({placeholders})
-                AND NOT EXISTS (SELECT 1 FROM json_each(source_event_ids) AS source
-                    WHERE NOT EXISTS (SELECT 1 FROM events WHERE events.id=source.value
-                        AND events.scene_id=episodes.scene_id AND (? IS NULL OR events.rowid<=?)))""",
-            [scene_id, *ids, through_event_rowid, through_event_rowid],
-        )
-        found.update(row[0] for row in await episode_cursor.fetchall())
-        return found == reference_ids
-
-    async def query_timeline(
-        self,
-        scene_id: str,
-        start_time: float,
-        end_time: float,
-        allowed_scopes: Optional[list[str]] = None,
-        limit: int = 20
-    ) -> list[dict[str, Any]]:
-        """Queries events in a time window for a scene, guarded by execution scope."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        if not allowed_scopes or scene_id not in allowed_scopes:
-            return []
-
-        sql = """
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload
-            FROM events
-            WHERE scene_id = ? AND timestamp >= ? AND timestamp <= ?
-            ORDER BY timestamp ASC
-            LIMIT ?;
-        """
-        cursor = await self._db.execute(sql, [scene_id, start_time, end_time, limit])
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
-            for r in rows
-        ]
-
-    async def query_person_history(
-        self,
-        actor_id: str,
-        allowed_scopes: Optional[list[str]] = None,
-        limit: int = 15
-    ) -> list[dict[str, Any]]:
-        """Queries events by a specific actor across permitted scenes."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        if not allowed_scopes:
-            return []
-
-        placeholders = ",".join("?" for _ in allowed_scopes)
-        sql = f"""
-            SELECT id, event_type, scene_id, actor_id, timestamp, payload
-            FROM events
-            WHERE actor_id = ? AND scene_id IN ({placeholders})
-            ORDER BY timestamp DESC
-            LIMIT ?;
-        """
-        cursor = await self._db.execute(sql, [actor_id, *allowed_scopes, limit])
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3], "timestamp": r[4], "payload": json.loads(r[5])}
-            for r in rows
-        ]
-
-    async def load_scene_state(self, scene_id: str) -> Optional[dict[str, Any]]:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        cursor = await self._db.execute(
-            "SELECT version, state_json FROM scene_states WHERE scene_id = ?;",
-            (scene_id,)
-        )
-        row = await cursor.fetchone()
-        if row:
-            data = json.loads(row[1])
-            data["version"] = row[0]
-            return data
-        return None
-
-    async def load_group_agent_session(self, scene_id: str) -> Optional[dict[str, Any]]:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        cursor = await self._db.execute(
-            """
-            SELECT version, last_observed_event_rowid, last_cognized_event_rowid, state_json
-            FROM group_agent_sessions
-            WHERE scene_id = ?;
-            """,
-            (scene_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        data = json.loads(row[3])
-        data["version"] = row[0]
-        data["last_observed_event_rowid"] = row[1]
-        data["last_cognized_event_rowid"] = row[2]
-        return data
-
-    async def save_scene_state(self, scene_id: str, version: int, state_data: dict[str, Any]) -> None:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        async with self._write_lock:
-            await self._db.execute(
-                """
-                INSERT INTO scene_states (scene_id, version, state_json, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    version = excluded.version,
-                    state_json = excluded.state_json,
-                    updated_at = excluded.updated_at;
-                """,
-                (scene_id, version, json.dumps(state_data, ensure_ascii=False), time.time())
-            )
-            await self._db.commit()
+    async def load_scene_session(self, scene_id):
+        row = await (await self._db.execute(
+            "SELECT state_json FROM scene_sessions WHERE scene_id=?", (scene_id,))).fetchone()
+        return json.loads(row[0]) if row else None
 
     async def commit_scene_event(
         self,
@@ -916,7 +604,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         scene_state_data: dict[str, Any],
         task_id_to_trigger: Optional[str] = None,
         associated_open_loop: Optional[dict[str, Any]] = None,
-        group_session_data: Optional[dict[str, Any]] = None,
         advance_session_observation: bool = True,
     ) -> int:
         """Atomically commit an Event and its materialized scene state."""
@@ -924,7 +611,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             try:
                 rowid = await self._write_scene_event(
                     event, scene_state_data, task_id_to_trigger, associated_open_loop,
-                    group_session_data, advance_session_observation,
+                    advance_session_observation,
                 )
                 await self._db.commit()
                 return rowid
@@ -938,7 +625,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         scene_state_data: dict[str, Any],
         task_id_to_trigger: Optional[str] = None,
         associated_open_loop: Optional[dict[str, Any]] = None,
-        group_session_data: Optional[dict[str, Any]] = None,
         advance_session_observation: bool = True,
     ) -> int:
         """Write inside the caller's locked transaction; no commit authority here."""
@@ -1008,49 +694,15 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 )
             )
 
-        # 5. Upsert SceneState
-        version = scene_state_data.get("version", 0)
+        persisted = dict(scene_state_data)
+        if advance_session_observation:
+            persisted["last_observed_event_rowid"] = event_rowid
         await self._db.execute(
-            """
-            INSERT INTO scene_states (scene_id, version, state_json, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(scene_id) DO UPDATE SET
-                version = excluded.version,
-                state_json = excluded.state_json,
-                updated_at = excluded.updated_at;
-            """,
-            (event.scene_id, version, json.dumps(scene_state_data, ensure_ascii=False), time.time())
-        )
-
-        if group_session_data is not None:
-            persisted_session = dict(group_session_data)
-            if advance_session_observation:
-                persisted_session["last_observed_event_rowid"] = event_rowid
-            session_version = int(persisted_session.get("version", 0))
-            last_observed = int(persisted_session.get("last_observed_event_rowid", 0))
-            last_cognized = int(persisted_session.get("last_cognized_event_rowid", 0))
-            await self._db.execute(
-                """
-                INSERT INTO group_agent_sessions (
-                    scene_id, version, last_observed_event_rowid,
-                    last_cognized_event_rowid, state_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    version = excluded.version,
-                    last_observed_event_rowid = excluded.last_observed_event_rowid,
-                    last_cognized_event_rowid = excluded.last_cognized_event_rowid,
-                    state_json = excluded.state_json,
-                    updated_at = excluded.updated_at;
-                """,
-                (
-                    event.scene_id,
-                    session_version,
-                    last_observed,
-                    last_cognized,
-                    json.dumps(persisted_session, ensure_ascii=False),
-                    time.time(),
-                ),
-            )
+            "INSERT INTO scene_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(scene_id) DO UPDATE SET "
+            "version=excluded.version,last_observed_event_rowid=excluded.last_observed_event_rowid,"
+            "last_cognized_event_rowid=excluded.last_cognized_event_rowid,state_json=excluded.state_json,updated_at=excluded.updated_at",
+            (event.scene_id, persisted.get("version", 0), persisted.get("last_observed_event_rowid", 0),
+             persisted.get("last_cognized_event_rowid", 0), json.dumps(persisted, ensure_ascii=False), self.clock()))
 
         return event_rowid
 
@@ -1110,40 +762,55 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
     # ADR-0038 §5: curated bot voice exemplars
     # ------------------------------------------------------------------
 
-    async def preview_diana_persona(self) -> dict:
+    async def preview_diana_persona(self, media_refs: dict[str, str] | None = None) -> dict:
         import hashlib
-        from len_bot.cognition.diana import PERSONA, PRESET_ID, LEGACY_PRESET_ID, LEGACY_PERSONA, LEGACY_EXAMPLES, EXAMPLES, EXAMPLE_IDS
+        from len_bot.cognition.diana import PERSONA, PRESET_ID, PREVIOUS_PERSONAS, PREVIOUS_EXAMPLES, MEDIA_REF_TAGS, build_examples
         current = await self.get_dynamic_config("persona_config") or {}
         applied = await self.get_dynamic_config(PRESET_ID) is not None
         examples = await self.list_voice_examples()
+        if media_refs is None:
+            palette = await self.list_palette("global-safe")
+            media_refs = {name: next((asset["id"] for asset in palette if tag in asset["tags"]), "")
+                          for name, tag in MEDIA_REF_TAGS.items()}
+        available_refs = {}
+        for name, asset_id in media_refs.items():
+            asset = await self.get_media(asset_id, ["global-safe"])
+            if asset and asset["curated"]:
+                available_refs[name] = asset_id
+        desired_examples = build_examples(available_refs, strict=False)
         fields = []
         for key, desired in PERSONA.items():
             previous = current.get(key)
-            update = not applied and (previous is None or previous == LEGACY_PERSONA[key])
+            update = not applied and (previous is None or any(previous == baseline[key] for baseline in PREVIOUS_PERSONAS))
             fields.append({"key": key, "current": previous, "next": desired if update else previous,
                            "action": "update" if update and previous != desired else
                                      "preserve" if previous != desired else "unchanged"})
-        legacy = {f"{LEGACY_PRESET_ID}:{i}": (context, content)
-                  for i, (context, content) in enumerate(LEGACY_EXAMPLES)}
-        disable = [item["id"] for item in examples if item["id"] in legacy
-                   and (item["context"], item["content"]) == legacy[item["id"]]]
-        token = hashlib.sha256(json.dumps([current, examples, applied], sort_keys=True,
+        disable = [item["id"] for item in examples if item["id"] in PREVIOUS_EXAMPLES
+                   and (item["context"], item["content"]) == PREVIOUS_EXAMPLES[item["id"]]
+                   and not item["scene_id"] and item["tag"] in {"", "嘉然"}
+                   and item["segments"] == [{"type": "text", "text": item["content"]}]]
+        token = hashlib.sha256(json.dumps([current, examples, applied, desired_examples], sort_keys=True,
                                          ensure_ascii=False).encode()).hexdigest()
         return {"preset_id": PRESET_ID, "applied": applied, "fields": fields,
-                "disable_example_ids": disable, "example_count": sum(eid not in {item["id"] for item in examples} for eid in EXAMPLE_IDS), "examples": [{"id": eid, "context": value[0], "content": value[1]} for eid, value in zip(EXAMPLE_IDS, EXAMPLES)], "preview_token": token}
+                "disable_example_ids": disable,
+                "example_count": sum(item["id"] not in {existing["id"] for existing in examples} for item in desired_examples),
+                "examples": desired_examples, "preview_token": token,
+                "missing_media": sorted({MEDIA_REF_TAGS[name] for item in desired_examples for name in item["missing_media_refs"]})}
 
-    async def apply_diana_persona(self, bot_qq: int, expected_token: str | None = None) -> bool:
+    async def apply_diana_persona(self, bot_qq: int, expected_token: str | None = None, *, media_refs: dict[str, str] | None = None) -> bool:
         """Explicit, atomic preset migration. Preserve edits; never run on startup."""
-        from len_bot.cognition.diana import EXAMPLES, PRESET_ID, EXAMPLE_IDS
+        from len_bot.cognition.diana import PRESET_ID
         async with self._write_lock:
             await self._db.execute("BEGIN IMMEDIATE")
             try:
-                preview = await self.preview_diana_persona()
+                preview = await self.preview_diana_persona(media_refs)
                 if expected_token is not None and expected_token != preview["preview_token"]:
                     raise ValueError("配置已变化，请重新预览后应用")
                 if preview["applied"]:
                     await self._db.rollback()
                     return False
+                if preview["missing_media"]:
+                    raise ValueError("请先将这些情绪的运营素材选入固定目录：" + "、".join(preview["missing_media"]))
                 now = self.clock()
                 config = await self.get_dynamic_config("persona_config") or {}
                 config.update({field["key"]: field["next"] for field in preview["fields"]})
@@ -1155,9 +822,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 await self._db.executemany("UPDATE voice_exemplars SET enabled=0 WHERE id=?",
                                           [(mid,) for mid in preview["disable_example_ids"]])
                 await self._db.executemany(
-                    "INSERT INTO voice_exemplars(id,scene_id,context,content,tag,created_at,source) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
-                    [(EXAMPLE_IDS[i], "", context, content, "嘉然", now, "operator")
-                     for i, (context, content) in enumerate(EXAMPLES)],
+                    "INSERT INTO voice_exemplars(id,scene_id,context,content,segments_json,tag,created_at,source) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                    [(item["id"], "", item["context"], item["content"], json.dumps(item["segments"], ensure_ascii=False), "嘉然", now, "operator")
+                     for item in preview["examples"]],
                 )
                 await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
                                        (PRESET_ID, '{"applied":true}', now))
@@ -1170,21 +837,23 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
     async def add_voice_example(
         self,
         scene_id: str,
-        content: str,
+        content: str = "",
         context: str = "",
         tag: str = "",
+        segments: list | None = None,
     ) -> dict[str, Any]:
         if not self._db:
             raise RuntimeError("Database not initialized")
         example_id = f"voice_{uuid.uuid4().hex[:10]}"
         now = self.clock()
         async with self._write_lock:
+            content, segments = await self._voice_body(scene_id, content, segments)
             await self._db.execute(
                 """
-                INSERT INTO voice_exemplars (id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at)
-                VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?);
+                INSERT INTO voice_exemplars (id, scene_id, context, content, segments_json, tag, enabled, use_count, last_used_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?);
                 """,
-                (example_id, scene_id or "", context, content, tag, now),
+                (example_id, scene_id or "", context, content, json.dumps(segments, ensure_ascii=False), tag, now),
             )
             await self._db.commit()
         return {
@@ -1192,6 +861,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             "scene_id": scene_id or "",
             "context": context,
             "content": content,
+            "segments": segments,
             "tag": tag,
             "source": "operator",
             "enabled": True,
@@ -1200,40 +870,56 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             "created_at": now,
         }
 
+    async def _voice_body(self, scene_id: str, content: str, segments: list | None):
+        from len_bot.media.models import MessageSegment, segment_text
+        if scene_id and not scene_id.startswith(("group:", "private:")):
+            raise ValueError("样例范围须留空或填写 group:/private: 场景")
+        parts = [MessageSegment.model_validate(item) for item in segments] if segments is not None else [MessageSegment(type="text", text=content)]
+        if not parts or not segment_text(parts).strip():
+            raise ValueError("样例需要文字或图片")
+        scopes = [scene_id, "global-safe"] if scene_id else ["global-safe"]
+        for part in parts:
+            if part.type == "image":
+                asset = await self.get_media(part.asset_id, scopes)
+                if not asset or not asset["curated"]:
+                    raise ValueError("样例图片须是启用且在样例范围内的运营素材")
+        return segment_text(parts), [part.model_dump(exclude_none=True) for part in parts]
+
+    @staticmethod
+    def _voice_row(row):
+        item = dict(zip(("id", "scene_id", "context", "content", "tag", "enabled", "use_count", "last_used_at", "created_at", "source", "segments"), row))
+        item["enabled"] = bool(item["enabled"])
+        item["segments"] = json.loads(item["segments"])
+        return item
+
     async def list_voice_examples(self, scene_id: str | None = None) -> list[dict[str, Any]]:
         """All exemplars; when scene_id is given, that scene's plus global ones."""
         if not self._db:
             raise RuntimeError("Database not initialized")
         if scene_id is None:
             cursor = await self._db.execute(
-                "SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source FROM voice_exemplars ORDER BY created_at DESC;"
+                "SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source, segments_json FROM voice_exemplars ORDER BY created_at DESC,id;"
             )
         else:
             cursor = await self._db.execute(
                 """
-                SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source
+                SELECT id, scene_id, context, content, tag, enabled, use_count, last_used_at, created_at, source, segments_json
                 FROM voice_exemplars
                 WHERE scene_id IN (?, '')
-                ORDER BY created_at DESC;
+                ORDER BY created_at DESC,id;
                 """,
                 (scene_id,),
             )
         rows = await cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "scene_id": r[1],
-                "context": r[2],
-                "content": r[3],
-                "tag": r[4],
-                "enabled": bool(r[5]),
-                "use_count": r[6],
-                "last_used_at": r[7],
-                "created_at": r[8],
-                "source": r[9],
-            }
-            for r in rows
-        ]
+        examples = [self._voice_row(row) for row in rows]
+        for item in examples:
+            try:
+                await self._voice_body(item["scene_id"], item["content"], item["segments"])
+            except ValueError as error:
+                item.update(available=False, unavailable_reason=str(error))
+            else:
+                item["available"] = True
+        return examples
 
     async def delete_voice_example(self, example_id: str) -> bool:
         if not self._db:
@@ -1250,6 +936,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         if not self._db:
             raise RuntimeError("Database not initialized")
         async with self._write_lock:
+            if enabled:
+                row = await (await self._db.execute("SELECT scene_id,content,segments_json FROM voice_exemplars WHERE id=?", (example_id,))).fetchone()
+                if row is None:
+                    return False
+                await self._voice_body(row[0], row[1], json.loads(row[2]))
             cursor = await self._db.execute(
                 "UPDATE voice_exemplars SET enabled = ? WHERE id = ?;",
                 (1 if enabled else 0, example_id),
@@ -1257,23 +948,21 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             await self._db.commit()
         return cursor.rowcount > 0
 
-    async def update_voice_example(self, example_id: str, *, scene_id: str, content: str, context: str, tag: str) -> bool:
+    async def update_voice_example(self, example_id: str, *, scene_id: str, content: str = "", context: str, tag: str, segments: list | None = None) -> bool:
         async with self._write_lock:
+            content, segments = await self._voice_body(scene_id, content, segments)
             cursor = await self._db.execute(
-                "UPDATE voice_exemplars SET scene_id=?,content=?,context=?,tag=?,source='operator' WHERE id=?",
-                (scene_id, content, context, tag, example_id),
+                "UPDATE voice_exemplars SET scene_id=?,content=?,segments_json=?,context=?,tag=?,source='operator' WHERE id=?",
+                (scene_id, content, json.dumps(segments, ensure_ascii=False), context, tag, example_id),
             )
             await self._db.commit()
         return cursor.rowcount == 1
 
     async def select_voice_examples(self, scene_id: str) -> list[dict[str, Any]]:
         """All enabled operator examples, stable order; reading never changes selection."""
-        cursor = await self._db.execute(
-            """SELECT id,scene_id,context,content,tag,source FROM voice_exemplars
-               WHERE enabled=1 AND scene_id IN (?, '') ORDER BY scene_id,id""", (scene_id,),
-        )
-        return [dict(zip(("id", "scene_id", "context", "content", "tag", "source"), row))
-                for row in await cursor.fetchall()]
+        examples = await self.list_voice_examples(scene_id)
+        return sorted((item for item in examples if item["enabled"] and item["available"]),
+                      key=lambda item: (item["scene_id"], item["id"]))
 
     async def create_task(self, task_data: dict[str, Any]) -> None:
         """P0.1: Dedicated write authority for tasks under write_lock."""
@@ -1482,6 +1171,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         job_proposals=None,
         job_messages=None,
         origin_mode="live",
+        bot_actor_id: str = "",
+        through_rowid: int | None = None,
     ) -> tuple[list[Any], list[str], list[Any]]:
         """
         V2 Atomic Proposal Commit (ADR-0003 & ADR-0011 Closure):
@@ -1495,7 +1186,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
         import uuid
         from len_bot.scheduler.models import TaskItem, TaskStatus
-        from len_bot.memory.models import MemoryItem, MemoryCertainty, MemoryStatus
+        from len_bot.memory.models import MemoryItem
         from len_bot.cognition.models import CONDITION_TASK_DEFAULT_DEADLINE_SECONDS
 
         now = self.clock()
@@ -1506,38 +1197,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                if scene_commit is not None:
-                    perception = scene_commit["event"].payload["result"]["perception"]
-                    references = {mid for update in [*perception.get("person_updates", []),
-                                                     *perception.get("relationship_updates", [])]
-                                  for mid in update.get("memory_ids_add", [])}
-                    if references and not await self.memory_references_readable(references, scene_id):
-                        raise ValueError("Working memory references changed or are outside readable scope")
-                # 1. Validate evidence integrity for all memory proposals upfront
                 for mp in memory_proposals:
-                    mp.scope = scene_id
-                    if not mp.evidence:
-                        raise ValueError(f"Memory proposal '{mp.key}' lacks evidence references")
-
-                    placeholders = ",".join("?" for _ in mp.evidence)
-                    cursor = await self._db.execute(
-                        f"SELECT COUNT(*) FROM events WHERE id IN ({placeholders}) AND scene_id = ?;",
-                        [*mp.evidence, scene_id]
-                    )
-                    (ev_count,) = await cursor.fetchone()
-
-                    ep_cursor = await self._db.execute(
-                        f"SELECT COUNT(*) FROM episodes WHERE id IN ({placeholders}) AND scene_id = ?;",
-                        [*mp.evidence, scene_id]
-                    )
-                    (ep_count,) = await ep_cursor.fetchone()
-
-                    required_evidence_count = len(set(mp.evidence))
-                    if (ev_count + ep_count) < required_evidence_count:
-                        raise ValueError(
-                            f"Evidence integrity check failed for memory '{mp.key}'. "
-                            f"Expected {required_evidence_count} evidence items in scope '{scene_id}', found {ev_count + ep_count}"
-                        )
+                    await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
 
                 # 2. Insert Tasks
                 job_tasks, proposal_tasks = await self.apply_job_proposals_in_transaction(job_proposals or [], scene_id, episode_id, origin_mode)
@@ -1687,8 +1348,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
                 # 4. Commit Memory Proposals with Unified Validation & Conflict Resolution (ADR-0025, §13)
                 for mp in memory_proposals:
-                    await validate_memory_proposal(self._db, mp, scene_id)
-                    mem_item = await commit_memory_proposal_core(self._db, mp, scene_id, now=now)
+                    await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
+                    mem_item = await commit_memory_proposal_core(self._db, mp, scene_id, now=now,
+                        revision_event_id=scene_commit["event"].id if scene_commit else None)
                     committed_memories.append(mem_item)
 
                 for message in job_messages or []:
@@ -1712,13 +1374,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                         raise ValueError("Task is not ready for fulfilment")
 
                 if scene_commit is not None:
-                    from len_bot.cognition.session import GroupAgentSession, GroupAgentSessionReducer
-                    session = GroupAgentSession.model_validate(scene_commit["group_session_data"])
-                    receipts = [await self._memory_receipt(mp, item)
-                                for mp, item in zip(memory_proposals, committed_memories)]
-                    GroupAgentSessionReducer.apply_memory_receipts(session, receipts)
-                    scene_commit["group_session_data"] = session.model_dump()
-                    scene_commit["event"].payload["memory_receipts"] = receipts
+                    scene_commit["event"].payload["memory_receipts"] = [
+                        await self._memory_receipt(mp, item) for mp, item in zip(memory_proposals, committed_memories)]
                     await self._write_scene_event(**scene_commit)
 
                 # 5. Commit all mutations atomically in one transaction!
@@ -1728,24 +1385,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 await self._db.rollback()
                 raise
 
-    async def _memory_receipt(self, proposal: MemoryProposal, item: MemoryItem) -> dict:
-        replaced = await (await self._db.execute(
-            """WITH RECURSIVE replaced(id) AS (
-                   SELECT id FROM memories WHERE scope=? AND superseded_by=?
-                   UNION SELECT m.id FROM memories m JOIN replaced r ON m.superseded_by=r.id WHERE m.scope=?
-               ) SELECT id FROM replaced""", (item.scope, item.id, item.scope),
-        )).fetchall()
-        return {"id": item.id, "subject": item.subject, "kind": item.kind.value, "key": item.key,
-                "value": item.value, "status": item.status.value, "operation": proposal.operation,
-                "reason": proposal.reason, "evidence": proposal.evidence,
-                "target_memory_ids": list(dict.fromkeys(proposal.target_memory_ids + [r[0] for r in replaced]))}
-
-    async def memory_references_readable(self, memory_ids: set[str], scene_id: str) -> bool:
-        cursor = await self._db.execute(
-            f"SELECT COUNT(*) FROM memories WHERE scope IN (?, 'global-safe') AND status='active' AND id IN ({','.join('?' for _ in memory_ids)})",
-            [scene_id, *memory_ids],
-        )
-        return (await cursor.fetchone())[0] == len(memory_ids)
+    async def _memory_receipt(self, proposal, item):
+        return {"id": item.id, "subject": item.subject, "kind": item.kind,
+                "statement": item.statement, "basis": item.basis, "status": item.status,
+                "operation": proposal.operation, "reason": proposal.reason,
+                "evidence": proposal.evidence, "target_memory_ids": proposal.target_memory_ids}
 
     async def scene_tasks(self, scene_id: str) -> list[dict]:
         cursor = await self._db.execute(
@@ -1774,7 +1418,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         async with self._write_lock:
             try:
                 cursor = await self._db.execute(
-                    "SELECT scene_id,last_observed_event_rowid,last_cognized_event_rowid FROM group_agent_sessions"
+                    "SELECT scene_id,last_observed_event_rowid,last_cognized_event_rowid FROM scene_sessions"
                 )
                 rows = await cursor.fetchall()
                 for scene_id, observed, cognized in rows:
@@ -1815,23 +1459,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                                        (event.id, scene_id, event.model_dump_json()))
                 await self._db.commit()
                 return True
-            except BaseException:
-                await self._db.rollback()
-                raise
-
-    async def migrate_social_continuity(self) -> None:
-        """One-time audit of old reflected ranges; only cognition may act on reviews."""
-        async with self._write_lock:
-            try:
-                cursor = await self._db.execute(
-                    "SELECT 1 FROM runtime_dynamic_configs WHERE key='adr0040_migration'")
-                if await cursor.fetchone():
-                    return
-                await self._db.execute("UPDATE reflection_cursors SET last_event_rowid=0")
-                await self._db.execute(
-                    "INSERT INTO runtime_dynamic_configs(key,value_json,updated_at) VALUES ('adr0040_migration',?,?)",
-                    ('{"version":1}', self.clock()))
-                await self._db.commit()
             except BaseException:
                 await self._db.rollback()
                 raise

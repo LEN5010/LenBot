@@ -3,19 +3,22 @@
 Control Plane routes NEVER reach into runtime internals (`event_store._db`,
 `scene_manager._actors`, `plugin_host._plugins`) — every read goes through
 here, so the Dashboard is decoupled from Runtime implementation details.
-Mutating interventions stay on their existing authority paths (scheduler,
-OpenLoopManager, MemoryStore, receive_event).
+Mutating interventions use explicit operator events and proposal submission.
 """
 
 import json
 import time
 from typing import Optional
-from len_bot.scenes.models import SceneState
+from len_bot.scenes.models import SceneSession
+from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
 
 
 class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
+
+    def current_time(self) -> float:
+        return self.runtime.event_store.clock()
 
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
@@ -36,7 +39,7 @@ class RuntimeQueryService:
 
     async def media_assets(self, scene_id, query=""):
         rows = await self.runtime.event_store.list_media(list(dict.fromkeys([scene_id, "global-safe"])), query=query, include_disabled=True)
-        return [{key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at")} for asset in rows]
+        return [{key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at", "palette_order")} for asset in rows]
 
     async def media_file(self, asset_id, scene_id):
         return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
@@ -52,22 +55,23 @@ class RuntimeQueryService:
 
         memory_count = 0
         if rt.memory_store:
-            cursor = await rt.memory_store._db.execute("SELECT COUNT(*) FROM memories WHERE status = 'active';")
+            cursor = await rt.memory_store._db.execute(
+                "SELECT COUNT(*) FROM memories WHERE status='active' AND (expires_at IS NULL OR expires_at>?)", (self.current_time(),))
             (memory_count,) = await cursor.fetchone()
 
-        scenes = self.loaded_scene_summaries()
+        scenes = await self.list_scenes()
         routing = rt.provider_registry.snapshot()
         social = rt.metrics.snapshot()["social"]
 
         return {
             "stats": {
                 **stats,
-                "active_scenes": sum(1 for s in scenes if s["activity"] in ("active", "hot")),
+                "active_scenes": len(scenes),
                 "memory_beliefs_count": memory_count,
                 "websocket_connected": self.websocket_connected(),
                 "onebot_connection_mode": rt.config.onebot_connection_mode,
-                "normal_model": routing["routing"]["normal"]["model"] if routing["routing"] else None,
-                "deliberate_model": routing["routing"]["deliberate"]["model"] if routing["routing"] else None,
+                "conversation_model": routing["routing"]["conversation"]["model"] if routing["routing"] else None,
+                "work_model": routing["routing"]["work"]["model"] if routing["routing"] else None,
                 "identity_name": rt.config.identity_name,
                 "bot_qq": rt.config.bot_qq,
                 "uptime_seconds": time.time() - getattr(rt, "_started_at", time.time()),
@@ -104,80 +108,36 @@ class RuntimeQueryService:
 
     # ---------- Scenes ----------
 
-    def loaded_scene_summaries(self) -> list[dict]:
-        summaries = []
-        for scene_id, actor in self.runtime.scene_manager._actors.items():
-            state = actor.state
-            session = actor.group_session
-            summaries.append({
-                "scene_id": scene_id,
-                "version": state.version if state else 0,
-                "activity": state.activity_level if state else "idle",
-                "topics": [topic.model_dump(mode="json") for topic in session.social_world.topics] if session else [],
-                "engagement": session.self_social_state.engagement if session else "observing",
-                "consecutive_bot_messages": state.consecutive_bot_messages if state else 0,
-            })
-        return summaries
-
     async def list_scenes(self) -> list[dict]:
-        scenes = []
-        for scene_id, actor in self.runtime.scene_manager._actors.items():
-            state = actor.state
-            session = actor.group_session
-            scenes.append({
-                "scene_id": scene_id,
-                "version": state.version if state else 0,
-                "activity_level": state.activity_level if state else "idle",
-                "participant_count": len(state.participants) if state else 0,
-                "social_world": session.social_world.model_dump(mode="json") if session else None,
-                "self_social_state": session.self_social_state.model_dump(mode="json") if session else None,
-                "is_in_memory": True,
-            })
-
-        cursor = await self.runtime.event_store._db.execute("SELECT DISTINCT scene_id FROM events;")
-        rows = await cursor.fetchall()
-        existing_ids = {s["scene_id"] for s in scenes}
-        for r in rows:
-            if r[0] and r[0] not in existing_ids:
-                scenes.append({
-                    "scene_id": r[0], "version": 0, "activity_level": "idle",
-                    "participant_count": 0, "social_world": None,
-                    "self_social_state": None, "is_in_memory": False,
-                })
-        return scenes
+        rows = await (await self.runtime.event_store._db.execute(
+            "SELECT state_json FROM scene_sessions ORDER BY updated_at DESC,scene_id")).fetchall()
+        jobs = await self.jobs()
+        active_statuses = {"pending", "claimed", "processing", "review_required", "result_ready", "awaiting_delivery"}
+        counts: dict[str, int] = {}
+        for job in jobs:
+            if job["status"] in active_statuses:
+                counts[job["scene_id"]] = counts.get(job["scene_id"], 0) + 1
+        sessions = [SceneSession.model_validate_json(row[0]) for row in rows]
+        return [{"scene_id": session.scene_id, "version": session.version,
+                 "participant_count": len(session.participants), "last_event_at": session.last_event_at,
+                 "last_bot_message_at": session.last_bot_message_at,
+                 "active_job_count": counts.get(session.scene_id, 0)} for session in sessions]
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:
-        """ADR-0027 (§22): Read-only scene detail without mutating actor registry."""
-        state = self.runtime.scene_manager.get_scene_state(scene_id)
-        if state is None:
-            raw_state = await self.runtime.event_store.load_scene_state(scene_id)
-            if not raw_state:
-                return None
-            state = SceneState.model_validate(raw_state)
-
-        actor = self.runtime.scene_manager._actors.get(scene_id)
-        session = actor.group_session if actor else None
-        if session is None:
-            raw_session = await self.runtime.event_store.load_group_agent_session(scene_id)
-            if raw_session:
-                from len_bot.cognition.session import GroupAgentSession
-                session = GroupAgentSession.model_validate(raw_session)
+        """Read the committed fact session without creating or changing an Actor."""
+        raw_session = await self.runtime.event_store.load_scene_session(scene_id)
+        if raw_session is None:
+            return None
+        session = SceneSession.model_validate(raw_session)
+        preferences = await self.runtime.memory_store.interaction_preferences(scene_id, list(session.participants)) if self.runtime.memory_store else []
+        recent = await self.query_events(scene_id=scene_id, limit=160)
         return {
-            "scene_id": scene_id,
-            "version": state.version,
-            "activity_level": state.activity_level,
-            "consecutive_bot_messages": state.consecutive_bot_messages,
-            "participants": state.participants,
-            "social_world": session.social_world.model_dump(mode="json") if session else None,
-            "self_social_state": session.self_social_state.model_dump(mode="json") if session else None,
-            "working_persons": {
-                key: value.model_dump(mode="json")
-                for key, value in (session.working_persons.items() if session else [])
-            },
-            "working_relationships": {key: value.model_dump(mode="json")
-                                      for key, value in (session.working_relationships.items() if session else [])},
-            "recent_memory_changes": session.recent_memory_changes if session else [],
-            "recent_deliveries": [event for event in await self.query_events(scene_id=scene_id, limit=80)
+            "session": session.model_dump(mode="json"),
+            "preferences": [item.model_dump(mode="json") for item in preferences],
+            "jobs": await self.jobs(scene_id),
+            "recent_messages": [event for event in recent if event["event_type"] in {
+                "GROUP_MESSAGE_RECEIVED", "PRIVATE_MESSAGE_RECEIVED", "MESSAGE_SENT"}][:40],
+            "recent_deliveries": [event for event in recent
                                   if event["event_type"] in {"MESSAGE_SENT", "MESSAGE_SEND_FAILED", "ACTION_SHADOWED"}][:12],
         }
 
@@ -209,8 +169,8 @@ class RuntimeQueryService:
         if until is not None:
             sql += " AND timestamp <= ?"
             params.append(until)
-        sql += " ORDER BY timestamp DESC LIMIT ?;"
-        params.append(limit)
+        sql += " ORDER BY rowid DESC LIMIT ?;"
+        params.append(max(1, min(limit, 1000)))
         cursor = await self.runtime.event_store._db.execute(sql, params)
         rows = await cursor.fetchall()
         return [
@@ -237,10 +197,17 @@ class RuntimeQueryService:
 
     async def get_task(self, task_id: str) -> dict | None:
         cursor = await self.runtime.event_store._db.execute(
-            "SELECT id,scene_id,description,due_at,status,payload,wake_event_type FROM tasks WHERE id=?", (task_id,))
+            "SELECT id,scene_id,description,due_at,status,payload,wake_event_type,wake_match_json FROM tasks WHERE id=?", (task_id,))
         row = await cursor.fetchone()
         return dict(id=row[0], scene_id=row[1], description=row[2], due_at=row[3], status=row[4],
-                    payload=json.loads(row[5]), wake_event_type=row[6]) if row else None
+                    payload=json.loads(row[5]), wake_event_type=row[6],
+                    wake_match=json.loads(row[7]) if row[7] else None) if row else None
+
+    async def open_loop(self, loop_id: str) -> dict | None:
+        cursor = await self.runtime.event_store._db.execute(
+            "SELECT id,scene_id,status FROM open_loops WHERE id=?", (loop_id,))
+        row = await cursor.fetchone()
+        return {"id": row[0], "scene_id": row[1], "status": row[2]} if row else None
 
     async def list_open_loops(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
         sql = "SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at FROM open_loops"
@@ -265,12 +232,9 @@ class RuntimeQueryService:
         subject: Optional[str] = None,
         limit: int = 50,
     ) -> list[dict]:
-        sql = """
-            SELECT id, subject, kind, key, value, certainty, scope, status,
-                   superseded_by, evidence, human_readable_assertion, created_at, last_confirmed_at,
-                   revision_reason, revision_evidence
-            FROM memories WHERE 1=1
-        """
+        if not self.runtime.memory_store:
+            return []
+        sql = f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE 1=1"
         params: list = []
         if status:
             sql += " AND status = ?"
@@ -281,36 +245,33 @@ class RuntimeQueryService:
         if subject:
             sql += " AND subject = ?"
             params.append(subject)
-        sql += " ORDER BY last_confirmed_at DESC LIMIT ?;"
-        params.append(limit)
+        sql += " ORDER BY created_at DESC,id LIMIT ?;"
+        params.append(max(1, min(limit, 200)))
         cursor = await self.runtime.memory_store._db.execute(sql, params)
         rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "subject": r[1], "kind": r[2], "key": r[3], "value": r[4],
-             "certainty": r[5], "scope": r[6], "status": r[7],
-             "superseded_by": r[8], "evidence": json.loads(r[9]) if r[9] else [],
-             "human_readable_assertion": r[10], "created_at": r[11], "last_confirmed_at": r[12],
-             "revision_reason": r[13], "revision_evidence": json.loads(r[14])}
-            for r in rows
-        ]
+        return [memory_from_row(row).model_dump(mode="json") for row in rows]
+
+    async def memory(self, memory_id: str) -> dict | None:
+        if not self.runtime.memory_store:
+            return None
+        row = await (await self.runtime.memory_store._db.execute(
+            f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE id=?", (memory_id,))).fetchone()
+        return memory_from_row(row).model_dump(mode="json") if row else None
 
     async def memory_chain(self, memory_id: str) -> list[dict]:
         """Include every merged predecessor, not just the first old semantic key."""
+        if not self.runtime.memory_store:
+            return []
         cursor = await self.runtime.memory_store._db.execute(
-            """WITH RECURSIVE chain(id, scope, superseded_by) AS (
+            f"""WITH RECURSIVE chain(id, scope, superseded_by) AS (
                    SELECT id,scope,superseded_by FROM memories WHERE id=?
                    UNION
                    SELECT m.id,m.scope,m.superseded_by FROM memories m JOIN chain c
                      ON m.scope=c.scope AND (m.id=c.superseded_by OR m.superseded_by=c.id)
                )
-               SELECT m.* FROM memories m JOIN chain c ON m.id=c.id
+               SELECT {','.join('m.' + column for column in MEMORY_COLUMNS)} FROM memories m JOIN chain c ON m.id=c.id
                ORDER BY m.created_at,m.id""", (memory_id,))
-        columns = [column[0] for column in cursor.description]
-        items = [dict(zip(columns, row)) for row in await cursor.fetchall()]
-        for item in items:
-            item["evidence"] = json.loads(item["evidence"])
-            item["revision_evidence"] = json.loads(item["revision_evidence"])
-        return items
+        return [memory_from_row(row).model_dump(mode="json") for row in await cursor.fetchall()]
 
     # ---------- Trace / Metrics / Plugins / Shadow ----------
 
