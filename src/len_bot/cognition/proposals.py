@@ -29,7 +29,7 @@ class TurnMessage(StrictModel):
     segments:list[Annotated[TextPart|ImagePart,Field(discriminator='type')]]=Field(min_length=1,max_length=12)
     reply_to: str|None=Field(default=None,description='可选消息M引用')
     ack_ref: str|None=Field(default=None,description='仅用于确认本轮start_work/schedule_reminder新建事项的proposal_ref；其他暂存S引用用于discard_proposal')
-    delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T')
+    delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
 
@@ -107,7 +107,7 @@ TOOLS={
     'start_work':(StartWork,'建立后台只读工作；主动搜索陌生概念、外部事实和当前信息，也用于计算、解题和整理。群友不必另行要求搜索；与finish_turn一起提交后开始执行。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。'),
-    'resume_work':(ControlWork,'恢复可恢复的工作；保持已有预算与资料。'),
+    'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料，部分结果不因此重开。'),
     'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),
@@ -202,7 +202,10 @@ class ProposalLedger:
             result=FinishTurn.model_validate(arguments)
             refs=self.context.refs;messages=[]
             for item in result.messages:
-                if item.ack_ref and item.ack_ref not in self.proposal_refs:raise ValueError('ack_ref没有对应本轮提案')
+                if item.ack_ref and item.ack_ref not in self.proposal_refs:
+                    raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
+                        + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
+                        '需要查询时先调用start_work取得staged回执，再调用finish_turn确认。')
                 parts=[{'type':'text','text':p.text} if isinstance(p,TextPart) else {'type':'image','asset_id':refs.media_id(p.asset_id)} for p in item.segments]
                 reply=None
                 if item.reply_to:
