@@ -62,8 +62,20 @@ class MediaService:
     async def reset_cache(self):
         self._vision_cache.clear()
         self._locks.clear()
+        retained = {Path(path).resolve() for path in await self.runtime.event_store.retained_media_paths()}
         if self.root.exists():
-            await asyncio.to_thread(shutil.rmtree, self.root)
+            if not retained:
+                await asyncio.to_thread(shutil.rmtree, self.root)
+            else:
+                await asyncio.to_thread(self._clear_unretained_files, retained)
+
+    def _clear_unretained_files(self, retained):
+        for path in self.root.rglob("*"):
+            if path.is_file() and path.resolve() not in retained:
+                path.unlink()
+        for path in sorted(self.root.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
 
     async def _store_bytes(self, data):
         try:

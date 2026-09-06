@@ -57,6 +57,11 @@ class MediaStoreMixin:
             [asset_id, *allowed_scopes])).fetchone()
         return _asset(row)
 
+    async def retained_media_paths(self):
+        """Operator Reset keeps the files belonging to curated media."""
+        return [row[0] for row in await (await self._db.execute(
+            "SELECT path FROM media_assets WHERE curated=1 AND path IS NOT NULL")).fetchall()]
+
     async def list_media(self, allowed_scopes, *, query="", curated_only=False, include_disabled=False, limit=40):
         if not allowed_scopes:
             return []
@@ -66,9 +71,9 @@ class MediaStoreMixin:
             sql += " AND curated=1"
         if not include_disabled:
             sql += " AND enabled=1"
-        if query:
+        for term in query.split():
             sql += " AND (instr(lower(description),lower(?))>0 OR instr(lower(tags_json),lower(?))>0)"
-            params += [query, query]
+            params += [term, term]
         sql += " ORDER BY created_at DESC,id LIMIT ?"
         params.append(min(max(1, limit), 100))
         return [_asset(row) for row in await (await self._db.execute(sql, params)).fetchall()]

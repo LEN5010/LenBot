@@ -1,6 +1,7 @@
 """Reset cancels old work before deleting its evidence and resumes cleanly."""
 
 import asyncio
+import base64
 import io
 import time
 from pathlib import Path
@@ -94,8 +95,15 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             await runtime.commit_tool_observation(event)
             picture = io.BytesIO()
             Image.new("RGB", (2, 2), "red").save(picture, format="PNG")
-            asset = await runtime.media_service.upload(picture.getvalue(), group, "旧图片", [])
+            old_image = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=group, actor_id="user:7",
+                timestamp=time.time()-120, payload={"raw_text": "旧聊天图片", "segments": [{"type": "image", "data": {
+                    "file": "base64://"+base64.b64encode(picture.getvalue()).decode()}}]})
+            await runtime.commit_tool_observation(old_image)
+            asset, _ = await runtime.media_service.get_bytes(old_image.metadata["media"][0]["asset_id"], group)
             assert Path(asset["path"]).is_file()
+            sticker = io.BytesIO()
+            Image.new("RGB", (2, 2), "blue").save(sticker, format="PNG")
+            curated = await runtime.media_service.upload(sticker.getvalue(), "global-safe", "运营表情", ["开心"])
 
             await runtime.receive_event(Event(event_type=EventType.GROUP_MESSAGE_RECEIVED,
                 scene_id=group, actor_id="user:7", payload={"raw_text": "旧的群聊消息_待取消", "at_bot": True}))
@@ -112,7 +120,10 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             assert await runtime.event_store.get_pending_tasks() == []
             assert await runtime.event_store.read_tool_observation(observation.result_id, [group]) is None
             assert await runtime.event_store.get_media(asset["id"], [group]) is None
-            assert not runtime.media_service.root.exists()
+            assert not Path(asset["path"]).exists()
+            assert (await runtime.event_store.get_media(curated["id"], ["global-safe"]))["description"] == "运营表情"
+            assert Path(curated["path"]).is_file()
+            assert await runtime.event_store.event_exists(curated["source_event_id"], "global-safe")
             assert await runtime.event_store.get_dashboard_user("admin") == user_before
             assert (await client.get("/api/auth/me")).status_code == 200
             assert (await client.get("/api/voice/exemplars")).json() == exemplars_before

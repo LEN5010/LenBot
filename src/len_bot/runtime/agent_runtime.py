@@ -616,6 +616,7 @@ class AgentRuntime:
                 raw_events = await self.event_store.get_recent_events(scene_id, limit=12_000)
                 raw_events = [e for e in raw_events if e.metadata.get("_rowid", 0) <= observed]
                 raw_events = await self.event_store.project_reply_context(scene_id, raw_events)
+                raw_events = await self.event_store.project_image_observations(scene_id, raw_events, observed)
                 if any(e.metadata.get("_rowid", 0) > session.last_cognized_event_rowid
                        and _is_shadow_input(e)
                        for e in raw_events):
@@ -657,6 +658,7 @@ class AgentRuntime:
                     events = await self.event_store.get_events_since(scene_id, after_rowid=observed, limit=12_000)
                     events = [e for e in events if e.metadata.get("_rowid", 0) <= target]
                     events = await self.event_store.project_reply_context(scene_id, events)
+                    events = await self.event_store.project_image_observations(scene_id, events, target)
                     observed = target
                     if any(_is_shadow_input(e) for e in events):
                         mailbox.origin_mode = "shadow"
