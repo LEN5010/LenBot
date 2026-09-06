@@ -101,23 +101,17 @@ async def test_bilibili_sensor_emits_live_events_into_bus(tmp_path, monkeypatch)
 async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
     """
     ADR-0021: web_search executes through the PluginHost sandbox (timeout +
-    fault isolation) and parses DuckDuckGo results into evidence lines.
+    fault isolation) and parses Bing RSS results into evidence lines.
     Network failures surface as error strings — never as exceptions.
     """
     db_file = str(tmp_path / "websearch.db")
     runtime = AgentRuntime(RuntimeConfig(bot_qq=1, db_path=db_file))
     await runtime.start()
 
-    fake_html = """
-    <div class="result">
-      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa">标题A</a>
-      <a class="result__snippet" href="#">这是摘要A</a>
-    </div>
-    <div class="result">
-      <a class="result__a" href="https://example.org/b">标题B</a>
-      <a class="result__snippet" href="#">这是摘要B</a>
-    </div>
-    """
+    fake_html = '''<rss><channel>
+      <item><title>标题A</title><link>https://example.com/a</link><description>这是摘要A</description></item>
+      <item><title>标题B</title><link>https://example.org/b</link><description>这是摘要B</description></item>
+    </channel></rss>'''
 
     class FakeResponse:
         status_code = 200
@@ -126,6 +120,7 @@ async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
         def json(self): return {}
 
     async def fake_get(url, params=None):
+        assert params['format']=='rss'
         return FakeResponse()
 
     plugin = runtime.plugin_host._plugins["web_search_tool"]
@@ -133,7 +128,7 @@ async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
 
     result = await runtime.plugin_host.execute_tool("web_search", {"query": "test"})
     assert "标题A" in result
-    assert "https://example.com/a" in result  # uddg unwrapped
+    assert "https://example.com/a" in result
     assert "摘要B" in result
     assert result.startswith("Error:") is False
 

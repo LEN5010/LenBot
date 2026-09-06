@@ -12,6 +12,7 @@ const emptyExample = () => ({ context: '', scene_id: '', tag: '', segments: [{ t
 const example = ref(emptyExample())
 const exampleMedia = ref([]), mediaQuery = ref(''), exampleSaving = ref(false)
 const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '', character_context: '' })
+const addressNames = ref('')
 const onebotForm = ref({
   connection_mode: 'forward_ws', action_transport: 'websocket',
   ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
@@ -41,6 +42,7 @@ async function load() {
       character_context: personaRes.character_context || '',
       conversation_style: personaRes.conversation_style || '',
     }
+    addressNames.value = personaRes.address_names.join('、')
     const onebotRes = await api('/api/websocket/status')
     onebot.value = onebotRes
     onebotForm.value = {
@@ -106,7 +108,9 @@ async function savePersona() {
   try {
     const res = await api('/api/settings/persona', {
       method: 'POST',
-      body: JSON.stringify(persona.value),
+      body: JSON.stringify({ ...persona.value,
+        address_names: [...new Set(addressNames.value.split(/[\n,，、]+/).map(name => name.trim()).filter(Boolean))],
+      }),
     })
     message.value = res.message
     await load()
@@ -281,6 +285,10 @@ async function resetConversationData() {
       <div class="persona-fields">
         <label>机器人名字
           <input v-model="persona.identity_name" placeholder="例如：Len" />
+        </label>
+        <label>呼唤昵称
+          <input v-model="addressNames" placeholder="然比、小然" />
+          <small>用逗号或顿号分隔。叫名字、@或引用时优先回应，别人之间的闲聊通常旁听；接着聊不必重复叫名字。</small>
         </label>
         <label class="wide">身份背景
           <textarea v-model="persona.identity_persona" rows="5" placeholder="例如：嘴有点损但没有恶意，熟人面前话多，对比赛和直播很感兴趣……"></textarea>

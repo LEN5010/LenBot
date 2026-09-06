@@ -1,8 +1,10 @@
 """Small native proposal tools stage changes; finish_turn commits one ledger."""
 from __future__ import annotations
 
-from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import copy
+import json
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
 from len_bot.cognition.jobs import JobProposal
@@ -13,22 +15,24 @@ from len_bot.memory.models import MemoryProposal
 class StrictModel(BaseModel):
     model_config=ConfigDict(extra='forbid')
 
-class TextPart(StrictModel):
-    type: Literal['text']
-    text: str=Field(min_length=1)
+class TurnPart(StrictModel):
+    text: str|None=Field(default=None,min_length=1)
+    image: str|None=Field(default=None,min_length=1)
 
-class ImagePart(StrictModel):
-    type: Literal['image']
-    asset_id: str=Field(min_length=1,description='图片I或运营表情P引用')
+    @model_validator(mode='after')
+    def one_content(self):
+        if self.model_fields_set not in ({'text'}, {'image'}) or not (self.text or self.image):
+            raise ValueError('每个片段必须且只能填写一个非空text或image字段')
+        return self
 
 class ReplyExpectation(StrictModel):
     target: str=Field(description='期待回应的人物U引用')
     intent: str=Field(min_length=1)
 
 class TurnMessage(StrictModel):
-    segments:list[Annotated[TextPart|ImagePart,Field(discriminator='type')]]=Field(min_length=1,max_length=12)
+    segments:list[TurnPart]=Field(min_length=1,max_length=12)
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    ack_ref: str|None=Field(default=None,description='仅用于确认本轮start_work/schedule_reminder新建事项的proposal_ref；其他暂存S引用用于discard_proposal')
+    ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
     delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
@@ -41,8 +45,7 @@ class Evidence(StrictModel):
     evidence:list[str]=Field(min_length=1,description='本轮实际读过的消息M引用')
 
 class StartWork(Evidence):
-    proposal_ref:str=Field(min_length=1,description='你为本轮提案指定的短名字，可用于消息ack_ref')
-    goal:str=Field(min_length=1)
+    goal:str=Field(min_length=1,description='保留原问题指定的公司、型号、对象与所求结果；未核实的同名猜测不替代目标')
     constraints:list[str]=Field(default_factory=list)
     result_refs:list[str]=Field(default_factory=list,description='复用本群已有资料R')
 
@@ -60,7 +63,6 @@ class ScheduleReminder(Evidence):
         {'required':['due_at'],'properties':{'due_at':{'type':'number'},'delay_seconds':{'type':'null'}}},
         {'required':['delay_seconds'],'properties':{'delay_seconds':{'type':'number'},'due_at':{'type':'null'}}},
     ]})
-    proposal_ref:str=Field(min_length=1)
     description:str=Field(min_length=1)
     due_at:float|None=Field(default=None,allow_inf_nan=False,description='绝对Unix时间，需晚于当前时间；与delay_seconds二选一')
     delay_seconds:float|None=Field(default=None,gt=0,allow_inf_nan=False,description='从事务提交时起等待的秒数；如20分钟后填1200，与due_at二选一')
@@ -104,11 +106,11 @@ class DiscardProposal(StrictModel):
 
 
 TOOLS={
-    'start_work':(StartWork,'建立后台只读工作；主动搜索陌生概念、外部事实和当前信息，也用于计算、解题和整理。群友不必另行要求搜索；与finish_turn一起提交后开始执行。'),
+    'start_work':(StartWork,'建立后台只读工作：查询陌生概念、外部或当前事实，也用于计算、解题和整理。先调用本工具，再把回执中的ack_ref复制到finish_turn的确认消息；引用由工具生成，无需自拟。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。'),
     'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料，部分结果不因此重开。'),
-    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒。'),
+    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，可把ack_ref复制到finish_turn的确认消息。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),
     'remember':(Remember,'保存有原话证据的明确称呼、偏好或相处要求。'),
@@ -122,7 +124,50 @@ TOOLS={
 def definition(name,model,description):
     return {'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}}
 
-FINISH_TURN=definition('finish_turn',FinishTurn,'提交剩余暂存提案及零至三条消息；不再需要的提案先用discard_proposal撤回。空消息不丢弃提案，只有事务获准的消息才发送。')
+def _object(properties, required=()):
+    return {'type':'object','properties':properties,'required':list(required),'additionalProperties':False}
+
+
+# The model sees one small object shape, not Pydantic's discriminator/ref graph.
+# Local validation remains authoritative, including exactly one content field.
+FINISH_TURN={
+    'type':'function',
+    'function':{
+        'name':'finish_turn',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。片段只填text或image，不填type。引用工作进展或结果时填work_ref，最终交付再填delivery_ref。',
+        'parameters':_object({
+            'messages':{'type':'array','maxItems':3,'items':_object({
+                'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
+                    **_object({'text':{'type':'string','minLength':1},
+                               'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'}}),
+                    'description':'恰好一个字段：{"text":"一句回应"}或{"image":"本轮图片引用"}；可单图或按顺序混排。'}},
+                'reply_to':{'type':'string','description':'可选的已读消息M引用'},
+                'work_ref':{'type':'string','description':'本条进展或结果所依据的工作J'},
+                'delivery_ref':{'type':'string','description':'送达后完成的工作J或提醒T；失败工作不能履约'},
+                'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
+                                        'intent':{'type':'string','minLength':1}},('target','intent')),
+            },('segments',))},
+            'note':{'type':'string','maxLength':500,'description':'可省略的内部参与判断，不发送'},
+        },('messages',)),
+    },
+}
+
+
+def argument_feedback(error, image_ref=None):
+    if not isinstance(error, ValidationError):
+        return str(error)[:1000]
+    issues=error.errors(include_url=False,include_input=False,include_context=False)
+    lines=[]
+    for issue in issues[:4]:
+        path=''.join(f'[{part}]' if isinstance(part,int) else ('.' if i else '')+str(part)
+                     for i,part in enumerate(issue['loc'])) or 'arguments'
+        lines.append(f"{path}: {issue['msg']}")
+    if any('segments' in issue['loc'] for issue in issues):
+        hint='每个片段只填一个内容字段，不填type：{"text":"一句回应"}'
+        if image_ref:
+            hint+=' 或 '+json.dumps({'image':image_ref},ensure_ascii=False)
+        lines.append(hint+'。')
+    return '\n'.join(lines)[:1000]
 
 
 class ProposalLedger:
@@ -134,7 +179,25 @@ class ProposalLedger:
         self.staged={}
         self._next_handle=1
 
-    def definitions(self):return [definition(name,*value) for name,value in TOOLS.items()]
+    def terminal_definition(self):
+        result=copy.deepcopy(FINISH_TURN)
+        if self.proposal_refs:
+            props=result['function']['parameters']['properties']['messages']['items']['properties']
+            props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
+                'description':'复制新建工作或提醒的暂存回执；此消息与对应提案一起提交，不能单独确认'}
+        return result
+
+    def definitions(self):
+        refs=self.context.refs
+        names={'start_work','schedule_reminder','remember'}
+        if any(job.get('status') not in {'completed','cancelled','shadow_observed'} for job in refs.jobs.values()):
+            names.update({'revise_work','cancel_work'})
+        if any(job.get('can_resume') for job in refs.jobs.values()):names.add('resume_work')
+        if refs.editable_tasks:names.update({'update_reminder','cancel_reminder'})
+        if refs.editable_memories:names.update({'refute_memory','supersede_memory'})
+        if refs.active_loops:names.add('resolve_wait')
+        if self.staged:names.add('discard_proposal')
+        return [definition(name,*value) for name,value in TOOLS.items() if name in names]
 
     async def stage(self,name,arguments):
         try:
@@ -151,8 +214,7 @@ class ProposalLedger:
                 return {'status':'discarded','proposal_ref':model.proposal_ref,
                         'note':'仅撤回本轮尚未提交的提案，未修改任何实际工作或提醒；其余暂存提案仍待finish_turn统一提交'}
             evidence=[refs.event_id(ref) for ref in getattr(model,'evidence',[])]
-            proposal_ref=getattr(model,'proposal_ref',None)
-            if proposal_ref and proposal_ref in self.staged:raise ValueError('本轮proposal_ref重复')
+            proposal_ref=f'S{self._next_handle}'
             if name=='start_work':
                 collection='jobs'
                 value=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
@@ -187,15 +249,16 @@ class ProposalLedger:
                 collection='loops';value=refs.loop_id(model.wait_ref)
                 existing=next((ref for ref,entry in self.staged.items() if entry==(collection,value)),None)
                 if existing:return {'status':'staged','proposal_ref':existing,'note':'该关闭提案已在本轮暂存，尚未提交'}
-            if proposal_ref:self.proposal_refs.add(proposal_ref)
-            else:
-                while f'S{self._next_handle}' in self.staged:self._next_handle+=1
-                proposal_ref=f'S{self._next_handle}';self._next_handle+=1
+            self._next_handle+=1
+            creation=name in {'start_work','schedule_reminder'}
+            if creation:self.proposal_refs.add(proposal_ref)
             getattr(self,collection).append(value)
             self.staged[proposal_ref]=(collection,value)
             return {'status':'staged','proposal_ref':proposal_ref,
+                    **({'ack_ref':proposal_ref} if creation else {}),
                     'note':'尚未提交；可用discard_proposal撤回本条，finish_turn统一提交剩余提案。此引用不是实际工作J或提醒T'}
-        except (ValueError,KeyError) as error:raise ToolArgumentError(str(error)) from error
+        except (ValueError,KeyError) as error:
+            raise ToolArgumentError(str(error),model_message=argument_feedback(error)) from error
 
     async def finish(self,arguments):
         try:
@@ -206,7 +269,7 @@ class ProposalLedger:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
                         '需要查询时先调用start_work取得staged回执，再调用finish_turn确认。')
-                parts=[{'type':'text','text':p.text} if isinstance(p,TextPart) else {'type':'image','asset_id':refs.media_id(p.asset_id)} for p in item.segments]
+                parts=[{'type':'text','text':p.text} if p.text is not None else {'type':'image','asset_id':refs.media_id(p.image)} for p in item.segments]
                 reply=None
                 if item.reply_to:
                     event_id=refs.event_id(item.reply_to)
@@ -231,4 +294,6 @@ class ProposalLedger:
             return EpisodeOutcome(disposition=FinalDisposition.ACTION if messages else FinalDisposition.SILENCE,
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
-        except (ValueError,KeyError) as error:raise TerminalArgumentError(str(error)) from error
+        except (ValueError,KeyError) as error:
+            feedback=argument_feedback(error,next(iter(self.context.refs.media),None))
+            raise TerminalArgumentError(str(error),model_message=feedback) from error

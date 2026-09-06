@@ -22,7 +22,7 @@ SCENE, OTHER_SCENE, BOT = "group:4242", "group:8181", "user:99"
 
 
 def terminal(text=None):
-    messages = [{"segments": [{"type": "text", "text": text}]}] if text else []
+    messages = [{"segments": [{"text": text}]}] if text else []
     return {"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "tool_calls": [
         {"id": "finish", "type": "function", "function": {"name": "finish_turn", "arguments": json.dumps({"messages": messages})}},
     ]}}]}
@@ -31,9 +31,9 @@ def terminal(text=None):
 def facts_from_messages(messages):
     for message in messages:
         content = message.get("content")
-        if isinstance(content, str) and content.startswith("当前实际工作、任务"):
+        if isinstance(content, str) and content.startswith("运行事实"):
             return json.loads(content.rsplit("\n", 1)[-1])
-    raise AssertionError("Missing runtime facts")
+    return {}
 
 
 @pytest.mark.asyncio
@@ -99,6 +99,10 @@ async def test_blocked_send_is_visible_to_next_turn_and_late_receipt_stays_out_o
         assert delivered.id not in context.refs.read_events and delivered.id not in context.refs.events.values()
         assert runtime.scene_manager.get_session(SCENE).last_cognized_event_rowid == cutoff
         assert await runtime.event_store.outbound_message_facts(SCENE, delivered.metadata["_rowid"], bot_actor_id=BOT) == []
+        context.refs.cutoff=delivered.metadata['_rowid']
+        cleared=await context.facts_message()
+        assert facts_from_messages([cleared])=={'outbound':[]}
+        assert await context.facts_message() is None
     finally:
         release_send.set()
         await runtime.stop()
@@ -179,3 +183,23 @@ def test_mentions_use_the_same_actor_handles_in_raw_and_quoted_messages():
     assert "[提及全体成员]" in text
     assert "提及 QQ" not in text
     assert context.refs.actor_id("U2") == "user:22"
+
+
+def test_call_signals_keep_private_and_read_reply_context_without_matching_quoted_names():
+    from types import SimpleNamespace
+    runtime=SimpleNamespace(bot_actor_id=BOT,config=RuntimeConfig(identity_name='嘉然'))
+    context=ConversationContext(runtime,SceneSession(scene_id=SCENE),10)
+    reply=Event(id='reply',event_type=EventType.GROUP_MESSAGE_RECEIVED,scene_id=SCENE,actor_id='user:1',
+        payload={'raw_text':'你接着说'},metadata={'_rowid':3,'quote_context':{
+            'event_id':'bot-message','rowid':2,'actor_id':BOT,'text':'小然、然比都是角色称呼'}})
+    context.event_message(reply)
+    context.input_message([reply])
+    assert context.call_signals=={'reply':{'reply_to_bot':True}}
+    assert context.refs.cutoff==10
+
+    private=ConversationContext(runtime,SceneSession(scene_id='private:1'),1)
+    message=Event(id='direct',event_type=EventType.PRIVATE_MESSAGE_RECEIVED,scene_id='private:1',actor_id='user:1',
+        payload={'raw_text':'你好'},metadata={'_rowid':1})
+    private.event_message(message)
+    private.input_message([message])
+    assert private.call_signals=={'direct':{'direct_message':True}}

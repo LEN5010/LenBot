@@ -7,7 +7,7 @@ from len_bot.cognition.agent_loop import AgentLoop, CommitConflict
 from len_bot.cognition.context import ConversationContext, CHAT_TYPES, CUE_TYPES, media_ids
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.projection import estimate_tokens
-from len_bot.cognition.proposals import ProposalLedger, FINISH_TURN, TOOLS
+from len_bot.cognition.proposals import ProposalLedger, TOOLS
 from len_bot.tools.retrieval import RetrievalToolkit
 
 
@@ -50,7 +50,9 @@ class SocialCognitionCore:
                 for event in new_events:
                     if event.event_type in CHAT_TYPES|CUE_TYPES:additions.append(context.event_message(event))
                 additions.extend(await context.attachments([asset for event in new_events for asset in media_ids(event)]))
-                additions.append(await context.facts_message())
+                facts=await context.facts_message()
+                if facts:additions.append(facts)
+                additions.append(context.input_message(new_events))
             return additions or None
 
         async def prepare_request(trajectory,definitions):
@@ -61,6 +63,7 @@ class SocialCognitionCore:
                 raise ValueError('Conversation text and tool results exceed the context budget; input remains pending')
             audit['estimated_context_tokens']=tokens
             audit['read_cutoff']=context.refs.cutoff
+            audit['call_signals']=dict(context.call_signals)
             return context.model_messages(trajectory)
 
         async def finish(arguments):
@@ -68,6 +71,7 @@ class SocialCognitionCore:
             audit['references']=context.refs.snapshot()
             audit['media_manifest']=list(context.media_manifest)
             audit['read_cutoff']=context.refs.cutoff
+            audit['call_signals']=dict(context.call_signals)
             if commit:
                 decision=await commit(outcome)
                 if not decision.accepted:raise CommitConflict(decision.reason)
@@ -76,9 +80,12 @@ class SocialCognitionCore:
         try:
             return await AgentLoop(ModelGateway(binding,max_output_tokens=runtime.config.conversation_output_tokens)).run(
                 messages=messages,tool_definitions=lambda:toolkit.get_tool_definitions()+ledger.definitions(),
-                execute_tool=execute,terminal=FINISH_TURN,finish=finish,proposal_tool_names=set(TOOLS),
+                execute_tool=execute,terminal=ledger.terminal_definition,finish=finish,proposal_tool_names=set(TOOLS),
                 max_steps=runtime.config.conversation_max_steps,max_tool_calls=runtime.config.conversation_max_tool_calls,
                 observe=incorporate,prepare_request=prepare_request,checkpoint=getattr(runtime,'evaluation_hook',None),trace=audit)
+        except Exception:
+            audit['staged_proposals']=[item.model_dump(mode='json') for item in [*ledger.jobs,*ledger.tasks]]
+            raise
         finally:
             audit['references']=context.refs.snapshot()
             audit['media_manifest']=list(context.media_manifest)
