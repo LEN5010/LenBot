@@ -35,7 +35,7 @@ async def apply_diana(req: PersonaPresetRequest, request: Request, user: str = D
         for key in PERSONA:
             setattr(runtime.config, key, saved[key])
     return {"success": True, "applied": applied,
-            "message": "新版嘉然人格与12组表达示例已应用，人工修改已保留" if applied else "已应用过新版嘉然人格，保留你的后续编辑"}
+            "message": "新版嘉然人格与6组图文表达示例已应用，人工修改已保留" if applied else "已应用过新版嘉然人格，保留你的后续编辑"}
 
 class PersonaSettingsRequest(BaseModel):
     character_context: Optional[str] = None
@@ -47,15 +47,7 @@ class PersonaSettingsRequest(BaseModel):
 
 @router.get("/persona")
 async def get_persona_settings(request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    return {
-        "character_context": runtime.config.character_context,
-        "identity_name": runtime.config.identity_name,
-        "identity_core": runtime.config.identity_core,
-        "identity_persona": runtime.config.identity_persona,
-        "conversation_style": runtime.config.conversation_style,
-        "bot_qq": runtime.config.bot_qq
-    }
+    return request.app.state.runtime.query_service.persona_settings()
 
 @router.post("/persona")
 async def update_persona_settings(req: PersonaSettingsRequest, request: Request, user: str = Depends(get_current_user)):

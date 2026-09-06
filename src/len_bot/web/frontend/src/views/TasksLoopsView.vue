@@ -29,13 +29,10 @@ async function cancelTask(id) {
 }
 
 async function triggerTask(id) {
-  await api(`/api/cockpit/tasks/${id}/trigger_now`, { method: 'POST' })
-  await load()
-}
-
-async function promoteTask(id) {
-  await api(`/api/cockpit/tasks/${id}/promote`, { method: 'POST' })
-  await load()
+  try {
+    await api(`/api/cockpit/tasks/${id}/trigger_now`, { method: 'POST' })
+    await load()
+  } catch (e) { error.value = e.message }
 }
 
 async function resolveLoop(id) {
@@ -121,11 +118,12 @@ function taskStatus(value) {
               </span>
             </td>
             <td>
-              <div class="action-btn-group" v-if="editable(t.status)">
+              <div class="action-btn-group" v-if="editable(t.status) && t.payload?.kind !== 'agent_job'">
                 <button v-if="t.status === 'pending'" class="small-btn primary" @click="triggerTask(t.id)">立即触发</button>
                 <button class="small-btn" @click="startEdit(t)">修改</button>
                 <button class="small-btn danger" @click="cancelTask(t.id)">取消</button>
               </div>
+              <span v-else-if="t.payload?.kind === 'agent_job'" class="muted">请在信息工作中管理</span>
               <span v-else class="muted">—</span>
             </td>
           </tr>

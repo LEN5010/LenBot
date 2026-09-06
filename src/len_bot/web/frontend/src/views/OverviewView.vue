@@ -1,19 +1,17 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../api.js'
+import { api, fmtTime } from '../api.js'
 
 const data = ref(null)
 const error = ref('')
 onMounted(load)
 async function load() { try { data.value = await api('/api/overview/stats'); error.value = '' } catch (e) { error.value = e.message } }
-function activityLabel(value) { return value === 'HIGH' ? '很活跃' : value === 'MEDIUM' ? '有消息' : '安静' }
-function engagementLabel(value) { return value === 'participating' || value === 'active' ? '正在参与' : value === 'lightly_participating' ? '偶尔参与' : '正在旁观' }
 </script>
 
 <template>
   <div class="overview-view">
     <div class="toolbar">
-      <div class="page-title"><h1>今天运行得怎么样</h1><p class="muted">先看连接、发送状态和最近群聊，其他数字需要时再展开。</p></div>
+      <div class="page-title"><h1>运行概览</h1><p class="muted">查看连接、发送配置和最近场景，模型调用与后台工作分别记录。</p></div>
       <button @click="load">刷新</button>
     </div>
     <p v-if="error" class="tag bad">{{ error }}</p>
@@ -27,31 +25,31 @@ function engagementLabel(value) { return value === 'participating' || value === 
         </div>
         <div class="bento-card bento-col-4">
           <div class="bento-badge">消息发送</div>
-          <div class="hero-status">{{ data.stats.shadow_mode ? '只观察，不实发' : '正在真实发送' }}</div>
-          <div class="bento-desc">{{ data.stats.shadow_mode ? '机器人会正常思考，但消息只记在后台' : '机器人通过审核的消息会发到 QQ' }}</div>
+          <div class="hero-status">{{ data.stats.shadow_mode ? 'Shadow · 不实发' : '按实发名单发送' }}</div>
+          <div class="bento-desc">{{ data.stats.shadow_mode ? '正常处理对话，表达提案只记在后台' : '通过 Gate 的消息仅向实发名单中的场景投递' }}</div>
         </div>
         <div class="bento-card bento-col-4">
-          <div class="bento-badge">当前聊天模型</div>
-          <div class="hero-model">{{ data.stats.normal_model || '尚未设置' }}</div>
-          <div class="bento-desc">复杂问题会切换到 {{ data.stats.deliberate_model || '尚未设置的思考模型' }}</div>
+          <div class="bento-badge">对话模型</div>
+          <div class="hero-model">{{ data.stats.conversation_model || '尚未设置' }}</div>
+          <div class="bento-desc">后台工作：{{ data.stats.work_model || '尚未设置' }}</div>
         </div>
         <div class="bento-card bento-col-7">
-          <div class="bento-badge">今天的互动</div>
-          <div class="stats-row"><div><strong>{{ data.social_metrics.human_messages }}</strong><span>收到消息</span></div><div><strong>{{ data.social_metrics.social_cognition }}</strong><span>理解场景</span></div><div><strong>{{ data.social_metrics.intentional_silence }}</strong><span>看懂后没插嘴</span></div><div><strong>{{ data.social_metrics.visible_messages }}</strong><span>实际发言</span></div></div>
+          <div class="bento-badge">本次运行中的互动</div>
+          <div class="stats-row"><div><strong>{{ data.social_metrics.human_messages }}</strong><span>收到消息</span></div><div><strong>{{ data.social_metrics.social_cognition }}</strong><span>对话轮次</span></div><div><strong>{{ data.social_metrics.intentional_silence }}</strong><span>选择沉默</span></div><div><strong>{{ data.social_metrics.visible_messages }}</strong><span>实际发言</span></div></div>
         </div>
         <div class="bento-card bento-col-5">
           <div class="bento-badge">持续记忆</div>
           <div class="bento-hero-stat">{{ data.stats.memory_beliefs_count }}<span class="unit">条</span></div>
-          <div class="bento-desc">已经保存的人物、关系、偏好和群体习惯</div>
+          <div class="bento-desc">有来源的称呼、偏好、关系、事实与群体规范</div>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-header"><div><h2>最近的群聊</h2><p class="muted">点开“群聊”页面可以查看更完整的上下文。</p></div><span class="tag">{{ data.scenes.length }} 个</span></div>
         <table>
-          <thead><tr><th>群聊</th><th>现在是否活跃</th><th>大家在聊什么</th><th>机器人状态</th></tr></thead>
+          <thead><tr><th>场景</th><th>已记录成员</th><th>最近事件</th><th>进行中的工作</th></tr></thead>
           <tbody>
-            <tr v-for="scene in data.scenes" :key="scene.scene_id"><td><code>{{ scene.scene_id }}</code></td><td>{{ activityLabel(scene.activity) }}</td><td>{{ scene.topics?.map(topic => topic.subject).join(' / ') || '还没有明确话题' }}</td><td>{{ engagementLabel(scene.engagement) }}</td></tr>
+            <tr v-for="scene in data.scenes" :key="scene.scene_id"><td><code>{{ scene.scene_id }}</code></td><td>{{ scene.participant_count }}</td><td>{{ fmtTime(scene.last_event_at) }}</td><td>{{ scene.active_job_count }}</td></tr>
             <tr v-if="!data.scenes.length"><td colspan="4" class="muted empty">还没有收到群聊消息</td></tr>
           </tbody>
         </table>
