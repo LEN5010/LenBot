@@ -1,228 +1,172 @@
-from len_bot.actions.models import DeliveryResult, DeliveryStatus
-from delivery_support import allow_fake_delivery
+"""Authenticated trace, knowledge history and Shadow controls on the VNext runtime."""
+
+from httpx import ASGITransport, AsyncClient
 import pytest
-import asyncio
-import time
-from httpx import AsyncClient, ASGITransport
 
+from delivery_support import allow_fake_delivery
+from len_bot.actions.models import DeliveryResult, DeliveryStatus
+from len_bot.cognition.models import EpisodeOutcome
 from len_bot.config import RuntimeConfig
-from len_bot.runtime.agent_runtime import AgentRuntime
-from len_bot.web.app import create_app
 from len_bot.events.models import Event, EventType
-from len_bot.testing.social import social_result
+from len_bot.memory.models import MemoryProposal
+from len_bot.runtime.agent_runtime import AgentRuntime
+from len_bot.testing.replay import drain
+from len_bot.testing.turns import turn_result
+from len_bot.web.app import create_app
 
 
-async def _make_runtime_and_client(config):
-    runtime = AgentRuntime(config)
+async def _make_runtime_and_client(config, *, mock_turn_handler=None, send_adapter=None):
+    runtime = AgentRuntime(config, mock_turn_handler=mock_turn_handler, send_adapter=send_adapter)
     await runtime.start()
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    client = AsyncClient(transport=transport, base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=create_app(runtime)), base_url="http://test")
     login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
     assert "session_token" in login.cookies
-    headers = {}
-    return runtime, client, headers
+    return runtime, client
 
 
 @pytest.mark.asyncio
 async def test_trace_captures_full_causal_chain(tmp_path):
-    """
-    ADR-0022 (完成定义 Control Plane): from one message you can see
-    Event → Attention → Cognition → Gate → durable effects → visible action.
-    """
-    config = RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "trace.db"))
     sent_actions = []
 
-    async def mock_send(item):
-        sent_actions.append(item)
-        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+    async def send(action):
+        sent_actions.append(action)
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="isolated-test")
 
-    async def mock_social_core(messages):
-        stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
-        if "帮我看看" in stimulus_text:
-            return social_result(reason="User asked directly", content="看了一下，没问题")
-        return social_result(reason="silence")
+    async def turn(session, events):
+        return turn_result(reason="User asked directly", content="看了一下，没问题")
 
-    runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
-    await runtime.start()
-    await allow_fake_delivery(runtime, 'group:trace')
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-        assert "session_token" in login.cookies
-        headers = {}
-
+    runtime, client = await _make_runtime_and_client(
+        RuntimeConfig(db_path=str(tmp_path / "trace.db")), mock_turn_handler=turn, send_adapter=send,
+    )
+    try:
         scene_id = "group:trace"
-        t0 = time.time()
-        await runtime.receive_event(Event(
-            event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
-            actor_id="user:A", timestamp=t0, payload={"raw_text": "@Bot 帮我看看这个", "at_bot": True}
-        ))
-        await asyncio.sleep(0.4)
-
-        traces = (await client.get("/api/cockpit/traces", params={"scene_id": scene_id}, headers=headers)).json()
-        kinds = {t["kind"] for t in traces}
-        assert "social_cognition" in kinds
-        social_rows = [t for t in traces if t["kind"] == "social_cognition"]
-        assert social_rows
-        payload = social_rows[0]["payload"]
-        assert payload["result"]["decision"]["action"] == "speak"
-        assert payload["gate"]["disposition"] == "ACTION"
-        assert payload["actions_enqueued"] == 1
-        assert len(sent_actions) == 1
-        assert payload["cognition"]["mode"] == "mock"
-
-    await runtime.stop()
+        await allow_fake_delivery(runtime, scene_id)
+        incoming = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+                         actor_id="user:A", payload={"raw_text": "@Bot 帮我看看这个", "at_bot": True})
+        await runtime.receive_event(incoming)
+        await drain(runtime)
+        response = await client.get("/api/cockpit/traces", params={"scene_id": scene_id, "kind": "conversation"})
+        assert response.status_code == 200
+        rows = response.json()
+        assert len(rows) == 1
+        payload = rows[0]["payload"]
+        assert payload["result"]["disposition"] == "ACTION"
+        assert payload["gate"]["accepted"] and payload["gate"]["disposition"] == "ACTION"
+        assert payload["actions_enqueued"] == len(sent_actions) == 1
+        assert incoming.id in payload["conversation"]["source_event_ids"]
+        assert payload["gate"]["action_ids"] == [sent_actions[0].id]
+        events = await runtime.event_store.get_recent_events(scene_id)
+        delivery = next(event for event in events if event.event_type == EventType.MESSAGE_SENT)
+        assert delivery.payload["action_id"] == sent_actions[0].id
+    finally:
+        await client.aclose()
+        await runtime.stop()
 
 
 @pytest.mark.asyncio
 async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
-    """ADR-0022: QueryService exposes superseded chains & filtered event queries."""
-    # Mock cognition keeps any incidental wake fully offline
-    async def mock_social_core(messages):
-        return social_result(reason="offline")
+    runtime, client = await _make_runtime_and_client(RuntimeConfig(db_path=str(tmp_path / "chain.db")))
+    try:
+        scene_id = "group:chain"
+        original = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+                         actor_id="user:A", payload={"raw_text": "我吃微辣"})
+        await runtime.receive_event(original)
+        await drain(runtime)
+        first = await runtime.operator_outcome(scene_id, EpisodeOutcome(
+            decision_reason="原话支持的认识",
+            memory_proposals=[MemoryProposal(subject="user:A", kind="preference", statement="A说自己吃微辣",
+                                             basis="reported", evidence=[original.id])],
+        ))
+        assert first.accepted
+        old = first.committed_proposal.committed_memories[0]
+        correction = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+                           actor_id="user:A", payload={"raw_text": "我现在完全不吃辣了"})
+        await runtime.receive_event(correction)
+        await drain(runtime)
+        second = await runtime.operator_outcome(scene_id, EpisodeOutcome(
+            decision_reason="后续原话更正",
+            memory_proposals=[MemoryProposal(operation="supersede", target_memory_ids=[old.id],
+                reason="A明确更正当前偏好", subject="user:A", kind="preference", statement="A说自己现在完全不吃辣",
+                basis="reported", evidence=[correction.id])],
+        ))
+        assert second.accepted
+        current = second.committed_proposal.committed_memories[0]
+        response = await client.get(f"/api/cockpit/memories/{current.id}/chain")
+        assert response.status_code == 200
+        chain = response.json()["chain"]
+        assert [item["id"] for item in chain] == [old.id, current.id]
+        assert [item["status"] for item in chain] == ["superseded", "active"]
+        assert chain[0]["statement"] == old.statement and chain[0]["evidence"] == [original.id]
+        assert chain[1]["statement"] == current.statement and chain[1]["evidence"] == [correction.id]
 
-    runtime = AgentRuntime(
-        RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "chain.db")),
-        mock_social_handler=mock_social_core
-    )
-    await runtime.start()
-    await allow_fake_delivery(runtime, 'group:chain')
-    app = create_app(runtime)
-    transport = ASGITransport(app=app)
-    client = AsyncClient(transport=transport, base_url="http://test")
-    login = await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-    assert "session_token" in login.cookies
-    headers = {}
-
-    scene_id = "group:chain"
-    from len_bot.memory.models import MemoryItem, MemoryKind, MemoryStatus
-    old = MemoryItem(
-        subject="user:A", kind=MemoryKind.PREFERENCE, key="food", value="微辣",
-        scope=scene_id, evidence=["ev1"], human_readable_assertion="A 吃微辣",
-        status=MemoryStatus.SUPERSEDED, superseded_by="mem_new",
-        created_at=time.time(), last_confirmed_at=time.time() - 100
-    )
-    await runtime.memory_store.save_memory(old)
-    await runtime.memory_store._db.execute(
-        """INSERT INTO memories (id, subject, kind, key, value, temporal, certainty, scope,
-                                 evidence, status, human_readable_assertion, created_at, last_confirmed_at)
-           VALUES ('mem_new', 'user:A', 'preference', 'food', '不吃辣', 'recent', 'likely', ?,
-                   '[]', 'active', 'A 现在完全不吃了', ?, ?);""",
-        (scene_id, time.time(), time.time())
-    )
-    await runtime.memory_store._db.commit()
-
-    chain = (await client.get("/api/cockpit/memories/mem_new/chain", headers=headers)).json()["chain"]
-    # Chain is oldest → newest: root ancestor first, then the superseding belief
-    assert [m["id"] for m in chain] == [old.id, "mem_new"]
-    assert chain[0]["status"] == "superseded"
-    assert chain[1]["status"] == "active"
-
-    # Filtered events query
-    t0 = time.time()
-    ev = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
-               actor_id="user:B", timestamp=t0, payload={"raw_text": "标记消息"})
-    await runtime.receive_event(ev)
-    await asyncio.sleep(0.2)
-    filtered = (await client.get(
-        "/api/cockpit/../overview/recent_events", headers=headers  # overview endpoint sanity
-    ))
-    by_scene = (await client.get(
-        "/api/cockpit/traces", params={"scene_id": scene_id, "kind": "social_cognition"}, headers=headers
-    )).json()
-    assert isinstance(by_scene, list)
-
-    # Event filters via query service path (overview recent_events supports filters)
-    events = await runtime.query_service.query_events(scene_id=scene_id, actor_id="user:B")
-    assert len(events) == 1 and events[0]["actor_id"] == "user:B"
-
-    await client.aclose()
-    await runtime.stop()
-
-
+        marker = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+                       actor_id="user:B", payload={"raw_text": "标记消息"})
+        await runtime.receive_event(marker)
+        await drain(runtime)
+        events = await runtime.query_service.query_events(scene_id=scene_id, actor_id="user:B")
+        assert len(events) == 1 and events[0]["id"] == marker.id
+        assert events[0]["actor_id"] == "user:B"
+    finally:
+        await client.aclose()
+        await runtime.stop()
 
 
 @pytest.mark.asyncio
 async def test_shadow_mode_records_without_sending(tmp_path):
-    """
-    ADR-0023 Shadow Mode: enabled → zero adapter calls, zero MESSAGE_SENT events,
-    no OpenLoop activation; would-send log records what WOULD have been sent.
-    Disabled → normal sending resumes.
-    """
-    config = RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "shadow.db"))
     sent_actions = []
 
-    async def mock_send(item):
-        sent_actions.append(item)
-        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+    async def send(action):
+        sent_actions.append(action)
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="isolated-test")
 
-    async def mock_social_core(messages):
-        stimulus_text = messages[-1]["content"].split("【CURRENT BURST】")[-1]
-        if "你好" in stimulus_text:
-            return social_result(
-                reason="greeting", content="你好呀", expect_reply=True, reply_target="user:A"
-            )
-        return social_result(reason="silence")
+    async def turn(session, events):
+        return turn_result(reason="greeting", content="你好呀", expect_reply=True, reply_target="user:A")
 
-    runtime = AgentRuntime(config, send_adapter=mock_send, mock_social_handler=mock_social_core)
-    await runtime.start()
-    await allow_fake_delivery(runtime, 'group:shadow', 'group:shadow2')
-    await runtime.set_shadow_mode(True)
+    runtime, client = await _make_runtime_and_client(
+        RuntimeConfig(db_path=str(tmp_path / "shadow.db")), mock_turn_handler=turn, send_adapter=send,
+    )
+    try:
+        scene_id = "group:shadow"
+        await allow_fake_delivery(runtime, scene_id)
+        await runtime.set_shadow_mode(True)
+        await runtime.receive_event(Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+            actor_id="user:A", payload={"raw_text": "@Bot 你好", "at_bot": True}))
+        await drain(runtime)
+        assert not sent_actions
+        assert runtime.metrics.social["would_send"] == 1
+        assert len(runtime.shadow_would_send_log) == 1
+        assert runtime.shadow_would_send_log[0]["content"] == "你好呀"
+        events = await runtime.event_store.get_recent_events(scene_id)
+        assert all(event.event_type != EventType.MESSAGE_SENT for event in events)
+        assert await runtime.event_store.get_active_open_loops(scene_id) == []
 
-    scene_id = "group:shadow"
-    await runtime.receive_event(Event(
-        event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
-        actor_id="user:A", timestamp=time.time(),
-        payload={"raw_text": "@Bot 你好", "at_bot": True}
-    ))
-    await asyncio.sleep(0.4)
-
-    # NOTHING physically sent — cognition happened, visible speech did not
-    assert len(sent_actions) == 0
-    assert runtime.metrics.social["would_send"] == 1
-    assert len(runtime.shadow_would_send_log) == 1
-    assert runtime.shadow_would_send_log[0]["content"] == "你好呀"
-
-    # No MESSAGE_SENT social fact → open loop never activated
-    events = await runtime.event_store.get_recent_events(scene_id, limit=10)
-    assert all(e.event_type != EventType.MESSAGE_SENT for e in events)
-    loops = await runtime.event_store.get_active_open_loops(scene_id)
-    assert loops == []
-
-    # Toggle off via the authority method → sending resumes
-    await runtime.set_shadow_mode(False)
-    await runtime.receive_event(Event(
-        event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id="group:shadow2",
-        actor_id="user:A", timestamp=time.time(),
-        payload={"raw_text": "@Bot 你好", "at_bot": True}
-    ))
-    await asyncio.sleep(0.4)
-    assert len(sent_actions) == 1
-
-    await runtime.stop()
+        await runtime.set_shadow_mode(False)
+        await runtime.receive_event(Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
+            actor_id="user:A", payload={"raw_text": "@Bot 你好", "at_bot": True}))
+        await drain(runtime)
+        assert len(sent_actions) == 1
+        loops = await runtime.event_store.get_active_open_loops(scene_id)
+        assert len(loops) == 1 and loops[0]["source_event_id"]
+    finally:
+        await client.aclose()
+        await runtime.stop()
 
 
 @pytest.mark.asyncio
 async def test_shadow_toggle_persists_and_api_reports(tmp_path):
-    runtime, client, headers = await _make_runtime_and_client(
-        RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "shadow_api.db"))
-    )
+    runtime, client = await _make_runtime_and_client(RuntimeConfig(db_path=str(tmp_path / "shadow-api.db")))
     try:
-        toggle = await client.post("/api/cockpit/shadow/toggle", headers=headers, json={"enabled": True})
-        assert toggle.status_code == 200
-        assert toggle.json()["shadow_mode"] is True
-
-        status = (await client.get("/api/cockpit/shadow", headers=headers)).json()
-        assert status["enabled"] is True
-        assert status["would_send"] == []
-
-        # Restart persistence
-        runtime2 = AgentRuntime(RuntimeConfig(bot_qq=12345678, db_path=runtime.config.db_path))
+        toggle = await client.post("/api/cockpit/shadow/toggle", json={"enabled": True})
+        assert toggle.status_code == 200 and toggle.json()["shadow_mode"] is True
+        response = await client.get("/api/cockpit/shadow")
+        assert response.status_code == 200
+        assert response.json()["enabled"] is True and response.json()["would_send"] == []
+        runtime2 = AgentRuntime(RuntimeConfig(db_path=runtime.config.db_path))
         await runtime2.start()
-        assert runtime2.shadow_mode is True
-        await runtime2.stop()
+        try:
+            assert runtime2.shadow_mode is True
+        finally:
+            await runtime2.stop()
     finally:
         await client.aclose()
         await runtime.stop()
@@ -230,15 +174,12 @@ async def test_shadow_toggle_persists_and_api_reports(tmp_path):
 
 @pytest.mark.asyncio
 async def test_cors_no_wildcard_with_credentials(tmp_path):
-    """§三十九: create_app must not combine allow_origins=['*'] with credentials."""
-    runtime, client, headers = await _make_runtime_and_client(
-        RuntimeConfig(bot_qq=12345678, db_path=str(tmp_path / "cors.db"))
-    )
+    runtime, client = await _make_runtime_and_client(RuntimeConfig(db_path=str(tmp_path / "cors.db")))
     try:
-        import inspect
-        from len_bot.web.app import create_app as _ca
-        src = inspect.getsource(_ca)
-        assert 'allow_origins=["*"]' not in src
+        response = await client.get("/api/overview/stats", headers={"Origin": "https://untrusted.example"})
+        assert response.status_code == 200
+        assert "access-control-allow-origin" not in response.headers
+        assert "access-control-allow-credentials" not in response.headers
     finally:
         await client.aclose()
         await runtime.stop()

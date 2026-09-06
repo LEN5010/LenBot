@@ -86,7 +86,7 @@ class AgentLoop:
         before_tool: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         observe: Callable[[], Awaitable[list[dict[str, Any]] | None]] | None = None,
         checkpoint: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-        prepare_request: Callable[[list[dict], list[dict]], Awaitable[None]] | None = None,
+        prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
         trace: dict[str, Any] | None = None,
     ) -> Any:
         if max_steps < 1 or max_tool_calls < 0:
@@ -145,8 +145,7 @@ class AgentLoop:
             known_names = {definition["function"]["name"] for definition in definitions}
             forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls
             choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
-            if prepare_request is not None:
-                await prepare_request(trajectory, definitions)
+            request_messages = await prepare_request(trajectory, definitions) if prepare_request else None
             if before_model is not None:
                 await before_model()
             audit["model_calls_used"] += 1
@@ -157,7 +156,7 @@ class AgentLoop:
             if checkpoint is not None:
                 await checkpoint("before_model", {**step, "message_count": len(trajectory)})
             try:
-                response = await self.gateway.complete(trajectory, definitions, choice)
+                response = await self.gateway.complete(request_messages if request_messages is not None else trajectory, definitions, choice)
             except Exception as exc:
                 step["failure_reason"] = _error_text(exc)
                 audit["failure_reason"] = step["failure_reason"]

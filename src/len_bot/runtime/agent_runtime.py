@@ -98,7 +98,6 @@ class AgentRuntime:
         self.runtime_gate = RuntimeGate(
             self.event_store, self.action_queue, scheduler=self.scheduler, metrics=self.metrics,
             origin_mode_provider=lambda: "shadow" if self.shadow_mode else "live",
-            next_wake_min_interval_seconds=config.next_wake_min_interval_seconds,
             bot_actor_id=self.bot_actor_id,
         )
         self.runtime_gate.scene_shadow_probe = self.is_scene_shadow

@@ -5,14 +5,14 @@ from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.testing.replay import drain
-from len_bot.testing.social import social_result
+from len_bot.testing.turns import turn_result
 
 
 SCENE = "group:126300994"
 
 
-async def silent(messages):
-    return social_result(reason="isolated fixture")
+async def silent(session, events):
+    return turn_result(reason="isolated fixture")
 
 
 def action(content, scene=SCENE, **kwargs):
@@ -27,11 +27,11 @@ async def test_shadow_and_scene_selection_control_delivery_and_persist(tmp_path)
         sent.append(item.content)
         return DeliveryResult(status=DeliveryStatus.SENT, transport="fake")
 
-    async def respond(messages):
-        return social_result(reason="回应当前真人消息", content="fresh-response")
+    async def respond(session, events):
+        return turn_result(reason="回应当前真人消息", content="fresh-response")
 
     config = RuntimeConfig(db_path=str(tmp_path / "delivery.db"))
-    runtime = AgentRuntime(config, send_adapter=send, mock_social_handler=respond)
+    runtime = AgentRuntime(config, send_adapter=send, mock_turn_handler=respond)
     await runtime.start()
     try:
         assert runtime.shadow_mode
@@ -61,7 +61,7 @@ async def test_shadow_and_scene_selection_control_delivery_and_persist(tmp_path)
     finally:
         await runtime.stop()
 
-    restarted = AgentRuntime(config, mock_social_handler=silent)
+    restarted = AgentRuntime(config, mock_turn_handler=silent)
     await restarted.start()
     try:
         assert restarted.allowed_scenes == {"group:2"}
@@ -84,7 +84,7 @@ async def test_unknown_delivery_stops_only_its_batch(tmp_path):
     runtime = AgentRuntime(
         RuntimeConfig(db_path=str(tmp_path / "batch.db"), message_pacing=False),
         send_adapter=send,
-        mock_social_handler=silent,
+        mock_turn_handler=silent,
     )
     await runtime.start()
     try:

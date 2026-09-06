@@ -133,7 +133,10 @@ class RetrievalToolkit:
             if self.checkpoint:await self.checkpoint('before_tool',{'scene_id':self.default_scene_id,'name':name,'arguments':args})
             start=time.monotonic()
             async with self._parallel:
-                try:result=ToolResult.normalize(await self._execute_raw(name,args))
+                try:
+                    raw=await self._execute_raw(name,args)
+                    result=ToolResult.normalize(raw)
+                    if isinstance(raw,list) and not raw:result.status='no_results'
                 except Exception as error:result=ToolResult.failure(str(error),type(error).__name__)
             result.duration_ms=round((time.monotonic()-start)*1000,2)
             if not(self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind=='unknown':result.evidence_kind='retrieval'
@@ -146,42 +149,53 @@ class RetrievalToolkit:
 
     async def _present(self,name,result,offset=0,limit=6000):
         if not self.context:return result.page(offset,limit)
+        if offset<0 or not 1<=limit<=12000:raise ValueError('offset must be nonnegative; limit must be 1..12000')
         refs=self.references;shown=result.model_copy(deep=True)
         if shown.result_id:shown.result_id=refs.register_result(shown.result_id)
+        local={'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs'}
+        if name not in local:return shown.page(offset,limit)
         try:data=json.loads(shown.content)
         except (TypeError,ValueError):return shown.page(offset,limit)
-        if name in {'search_messages','read_context','query_timeline','query_person_history'}:
-            rows=[]
-            for raw in data:
-                event=Event.model_validate(raw)
-                if event.metadata['_rowid']<=refs.cutoff:
-                    # Render only events overlapping the requested page. A source
-                    # locator does not by itself grant evidence authority.
-                    original=self.context.refs
-                    self.context.refs=copy.deepcopy(original)
-                    try:preview=self.context.event_message(event)['content']
-                    finally:self.context.refs=original
-                    position=sum(len(line)+1 for line in rows)
-                    if position+len(preview)>offset and position<offset+limit:
-                        rows.append(self.context.event_message(event)['content'])
-                    else:rows.append(preview)
-            shown.content='\n'.join(rows)
-        elif name=='search_media':
-            for item in data:item['asset_id']=refs.register_media(item['asset_id'])
-            shown.content=json.dumps(data,ensure_ascii=False)
-        elif name=='query_memory':
-            for item in data:
-                item['ref']=refs.register_memory(item.pop('id'))
+        if not isinstance(data,list):return shown.page(offset,limit)
+        history=name in {'search_messages','read_context','query_timeline','query_person_history'}
+
+        def project(raw):
+            item=copy.deepcopy(raw);refs=self.references
+            if history:
+                event=Event.model_validate(item)
+                if event.metadata['_rowid']>refs.cutoff:raise ValueError('Retrieved message exceeds read cutoff')
+                return self.context.event_message(event)['content']
+            if name=='search_media':
+                return {'asset_id':refs.register_media(item.pop('asset_id')),**item}
+            if name=='query_memory':
+                ref=refs.register_memory(item.pop('id'))
                 item['subject']=refs.register_actor(item['subject'])
                 item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
-            shown.content=json.dumps(data,ensure_ascii=False)
-        elif name=='query_jobs':
-            for item in data:
-                item['ref']=refs.register_job(item)
-                item['result_ids']=[refs.register_result(r) for r in item['result_ids']]
-            shown.content=json.dumps(data,ensure_ascii=False)
-        return shown.page(offset,limit)
+                return {'ref':ref,**item}
+            ref=refs.register_job(item)
+            item.pop('id')
+            item['result_ids']=[refs.register_result(r) for r in item['result_ids']]
+            return {'ref':ref,**item}
+
+        selected=[]
+        index=min(offset,len(data))
+        while index<len(data):
+            original=self.context.refs
+            self.context.refs=copy.deepcopy(original)
+            try:candidate=project(data[index])
+            finally:self.context.refs=original
+            candidate_text='\n'.join([*selected,candidate]) if history else json.dumps([*selected,candidate],ensure_ascii=False)
+            if len(candidate_text)>limit:
+                if not selected:return ToolResult.failure(f'limit太小，无法完整展示此条记录和引用；请将limit调大，至少需要{len(candidate_text)}字符。','page_too_small')
+                break
+            selected.append(project(data[index]))
+            index+=1
+        shown.content='\n'.join(selected) if history else json.dumps(selected,ensure_ascii=False)
+        shown.truncated=index<len(data)
+        shown.next_offset=index if shown.truncated else None
+        shown.coverage='record_page; offset is the next record index' if shown.truncated or offset else shown.coverage
+        return shown
 
     async def _execute_raw(self,name,args):
         store=self.event_store;scopes=self.allowed_scopes

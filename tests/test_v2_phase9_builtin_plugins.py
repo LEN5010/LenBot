@@ -7,6 +7,7 @@ from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.events.models import Event, EventType
 from len_bot.plugins.builtin.bilibili_live import BilibiliLiveSensor, LIVE_API_URL
+from len_bot.testing.replay import drain
 
 
 @pytest.mark.asyncio
@@ -84,7 +85,7 @@ async def test_bilibili_sensor_emits_live_events_into_bus(tmp_path, monkeypatch)
     await sensor._poll_once()  # offline → nothing
     await sensor._poll_once()  # 0→1 → LIVE_STARTED
     await sensor._poll_once()  # 1→0 → LIVE_ENDED
-    await asyncio.sleep(0.2)
+    await drain(runtime)
 
     # Fact events committed as immutable raw history through the SceneActor
     events = await runtime.event_store.get_recent_events(scene_id, limit=5)

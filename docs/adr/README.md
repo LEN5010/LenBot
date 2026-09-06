@@ -1,10 +1,28 @@
 # ADR 索引
 
-当前执行说明见 [架构](../architecture.md)。旧决策按其后续 ADR 解读，不作为新功能已实施的证明。
+当前架构由 [ADR-0044：原生对话 Agent 与单一证据账本](0044-native-conversation-and-evidence-ledger.md) 及 [架构](../architecture.md) 定义。实现与上线状态以 [实施记录](../implementation.md) 为准，操作见 [运行手册](../operations.md)。
 
-2026-09-06 已移除日常回放、人工评分、报告导入与实发准入门槛；0022、0023、0031 的相关段落仅作为历史决策保留，当前操作见 [运行手册](../operations.md)。
+## 现行决策
 
-0007、0014、0027、0038 的现行有效原则已迁入架构；0039 草案被 0043 替代。原文在 Git 历史中保留。
+- [ADR-0044：原生对话 Agent 与单一证据账本](0044-native-conversation-and-evidence-ledger.md)：自然原话与原图、窄原生提案、后台工作、事实 Session、单一认识账本和显式 conversation/work 路由。
+
+## 已由 ADR-0044 替代的设计
+
+下列旧文档保留当时的理由与约束，不能据其类型、字段、预算或路由说明实现当前功能。事件、权限、事务和真实送达等仍有效原则已迁入现行架构。
+
+| 历史 ADR | 被替代的部分 |
+|---|---|
+| 0011、0015、0019、0024、0025、0028 | 多层记忆、语义槽、衰减/晋升、episode 摘要、工作世界补丁和旧反思返回结构 |
+| 0012、0020、0035、0037 | 兴趣评分、能力档位、normal/deliberate/fallback 路由及旧上下文/抢占策略 |
+| 0018、0032、0033、0034、0040、0042 | 持久社会世界、自我意愿、Retained Attention、人物/关系容器及大 JSON 输出契约 |
+| 0041 | 最终草稿后的额外续接；当前终结后不再吸收输入，发送结果边界继续保留 |
+| 0043 | 前台与后台的查询分工及旧工作模型循环；当前外部查询、解题和整理统一后台，复用原生 AgentLoop |
+
+0022、0023、0031 中的日常回放、人工评分、报告导入和实发准入门槛早已退出生产。0007、0014、0027、0038 的有效原则已迁入架构，0039 草案先由 0043 替代；这些已移除文档的原文保留在 Git 历史。
+
+## 历史文档
+
+以下按编号保留，不表示其中整份实现仍有效；与 ADR-0044 冲突时采用 ADR-0044。
 
 - [Materialized State Tables in SQLite with Transactional Dual-Write](0001-materialized-state-in-sqlite.md)
 - [Step-Boundary Episode Steering with Runtime Gate Staleness Check](0002-step-boundary-episode-steering.md)

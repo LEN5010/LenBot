@@ -59,26 +59,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             )
         """)
         # 2. SQLite Trigram FTS5 for CJK Message Search (ADR-0005)
-        try:
-            await self._db.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-                    event_id UNINDEXED,
-                    scene_id UNINDEXED,
-                    actor_id UNINDEXED,
-                    content,
-                    tokenize='trigram'
-                );
-            """)
-        except Exception:
-            # Fallback for environments where trigram might not be compiled
-            await self._db.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-                    event_id UNINDEXED,
-                    scene_id UNINDEXED,
-                    actor_id UNINDEXED,
-                    content
-                );
-            """)
+        await self._db.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+            event_id UNINDEXED, scene_id UNINDEXED, actor_id UNINDEXED, content,
+            tokenize='trigram')""")
 
         await self._db.execute("""CREATE TABLE IF NOT EXISTS scene_sessions (
             scene_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
@@ -96,7 +79,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 source_event_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at REAL NOT NULL,
-                expires_at REAL NOT NULL
+                expires_at REAL NOT NULL,
+                source_stimulus_id TEXT
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_open_loops_active ON open_loops(scene_id, status);")
@@ -119,24 +103,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                 origin_mode TEXT DEFAULT 'live'
             );
         """)
-        await self._db.execute("UPDATE tasks SET status='review_required' WHERE status='triggered'")
-        # Migrations for databases created in earlier stages (ADR-0018 & ADR-0029)
-        for col, col_type in [
-            ("wake_event_type", "TEXT"),
-            ("wake_match_json", "TEXT"),
-            ("origin_episode_id", "TEXT"),
-            ("origin_stimulus_id", "TEXT"),
-            ("trigger_event_id", "TEXT"),
-            ("origin_mode", "TEXT DEFAULT 'live'"),
-        ]:
-            try:
-                await self._db.execute(f"ALTER TABLE tasks ADD COLUMN {col} {col_type};")
-            except Exception:
-                pass
-        try:
-            await self._db.execute("ALTER TABLE open_loops ADD COLUMN source_stimulus_id TEXT;")
-        except Exception:
-            pass
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_at);")
 
         # 4. Dashboard Users & Dynamic Configurations
@@ -1094,33 +1060,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             for r in rows
         ]
 
-    async def get_pending_next_wake(self, scene_id: str) -> Optional[dict[str, Any]]:
-        """Return the scene's authoritative pending ambient wake, if any."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        cursor = await self._db.execute(
-            """
-            SELECT id, description, due_at, payload, created_at, origin_mode
-            FROM tasks
-            WHERE scene_id = ? AND status = 'pending'
-              AND json_extract(payload, '$.kind') = 'next_wake'
-            ORDER BY created_at DESC
-            LIMIT 1;
-            """,
-            (scene_id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        payload = json.loads(row[3])
-        return {
-            "task_id": row[0],
-            "reason": payload["reason"],
-            "wake_at": row[2],
-            "source_event_ids": payload.get("source_event_ids", []),
-            "created_at": row[4],
-            "origin_mode": row[5] or "live",
-        }
 
     async def mark_task_status(self, task_id: str, status: str, trigger_event_id: Optional[str] = None) -> None:
         if not self._db:
@@ -1278,22 +1217,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                     if tp.proposal_id:
                         proposal_tasks[tp.proposal_id] = task_id
                     payload_json = json.dumps(tp.payload, ensure_ascii=False)
-                    # ADR-0034: at most one pending next-wake task per scene; a new
-                    # one durably supersedes the previous inside the same transaction.
-                    if tp.payload.get("kind") == "next_wake":
-                        supersede_cursor = await self._db.execute(
-                            """
-                            UPDATE tasks SET status = 'cancelled'
-                            WHERE scene_id = ? AND status = 'pending'
-                              AND json_extract(payload, '$.kind') = 'next_wake';
-                            """,
-                            (scene_id,)
-                        )
-                        if supersede_cursor.rowcount:
-                            logger.info(
-                                "Next-wake supersede on scene %s: cancelled %d prior pending task(s)",
-                                scene_id, supersede_cursor.rowcount
-                            )
                     wake_match_json = json.dumps(tp.wake_match, ensure_ascii=False) if getattr(tp, "wake_match", None) else None
                     # ADR-0018: condition-bound tasks fire on wake_event_type or deadline, whichever first.
                     delay = tp.delay_seconds if tp.delay_seconds is not None else CONDITION_TASK_DEFAULT_DEADLINE_SECONDS

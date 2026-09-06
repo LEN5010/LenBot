@@ -59,7 +59,6 @@ class RuntimeGate:
         memory_gate: Optional[Any] = None,
         metrics: Optional[Any] = None,
         origin_mode_provider: Optional[Callable[[], str]] = None,
-        next_wake_min_interval_seconds: float = 60.0,
         bot_actor_id: str = "",
     ):
         self.event_store = event_store
@@ -69,7 +68,6 @@ class RuntimeGate:
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
         self.scene_shadow_probe = None
-        self.next_wake_min_interval_seconds = next_wake_min_interval_seconds
         self.bot_actor_id = bot_actor_id
         self.jobs_enabled_probe = lambda: True
 
@@ -135,19 +133,6 @@ class RuntimeGate:
         if curr_origin == "shadow":
             for tp in proposal_commit.outcome.task_proposals:
                 tp.origin_mode = "shadow"
-
-        # ADR-0034: next-wake tasks are clamped to the configured minimum interval
-        for tp in proposal_commit.outcome.task_proposals:
-            if (
-                tp.payload.get("kind") == "next_wake"
-                and tp.delay_seconds is not None
-                and tp.delay_seconds < self.next_wake_min_interval_seconds
-            ):
-                logger.info(
-                    "Clamping next-wake delay %.1fs to minimum interval %.1fs on scene %s",
-                    tp.delay_seconds, self.next_wake_min_interval_seconds, proposal_commit.scene_id
-                )
-                tp.delay_seconds = self.next_wake_min_interval_seconds
 
         # Resolve references before any transaction or visible acknowledgement.
         if not self.jobs_enabled_probe() and any(p.operation in {"create", "resume"} for p in outcome.job_proposals):

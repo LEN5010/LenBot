@@ -30,7 +30,7 @@ class JobProposal(BaseModel):
 class JobResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["completed", "partial", "failed", "interrupted", "cancelled"]
-    summary: str = Field(max_length=8000)
+    summary: str = Field(max_length=4000, description="最终结论、简短完整依据与适用条件；省去草稿和已放弃的推理，未解决的矛盾放入 unresolved")
     result_ids: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
 

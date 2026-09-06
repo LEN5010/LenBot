@@ -48,17 +48,6 @@ class TaskScheduler:
                 pass
 
     def schedule_task(self, task: TaskItem) -> None:
-        if task.payload.get("kind") == "next_wake":
-            superseded_ids = {
-                queued.id
-                for queued in self._heap
-                if queued.scene_id == task.scene_id
-                and queued.payload.get("kind") == "next_wake"
-            }
-            if superseded_ids:
-                self._known_task_ids.difference_update(superseded_ids)
-                self._heap = [queued for queued in self._heap if queued.id not in superseded_ids]
-                heapq.heapify(self._heap)
         if task.id not in self._known_task_ids:
             self._known_task_ids.add(task.id)
             heapq.heappush(self._heap, task)
@@ -248,35 +237,3 @@ class TaskScheduler:
         heapq.heapify(self._heap)
 
         return await self._emit_task_due(target_task, self.event_store.clock(), trigger_event_id="manual:trigger_now")
-
-    async def promote_task(self, task_id: str) -> Optional[dict]:
-        """ADR-0029, §23.4: Promotes/duplicates task as a renewed template task with live origin."""
-        if not self.event_store._db:
-            return None
-        cursor = await self.event_store._db.execute("SELECT * FROM tasks WHERE id = ?;", (task_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        import uuid
-        import json
-        new_id = f"promoted_{uuid.uuid4().hex[:8]}_{task_id}"
-        payload_data = json.loads(row[6]) if row[6] and isinstance(row[6], str) else (row[6] or {})
-        wake_match_data = json.loads(row[9]) if len(row) > 9 and row[9] and isinstance(row[9], str) else None
-
-        new_task = TaskItem(
-            id=new_id,
-            scene_id=row[1],
-            description=f"[Promoted] {row[2]}",
-            due_at=self.event_store.clock() + 86400.0,
-            status=TaskStatus.PENDING,
-            source_event_id=f"promoted:{task_id}",
-            payload=payload_data,
-            wake_event_type=row[8] if len(row) > 8 else None,
-            wake_match=wake_match_data,
-            origin_episode_id=row[10] if len(row) > 10 else None,
-            origin_stimulus_id=row[11] if len(row) > 11 else None,
-            origin_mode="live",
-        )
-        await self.event_store.save_task(new_task)
-        self.schedule_task(new_task)
-        return new_task.model_dump()

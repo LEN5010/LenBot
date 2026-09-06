@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
 from len_bot.cognition.jobs import JobProposal
@@ -28,7 +28,7 @@ class ReplyExpectation(StrictModel):
 class TurnMessage(StrictModel):
     segments:list[Annotated[TextPart|ImagePart,Field(discriminator='type')]]=Field(min_length=1,max_length=12)
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    ack_ref: str|None=Field(default=None,description='本轮工作或提醒提案的proposal_ref，确认其已建立或控制')
+    ack_ref: str|None=Field(default=None,description='仅用于确认本轮start_work/schedule_reminder新建事项的proposal_ref；其他暂存S引用用于discard_proposal')
     delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
@@ -56,11 +56,22 @@ class ControlWork(Evidence):
     work_ref:str
 
 class ScheduleReminder(Evidence):
+    model_config=ConfigDict(extra='forbid',json_schema_extra={'oneOf':[
+        {'required':['due_at'],'properties':{'due_at':{'type':'number'},'delay_seconds':{'type':'null'}}},
+        {'required':['delay_seconds'],'properties':{'delay_seconds':{'type':'number'},'due_at':{'type':'null'}}},
+    ]})
     proposal_ref:str=Field(min_length=1)
     description:str=Field(min_length=1)
-    due_at:float=Field(description='约定提醒的绝对Unix时间，需晚于当前时间')
+    due_at:float|None=Field(default=None,allow_inf_nan=False,description='绝对Unix时间，需晚于当前时间；与delay_seconds二选一')
+    delay_seconds:float|None=Field(default=None,gt=0,allow_inf_nan=False,description='从事务提交时起等待的秒数；如20分钟后填1200，与due_at二选一')
     requester:str=Field(description='请求人的U引用')
     target:str|None=Field(default=None,description='提醒对象的U引用，省略为请求人')
+
+    @model_validator(mode='after')
+    def exactly_one_time(self):
+        if (self.due_at is None)==(self.delay_seconds is None):
+            raise ValueError('schedule_reminder必须且只能提供due_at或delay_seconds之一')
+        return self
 
 class UpdateReminder(Evidence):
     reminder_ref:str
@@ -88,6 +99,10 @@ class ResolveWait(StrictModel):
     wait_ref:str
 
 
+class DiscardProposal(StrictModel):
+    proposal_ref:str=Field(min_length=1,description='本轮工具返回的暂存提案引用；不是已提交的工作J或提醒T')
+
+
 TOOLS={
     'start_work':(StartWork,'提议后台只读工作，用于查询、计算、解题、事实核对和整理。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
@@ -100,13 +115,14 @@ TOOLS={
     'refute_memory':(RefuteMemory,'依照新证据撤销已有认识，保留历史。'),
     'supersede_memory':(SupersedeMemory,'用新的明确表达修订同一主体同类认识，保留旧记录。'),
     'resolve_wait':(ResolveWait,'结束已实际送达后建立的等待回应。'),
+    'discard_proposal':(DiscardProposal,'撤回本轮尚未提交的单条提案。用户改变要求时先撤回旧提案；实际工作J/提醒T应使用cancel_work/cancel_reminder。'),
 }
 
 
 def definition(name,model,description):
     return {'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}}
 
-FINISH_TURN=definition('finish_turn',FinishTurn,'提交这一轮暂存的提案及零至三条消息；只有事务获准的消息才发送。')
+FINISH_TURN=definition('finish_turn',FinishTurn,'提交剩余暂存提案及零至三条消息；不再需要的提案先用discard_proposal撤回。空消息不丢弃提案，只有事务获准的消息才发送。')
 
 
 class ProposalLedger:
@@ -115,6 +131,8 @@ class ProposalLedger:
         self.episode_id=episode_id
         self.jobs=[];self.tasks=[];self.memories=[];self.loops=[]
         self.proposal_refs=set()
+        self.staged={}
+        self._next_handle=1
 
     def definitions(self):return [definition(name,*value) for name,value in TOOLS.items()]
 
@@ -122,38 +140,61 @@ class ProposalLedger:
         try:
             model=TOOLS[name][0].model_validate(arguments)
             refs=self.context.refs
+            if name=='discard_proposal':
+                entry=self.staged.pop(model.proposal_ref,None)
+                if entry is None:raise ValueError('未找到本轮暂存提案；已提交的工作J或提醒T不能用discard_proposal撤回')
+                collection,value=entry
+                values=getattr(self,collection)
+                if collection=='loops':values.remove(value)
+                else:values[:]=[item for item in values if item is not value]
+                self.proposal_refs.discard(model.proposal_ref)
+                return {'status':'discarded','proposal_ref':model.proposal_ref,
+                        'note':'仅撤回本轮尚未提交的提案，未修改任何实际工作或提醒；其余暂存提案仍待finish_turn统一提交'}
             evidence=[refs.event_id(ref) for ref in getattr(model,'evidence',[])]
             proposal_ref=getattr(model,'proposal_ref',None)
-            if proposal_ref and proposal_ref in self.proposal_refs:raise ValueError('本轮proposal_ref重复')
+            if proposal_ref and proposal_ref in self.staged:raise ValueError('本轮proposal_ref重复')
             if name=='start_work':
-                proposal=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
+                collection='jobs'
+                value=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
                     source_event_ids=evidence,result_ids=[refs.result_id(r) for r in model.result_refs])
-                self.jobs.append(proposal)
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
-                self.jobs.append(JobProposal(operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
+                collection='jobs'
+                value=JobProposal(operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
                     job_id=job['id'],expected_revision=job['revision'],source_event_ids=evidence,
-                    goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[])))
+                    goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]))
             elif name=='schedule_reminder':
-                self.tasks.append(TaskProposal(proposal_id=proposal_ref,description=model.description,due_at=model.due_at,
+                collection='tasks'
+                value=TaskProposal(proposal_id=proposal_ref,description=model.description,due_at=model.due_at,
+                    delay_seconds=model.delay_seconds,
                     requester_id=refs.actor_id(model.requester),target_actor_id=refs.actor_id(model.target or model.requester),
-                    source_event_ids=evidence,payload={'kind':'reminder'},origin_episode_id=self.episode_id))
+                    source_event_ids=evidence,payload={'kind':'reminder'},origin_episode_id=self.episode_id)
             elif name in {'update_reminder','cancel_reminder'}:
-                self.tasks.append(TaskProposal(operation='update' if name=='update_reminder' else 'cancel',
-                    task_id=refs.task_id(model.reminder_ref),due_at=getattr(model,'due_at',None),description=getattr(model,'description',''),source_event_ids=evidence))
+                collection='tasks'
+                value=TaskProposal(operation='update' if name=='update_reminder' else 'cancel',
+                    task_id=refs.task_id(model.reminder_ref),due_at=getattr(model,'due_at',None),description=getattr(model,'description',''),source_event_ids=evidence)
             elif name in {'remember','supersede_memory'}:
-                self.memories.append(MemoryProposal(operation='create' if name=='remember' else 'supersede',
+                collection='memories'
+                value=MemoryProposal(operation='create' if name=='remember' else 'supersede',
                     subject=refs.actor_id(model.subject),kind=model.kind,statement=model.statement,basis='reported',
                     evidence=evidence,expires_at=model.expires_at,scope=refs.scene_id,reason=getattr(model,'reason',''),
-                    target_memory_ids=[refs.memory_id(r) for r in getattr(model,'memory_refs',[])]))
+                    target_memory_ids=[refs.memory_id(r) for r in getattr(model,'memory_refs',[])])
             elif name=='refute_memory':
-                self.memories.append(MemoryProposal(operation='refute',target_memory_ids=[refs.memory_id(model.memory_ref)],
-                    reason=model.reason,evidence=evidence,scope=refs.scene_id))
+                collection='memories'
+                value=MemoryProposal(operation='refute',target_memory_ids=[refs.memory_id(model.memory_ref)],
+                    reason=model.reason,evidence=evidence,scope=refs.scene_id)
             elif name=='resolve_wait':
-                loop=refs.loop_id(model.wait_ref)
-                if loop not in self.loops:self.loops.append(loop)
+                collection='loops';value=refs.loop_id(model.wait_ref)
+                existing=next((ref for ref,entry in self.staged.items() if entry==(collection,value)),None)
+                if existing:return {'status':'staged','proposal_ref':existing,'note':'该关闭提案已在本轮暂存，尚未提交'}
             if proposal_ref:self.proposal_refs.add(proposal_ref)
-            return {'status':'staged','proposal_ref':proposal_ref,'note':'尚未提交；finish_turn 后统一确认'}
+            else:
+                while f'S{self._next_handle}' in self.staged:self._next_handle+=1
+                proposal_ref=f'S{self._next_handle}';self._next_handle+=1
+            getattr(self,collection).append(value)
+            self.staged[proposal_ref]=(collection,value)
+            return {'status':'staged','proposal_ref':proposal_ref,
+                    'note':'尚未提交；可用discard_proposal撤回本条，finish_turn统一提交剩余提案。此引用不是实际工作J或提醒T'}
         except (ValueError,KeyError) as error:raise ToolArgumentError(str(error)) from error
 
     async def finish(self,arguments):

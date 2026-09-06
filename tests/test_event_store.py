@@ -41,11 +41,11 @@ async def test_event_store_lifecycle(tmp_path):
     assert len(results_private) == 1
     assert results_private[0]["actor_id"] == "user:2002"
 
-    # 4. Test Materialized Scene State (ADR-0001)
-    await store.save_scene_state("group:1001", version=5, state_data={"topic": "live"})
-    loaded = await store.load_scene_state("group:1001")
-    assert loaded is not None
-    assert loaded["version"] == 5
-    assert loaded["topic"] == "live"
-
+    # Facts are persisted together with their source event.
+    from len_bot.scenes.models import SceneSession
+    e3=Event(event_type=EventType.GROUP_MESSAGE_RECEIVED,scene_id="group:1001",actor_id="user:2001",payload={"raw_text":"新的原话"})
+    session=SceneSession(scene_id=e3.scene_id,version=1)
+    rowid=await store.commit_scene_event(e3,session.model_dump())
+    loaded=await store.load_scene_session(e3.scene_id)
+    assert loaded["version"]==1 and loaded["last_observed_event_rowid"]==rowid
     await store.close()

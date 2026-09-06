@@ -164,3 +164,45 @@ async def test_scoped_history_cutoff_and_image_metadata_survive_retrieval(harnes
     assert list(context.refs.events.values())==[first.id]
     recent=await h.store.get_recent_events(h.actor.scene_id,through_rowid=cutoff)
     assert [e.id for e in recent]==[first.id]
+
+
+@pytest.mark.asyncio
+async def test_paged_beliefs_only_grant_references_for_complete_visible_records(harness):
+    from len_bot.memory.models import MemoryItem
+    from len_bot.tools.results import ToolResult
+    h=harness;event=await h.human('别用那个称呼')
+    context=ConversationContext(h.runtime,h.actor.session,event.metadata['_rowid'])
+    toolkit=RetrievalToolkit(h.store,[h.actor.scene_id],h.actor.scene_id,context=context)
+    items=[MemoryItem(id=f'memory:{i}',subject='user:1',scope=h.actor.scene_id,kind='preference',
+        statement=f'偏好{i}'+('资料'*200),basis='reported',evidence=[event.id]).model_dump(mode='json') for i in range(2)]
+    first=await toolkit._present('query_memory',ToolResult(content=json.dumps(items[:1],ensure_ascii=False)))
+    page=await toolkit._present('query_memory',ToolResult(content=json.dumps(items,ensure_ascii=False)),limit=len(first.content))
+    assert page.next_offset==1 and 'memory:1' not in context.refs.memories.values()
+    assert len(json.loads(page.content))==1
+    with pytest.raises(ValueError):context.refs.memory_id('B2')
+    second=await toolkit._present('query_memory',ToolResult(content=json.dumps(items,ensure_ascii=False)),offset=page.next_offset)
+    assert json.loads(second.content)[0]['ref']=='B2'
+    assert context.refs.memory_id('B2')=='memory:1'
+
+
+@pytest.mark.asyncio
+async def test_read_media_reloads_evicted_pixels_and_identical_assets_keep_provenance(harness):
+    h=harness;assets=[]
+    for color in ['red','red','green','blue','yellow','orange','pink']:
+        buf=io.BytesIO();Image.new('RGB',(12,12),color).save(buf,format='PNG')
+        asset=await h.runtime.media_service.upload(buf.getvalue(),'global-safe',color,[color]);assets.append(asset['id'])
+    context=ConversationContext(h.runtime,h.actor.session,0)
+    messages=await context.attachments(assets[:6])
+    context.limit_image_window(messages)
+    assert len(context.attached)==6
+    messages.extend(await context.attachments(assets[6:]))
+    context.limit_image_window(messages)
+    assert assets[0] not in context.attached and assets[1] in context.attached
+    assert context.media_manifest[-1]['asset_id']==assets[0]
+    reloaded=await context.attachments([assets[0]])
+    assert reloaded
+    messages.extend(reloaded);context.limit_image_window(messages)
+    assert assets[0] in context.attached and assets[1] not in context.attached
+    wire=context.model_messages(messages)
+    assert sum(part['type']=='image_url' for message in wire for part in message['content'])==6
+    assert all('_asset_id' not in part for message in wire for part in message['content'])

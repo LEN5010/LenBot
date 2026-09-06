@@ -1,32 +1,36 @@
 import asyncio
 from delivery_support import allow_fake_delivery
 import json
-from types import SimpleNamespace as NS
+import uuid
+from openai import AsyncOpenAI
 
 import pytest
 import httpx
 
 from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
-from len_bot.cognition.jobs import JobProposal, JobResult, JobChanged, JobBudgetExhausted
+from len_bot.cognition.jobs import JobProposal, JobResult
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.agent_runtime import AgentRuntime
+from runtime_support import configure_fixture_profile
 from len_bot.testing.replay import drain
-from len_bot.testing.social import social_result
+from len_bot.testing.turns import turn_result
+from len_bot.cognition.providers import RouteResolution
 from len_bot.plugins.base import BasePlugin
 from len_bot.plugins.models import PluginManifest, PluginPermission
 from len_bot.tools.results import ToolResult
 from len_bot.web.app import create_app
 
 
-async def quiet(messages):
-    return social_result(reason="测试不发言")
+async def quiet(session, events):
+    return turn_result(reason="测试不发言")
 
 
 async def setup_runtime(tmp_path, **config):
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999, **config), mock_social_handler=quiet, clock=lambda: 1000)
+    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999, **config), mock_turn_handler=quiet, clock=lambda: 1000)
     await rt.start()
+    await configure_fixture_profile(rt)
     await allow_fake_delivery(rt, 'group:jobs')
     await rt.scheduler.stop()
     rt.job_runner.running = False
@@ -37,16 +41,15 @@ async def setup_runtime(tmp_path, **config):
 
 async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_revision=None, fulfils_task_id=None, origin_mode="live"):
     actor = await rt.scene_manager.get_or_create_actor("group:jobs")
-    mailbox = EpisodeMailbox("unit-job", actor.scene_id, actor.state.version)
+    mailbox = EpisodeMailbox(f"unit-job:{uuid.uuid4().hex}", actor.scene_id, actor.session.version)
     mailbox.origin_mode = origin_mode
     assert actor.acquire_episode_lease(mailbox.episode_id, mailbox)
-    result = social_result(reason="测试工作提案", content=content, task_ref=task_ref, job_id=job_id,
+    result = turn_result(reason="测试工作提案", content=content, task_ref=task_ref, job_id=job_id,
                            job_revision=job_revision, fulfils_task_id=fulfils_task_id)
     result.job_proposals = [proposal] if proposal else []
     try:
-        return await actor.commit_cognitive_turn(result, actor.group_session.last_observed_event_rowid,
-            ["source"], origin_mode, mailbox.episode_id, mailbox, rt.runtime_gate,
-            social_revision=actor.group_session.social_revision)
+        return await actor.commit_turn(result, actor.session.last_observed_event_rowid,
+            ["source"], actor.session.knowledge_revision, mailbox, rt.runtime_gate)
     finally:
         actor.release_episode_lease(mailbox.episode_id)
 
@@ -116,7 +119,7 @@ async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path
     await rt.scene_manager._actors["group:jobs"]._queue.join()
     await rt.commit_tool_observation(await rt.event_store.job_checkpoint(job["id"], job["scene_id"], 1, model_steps=2))
     await rt.stop()
-    second = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999), mock_social_handler=quiet, clock=lambda: 1000)
+    second = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999), mock_turn_handler=quiet, clock=lambda: 1000)
     await second.start()
     await second.scheduler.stop()
     second.job_runner.running = False
@@ -151,22 +154,28 @@ class SlowDocumentPlugin(BasePlugin):
 class WorkRegistry:
     def __init__(self):
         self.calls = []
-    def resolve(self, tier):
-        return NS(provider_id="test", model="work", client=NS(chat=NS(completions=self)))
-    def resolve_fallback(self):
-        return None
-    def has_live_provider(self):
-        return True
-    async def create(self, **kwargs):
+        self.client = AsyncOpenAI(api_key="fixture", base_url="https://fixture.invalid/v1", max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(self.respond)))
+    def snapshot(self):
+        return {"providers": [{"id": "test", "enabled": True}], "routing": {
+            "conversation": {"provider_id": "test", "model": "work"},
+            "work": {"provider_id": "test", "model": "work"}}}
+    def resolve(self, role):
+        return RouteResolution(provider_id="test", model="work", client=self.client, role=role)
+    async def respond(self, request):
+        kwargs = json.loads(request.content)
         self.calls.append(kwargs)
         if len(self.calls) == 1:
-            message = NS(content=None, tool_calls=[NS(id="read", function=NS(name="lookup_document", arguments="{}"))])
+            function = {"name": "lookup_document", "arguments": "{}"}
         else:
-            brief = json.loads(kwargs["messages"][1]["content"])
+            content = kwargs["messages"][1]["content"]
+            brief = json.loads(content if isinstance(content, str) else content[0]["text"])
             assert "只用手机" in brief["constraints"]
             assert brief["result_ids"]
-            message = NS(content=JobResult(status="completed", summary="按手机约束整理了资料", result_ids=brief["result_ids"]).model_dump_json(), tool_calls=None)
-        return NS(choices=[NS(message=message)], usage=None)
+            result = JobResult(status="completed", summary="按手机约束整理了资料", result_ids=brief["result_ids"])
+            function = {"name": "finish_work", "arguments": result.model_dump_json()}
+        return httpx.Response(200, json={"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": None, "tool_calls": [{"id": "work-call", "type": "function", "function": function}]}}]})
 
 
 @pytest.mark.asyncio
@@ -176,23 +185,24 @@ async def test_work_can_be_revised_while_social_core_keeps_responding(tmp_path):
         sent.append(action.content)
         return DeliveryResult(status=DeliveryStatus.SENT, transport="test", message_id=str(len(sent)))
     rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "live.db"), bot_qq=999), send_adapter=send, clock=lambda: 1000)
-    async def social(messages):
+    async def social(session, events):
+        messages = [event.model_dump(mode="json") for event in events]
         jobs = await rt.event_store.list_jobs("group:work")
         if not jobs:
-            result = social_result(reason="需要独立查询", content="我先查一下", task_ref="lookup")
+            result = turn_result(reason="需要独立查询", content="我先查一下", task_ref="lookup")
             result.job_proposals = [JobProposal(proposal_id="lookup", goal="整理公开资料", source_event_ids=["first"])]
             return result
         job = jobs[0]
         if "只用手机" in json.dumps(messages, ensure_ascii=False) and "只用手机" not in job["constraints"]:
-            result = social_result(reason="用户补充了限制", content="知道了，按手机能操作的方式查")
+            result = turn_result(reason="用户补充了限制", content="知道了，按手机能操作的方式查")
             result.job_proposals = [JobProposal(operation="revise", job_id=job["id"], expected_revision=job["revision"],
                 constraints_add=["只用手机"], source_event_ids=["late"])]
             return result
         if job["status"] == "result_ready":
-            return social_result(reason="结果就绪", content=job["result"]["summary"], job_id=job["id"],
+            return turn_result(reason="结果就绪", content=job["result"]["summary"], job_id=job["id"],
                 job_revision=job["revision"], fulfils_task_id=job["id"])
-        return social_result(reason="继续等待资料")
-    rt.social_core.mock_handler = social
+        return turn_result(reason="继续等待资料")
+    rt.mock_turn_handler = social
     await rt.start()
     await allow_fake_delivery(rt, 'group:work')
     registry, plugin = WorkRegistry(), SlowDocumentPlugin()
@@ -206,7 +216,7 @@ async def test_work_can_be_revised_while_social_core_keeps_responding(tmp_path):
         await asyncio.wait_for(plugin.started.wait(), 5)
         await rt.receive_event(user("late", "只用手机"))
         await rt.scene_manager._actors["group:work"]._queue.join()
-        await asyncio.gather(*list(rt._social_tasks.values()))
+        await asyncio.gather(*list(rt._conversation_tasks.values()))
         assert "知道了，按手机能操作的方式查" in sent or not rt.action_queue._queue.empty()
         plugin.release.set()
         await asyncio.wait_for(drain(rt), 5)
@@ -217,18 +227,16 @@ async def test_work_can_be_revised_while_social_core_keeps_responding(tmp_path):
     finally:
         plugin.release.set()
         await rt.stop()
+        await registry.client.close()
 
 
 @pytest.mark.asyncio
 async def test_work_budget_counts_failed_model_attempt_and_scope(tmp_path):
     rt = await setup_runtime(tmp_path, job_max_steps=1)
-    class FailingRegistry:
-        def __init__(self): self.calls = 0
-        def resolve(self, tier): return NS(provider_id="p", model="primary", client=NS(chat=NS(completions=self)))
-        def resolve_fallback(self): return NS(provider_id="p", model="fallback", client=NS(chat=NS(completions=self)))
-        async def create(self, **kwargs):
-            self.calls += 1
-            raise RuntimeError("offline")
+    class FailingRegistry(WorkRegistry):
+        async def respond(self, request):
+            self.calls.append(json.loads(request.content))
+            raise httpx.ReadTimeout("fixture offline")
     registry = FailingRegistry()
     rt.provider_registry = registry
     try:
@@ -238,11 +246,12 @@ async def test_work_budget_counts_failed_model_attempt_and_scope(tmp_path):
         rt.job_runner.running = True
         await asyncio.wait_for(drain(rt), 5)
         final = await rt.event_store.get_job(job["id"], job["scene_id"])
-        assert final["model_steps"] == 1 and registry.calls == 1
-        assert final["result"]["status"] == "partial"
+        assert final["model_steps"] == 1 and len(registry.calls) == 1
+        assert final["result"]["status"] == "failed"
         assert final["status"] == "result_ready"  # Not delivered or fulfilled.
     finally:
         await rt.stop()
+        await registry.client.close()
 
 
 @pytest.mark.asyncio
@@ -295,3 +304,4 @@ async def test_cancel_during_tool_stops_before_another_model_call(tmp_path):
     finally:
         plugin.release.set()
         await rt.stop()
+        await registry.client.close()

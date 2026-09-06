@@ -2,7 +2,6 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from len_bot.config import RuntimeConfig
 from len_bot.runtime.agent_runtime import AgentRuntime
-from len_bot.cognition.router import CognitiveTier
 from len_bot.web.app import create_app
 from len_bot.adapters.onebot import OneBotAdapter
 
@@ -93,9 +92,8 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         providers_get = await client.get("/api/models/providers", headers=headers)
         assert providers_get.status_code == 200
         providers_data = providers_get.json()
-        # Startup seeded the default provider from config (no legacy model_config existed)
-        assert any(p["id"] == "default" for p in providers_data["providers"])
-        assert providers_data["routing"]["normal"]["model"] == "deepseek-chat"
+        # Starting the control plane does not configure or select a model.
+        assert providers_data == {"providers": [], "routing": None}
 
         provider_post = await client.post("/api/models/providers", headers=headers, json={
             "id": "openai-main",
@@ -121,20 +119,17 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         assert models_save.status_code == 200
 
         routing_post = await client.post("/api/models/routing", headers=headers, json={
-            "normal_provider_id": "openai-main",
-            "normal_model": "gpt-4o-mini",
-            "deliberate_provider_id": "openai-main",
-            "deliberate_model": "gpt-4o",
-            "fallback_provider_id": "default",
-            "fallback_model": "deepseek-chat",
+            "conversation": {"provider_id": "openai-main", "model": "gpt-4o-mini"},
+            "work": {"provider_id": "openai-main", "model": "gpt-4o", "reasoning_effort": "high"},
         })
         assert routing_post.status_code == 200
 
         # Hot-applied: registry resolves the new routing immediately
-        normal_res = runtime.provider_registry.resolve(CognitiveTier.NORMAL)
+        normal_res = runtime.provider_registry.resolve("conversation")
         assert normal_res.model == "gpt-4o-mini"
         assert normal_res.provider_id == "openai-main"
-        assert runtime.provider_registry.resolve_fallback().provider_id == "default"
+        assert runtime.provider_registry.resolve("work").model == "gpt-4o"
+        assert runtime.provider_registry.resolve("work").reasoning_effort == "high"
 
         # A model already used by routing remains selectable even if it is
         # accidentally unchecked in the provider catalog.
@@ -145,7 +140,7 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         )
         assert catalog_update.status_code == 200
         assert catalog_update.json()["models"] == ["gpt-4o", "gpt-4o-mini"]
-        assert "自动保留" in catalog_update.json()["message"]
+        assert "已保留" in catalog_update.json()["message"]
 
         # API key never echoed back
         providers_after = (await client.get("/api/models/providers", headers=headers)).json()
@@ -156,10 +151,11 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         # Persisted: survives a fresh runtime on the same DB
         runtime2 = AgentRuntime(config=RuntimeConfig(db_path=db_file))
         await runtime2.start()
-        normal2 = runtime2.provider_registry.resolve(CognitiveTier.NORMAL)
+        normal2 = runtime2.provider_registry.resolve("conversation")
         assert normal2.model == "gpt-4o-mini" and normal2.provider_id == "openai-main"
         assert normal2.client.base_url.host == "api.openai.com"
-        assert runtime2.provider_registry.resolve_fallback().model == "deepseek-chat"
+        assert runtime2.provider_registry.resolve("work").model == "gpt-4o"
+        assert runtime2.provider_registry.resolve("work").reasoning_effort == "high"
         assert runtime2.config.onebot_connection_mode == "forward_ws"
         assert runtime2.config.onebot_action_transport == "http"
         assert runtime2.config.onebot_ws_url == "ws://127.0.0.1:13001/"

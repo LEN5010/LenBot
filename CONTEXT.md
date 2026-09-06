@@ -1,35 +1,44 @@
 # 领域术语
 
-此文件只定义现行领域语言；运行路径见 [架构](docs/architecture.md)，实施状态见 [实施记录](docs/implementation.md)。
+此文件定义现行领域语言，供实现与审查时对齐边界。运行路径见 [架构](docs/architecture.md)，决策见 [ADR-0044](docs/adr/0044-native-conversation-and-evidence-ledger.md)。
 
 | 术语 | 含义与边界 |
 |---|---|
-| Persistent Runtime | 持续存在的 Agent 权威，拥有时间、状态和行动生命周期 |
-| Event | 不可变的原始观察或内部事实，不等同于消息或模型结论 |
-| Scene | 群聊或私聊的隔离范围，也是检索和证据的权限边界 |
-| SceneActor | 场景事实与 Session 的单写者，不等待模型推理 |
-| Burst | 仅按到达时间聚合的一组有序场景事件 |
-| GroupAgentSession | 持久工作认识，不是模型聊天历史 |
-| Social Core | 解释社会场景、按需查询并提出行动的临时认知过程 |
-| Observed Cutoff | 该轮实际读到的事件截点，晚到输入保持未读 |
-| Social Revision | 社会理解版本，不是输入消息计数 |
-| Episode Lease / Mailbox | 一轮社会认知的执行权及步骤边界输入通道 |
-| Proposal / RuntimeGate | 候选更新及其权威事务边界，模型没有直接执行权 |
-| Cognitive Tier | normal/deliberate 能力路由，不是 FAST/FULL 双轨 |
-| Tool Budget / Forced Final | 模型和工具的硬额度，耗尽后必须收束，不假称完成 |
-| Tool Observation | 工具取得的原始资料或错误，不等于已证明的现实结论 |
-| Agent Job | 由 Runtime 管理的信息型工作，社会认知决定目标和表达，执行器只读工具并返回结果；实现状态见实施记录 |
-| Preferred Address | 从发言证据形成的场景称呼偏好，独立于昵称和群名片 |
-| Memory Revision | 有证据的撤销/替代，保留原认识及修订理由 |
-| Social World / Self State | 对话题、人际与自身参与的可修订认识，不是运行时规则 |
-| Retained Attention | 保留兴趣的软状态，不能自动生成任务 |
-| Future Attention / Next Wake | 认知提出的未来观察意图，经 Gate 变成持久调度任务 |
-| Task | 有来源、目标和触发条件的执行义务，到期不等于履约 |
-| OpenLoop | 经确认送达后激活的社会期待，不是后台工作队列 |
-| DeliveryResult | sent/not_sent/rejected/unknown 四种事实结果，unknown 不自动重发 |
-| Shadow | 只记录候选，没有物理发送和社会送达事实 |
-| 实发群名单 | 运营明确允许实发的群；只有名单内且全局 Shadow 关闭时才能实际发送，无消息数或评分门槛 |
-| Simulated Delivery | 隔离测试中的虚拟回执，不是真实送达或真实人类互动 |
-| Reflection | 提出认识、版本化补丁和核对事项，无任务或发送权 |
-| ExecutionScope | SQL/存储层约束的允许场景集合，不能由模型扩大 |
-| OneBot Link / Transport | 唯一事件连接及显式选择的发送通道，不作跨通道重试 |
+| Persistent Runtime | 持续运行并管理事件、调度、预算和行动生命周期的权威 |
+| Event | 追加且不可变的观察或运行事实；模型结论的记录不等于独立事实证据 |
+| Scene | 群聊或私聊的隔离范围，也是历史、工具观察和媒体的存储权限边界 |
+| `SceneActor` / `SceneSession` | 单写 Actor 与事实投影，保存身份、游标、版本和收发事实，不保存气氛或自我意愿 |
+| Burst | 仅按到达时间聚合的一组有序场景输入 |
+| `SocialCognitionCore` | 唯一社会认知入口，决定参与、沉默、回忆与工作目标，并提出表达 |
+| Conversation Context | 本轮的原话、原图、明确相处要求及运行资料；不充当永久会话 |
+| Read Cutoff | 本轮实际读取的连续事件截点；晚到或未提供的输入继续 pending |
+| Knowledge Revision | 认识账本版本，变化后旧认知须重建；不是消息数量 |
+| Episode Lease / Mailbox | 一轮认知的执行权与新增输入通道，只确认实际已读截点 |
+| Model Profile | `conversation` 或 `work` 的显式提供商、模型和推理强度配置 |
+| `ModelGateway` | 固定一次运行的模型绑定，保留供应商原生 assistant 续接数据 |
+| `AgentLoop` | 对话、工作和反思共用的原生工具循环，执行预算与终结契约 |
+| `TurnReferences` | 本轮短引用到真实 ID 的映射，区分看到来源位置与实际读过证据 |
+| `ProposalLedger` | 尚未提交的工作、提醒、认识和表达意向；可在终结前撤回暂存提案 |
+| `finish_turn` / `RuntimeGate` | 零至三条文字或图片消息的终结提案，以及授权、事务和发送边界；空列表为沉默 |
+| Tool Budget / Forced Final | 模型步骤与工具执行的硬额度；最后一步指定终结工具，失败不能伪装完成 |
+| Tool Observation | 工具取得的原始资料、派生内容或错误；持久 result_id 不扩大场景权限 |
+| Information Job | 由 `start_work` 提议、Runtime 管理的只读查询、解题或整理工作；结果回到对话入口表达 |
+| Work Revision | 工作目标和约束版本；修订保留已用预算、资料和本次运行的模型绑定 |
+| Evidence Ledger / Memory | 单一认识账本，保存主体、陈述、依据、来源、有效期和修订链 |
+| `reported` / `inferred` | 有人明确报告与从互动推断的认识，均保留来源；不表示已客观核实 |
+| Preferred Address | 有原话证据的称呼偏好，独立于协议昵称和群名片 |
+| Memory Revision | `create/refute/supersede` 提案；替代或撤销保留旧陈述及修订理由 |
+| Reflection | 使用 `work` 模型整理稀疏认识及核对事项，无工作、任务或发送权 |
+| Task / Reminder | 有来源与触发时间的执行义务；触发、结果就绪和实际履约分别记录 |
+| OpenLoop | 真实发送后激活的等待回应；关闭通过提案提交，过期遵循记录的期限 |
+| Native Image / Media Manifest | 实际装入模型的原图及其来源、覆盖范围、未装入或移出状态 |
+| Operator Palette | 最多 20 项固定运营目录及编号总览；选择缩略图，发送获准原图 |
+| Voice Example | 运营固定顺序提供的文字、图片或混排表达参考，不是群友事实 |
+| DeliveryResult | sent/not_sent/rejected/unknown 四种发送结果；unknown 不自动重发 |
+| Shadow | 记录候选表达，不产生真实发送、履约或等待回应事实 |
+| 实发群名单 | 运营允许实发的群；与全局 Shadow 共同控制实际发送，沿用保存值 |
+| Replay / Simulated Delivery | 隔离验证中的输入和回执，不能冒充真实群聊或实际成功 |
+| Operator Outcome | 记录操作者事件后经过 Actor/Gate 的干预，不消费未读人类输入 |
+| OneBot Link / Transport | 唯一事件连接与显式发送通道，不作不确定发送的跨通道重试 |
+
+GroupAgentSession、Social World、Self State、Retained Attention、Cognitive Tier、独立 vision 路由和 episode 摘要属于已替代设计，不用于描述当前实现。
