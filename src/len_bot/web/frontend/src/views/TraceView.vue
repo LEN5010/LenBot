@@ -21,8 +21,16 @@ function candidate(trace) {
   return [...steps(trace)].reverse().find(step => step.terminal_candidate)?.terminal_candidate || run(trace).terminal_candidate || null
 }
 function messages(trace) { return candidate(trace)?.messages || trace.payload?.result?.message_proposals || [] }
-function messageText(message) { return (message.segments || []).map(segment => segment.type === 'image' ? `[图片 ${segment.asset_id}]` : segment.text || '').join('') }
+function messageText(message) {
+  return (message.segments || []).map(segment => {
+    if (segment.image) return `[图片 ${segment.image}]`
+    if (segment.type === 'image') return `[图片 ${segment.asset_id}]`
+    return segment.text || ''
+  }).join('')
+}
 function toolCount(trace) { return runs(trace).reduce((count, item) => count + (item.tool_calls_used || 0), 0) }
+function observationLabel(call) { return { ok: '资料已读取', partial: '部分资料', no_results: '无结果', error: '读取失败', unsupported: '服务或格式不可用' }[call.observation?.status] || '' }
+function observationClass(call) { return ['error', 'unsupported'].includes(call.observation?.status) ? 'bad' : ['partial', 'no_results'].includes(call.observation?.status) ? 'warn' : 'ok' }
 function kindLabel(kind) { return { conversation: '对话', conversation_error: '对话失败', agent_job: '信息工作', agent_job_error: '工作失败', reflection: '记忆修订' }[kind] || kind }
 function errorText(value) { return typeof value === 'string' ? value : JSON.stringify(value) }
 function failures(trace) {
@@ -30,7 +38,10 @@ function failures(trace) {
   if (payload.gate?.accepted === false) values.push(payload.gate.reason)
   for (const step of steps(trace)) {
     values.push(step.failure_reason, step.error)
-    for (const call of step.tool_calls || []) values.push(call.failure_reason, call.error)
+    for (const call of step.tool_calls || []) {
+      values.push(call.failure_reason, call.error)
+      if (['error', 'unsupported'].includes(call.observation?.status)) values.push(`${call.name}: ${observationLabel(call)} (${call.observation.error_code || 'unknown'})`)
+    }
   }
   return [...new Set(values.filter(Boolean).map(errorText))]
 }
@@ -65,7 +76,7 @@ function sourceText(trace) { return trace.payload?.burst?.text || trace.payload?
     <section v-if="selected" class="panel detail-panel"><div class="panel-header"><div><div class="bento-badge">{{ selected.scene_id }} · {{ fmtTime(selected.created_at) }}</div><h2>{{ resultLabel(selected) }}</h2></div><button @click="selected = null">关闭</button></div>
       <div v-if="failures(selected).length" class="error-box"><strong>具体错误</strong><p v-for="failure in failures(selected)" :key="failure">{{ failure }}</p></div>
       <div class="detail-grid"><div><h3>输入与结果</h3><p class="detail-copy">{{ sourceText(selected) }}</p><p class="muted">{{ brief(selected) }}</p><div class="kv"><span class="k">读取截点</span><span class="v">{{ run(selected).read_cutoff ?? '—' }}</span></div><div class="kv"><span class="k">提交结果</span><span class="v">{{ commitLabel(selected) }}</span></div></div><div><h3>{{ commitRejected(selected) ? '表达提案（未提交）' : '表达提案' }}</h3><article v-for="(message, index) in messages(selected)" :key="index" class="proposed-message"><span class="tag">第 {{ index + 1 }} 条</span><p>{{ messageText(message) }}</p><span v-if="message.reply_to" class="muted">引用消息 {{ message.reply_to }}</span></article><p v-if="!messages(selected).length" class="muted">没有表达提案</p><p class="muted">提案与实际送达分别记录，送达情况见场景回执。</p></div></div>
-      <h3>模型与工具步骤</h3><div class="table-scroll"><table><thead><tr><th>步骤</th><th>模型</th><th>耗时</th><th>工具调用</th><th>结果</th></tr></thead><tbody><tr v-for="(step, index) in steps(selected)" :key="index"><td>{{ index + 1 }}<span v-if="step.forced_final" class="tag">终结</span></td><td>{{ step.provider_id }} / {{ step.model }}</td><td>{{ step.latency_ms ?? '—' }} ms</td><td><div v-for="call in step.tool_calls || []" :key="call.id"><code>{{ call.name }}</code><span class="muted"> {{ call.status || '' }}</span></div></td><td><span class="tag" :class="step.failure_reason ? 'bad' : ''">{{ step.failure_reason || step.finish_reason || '—' }}</span><details><summary>步骤详情</summary><pre>{{ JSON.stringify(step, null, 2) }}</pre></details></td></tr><tr v-if="!steps(selected).length"><td colspan="5" class="muted">没有模型步骤记录</td></tr></tbody></table></div>
+      <h3>模型与工具步骤</h3><div class="table-scroll"><table><thead><tr><th>步骤</th><th>模型</th><th>耗时</th><th>工具调用</th><th>结果</th></tr></thead><tbody><tr v-for="(step, index) in steps(selected)" :key="index"><td>{{ index + 1 }}<span v-if="step.forced_final" class="tag">终结</span></td><td>{{ step.provider_id }} / {{ step.model }}</td><td>{{ step.latency_ms ?? '—' }} ms</td><td><div v-for="call in step.tool_calls || []" :key="call.id"><code>{{ call.name }}</code><span class="muted"> {{ call.status === 'completed' ? '调用结束' : call.status || '' }}</span><span v-if="observationLabel(call)" class="tag" :class="observationClass(call)">{{ observationLabel(call) }}</span><small v-if="call.observation?.error_code"> {{ call.observation.error_code }}</small></div></td><td><span class="tag" :class="step.failure_reason ? 'bad' : ''">{{ step.failure_reason || step.finish_reason || '—' }}</span><details><summary>步骤详情</summary><pre>{{ JSON.stringify(step, null, 2) }}</pre></details></td></tr><tr v-if="!steps(selected).length"><td colspan="5" class="muted">没有模型步骤记录</td></tr></tbody></table></div>
       <details v-if="candidate(selected)" class="detail-record"><summary>{{ commitRejected(selected) ? '终结候选（未提交）' : '终结候选' }}</summary><pre>{{ JSON.stringify(candidate(selected), null, 2) }}</pre></details>
       <details v-if="run(selected).media_manifest" class="detail-record"><summary>图片与表情来源</summary><pre>{{ JSON.stringify(run(selected).media_manifest, null, 2) }}</pre></details>
       <details class="detail-record"><summary>完整记录</summary><pre>{{ JSON.stringify(selected.payload, null, 2) }}</pre></details>

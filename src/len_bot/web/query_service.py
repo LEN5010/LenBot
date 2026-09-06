@@ -46,7 +46,7 @@ class RuntimeQueryService:
 
     def persona_settings(self):
         return {key:getattr(self.runtime.config,key) for key in (
-            "character_context","identity_name","identity_core","identity_persona","conversation_style","bot_qq")}
+            "character_context","identity_name","identity_core","identity_persona","conversation_style","address_names","bot_qq")}
 
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona()

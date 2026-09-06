@@ -27,7 +27,7 @@ RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
     "query_timeline",
     "query_person_history",
     "query_memory",
-    "tool_search", "read_tool_result", "read_media", "calculate", "start_work", "discard_proposal", "revise_work", "cancel_work", "resume_work", "schedule_reminder", "update_reminder", "cancel_reminder", "remember", "refute_memory", "supersede_memory", "resolve_wait", "finish_turn", "finish_work", "report_progress", "search_media", "query_jobs",
+    "tool_search", "read_tool_result", "read_media", "read_web_media", "calculate", "finite_check", "start_work", "discard_proposal", "revise_work", "cancel_work", "resume_work", "schedule_reminder", "update_reminder", "cancel_reminder", "remember", "refute_memory", "supersede_memory", "resolve_wait", "finish_turn", "finish_work", "report_progress", "search_media", "query_jobs",
 })
 
 

@@ -10,6 +10,7 @@ from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event
 from len_bot.tools.results import ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
+from len_bot.tools.finite_check import FINITE_CHECK_TOOL, finite_check
 
 
 def tool(name, description, properties, required=()):
@@ -55,6 +56,9 @@ class RetrievalToolkit:
         self.context=context
         self.discovered_tools=set()
         self.result_ids=[]
+        self.observations={}
+        self.external_attempted=False
+        self.unavailable_tools=set()
         self._cache={}
         self._call_locks={}
         self._parallel=asyncio.Semaphore(3)
@@ -69,10 +73,14 @@ class RetrievalToolkit:
         if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
         if self.read_only_only:
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
+            definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
+            if self.media_service:
+                definitions.append(tool('read_web_media','查看公开网页中的原图或PDF的一页，直接向模型提供像素。使用已知图片/PDF链接；不读取HTML页面。PDF页码从1开始，省略默认第1页。',
+                    {'url':S,'page':{'type':'integer','minimum':1,'maximum':100}},['url']))
             definitions.append(tool('tool_search','按名称或描述发现可用的外部只读工具。',{'query':S},['query']))
             for definition in self.plugin_host.get_tool_definitions() if self.plugin_host else []:
                 name=definition['function']['name'];caps=self.plugin_host.tool_capabilities(name)
-                if caps['read_only'] and (not caps['deferred'] or name in self.discovered_tools):
+                if name not in self.unavailable_tools and caps['read_only'] and (not caps['deferred'] or name in self.discovered_tools):
                     definition=copy.deepcopy(definition)
                     definition['function']['parameters'].setdefault('properties',{})['refresh']={
                         'type':'boolean','description':'重新获取，不复用已有资料'}
@@ -80,7 +88,7 @@ class RetrievalToolkit:
         return definitions
 
     def is_read_only(self,name):
-        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','tool_search'}: return True
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search'}: return True
         return bool(self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name)
                     and self.plugin_host.tool_capabilities(name)['read_only'])
 
@@ -97,7 +105,10 @@ class RetrievalToolkit:
             result=await self.event_store.read_tool_observation(result_id,self.allowed_scopes)
             if result is None:raise ValueError('Transferred result does not belong to this scene')
             if result_id not in self.result_ids:self.result_ids.append(result_id)
+            self.observations[result_id]=result
             call=await self.event_store.tool_observation_call(result_id,self.default_scene_id)
+            if call and (call[0]=='read_web_media' or self.plugin_host and self.plugin_host.has_tool(call[0])):
+                self.external_attempted=True
             if call and self.plugin_host and self.plugin_host.has_tool(call[0]) and self.is_read_only(call[0]) and result.status in {'ok','no_results','partial'}:
                 self._cache[json.dumps(list(call),ensure_ascii=False,sort_keys=True)]=result
 
@@ -124,7 +135,8 @@ class RetrievalToolkit:
             query=str(args.get('query','')).casefold().strip()
             if not query:return ToolResult.failure('query不能为空','invalid_arguments')
             matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions() if
-                self.is_read_only(t['function']['name']) and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
+                self.is_read_only(t['function']['name']) and t['function']['name'] not in self.unavailable_tools
+                and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
             self.discovered_tools.update(matches[:8])
             return ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog')
         refresh=bool(args.pop('refresh',False));key=json.dumps([name,args],ensure_ascii=False,sort_keys=True)
@@ -132,20 +144,46 @@ class RetrievalToolkit:
             if not refresh and key in self._cache:return await self._present(name,self._cache[key].model_copy(update={'cached':True}))
             if self.checkpoint:await self.checkpoint('before_tool',{'scene_id':self.default_scene_id,'name':name,'arguments':args})
             start=time.monotonic()
+            media_files=[]
             async with self._parallel:
                 try:
-                    raw=await self._execute_raw(name,args)
+                    if name=='read_web_media':
+                        self.external_attempted=True
+                        raw,media_files=await self.media_service.read_web_media(args.get('url',''),args.get('page'))
+                    else:
+                        if self.plugin_host and self.plugin_host.has_tool(name):self.external_attempted=True
+                        raw=await self._execute_raw(name,args)
                     result=ToolResult.normalize(raw)
                     if isinstance(raw,list) and not raw:result.status='no_results'
                 except Exception as error:result=ToolResult.failure(str(error),type(error).__name__)
             result.duration_ms=round((time.monotonic()-start)*1000,2)
             if not(self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind=='unknown':result.evidence_kind='retrieval'
-            result,event=await self.event_store.save_tool_observation(self.default_scene_id,name,args,result,background_work=self.read_only_only)
+            if name=='web_search' and result.status in {'error','unsupported'} and result.error_code!='invalid_arguments':
+                self.unavailable_tools.add(name)
+                result.content+='\n本次工作的搜索服务不可用，已停止继续调用；可读取已有官方链接，未核实部分写入unresolved，不用群史或旧知识代替发布事实。'
+            result,event=await self.event_store.save_tool_observation(self.default_scene_id,name,args,result,
+                background_work=self.read_only_only,media_files=media_files)
             self.result_ids.append(result.result_id)
+            self.observations[result.result_id]=result
             if self.on_observation:await self.on_observation(event)
             if self.checkpoint:await self.checkpoint('after_tool',{'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
             if self.plugin_host and self.plugin_host.has_tool(name) and result.status in {'ok','no_results','partial'}:self._cache[key]=result
-            return await self._present(name,result)
+        return await self._present(name,result)
+
+    def validate_conclusion_sources(self, result_ids, unresolved):
+        """Validate evidence availability, not the semantic truth of a conclusion."""
+        if not set(result_ids).issubset(self.result_ids):
+            raise ValueError('Result references resources this work has not observed')
+        if unresolved:
+            return
+        sources=[self.observations[ident] for ident in result_ids]
+        if any(item.status not in {'ok','partial'} for item in sources):
+            raise ValueError('完成结论引用了失败、不可用或空结果。请补充有效依据，或把尚未核实的要求写入unresolved。')
+        if self.external_attempted and not any(
+            (item.evidence_kind=='external' and item.sources and item.coverage not in {'search_snippets','pdf_text_empty'})
+            or item.coverage in {'arithmetic','finite_enumeration'} for item in sources
+        ):
+            raise ValueError('外部查询尚无成功读取的来源；搜索摘要、本地对话和自己的确认不能证明外部事实。请读取相关原始来源，或将未核实部分写入unresolved，结论只保留已验证内容。')
 
     async def _present(self,name,result,offset=0,limit=6000):
         if not self.context:return result.page(offset,limit)
@@ -168,7 +206,8 @@ class RetrievalToolkit:
             if name=='search_media':
                 return {'asset_id':refs.register_media(item.pop('asset_id')),**item}
             if name=='query_memory':
-                ref=refs.register_memory(item.pop('id'))
+                editable=item['status']=='active' and (item['expires_at'] is None or item['expires_at']>self.context.runtime.clock())
+                ref=refs.register_memory(item.pop('id'),editable=editable)
                 item['subject']=refs.register_actor(item['subject'])
                 item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
@@ -208,6 +247,7 @@ class RetrievalToolkit:
                 job=await store.get_job(args['job_id'],self.default_scene_id);return [job] if job else []
             return await store.list_jobs(self.default_scene_id)
         if name=='calculate':return calculate(args.get('expression',''))
+        if name=='finite_check':return await asyncio.to_thread(finite_check,**args)
         if self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name):
             return await self.plugin_host.execute_tool(name,args)
         rows=None;limit=max(1,min(int(args.get('limit',15)),50))

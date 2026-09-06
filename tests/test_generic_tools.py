@@ -60,9 +60,10 @@ async def test_redirect_scope_size_and_unsupported(monkeypatch):
             result = await plugin._read_page({"url": f"https://example.org/{path}"})
             assert result.status == "error"
         assert not any("127.0.0.1" in url for url in visited)
-        for path in ("empty", "pdf"):
-            result = await plugin._read_page({"url": f"https://example.org/{path}"})
-            assert result.status == "unsupported"
+        result = await plugin._read_page({"url": 'https://example.org/empty'})
+        assert result.status == 'unsupported'
+        result = await plugin._read_page({"url": 'https://example.org/pdf'})
+        assert result.status == 'error'  # Invalid PDF bytes, not an unsupported format.
     finally:
         await plugin.on_unload()
 
@@ -130,5 +131,67 @@ async def test_discovery_parallel_cache_paging_and_scoped_durability(tmp_path):
         page = await kit.execute_result("read_tool_result", {"result_id": first.result_id, "offset": 12000})
         assert page.content.endswith("tail")
         assert await runtime.event_store.event_exists(first.observation_event_id, "group:a")
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_web_pixels_and_observation_commit_together_in_the_requested_scene(tmp_path,monkeypatch):
+    import io
+    import sqlite3
+    from PIL import Image
+    monkeypatch.setattr('len_bot.tools.http.validate_url',lambda url:(True,''))
+    output=io.BytesIO();picture=Image.new('RGB',(30,20),'blue');picture.save(output,format='PNG')
+    pdf=io.BytesIO();picture.save(pdf,format='PDF')
+    runtime=AgentRuntime(RuntimeConfig(db_path=str(tmp_path/'media.db')))
+    await runtime.start()
+    await runtime.media_service._client.aclose()
+    runtime.media_service._client=httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req:httpx.Response(200,headers={'content-type':'application/pdf' if req.url.path.endswith('.pdf') else 'image/png'},
+            content=pdf.getvalue() if req.url.path.endswith('.pdf') else output.getvalue())))
+    kit=RetrievalToolkit(runtime.event_store,['group:a'],'group:a',read_only_only=True,
+        media_service=runtime.media_service,on_observation=runtime.commit_tool_observation)
+    try:
+        result=await kit.execute_result('read_web_media',{'url':'https://example.org/chart.png'})
+        assert result.status=='ok' and len(result.attachments)==1
+        asset=await runtime.event_store.get_media(result.attachments[0],['group:a'])
+        assert not asset['curated'] and asset['source_event_id']==result.observation_event_id
+        assert await runtime.event_store.get_media(asset['id'],['group:b']) is None
+        assert await runtime.event_store.read_tool_observation(result.result_id,['group:b']) is None
+        rendered=await kit.execute_result('read_web_media',{'url':'https://example.org/report.pdf','page':1})
+        assert rendered.status=='ok' and rendered.coverage=='pdf_page' and rendered.attachments
+        await runtime.event_store._db.execute("CREATE TRIGGER reject_observation BEFORE INSERT ON tool_observations BEGIN SELECT RAISE(ABORT,'fixture failure'); END")
+        with pytest.raises(sqlite3.IntegrityError):
+            await kit.execute_result('read_web_media',{'url':'https://example.org/chart2.png'})
+        assert len(await runtime.event_store.list_media(['group:a']))==2
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_search_outage_is_not_external_evidence_or_a_retry_loop(tmp_path,monkeypatch):
+    monkeypatch.setattr('len_bot.tools.http.validate_url',lambda url:(True,''))
+    monkeypatch.setattr('len_bot.plugins.builtin.web_search.validate_url',lambda url:(True,''))
+    runtime=AgentRuntime(RuntimeConfig(db_path=str(tmp_path/'search.db')))
+    await runtime.start()
+    plugin=runtime.plugin_host._plugins['web_search_tool']
+    await plugin._client.aclose()
+    plugin._client=httpx.AsyncClient(transport=httpx.MockTransport(lambda req:
+        httpx.Response(202,text='<html>Verification required</html>') if req.url.host=='www.bing.com'
+        else httpx.Response(200,headers={'content-type':'text/plain'},text='Published model documentation')))
+    kit=RetrievalToolkit(runtime.event_store,['group:a'],'group:a',read_only_only=True,plugin_host=runtime.plugin_host,
+        on_observation=runtime.commit_tool_observation)
+    try:
+        invalid=await kit.execute_result('web_search',{'query':''})
+        assert invalid.error_code=='invalid_arguments'
+        assert 'web_search' in {d['function']['name'] for d in kit.get_tool_definitions()}
+        failed=await kit.execute_result('web_search',{'query':'recent model'})
+        assert failed.status=='unsupported'
+        assert 'web_search' not in {d['function']['name'] for d in kit.get_tool_definitions()}
+        with pytest.raises(ValueError,match='外部查询'):
+            kit.validate_conclusion_sources([],[])
+        kit.validate_conclusion_sources([failed.result_id],['发布时间尚未核实'])
+        body=await kit.execute_result('read_page',{'url':'https://example.org/model'})
+        kit.validate_conclusion_sources([body.result_id],[])
     finally:
         await runtime.stop()

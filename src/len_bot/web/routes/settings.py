@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Request, Depends, HTTPException
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from len_bot.config import AddressName
 from len_bot.web.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -43,6 +44,7 @@ class PersonaSettingsRequest(BaseModel):
     identity_persona: str
     identity_core: Optional[str] = None
     conversation_style: Optional[str] = None
+    address_names: list[AddressName]|None = Field(default=None,max_length=32)
     bot_qq: Optional[int] = None
 
 @router.get("/persona")
@@ -55,7 +57,7 @@ async def update_persona_settings(req: PersonaSettingsRequest, request: Request,
     values = {
         key: getattr(runtime.config, key) for key in
         ("character_context", "identity_name", "identity_core", "identity_persona",
-         "conversation_style", "bot_qq")
+         "conversation_style", "address_names", "bot_qq")
     }
     values.update({key: value.strip() if isinstance(value, str) else value
                    for key, value in req.model_dump(exclude_none=True).items()})

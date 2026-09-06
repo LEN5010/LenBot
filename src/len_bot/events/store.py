@@ -462,17 +462,19 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         rows = await (await self._db.execute(
             """SELECT ref_id,payload FROM traces
                WHERE scene_id=? AND kind='conversation_error'
-                 AND json_extract(payload,'$.error_type') IN ('SceneCommitConflict','CommitConflict')
+                 AND json_extract(payload,'$.error_type') IN
+                     ('SceneCommitConflict','CommitConflict','AgentProtocolError','AgentBudgetExhausted','TruncatedModelOutput')
                  AND COALESCE(json_extract(payload,'$.gate.accepted'),0)=0
-                 AND json_extract(payload,'$.observed_rowid')>?
-                 AND json_extract(payload,'$.observed_rowid')<=?
-                 AND json_array_length(payload,'$.conversation.proposed_outcome.job_proposals')>0
+                 AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))>?
+                 AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))<=?
                ORDER BY created_at DESC LIMIT 3""", (scene_id, after_rowid, through_rowid),
         )).fetchall()
-        return [{"attempt_id": ref_id, "status": "not_committed", "reason": payload["error"],
+        return [{"attempt_id": ref_id, "status": "not_committed", "reason": payload["error"][:600],
+                 "source_event_ids": payload.get("source_event_ids", []),
                  "proposals": [{key: proposal.get(key) for key in
-                     ("operation", "goal", "job_id", "source_event_ids")}
-                     for proposal in payload["conversation"]["proposed_outcome"]["job_proposals"]]}
+                     ("operation", "goal", "description", "job_id", "source_event_ids")}
+                     for proposal in (payload["conversation"].get("staged_proposals") or
+                         payload["conversation"].get("proposed_outcome", {}).get("job_proposals", []))]}
                 for ref_id, raw in rows for payload in [json.loads(raw)]]
 
     async def own_sent_message_ids(self, actor_id: str, limit: int = 1000) -> list[str]:
@@ -1477,9 +1479,16 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             try:
                 await self._db.execute("UPDATE tasks SET status='delivery_unknown' WHERE status='awaiting_delivery'")
                 cursor = await self._db.execute(
-                    "SELECT id,scene_id,description,status,origin_mode FROM tasks WHERE status IN ('processing','claimed','result_ready','review_required')"
+                    """SELECT t.id,t.scene_id,t.description,t.status,t.origin_mode,j.result_json
+                       FROM tasks t LEFT JOIN agent_jobs j ON j.id=t.id AND j.scene_id=t.scene_id
+                       WHERE t.status IN ('processing','claimed','result_ready','review_required')"""
                 )
-                for task_id, scene_id, description, status, origin_mode in await cursor.fetchall():
+                for task_id, scene_id, description, status, origin_mode, work_result in await cursor.fetchall():
+                    # A persisted execution result survives process restart.
+                    # Only unfinished execution needs an explicit resume.
+                    recovered_status = 'result_ready' if status == 'result_ready' or work_result is not None else 'review_required'
+                    await self._db.execute("UPDATE tasks SET status=? WHERE id=? AND scene_id=?",
+                                           (recovered_status, task_id, scene_id))
                     pending = await self._db.execute(
                         "SELECT 1 FROM pending_runtime_events WHERE json_extract(event_json,'$.payload.task_id')=?",
                         (task_id,),
@@ -1489,9 +1498,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
                     event = Event(event_type=EventType.TASK_REVIEW, scene_id=scene_id,
                                   actor_id="system:recovery", payload={
                                       "task_id": task_id, "origin_mode": origin_mode,
+                                      "recovered_status": recovered_status,
                                       "raw_text": f"重启后待核对任务：{description}。检查当前时间和结果，不要假定已完成。",
                                   })
-                    await self._db.execute("UPDATE tasks SET status='review_required' WHERE id=?", (task_id,))
                     await self._db.execute("INSERT INTO pending_runtime_events VALUES (?,?,?)",
                                            (event.id, scene_id, event.model_dump_json()))
                 await self._db.commit()

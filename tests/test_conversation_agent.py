@@ -36,7 +36,7 @@ def response(*calls,content='内部前言，不能送达',**extra):
         'usage':{'prompt_tokens':20,'completion_tokens':10}}
 
 
-def text_reply(text):return {'messages':[{'segments':[{'type':'text','text':text}]}]}
+def text_reply(text):return {'messages':[{'segments':[{'text':text}]}]}
 
 
 @pytest_asyncio.fixture
@@ -91,7 +91,7 @@ async def harness(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('messages',[[],[{'segments':[{'type':'text','text':'终于解放了，先歇会儿'}]}]])
+@pytest.mark.parametrize('messages',[[],[{'segments':[{'text':'终于解放了，先歇会儿'}]}]])
 async def test_one_native_call_only_terminal_messages_can_send(harness,messages):
     h=harness;await h.human();requests=await h.setup([response(call('finish_turn',{'messages':messages}))])
     result,trace=await h.run()
@@ -100,27 +100,40 @@ async def test_one_native_call_only_terminal_messages_can_send(harness,messages)
     assert all('内部前言' not in action.content for action in h.actions)
     names={t['function']['name'] for t in requests[0]['tools']}
     assert {'finish_turn','remember','start_work','read_media'}<=names
+    assert len(names)==13
+    assert not names&{'discard_proposal','cancel_work','resume_work','resolve_wait','refute_memory'}
+    assert not any(isinstance(m['content'],str) and m['content'].startswith('运行事实') for m in requests[0]['messages'])
+    schema=next(t['function']['parameters'] for t in requests[0]['tools'] if t['function']['name']=='finish_turn')
+    assert not any(key in json.dumps(schema) for key in ('$defs','$ref','discriminator'))
     assert not names&{'tool_search','calculate','inspect_image','request_deliberate'}
     assert not any('SocialWorld' in json.dumps(message,ensure_ascii=False) for message in requests[0]['messages'])
 
 
 @pytest.mark.asyncio
-async def test_terminal_and_work_are_atomic_and_native_order_independent(harness):
+async def test_work_receipt_then_terminal_are_atomic(harness):
     h=harness;await h.human('帮我查一下这个消息有没有依据')
-    await h.setup([response(call('finish_turn',{'messages':[{'segments':[{'type':'text','text':'我查一下来源'}],'ack_ref':'lookup'}]},'end'),
-        call('start_work',{'proposal_ref':'lookup','goal':'核对消息来源','evidence':['M1']},'work'))])
+    requests=await h.setup([
+        response(call('start_work',{'goal':'核对消息来源','evidence':['M1']},'work')),
+        response(call('finish_turn',{'messages':[{'segments':[{'text':'我查一下来源'}],'ack_ref':'S1'}]},'end'))])
     _,trace=await h.run()
     jobs=await h.store.list_jobs(h.actor.scene_id)
     assert len(jobs)==len(h.actions)==1 and jobs[0]['goal']=='核对消息来源'
-    assert trace['model_calls_used']==1 and h.actions[0].job_id==jobs[0]['id']
+    assert trace['model_calls_used']==2 and h.actions[0].job_id==jobs[0]['id']
+    schema=lambda request: next(t['function']['parameters']['properties']['messages']['items']['properties']
+        for t in request['tools'] if t['function']['name']=='finish_turn')
+    assert 'ack_ref' not in schema(requests[0])
+    assert schema(requests[1])['ack_ref']['enum']==['S1']
+    receipt=json.loads(next(m['content'] for m in requests[1]['messages'] if m.get('tool_call_id')=='work'))
+    assert receipt['status']=='staged' and receipt['ack_ref']=='S1'
 
 
 @pytest.mark.asyncio
 async def test_invalid_late_memory_rolls_back_staged_job_and_ack(harness):
     h=harness;await h.human()
-    await h.setup([response(call('start_work',{'proposal_ref':'work','goal':'检查资料','evidence':['M1']},'w'),
+    await h.setup([response(call('start_work',{'goal':'检查资料','evidence':['M1']},'w')),
+        response(
         call('remember',{'subject':'BOT','kind':'preference','statement':'Bot能够进入MC服务器','evidence':['M1']},'b'),
-        call('finish_turn',{'messages':[{'segments':[{'type':'text','text':'我记住了'}],'ack_ref':'work'}]},'f'))])
+        call('finish_turn',{'messages':[{'segments':[{'text':'我记住了'}],'ack_ref':'S1'}]},'f'))])
     with pytest.raises(CommitConflict):await h.run()
     assert await h.store.list_jobs(h.actor.scene_id)==[] and not h.actions
     assert await h.memory.query_memories([h.actor.scene_id])==[]
@@ -128,25 +141,67 @@ async def test_invalid_late_memory_rolls_back_staged_job_and_ack(harness):
 
 
 @pytest.mark.asyncio
-async def test_native_palette_can_be_selected_without_a_read_tool(harness):
+@pytest.mark.parametrize('segments',[[{'image':'P01'}],[{'text':'先说一句'},{'image':'P01'},{'text':'再接一句'}]])
+async def test_native_palette_can_be_selected_without_a_read_tool(harness,segments):
     h=harness;buf=io.BytesIO();Image.new('RGB',(30,30),'orange').save(buf,format='PNG')
     asset=await h.runtime.media_service.upload(buf.getvalue(),'global-safe','开心',['开心'])
     await h.runtime.media_service.edit(asset['id'],'global-safe','开心',['开心'],True,palette_order=1)
+    original_example=[{'type':'text','text':'参考文字'},{'type':'image','asset_id':asset['id']}]
+    example=await h.store.add_voice_example('',context='参考语境',segments=original_example)
     await h.human()
-    requests=await h.setup([response(call('finish_turn',{'messages':[{'segments':[{'type':'image','asset_id':'P01'}]}]}))])
+    requests=await h.setup([response(call('finish_turn',{'messages':[{'segments':segments}]}))])
     _,trace=await h.run()
-    assert len(requests)==1 and h.actions[0].segments[0].asset_id==asset['id']
+    assert len(requests)==1
+    assert [(part.type,part.text if part.type=='text' else part.asset_id) for part in h.actions[0].segments]==[
+        ('text',part['text']) if 'text' in part else ('image',asset['id']) for part in segments]
     assert any(p.get('type')=='image_url' for m in requests[0]['messages'] if isinstance(m['content'],list) for p in m['content'])
+    sample=next(m['content'] for m in requests[0]['messages'] if isinstance(m['content'],str) and m['content'].startswith('运营编写'))
+    assert json.loads(sample.split('finish_turn 参数参考：')[-1])=={
+        'messages':[{'segments':[{'text':'参考文字'},{'image':'P01'}]}]}
+    stored=next(item for item in await h.store.list_voice_examples() if item['id']==example['id'])
+    assert stored['segments']==original_example
     assert 'base64' not in json.dumps(trace)
 
 
 @pytest.mark.asyncio
 async def test_unknown_refs_are_repaired_once_without_sending_partial_output(harness):
     h=harness;await h.human()
-    bad=response(call('finish_turn',{'messages':[{'segments':[{'type':'image','asset_id':'other-scene'}]}]}))
+    bad=response(call('finish_turn',{'messages':[{'segments':[{'image':'other-scene'}]}]}))
     requests=await h.setup([bad,bad])
     with pytest.raises(AgentProtocolError):await h.run()
     assert len(requests)==2 and not h.actions and h.actor.session.last_cognized_event_rowid==0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('part',[{'text':'不能先发这段','image':'P01'},{'image_ref':'P01'}])
+async def test_ambiguous_or_legacy_parts_need_explicit_repair_before_sending(harness,part):
+    h=harness;await h.human()
+    requests=await h.setup([
+        response(call('finish_turn',{'messages':[{'segments':[part]}]})),
+        response(call('finish_turn',text_reply('确认后的内容'))),
+    ])
+    _,trace=await h.run()
+    assert [action.content for action in h.actions]==['确认后的内容']
+    assert len(trace['contract_repairs'])==1
+    feedback=next(m['content'] for m in requests[1]['messages'] if m['role']=='tool')
+    assert 'messages[0].segments[0]' in feedback and len(feedback)<1200
+    assert 'errors.pydantic.dev' not in feedback and 'input_value' not in feedback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('text','signal'),[
+    ('小然在吗',{'name_matches':['小然']}),
+    ('然比的表情包',{'name_matches':['然比']}),
+    ('[CQ:at,qq=99] 在吗',{'at_bot':True}),
+    ('[CQ:image,file=小然.png]',None),
+])
+async def test_address_cues_are_read_facts_and_do_not_force_a_reply(harness,text,signal):
+    h=harness;event=await h.human(text)
+    await h.setup([response(call('finish_turn',{'messages':[]}))])
+    _,trace=await h.run()
+    assert trace['call_signals']==({event.id:signal} if signal else {})
+    assert not h.actions
+    assert h.actor.session.last_cognized_event_rowid==event.metadata['_rowid']
 
 
 @pytest.mark.asyncio
@@ -179,6 +234,7 @@ async def test_paged_beliefs_only_grant_references_for_complete_visible_records(
     page=await toolkit._present('query_memory',ToolResult(content=json.dumps(items,ensure_ascii=False)),limit=len(first.content))
     assert page.next_offset==1 and 'memory:1' not in context.refs.memories.values()
     assert len(json.loads(page.content))==1
+    assert context.refs.editable_memories=={'memory:0'}
     with pytest.raises(ValueError):context.refs.memory_id('B2')
     second=await toolkit._present('query_memory',ToolResult(content=json.dumps(items,ensure_ascii=False)),offset=page.next_offset)
     assert json.loads(second.content)[0]['ref']=='B2'

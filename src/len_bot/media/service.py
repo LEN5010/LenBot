@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 from len_bot.media.models import MessageSegment, PreparedMediaContext, segment_text
 from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import fetch_public
+from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolResult, ToolSource
 
 MAX_IMAGE_BYTES = 10_000_000
@@ -212,6 +213,27 @@ class MediaService:
         return ToolResult(content=json.dumps(manifest, ensure_ascii=False), attachments=[asset_id],
             sources=[ToolSource(event_id=manifest["source_event_id"], title="原始图片")],
             coverage=manifest["coverage"], evidence_kind="retrieval")
+
+    async def read_web_media(self, url: str, page: int | None = None):
+        """Prepare public pixels; the toolkit commits files and observation together."""
+        if not self.runtime.config.media_enabled:
+            return ToolResult(status='unsupported', content='媒体能力已停用', error_code='media_disabled'), []
+        final_url, headers, data = await fetch_public(self._client, url, max_bytes=MAX_PDF_BYTES)
+        media_type = headers.get('content-type', '').split(';')[0].lower()
+        if media_type == 'application/pdf' or data.startswith(b'%PDF-'):
+            rendered = await read_pdf(data, page=1 if page is None else page)
+            data = base64.b64decode(rendered['png_base64'], validate=True)
+            description = f"PDF第{rendered['page']}页，共{rendered['page_count']}页"
+            source_url, coverage = f"{final_url}#page={rendered['page']}", 'pdf_page'
+        else:
+            if page is not None:
+                raise ValueError('仅PDF支持page页码参数')
+            description, source_url, coverage = '网页原始图片', final_url, 'web_image'
+        digest, mime, path = await self._store_bytes(data)
+        result = ToolResult(content=description+'；像素将进入当前模型，未识别或未覆盖的细节不能当作已核实。',
+            sources=[ToolSource(url=source_url, title=description)], evidence_kind='external', coverage=coverage)
+        files = [{'sha256': digest, 'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
+        return result, files
 
     async def prepare_palette(self, scene_id: str) -> PreparedMediaContext:
         """A stable, scoped operator palette. Selection never depends on a message."""

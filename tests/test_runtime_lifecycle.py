@@ -131,7 +131,8 @@ async def test_input_arriving_during_a_turn_remains_for_the_next_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_path):
+@pytest.mark.parametrize('failure_kind',['conflict','protocol'])
+async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_path,failure_kind):
     entered, release = asyncio.Event(), asyncio.Event()
     contexts = []
     calls = 0
@@ -142,6 +143,9 @@ async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_p
         if calls == 1:
             entered.set()
             await release.wait()
+            if failure_kind=='protocol':
+                from len_bot.cognition.agent_loop import AgentProtocolError
+                raise AgentProtocolError('ack_ref没有对应本轮提案，先调用start_work')
             return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason='拟查询',
                 job_proposals=[JobProposal(proposal_id='query', goal='核对公开模型的正式评测',
                                            source_event_ids=['question'])],
@@ -163,9 +167,10 @@ async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_p
         await settle(runtime)
         assert calls == 2 and not await runtime.event_store.list_jobs(SCENE)
         failed = [message for message in contexts if isinstance(message.get('content'),str)
-                  and message['content'].startswith('前一轮的工作意向')]
+                  and message['content'].startswith('前一轮处理这些输入时失败')]
         assert len(failed) == 1 and failed[0]['role'] == 'user'
-        assert 'not_committed' in failed[0]['content'] and '核对公开模型的正式评测' in failed[0]['content']
+        assert 'not_committed' in failed[0]['content']
+        assert ('核对公开模型的正式评测' if failure_kind=='conflict' else 'ack_ref没有对应本轮提案') in failed[0]['content']
         assert not [event for event in await runtime.event_store.get_recent_events(SCENE)
                     if event.event_type in {EventType.MESSAGE_SENT,EventType.ACTION_SHADOWED}]
         assert await runtime.event_store.uncommitted_job_attempts('group:other',0,1000) == []

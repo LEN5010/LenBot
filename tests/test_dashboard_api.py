@@ -171,11 +171,17 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         persona_post = await client.post("/api/settings/persona", headers=headers, json={
             "identity_name": "LenAdmin",
             "identity_persona": "Custom test persona",
+            "address_names": [" 小然 ", "然比"],
             "bot_qq": 987654321
         })
         assert persona_post.status_code == 200
         assert runtime.config.identity_name == "LenAdmin"
         assert runtime.config.bot_qq == 987654321
+        assert runtime.config.address_names == ['小然','然比']
+        assert (await client.get('/api/settings/persona',headers=headers)).json()['address_names']==['小然','然比']
+        await client.post('/api/settings/persona',headers=headers,json={
+            'identity_name':'LenAdmin','identity_persona':'Custom test persona'})
+        assert (await runtime.event_store.get_dynamic_config('persona_config'))['address_names']==['小然','然比']
 
         # 9. Plugins Subsystem (real registry only, ADR-0021)
         plugins_get = await client.get("/api/plugins/list", headers=headers)

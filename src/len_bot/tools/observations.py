@@ -14,16 +14,27 @@ class ObservationStoreMixin:
             result_json TEXT NOT NULL, created_at REAL NOT NULL)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tool_observations_scene ON tool_observations(scene_id,created_at)")
 
-    async def save_tool_observation(self, scene_id, tool_name, arguments, result: ToolResult, *, background_work=False):
+    async def save_tool_observation(self, scene_id, tool_name, arguments, result: ToolResult, *, background_work=False, media_files=()):
         result = result.model_copy(update={"result_id": uuid.uuid4().hex, "observation_event_id": uuid.uuid4().hex})
+        assets = [('image_'+uuid.uuid4().hex, item) for item in media_files]
+        result.attachments = [*result.attachments, *[ident for ident, _ in assets]]
         event = Event(id=result.observation_event_id, event_type=EventType.TOOL_OBSERVATION_RECORDED,
                       scene_id=scene_id, actor_id="system:tools", timestamp=self.clock(), metadata={"background_work": background_work}, payload={
                           "result_id": result.result_id, "tool_name": tool_name,
                           "status": result.status, "sources": [s.model_dump() for s in result.sources],
                           "independent_evidence": result.evidence_kind == "external" and result.status in {"ok", "partial"},
+                          **({'media': result.attachments} if result.attachments else {}),
                       })
         async with self._write_lock:
             try:
+                for ident, item in assets:
+                    await self._db.execute('''INSERT INTO media_assets
+                        (id,scope,source_event_id,locator,sha256,mime_type,path,description,tags_json,curated,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,'[]',0,?)''', (ident, scene_id, event.id, item['locator'],
+                        item['sha256'], item['mime_type'], item['path'], item['description'], self.clock()))
+                for ident in result.attachments:
+                    if await self.get_media(ident, [scene_id, 'global-safe']) is None:
+                        raise ValueError('Tool image is not available in this scene')
                 await self._db.execute("INSERT INTO tool_observations VALUES(?,?,?,?,?,?,?)", (
                     result.result_id, scene_id, event.id, tool_name,
                     json.dumps(arguments, ensure_ascii=False), result.model_dump_json(), self.clock()))
