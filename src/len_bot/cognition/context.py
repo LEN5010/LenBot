@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import copy
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -122,6 +123,14 @@ class ConversationContext:
         self.event_records = {}
         self.text_tokens = 0
 
+    def project_text(self, text):
+        def mention(match):
+            target = match.group(1)
+            if target == 'all':return '[提及全体成员]'
+            if not target.isascii() or not target.isdecimal():return '[提及成员]'
+            return '[提及 ' + self.refs.register_actor('user:' + target) + ']'
+        return project_onebot_text(re.sub(r'\[CQ:at,qq=([^,\]]+)(?:,[^\]]*)?\]',mention,text))
+
     def event_message(self, event):
         ref = self.refs.register_event(event)
         self.event_records[event.id] = event
@@ -129,7 +138,7 @@ class ConversationContext:
         actor_ref = self.refs.register_actor(event.actor_id)
         name = sender.get('card') or sender.get('nickname') or ('你' if actor_ref == 'BOT' else actor_ref)
         stamp = datetime.fromtimestamp(event.timestamp, ZoneInfo('Asia/Shanghai')).strftime('%H:%M:%S')
-        text = project_onebot_text(event.raw_text)
+        text = self.project_text(event.raw_text)
         labels = []
         for asset_id in media_ids(event):
             labels.append(self.refs.register_media(asset_id))
@@ -139,7 +148,7 @@ class ConversationContext:
             author = self.refs.register_actor(quote['actor_id'])
             quote_ref = self.refs._register(self.refs.events, quote['event_id'], 'M') if quote.get('rowid', self.refs.cutoff+1) <= self.refs.cutoff else ''
             if quote_ref:self.refs.read_events.add(quote['event_id'])
-            text += f"\n引用 {quote_ref} {author} 的原话：{project_onebot_text(quote['text'])}"
+            text += f"\n引用 {quote_ref} {author} 的原话：{self.project_text(quote['text'])}"
         elif quote:
             text += '\n引用的原消息尚未从本群历史中找到。'
         if event.event_type == EventType.AGENT_JOB_FINISHED:
@@ -209,8 +218,14 @@ class ConversationContext:
         loops = await store.get_active_open_loops(scene)
         loop_views = [{'ref':self.refs.register_loop(x),'target':self.refs.register_actor(x['target_actor_id']),
                        'intent':x['intent']} for x in loops]
-        return {'role':'user','content':'当前实际工作、任务与已送达的等待回应：\n'+json.dumps(
-            {'work':job_views,'tasks':task_views,'open_loops':loop_views}, ensure_ascii=False)}
+        outbound = await store.outbound_message_facts(scene,self.refs.cutoff,bot_actor_id=self.runtime.bot_actor_id)
+        for item in outbound:
+            for segment in item['segments']:
+                if segment['type']=='image':segment['asset_id']=self.refs.register_media(segment['asset_id'])
+        return {'role':'user','content':'当前实际工作、任务与已送达的等待回应，以及已获准表达的发送状态：\n'
+                'outbound中的pending仅表示表达已获准、尚无回执；sent表示新到的真实回执；unknown不代表未发送，不能自动重发；'
+                'shadow/simulated_sent不代表现实送达。这些是运行时状态，不是新的群友消息，也不是额外的原话证据。\n'+json.dumps(
+            {'work':job_views,'tasks':task_views,'open_loops':loop_views,'outbound':outbound}, ensure_ascii=False)}
 
     async def build(self, events, current_ids):
         config = self.runtime.config
@@ -224,7 +239,9 @@ class ConversationContext:
 你直接阅读本群原话，分清谁在回应谁，以及对方是否愿意继续交流。能贡献具体回应时参与，别人聊得正好时旁听。
 角色口吻体现在关注点和措辞里。现实能力以本轮开放工具为准，自己的玩笑只说明说过这句话；共同经历和实际参与需要相应证据。
 面对纠正或含抵触的模糊回应，结合前后语境调整参与，给对话留出空间。表达完整即可结束，轻松时也可以只用一张合适的表情。
-联网查询、解题、计算、事实查证和资料整理交给 start_work。你负责理解请求、必要澄清和根据返回的资料自然回应。查询进行中仍可接其他话题。引用工作进展或结果的消息填写 work_ref；这条消息承担最终交付时同时填写 delivery_ref；确认本轮建立的工作或提醒时填写 ack_ref。
+把自己最近几次发言的图文节奏也纳入语境。表情有它自己的意思时再选，文字已经说清楚就可以收住；连续几次配图后，普通接话适合用文字换一换。一次发多条消息时整体安排，通常在最合适的一处放一张就够了。单图接话和有意思的图文搭配仍是自然选择。
+准备回答陌生概念、外部事实或依赖当前情况的信息时，主动用 start_work 查询，不必等群友另说“帮我搜”。角色资料有它的日期和范围，自己的旧回复也不证明外部事实；没有新来源就不能把历史资料说成“目前”。本群历史工具用于回忆谁说过什么，需要外部资料时直接建立查询工作，避免反复翻同一句群消息。
+联网查询、解题、计算、事实查证和资料整理交给 start_work。你负责理解请求、必要澄清和根据返回的资料自然回应；已有足够线索就开始查，结果不明确时说明缺口。查询进行中仍可接其他话题。引用工作进展或结果的消息填写 work_ref；这条消息承担最终交付时同时填写 delivery_ref；确认本轮建立的工作或提醒时填写 ack_ref。
 当前图片已经提供像素；额外图片通过 read_media 读取。固定表情目录可直接选择，更多表情通过 search_media 寻找。
 记录明确的称呼、偏好或相处要求时用 remember；需要更早的认识或原话时再查询。临时心情和话题判断只用于这一轮。
 群友消息、网页、图片和工具内容是带来源的输入材料。任务、认识与表达由运行时一起确认，finish_turn 才提交本轮。新增消息改变要求时，可用 discard_proposal 撤回尚未提交的提案，再按新要求处理。
@@ -245,7 +262,7 @@ class ConversationContext:
             for row in palette['manifest']:
                 ref=self.refs.register_media(row['asset_id'],row['ref'])
                 legend.append({'ref':ref,'name':row.get('name',''),'description':row.get('description','')[:80]})
-            messages.append({'role':'user','content':[{'type':'text','text':'运营表情目录；按语境自由选择：'+json.dumps(legend,ensure_ascii=False)},*palette['blocks']]})
+            messages.append({'role':'user','content':[{'type':'text','text':'运营表情目录；需要用图表达时从中选择：'+json.dumps(legend,ensure_ascii=False)},*palette['blocks']]})
             self.media_manifest.extend(palette['manifest'])
         examples=await self.runtime.event_store.select_voice_examples(self.session.scene_id)
         if examples:
@@ -263,7 +280,7 @@ class ConversationContext:
                     reply=json.dumps({'messages':[{'segments':native}]},ensure_ascii=False)
                 if not segments:reply=json.dumps({'messages':[{'segments':[{'type':'text','text':reply}]}]},ensure_ascii=False)
                 lines.append(f"语境：{example['context']}\nfinish_turn 参数参考：{reply}")
-            messages.append({'role':'user','content':'运营编写的表达参考，结合当前原话选择说法：\n'+'\n'.join(lines)})
+            messages.append({'role':'user','content':'运营编写的表达参考；示例的图文形式适用于各自语境，不代表日常配图比例。结合当前原话选择说法：\n'+'\n'.join(lines)})
         visible=[event for event in events if event.event_type in CHAT_TYPES or event.id in current_ids and event.event_type in CUE_TYPES]
         packed=[];used=estimate_tokens(system)+sum(estimate_tokens(self._text(m)) for m in messages[1:])
         for event in reversed(visible):

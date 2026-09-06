@@ -139,12 +139,17 @@ class AgentLoop:
             return result
 
         for step_index in range(max_steps):
-            definitions = copy.deepcopy(tool_definitions())
+            forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls
+            definitions = [] if forced_final else copy.deepcopy(tool_definitions())
             definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
             definitions.append(copy.deepcopy(terminal))
             known_names = {definition["function"]["name"] for definition in definitions}
-            forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls
             choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
+            if forced_final:
+                trajectory.append({"role": "user", "content": (
+                    f"本轮已经到最后一步，当前只开放 {terminal_name}。"
+                    "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
+                )})
             request_messages = await prepare_request(trajectory, definitions) if prepare_request else None
             if before_model is not None:
                 await before_model()

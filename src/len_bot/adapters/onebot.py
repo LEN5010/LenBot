@@ -242,7 +242,10 @@ class OneBotAdapter:
                 else:
                     if segment.asset_id not in action.resolved_images:
                         raise ValueError("Image asset has not been resolved by the runtime")
-                    parts.append({"type": "image", "data": {"file": action.resolved_images[segment.asset_id]}})
+                    data = {"file": action.resolved_images[segment.asset_id]}
+                    if segment.asset_id in action.resolved_sticker_ids:
+                        data.update(sub_type=1, summary="[表情]")
+                    parts.append({"type": "image", "data": data})
         else:
             parts.append({"type": "text", "data": {"text": action.content}})
         params = {"message": parts}

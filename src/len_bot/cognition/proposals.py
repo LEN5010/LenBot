@@ -104,7 +104,7 @@ class DiscardProposal(StrictModel):
 
 
 TOOLS={
-    'start_work':(StartWork,'提议后台只读工作，用于查询、计算、解题、事实核对和整理。'),
+    'start_work':(StartWork,'建立后台只读工作；主动搜索陌生概念、外部事实和当前信息，也用于计算、解题和整理。群友不必另行要求搜索；与finish_turn一起提交后开始执行。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。'),
     'resume_work':(ControlWork,'恢复可恢复的工作；保持已有预算与资料。'),
