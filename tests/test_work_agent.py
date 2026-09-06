@@ -12,7 +12,7 @@ from len_bot.cognition.providers import RouteResolution
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
-from len_bot.runtime.job_runner import InformationJobRunner
+from len_bot.runtime.job_runner import InformationJobRunner, JobContextExhausted, WorkGateway
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.tools.results import ToolResult
 
@@ -43,7 +43,7 @@ def result_ids(request):
 
 
 def finish_response(request, **changes):
-    result = {"status": "completed", "summary": "已核对资料", "result_ids": result_ids(request), "unresolved": []}
+    result = {"summary": "已核对资料", "result_ids": result_ids(request), "unresolved": []}
     result.update(changes)
     return completion(native_call("finish_work", result))
 
@@ -166,12 +166,16 @@ async def test_native_work_progress_returns_evidence_without_sending(work_runtim
     async def respond(request, number):
         names = {tool["function"]["name"] for tool in request["tools"]}
         assert "finish_work" in names and "fixture_send" not in names
+        terminal = next(tool["function"]["parameters"] for tool in request["tools"] if tool["function"]["name"] == "finish_work")
+        assert set(terminal["properties"]) == set(terminal["required"]) == {"summary", "result_ids", "unresolved"}
+        assert terminal["additionalProperties"] is False
         assert "response_format" not in request and request["reasoning_effort"] == "high"
+        assert request["max_completion_tokens"] == 16384
         if number == 1:
             return completion(native_call("fixture_read", {}))
         ids = result_ids(request)
         return completion(native_call("report_progress", {"summary": "发现明确的来源", "result_ids": ids}, "progress"),
-                          native_call("finish_work", {"status": "completed", "summary": "核对完成", "result_ids": ids}, "finish"))
+                          native_call("finish_work", {"summary": "核对完成", "result_ids": ids, "unresolved": []}, "finish"))
 
     runtime, requests = await work_runtime(respond)
     job_id = await create_job(runtime)
@@ -182,6 +186,66 @@ async def test_native_work_progress_returns_evidence_without_sending(work_runtim
     assert len(requests) == 2 and runtime.provider_registry.calls == ["work"]
     assert {event.event_type for event in runtime.events}.issuperset({EventType.AGENT_JOB_PROGRESS, EventType.AGENT_JOB_FINISHED})
     assert all(event.event_type != EventType.MESSAGE_SENT for event in runtime.events)
+
+
+@pytest.mark.asyncio
+async def test_final_work_conclusion_with_unresolved_preserves_partial_results(work_runtime):
+    async def respond(request, number):
+        if number == 1:
+            return completion(native_call("fixture_read", {}))
+        assert request["tool_choice"]["function"]["name"] == "finish_work"
+        return finish_response(request, summary="已核对官方文档的模型说明", unresolved=["具体正确率尚未核实"])
+
+    runtime, requests = await work_runtime(respond, job_max_steps=2)
+    job_id = await create_job(runtime)
+    await runtime.job_runner._run_job(job_id, "group:work")
+    job = await runtime.event_store.get_job(job_id, "group:work")
+    assert job["status"] == "result_ready" and len(requests) == 2
+    assert job["result"] == {"status": "partial", "summary": "已核对官方文档的模型说明",
+                             "result_ids": job["result_ids"], "unresolved": ["具体正确率尚未核实"]}
+    assert len(job["result_ids"]) == 1
+    trace = (await runtime.event_store.query_traces(ref_id=job_id))[0]
+    assert trace["kind"] == "agent_job" and trace["payload"]["runs"][0]["contract_repairs"] == []
+
+
+@pytest.mark.asyncio
+async def test_work_terminal_rejects_an_extra_status_instead_of_converting_it(work_runtime):
+    async def respond(request, number):
+        return finish_response(request, status="completed", unresolved=["尚未完成"])
+
+    runtime, requests = await work_runtime(respond, job_max_steps=1)
+    job_id = await create_job(runtime)
+    await runtime.job_runner._run_job(job_id, "group:work")
+    job = await runtime.event_store.get_job(job_id, "group:work")
+    assert job["result"]["status"] == "failed" and len(requests) == 1
+    trace = (await runtime.event_store.query_traces(ref_id=job_id))[0]
+    assert "Extra inputs are not permitted" in trace["payload"]["runs"][0]["failure_reason"]
+
+
+@pytest.mark.asyncio
+async def test_work_output_configuration_reaches_the_model_request(work_runtime):
+    async def respond(request, number):
+        assert request["max_completion_tokens"] == 8192
+        return finish_response(request)
+
+    runtime, requests = await work_runtime(respond, work_output_tokens=8192)
+    job_id = await create_job(runtime)
+    await runtime.job_runner._run_job(job_id, "group:work")
+    job = await runtime.event_store.get_job(job_id, "group:work")
+    assert job["result"]["status"] == "completed" and len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_work_context_reserves_the_full_configured_output_before_request(work_runtime):
+    async def respond(request, number):
+        raise AssertionError("Input plus output reservation exceeds the context budget")
+
+    runtime, requests = await work_runtime(respond, job_context_tokens=8000, work_output_tokens=6144)
+    gateway = WorkGateway(runtime.provider_registry.resolve("work"), runtime.config.job_context_tokens,
+                          runtime.config.work_output_tokens)
+    with pytest.raises(JobContextExhausted):
+        await gateway.complete([{"role": "user", "content": "x" * 6000}], [], "required")
+    assert requests == []
 
 
 @pytest.mark.asyncio

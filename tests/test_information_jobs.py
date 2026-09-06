@@ -9,6 +9,7 @@ import httpx
 
 from len_bot.actions.models import ActionItem, ActionType, DeliveryResult, DeliveryStatus
 from len_bot.cognition.jobs import JobProposal, JobResult
+from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
@@ -173,7 +174,7 @@ class WorkRegistry:
             assert "只用手机" in brief["constraints"]
             assert brief["result_ids"]
             result = JobResult(status="completed", summary="按手机约束整理了资料", result_ids=brief["result_ids"])
-            function = {"name": "finish_work", "arguments": result.model_dump_json()}
+            function = {"name": "finish_work", "arguments": result.model_dump_json(exclude={"status"})}
         return httpx.Response(200, json={"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
             "role": "assistant", "content": None, "tool_calls": [{"id": "work-call", "type": "function", "function": function}]}}]})
 
@@ -249,9 +250,113 @@ async def test_work_budget_counts_failed_model_attempt_and_scope(tmp_path):
         assert final["model_steps"] == 1 and len(registry.calls) == 1
         assert final["result"]["status"] == "failed"
         assert final["status"] == "result_ready"  # Not delivered or fulfilled.
+        assert final["execution_status"] == "failed" and final["can_resume"]
     finally:
         await rt.stop()
         await registry.client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_status", ["failed", "interrupted", "cancelled"])
+async def test_failed_work_cannot_fulfil_or_commit_accompanying_ack(tmp_path, execution_status):
+    rt = await setup_runtime(tmp_path)
+    try:
+        await submit(rt, create())
+        job = (await rt.event_store.list_jobs("group:jobs"))[0]
+        await drain(rt)
+        finished = await rt.event_store.complete_job(job["id"], job["scene_id"], 1,
+            JobResult(status=execution_status, summary="结果未完成", unresolved=["尚未核实要求"]))
+        await rt.commit_tool_observation(finished)
+        await drain(rt)
+
+        new_work = JobProposal(proposal_id="must_rollback", goal="另一项查询", source_event_ids=["source"])
+        decision = await submit(rt, new_work, content="查完了，也开始新查询了", task_ref="must_rollback",
+            job_id=job["id"], job_revision=1, fulfils_task_id=job["id"])
+        assert not decision.accepted and decision.actions_enqueued == 0
+        assert "completed or partial result" in decision.reason
+        assert len(await rt.event_store.list_jobs(job["scene_id"])) == 1
+        assert rt.action_queue._queue.empty()
+        current = await rt.event_store.get_job(job["id"], job["scene_id"])
+        assert current["status"] == "result_ready" and current["execution_status"] == execution_status
+
+        # Reporting the failure is legitimate, but cannot mark the job fulfilled.
+        report = await submit(rt, None, content="这次没有完成核实", job_id=job["id"], job_revision=1)
+        assert report.accepted and report.actions_enqueued == 1
+        await drain(rt)
+        assert (await rt.event_store.get_job(job["id"], job["scene_id"]))["status"] == "result_ready"
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_status", ["failed", "interrupted"])
+async def test_unfinished_result_is_explicit_and_resumes_with_observations_and_used_budget(tmp_path, execution_status):
+    rt = await setup_runtime(tmp_path)
+    try:
+        await submit(rt, create())
+        job = (await rt.event_store.list_jobs("group:jobs"))[0]
+        await drain(rt)
+        observation, event = await rt.event_store.save_tool_observation(job["scene_id"], "calculate", {},
+            ToolResult(content="单次算式结果", coverage="arithmetic"), background_work=True)
+        await rt.commit_tool_observation(event)
+        await rt.commit_tool_observation(await rt.event_store.job_checkpoint(job["id"], job["scene_id"], 1,
+            model_steps=6, tool_calls=5, elapsed_seconds=38, result_ids=[observation.result_id]))
+        finished = await rt.event_store.complete_job(job["id"], job["scene_id"], 1,
+            JobResult(status=execution_status, summary="查询未完成", result_ids=[observation.result_id], unresolved=["最终结论尚未核实"]))
+        await rt.commit_tool_observation(finished)
+        await drain(rt)
+        actor = rt.scene_manager._actors[job["scene_id"]]
+        context = ConversationContext(rt, actor.session, actor.session.last_observed_event_rowid)
+        facts = (await context.facts_message())["content"]
+        work = json.loads(facts.split("\n")[-1])["work"][0]
+        assert work["execution_status"] == execution_status and work["response_phase"] == "result_ready"
+        assert work["can_resume"] and work["used_budget"] == {"model_steps": 6, "tool_calls": 5, "elapsed_seconds": 38}
+        assert work["result"]["unresolved"] == ["最终结论尚未核实"]
+        assert "不等于完整论证" in facts
+        assert "未完成" in context.event_message(finished)["content"]
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(rt)), base_url="http://test") as client:
+            await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
+            displayed = (await client.get("/api/cockpit/jobs")).json()[0]
+            assert displayed["can_resume"] and displayed["execution_status"] == execution_status
+            response = await client.post(f"/api/cockpit/jobs/{job['id']}/resume", json={"expected_revision": 1})
+            assert response.status_code == 200
+            resumed = response.json()["job"]
+        assert resumed["revision"] == 2 and resumed["status"] == "pending"
+        assert resumed["result"] is None and not resumed["can_resume"]
+        assert (resumed["model_steps"], resumed["tool_calls"], resumed["elapsed_seconds"]) == (6, 5, 38)
+        assert resumed["result_ids"] == [observation.result_id]
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_status", ["completed", "partial"])
+async def test_completed_and_partial_results_deliver_without_becoming_resumable(tmp_path, execution_status):
+    rt = await setup_runtime(tmp_path)
+    async def sent(action):
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+    rt.action_queue.send_adapter = sent
+    try:
+        await submit(rt, create())
+        job = (await rt.event_store.list_jobs("group:jobs"))[0]
+        await drain(rt)
+        finished = await rt.event_store.complete_job(job["id"], job["scene_id"], 1,
+            JobResult(status=execution_status, summary="已核实的部分", unresolved=["剩余事项"] if execution_status == "partial" else []))
+        await rt.commit_tool_observation(finished)
+        await drain(rt)
+        current = await rt.event_store.get_job(job["id"], job["scene_id"])
+        assert not current["can_resume"]
+        restart = await submit(rt, JobProposal(operation="resume", job_id=job["id"], expected_revision=1, source_event_ids=["source"]))
+        assert not restart.accepted
+        delivery = await submit(rt, None, content="这里是已核实的部分和剩余缺口", job_id=job["id"], job_revision=1, fulfils_task_id=job["id"])
+        assert delivery.accepted and delivery.actions_enqueued == 1
+        await drain(rt)
+        current = await rt.event_store.get_job(job["id"], job["scene_id"])
+        assert current["status"] == "completed" and current["execution_status"] == execution_status
+        assert not current["can_resume"]
+    finally:
+        await rt.stop()
 
 
 @pytest.mark.asyncio

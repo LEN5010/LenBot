@@ -23,7 +23,7 @@ class RuntimeConfig(BaseModel):
     conversation_context_tokens: int = Field(default=24_000, ge=4_000)
     conversation_output_tokens: int = Field(default=4096, ge=256)
     max_context_images: int = Field(default=6, ge=1, le=6)
-    work_output_tokens: int = Field(default=4096, ge=256)
+    work_output_tokens: int = Field(default=16384, ge=256)
     jobs_enabled: bool = Field(default_factory=lambda: os.getenv("JOBS_ENABLED", "true").lower() in {"true", "1", "yes"})
     job_max_steps: int = Field(default=16, ge=1)
     job_max_tool_calls: int = Field(default=24, ge=1)

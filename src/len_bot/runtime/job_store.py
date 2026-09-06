@@ -15,6 +15,13 @@ def _decode_job(row):
     data = dict(zip(fields, row))
     for field in ("constraints", "source_event_ids", "result_ids", "result"):
         data[field] = json.loads(data[field]) if data[field] else None
+    # Task status describes response/delivery, not whether execution succeeded.
+    data["execution_status"] = (data["result"] or {}).get("status") or {
+        "pending": "pending", "claimed": "pending", "processing": "running",
+        "review_required": "interrupted", "failed": "failed", "cancelled": "cancelled",
+    }.get(data["status"], "unknown")
+    data["can_resume"] = data["status"] in {"review_required", "failed"} or (
+        data["status"] == "result_ready" and data["execution_status"] in {"failed", "interrupted"})
     return data
 
 
@@ -90,8 +97,8 @@ class JobStoreMixin:
                 raise ValueError("Job version conflict or outside scene")
             if current["status"] in {"completed", "cancelled", "shadow_observed", "delivery_unknown"}:
                 raise ValueError("Job is no longer editable")
-            if proposal.operation == "resume" and current["status"] not in {"review_required", "failed"}:
-                raise ValueError("Only an interrupted/failed job can resume")
+            if proposal.operation == "resume" and not current["can_resume"]:
+                raise ValueError("Only interrupted or failed work can resume")
             revision = current["revision"] + 1
             goal = proposal.goal.strip() if proposal.goal else current["goal"]
             constraints = [value for value in current["constraints"] if value not in proposal.constraints_remove]
@@ -110,10 +117,11 @@ class JobStoreMixin:
 
     async def validate_job_message(self, scene_id, job_id, revision, fulfil=False):
         job = await self.get_job(job_id, scene_id)
-        if not job or job["revision"] != revision or job["status"] not in {"pending", "claimed", "processing", "result_ready", "awaiting_delivery"}:
+        if not job or job["revision"] != revision or job["status"] not in {"pending", "claimed", "processing", "result_ready", "awaiting_delivery", "review_required", "failed"}:
             raise ValueError("Reply refers to an obsolete or cancelled job")
-        if fulfil and not job["result"]:
-            raise ValueError("Job has not produced a result")
+        if fulfil and (job["status"] not in {"result_ready", "awaiting_delivery"}
+                       or job["execution_status"] not in {"completed", "partial"}):
+            raise ValueError("Job fulfilment requires a completed or partial result ready for delivery")
         return job
 
     async def report_job_progress(self, job_id, scene_id, revision, summary, result_ids):
