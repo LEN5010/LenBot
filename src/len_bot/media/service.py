@@ -252,10 +252,14 @@ class MediaService:
                 raise ValueError("含图片消息的拦截器必须同步修改segments")
             segments = [MessageSegment(type="text", text=action.content)]
         images = {}
+        sticker_ids = set()
         for segment in segments:
             if segment.type == "image":
                 if not self.runtime.config.media_enabled:
                     raise ValueError("媒体能力已停用")
-                _, data = await self.get_bytes(segment.asset_id, action.scene_id)
+                asset, data = await self.get_bytes(segment.asset_id, action.scene_id)
                 images[segment.asset_id] = "base64://" + base64.b64encode(data).decode()
-        return action.model_copy(update={"segments": segments, "resolved_images": images})
+                if asset["curated"] and "表情包" in asset["tags"]:
+                    sticker_ids.add(segment.asset_id)
+        return action.model_copy(update={"segments": segments, "resolved_images": images,
+                                         "resolved_sticker_ids": sticker_ids})

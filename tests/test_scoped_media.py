@@ -68,7 +68,7 @@ async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
             await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
             bad = await client.post("/api/media", files={"file": ("bad.png", b"not an image", "image/png")})
             assert bad.status_code == 400
-            response = await client.post("/api/media", data={"scope": "global-safe", "description": "高兴", "tags": "开心 问候"}, files={"file": ("test.png", picture(), "image/png")})
+            response = await client.post("/api/media", data={"scope": "global-safe", "description": "高兴", "tags": "开心 问候 表情包"}, files={"file": ("test.png", picture(), "image/png")})
             assert response.status_code == 200
             asset = response.json()
             assert "path" not in asset and "locator" not in asset
@@ -80,7 +80,10 @@ async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
             endpoint, payload = OneBotAdapter(rt.config, rt.receive_event)._action_payload(prepared)
             assert payload["message"][0]["type"] == "text" and "CQ:at" in payload["message"][0]["data"]["text"]
             assert payload["message"][1]["data"]["file"].startswith("base64://")
+            assert payload["message"][1]["data"]["sub_type"] == 1
+            assert base64.b64decode(payload["message"][1]["data"]["file"].removeprefix("base64://")) == picture()
             assert "resolved_images" not in prepared.model_dump()
+            assert "resolved_sticker_ids" not in prepared.model_dump()
             partial = await rt.media_service.upload(picture(), "global-safe", "笑脸", ["开心"])
             await rt.media_service.upload(picture(), "group:other", "本群素材", ["开心", "问候", "不存在"])
             kit = RetrievalToolkit(rt.event_store, ["group:a", "global-safe"], "group:a",
