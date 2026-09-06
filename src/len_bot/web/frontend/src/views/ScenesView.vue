@@ -1,256 +1,69 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { api } from '../api.js'
+import { computed, ref, onMounted } from 'vue'
+import { api, fmtTime } from '../api.js'
 
-const scenes = ref([])
-const detail = ref(null)
-const error = ref('')
-
+const scenes = ref([]), detail = ref(null), error = ref(''), loadingScene = ref('')
+const participants = computed(() => Object.values(detail.value?.session?.participants || {}))
 onMounted(load)
 async function load() {
-  try {
-    scenes.value = (await api('/api/cockpit/scenes')).scenes
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
-async function openDetail(sceneId) {
   error.value = ''
+  try { scenes.value = (await api('/api/cockpit/scenes')).scenes }
+  catch (e) { error.value = e.message }
+}
+async function openDetail(sceneId) {
+  error.value = ''; loadingScene.value = sceneId
   try {
-    detail.value = await api(`/api/cockpit/scenes/${encodeURIComponent(sceneId)}`)
-    detail.value.timeline = await api(`/api/cockpit/traces?scene_id=${encodeURIComponent(sceneId)}&limit=20`)
-  } catch (e) {
-    error.value = e.message
-  }
+    const result = await api(`/api/cockpit/scenes/${encodeURIComponent(sceneId)}`)
+    if (loadingScene.value === sceneId) detail.value = result
+  } catch (e) { error.value = e.message }
+  finally { if (loadingScene.value === sceneId) loadingScene.value = '' }
 }
-
-function activityLabel(value) {
-  return value === 'HIGH' ? '很活跃' : value === 'MEDIUM' ? '有消息' : '安静'
+function sender(event) {
+  const participant = detail.value?.session?.participants?.[event.actor_id]
+  return participant?.card || participant?.nickname || event.actor_id || '系统'
 }
-
-function engagementLabel(value) {
-  return value === 'participating' || value === 'active' ? '正在参与' : value === 'lightly_participating' ? '偶尔参与' : '正在旁观'
-}
-
-function traceLabel(value) {
-  return value === 'social_cognition_error' ? '处理失败' : '社交判断'
+function eventText(event) { return event.raw_text || event.payload?.raw_text || event.payload?.content || '无文字内容' }
+function basisLabel(value) { return value === 'reported' ? '原话报告' : '有据推断' }
+function jobStatus(status) {
+  return { pending: '等待执行', claimed: '已认领', processing: '正在处理', result_ready: '结果就绪', awaiting_delivery: '等待交付', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', review_required: '等待核对', interrupted: '已中断' }[status] || status
 }
 function deliveryLabel(event) {
-  if (event.event_type === 'ACTION_SHADOWED') return '仅观察，未发送'
-  return {sent: '已送达', not_sent: '未发出', rejected: '接口拒绝', unknown: '结果不确定'}[event.payload.delivery_status]
-    || (event.event_type === 'MESSAGE_SENT' ? '已送达' : '旧记录缺少详细原因')
+  if (event.event_type === 'ACTION_SHADOWED') return 'Shadow · 未实发'
+  return { sent: '已送达', not_sent: '未发出', rejected: '已拒绝', unknown: '结果不确定' }[event.payload?.delivery_status]
+    || (event.event_type === 'MESSAGE_SENT' ? '已送达' : '未确认送达')
 }
 </script>
 
 <template>
   <div class="scenes-view">
-    <div class="toolbar">
-      <div class="page-title">
-        <h1>群聊状态</h1>
-        <p class="muted">查看机器人正在关注哪些群、聊什么，以及它当前是否参与。</p>
-      </div>
-      <button class="primary" @click="load">
-        <span>刷新</span>
-      </button>
-    </div>
-
-    <p v-if="error" class="tag bad">{{ error }}</p>
-
-    <!-- Bento Scene Cards Grid -->
+    <div class="toolbar"><div class="page-title"><h1>群聊状态</h1><p class="muted">查看事件形成的场景事实、正在进行的工作和真实发送回执。</p></div><button @click="load">刷新</button></div>
+    <p v-if="error" class="tag bad" role="alert">{{ error }}</p>
     <div class="grid cards">
-      <div
-        v-for="s in scenes"
-        :key="s.scene_id"
-        class="card clickable bento-scene-card"
-        :class="{ selected: detail?.scene_id === s.scene_id }"
-        @click="openDetail(s.scene_id)"
-      >
-        <div class="scene-header">
-          <h3><code>{{ s.scene_id }}</code></h3>
-          <span v-if="!s.is_in_memory" class="tag">未装载</span>
-          <span v-else class="tag ok">活跃中</span>
-        </div>
-        <div class="kv">
-          <span class="k">最近状态</span>
-          <span class="tag" :class="s.activity_level === 'HIGH' ? 'ok' : s.activity_level === 'MEDIUM' ? 'warn' : ''">
-            {{ activityLabel(s.activity_level) }}
-          </span>
-        </div>
-        <div class="kv">
-          <span class="k">当前话题</span>
-          <span class="v">{{ s.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
-        </div>
-        <div class="kv">
-          <span class="k">机器人状态</span>
-          <span class="v highlight">{{ engagementLabel(s.self_social_state?.engagement) }}</span>
-        </div>
-        <div class="kv">
-          <span class="k">参与成员数</span>
-          <span class="v">{{ s.participant_count }} 人</span>
-        </div>
-      </div>
+      <button v-for="scene in scenes" :key="scene.scene_id" type="button" class="card scene-card" :class="{ selected: detail?.session?.scene_id === scene.scene_id }" @click="openDetail(scene.scene_id)">
+        <div class="scene-header"><h3><code>{{ scene.scene_id }}</code></h3><span class="tag">版本 {{ scene.version }}</span></div>
+        <div class="kv"><span class="k">已记录成员</span><span class="v">{{ scene.participant_count }} 人</span></div>
+        <div class="kv"><span class="k">最近事件</span><span class="v">{{ fmtTime(scene.last_event_at) }}</span></div>
+        <div class="kv"><span class="k">最近实际发言</span><span class="v">{{ fmtTime(scene.last_bot_message_at) }}</span></div>
+        <div class="kv"><span class="k">进行中的工作</span><span class="v highlight">{{ scene.active_job_count }}</span></div>
+      </button>
+      <p v-if="!scenes.length" class="panel muted">还没有场景记录</p>
     </div>
-
-    <!-- Scene Detail Panel -->
-    <template v-if="detail">
-      <div class="panel detail-panel">
-        <div class="detail-header">
-          <div>
-            <h2>场景详情 · <code>{{ detail.scene_id }}</code></h2>
-            <p class="muted">机器人{{ engagementLabel(detail.self_social_state?.engagement) }}，最近有 {{ detail.participants?.length || 0 }} 位成员参与</p>
-          </div>
-        </div>
-
-        <div class="detail-grid">
-          <div class="kv">
-            <span class="k">最近状态</span>
-            <span class="tag" :class="detail.activity_level === 'HIGH' ? 'ok' : 'warn'">
-              {{ activityLabel(detail.activity_level) }}
-            </span>
-          </div>
-          <div class="kv">
-            <span class="k">正在聊的话题</span>
-            <span class="v highlight">{{ detail.social_world?.topics?.map(t => t.subject).join(' / ') || '—' }}</span>
-          </div>
-          <div class="kv">
-            <span class="k">最近参与成员</span>
-            <span class="v">{{ detail.participants.join(', ') || '—' }}</span>
-          </div>
-          <div class="kv">
-            <span class="k">还没聊完的事</span>
-            <span class="v">{{ detail.social_world?.open_threads?.filter(t => t.status !== 'resolved').map(t => t.unresolved || t.summary).join(' / ') || '—' }}</span>
-          </div>
-        </div>
+    <p v-if="loadingScene" class="muted" role="status">正在读取 {{ loadingScene }}…</p>
+    <template v-if="detail?.session">
+      <section class="panel detail-panel"><div class="panel-header"><div><h2>{{ detail.session.scene_id }}</h2><p class="muted">{{ participants.length }} 位已记录成员 · 事实版本 {{ detail.session.version }}</p></div><button @click="detail = null">关闭详情</button></div>
+        <div class="detail-facts"><span>最近事件：{{ fmtTime(detail.session.last_event_at) }}</span><span>最近实际发言：{{ fmtTime(detail.session.last_bot_message_at) }}</span><span>发言后新增群友消息：{{ detail.session.human_messages_since_bot }}</span></div>
+      </section>
+      <div class="detail-grid">
+        <section class="panel"><h2>参与者</h2><p class="muted">账号昵称和群名片来自消息事件，称呼偏好单独保留在认识中。</p><div class="table-scroll"><table><thead><tr><th>账号</th><th>昵称</th><th>群名片</th><th>群角色</th></tr></thead><tbody><tr v-for="person in participants" :key="person.actor_id"><td><code>{{ person.actor_id }}</code></td><td>{{ person.nickname || '—' }}</td><td>{{ person.card || '—' }}</td><td>{{ person.role || '—' }}</td></tr><tr v-if="!participants.length"><td colspan="4" class="muted">暂无参与者事实</td></tr></tbody></table></div></section>
+        <section class="panel"><h2>称呼与互动偏好</h2><article v-for="memory in detail.preferences || []" :key="memory.id" class="record"><div><span class="tag">{{ basisLabel(memory.basis) }}</span><code>{{ memory.subject }}</code></div><p>{{ memory.statement }}</p><details><summary>来源与适用时间</summary><p>{{ memory.evidence?.join('、') || '未附来源' }}</p><p>到期时间：{{ memory.expires_at ? fmtTime(memory.expires_at) : '未设置' }}</p></details></article><p v-if="!detail.preferences?.length" class="muted">暂无有效的称呼与互动偏好</p></section>
+        <section class="panel"><h2>信息工作</h2><article v-for="job in detail.jobs || []" :key="job.id" class="record"><div><span class="tag">{{ jobStatus(job.status) }}</span><span class="muted">目标版本 {{ job.revision }}</span></div><p>{{ job.goal }}</p><p v-if="job.result?.summary" class="muted">{{ job.result.summary }}</p><details><summary>工作详情</summary><pre>{{ JSON.stringify(job, null, 2) }}</pre></details></article><p v-if="!detail.jobs?.length" class="muted">暂无信息工作</p></section>
+        <section class="panel"><h2>消息是否送达</h2><article v-for="event in detail.recent_deliveries || []" :key="event.id" class="record"><div><span class="tag" :class="event.event_type === 'MESSAGE_SENT' ? 'ok' : 'warn'">{{ deliveryLabel(event) }}</span><time class="muted">{{ fmtTime(event.timestamp) }}</time></div><p class="message-copy">{{ eventText(event) }}</p><p v-if="event.payload?.error" class="bad-text">{{ event.payload.error }}</p><details><summary>回执详情</summary><pre>{{ JSON.stringify(event.payload, null, 2) }}</pre></details></article><p v-if="!detail.recent_deliveries?.length" class="muted">暂无发送回执</p></section>
       </div>
-
-      <div class="grid cards">
-        <div class="panel">
-          <h2>现在怎样称呼大家</h2>
-          <div v-for="p in detail.working_persons" :key="p.actor_id" class="kv">
-            <div><strong>{{ p.preferred_name || p.card || p.nickname || p.display_name || '尚未确认称呼' }}</strong>
-              <p class="muted">昵称：{{ p.nickname || '未知' }} · 群名片：{{ p.card || '未设置' }}</p>
-              <p>{{ p.recent_context.join('；') }}</p>
-              <details><summary>来源与账号</summary><code>{{ p.actor_id }}</code><p>{{ p.recent_event_ids.join('、') }}</p></details>
-            </div>
-          </div>
-        </div>
-        <div class="panel">
-          <h2>最近收到的反馈</h2>
-          <p v-for="feedback in detail.self_social_state?.recent_feedback" :key="feedback">{{ feedback }}</p>
-          <p v-if="!detail.self_social_state?.recent_feedback?.length" class="muted">暂未记录明确反馈</p>
-          <h3>相处方式</h3>
-          <p v-for="r in detail.working_relationships" :key="r.actor_id">{{ detail.working_persons[r.actor_id]?.preferred_name || detail.working_persons[r.actor_id]?.display_name || r.actor_id }}：{{ r.patterns.join('；') }}</p>
-        </div>
-        <div class="panel">
-          <h2>最近修订的认识</h2>
-          <div v-for="m in detail.recent_memory_changes" :key="m.id" class="kv">
-            <div><span class="tag">{{ m.operation === 'refute' ? '已撤销' : m.operation === 'supersede' ? '已替代旧认识' : '已记住' }}</span>
-              <p>{{ m.value }}</p><p class="muted">{{ m.reason }}</p>
-              <details><summary>证据详情</summary><code>{{ m.id }}</code><p>{{ m.evidence.join('、') }}</p></details>
-            </div>
-          </div>
-          <p v-if="!detail.recent_memory_changes?.length" class="muted">暂无修订记录</p>
-        </div>
-        <div class="panel">
-          <h2>消息是否送达</h2>
-          <div v-for="e in detail.recent_deliveries" :key="e.id" class="kv">
-            <div><span class="tag" :class="e.event_type === 'MESSAGE_SEND_FAILED' ? 'bad' : 'ok'">{{ deliveryLabel(e) }}</span>
-              <p>{{ e.payload.content }}</p><p class="muted">{{ e.payload.error }}</p>
-              <details><summary>发送详情</summary><p>{{ new Date(e.timestamp * 1000).toLocaleString() }}</p><code>{{ e.payload.action_id }}</code></details>
-            </div>
-          </div>
-          <p v-if="!detail.recent_deliveries?.length" class="muted">暂无发送记录</p>
-        </div>
-      </div>
-
-      <h2>最近的机器人动态</h2>
-      <div class="panel">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>类型</th>
-              <th>机器人理解</th>
-              <th>最终决定</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in detail.timeline" :key="t.id">
-              <td>{{ new Date(t.created_at * 1000).toLocaleTimeString() }}</td>
-              <td>
-                <span class="tag" :class="t.kind === 'social_cognition_error' ? 'bad' : 'ok'">{{ traceLabel(t.kind) }}</span>
-              </td>
-              <td>{{ t.payload.result?.perception?.summary || t.payload.error || '—' }}</td>
-              <td>{{ t.payload.result?.decision?.action === 'speak' ? '准备发言' : t.payload.result?.decision?.action === 'silence' ? '选择沉默' : '未完成' }}<p class="muted">{{ t.payload.result?.decision?.reason || t.payload.gate?.reason }}</p></td>
-            </tr>
-            <tr v-if="!detail.timeline?.length">
-              <td colspan="4" class="muted" style="text-align: center; padding: 20px;">该场景暂无行为链路记录</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <section class="panel"><h2>近期原话</h2><article v-for="event in detail.recent_messages || []" :key="event.id" class="record"><div><strong>{{ sender(event) }}</strong><time class="muted">{{ fmtTime(event.timestamp) }}</time></div><p class="message-copy">{{ eventText(event) }}</p><details><summary>事件来源</summary><code>{{ event.id }}</code><p>{{ event.actor_id }}</p></details></article><p v-if="!detail.recent_messages?.length" class="muted">暂无近期原话</p></section>
     </template>
   </div>
 </template>
 
 <style scoped>
-.page-title h1 {
-  margin: 0;
-  font-size: 1.4rem;
-}
-.page-title p {
-  margin: 4px 0 0;
-  font-size: 0.85rem;
-}
-
-.bento-scene-card {
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.bento-scene-card:hover {
-  border-color: var(--border-accent);
-  transform: translateY(-2px);
-}
-.bento-scene-card.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-md);
-  background: rgba(235, 243, 255, 0.92);
-}
-
-.scene-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.scene-header h3 {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-.detail-panel {
-  margin-top: 24px;
-}
-.detail-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.detail-header h2 {
-  margin: 0;
-}
-.detail-header p {
-  margin: 4px 0 0;
-  font-size: 0.84rem;
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 12px;
-}
-
-.highlight { color: var(--accent-strong); font-weight: 600; }
+.scene-card { text-align:left;white-space:normal;color:var(--text);min-width:0;cursor:pointer }.scene-card:hover,.scene-card.selected { border-color:var(--border-accent) }.scene-header { display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px }.scene-header h3 { margin:0;overflow-wrap:anywhere }.detail-panel { margin-top:24px }.detail-facts { display:flex;gap:20px;flex-wrap:wrap;color:var(--text-soft);font-size:.86rem }.detail-grid { display:grid;grid-template-columns:1fr 1fr;gap:18px }.detail-grid .panel { min-width:0 }.record { padding:14px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere }.record:last-child { border-bottom:0 }.record>div { display:flex;gap:10px;align-items:center;flex-wrap:wrap }.record p { margin:9px 0;line-height:1.6 }.record time { font-size:.78rem }.message-copy { white-space:pre-wrap }.table-scroll { overflow-x:auto }details { font-size:.8rem;color:var(--muted) }summary { cursor:pointer }pre { white-space:pre-wrap;overflow-wrap:anywhere }@media(max-width:920px){.detail-grid{grid-template-columns:1fr}}
 </style>

@@ -5,13 +5,12 @@ from pydantic import BaseModel, Field
 
 from len_bot.web.auth import get_current_user
 from len_bot.media.service import MAX_IMAGE_BYTES
-from len_bot.tools.retrieval import RetrievalToolkit
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
 
 def public_asset(asset):
-    return {key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at")}
+    return {key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at", "palette_order")}
 
 
 @router.get("")
@@ -35,12 +34,14 @@ class MediaEditRequest(BaseModel):
     description: str = Field(max_length=2000)
     tags: list[str] = Field(default_factory=list, max_length=30)
     enabled: bool
+    palette_order: int | None = Field(default=None, ge=0)
 
 
 @router.post("/{asset_id}")
 async def edit_media(asset_id: str, req: MediaEditRequest, request: Request, user: str = Depends(get_current_user)):
     try:
-        asset = await request.app.state.runtime.media_service.edit(asset_id, req.scope, req.description, req.tags, req.enabled)
+        options = {"palette_order": req.palette_order} if "palette_order" in req.model_fields_set else {}
+        asset = await request.app.state.runtime.media_service.edit(asset_id, req.scope, req.description, req.tags, req.enabled, **options)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return public_asset(asset)
@@ -53,17 +54,3 @@ async def media_file(asset_id: str, scene_id: str, request: Request, user: str =
     except ValueError as error:
         raise HTTPException(404, str(error)) from error
     return Response(content=data, media_type=asset["mime_type"], headers={"Cache-Control": "private, no-store"})
-
-
-class InspectRequest(BaseModel):
-    scene_id: str
-    question: str = Field(default="描述图片中可确认的信息", max_length=2000)
-
-
-@router.post("/{asset_id}/inspect")
-async def inspect_media(asset_id: str, req: InspectRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    toolkit = RetrievalToolkit(runtime.event_store, [req.scene_id, "global-safe"], req.scene_id,
-        media_service=runtime.media_service, on_observation=runtime.commit_tool_observation)
-    result = await toolkit.execute_result("inspect_image", {"asset_id": asset_id, "question": req.question})
-    return result.model_dump()
