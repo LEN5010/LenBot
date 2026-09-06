@@ -1,6 +1,6 @@
 from enum import StrEnum
 from typing import Optional, Any
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
 from len_bot.media.models import MessageSegment, normalize_message_body
 
@@ -9,7 +9,8 @@ class FinalDisposition(StrEnum):
     ACTION = "ACTION"
 
 class MessageProposal(BaseModel):
-    content: str = Field(default="", description="Legacy text message; use segments for text/image combinations")
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(default="", exclude=True)
     segments: list[MessageSegment] = Field(default_factory=list)
     reply_to: Optional[str] = Field(default=None, description="OneBot message_id to quote-reply")
     expect_reply: bool = Field(default=False, description="Whether this message expects an answer from a specific user")
@@ -65,3 +66,8 @@ class EpisodeOutcome(BaseModel):
     job_proposals: list[JobProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
+
+    def requires_fresh_input(self) -> bool:
+        return bool(self.task_proposals or self.job_proposals or self.resolve_open_loop_ids
+                    or any(m.task_ref or m.fulfils_task_id or m.expect_reply or m.job_id
+                           for m in self.message_proposals))

@@ -43,47 +43,6 @@ class ObservationStoreMixin:
         row = await cursor.fetchone()
         return ToolResult.model_validate_json(row[0]) if row else None
 
-    async def project_image_observations(self, scene_id, events, through_rowid):
-        """Reuse committed observations for images already present in working context."""
-        def image_ids(event):
-            media = [*event.metadata.get("media", []),
-                     *event.metadata.get("quote_context", {}).get("media", [])]
-            return {item["asset_id"] for item in media if item.get("asset_id")}
-
-        projected = [event.model_copy(deep=True) for event in events]
-        for event in projected:
-            event.metadata.pop("image_observations", None)
-        asset_ids = set().union(*(image_ids(event) for event in projected))
-        if not asset_ids:
-            return projected
-        rows = await (await self._db.execute(
-            "SELECT json_extract(o.arguments_json,'$.asset_id'),o.arguments_json,o.result_json "
-            "FROM tool_observations o JOIN events e ON e.id=o.event_id AND e.scene_id=o.scene_id "
-            "JOIN media_assets m ON m.id=json_extract(o.arguments_json,'$.asset_id') "
-            "WHERE o.scene_id=? AND m.scope IN (?, 'global-safe') AND e.rowid<=? "
-            "AND o.tool_name='inspect_image' AND json_extract(o.result_json,'$.status')='ok' "
-            "AND m.id IN (SELECT value FROM json_each(?)) ORDER BY o.rowid DESC",
-            (scene_id, scene_id, through_rowid, json.dumps(sorted(asset_ids))),
-        )).fetchall()
-        observations = {}
-        for asset_id, raw_arguments, raw_result in rows:
-            if asset_id in observations:
-                continue
-            result = ToolResult.model_validate_json(raw_result)
-            observations[asset_id] = {
-                "asset_id": asset_id, "question": json.loads(raw_arguments).get("question", ""),
-                "content": result.content, "coverage": result.coverage, "evidence_kind": result.evidence_kind,
-                "result_id": result.result_id, "observation_event_id": result.observation_event_id,
-            }
-        attached = set()
-        for item in reversed(projected):
-            ids = image_ids(item) - attached
-            related = [observations[asset_id] for asset_id in sorted(ids) if asset_id in observations]
-            if related:
-                item.metadata["image_observations"] = related
-                attached.update(record["asset_id"] for record in related)
-        return projected
-
     async def tool_observation_call(self, result_id, scene_id):
         row = await (await self._db.execute(
             "SELECT tool_name,arguments_json FROM tool_observations WHERE id=? AND scene_id=?", (result_id, scene_id))).fetchone()

@@ -1,436 +1,212 @@
-import time
-import json
-import logging
+"""Scoped local reads for conversation; external read-only capabilities for work."""
+from __future__ import annotations
+
 import asyncio
 import copy
-from typing import Any, Optional
-from len_bot.events.store import EventStore
-from len_bot.memory.store import MemoryStore
-from len_bot.events.models import Event
-from len_bot.cognition.projection import project_event
-from len_bot.tools.results import ToolResult
+import json
+import time
 
-logger = logging.getLogger(__name__)
+from len_bot.cognition.projection import project_event
+from len_bot.events.models import Event
+from len_bot.tools.results import ToolResult
+from len_bot.tools.calculator import CALCULATE_TOOL, calculate
+
+
+def tool(name, description, properties, required=()):
+    return {'type':'function','function':{'name':name,'description':description,
+        'parameters':{'type':'object','properties':properties,'required':list(required),'additionalProperties':False}}}
+
+
+S={'type':'string'}
+N={'type':'number'}
+I={'type':'integer','minimum':1,'maximum':50}
+LOCAL_TOOLS=[
+    tool('search_messages','按文字查找本群已读截点之前的原话。',{'query':S,'limit':I},['query']),
+    tool('read_context','读取消息M前后的本群原话。',{'event_id':S,'before':I,'after':I},['event_id']),
+    tool('query_timeline','读取本群指定时间内的消息。',{'start_time':N,'end_time':N,'limit':I},['start_time','end_time']),
+    tool('query_person_history','读取本群人物U以前说过的话。',{'actor_id':S,'limit':I},['actor_id']),
+    tool('query_memory','按需读取本群认识及其来源；已撤销的认识不是当前事实。',{
+        'subject':S,'kind':{'type':'string','enum':['address','preference','relationship','fact','group_norm']},
+        'query':S,'include_history':{'type':'boolean'}}),
+    tool('query_jobs','读取本群工作的实际版本、资料和进展。',{'job_id':S}),
+    tool('read_tool_result','继续阅读已获得的资料R；offset使用上次next_offset。',{'result_id':S,
+        'offset':{'type':'integer','minimum':0},'limit':{'type':'integer','minimum':1,'maximum':12000}},['result_id']),
+    tool('search_media','按名称和描述查询本群或运营发布的图片。',{'query':S,'curated_only':{'type':'boolean'}}),
+    tool('read_media','装入图片I/P像素和来源；动图只覆盖首帧。',{'asset_id':S},['asset_id']),
+]
+
 
 class RetrievalToolkit:
-    """Agentic History & Memory Retrieval Tools (ADR-0010 & ADR-0011) enforcing Ambient ExecutionScope."""
-    
-    def __init__(
-        self,
-        event_store: EventStore,
-        allowed_scopes: list[str],
-        default_scene_id: str,
-        memory_store: Optional[MemoryStore] = None,
-        plugin_host: Optional[Any] = None,
-        bot_qq: int | str = "",
-        on_observation=None,
-        read_only_only: bool = False,
-        checkpoint=None,
-        media_service=None,
-    ):
-        self.event_store = event_store
-        self.allowed_scopes = allowed_scopes
-        self.default_scene_id = default_scene_id
-        self.memory_store = memory_store
-        self.plugin_host = plugin_host
-        self.bot_qq = bot_qq
-        self.on_observation = on_observation
-        self.read_only_only = read_only_only
-        self.checkpoint = checkpoint
-        self.media_service = media_service
-        self.before_nested_model = None
-        self.discovered_tools: set[str] = set()
-        self.result_ids: list[str] = []
-        self._cache: dict[str, ToolResult] = {}
-        self._call_locks: dict[str, asyncio.Lock] = {}
-        self._parallel = asyncio.Semaphore(3)
+    def __init__(self,event_store,allowed_scopes,default_scene_id,memory_store=None,plugin_host=None,
+                 bot_qq='',on_observation=None,read_only_only=False,checkpoint=None,media_service=None,
+                 context=None):
+        self.event_store=event_store
+        # Historical and tool observations are always local. global-safe applies only to media.
+        if default_scene_id not in allowed_scopes: raise ValueError('Default scene is outside execution scope')
+        self.allowed_scopes=[default_scene_id]
+        self.default_scene_id=default_scene_id
+        self.memory_store=memory_store
+        self.plugin_host=plugin_host
+        self.bot_qq=bot_qq
+        self.on_observation=on_observation
+        self.read_only_only=read_only_only
+        self.checkpoint=checkpoint
+        self.media_service=media_service
+        self.context=context
+        self.discovered_tools=set()
+        self.result_ids=[]
+        self._cache={}
+        self._call_locks={}
+        self._parallel=asyncio.Semaphore(3)
 
-    async def _project_rows(self, rows: list[dict]) -> list[str]:
-        events = [Event.model_validate(row) for row in rows]
-        projected = {}
-        for scene_id in dict.fromkeys(event.scene_id for event in events):
-            enriched = await self.event_store.project_reply_context(
-                scene_id, [event for event in events if event.scene_id == scene_id])
-            projected.update({event.id: project_event(event, self.bot_qq) for event in enriched})
-        return [projected[event.id] for event in events]
+    @property
+    def references(self): return self.context.refs if self.context else None
+    @property
+    def cutoff(self): return self.references.cutoff if self.references else None
 
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_messages",
-                    "description": "通过关键词搜索群聊或私聊历史消息记录（底层基于 SQLite FTS5 全文索引）。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "要搜索的关键词或子串，例如'直播'、'几点'、'作业'等。"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "最多返回的消息条数，默认 10 条。"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_context",
-                    "description": "围绕某条特定消息事件 ID，读取其前后的上下文消息对话，还原当时现场。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "event_id": {
-                                "type": "string",
-                                "description": "目标事件的唯一 ID。"
-                            },
-                            "before": {
-                                "type": "integer",
-                                "description": "读取该消息前多少条记录，默认 3 条。"
-                            },
-                            "after": {
-                                "type": "integer",
-                                "description": "读取该消息后多少条记录，默认 3 条。"
-                            }
-                        },
-                        "required": ["event_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "query_timeline",
-                    "description": "按时间跨度查询当前 Scene 发生的历史事件流水。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "start_time": {
-                                "type": "number",
-                                "description": "起始 Unix 时间戳（秒）。"
-                            },
-                            "end_time": {
-                                "type": "number",
-                                "description": "结束 Unix 时间戳（秒）。"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "最大条数，默认 15。"
-                            }
-                        },
-                        "required": ["start_time", "end_time"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "query_person_history",
-                    "description": "按发言人 ID（如 user:123456）查询其在允许范围内的过往发言历史。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "actor_id": {
-                                "type": "string",
-                                "description": "目标发言者的 actor_id，例如'user:1001'。"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "最大条数，默认 10。"
-                            }
-                        },
-                        "required": ["actor_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "query_memory",
-                    "description": "查询当前合法范围内对特定人物、群体或话题已形成的认识记忆（L2 认知信念），支持全局跨场景偏好检索与演进历史追溯。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "subject": {
-                                "type": "string",
-                                "description": "认识对象的主体，如'user:1001'或'group:123'。"
-                            },
-                            "kind": {
-                                "type": "string",
-                                "description": "记忆种类：preference（偏好）、habit（习惯）、relationship（关系）、fact（事实）、group_norm（群体规范）、topic_interest（话题兴趣）、recurring_role（常扮演角色）、social_pattern（社交模式）。"
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "特定槽位键，例如'food'、'programming_language'、'sleep_schedule'等。"
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "模糊检索断言内容的子串或关键词，例如'Rust'、'火锅'等。"
-                            },
-                            "include_history": {
-                                "type": "boolean",
-                                "description": "是否包含已撤销（refuted）或被替代（superseded）的历史信念及其纠正证据，默认 false。"
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "inspect_episode",
-                    "description": "读取过去某次完整经历（L1 Episode）的摘要、参与人和引用的原始事件来源。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "episode_id": {
-                                "type": "string",
-                                "description": "经历事件的 ID（如 ep_rec_xxx）。"
-                            }
-                        },
-                        "required": ["episode_id"]
-                    }
-                }
-            }
-        ]
-        if self.plugin_host:
-            for tool in self.plugin_host.get_tool_definitions():
-                name = tool["function"]["name"]
-                caps = self.plugin_host.tool_capabilities(name)
-                if self.read_only_only and not caps["read_only"]:
-                    continue
-                if not caps["deferred"] or name in self.discovered_tools:
-                    tools.append(tool)
-        tools.extend([
-            {"type": "function", "function": {"name": "query_jobs",
-                "description": "查询本场景的信息工作、当前目标版本、进展及结果；不改变工作。",
-                "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}}}},
-            {"type": "function", "function": {"name": "tool_search",
-                "description": "按名称或描述发现可用工具，发现后可在后续步骤调用。",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
-            {"type": "function", "function": {"name": "read_tool_result",
-                "description": "按 result_id 继续读取已取得资料；offset 使用上次 next_offset。",
-                "parameters": {"type": "object", "properties": {"result_id": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["result_id"]}}},
-        ])
-        if self.media_service and self.media_service.runtime.config.media_enabled:
-            tools.extend([
-                {"type": "function", "function": {"name": "inspect_image", "description": "实际查看本群或获准素材图片，按问题返回解释和不确定项；需要独立视觉模型。",
-                    "parameters": {"type": "object", "properties": {"asset_id": {"type": "string"}, "question": {"type": "string"}}, "required": ["asset_id"]}}},
-                {"type": "function", "function": {"name": "search_media", "description": "按名称或情绪关键词查找运营表情的asset_id，如开心、疑惑、安慰、晚安。多个词用空格分隔，返回命中任一词的素材，命中词越多越靠前；结合描述和语境自主选择图片。",
-                    "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "curated_only": {"type": "boolean"}}}}},
-            ])
-        for tool in tools:
-            # This wrapper option is consumed before calling legacy plugin handlers.
-            if tool["function"]["name"] not in {"tool_search", "read_tool_result"}:
-                tool["function"]["parameters"] = copy.deepcopy(tool["function"]["parameters"])
-                params = tool["function"]["parameters"]
-                params.setdefault("properties", {})["refresh"] = {"type": "boolean", "description": "重新获取，不复用本轮资料"}
-        return tools
+    def get_tool_definitions(self):
+        definitions=copy.deepcopy(LOCAL_TOOLS)
+        if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
+        if self.read_only_only:
+            definitions.append(copy.deepcopy(CALCULATE_TOOL))
+            definitions.append(tool('tool_search','按名称或描述发现可用的外部只读工具。',{'query':S},['query']))
+            for definition in self.plugin_host.get_tool_definitions() if self.plugin_host else []:
+                name=definition['function']['name'];caps=self.plugin_host.tool_capabilities(name)
+                if caps['read_only'] and (not caps['deferred'] or name in self.discovered_tools):
+                    definition=copy.deepcopy(definition)
+                    definition['function']['parameters'].setdefault('properties',{})['refresh']={
+                        'type':'boolean','description':'重新获取，不复用已有资料'}
+                    definitions.append(definition)
+        return definitions
 
-    async def execute(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        return str(await self.execute_result(tool_name, arguments))
+    def is_read_only(self,name):
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','tool_search'}: return True
+        return bool(self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name)
+                    and self.plugin_host.tool_capabilities(name)['read_only'])
 
-    def is_read_only(self, name: str) -> bool:
-        if self.plugin_host and self.plugin_host.has_tool(name):
-            return self.plugin_host.tool_capabilities(name)["read_only"]
-        return name in {"search_messages", "read_context", "query_timeline", "query_person_history",
-                        "query_memory", "inspect_episode", "tool_search", "read_tool_result", "query_jobs", "inspect_image", "search_media"}
+    async def execute(self,name,arguments): return str(await self.execute_result(name,arguments))
 
-    async def execute_many(self, calls):
-        """Parallelize read-only groups; preserve ordering around unknown effects."""
-        results, batch = [], []
-        async def run(name, arguments):
-            async with self._parallel:
-                try:
-                    return await self.execute(name, arguments)
-                except Exception as error:
-                    return error
-        for name, arguments in calls:
-            if self.is_read_only(name):
-                batch.append((name, arguments))
-            else:
-                results.extend(await asyncio.gather(*(run(*call) for call in batch)))
-                batch.clear()
-                results.append(await run(name, arguments))
-        results.extend(await asyncio.gather(*(run(*call) for call in batch)))
-        return results
+    async def execute_many(self,calls):
+        async def run(name,args):
+            try: return await self.execute(name,args)
+            except Exception as error:return error
+        return await asyncio.gather(*(run(*call) for call in calls))
 
-    async def import_results(self, result_ids):
-        """Transfer completed observations to a new job without repeating network work."""
+    async def import_results(self,result_ids):
         for result_id in result_ids:
-            result = await self.event_store.read_tool_observation(result_id, [self.default_scene_id])
-            if result is None:
-                raise ValueError("Transferred result does not belong to this scene")
-            if result_id not in self.result_ids:
-                self.result_ids.append(result_id)
-            call = await self.event_store.tool_observation_call(result_id, self.default_scene_id)
-            if call and self.plugin_host and self.plugin_host.has_tool(call[0]) and self.is_read_only(call[0]) and result.status in {"ok", "no_results", "partial"}:
-                self._cache[json.dumps(list(call), ensure_ascii=False, sort_keys=True)] = result
+            result=await self.event_store.read_tool_observation(result_id,self.allowed_scopes)
+            if result is None:raise ValueError('Transferred result does not belong to this scene')
+            if result_id not in self.result_ids:self.result_ids.append(result_id)
+            call=await self.event_store.tool_observation_call(result_id,self.default_scene_id)
+            if call and self.plugin_host and self.plugin_host.has_tool(call[0]) and self.is_read_only(call[0]) and result.status in {'ok','no_results','partial'}:
+                self._cache[json.dumps(list(call),ensure_ascii=False,sort_keys=True)]=result
 
-    async def execute_result(self, name, arguments):
-        arguments = dict(arguments)
-        if name == "read_tool_result":
-            result = await self.event_store.read_tool_observation(str(arguments.get("result_id", "")), self.allowed_scopes)
-            if result is None:
-                return ToolResult.failure("结果不存在或不在允许场景中", "not_found")
-            return result.page(int(arguments.get("offset", 0)), int(arguments.get("limit", 6000)))
-        if name == "tool_search":
-            query = str(arguments.get("query", "")).casefold().strip()
-            if not query:
-                return ToolResult.failure("query must not be empty", "invalid_arguments")
-            matches = []
-            for tool in self.plugin_host.get_tool_definitions() if self.plugin_host else []:
-                fn = tool["function"]
-                if self.read_only_only and not self.is_read_only(fn["name"]):
-                    continue
-                if query in (fn["name"] + " " + fn["description"]).casefold():
-                    matches.append(fn["name"])
+    def _resolve_arguments(self,name,args):
+        if not self.references:return args
+        refs=self.references
+        for key,resolve in [('event_id',refs.locate_event),('actor_id',refs.actor_id),('asset_id',refs.media_id),
+                            ('subject',refs.actor_id),('result_id',refs.result_id)]:
+            if args.get(key):args[key]=resolve(args[key])
+        if args.get('job_id'):args['job_id']=refs.job(args['job_id'])['id']
+        return args
+
+    async def execute_result(self,name,arguments):
+        definitions={t['function']['name']:t for t in self.get_tool_definitions()}
+        if name not in definitions:return ToolResult.failure('本入口未开放此工具','capability_denied')
+        try:args=self._resolve_arguments(name,dict(arguments))
+        except ValueError as error:return ToolResult.failure(str(error),'invalid_reference')
+        if name=='read_tool_result':
+            result=await self.event_store.read_tool_observation(args.get('result_id',''),self.allowed_scopes)
+            if result is None:return ToolResult.failure('资料不存在或不属于本群','not_found')
+            call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
+            return (await self._present(call[0] if call else '',result,offset=int(args.get('offset',0)),limit=int(args.get('limit',6000))))
+        if name=='tool_search':
+            query=str(args.get('query','')).casefold().strip()
+            if not query:return ToolResult.failure('query不能为空','invalid_arguments')
+            matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions() if
+                self.is_read_only(t['function']['name']) and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
             self.discovered_tools.update(matches[:8])
-            return ToolResult(status="ok" if matches else "no_results", content=json.dumps(matches[:8], ensure_ascii=False), coverage="tool_catalog")
-        if self.read_only_only and not self.is_read_only(name):
-            return ToolResult.failure("工作执行器仅可使用声明为只读的工具", "capability_denied")
-        refresh = bool(arguments.pop("refresh", False))
-        key = json.dumps([name, arguments], ensure_ascii=False, sort_keys=True)
-        async with self._call_locks.setdefault(key, asyncio.Lock()):
-            if not refresh and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and key in self._cache:
-                return self._cache[key].model_copy(update={"cached": True}).page()
-            if self.checkpoint:
-                await self.checkpoint("before_tool", {"scene_id": self.default_scene_id, "name": name, "arguments": arguments})
-            started = time.monotonic()
-            result = ToolResult.normalize(await self._execute_raw(name, arguments))
-            result.duration_ms = round((time.monotonic()-started)*1000, 2)
-            if not (self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind == "unknown":
-                result.evidence_kind = "retrieval"
-            result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, arguments, result, background_work=self.read_only_only)
+            return ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog')
+        refresh=bool(args.pop('refresh',False));key=json.dumps([name,args],ensure_ascii=False,sort_keys=True)
+        async with self._call_locks.setdefault(key,asyncio.Lock()):
+            if not refresh and key in self._cache:return await self._present(name,self._cache[key].model_copy(update={'cached':True}))
+            if self.checkpoint:await self.checkpoint('before_tool',{'scene_id':self.default_scene_id,'name':name,'arguments':args})
+            start=time.monotonic()
+            async with self._parallel:
+                try:result=ToolResult.normalize(await self._execute_raw(name,args))
+                except Exception as error:result=ToolResult.failure(str(error),type(error).__name__)
+            result.duration_ms=round((time.monotonic()-start)*1000,2)
+            if not(self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind=='unknown':result.evidence_kind='retrieval'
+            result,event=await self.event_store.save_tool_observation(self.default_scene_id,name,args,result,background_work=self.read_only_only)
             self.result_ids.append(result.result_id)
-            if self.on_observation:
-                await self.on_observation(event)
-            if self.checkpoint:
-                await self.checkpoint("after_tool", {"scene_id": self.default_scene_id, "name": name, "result": result.model_dump()})
-            if self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name) and result.status in {"ok", "no_results", "partial"}:
-                self._cache[key] = result
-            return result.page()
+            if self.on_observation:await self.on_observation(event)
+            if self.checkpoint:await self.checkpoint('after_tool',{'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
+            if self.plugin_host and self.plugin_host.has_tool(name) and result.status in {'ok','no_results','partial'}:self._cache[key]=result
+            return await self._present(name,result)
 
-    async def _execute_raw(self, tool_name: str, arguments: dict[str, Any]):
-        try:
-            if tool_name == "inspect_image":
-                if not self.media_service:
-                    return ToolResult(status="unsupported", content="媒体服务未配置")
-                return await self.media_service.inspect(str(arguments.get("asset_id", "")), self.default_scene_id,
-                    str(arguments.get("question", "")), self.before_nested_model)
-            if tool_name == "search_media":
-                assets = await self.event_store.list_media([self.default_scene_id, "global-safe"],
-                    query=str(arguments.get("query", "")), curated_only=bool(arguments.get("curated_only", True)))
-                records = [{"asset_id": asset["id"], **{key: asset[key] for key in ("scope", "source_event_id", "description", "tags")}} for asset in assets]
-                return ToolResult(status="ok" if records else "no_results", content=json.dumps(records, ensure_ascii=False), evidence_kind="retrieval")
-            if tool_name == "query_jobs":
-                job_id = arguments.get("job_id")
-                result = await self.event_store.get_job(job_id, self.default_scene_id) if job_id else await self.event_store.list_jobs(self.default_scene_id)
-                return ToolResult(status="ok" if result else "no_results", content=json.dumps(result, ensure_ascii=False), evidence_kind="retrieval")
-            if self.plugin_host and self.plugin_host.has_tool(tool_name):
-                return await self.plugin_host.execute_tool(tool_name, arguments)
+    async def _present(self,name,result,offset=0,limit=6000):
+        if not self.context:return result.page(offset,limit)
+        refs=self.references;shown=result.model_copy(deep=True)
+        if shown.result_id:shown.result_id=refs.register_result(shown.result_id)
+        try:data=json.loads(shown.content)
+        except (TypeError,ValueError):return shown.page(offset,limit)
+        if name in {'search_messages','read_context','query_timeline','query_person_history'}:
+            rows=[]
+            for raw in data:
+                event=Event.model_validate(raw)
+                if event.metadata['_rowid']<=refs.cutoff:
+                    # Render only events overlapping the requested page. A source
+                    # locator does not by itself grant evidence authority.
+                    original=self.context.refs
+                    self.context.refs=copy.deepcopy(original)
+                    try:preview=self.context.event_message(event)['content']
+                    finally:self.context.refs=original
+                    position=sum(len(line)+1 for line in rows)
+                    if position+len(preview)>offset and position<offset+limit:
+                        rows.append(self.context.event_message(event)['content'])
+                    else:rows.append(preview)
+            shown.content='\n'.join(rows)
+        elif name=='search_media':
+            for item in data:item['asset_id']=refs.register_media(item['asset_id'])
+            shown.content=json.dumps(data,ensure_ascii=False)
+        elif name=='query_memory':
+            for item in data:
+                item['ref']=refs.register_memory(item.pop('id'))
+                item['subject']=refs.register_actor(item['subject'])
+                item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
+                item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
+            shown.content=json.dumps(data,ensure_ascii=False)
+        elif name=='query_jobs':
+            for item in data:
+                item['ref']=refs.register_job(item)
+                item['result_ids']=[refs.register_result(r) for r in item['result_ids']]
+            shown.content=json.dumps(data,ensure_ascii=False)
+        return shown.page(offset,limit)
 
-            if tool_name == "search_messages":
-                query = arguments.get("query", "")
-                limit = int(arguments.get("limit", 10))
-                rows = await self.event_store.search_messages(
-                    query=query,
-                    allowed_scopes=self.allowed_scopes,
-                    limit=limit
-                )
-                formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content="未找到匹配的历史消息。")
-
-            elif tool_name == "read_context":
-                event_id = arguments.get("event_id", "")
-                before = int(arguments.get("before", 3))
-                after = int(arguments.get("after", 3))
-                rows = await self.event_store.read_context(
-                    event_id=event_id,
-                    before=before,
-                    after=after,
-                    allowed_scopes=self.allowed_scopes
-                )
-                formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content=f"未找到该事件 {event_id} 或其上下文。")
-
-            elif tool_name == "query_timeline":
-                start_time = float(arguments.get("start_time", 0))
-                end_time = float(arguments.get("end_time", 0))
-                limit = int(arguments.get("limit", 15))
-                rows = await self.event_store.query_timeline(
-                    scene_id=self.default_scene_id,
-                    start_time=start_time,
-                    end_time=end_time,
-                    allowed_scopes=self.allowed_scopes,
-                    limit=limit
-                )
-                formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else "该时间段内无历史记录。"
-
-            elif tool_name == "query_person_history":
-                actor_id = arguments.get("actor_id", "")
-                limit = int(arguments.get("limit", 10))
-                rows = await self.event_store.query_person_history(
-                    actor_id=actor_id,
-                    allowed_scopes=self.allowed_scopes,
-                    limit=limit
-                )
-                formatted = await self._project_rows(rows)
-                return "\n".join(formatted) if formatted else f"未找到用户 {actor_id} 的历史发言。"
-
-            elif tool_name == "query_memory":
-                if not self.memory_store:
-                    return ToolResult(status="unsupported", content="未配置记忆库。")
-                subject = arguments.get("subject")
-                kind = arguments.get("kind")
-                key = arguments.get("key")
-                query = arguments.get("query")
-                include_history = bool(arguments.get("include_history", False))
-                memories = await self.memory_store.query_memories(
-                    allowed_scopes=self.allowed_scopes,
-                    subject=subject,
-                    kind=kind,
-                    key=key,
-                    query=query,
-                    include_superseded=include_history
-                )
-                formatted = []
-                for m in memories:
-                    status_tag = f"[{m.status.value.upper()}]"
-                    history_tag = f" (已被覆盖 superseded_by: {m.superseded_by})" if m.status.value == "superseded" else ""
-                    formatted.append(
-                        f"[{m.id}] {status_tag} [{m.kind.upper()}] {m.subject} -> {m.key}: {m.value} "
-                        f"(certainty: {m.certainty.value}, assertion: {m.human_readable_assertion}{history_tag})"
-                        f" 原始证据EventIDs={m.evidence} 修订原因={m.revision_reason} 修订证据={m.revision_evidence}"
-                    )
-                return "\n".join(formatted) if formatted else ToolResult(status="no_results", content="未找到匹配的认识信念记忆。")
-
-            elif tool_name == "inspect_episode":
-                if not self.memory_store:
-                    return ToolResult(status="unsupported", content="未配置经历库。")
-                episode_id = arguments.get("episode_id", "")
-                ep = await self.memory_store.get_episode_in_scopes(
-                    episode_id,
-                    self.allowed_scopes,
-                )
-                if not ep:
-                    return f"在当前可用范围内未找到经历记录 {episode_id}。"
-                return (
-                    f"【经历: {ep.title}】 (ID: {ep.id})\n"
-                    f"时间: {ep.created_at} | 参与者: {', '.join(ep.participants)}\n"
-                    f"标签: {', '.join(ep.tags)}\n"
-                    f"摘要: {ep.summary}\n"
-                    f"引用原始事件数: {len(ep.source_event_ids)}"
-                )
-
-            return ToolResult.failure(f"未知工具: {tool_name}", "not_found")
-        except Exception as e:
-            logger.exception("Error executing tool %s: %s", tool_name, e)
-            return ToolResult.failure(f"工具执行失败: {e}", type(e).__name__)
+    async def _execute_raw(self,name,args):
+        store=self.event_store;scopes=self.allowed_scopes
+        if name=='read_media':return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
+        if name=='search_media':
+            rows=await store.list_media([self.default_scene_id,'global-safe'],query=str(args.get('query','')),curated_only=bool(args.get('curated_only',True)))
+            return [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')}} for x in rows]
+        if name=='query_jobs':
+            if args.get('job_id'):
+                job=await store.get_job(args['job_id'],self.default_scene_id);return [job] if job else []
+            return await store.list_jobs(self.default_scene_id)
+        if name=='calculate':return calculate(args.get('expression',''))
+        if self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name):
+            return await self.plugin_host.execute_tool(name,args)
+        rows=None;limit=max(1,min(int(args.get('limit',15)),50))
+        if name=='search_messages':rows=await store.search_messages(str(args.get('query','')),scopes,limit,through_rowid=self.cutoff)
+        elif name=='read_context':rows=await store.read_context(str(args.get('event_id','')),int(args.get('before',3)),int(args.get('after',3)),scopes,through_rowid=self.cutoff)
+        elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,float(args['start_time']),float(args['end_time']),scopes,limit,through_rowid=self.cutoff)
+        elif name=='query_person_history':rows=await store.query_person_history(str(args.get('actor_id','')),scopes,limit,through_rowid=self.cutoff)
+        elif name=='query_memory':
+            if not self.memory_store:return ToolResult(status='unsupported',content='未配置认识账本')
+            memories=await self.memory_store.query_memories(scopes,subject=args.get('subject'),kind=args.get('kind'),query=args.get('query'),include_superseded=bool(args.get('include_history',False)))
+            return [m.model_dump(mode='json') for m in memories]
+        if rows is not None:
+            enriched=await store.project_reply_context(self.default_scene_id,[Event.model_validate(r) for r in rows],through_rowid=self.cutoff)
+            if self.context:return [event.model_dump(mode='json') for event in enriched]
+            return '\n'.join(project_event(event,self.bot_qq) for event in enriched)
+        return ToolResult.failure('未知工具','not_found')
