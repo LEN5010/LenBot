@@ -173,6 +173,7 @@ async def test_palette_edit_api_and_send_preparation_recheck_scope_and_enabled(m
     action = ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:a", content=segment_text(segments), segments=segments)
     prepared = await service.prepare_action(action)
     assert prepared.resolved_images[asset["id"]].startswith("base64://")
+    assert not prepared.resolved_sticker_ids
     assert "resolved_images" not in prepared.model_dump()
     await service.edit(asset["id"], "global-safe", "笑", [], False)
     with pytest.raises(ValueError):

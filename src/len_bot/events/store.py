@@ -389,6 +389,70 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             projected.append(item)
         return projected
 
+    async def outbound_message_facts(
+        self, scene_id: str, through_rowid: int, *, bot_actor_id: str, limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Read approved expressions and their latest same-scene receipt atomically.
+
+        Conversation commits precede queue delivery. They already authorize an
+        expression, but are not MESSAGE_SENT. Receipts beyond the conversation's
+        input cutoff remain outbound status facts, without consuming that input.
+        Actor commit IDs are ``turn:{episode_id}``; Queue uses that episode ID as
+        batch_id and the message's array position as batch_index.
+        """
+        if not scene_id or not bot_actor_id or through_rowid < 0:
+            raise ValueError("Outbound facts require a scene, Bot identity and read cutoff")
+        rows = await (await self._db.execute(
+            """WITH approved AS (
+                SELECT rowid AS approval_rowid,id,timestamp,payload,metadata,substr(id,6) AS batch_id
+                FROM events WHERE scene_id=? AND event_type='CONVERSATION_COMMITTED'
+                  AND id LIKE 'turn:%' AND json_array_length(payload,'$.outcome.message_proposals')>0
+                ORDER BY rowid DESC LIMIT ?
+            )
+            SELECT a.id,a.timestamp,a.batch_id,a.metadata,m.key,m.value,
+                   r.rowid,r.id,r.event_type,r.timestamp,r.payload,r.metadata
+            FROM approved a JOIN json_each(a.payload,'$.outcome.message_proposals') m
+            LEFT JOIN events r ON r.rowid=(
+                SELECT receipt.rowid FROM events receipt
+                WHERE receipt.scene_id=? AND receipt.actor_id=?
+                  AND receipt.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+                  AND json_extract(receipt.payload,'$.batch_id')=a.batch_id
+                  AND COALESCE(json_extract(receipt.payload,'$.batch_index'),0)=CAST(m.key AS INTEGER)
+                ORDER BY receipt.rowid DESC LIMIT 1
+            )
+            WHERE r.rowid IS NULL OR r.event_type!='MESSAGE_SENT' OR r.rowid>?
+            ORDER BY a.approval_rowid,CAST(m.key AS INTEGER)""",
+            (scene_id, max(1, min(limit, 20)), scene_id, bot_actor_id, through_rowid),
+        )).fetchall()
+        facts = []
+        for approval_id, approved_at, batch_id, approval_metadata, index, message_json, receipt_rowid, receipt_id, kind, receipt_at, receipt_json, receipt_metadata in rows:
+            message = json.loads(message_json)
+            receipt = json.loads(receipt_json) if receipt_json else {}
+            simulated = bool(json.loads(receipt_metadata).get("simulated")) if receipt_metadata else False
+            if receipt_id is None:
+                status = "pending"
+            elif kind == "ACTION_SHADOWED":
+                status = "shadow"
+            elif kind == "MESSAGE_SENT":
+                status = "simulated_sent" if simulated else "sent"
+            elif receipt.get("delivery_unknown") or receipt.get("delivery_status") == "unknown":
+                status = "unknown"
+            else:
+                status = receipt.get("delivery_status")
+                if status not in {"not_sent", "rejected"}:
+                    status = "unknown"
+            facts.append({
+                "approval_event_id": approval_id, "approved_at": approved_at,
+                "batch_id": batch_id, "batch_index": int(index),
+                "approval_mode": json.loads(approval_metadata).get("mode"),
+                "segments": receipt.get("segments", message.get("segments", [])), "status": status,
+                "body_source": "receipt" if "segments" in receipt else "approval",
+                "receipt_event_id": receipt_id, "receipt_at": receipt_at,
+                "receipt_after_cutoff": receipt_rowid is not None and receipt_rowid > through_rowid,
+                "simulated": simulated,
+            })
+        return facts
+
     async def own_sent_message_ids(self, actor_id: str, limit: int = 1000) -> list[str]:
         cursor = await self._db.execute(
             "SELECT json_extract(payload, '$.message_id') FROM events "

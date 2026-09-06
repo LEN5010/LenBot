@@ -574,7 +574,6 @@ class AgentRuntime:
                 if any(_is_shadow_input(event) for event in additions):
                     mailbox.origin_mode = "shadow"
                 mailbox.acknowledge_through(observed)
-                trace["interim_batches"] = trace.get("interim_batches", 0) + 1
                 return {"session": current, "events": additions, "through_rowid": observed,
                         "source_event_ids": list(source_ids)}
 

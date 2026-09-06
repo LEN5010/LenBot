@@ -134,8 +134,11 @@ async def test_plain_content_never_becomes_a_reply_and_final_step_forces_termina
         return args
 
     trace = {}
-    assert await run(gateway, max_steps=2, finish=finish, trace=trace) == {"messages": []}
+    assert await run(gateway, max_steps=2, tool_definitions=lambda: [definition("start_work")],
+                     finish=finish, trace=trace) == {"messages": []}
     assert accepted == [{"messages": []}]
+    assert requests[0]["tools"] == [definition("start_work"), TERMINAL]
+    assert requests[1]["tools"] == [TERMINAL]
     assert requests[1]["tool_choice"] == {"type": "function", "function": {"name": "finish_turn"}}
     assert "reasoning_effort" not in requests[0]
     assert len(trace["contract_repairs"]) == 1
@@ -301,7 +304,9 @@ async def test_tool_boundary_observation_and_budget_hooks(gateway_factory):
     await run(gateway, tool_definitions=lambda: [definition("read")], execute_tool=execute,
               before_tool=charge_tool, observe=observe, max_tool_calls=1, trace=trace)
     assert calls == [("read", {})]
-    assert requests[1]["messages"][-1]["content"] == "新增输入"
+    assert requests[1]["messages"][-2]["content"] == "新增输入"
+    assert "finish_turn" in requests[1]["messages"][-1]["content"]
+    assert requests[1]["tools"] == [TERMINAL]
     assert requests[1]["tool_choice"]["function"]["name"] == "finish_turn"
     assert trace["interim_batches"] == 1
 
@@ -366,11 +371,22 @@ async def test_cancellation_hook_prevents_tool_execution_and_terminal(gateway_fa
 
 
 @pytest.mark.asyncio
-async def test_last_step_rejects_read_request_without_executing_it(gateway_factory):
-    gateway, requests = gateway_factory([response(call("read", "{}"))])
+@pytest.mark.parametrize("calls", [
+    (call("read"),),
+    (call("finish_turn"), call("start_work", call_id="work")),
+])
+async def test_last_step_rejects_unoffered_tools_without_execution_or_commit(gateway_factory, calls):
+    gateway, requests = gateway_factory([response(*calls)])
     trace = {}
-    with pytest.raises(AgentProtocolError, match="No model budget remains"):
-        await run(gateway, tool_definitions=lambda: [definition("read")], max_steps=1, trace=trace)
+
+    async def finish(args):
+        raise AssertionError("must reject the entire response")
+
+    with pytest.raises(AgentProtocolError, match="Unknown tool:"):
+        await run(gateway, tool_definitions=lambda: [definition("read"), definition("start_work")],
+                  proposal_tool_names={"start_work"}, finish=finish, max_steps=1, trace=trace)
+    assert len(requests) == 1
+    assert requests[0]["tools"] == [TERMINAL]
     assert requests[0]["tool_choice"]["function"]["name"] == "finish_turn"
     assert trace["tool_calls_used"] == 0
 
