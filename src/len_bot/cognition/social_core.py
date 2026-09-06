@@ -40,7 +40,9 @@ class SocialCognitionCore:
             if pending_images:
                 additions.extend(await context.attachments(pending_images))
                 pending_images.clear()
-            update=await observe() if observe else None
+            can_absorb=(runtime.config.conversation_max_steps-audit['model_calls_used']>=2
+                        and runtime.config.conversation_max_tool_calls-audit['tool_calls_used']>=1)
+            update=await observe() if observe and can_absorb else None
             if update:
                 context.session=update['session']
                 context.refs.cutoff=update['through_rowid']
@@ -59,6 +61,7 @@ class SocialCognitionCore:
                 raise ValueError('Conversation text and tool results exceed the context budget; input remains pending')
             audit['estimated_context_tokens']=tokens
             audit['read_cutoff']=context.refs.cutoff
+            return context.model_messages(trajectory)
 
         async def finish(arguments):
             outcome=await ledger.finish(arguments)

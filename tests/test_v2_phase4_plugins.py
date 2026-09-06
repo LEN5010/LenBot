@@ -13,7 +13,8 @@ from len_bot.events.store import EventStore
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.testing.social import social_result
+from len_bot.testing.turns import turn_result
+from len_bot.testing.replay import drain
 
 class LotterySensoryPlugin(BasePlugin):
     """Goal 6: Social participant plugin that emits sensory events rather than sending messages directly."""
@@ -120,17 +121,17 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
         sent_messages.append(action.content)
         return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
 
-    async def mock_social_core(messages):
-        last_msg = messages[-1]["content"] if messages else ""
+    async def mock_turn(session, events):
+        last_msg = "\n".join(event.raw_text for event in events)
         if "抽奖" in last_msg:
-            return social_result(
+            return turn_result(
                 reason="有人发起了抽奖，自然接一句",
                 content="好耶！开抽开抽，两小时后见分晓~",
             )
-        return social_result(reason="无须发言")
+        return turn_result(reason="无须发言")
 
     config = RuntimeConfig(bot_qq=12345678, db_path=db_file, debounce_idle_ms=50, debounce_max_ms=100)
-    runtime = AgentRuntime(config, send_adapter=mock_adapter, mock_social_handler=mock_social_core)
+    runtime = AgentRuntime(config, send_adapter=mock_adapter, mock_turn_handler=mock_turn)
     await runtime.start()
     await allow_fake_delivery(runtime, 'group:lottery_scene')
 
@@ -143,7 +144,7 @@ async def test_goal6_sensory_plugin_social_participant(tmp_path):
 
     # Trigger lottery through plugin
     await lottery_plugin.trigger_lottery(scene_id, "user:organizer", "限量版 LenBot 贴纸")
-    await asyncio.sleep(0.3)
+    await drain(runtime)
 
     # Verify message was sent by Bot's persona through ActionQueue
     assert len(sent_messages) == 1
@@ -219,7 +220,7 @@ async def test_goal7_plugin_crash_and_timeout_sandbox_isolation(tmp_path):
     # 4. Runtime and scene actor continue operating normally!
     scene_id = "group:resilience"
     actor = await runtime.scene_manager.get_or_create_actor(scene_id)
-    assert actor.state.scene_id == scene_id
+    assert actor.session.scene_id == scene_id
 
     # 5. Dynamic Unload & Cleanup
     await runtime.plugin_host.unload_plugin("faulty_plugin")
@@ -256,20 +257,20 @@ async def test_action_interceptor_filtering(tmp_path):
     # 1. Enqueue action with normal text -> sent successfully
     act_normal = ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:test", content="你好世界！")
     runtime.action_queue.enqueue(act_normal)
-    await asyncio.sleep(0.1)
+    await drain(runtime)
     assert len(sent_messages) == 1
     assert sent_messages[0] == "你好世界！"
 
     # 2. Enqueue action with blocked text -> dropped by interceptor
     act_blocked = ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:test", content="这是一条含有违禁敏感词的内容")
     runtime.action_queue.enqueue(act_blocked)
-    await asyncio.sleep(0.1)
+    await drain(runtime)
     assert len(sent_messages) == 1  # Not sent!
 
     # 3. Enqueue action with content requiring sanitization -> sanitized and sent
     act_sanitized = ActionItem(action_type=ActionType.SEND_GROUP_MESSAGE, scene_id="group:test", content="敏感前缀:用户电话13800000000")
     runtime.action_queue.enqueue(act_sanitized)
-    await asyncio.sleep(0.1)
+    await drain(runtime)
     assert len(sent_messages) == 2
     assert "[安全脱敏]:用户电话13800000000" in sent_messages[1]
 

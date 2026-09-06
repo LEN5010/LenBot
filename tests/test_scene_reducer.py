@@ -42,5 +42,5 @@ def test_scene_reducer_single_writer_flow():
     s3 = SceneReducer.reduce(s2, e3, bot_id)
     assert s3.version == 3
     assert s3.consecutive_bot_messages == 1
-    assert s3.recent_bot_message_at == now + 2
-    assert s3.intervening_messages_since_bot == 0
+    assert s3.last_bot_message_at == now + 2
+    assert s3.human_messages_since_bot == 0

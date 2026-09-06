@@ -52,7 +52,7 @@ async def run_app():
 
     banner = f"""
 ======================================================================
-  🤖 Len Bot - Persistent Social Agent Runtime v0.2
+  🤖 Len Bot - Native Conversation and Work Runtime
 ======================================================================
   ● Web 管理面板 (Dashboard):  {"http://" + config.dashboard_host + ":" + str(config.dashboard_port) if config.dashboard_enabled else "Disabled"}
   ● 默认管理员凭据:           admin / lenbot123
@@ -60,7 +60,7 @@ async def run_app():
   ● OneBot v11 发送方式:      {action_transport}
   ● 数据库路径:               {config.db_path}
 ======================================================================
-  Bot 正在持续观察环境、守护时间感与未决事务中... 按 Ctrl+C 优雅退出
+  Bot 已启动，等待群聊与工作事件。 按 Ctrl+C 优雅退出
 ======================================================================
 """
     print(banner)

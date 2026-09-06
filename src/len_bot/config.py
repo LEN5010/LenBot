@@ -40,17 +40,10 @@ class RuntimeConfig(BaseModel):
     )
     maintenance_interval_seconds: float = Field(
         default=60.0,
-        description="Background heartbeat: open-loop GC and memory decay"
+        description="Background maintenance of explicit open-loop expiry"
     )
 
-    # Ambient Cognition (ADR-0034): durable next-wake intents
-    next_wake_min_interval_seconds: float = Field(
-        default=60.0,
-        description="Minimum delay for Social Core next-wake tasks; closer wakes are clamped"
-    )
-    
-    # Identity (ADR-0038: layered persona — identity core + style line + adaptive
-    # self state + group register + voice exemplars, not two static strings)
+    # Operator-owned character card; explicit preset application preserves edits.
     identity_name: str = "Len"
     character_context: str = ""
     identity_core: str = (

@@ -39,7 +39,7 @@ async def persona_store(tmp_path):
 
 async def palette(service):
     refs = {}
-    for index, (name, tag) in enumerate((('celebrate', '开心'), ('wry', '无奈')), 1):
+    for index, (name, tag) in enumerate((('celebrate', '开心'), ('wry', '无语')), 1):
         asset = await service.upload(picture(), 'global-safe', tag, [tag])
         await service.edit(asset['id'], 'global-safe', tag, [tag], True, palette_order=index)
         refs[name] = asset['id']
@@ -89,7 +89,7 @@ async def test_short_card_upgrade_preserves_manual_edits_and_preview_token(perso
 async def test_preset_requires_real_materials_and_rechecks_disabled_asset(persona_store):
     store, service, _ = persona_store
     preview = await store.preview_diana_persona()
-    assert preview['missing_media'] == ['开心', '无奈']
+    assert preview['missing_media'] == ['开心', '无语']
     with pytest.raises(ValueError, match='运营素材'):
         await store.apply_diana_persona(999, preview['preview_token'])
     assert not await store.list_voice_examples() and await store.get_dynamic_config(PRESET_ID) is None
