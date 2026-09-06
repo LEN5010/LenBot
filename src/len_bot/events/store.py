@@ -453,6 +453,28 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             })
         return facts
 
+    async def uncommitted_job_attempts(self, scene_id: str, after_rowid: int, through_rowid: int) -> list[dict[str, Any]]:
+        """Prior rejected intent is a failure record, never an actual job.
+
+        Only show it while the input that it read remains unconsumed. A trace
+        recorded after an accepted commit must never become a rejected intent.
+        """
+        rows = await (await self._db.execute(
+            """SELECT ref_id,payload FROM traces
+               WHERE scene_id=? AND kind='conversation_error'
+                 AND json_extract(payload,'$.error_type') IN ('SceneCommitConflict','CommitConflict')
+                 AND COALESCE(json_extract(payload,'$.gate.accepted'),0)=0
+                 AND json_extract(payload,'$.observed_rowid')>?
+                 AND json_extract(payload,'$.observed_rowid')<=?
+                 AND json_array_length(payload,'$.conversation.proposed_outcome.job_proposals')>0
+               ORDER BY created_at DESC LIMIT 3""", (scene_id, after_rowid, through_rowid),
+        )).fetchall()
+        return [{"attempt_id": ref_id, "status": "not_committed", "reason": payload["error"],
+                 "proposals": [{key: proposal.get(key) for key in
+                     ("operation", "goal", "job_id", "source_event_ids")}
+                     for proposal in payload["conversation"]["proposed_outcome"]["job_proposals"]]}
+                for ref_id, raw in rows for payload in [json.loads(raw)]]
+
     async def own_sent_message_ids(self, actor_id: str, limit: int = 1000) -> list[str]:
         cursor = await self._db.execute(
             "SELECT json_extract(payload, '$.message_id') FROM events "

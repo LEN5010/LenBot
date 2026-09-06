@@ -6,7 +6,7 @@ import json
 import time
 from datetime import datetime, timezone
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from len_bot.cognition.agent_loop import AgentLoop, TerminalArgumentError, ToolArgumentError
 from len_bot.cognition.gateway import ModelGateway
@@ -41,8 +41,8 @@ def _request_tokens(messages, tools):
 
 
 class WorkGateway(ModelGateway):
-    def __init__(self, binding, context_tokens):
-        super().__init__(binding, max_output_tokens=min(4096, max(1024, context_tokens // 4)))
+    def __init__(self, binding, context_tokens, max_output_tokens):
+        super().__init__(binding, max_output_tokens=max_output_tokens)
         self.context_tokens = context_tokens
 
     async def complete(self, messages, tools, tool_choice):
@@ -51,10 +51,17 @@ class WorkGateway(ModelGateway):
         return await super().complete(messages, tools, tool_choice)
 
 
+class WorkConclusion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    summary: str = Field(max_length=4000, description="最终结论、简短完整依据与适用条件；省去草稿和已放弃的推理，未解决的矛盾放入 unresolved")
+    result_ids: list[str]
+    unresolved: list[str]
+
+
 FINISH_WORK = {
     "type": "function", "function": {
-        "name": "finish_work", "description": "提交本次工作结果和仍未核实的事项；资料回到对话，由对话模型决定表达。",
-        "parameters": JobResult.model_json_schema(),
+        "name": "finish_work", "description": "提交结论、资料引用和未完成事项；unresolved 非空表示部分结果，空列表表示全部完成。资料回到对话，由对话模型决定表达。",
+        "parameters": WorkConclusion.model_json_schema(),
     },
 }
 REPORT_PROGRESS = {
@@ -142,8 +149,8 @@ class InformationJobRunner:
             "原始图片直接作为图像输入提供；不清楚的部分保留未核实项。"
             "有值得回到对话中的阶段性发现时调用 report_progress，进展是资料而非群聊台词。"
             "提交前核对最终结论与已验证的依据、数值、单位和条件是否一致；矛盾未解决时记录在 unresolved。"
-            "完成时调用 finish_work，summary 给最终结论与简短完整依据，不重复草稿或已放弃的结论；status=completed 时必须已解决全部要求。"
-            "证据不足或预算有限时提交 partial 和具体 unresolved，不用印象填补。普通正文不会作为工作结果提交。")},
+            "结束本次工作时调用 finish_work，summary 给最终结论与简短完整依据，不重复草稿或已放弃的结论；result_ids 和 unresolved 显式提供列表。"
+            "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
         return messages, seen_assets
 
@@ -227,13 +234,12 @@ class InformationJobRunner:
 
         async def finish(arguments):
             try:
-                result = JobResult.model_validate(arguments)
-                if result.status == "completed" and result.unresolved:
-                    raise ValueError("Completed work cannot contain unresolved requirements")
-                if not set(result.result_ids).issubset(toolkit.result_ids):
+                conclusion = WorkConclusion.model_validate(arguments)
+                if not set(conclusion.result_ids).issubset(toolkit.result_ids):
                     raise ValueError("Result references resources this work has not observed")
             except (ValidationError, ValueError) as error:
                 raise TerminalArgumentError(str(error)) from error
+            result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump())
             return await commit_result(result, revision)
 
         async def checkpoint(stage, payload):
@@ -260,7 +266,8 @@ class InformationJobRunner:
                 trace["runs"].append(run_trace)
                 try:
                     if gateway is None:
-                        gateway = WorkGateway(runtime.provider_registry.resolve("work"), config.job_context_tokens)
+                        gateway = WorkGateway(runtime.provider_registry.resolve("work"), config.job_context_tokens,
+                                              config.work_output_tokens)
                     await toolkit.import_results(job["result_ids"])
                     await charge(revision, enforce=False)
                     job = await store.get_job(job_id, scene_id)

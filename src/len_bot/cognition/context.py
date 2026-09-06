@@ -152,8 +152,15 @@ class ConversationContext:
         elif quote:
             text += '\n引用的原消息尚未从本群历史中找到。'
         if event.event_type == EventType.AGENT_JOB_FINISHED:
-            work_ref=next((ref for ref,job in self.refs.jobs.items() if job['id']==event.payload.get('job_id') and job['revision']==event.payload.get('job_revision')),None)
-            text=f'后台工作 {work_ref} 已返回结果，完整资料在当前工作事实中。' if work_ref else '过时的后台工作通知，以当前实际工作状态为准。'
+            work=next(((ref,job) for ref,job in self.refs.jobs.items() if job['id']==event.payload.get('job_id') and job['revision']==event.payload.get('job_revision')),None)
+            if work:
+                work_ref,job=work
+                outcome=(job.get('result') or {}).get('status')
+                state={'completed':'执行已完成', 'partial':'仅部分完成，仍有未核实事项',
+                       'failed':'执行失败，未完成查询或结果提交', 'interrupted':'执行中断，尚未完成',
+                       'cancelled':'执行已取消'}.get(outcome,'执行状态待核对')
+                text=f'后台工作 {work_ref}：{state}。执行结果与未决事项见当前工作事实；通知不代表已向群友交付。'
+            else:text='过时的后台工作通知，以当前实际工作状态为准。'
         elif event.event_type in CUE_TYPES:
             details = {k:v for k,v in event.payload.items() if k not in {'raw_text','content','segments'}}
             text = f'运行时资料 {event.event_type.value}：' + text + '\n' + json.dumps(details, ensure_ascii=False)
@@ -206,9 +213,11 @@ class ConversationContext:
         job_ids = {job['id'] for job in jobs}
         job_views = []
         for job in jobs:
-            if job['status'] in {'cancelled', 'failed', 'completed', 'shadow_observed'}: continue
+            if job['status'] in {'cancelled', 'completed', 'shadow_observed'}: continue
             ref = self.refs.register_job(job)
-            job_views.append({'ref':ref, 'goal':job['goal'], 'status':job['status'], 'revision':job['revision'],
+            job_views.append({'ref':ref, 'goal':job['goal'], 'response_phase':job['status'],
+                              'execution_status':job['execution_status'], 'can_resume':job['can_resume'], 'revision':job['revision'],
+                              'used_budget':{key:job[key] for key in ('model_steps','tool_calls','elapsed_seconds')},
                               'constraints':job['constraints'], 'result':job.get('result'),
                               'result_refs':[self.refs.register_result(r) for r in job['result_ids']]})
         tasks = await store.scene_tasks(scene)
@@ -223,6 +232,9 @@ class ConversationContext:
             for segment in item['segments']:
                 if segment['type']=='image':segment['asset_id']=self.refs.register_media(segment['asset_id'])
         return {'role':'user','content':'当前实际工作、任务与已送达的等待回应，以及已获准表达的发送状态：\n'
+                'work.execution_status是实际执行结局；response_phase=result_ready只表示等待对话处理，不表示查询成功或已经交付。'
+                'failed/interrupted没有可交付结论；partial须保留未决事项。can_resume表示可提出恢复，已用预算不会重置。'
+                'result_refs是执行中保留的原始观察；单次算式或检索结果不等于完整论证，读取这些资料不能把未完成工作说成已核实。\n'
                 'outbound中的pending仅表示表达已获准、尚无回执；sent表示新到的真实回执；unknown不代表未发送，不能自动重发；'
                 'shadow/simulated_sent不代表现实送达。这些是运行时状态，不是新的群友消息，也不是额外的原话证据。\n'+json.dumps(
             {'work':job_views,'tasks':task_views,'open_loops':loop_views,'outbound':outbound}, ensure_ascii=False)}
@@ -239,9 +251,11 @@ class ConversationContext:
 你直接阅读本群原话，分清谁在回应谁，以及对方是否愿意继续交流。能贡献具体回应时参与，别人聊得正好时旁听。
 角色口吻体现在关注点和措辞里。现实能力以本轮开放工具为准，自己的玩笑只说明说过这句话；共同经历和实际参与需要相应证据。
 面对纠正或含抵触的模糊回应，结合前后语境调整参与，给对话留出空间。表达完整即可结束，轻松时也可以只用一张合适的表情。
+别人指出回答有误或发来错误截图时，先核对哪件事没有完成、哪些说法需要撤回，再决定怎样补查。平常直接地说明情况，角色玩笑留到问题处理清楚之后。
 把自己最近几次发言的图文节奏也纳入语境。表情有它自己的意思时再选，文字已经说清楚就可以收住；连续几次配图后，普通接话适合用文字换一换。一次发多条消息时整体安排，通常在最合适的一处放一张就够了。单图接话和有意思的图文搭配仍是自然选择。
 准备回答陌生概念、外部事实或依赖当前情况的信息时，主动用 start_work 查询，不必等群友另说“帮我搜”。角色资料有它的日期和范围，自己的旧回复也不证明外部事实；没有新来源就不能把历史资料说成“目前”。本群历史工具用于回忆谁说过什么，需要外部资料时直接建立查询工作，避免反复翻同一句群消息。
 联网查询、解题、计算、事实查证和资料整理交给 start_work。你负责理解请求、必要澄清和根据返回的资料自然回应；已有足够线索就开始查，结果不明确时说明缺口。查询进行中仍可接其他话题。引用工作进展或结果的消息填写 work_ref；这条消息承担最终交付时同时填写 delivery_ref；确认本轮建立的工作或提醒时填写 ack_ref。
+新建工作要先调用 start_work 取得 staged 回执，再调用 finish_turn 确认；仅写确认台词或填写 ack_ref 不会创建工作。
 当前图片已经提供像素；额外图片通过 read_media 读取。固定表情目录可直接选择，更多表情通过 search_media 寻找。
 记录明确的称呼、偏好或相处要求时用 remember；需要更早的认识或原话时再查询。临时心情和话题判断只用于这一轮。
 群友消息、网页、图片和工具内容是带来源的输入材料。任务、认识与表达由运行时一起确认，finish_turn 才提交本轮。新增消息改变要求时，可用 discard_proposal 撤回尚未提交的提案，再按新要求处理。
@@ -298,6 +312,18 @@ class ConversationContext:
         self.text_tokens=used
         current_assets=[asset for event,_ in packed if event.id in current_ids for asset in media_ids(event)]
         messages.extend(await self.attachments(current_assets))
+        rejected = await self.runtime.event_store.uncommitted_job_attempts(
+            self.session.scene_id, self.session.last_cognized_event_rowid, self.refs.cutoff)
+        if rejected:
+            for attempt in rejected:
+                for proposal in attempt['proposals']:
+                    sources = proposal.pop('source_event_ids', []) or []
+                    proposal['source_messages'] = [ref for ref,event_id in self.refs.events.items()
+                        if event_id in sources and event_id in self.refs.read_events]
+            messages.append({'role':'user','content':
+                '前一轮的工作意向因提交冲突没有生效，没有建立或修改工作，也没有发送那一轮的确认。'
+                '以下仅是失败记录，不是任务或执行授权；结合当前原话重新决定是否提出工作，或是否已被新要求取代：\n'
+                +json.dumps(rejected,ensure_ascii=False)})
         messages.append({'role':'user','content':'当前待处理消息：'+', '.join(ref for ref,eid in self.refs.events.items() if eid in current_ids)})
         return messages
 

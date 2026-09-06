@@ -9,6 +9,8 @@ import pytest
 
 from len_bot.actions.models import ActionItem, ActionType
 from len_bot.cognition.mailbox import EpisodeMailbox
+from len_bot.cognition.context import ConversationContext
+from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, RoutingConfig
 from len_bot.config import RuntimeConfig
@@ -123,6 +125,53 @@ async def test_input_arriving_during_a_turn_remains_for_the_next_turn(tmp_path):
         newer = next(event for event in await runtime.event_store.get_recent_events(SCENE) if event.id == "input:new")
         assert first["payload"]["conversation"]["through_event_rowid"] < newer.metadata["_rowid"]
         assert actor.session.last_cognized_event_rowid >= newer.metadata["_rowid"]
+    finally:
+        release.set()
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_path):
+    entered, release = asyncio.Event(), asyncio.Event()
+    contexts = []
+    calls = 0
+
+    async def turn(session, events):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+            return EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason='拟查询',
+                job_proposals=[JobProposal(proposal_id='query', goal='核对公开模型的正式评测',
+                                           source_event_ids=['question'])],
+                message_proposals=[MessageProposal(content='我去查询', task_ref='query')])
+        context = ConversationContext(runtime, session, session.last_observed_event_rowid)
+        contexts.extend(await context.build(events, {'question', 'new-input'}))
+        return EpisodeOutcome(decision_reason='根据新输入重新决定，暂不建立工作')
+
+    runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/'rejected-work.db')),
+                           mock_turn_handler=turn, clock=lambda:100.0)
+    await runtime.start()
+    try:
+        await runtime.receive_event(human('这个模型的评测怎么样', 'question'))
+        await asyncio.wait_for(entered.wait(), 2)
+        await runtime.receive_event(human('先等等', 'new-input'))
+        actor = runtime.scene_manager._actors[SCENE]
+        await actor._queue.join()
+        release.set()
+        await settle(runtime)
+        assert calls == 2 and not await runtime.event_store.list_jobs(SCENE)
+        failed = [message for message in contexts if isinstance(message.get('content'),str)
+                  and message['content'].startswith('前一轮的工作意向')]
+        assert len(failed) == 1 and failed[0]['role'] == 'user'
+        assert 'not_committed' in failed[0]['content'] and '核对公开模型的正式评测' in failed[0]['content']
+        assert not [event for event in await runtime.event_store.get_recent_events(SCENE)
+                    if event.event_type in {EventType.MESSAGE_SENT,EventType.ACTION_SHADOWED}]
+        assert await runtime.event_store.uncommitted_job_attempts('group:other',0,1000) == []
+        consumed=actor.session.last_cognized_event_rowid
+        assert await runtime.event_store.uncommitted_job_attempts(SCENE,consumed,consumed) == []
+        assert await runtime.event_store.uncommitted_job_attempts(SCENE,0,0) == []
     finally:
         release.set()
         await runtime.stop()

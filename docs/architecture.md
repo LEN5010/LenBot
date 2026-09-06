@@ -14,6 +14,8 @@ OneBot、感知插件和 Scheduler 提供事件。SceneActor 是事实 SceneSess
 
 Actor 校验 episode lease、实际读取截点与 knowledge_revision。普通聊天按已读截点提交，后来输入留在数据库与待处理集合；工作控制、提醒、履约和等待回应要求没有未读输入。认识版本改变会拒绝旧轮次。运营操作走同一个 Actor/Gate，但不会消费尚未认知的人类消息。
 
+工作提案被提交冲突拒绝后，下一轮在相关输入尚未消费时看到明确的“未提交”记录。它不是任务，不自动执行或恢复；对话 Agent 结合新输入重新判断。已提交的轮次不会因后续 trace 写入异常而被当作未提交。
+
 下一轮可以读取最近已批准表达的发送状态：CONVERSATION_COMMITTED 按批次及片段关联同场景、同 Bot 的回执。尚无回执、已发送、未发送、拒绝、未知及 Shadow/模拟分别标注；晚于输入截点的真实回执作为独立运行时事实提供，不推进已读游标，也不授予消息证据引用。这样新输入到来时能看见在途表达，避免因上一条仍在发送而重新作答。@ 提及与引用原话统一使用本轮人物 U/BOT 引用。
 
 ## 事实与认识
@@ -40,7 +42,11 @@ Actor 校验 episode lease、实际读取截点与 knowledge_revision。普通�
 
 准备回答陌生概念、外部事实或时效信息时，对话 Agent 主动建立查询工作，无需额外收到“搜索”指令；不会通过重复检索群史来替代外部查证。工作上下文带当前时间，来源需核对对象、日期与适用范围。
 
-工作使用 tasks 和 agent_jobs 的同一 ID。Scheduler 持久认领后执行；默认每群一个、全局两个运行工作，预算为 16 个模型步骤、24 次工具、300 秒、64K 上下文。补充和取消继续由对话 Agent 处理，修订保持预算和已取得的资料。工作结果含总结、资料引用和未决事项，经 AGENT_JOB_PROGRESS / FINISHED 回到对话入口；结果完成与实际送达分开。
+工作使用 tasks 和 agent_jobs 的同一 ID。Scheduler 持久认领后执行；默认每群一个、全局两个运行工作，预算为 16 个模型步骤、24 次工具、300 秒、64K 上下文，单次输出上限使用 work_output_tokens（默认 16384），计入上下文预留。补充和取消继续由对话 Agent 处理，修订保持预算和已取得的资料。工作结果含总结、资料引用和未决事项，经 AGENT_JOB_PROGRESS / FINISHED 回到对话入口；结果完成与实际送达分开。
+
+模型的 finish_work 只提交 summary、result_ids、unresolved；未决项为空时形成 completed，否则形成 partial。失败和中断由运行时记录，不让模型重复填写与未决项相矛盾的状态。持久化 JobResult 与查询 API 仍保留完整状态。
+
+tasks.status=result_ready 表示终态资料等待对话处理，不表示执行成功。查询与模型上下文另外提供 execution_status 和 can_resume。失败／中断可在保留预算和资料的前提下显式恢复，partial 不因此重开；失败可以通过 work_ref 说明，但只有 completed/partial 执行结果可关联履约。单次算式与检索记录仍是中间观察，不能代替完整结论。
 
 ModelGateway 固定一次运行的提供商、模型、推理强度及客户端。conversation 与 work 独立配置，Reflection 使用 work；热更新在新轮次或新工作生效，同一工作修订仍保留原绑定。没有同轮型号切换、跨型号 fallback 或独立视觉路由。
 
