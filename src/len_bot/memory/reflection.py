@@ -1,83 +1,57 @@
-import logging
-import time
-from typing import Optional, Callable, Awaitable, Any
-from len_bot.events.models import Event
-from len_bot.memory.models import EpisodeRecord, MemoryProposal
-from len_bot.memory.store import MemoryStore
-from len_bot.memory.gate import MemoryGate
+"""Reflection proposes sparse knowledge revisions; it never commits or executes."""
 
-logger = logging.getLogger(__name__)
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from pydantic import Field
+
+from len_bot.events.models import Event
+from len_bot.memory.models import MemoryModel, MemoryProposal
+from len_bot.memory.store import MemoryStore
+
+
+class ReviewItem(MemoryModel):
+    summary: str = Field(min_length=1)
+    source_event_ids: list[str] = Field(min_length=1)
+
+
+class ReflectionResult(MemoryModel):
+    memory_proposals: list[MemoryProposal] = Field(default_factory=list)
+    review_items: list[ReviewItem] = Field(default_factory=list)
+    trace: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
 
 class ReflectionEngine:
-    """Produces L1 Episode Records and L2 Social Memory proposals from experiences (ADR-0011, ADR-0028)."""
+    """Scheduling and atomic commit belong to Runtime/SceneActor/EventStore."""
 
     def __init__(
         self,
         memory_store: MemoryStore,
-        memory_gate: MemoryGate,
-        llm_reflector: Optional[Callable[[list[Event]], Awaitable[tuple[EpisodeRecord, list[MemoryProposal]]]]] = None,
-        event_store: Optional[Any] = None
+        memory_gate: Any = None,
+        llm_reflector: Callable[..., Awaitable[ReflectionResult]] | None = None,
+        event_store: Any = None,
     ):
         self.memory_store = memory_store
-        self.memory_gate = memory_gate
         self.llm_reflector = llm_reflector
-        self.event_store = event_store
 
     async def reflect_on_events(
-        self, scene_id: str, events: list[Event], context: dict | None = None
-    ) -> tuple[Optional[EpisodeRecord], list[MemoryProposal], Optional[Any], Optional[Any]]:
-        """Generates an L1 EpisodeRecord, L2 MemoryProposals, an optional deferred
-        SocialWorldPatch, and an optional deferred task proposal without
-        persisting (ADR-0038 + amendment). Tolerates legacy reflectors that
-        return 2- or 3-tuples.
-        """
+        self, scene_id: str, events: list[Event], context: dict | None = None,
+    ) -> ReflectionResult:
         if not events:
-            return None, [], None, None
-
-        if self.llm_reflector:
-            return await self.llm_reflector(events, context=context)
-        else:
-            participants = list({e.actor_id for e in events if e.actor_id})
-            combined = " ".join(e.raw_text for e in events if e.raw_text)
-            title = f"对话记录 ({len(events)}条)"
-            tags = []
-            if "直播" in combined:
-                tags.append("直播")
-                title = "直播话题讨论"
-
-            episode_record = EpisodeRecord(
-                scene_id=scene_id,
-                title=title,
-                summary=combined[:200],
-                source_event_ids=[e.id for e in events],
-                participants=participants,
-                tags=tags,
-                created_at=time.time()
-            )
-            return episode_record, [], None, None
-
-    async def run_micro_reflection(self, scene_id: str, events: list[Event]) -> Optional[EpisodeRecord]:
-        """Runs micro-reflection when a conversation block has completed.
-        If event_store is wired, commits atomically via commit_reflection_batch (ADR-0028).
-        """
-        episode_record, proposals, _patch, _deferred_task = await self.reflect_on_events(scene_id, events)
-        if episode_record is None:
-            return None
-
-        max_rowid = max((int(e.metadata.get("_rowid", 0)) for e in events), default=0)
-        if self.event_store:
-            await self.event_store.commit_reflection_batch(
-                scene_id=scene_id,
-                episode_record=episode_record,
-                proposals=proposals,
-                new_cursor_rowid=max_rowid
-            )
-        else:
-            await self.memory_store.save_episode(episode_record)
-            for prop in proposals:
-                prop.scope = scene_id
-                gate_res = await self.memory_gate.commit_proposal(prop)
-                if not gate_res.success:
-                    logger.warning("MemoryGate rejected proposal: %s", gate_res.reason)
-
-        return episode_record
+            return ReflectionResult()
+        if self.llm_reflector is None:
+            raise RuntimeError("Reflection requires a configured work-profile agent")
+        if any(event.scene_id != scene_id for event in events):
+            raise ValueError("Reflection input contains another scene")
+        result = await self.llm_reflector(events, context=context or {})
+        if not isinstance(result, ReflectionResult):
+            raise TypeError("Reflector must return ReflectionResult")
+        known = {event.id for event in events}
+        for proposal in result.memory_proposals:
+            proposal.scope = scene_id
+            if not set(proposal.evidence).issubset(known):
+                raise ValueError("Reflection memory evidence must come from its original event batch")
+        for item in result.review_items:
+            if not set(item.source_event_ids).issubset(known):
+                raise ValueError("Reflection review evidence must come from its original event batch")
+        return result

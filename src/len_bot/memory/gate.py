@@ -1,39 +1,47 @@
-import logging
-import time
-import uuid
-from typing import Optional, Tuple
-from len_bot.events.store import EventStore
-from len_bot.memory.models import MemoryProposal, MemoryItem, MemoryStatus
+"""Standalone ledger transaction boundary for explicit management operations."""
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from len_bot.memory.models import MemoryItem, MemoryProposal
 from len_bot.memory.store import MemoryStore
-from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
+from len_bot.memory.writes import commit_memory_proposal_core, validate_memory_proposal
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from len_bot.events.store import EventStore
 
+
+@dataclass
 class MemoryGateResult:
-    def __init__(self, success: bool, reason: str, memory_item: Optional[MemoryItem] = None):
-        self.success = success
-        self.reason = reason
-        self.memory_item = memory_item
+    success: bool
+    reason: str
+    memory_item: MemoryItem | None = None
+
 
 class MemoryGate:
-    """Authoritative gate validating evidence provenance and managing conflict resolution (ADR-0011, ADR-0025)."""
+    """Normal cognitive turns use EventStore's combined proposal transaction."""
 
-    def __init__(self, memory_store: MemoryStore, event_store: EventStore):
+    def __init__(self, memory_store: MemoryStore, event_store: "EventStore", *, bot_actor_id: str):
         self.memory_store = memory_store
         self.event_store = event_store
+        self.bot_actor_id = bot_actor_id
 
-    async def commit_proposal(self, proposal: MemoryProposal, scene_id: Optional[str] = None) -> MemoryGateResult:
-        sid = scene_id or proposal.scope
-        if not sid:
-            return MemoryGateResult(False, "Rejected: Missing memory scope")
-
+    async def commit_proposal(
+        self, proposal: MemoryProposal, scene_id: str, *, through_rowid: int | None = None,
+        revision_event_id: str | None = None,
+    ) -> MemoryGateResult:
         async with self.memory_store.write_lock:
             try:
-                await validate_memory_proposal(self.memory_store._db, proposal, sid)
-                item = await commit_memory_proposal_core(self.memory_store._db, proposal, sid)
+                await self.memory_store._db.execute("BEGIN IMMEDIATE")
+                await validate_memory_proposal(
+                    self.memory_store._db, proposal, scene_id, through_rowid, bot_actor_id=self.bot_actor_id,
+                )
+                item = await commit_memory_proposal_core(
+                    self.memory_store._db, proposal, scene_id, self.memory_store.clock(),
+                    revision_event_id=revision_event_id,
+                )
                 await self.memory_store._db.commit()
                 return MemoryGateResult(True, "Committed memory", item)
-            except Exception as e:
+            except Exception as error:
                 await self.memory_store._db.rollback()
-                logger.warning("MemoryGate rejected proposal: %s", e)
-                return MemoryGateResult(False, f"Rejected: {e}")
+                return MemoryGateResult(False, f"Rejected: {error}")

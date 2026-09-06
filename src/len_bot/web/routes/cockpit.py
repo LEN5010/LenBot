@@ -1,19 +1,17 @@
-import time
 from typing import Optional
 from fastapi import APIRouter, Request, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from len_bot.web.auth import get_current_user
-from len_bot.events.models import Event, EventType
-from len_bot.memory.models import MemoryStatus
+from len_bot.memory.models import MemoryProposal
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
-from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.jobs import JobProposal
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
 
 class MemoryActionRequest(BaseModel):
-    reason: Optional[str] = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class ShadowToggleRequest(BaseModel):
@@ -47,7 +45,10 @@ async def list_scenes(request: Request, user: str = Depends(get_current_user)):
 
 @router.get("/scenes/{scene_id}")
 async def get_scene_detail(scene_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _service(request).scene_detail(scene_id)
+    detail = await _service(request).scene_detail(scene_id)
+    if detail is None:
+        raise HTTPException(404, "场景不存在")
+    return detail
 
 
 @router.get("/tasks")
@@ -61,10 +62,10 @@ async def jobs(request: Request, scene_id: str | None = None, user: str = Depend
 
 
 class JobControlRequest(BaseModel):
-    expected_revision: int
+    expected_revision: int = Field(ge=1)
     goal: str | None = None
-    constraints_add: list[str] = []
-    constraints_remove: list[str] = []
+    constraints_add: list[str] = Field(default_factory=list)
+    constraints_remove: list[str] = Field(default_factory=list)
 
 
 @router.post("/jobs/{job_id}/{operation}")
@@ -75,15 +76,12 @@ async def control_job(job_id: str, operation: str, req: JobControlRequest, reque
     job = await _service(request).job(job_id)
     if not job:
         raise HTTPException(404, "工作不存在")
-    event = Event(event_type=EventType.OPERATOR_ACTION, scene_id=job["scene_id"], actor_id=f"operator:{user}",
-        payload={"operation": operation, "job_id": job_id})
-    await runtime.commit_tool_observation(event)
-    actor = await runtime.scene_manager.get_or_create_actor(job["scene_id"])
-    mailbox = EpisodeMailbox(f"operator:{event.id}", job["scene_id"], actor.state.version)
+    event = await runtime.record_operator_event(job["scene_id"], f"job_{operation}", user,
+        {"job_id": job_id, **req.model_dump()})
     proposal = JobProposal(operation=operation, job_id=job_id, expected_revision=req.expected_revision,
         goal=req.goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove, source_event_ids=[event.id])
-    decision = await actor.submit_proposal(mailbox.episode_id, EpisodeOutcome(disposition=FinalDisposition.SILENCE,
-        decision_reason="运营修改信息工作", job_proposals=[proposal]), mailbox, runtime.runtime_gate)
+    decision = await runtime.operator_outcome(job["scene_id"], EpisodeOutcome(disposition=FinalDisposition.SILENCE,
+        decision_reason="运营修改信息工作", job_proposals=[proposal]), source_event_ids=[event.id])
     if not decision.accepted:
         raise HTTPException(409, decision.reason)
     return {"success": True, "job": await _service(request).job(job_id)}
@@ -91,24 +89,31 @@ async def control_job(job_id: str, operation: str, req: JobControlRequest, reque
 
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _edit_task(request, task_id, TaskProposal(operation="cancel", task_id=task_id))
+    return await _edit_task(request, task_id, TaskProposal(operation="cancel", task_id=task_id), user)
 
 
 class TaskUpdateRequest(BaseModel):
-    due_at: float
+    due_at: float = Field(allow_inf_nan=False)
     description: str = ""
 
 
-async def _edit_task(request, task_id, proposal):
+async def _edit_task(request, task_id, proposal, operator, *, trigger_now=False):
     runtime = request.app.state.runtime
     task = await _service(request).get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="未找到这个任务")
-    actor = await runtime.scene_manager.get_or_create_actor(task["scene_id"])
-    mailbox = EpisodeMailbox(f"operator:{task_id}", task["scene_id"], actor.state.version)
-    decision = await actor.submit_proposal(mailbox.episode_id, EpisodeOutcome(
+    if task["payload"].get("kind") == "agent_job":
+        raise HTTPException(409, "信息工作需要通过带版本号的工作控制接口修改")
+    if trigger_now and task["status"] != "pending":
+        raise HTTPException(409, "只有待执行任务可以立即触发")
+    event = await runtime.record_operator_event(task["scene_id"], "task_trigger_now" if trigger_now else f"task_{proposal.operation}", operator,
+        {"task_id": task_id, "changes": proposal.model_dump(exclude_none=True, exclude={"source_event_ids", "origin_mode"})})
+    proposal.source_event_ids = [event.id]
+    if trigger_now:
+        proposal.due_at = _service(request).current_time() + 1.0
+    decision = await runtime.operator_outcome(task["scene_id"], EpisodeOutcome(
         disposition=FinalDisposition.SILENCE, decision_reason="管理员修改任务",
-        task_proposals=[proposal]), mailbox, runtime.runtime_gate)
+        task_proposals=[proposal]), source_event_ids=[event.id])
     if not decision.accepted:
         raise HTTPException(status_code=409, detail="任务未修改：" + decision.reason)
     return {"success": True, "task_id": task_id}
@@ -117,24 +122,12 @@ async def _edit_task(request, task_id, proposal):
 @router.post("/tasks/{task_id}/update")
 async def update_task(task_id: str, req: TaskUpdateRequest, request: Request, user: str = Depends(get_current_user)):
     return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id,
-                                                         due_at=req.due_at, description=req.description))
+                                                         due_at=req.due_at, description=req.description), user)
 
 
 @router.post("/tasks/{task_id}/trigger_now")
 async def trigger_task_now(task_id: str, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    success = await runtime.scheduler.trigger_task_now(task_id)
-    return {"success": success, "task_id": task_id}
-
-
-@router.post("/tasks/{task_id}/promote")
-async def promote_task(task_id: str, request: Request, user: str = Depends(get_current_user)):
-    """ADR-0029, §23.4: Promote a task to a re-armed template or global template."""
-    runtime = request.app.state.runtime
-    promoted = await runtime.scheduler.promote_task(task_id)
-    if not promoted:
-        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
-    return {"success": True, "task": promoted}
+    return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id), user, trigger_now=True)
 
 
 @router.get("/loops")
@@ -144,14 +137,16 @@ async def list_loops(request: Request, status: Optional[str] = None, user: str =
 
 @router.post("/loops/{loop_id}/resolve")
 async def resolve_loop(loop_id: str, request: Request, user: str = Depends(get_current_user)):
-    """Authority path (ADR-0022): resolution goes through OpenLoopManager — the same
-    code path the runtime itself uses — never a direct SQL UPDATE from the UI."""
     runtime = request.app.state.runtime
-    loop = next((l for l in await _service(request).list_open_loops() if l["id"] == loop_id), None)
+    loop = await _service(request).open_loop(loop_id)
     if not loop:
         raise HTTPException(status_code=404, detail="Open loop not found")
-    resolved = await runtime.open_loop_manager.resolve_loop(loop_id, loop["scene_id"])
-    return {"success": resolved, "loop_id": loop_id}
+    event = await runtime.record_operator_event(loop["scene_id"], "loop_resolve", user, {"loop_id": loop_id})
+    decision = await runtime.operator_outcome(loop["scene_id"], EpisodeOutcome(
+        disposition=FinalDisposition.SILENCE, decision_reason="运营关闭待回应事项", resolve_open_loop_ids=[loop_id]), source_event_ids=[event.id])
+    if not decision.accepted:
+        raise HTTPException(409, decision.reason)
+    return {"success": True, "loop_id": loop_id}
 
 
 @router.get("/memories")
@@ -176,27 +171,18 @@ async def memory_chain(memory_id: str, request: Request, user: str = Depends(get
 @router.post("/memories/{memory_id}/refute")
 async def refute_memory(memory_id: str, req: MemoryActionRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    await runtime.memory_store.update_memory_status(memory_id, MemoryStatus.REFUTED)
+    memory = await _service(request).memory(memory_id)
+    if memory is None:
+        raise HTTPException(404, "认识不存在")
+    event = await runtime.record_operator_event(memory["scope"], "memory_refute", user,
+        {"target_memory_id": memory_id, "reason": req.reason})
+    proposal = MemoryProposal(operation="refute", scope=memory["scope"], evidence=[event.id],
+                              target_memory_ids=[memory_id], reason=req.reason)
+    decision = await runtime.operator_outcome(memory["scope"], EpisodeOutcome(
+        disposition=FinalDisposition.SILENCE, decision_reason="运营撤销认识", memory_proposals=[proposal]), source_event_ids=[event.id])
+    if not decision.accepted:
+        raise HTTPException(409, decision.reason)
     return {"success": True, "memory_id": memory_id, "status": "refuted"}
-
-
-@router.post("/memories/{memory_id}/supersede")
-async def supersede_memory(memory_id: str, req: MemoryActionRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    await runtime.memory_store.update_memory_status(memory_id, MemoryStatus.SUPERSEDED)
-    return {"success": True, "memory_id": memory_id, "status": "superseded"}
-
-
-@router.post("/memories/{memory_id}/promote")
-async def promote_memory(memory_id: str, request: Request, user: str = Depends(get_current_user)):
-    """Human Operator Promotion (ADR-0024, §3.3): Creates a new record with scope='global-safe'.
-    The original memory is untouched. Cognition and reflection have zero authority to promote.
-    """
-    runtime = request.app.state.runtime
-    promoted = await runtime.memory_store.promote_memory(memory_id)
-    if not promoted:
-        raise HTTPException(status_code=404, detail="Memory not found or not active")
-    return {"success": True, "original_id": memory_id, "promoted_id": promoted.id, "scope": promoted.scope}
 
 
 @router.get("/events")

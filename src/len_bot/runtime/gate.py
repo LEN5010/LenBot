@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Any, Callable
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
-from len_bot.scenes.models import SceneState
+from len_bot.scenes.models import SceneSession
 from len_bot.actions.models import ActionItem, ActionType
 from len_bot.actions.queue import ActionQueue
 from len_bot.events.store import EventStore
@@ -59,7 +59,8 @@ class RuntimeGate:
         memory_gate: Optional[Any] = None,
         metrics: Optional[Any] = None,
         origin_mode_provider: Optional[Callable[[], str]] = None,
-        next_wake_min_interval_seconds: float = 60.0
+        next_wake_min_interval_seconds: float = 60.0,
+        bot_actor_id: str = "",
     ):
         self.event_store = event_store
         self.action_queue = action_queue
@@ -69,13 +70,14 @@ class RuntimeGate:
         self.origin_mode_provider = origin_mode_provider
         self.scene_shadow_probe = None
         self.next_wake_min_interval_seconds = next_wake_min_interval_seconds
+        self.bot_actor_id = bot_actor_id
         self.jobs_enabled_probe = lambda: True
 
     async def evaluate_and_commit(
         self,
         outcome: EpisodeOutcome,
         mailbox: EpisodeMailbox,
-        current_scene_state: SceneState,
+        current_scene_state: SceneSession,
         proposal_commit: Optional[ProposalCommit] = None,
         scene_commit: dict | None = None,
         bounded_chat: bool = False,
@@ -184,6 +186,9 @@ class RuntimeGate:
                 job_proposals=outcome.job_proposals,
                 job_messages=outcome.message_proposals,
                 origin_mode=curr_origin,
+                bot_actor_id=self.bot_actor_id,
+                through_rowid=(scene_commit["event"].metadata["through_event_rowid"]
+                               if scene_commit else current_scene_state.last_observed_event_rowid),
             )
             if resolved_loops and self.metrics:
                 self.metrics.inc_social("openloops_resolved", len(resolved_loops))
