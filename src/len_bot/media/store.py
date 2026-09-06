@@ -71,10 +71,17 @@ class MediaStoreMixin:
             sql += " AND curated=1"
         if not include_disabled:
             sql += " AND enabled=1"
-        for term in query.split():
-            sql += " AND (instr(lower(description),lower(?))>0 OR instr(lower(tags_json),lower(?))>0)"
-            params += [term, term]
-        sql += " ORDER BY created_at DESC,id LIMIT ?"
+        terms = list(dict.fromkeys(query.split()))
+        order = "created_at DESC,id"
+        if terms:
+            matches = ["(instr(lower(description),lower(?))>0 OR instr(lower(tags_json),lower(?))>0)"
+                       for _ in terms]
+            term_params = [value for term in terms for value in (term, term)]
+            sql += " AND (" + " OR ".join(matches) + ")"
+            params += term_params
+            order = "(" + "+".join(matches) + ") DESC," + order
+            params += term_params
+        sql += " ORDER BY " + order + " LIMIT ?"
         params.append(min(max(1, limit), 100))
         return [_asset(row) for row in await (await self._db.execute(sql, params)).fetchall()]
 

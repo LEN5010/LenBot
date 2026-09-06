@@ -222,7 +222,7 @@ class RetrievalToolkit:
             tools.extend([
                 {"type": "function", "function": {"name": "inspect_image", "description": "实际查看本群或获准素材图片，按问题返回解释和不确定项；需要独立视觉模型。",
                     "parameters": {"type": "object", "properties": {"asset_id": {"type": "string"}, "question": {"type": "string"}}, "required": ["asset_id"]}}},
-                {"type": "function", "function": {"name": "search_media", "description": "按名称或情绪关键词查找运营表情的asset_id，如开心、疑惑、安慰、晚安。结合语境自主选择图片。",
+                {"type": "function", "function": {"name": "search_media", "description": "按名称或情绪关键词查找运营表情的asset_id，如开心、疑惑、安慰、晚安。多个词用空格分隔，返回命中任一词的素材，命中词越多越靠前；结合描述和语境自主选择图片。",
                     "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "curated_only": {"type": "boolean"}}}}},
             ])
         for tool in tools:
