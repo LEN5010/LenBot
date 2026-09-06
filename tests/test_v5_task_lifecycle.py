@@ -7,16 +7,13 @@ from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.events.models import Event, EventType
-from len_bot.testing.social import social_result
+from len_bot.testing.turns import turn_result
 from len_bot.testing.replay import drain
 
 async def proposal(rt, tasks=(), messages=(), scene="group:1"):
-    actor = await rt.scene_manager.get_or_create_actor(scene)
-    box = EpisodeMailbox("test", scene, actor.state.version)
-    return await actor.submit_proposal("test", EpisodeOutcome(
+    return await rt.operator_outcome(scene,EpisodeOutcome(
         disposition=FinalDisposition.ACTION if messages else FinalDisposition.SILENCE,
-        decision_reason="test", task_proposals=list(tasks), message_proposals=list(messages)),
-        box, rt.runtime_gate)
+        decision_reason="test",task_proposals=list(tasks),message_proposals=list(messages)))
 
 async def pending(rt):
     decision = await proposal(rt, [TaskProposal(description="叫醒A", due_at=rt.clock()+600, proposal_id="wake")])
@@ -73,9 +70,9 @@ async def test_fulfilment_waits_for_actual_delivery(tmp_path, delivery, status):
         from len_bot.actions.models import DeliveryResult, DeliveryStatus
         return DeliveryResult(status=DeliveryStatus.SENT if delivery == "ok" else DeliveryStatus.REJECTED,
                               transport="test")
-    async def core(messages):
-        return social_result(reason="履约", content="该起床了", fulfils_task_id=task.id)
-    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")), send_adapter=send, mock_social_handler=core)
+    async def core(session, events):
+        return turn_result(reason="履约", content="该起床了", fulfils_task_id=task.id)
+    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"task.db")), send_adapter=send, mock_turn_handler=core)
     await rt.start()
     await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
@@ -101,7 +98,7 @@ async def test_fulfilment_waits_for_actual_delivery(tmp_path, delivery, status):
 @pytest.mark.asyncio
 async def test_claim_and_due_event_survive_crash(tmp_path):
     config = RuntimeConfig(db_path=str(tmp_path/"restart.db"))
-    rt = AgentRuntime(config, mock_social_handler=lambda messages: asyncio.sleep(0, result=social_result(reason="核对")))
+    rt = AgentRuntime(config, mock_turn_handler=lambda session, events: asyncio.sleep(0, result=turn_result(reason="核对")))
     await rt.start()
     await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
@@ -110,7 +107,7 @@ async def test_claim_and_due_event_survive_crash(tmp_path):
     assert await rt.event_store.claim_task_event(task.id, task.scene_id, due)
     assert not await rt.event_store.claim_task_event(task.id, task.scene_id, due)
     await rt.stop()
-    restarted = AgentRuntime(config, mock_social_handler=lambda messages: asyncio.sleep(0, result=social_result(reason="核对")))
+    restarted = AgentRuntime(config, mock_turn_handler=lambda session, events: asyncio.sleep(0, result=turn_result(reason="核对")))
     await restarted.start()
     try:
         await drain(restarted)
@@ -131,7 +128,7 @@ async def test_incomplete_delivery_never_auto_resends_after_restart(tmp_path):
         task = await pending(rt)
         due = Event(event_type=EventType.TASK_DUE, scene_id=task.scene_id, actor_id="system", payload={"task_id":task.id})
         await rt.event_store.claim_task_event(task.id, task.scene_id, due)
-        await rt.event_store.commit_scene_event(due, {}, task_id_to_trigger=task.id)
+        await rt.commit_tool_observation(due)
         await rt.event_store.commit_proposal_transaction("test",task.scene_id,[],[],[],deliveries={task.id:"attempt-1"})
         await rt.event_store.recover_task_execution()
         assert (await rt.event_store.scene_tasks(task.scene_id))[0]["status"] == "delivery_unknown"

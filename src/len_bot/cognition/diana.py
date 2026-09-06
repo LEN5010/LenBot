@@ -85,7 +85,7 @@ PERSONA = {
     "character_context": LEGACY_PERSONA["character_context"],
 }
 
-MEDIA_REF_TAGS = {"celebrate": "开心", "wry": "无奈"}
+MEDIA_REF_TAGS = {"celebrate": "开心", "wry": "无语"}
 EXAMPLES = [
     {"context": "A：然然在吗？\nB 和 C 还在聊另一件事。", "segments": [{"type": "text", "text": "在呢，怎么啦？"}]},
     {"context": "A：总算弄好了，原来是我插错线了。", "segments": [{"type": "text", "text": "哈哈，能用了就好。"}]},

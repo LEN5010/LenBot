@@ -8,15 +8,20 @@ from pathlib import Path
 
 import httpx
 import pytest
+from openai import AsyncOpenAI
 from PIL import Image
 
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
-from len_bot.memory.models import MemoryItem
+from len_bot.memory.models import MemoryProposal
+from len_bot.cognition.models import EpisodeOutcome
+from len_bot.cognition.jobs import JobProposal
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.scheduler.models import TaskItem
-from len_bot.testing.social import social_result
+from runtime_support import configure_fixture_profile
+from len_bot.testing.replay import drain
+from len_bot.testing.turns import turn_result
 from len_bot.tools.results import ToolResult
 from len_bot.web.app import create_app
 
@@ -29,8 +34,8 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
     sent = []
     prompts = []
 
-    async def cognition(messages):
-        prompt = str(messages)
+    async def cognition(session, events):
+        prompt = str([event.model_dump(mode="json") for event in events])
         prompts.append(prompt)
         if len(prompts) == 1:
             assert "旧的群聊消息_待取消" in prompt
@@ -42,7 +47,7 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
                 raise
         assert "旧的群聊消息_待取消" not in prompt
         assert "旧的私聊内容" not in prompt
-        return social_result(reason="回应重置后的新消息", content="从新话题开始")
+        return turn_result(reason="回应重置后的新消息", content="从新话题开始")
 
     async def send(action):
         sent.append(action.content)
@@ -52,12 +57,13 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
     runtime = AgentRuntime(
         RuntimeConfig(
             db_path=str(tmp_path / "reset.db"), bot_qq=42,
-            openai_api_key="", onebot_access_token="", message_pacing=False,
+            onebot_access_token="", message_pacing=False,
             dashboard_default_admin_password="reset-test-password",
         ),
-        send_adapter=send, mock_social_handler=cognition,
+        send_adapter=send, mock_turn_handler=cognition,
     )
     await runtime.start()
+    await configure_fixture_profile(runtime)
     group, private = "group:126300994", "private:8"
     try:
         await runtime.set_delivery_scenes([group])
@@ -79,14 +85,14 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             # Old private input stays durable without starting a second episode.
             private_event = Event(event_type=EventType.PRIVATE_MESSAGE_RECEIVED, scene_id=private,
                                   actor_id="user:8", timestamp=time.time() - 120,
-                                  payload={"raw_text": "旧的私聊内容"})
+                                  payload={"raw_text": "旧的私聊内容：我喜欢喝茶"})
             await runtime.receive_event(private_event)
             private_actor = await runtime.scene_manager.get_or_create_actor(private)
             await private_actor._queue.join()
-            await runtime.memory_store.save_memory(MemoryItem(
-                id="old-memory", subject="user:8", kind="preference", key="drink", value="茶",
-                scope=private, evidence_event_ids=[private_event.id], human_readable_assertion="喜欢喝茶",
-            ))
+            result = await runtime.operator_outcome(private, EpisodeOutcome(decision_reason="测试种入有证据的旧认识",
+                memory_proposals=[MemoryProposal(subject="user:8", kind="preference", statement="用户8说喜欢喝茶",
+                    basis="reported", scope=private, evidence=[private_event.id])]))
+            assert result.accepted
             task = TaskItem(id="old-task", scene_id=group, description="旧的提醒", due_at=time.time() + 3600)
             await runtime.event_store.save_task(task)
             runtime.scheduler.schedule_task(task)
@@ -115,7 +121,7 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             assert len(prompts) == 1
             for scene in (group, private):
                 assert await runtime.event_store.get_recent_events(scene) == []
-                assert runtime.scene_manager.get_group_session(scene) is None
+                assert runtime.scene_manager.get_session(scene) is None
                 assert await runtime.memory_store.query_memories([scene]) == []
             assert await runtime.event_store.get_pending_tasks() == []
             assert await runtime.event_store.read_tool_observation(observation.result_id, [group]) is None
@@ -143,3 +149,61 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             assert any(event.event_type == EventType.MESSAGE_SENT for event in events)
     finally:
         await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_reset_waits_for_active_work_and_reflection_before_clearing_results(tmp_path):
+    entered = {role: asyncio.Event() for role in ("work", "reflection")}
+    cancelled = {role: asyncio.Event() for role in entered}
+    requests = []
+
+    async def quiet(session, events):
+        return turn_result(reason="仅保存测试原话")
+
+    async def model(request):
+        import json
+        payload = json.loads(request.content)
+        names = {tool["function"]["name"] for tool in payload["tools"]}
+        role = "reflection" if "finish_reflection" in names else "work"
+        requests.append(role)
+        entered[role].set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled[role].set()
+            raise
+
+    runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "workers-reset.db"), bot_qq=42,
+        reflection_quiet_window_seconds=3600), mock_turn_handler=quiet, clock=lambda: 1000)
+    await runtime.start()
+    await configure_fixture_profile(runtime)
+    model_client = AsyncOpenAI(api_key="fixture", base_url="https://fixture.invalid/v1", max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(model)))
+    runtime.provider_registry._clients["fixture"] = model_client
+    scene = "group:126300994"
+    try:
+        source = Event(id="old-work-source", event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=scene, actor_id="user:8", timestamp=1000, payload={"raw_text": "请核对旧资料", "at_bot": True})
+        await runtime.receive_event(source)
+        await drain(runtime)
+        decision = await runtime.operator_outcome(scene, EpisodeOutcome(decision_reason="测试旧信息工作",
+            job_proposals=[JobProposal(proposal_id="old-work", goal="核对旧资料", source_event_ids=[source.id])]))
+        assert decision.accepted
+        await runtime.scheduler.run_due(1000)
+        await asyncio.wait_for(entered["work"].wait(), 3)
+        runtime.mock_turn_handler = None
+        reflection = runtime._spawn_background_task(runtime._quiet_window_reflect(scene))
+        await asyncio.wait_for(entered["reflection"].wait(), 3)
+        result = await asyncio.wait_for(runtime.reset_conversation_data("tester"), 5)
+        assert result["success"]
+        assert all(event.is_set() for event in cancelled.values())
+        assert reflection.done()
+        assert await runtime.event_store.list_jobs() == []
+        assert await runtime.event_store.get_recent_events(scene) == []
+        assert await runtime.event_store.list_tool_observations(scene) == []
+        assert runtime.scene_manager.get_session(scene) is None
+        assert sorted(requests) == ["reflection", "work"]
+        assert runtime.provider_registry.snapshot()["routing"]["work"]["model"] == "fixture-model"
+    finally:
+        await runtime.stop()
+        await model_client.close()

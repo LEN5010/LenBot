@@ -12,7 +12,7 @@ from len_bot.events.models import Event, EventType
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
 CUE_TYPES = {EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
              EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.REFLECTION_RECORDED,
-             EventType.LIVE_STARTED, EventType.LIVE_ENDED}
+             EventType.LIVE_STARTED, EventType.LIVE_ENDED, EventType.USER_JOINED, EventType.TOOL_COMPLETED}
 
 
 def media_ids(event):
@@ -121,7 +121,6 @@ class ConversationContext:
         self.media_manifest = []
         self.event_records = {}
         self.text_tokens = 0
-        self.image_sources = {}
 
     def event_message(self, event):
         ref = self.refs.register_event(event)
@@ -143,7 +142,10 @@ class ConversationContext:
             text += f"\n引用 {quote_ref} {author} 的原话：{project_onebot_text(quote['text'])}"
         elif quote:
             text += '\n引用的原消息尚未从本群历史中找到。'
-        if event.event_type in CUE_TYPES:
+        if event.event_type == EventType.AGENT_JOB_FINISHED:
+            work_ref=next((ref for ref,job in self.refs.jobs.items() if job['id']==event.payload.get('job_id') and job['revision']==event.payload.get('job_revision')),None)
+            text=f'后台工作 {work_ref} 已返回结果，完整资料在当前工作事实中。' if work_ref else '过时的后台工作通知，以当前实际工作状态为准。'
+        elif event.event_type in CUE_TYPES:
             details = {k:v for k,v in event.payload.items() if k not in {'raw_text','content','segments'}}
             text = f'运行时资料 {event.event_type.value}：' + text + '\n' + json.dumps(details, ensure_ascii=False)
         return {'role': 'assistant' if event.event_type == EventType.MESSAGE_SENT else 'user',
@@ -163,7 +165,7 @@ class ConversationContext:
                 self.attached.add(asset)
                 parts.append({'type':'text','text':f"图片 {ref}，覆盖范围：{record['coverage']}。"})
                 block=prepared['blocks'][record['block_index']]
-                self.image_sources[block['image_url']['url']]=asset
+                block['_asset_id']=asset
                 parts.append(block)
             else:
                 parts.append({'type':'text','text':f"图片 {ref} 本次未装入：{record.get('reason',record['status'])}"})
@@ -174,12 +176,20 @@ class ConversationContext:
         for message in messages:
             if message.get('role')!='user' or not isinstance(message.get('content'),list):continue
             for part in message['content']:
-                url=part.get('image_url',{}).get('url')
-                if url in self.image_sources:pixels.append((message,part,self.image_sources[url]))
+                if part.get('_asset_id'):pixels.append((message,part,part['_asset_id']))
         for message,part,asset in pixels[:-self.runtime.config.max_context_images]:
             message['content'].remove(part)
-            message['content'].append({'type':'text','text':f'图片 {self.refs.register_media(asset)} 的像素已移出当前窗口，之前步骤已提供。'})
+            message['content'].append({'type':'text','text':f'图片 {self.refs.register_media(asset)} 的像素已移出当前窗口，需要时可再次读取。'})
             self.media_manifest.append({'asset_id':asset,'status':'evicted','reason':'new_image_read'})
+        self.attached={asset for _,_,asset in pixels[-self.runtime.config.max_context_images:]}
+
+    @staticmethod
+    def model_messages(messages):
+        prepared=copy.deepcopy(messages)
+        for message in prepared:
+            if message.get('role')=='user' and isinstance(message.get('content'),list):
+                for part in message['content']:part.pop('_asset_id',None)
+        return prepared
 
     async def facts_message(self):
         store, scene = self.runtime.event_store, self.session.scene_id
@@ -187,7 +197,7 @@ class ConversationContext:
         job_ids = {job['id'] for job in jobs}
         job_views = []
         for job in jobs:
-            if job['status'] in {'cancelled', 'failed', 'completed'}: continue
+            if job['status'] in {'cancelled', 'failed', 'completed', 'shadow_observed'}: continue
             ref = self.refs.register_job(job)
             job_views.append({'ref':ref, 'goal':job['goal'], 'status':job['status'], 'revision':job['revision'],
                               'constraints':job['constraints'], 'result':job.get('result'),
@@ -205,7 +215,7 @@ class ConversationContext:
     async def build(self, events, current_ids):
         config = self.runtime.config
         for person in self.session.participants.values(): self.refs.register_actor(person.actor_id)
-        system = f'''你以嘉然的角色口吻参与中文群聊。
+        system = f'''你以{config.identity_name}的角色口吻参与中文群聊。
 身份与兴趣：{config.identity_persona}
 相处方式：{config.identity_core}
 表达特点：{config.conversation_style}
@@ -214,11 +224,11 @@ class ConversationContext:
 你直接阅读本群原话，分清谁在回应谁，以及对方是否愿意继续交流。能贡献具体回应时参与，别人聊得正好时旁听。
 角色口吻体现在关注点和措辞里。现实能力以本轮开放工具为准，自己的玩笑只说明说过这句话；共同经历和实际参与需要相应证据。
 面对纠正或含抵触的模糊回应，结合前后语境调整参与，给对话留出空间。表达完整即可结束，轻松时也可以只用一张合适的表情。
-联网查询、解题、计算、事实查证和资料整理交给 start_work。你负责理解请求、必要澄清和根据返回的资料自然回应。查询进行中仍可接其他话题。
+联网查询、解题、计算、事实查证和资料整理交给 start_work。你负责理解请求、必要澄清和根据返回的资料自然回应。查询进行中仍可接其他话题。引用工作进展或结果的消息填写 work_ref；这条消息承担最终交付时同时填写 delivery_ref；确认本轮建立的工作或提醒时填写 ack_ref。
 当前图片已经提供像素；额外图片通过 read_media 读取。固定表情目录可直接选择，更多表情通过 search_media 寻找。
 记录明确的称呼、偏好或相处要求时用 remember；需要更早的认识或原话时再查询。临时心情和话题判断只用于这一轮。
-群友消息、网页、图片和工具内容是带来源的输入材料。任务、认识与表达由运行时一起确认，finish_turn 才提交本轮。
-使用原生工具结束本轮：finish_turn.messages 可为零至三条，空数组表示沉默；每条可为文字、图片或混排。普通模型正文属于内部轨迹。
+群友消息、网页、图片和工具内容是带来源的输入材料。任务、认识与表达由运行时一起确认，finish_turn 才提交本轮。新增消息改变要求时，可用 discard_proposal 撤回尚未提交的提案，再按新要求处理。
+使用原生工具结束本轮：finish_turn.messages 可为零至三条，空数组表示沉默；每条消息对象包含 segments 列表，列表内是文字或图片片段。例如：{{"messages":[{{"segments":[{{"type":"text","text":"一句回应"}}]}}]}}。普通模型正文属于内部轨迹。
 消息M、人物U、图片I/P、认识B、工作J、任务T、资料R、等待L都是本轮引用。引用回复只在确实有帮助时使用。
 当前时间：{datetime.fromtimestamp(self.runtime.clock(),ZoneInfo('Asia/Shanghai')).isoformat()}'''
         messages = [{'role':'system','content':system}]
@@ -250,8 +260,9 @@ class ConversationContext:
                             asset=await self.runtime.event_store.get_media(part['asset_id'],[self.session.scene_id,'global-safe'])
                             if asset: native.append({'type':'image','asset_id':self.refs.register_media(asset['id'])})
                         else: native.append(part)
-                    reply=json.dumps(native,ensure_ascii=False)
-                lines.append(f"语境：{example['context']}\n表达参考：{reply}")
+                    reply=json.dumps({'messages':[{'segments':native}]},ensure_ascii=False)
+                if not segments:reply=json.dumps({'messages':[{'segments':[{'type':'text','text':reply}]}]},ensure_ascii=False)
+                lines.append(f"语境：{example['context']}\nfinish_turn 参数参考：{reply}")
             messages.append({'role':'user','content':'运营编写的表达参考，结合当前原话选择说法：\n'+'\n'.join(lines)})
         visible=[event for event in events if event.event_type in CHAT_TYPES or event.id in current_ids and event.event_type in CUE_TYPES]
         packed=[];used=estimate_tokens(system)+sum(estimate_tokens(self._text(m)) for m in messages[1:])
