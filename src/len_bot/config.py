@@ -1,7 +1,9 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 import os
+
+AddressName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
 class RuntimeConfig(BaseModel):
     bot_qq: int = Field(default=12345678, description="The Bot's QQ account ID")
@@ -45,6 +47,8 @@ class RuntimeConfig(BaseModel):
 
     # Operator-owned character card; explicit preset application preserves edits.
     identity_name: str = "Len"
+    address_names: list[AddressName] = Field(default_factory=lambda: ["然比", "小然"], max_length=32,
+                                            description="额外呼唤昵称；只提供参与线索，不强制回复")
     character_context: str = ""
     identity_core: str = (
         "行为倾向(可观察):\n"

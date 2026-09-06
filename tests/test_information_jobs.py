@@ -112,13 +112,17 @@ async def test_revision_keeps_shadow_origin_budget_and_rejects_old_result_and_se
 
 
 @pytest.mark.asyncio
-async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path):
+@pytest.mark.parametrize('finished',[False,True])
+async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path,finished):
     rt = await setup_runtime(tmp_path)
     await submit(rt, create())
     job = (await rt.event_store.list_jobs("group:jobs"))[0]
     await rt.scheduler.run_due(1000)
     await rt.scene_manager._actors["group:jobs"]._queue.join()
     await rt.commit_tool_observation(await rt.event_store.job_checkpoint(job["id"], job["scene_id"], 1, model_steps=2))
+    if finished:
+        event=await rt.event_store.complete_job(job['id'],job['scene_id'],1,JobResult(status='completed',summary='已验证的结果'))
+        await rt.commit_tool_observation(event)
     await rt.stop()
     second = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "jobs.db"), bot_qq=999), mock_turn_handler=quiet, clock=lambda: 1000)
     await second.start()
@@ -127,8 +131,13 @@ async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path
     try:
         await drain(second)
         recovered = await second.event_store.get_job(job["id"], job["scene_id"])
-        assert recovered["status"] == "review_required" and recovered["model_steps"] == 2
+        assert recovered["status"] == ('result_ready' if finished else 'review_required') and recovered["model_steps"] == 2
         assert recovered["origin_mode"] == "live"
+        if finished:
+            assert recovered['execution_status']=='completed' and not recovered['can_resume']
+            decision=await submit(second,None,content='已验证的结果',job_id=job['id'],job_revision=1,fulfils_task_id=job['id'])
+            assert decision.accepted and decision.actions_enqueued==1
+            return
         await second.set_shadow_mode(True)
         assert (await submit(second, JobProposal(operation="resume", job_id=job["id"], expected_revision=1, source_event_ids=["source"]))).accepted
         await second.set_shadow_mode(False)
@@ -310,7 +319,10 @@ async def test_unfinished_result_is_explicit_and_resumes_with_observations_and_u
         facts = (await context.facts_message())["content"]
         work = json.loads(facts.split("\n")[-1])["work"][0]
         assert work["execution_status"] == execution_status and work["response_phase"] == "result_ready"
-        assert work["can_resume"] and work["used_budget"] == {"model_steps": 6, "tool_calls": 5, "elapsed_seconds": 38}
+        assert work["can_resume"] and 'used_budget' not in work
+        observed_job=context.refs.job(work['ref'])
+        assert {key:observed_job[key] for key in ('model_steps','tool_calls','elapsed_seconds')} == {
+            "model_steps": 6, "tool_calls": 5, "elapsed_seconds": 38}
         assert work["result"]["unresolved"] == ["最终结论尚未核实"]
         assert "不等于完整论证" in facts
         assert "未完成" in context.event_message(finished)["content"]

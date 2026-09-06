@@ -15,8 +15,8 @@ async def test_new_cancellation_discards_staged_work_before_single_terminal_comm
     h = harness
     source = await h.human("帮我查一下A", "original")
     requests = await h.setup([
-        response(call("start_work", {"proposal_ref": "lookup", "goal": "核对A", "evidence": ["M1"]})),
-        response(call("discard_proposal", {"proposal_ref": "lookup"}, "discard"),
+        response(call("start_work", {"goal": "核对A", "evidence": ["M1"]})),
+        response(call("discard_proposal", {"proposal_ref": "S1"}, "discard"),
                  call("finish_turn", text_reply("好，不查了"), "finish")),
     ])
     snapshot = h.actor.session.model_copy(deep=True)
@@ -52,6 +52,8 @@ async def test_new_cancellation_discards_staged_work_before_single_terminal_comm
     finally:
         h.actor.release_episode_lease(mailbox.episode_id)
     assert len(requests) == 2 and len(observed) == 1
+    assert 'discard_proposal' not in {t['function']['name'] for t in requests[0]['tools']}
+    assert 'discard_proposal' in {t['function']['name'] for t in requests[1]['tools']}
     assert "不用查了" in str(requests[1]["messages"])
     assert result.job_proposals == [] and await h.store.list_jobs(h.actor.scene_id) == []
     assert [action.content for action in h.actions] == ["好，不查了"]
@@ -64,9 +66,9 @@ async def test_parameter_repair_can_discard_prior_staging_without_any_side_effec
     h = harness
     await h.human("帮我核对资料")
     await h.setup([
-        response(call("start_work", {"proposal_ref": "lookup", "goal": "核对资料", "evidence": ["M1"]}, "stage"),
-                 call("finish_turn", {"messages": [{"segments": [{"type": "image", "asset_id": "unknown"}]}]}, "bad")),
-        response(call("discard_proposal", {"proposal_ref": "lookup"}, "discard"),
+        response(call("start_work", {"goal": "核对资料", "evidence": ["M1"]}, "stage"),
+                 call("finish_turn", {"messages": [{"segments": [{"image": "unknown"}]}]}, "bad")),
+        response(call("discard_proposal", {"proposal_ref": "S1"}, "discard"),
                  call("finish_turn", {"messages": []}, "finish")),
     ])
     result, trace = await h.run()
@@ -82,14 +84,15 @@ async def test_discard_is_per_proposal_and_silence_preserves_other_staged_work(h
     context = ConversationContext(h.runtime, h.actor.session, event.metadata["_rowid"])
     context.event_message(event)
     ledger = ProposalLedger(context, "ledger")
-    await ledger.stage("start_work", {"proposal_ref": "first", "goal": "A", "evidence": ["M1"]})
-    await ledger.stage("start_work", {"proposal_ref": "second", "goal": "B", "evidence": ["M1"]})
-    receipt = await ledger.stage("discard_proposal", {"proposal_ref": "first"})
+    first=await ledger.stage("start_work", {"goal": "A", "evidence": ["M1"]})
+    second=await ledger.stage("start_work", {"goal": "B", "evidence": ["M1"]})
+    receipt = await ledger.stage("discard_proposal", {"proposal_ref": first['proposal_ref']})
     assert receipt["status"] == "discarded"
     result = await ledger.finish({"messages": []})
-    assert [job.proposal_id for job in result.job_proposals] == ["second"]
+    assert [job.proposal_id for job in result.job_proposals] == [second['proposal_ref']]
+    assert ledger.terminal_definition()['function']['parameters']['properties']['messages']['items']['properties']['ack_ref']['enum']==[second['ack_ref']]
     with pytest.raises(TerminalArgumentError, match="ack_ref"):
-        await ledger.finish({"messages": [{"segments": [{"type": "text", "text": "已经安排了"}], "ack_ref": "first"}]})
+        await ledger.finish({"messages": [{"segments": [{"text": "已经安排了"}], "ack_ref": first['ack_ref']}]})
 
 
 @pytest.mark.asyncio
@@ -125,10 +128,10 @@ async def test_committed_references_and_repeated_discards_are_not_pending_handle
     ledger = ProposalLedger(context, "ledger")
     with pytest.raises(ToolArgumentError, match="已提交"):
         await ledger.stage("discard_proposal", {"proposal_ref": "J1"})
-    await ledger.stage("start_work", {"proposal_ref": "lookup", "goal": "A", "evidence": ["M1"]})
-    await ledger.stage("discard_proposal", {"proposal_ref": "lookup"})
+    receipt=await ledger.stage("start_work", {"goal": "A", "evidence": ["M1"]})
+    await ledger.stage("discard_proposal", {"proposal_ref": receipt['proposal_ref']})
     with pytest.raises(ToolArgumentError, match="未找到本轮暂存提案"):
-        await ledger.stage("discard_proposal", {"proposal_ref": "lookup"})
+        await ledger.stage("discard_proposal", {"proposal_ref": receipt['proposal_ref']})
 
 
 @pytest.mark.asyncio
@@ -140,7 +143,7 @@ async def test_relative_reminder_uses_commit_clock_and_requires_exactly_one_time
     context = ConversationContext(h.runtime, h.actor.session, event.metadata["_rowid"])
     context.event_message(event)
     ledger = ProposalLedger(context, "validate-reminder")
-    base = {"proposal_ref": "break", "description": "提醒休息", "requester": "U1", "evidence": ["M1"]}
+    base = {"description": "提醒休息", "requester": "U1", "evidence": ["M1"]}
     for timing in ({}, {"due_at": 2200, "delay_seconds": 1200}, {"delay_seconds": 0}, {"delay_seconds": -1}):
         with pytest.raises(ToolArgumentError):
             await ledger.stage("schedule_reminder", {**base, **timing})

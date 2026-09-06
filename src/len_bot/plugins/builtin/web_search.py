@@ -1,15 +1,12 @@
-"""Web Search Tool plugin (ADR-0021, V2 plan §十六 Plugin 2).
-
-Cognition-invoked agentic tools over DuckDuckGo's HTML endpoint (no API key).
-Tool results are plain observation strings — the plugin never prompts an LLM
-and never touches outbound messaging (Invariant B).
-"""
+"""Public Bing search and document reads; observations only, no cognition or sends."""
 
 import logging
 import re
 from html import unescape
+from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import urljoin, urlparse
+import xml.etree.ElementTree as ET
 
 import httpx
 import asyncio
@@ -20,15 +17,14 @@ from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.plugins.net_policy import validate_url
 from len_bot.tools.http import fetch_public
+from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolResult, ToolSource
 
 logger = logging.getLogger(__name__)
 
-DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+SEARCH_URL = "https://www.bing.com/search"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
-_RESULT_ANCHOR = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
-_RESULT_SNIPPET = re.compile(r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', re.DOTALL)
 _TAG_STRIP = re.compile(r"<[^>]+>")
 
 
@@ -36,15 +32,24 @@ def _strip_tags(raw: str) -> str:
     return unescape(re.sub(r"\s+", " ", _TAG_STRIP.sub("", raw))).strip()
 
 
-def _resolve_ddg_href(href: str) -> str:
-    """DDG wraps result URLs in /l/?uddg=<encoded>; unwrap to the real target."""
-    if "//duckduckgo.com/l/" in href or "duckduckgo.com/l/" in href:
-        parsed = urlparse(href if href.startswith("http") else f"https:{href}")
-        target = parse_qs(parsed.query).get("uddg", [""])[0]
-        return unquote(target) if target else href
-    if href.startswith("//"):
-        return f"https:{href}"
-    return href
+class _MediaLinks(HTMLParser):
+    def __init__(self, base_url):
+        super().__init__()
+        self.base_url, self.images, self.pdfs = base_url, [], []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        raw = (attrs.get('src') or attrs.get('data-src')) if tag == 'img' else attrs.get('href') if tag == 'a' else None
+        if not raw:
+            return
+        url = urljoin(self.base_url, raw)
+        if urlparse(url).scheme not in {'http', 'https'}:
+            return
+        if tag == 'img' and len(self.images) < 24 and url not in [row['url'] for row in self.images]:
+            self.images.append({'url': url, 'label': (attrs.get('alt') or '')[:200]})
+        elif tag == 'a' and (urlparse(url).path.endswith('.pdf') or '/pdf/' in urlparse(url).path):
+            if url not in self.pdfs and len(self.pdfs) < 12:
+                self.pdfs.append(url)
 
 
 class WebSearchToolPlugin(BasePlugin):
@@ -52,8 +57,8 @@ class WebSearchToolPlugin(BasePlugin):
         super().__init__(manifest=PluginManifest(
             id="web_search_tool",
             name="实时联网认知检索",
-            description="机器人需要补充资料时主动使用的网页搜索与页面阅读工具，无需单独配置密钥。",
-            version="1.0.0",
+            description="通过 Bing 公开检索查找网页，读取正文、PDF文本并保留图表入口，无需单独配置密钥。",
+            version="1.1.0",
             timeout_seconds=20.0,
             plugin_type=PluginType.TOOL,
             permissions=[PluginPermission.REGISTER_TOOL],
@@ -75,7 +80,7 @@ class WebSearchToolPlugin(BasePlugin):
     async def on_load(self, context: PluginContext) -> None:
         context.register_tool(
             name="web_search",
-            description="联网搜索：输入查询关键词，返回网页标题、链接与摘要。",
+            description="通过Bing联网搜索，返回标题、链接与摘要。保留问题中的公司、型号与时间；摘要用于定位原始来源，可在query中使用site:限定官方站点。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -88,7 +93,7 @@ class WebSearchToolPlugin(BasePlugin):
         )
         context.register_tool(
             name="read_page",
-            description="读取通用网页、文本或JSON，返回来源与正文。长内容以结果ID调用 read_tool_result 续读；不支持需登录或仅脚本渲染的内容。",
+            description="读取网页、文本、JSON或PDF文本，保留图表和PDF链接。长内容用read_tool_result续读；图表数值或PDF页面排版用read_web_media查看原图。需登录或仅脚本渲染的页面可能不可读。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -105,29 +110,31 @@ class WebSearchToolPlugin(BasePlugin):
 
     async def _web_search(self, args: dict[str, Any]) -> ToolResult:
         query = str(args.get("query", "")).strip()
-        if not query:
-            return ToolResult.failure("web_search requires a 'query' argument.", "invalid_arguments")
-        max_results = int(self.manifest.config.get("max_results", 5))
+        if not query or len(query) > 500:
+            return ToolResult.failure("query须为1至500字符。", "invalid_arguments")
+        max_results = min(10, max(1, int(self.manifest.config.get("max_results", 5))))
 
-        resp = await self._client.get(DDG_HTML_URL, params={"q": query})
+        resp = await self._client.get(SEARCH_URL, params={"q": query, "format": "rss"})
         resp.raise_for_status()
-        html = resp.text
-
-        anchors = _RESULT_ANCHOR.findall(html)
-        snippets = [_strip_tags(s) for s in _RESULT_SNIPPET.findall(html)]
-
+        try:
+            if resp.status_code != 200 or len(resp.text) > 1_000_000 or '<!DOCTYPE' in resp.text.upper() or '<!ENTITY' in resp.text.upper():
+                raise ValueError('Unexpected search response')
+            root = ET.fromstring(resp.text)
+            if root.tag != 'rss' or root.find('channel') is None:
+                raise ValueError('Search response is not RSS')
+        except (ET.ParseError, ValueError):
+            return ToolResult(status='unsupported', error_code='search_unavailable', evidence_kind='external',
+                content='搜索服务未返回可读取结果，可能是服务限制或验证页面；本次无法核实，不能判断对象不存在。')
         lines, sources = [], []
-        for idx, (href, title_html) in enumerate(anchors[:max_results]):
-            title = _strip_tags(title_html)
-            url = _resolve_ddg_href(href)
-            snippet = snippets[idx] if idx < len(snippets) else ""
-            lines.append(f"{idx + 1}. {title}\n   URL: {url}\n   摘要: {snippet}")
+        for item in root.findall('./channel/item')[:max_results]:
+            title, url = _strip_tags(item.findtext('title') or ''), item.findtext('link') or ''
+            if urlparse(url).scheme not in {'http', 'https'}:
+                continue
+            snippet = _strip_tags(item.findtext('description') or '')
+            lines.append(f"{len(lines) + 1}. {title}\n   URL: {url}\n   摘要: {snippet}")
             sources.append(ToolSource(url=url, title=title))
         if not lines:
-            empty = "result--no-result" in html or "No results found" in html
-            return ToolResult(status="no_results" if empty else "unsupported",
-                              content="检索没有返回结果，不能推断现实不存在。" if empty else "搜索服务未返回可解析结果，可能需要交互验证。",
-                              error_code=None if empty else "search_unavailable", evidence_kind="external")
+            return ToolResult(status='no_results', content='此次检索没有结果；保留原对象，不能推断现实不存在。', evidence_kind='external')
         return ToolResult(content="\n".join(lines), sources=sources, evidence_kind="external", coverage="search_snippets")
 
     async def _read_page(self, args: dict[str, Any]) -> ToolResult:
@@ -142,11 +149,21 @@ class WebSearchToolPlugin(BasePlugin):
             return ToolResult.failure(f"安全拦截: 目标地址受限 - {reason}", "blocked")
 
         try:
-            final_url, headers, body = await fetch_public(self._client, url)
+            final_url, headers, body = await fetch_public(self._client, url, max_bytes=MAX_PDF_BYTES)
             media_type = headers.get("content-type", "").split(";")[0].lower()
+            source = ToolSource(url=final_url)
+            if media_type == 'application/pdf' or body.startswith(b'%PDF-'):
+                document = await read_pdf(body)
+                content = (f"PDF共{document['page_count']}页，提取到第{document['pages_extracted']}页；以下为文本层，图表与列布局需用read_web_media指定页码核对。\n"
+                           + ('文本层为空，请查看页面原图。\n' if not document['has_text'] else '')
+                           + document['text'])
+                return ToolResult(content=content, sources=[source], evidence_kind='external',
+                    coverage='pdf_text' if document['has_text'] else 'pdf_text_empty', truncated=document['truncated'],
+                    status='partial' if document['truncated'] or not document['has_text'] else 'ok')
+            if len(body) > 2_000_000:
+                raise ValueError('网页或文本超过2MB上限')
             # aiter_bytes already decoded Content-Encoding; retain charset only.
             decoded = httpx.Response(200, headers={"content-type": headers.get("content-type", "")}, content=body).text
-            source = ToolSource(url=final_url)
             if media_type in {"application/json", "text/json"} or media_type.endswith("+json"):
                 content = json.dumps(json.loads(decoded), ensure_ascii=False, indent=2)
             elif media_type in {"text/plain", "text/markdown", "text/csv"}:
@@ -161,6 +178,12 @@ class WebSearchToolPlugin(BasePlugin):
                 content = await asyncio.to_thread(trafilatura.extract, decoded, url=final_url,
                     output_format="markdown", include_links=True, include_tables=True, include_comments=True)
                 content = content or extracted.text
+                resources = _MediaLinks(final_url)
+                resources.feed(decoded)
+                if resources.images or resources.pdfs:
+                    content = ('页面资源（最多24张图、12个PDF链接，尚未查看像素；指标图用read_web_media读取）：'
+                               + json.dumps({'images': resources.images, 'pdfs': resources.pdfs}, ensure_ascii=False)
+                               + '\n\n' + content)
                 source.title = extracted.title or ""
                 source.published_at = extracted.date
             else:

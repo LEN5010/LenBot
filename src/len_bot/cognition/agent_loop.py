@@ -13,11 +13,17 @@ from typing import Any
 from len_bot.cognition.gateway import ModelGateway, ToolCall
 
 
-class TerminalArgumentError(ValueError):
+class ModelArgumentError(ValueError):
+    def __init__(self, message: str, *, model_message: str | None = None):
+        super().__init__(message)
+        self.model_message = model_message or message
+
+
+class TerminalArgumentError(ModelArgumentError):
     """The terminal proposal needs a model-correctable parameter repair."""
 
 
-class ToolArgumentError(ValueError):
+class ToolArgumentError(ModelArgumentError):
     """A nonterminal tool rejected its arguments before applying a proposal."""
 
 
@@ -77,7 +83,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         tool_definitions: Callable[[], list[dict[str, Any]]],
         execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]],
-        terminal: dict[str, Any],
+        terminal: dict[str, Any] | Callable[[], dict[str, Any]],
         finish: Callable[[dict[str, Any]], Awaitable[Any]],
         proposal_tool_names: set[str] | frozenset[str] = frozenset(),
         max_steps: int = 5,
@@ -91,7 +97,7 @@ class AgentLoop:
     ) -> Any:
         if max_steps < 1 or max_tool_calls < 0:
             raise ValueError("Invalid agent run budget")
-        terminal_name = terminal["function"]["name"]
+        terminal_name = (terminal() if callable(terminal) else terminal)["function"]["name"]
         trajectory = copy.deepcopy(messages)
         audit = trace if trace is not None else {}
         audit.update({"steps": [], "model_calls_used": 0, "tool_calls_used": 0,
@@ -108,13 +114,14 @@ class AgentLoop:
                 raise AgentProtocolError(step["failure_reason"]) from error
             repair_used = True
             audit["contract_repairs"].append({"step": step["step"], "reason": step["failure_reason"]})
+            feedback = getattr(error, "model_message", str(error))
             if calls:
                 for call in calls:
-                    result = (receipts or {}).get(call.id, {"error": "invalid_arguments", "message": str(error)})
+                    result = (receipts or {}).get(call.id, {"error": "invalid_arguments", "message": feedback})
                     trajectory.append({"role": "tool", "tool_call_id": call.id,
                                        "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
             else:
-                trajectory.append({"role": "user", "content": f"请使用原生工具调用完成本轮：{error}"})
+                trajectory.append({"role": "user", "content": f"请使用原生工具调用完成本轮：{feedback}"})
 
         async def execute(call: ToolCall, arguments: dict[str, Any], item: dict) -> Any:
             nonlocal tool_calls_used
@@ -136,13 +143,19 @@ class AgentLoop:
                 return {"error": type(exc).__name__, "message": str(exc)}
             item["status"] = "completed"
             item["result_sha256"] = _digest(result)
+            try:
+                observation = json.loads(result) if isinstance(result, str) else result
+            except (ValueError, TypeError):
+                observation = None
+            if isinstance(observation, dict) and observation.get('status') in {'ok','partial','no_results','error','unsupported'}:
+                item['observation']={key:observation[key] for key in ('status','error_code','coverage','result_id') if key in observation}
             return result
 
         for step_index in range(max_steps):
             forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls
             definitions = [] if forced_final else copy.deepcopy(tool_definitions())
             definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
-            definitions.append(copy.deepcopy(terminal))
+            definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
             known_names = {definition["function"]["name"] for definition in definitions}
             choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
             if forced_final:
@@ -156,7 +169,8 @@ class AgentLoop:
             audit["model_calls_used"] += 1
             step = {"step": step_index, "provider_id": self.gateway.binding.provider_id,
                     "model": self.gateway.binding.model, "role": self.gateway.binding.role,
-                    "forced_final": forced_final, "tool_calls": []}
+                    "forced_final": forced_final, "available_tools": [item["function"]["name"] for item in definitions],
+                    "tool_calls": []}
             audit["steps"].append(step)
             if checkpoint is not None:
                 await checkpoint("before_model", {**step, "message_count": len(trajectory)})

@@ -169,7 +169,7 @@ class AgentRuntime:
             if field in saved:
                 setattr(self.config, field, saved[field])
         persona = await self.event_store.get_dynamic_config("persona_config") or {}
-        for field in ("character_context", "identity_name", "identity_core", "identity_persona", "conversation_style"):
+        for field in ("character_context", "identity_name", "identity_core", "identity_persona", "conversation_style", "address_names"):
             if field in persona:
                 setattr(self.config, field, persona[field])
         if "bot_qq" in persona:
