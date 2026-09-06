@@ -82,7 +82,9 @@ async def test_direct_mention_and_implicit_continuation_use_one_social_core(tmp_
                     open_topics=[TopicState(id="live", subject="今晚直播", participants=["user:A"])]
                 ),
             )
-        assert '"subject": "今晚直播"' in prompt
+        import json
+        state = json.loads(prompt.split("【CURRENT SOCIAL STATE】\n")[1].split("【GROUP REGISTER】")[0])
+        assert any(topic["subject"] == "今晚直播" for topic in state["social_world_state"]["topics"])
         return result(
             summary="没有关键词，但这是对今晚直播迟迟未开的自然延续",
             reason="顺着刚才的话题接一句",

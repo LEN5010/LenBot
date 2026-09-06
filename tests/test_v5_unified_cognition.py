@@ -120,7 +120,7 @@ async def test_replay_runs_runtime_tasks_and_shadow_queue(tmp_path):
                 due_at=first.timestamp+60, source_event_ids=[first.id])]
             return result
         import json
-        prompt = messages[1]["content"].split("【CURRENT SOCIAL STATE】\n")[1].split("\n\n")[0]
+        prompt = messages[1]["content"].split("【CURRENT SOCIAL STATE】\n")[1].split("【GROUP REGISTER】")[0]
         tasks = json.loads(prompt)["tasks"]
         result = social_result(reason="提醒到期", content="到点了", fulfils_task_id=tasks[0]["id"])
         return result

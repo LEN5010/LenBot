@@ -16,7 +16,7 @@ from len_bot.events.models import Event, EventType
 
 def project_onebot_text(text: str) -> str:
     labels = {
-        "image": "图片：尚未解析",
+        "image": "图片",
         "record": "语音",
         "video": "视频",
         "face": "表情",
@@ -53,6 +53,8 @@ def project_event(event: Event, bot_qq: int | str) -> str:
     text = project_onebot_text(event.raw_text)
     if event.metadata.get("media"):
         text += "\n图片引用（需要时用 inspect_image 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
+    if event.metadata.get("image_observations"):
+        text += "\n已有图片观察（模型解读，保留原问题与来源）：" + json.dumps(event.metadata["image_observations"], ensure_ascii=False)
     quote = event.metadata.get("quote_context")
     if quote is not None:
         text += "\n引用原话：" + ("本群历史中未找到，不能猜测作者或内容" if quote.get("missing") else

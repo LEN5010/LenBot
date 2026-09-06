@@ -368,10 +368,10 @@ async function resetConversationData() {
 
     <div class="panel" style="margin-top: 24px;">
       <h2>重新开始聊天</h2>
-      <p class="muted">清空全部群聊和私聊的对话数据、记忆、任务与工作、工具资料、图片及场景上下文。保留模型、OneBot、人格、表达样例、登录配置、Shadow 开关和实发群名单。</p>
+      <p class="muted">清空全部群聊和私聊的对话数据、记忆、任务与工作、工具资料、聊天图片及场景上下文。保留运营表情库、模型、OneBot、人格、表达样例、登录配置、Shadow 开关和实发群名单。</p>
       <button v-if="!resetConfirming" class="danger" @click="resetConfirming = true; resetFeedback = ''">Reset 对话数据</button>
       <div v-else>
-        <p>确认清空全部对话数据？此操作无法撤销，配置会保留。</p>
+        <p>确认清空全部对话数据？表情库和配置会保留。</p>
         <button class="danger" :disabled="resetting" @click="resetConversationData">{{ resetting ? '正在清空…' : '确认清空' }}</button>
         <button :disabled="resetting" @click="resetConfirming = false">取消</button>
       </div>

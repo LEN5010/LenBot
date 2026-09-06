@@ -92,6 +92,18 @@ async def test_vision_uses_actual_pixels_and_preserves_inference_boundary(tmp_pa
         rows = await rt.event_store.get_recent_events("group:a")
         observation = next(e for e in rows if e.id == result.observation_event_id)
         assert not observation.payload["independent_evidence"]
+        cutoff = (await (await rt.event_store._db.execute("SELECT rowid FROM events WHERE id=?", (observation.id,))).fetchone())[0]
+        reference = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id="group:a", actor_id="user:1",
+                          payload={"raw_text": "这张图"}, metadata={"media": [{"asset_id": asset["id"]}]})
+        projected = await rt.event_store.project_image_observations("group:a", [reference], cutoff)
+        assert projected[0].metadata["image_observations"][0]["observation_event_id"] == observation.id
+        assert "图片为红色" in project_event(projected[0], rt.config.bot_qq)
+        assert "image_observations" not in reference.metadata
+        assert "image_observations" not in (await rt.event_store.project_image_observations("group:a", [reference], cutoff-1))[0].metadata
+        assert "image_observations" not in (await rt.event_store.project_image_observations("group:b", projected, cutoff))[0].metadata
+        repeated = await rt.event_store.project_image_observations("group:a", [reference, reference.model_copy(update={"id": "quote"})], cutoff)
+        assert "image_observations" not in repeated[0].metadata
+        assert repeated[1].metadata["image_observations"][0]["asset_id"] == asset["id"]
     finally:
         await rt.stop()
 

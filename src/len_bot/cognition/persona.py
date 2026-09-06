@@ -20,7 +20,7 @@ def render_identity_block(config: RuntimeConfig) -> str:
         f"背景与性格:{config.identity_persona.strip()}\n"
         f"{config.identity_core.strip()}\n"
         f"语言风格:{config.conversation_style.strip()}\n"
-        f"【角色资料与梗：运营设定，不是群聊事实证据】\n{config.character_context.strip()}\n"
+        f"【角色参考：身份设定与梗的语境】\n{config.character_context.strip()}\n"
     )
 
 
@@ -38,7 +38,7 @@ def render_self_state_block(session: GroupAgentSession) -> str:
 
 
 def render_register_block(session: GroupAgentSession) -> str:
-    return f"【GROUP REGISTER】(本群的说话节奏统计,仅供参考语境,不要刻意模仿词汇)\n{session.group_register.render()}\n"
+    return f"【GROUP REGISTER】(本群的说话节奏，供理解当前语境)\n{session.group_register.render()}\n"
 
 
 def render_voice_examples_block(examples: list[dict]) -> str:
@@ -57,7 +57,7 @@ def render_voice_examples_block(examples: list[dict]) -> str:
     if not lines:
         return ""
     return (
-        "【VOICE EXAMPLES】(运营编写的表达参考，不是历史发言或记忆证据，不要照抄内容)\n"
+        "【VOICE EXAMPLES】(运营编写的情境与表达参考，结合当前原话选择合适的说法)\n"
         + "\n".join(lines)
         + "\n"
     )

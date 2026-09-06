@@ -265,8 +265,12 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             try:
                 counts = {}
                 for table in tables:
-                    counts[table] = (await (await self._db.execute(f"SELECT COUNT(*) FROM {table}")).fetchone())[0]
-                    await self._db.execute(f"DELETE FROM {table}")
+                    where = " WHERE curated=0" if table == "media_assets" else (
+                        " WHERE id NOT IN (SELECT source_event_id FROM media_assets) AND "
+                        "NOT (event_type='MEDIA_UPDATED' AND COALESCE(json_extract(payload,'$.asset_id') "
+                        "IN (SELECT id FROM media_assets),0))" if table == "events" else "")
+                    counts[table] = (await (await self._db.execute(f"SELECT COUNT(*) FROM {table}{where}")).fetchone())[0]
+                    await self._db.execute(f"DELETE FROM {table}{where}")
                 await self._db.execute("UPDATE voice_exemplars SET use_count=0,last_used_at=0")
                 await self._db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)",
                     (event.id, event.event_type.value, event.scene_id, event.actor_id, event.timestamp,

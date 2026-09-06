@@ -79,6 +79,9 @@ async def test_preferred_address_survives_metadata_refresh_and_restart(tmp_path)
         assert (person.nickname, person.card, person.preferred_name) == ("账号新昵称", "新群名片", "雨月云")
         assert later.id in person.recent_event_ids
         assert actor.group_session.working_persons["user:B"].preferred_name is None
+        await incoming(actor, "更新名片", sender={"nickname": "账号新昵称", "card": None})
+        person = actor.group_session.working_persons["user:A"]
+        assert person.card is None and person.display_name == "账号新昵称" and person.preferred_name == "雨月云"
 
 
 @pytest.mark.asyncio

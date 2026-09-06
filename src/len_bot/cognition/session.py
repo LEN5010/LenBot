@@ -501,9 +501,9 @@ class GroupAgentSessionReducer:
             person = WorkingPersonModel(actor_id=event.actor_id)
 
         if "nickname" in sender:
-            person.nickname = str(sender["nickname"])
+            person.nickname = str(sender["nickname"]) if sender["nickname"] is not None else None
         if "card" in sender:
-            person.card = str(sender["card"])
+            person.card = str(sender["card"]) if sender["card"] is not None else None
         display_name = person.card or person.nickname
         if display_name:
             person.display_name = str(display_name)
