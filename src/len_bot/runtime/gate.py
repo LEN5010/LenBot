@@ -262,7 +262,8 @@ class RuntimeGate:
                 action_origin = "shadow"
             job_id, job_revision = msg.job_id, msg.job_revision
             if msg.task_ref:
-                task = next((row for row in task_rows.values() if row["payload"].get("proposal_id") == msg.task_ref), None)
+                # Proposal refs repeat across turns; the transaction binds this unique action ID.
+                task = next((row for row in task_rows.values() if row["payload"].get("ack_action_id") == action_ids[index]), None)
                 if task and task["payload"].get("kind") == "agent_job":
                     job = await self.event_store.get_job(task["id"], current_scene_state.scene_id)
                     job_id, job_revision = job["id"], job["revision"]
