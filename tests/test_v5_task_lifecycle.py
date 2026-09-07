@@ -96,27 +96,87 @@ async def test_fulfilment_waits_for_actual_delivery(tmp_path, delivery, status):
         await rt.stop()
 
 @pytest.mark.asyncio
-async def test_claim_and_due_event_survive_crash(tmp_path):
+@pytest.mark.parametrize("trigger_event_id", ["", "condition:source"])
+async def test_claim_and_due_event_survive_crash(tmp_path, trigger_event_id):
     config = RuntimeConfig(db_path=str(tmp_path/"restart.db"))
     rt = AgentRuntime(config, mock_turn_handler=lambda session, events: asyncio.sleep(0, result=turn_result(reason="核对")))
     await rt.start()
     await allow_fake_delivery(rt, 'group:1')
     await rt.scheduler.stop()
     task = await pending(rt)
-    due = Event(event_type=EventType.TASK_DUE, scene_id="group:1", actor_id="system:scheduler", payload={"task_id":task.id})
+    obsolete = Event(event_type=EventType.TASK_DUE, scene_id=task.scene_id, actor_id="system:scheduler",
+                     payload={"task_id":task.id, "trigger_event_id":"old:claim"})
+    assert await rt.event_store.claim_task_event(task.id, task.scene_id, obsolete)
+    assert (await proposal(rt, [TaskProposal(operation="update", task_id=task.id, due_at=rt.clock()+600)])).accepted
+    due = Event(event_type=EventType.TASK_DUE, scene_id="group:1", actor_id="system:scheduler",
+                payload={"task_id":task.id, "trigger_event_id":trigger_event_id})
     assert await rt.event_store.claim_task_event(task.id, task.scene_id, due)
     assert not await rt.event_store.claim_task_event(task.id, task.scene_id, due)
+    await rt.event_store.recover_task_execution()
+    await rt.event_store.recover_task_execution()
+    assert (await rt.event_store.scene_tasks(task.scene_id))[0]["status"] == "claimed"
+    assert await rt.event_store.task_due_is_current(due)
+    assert not await rt.event_store.task_due_is_current(obsolete)
+    assert [event.id for event in await rt.event_store.pending_runtime_events()] == [obsolete.id, due.id]
     await rt.stop()
-    restarted = AgentRuntime(config, mock_turn_handler=lambda session, events: asyncio.sleep(0, result=turn_result(reason="核对")))
+    turns = []
+    async def core(session, events):
+        turns.append([event.id for event in events])
+        return turn_result(reason="核对")
+    restarted = AgentRuntime(config, mock_turn_handler=core)
     await restarted.start()
     try:
         await drain(restarted)
+        await restarted.receive_event(due)
+        await drain(restarted)
         events = await restarted.event_store.get_recent_events("group:1")
         assert len([e for e in events if e.id == due.id]) == 1
+        assert next(e for e in events if e.id == obsolete.id).metadata["obsolete_task_wake"] is True
+        assert next(e for e in events if e.id == due.id).metadata["obsolete_task_wake"] is False
+        assert not any(e.event_type == EventType.TASK_REVIEW for e in events)
+        assert len(turns) == 1 and due.id in turns[0]
         assert await restarted.event_store.pending_runtime_events() == []
         assert (await restarted.event_store.scene_tasks("group:1"))[0]["status"] == "processing"
     finally:
         await restarted.stop()
+
+@pytest.mark.asyncio
+async def test_recovery_ignores_unrelated_pending_events(tmp_path):
+    rt = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/"unmatched.db")))
+    await rt.start()
+    await rt.scheduler.stop()
+    try:
+        task = await pending(rt)
+        trigger = "current:claim"
+        assert await rt.event_store.claim_task(task.id, trigger)
+        unrelated = [
+            Event(event_type=event_type, scene_id=scene_id, actor_id="system:scheduler",
+                  payload={"task_id":task_id, "trigger_event_id":event_trigger})
+            for event_type, scene_id, task_id, event_trigger in [
+                (EventType.TASK_DUE, task.scene_id, "other:task", trigger),
+                (EventType.TASK_DUE, "group:other", task.id, trigger),
+                (EventType.TASK_DUE, task.scene_id, task.id, "old:claim"),
+                (EventType.TOOL_COMPLETED, task.scene_id, task.id, trigger),
+            ]
+        ]
+        await rt.event_store._db.executemany(
+            "INSERT INTO pending_runtime_events VALUES (?,?,?)",
+            [(event.id, event.scene_id, event.model_dump_json()) for event in unrelated],
+        )
+        await rt.event_store._db.commit()
+        await rt.event_store.recover_task_execution()
+        await rt.event_store.recover_task_execution()
+        assert (await rt.event_store.scene_tasks(task.scene_id))[0]["status"] == "review_required"
+        pending_events = await rt.event_store.pending_runtime_events()
+        reviews = [event for event in pending_events if event.event_type == EventType.TASK_REVIEW]
+        assert len(reviews) == 1
+        assert reviews[0].scene_id == task.scene_id
+        assert reviews[0].payload["task_id"] == task.id
+        assert reviews[0].payload["trigger_event_id"] == trigger
+        assert {event.id for event in pending_events} == {event.id for event in [*unrelated, reviews[0]]}
+        assert not await rt.event_store.task_due_is_current(unrelated[2])
+    finally:
+        await rt.stop()
 
 @pytest.mark.asyncio
 async def test_incomplete_delivery_never_auto_resends_after_restart(tmp_path):

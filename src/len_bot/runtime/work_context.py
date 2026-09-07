@@ -44,22 +44,80 @@ def validate_complete_exchanges(messages):
     exchange_spans(messages)
 
 
-def archive_trajectory(messages):
-    """Save media locations, never replicated base64; native assistant stays lossless."""
-    archived = copy.deepcopy(messages)
-    for message in archived:
+def _image_contexts(messages):
+    for message in messages:
         content = message.get("content")
         if message.get("role") != "user" or not isinstance(content, list):
             continue
-        manifest = []
         for block in content:
-            if block.get("type") == "text":
-                text = block.get("text", "")
-                try:
-                    facts = json.loads(text.removeprefix("工具读取的原始图片："))
-                except ValueError:
-                    continue
-                manifest = facts.get("image_manifest", []) if isinstance(facts, dict) else facts if isinstance(facts, list) else []
+            if block.get("type") != "text":
+                continue
+            text = block.get("text", "")
+            prefix = "工具读取的原始图片：" if text.startswith("工具读取的原始图片：") else ""
+            try:
+                facts = json.loads(text.removeprefix(prefix))
+            except ValueError:
+                continue
+            manifest = facts.get("image_manifest") if isinstance(facts, dict) else facts if prefix and isinstance(facts, list) else None
+            if isinstance(manifest, list):
+                yield content, block, prefix, facts, manifest
+                break
+        else:
+            if any(block.get("type") in {"image_url", "work_image_reference"} for block in content):
+                raise ValueError("Work image lacks a stored asset manifest")
+
+
+def synchronize_image_window(messages, image_limit=6):
+    """Derive current pixels from the trajectory, retaining the newest six assets."""
+    contexts = list(_image_contexts(messages))
+    pixels = []
+    for content, _, _, _, manifest in contexts:
+        by_index = {item["block_index"]: item["asset_id"] for item in manifest if "block_index" in item}
+        image_index = 0
+        for index, block in enumerate(content):
+            if block.get("type") == "image_url":
+                if image_index not in by_index:
+                    raise ValueError("Work image lacks a stored asset reference")
+                pixels.append((content, index, by_index[image_index]))
+                image_index += 1
+    current_assets, retained = set(), set()
+    for content, index, asset in reversed(pixels):
+        if asset not in current_assets and len(current_assets) < image_limit:
+            current_assets.add(asset)
+            retained.add((id(content), index))
+    local_indices = {}
+    for content, index, asset in pixels:
+        if (id(content), index) in retained:
+            indices = local_indices.setdefault(id(content), {})
+            indices[asset] = len(indices)
+        else:
+            content[index] = {"type": "text", "text": f"此处保留原图 {asset} 定位；像素已移出该位置，需要时可用 read_media 回读。"}
+    for content, block, prefix, facts, manifest in contexts:
+        indices = local_indices.get(id(content), {})
+        for item in manifest:
+            asset = item["asset_id"]
+            was_loaded = "block_index" in item
+            item.pop("block_index", None)
+            if asset in indices:
+                item.update(status="included", block_index=indices[asset])
+                if "source_coverage" in item:
+                    item["coverage"] = item["source_coverage"]
+                item.pop("reason", None)
+            elif asset in current_assets:
+                item.setdefault("source_coverage", item.get("coverage", "image"))
+                item.update(status="included_elsewhere", coverage="pixels_elsewhere_in_current_context")
+                item.pop("reason", None)
+            elif was_loaded or item.get("status") == "included_elsewhere":
+                item.setdefault("source_coverage", item.get("coverage", "image"))
+                item.update(status="omitted", coverage="pixels_not_loaded", reason="image_window_evicted")
+        block["text"] = prefix + json.dumps(facts, ensure_ascii=False)
+    return current_assets
+
+
+def archive_trajectory(messages):
+    """Save media locations, never replicated base64; native assistant stays lossless."""
+    archived = copy.deepcopy(messages)
+    for content, _, _, _, manifest in _image_contexts(archived):
         by_index = {item["block_index"]: item["asset_id"] for item in manifest if "block_index" in item}
         image_index = 0
         for index, block in enumerate(content):
@@ -71,49 +129,41 @@ def archive_trajectory(messages):
     return archived
 
 
-async def restore_trajectory(messages, media_service, scene_id, *, seen_assets=None, image_limit=6):
+async def restore_trajectory(messages, media_service, scene_id, *, image_limit=6):
     restored = copy.deepcopy(messages)
-    seen_assets = seen_assets if seen_assets is not None else set()
-    for message in restored:
-        content = message.get("content")
-        if not isinstance(content, list):
+    current_assets = synchronize_image_window(restored, image_limit)
+    for content, manifest_block, prefix, facts, manifest in _image_contexts(restored):
+        if not any(block.get("type") == "work_image_reference" for block in content):
             continue
         image_indices = {}
         image_metadata = {}
         for index, block in enumerate(content):
             if block.get("type") == "work_image_reference":
                 asset = block["asset_id"]
-                if asset in seen_assets:
-                    content[index] = {"type": "text", "text": f"原图 {asset} 像素已在本次上下文其他位置提供。"}
+                if asset in current_assets:
+                    content[index] = {"type": "text", "text": f"此处保留原图 {asset} 定位；当前像素覆盖见图片清单。"}
                     continue
-                prepared = await media_service.prepare_context_images(scene_id, [asset], limit=min(1, max(0, image_limit-len(seen_assets))))
+                prepared = await media_service.prepare_context_images(scene_id, [asset], limit=min(1, max(0, image_limit-len(current_assets))))
                 image_metadata.update({item["asset_id"]: item for item in prepared["manifest"]})
                 if prepared["blocks"]:
                     image_indices[asset] = len(image_indices)
-                    seen_assets.add(asset)
+                    current_assets.add(asset)
                     content[index] = prepared["blocks"][0]
                 else:
-                    content[index] = {"type": "text", "text": f"原图 {asset} 当前未装入；需要时 read_media 回读，不能据此声称已读取像素。"}
+                    content[index] = {"type": "text", "text": f"此处保留原图 {asset} 定位；像素未装入该位置，需要时可用 read_media 回读。"}
         # Keep the manifest's coverage aligned with the actual restored pixels.
-        for block in content:
-            if block.get("type") != "text":
-                continue
-            text = block.get("text", "")
-            prefix = "工具读取的原始图片：" if text.startswith("工具读取的原始图片：") else ""
-            try:
-                facts = json.loads(text.removeprefix(prefix))
-            except ValueError:
-                continue
-            manifest = facts.get("image_manifest", []) if isinstance(facts, dict) else facts if isinstance(facts, list) else []
-            for item in manifest:
-                item.pop("block_index", None)
-                item.update(image_metadata.get(item.get("asset_id"), {}))
-                if item.get("asset_id") in image_indices:
-                    item["block_index"] = image_indices[item["asset_id"]]
-                else:
-                    item["status"] = "included_elsewhere" if item.get("asset_id") in seen_assets else "omitted"
-                    item["coverage"] = "pixels_elsewhere_in_current_context" if item.get("asset_id") in seen_assets else "pixels_not_loaded"
-            block["text"] = prefix + json.dumps(facts, ensure_ascii=False)
+        for item in manifest:
+            item.pop("block_index", None)
+            item.update(image_metadata.get(item.get("asset_id"), {}))
+            if item.get("asset_id") in image_indices:
+                item["block_index"] = image_indices[item["asset_id"]]
+                item.pop("source_coverage", None)
+            else:
+                item.setdefault("source_coverage", item.get("coverage", "image"))
+                item["status"] = "included_elsewhere" if item.get("asset_id") in current_assets else "omitted"
+                item["coverage"] = "pixels_elsewhere_in_current_context" if item.get("asset_id") in current_assets else "pixels_not_loaded"
+        manifest_block["text"] = prefix + json.dumps(facts, ensure_ascii=False)
+    synchronize_image_window(restored, image_limit)
     return restored
 
 
@@ -214,6 +264,7 @@ class WorkCompressor:
             entry = {"start_exchange": start_exchange, "end_exchange": end_exchange, "goal_revision": self.revision, **segment.model_dump()}
             replacement = {"role": "user", "content": "旧工作区间摘要（非新增证据，原资料按 result_id 回读）：" + json.dumps(entry, ensure_ascii=False)}
             candidate[start:end] = [replacement]
+            synchronize_image_window(candidate)
             after = request_tokens(candidate, tools)
             if after >= compacted_before or after > input_budget:
                 raise JobContextExhausted("工作压缩未形成有效可用窗口")

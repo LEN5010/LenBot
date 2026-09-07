@@ -46,6 +46,17 @@ class MessageRangeArguments(BaseModel):
     limit: int = Field(default=4000, ge=1, le=8000)
 
 
+class PendingWakeArguments(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    after_rowid: int = Field(default=0, ge=0)
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+READ_PENDING_WAKES = tool('read_pending_wakes',
+    '分页定位当前场景尚未完整读取的唤醒来源；使用next_after_rowid继续。目录不是原文证据，随后用read_context或read_message_range读取。',
+    {'after_rowid':{'type':'integer','minimum':0}, 'limit':{'type':'integer','minimum':1,'maximum':20}})
+
+
 READ_MESSAGE_RANGE = tool('read_message_range',
     '按字符范围继续读取消息M的原话。使用上次next_offset；片段不代表整条已读，原文全部覆盖后才能作为提案证据。',
     {'message_ref': {'type':'string','minLength':1}, 'offset': {'type':'integer','minimum':0},
@@ -69,6 +80,8 @@ class RetrievalToolkit:
         self.checkpoint=checkpoint
         self.media_service=media_service
         self.context=context
+        if context and context.refs.scene_id != default_scene_id:
+            raise ValueError('Conversation context belongs to another scene')
         self.discovered_tools=set()
         self.result_ids=[]
         self.observations={}
@@ -85,6 +98,8 @@ class RetrievalToolkit:
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
+        if self.context and self.context.pending_wakes():
+            definitions.append(copy.deepcopy(READ_PENDING_WAKES))
         if self.context and (self.references.partial_events
                              or set(self.references.events.values()) - self.references.read_events):
             definitions.append(copy.deepcopy(READ_MESSAGE_RANGE))
@@ -106,7 +121,7 @@ class RetrievalToolkit:
         return definitions
 
     def is_read_only(self,name):
-        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range'}: return True
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes'}: return True
         return bool(self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name)
                     and self.plugin_host.tool_capabilities(name)['read_only'])
 
@@ -140,6 +155,11 @@ class RetrievalToolkit:
         return args
 
     async def execute_result(self,name,arguments):
+        if name == 'read_pending_wakes':
+            try:
+                arguments = PendingWakeArguments.model_validate(arguments).model_dump()
+            except ValidationError as error:
+                return ToolResult.failure(str(error), 'invalid_arguments')
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
         if name not in definitions:return ToolResult.failure('本入口未开放此工具','capability_denied')
         if name == 'read_message_range':
@@ -213,6 +233,15 @@ class RetrievalToolkit:
         if offset<0 or not 1<=limit<=12000:raise ValueError('offset must be nonnegative; limit must be 1..12000')
         refs=self.references;shown=result.model_copy(deep=True)
         if shown.result_id:shown.result_id=refs.register_result(shown.result_id)
+        if name == 'read_pending_wakes':
+            if shown.status not in {'ok','partial'}:return shown
+            page = json.loads(shown.content)
+            ids = {item['event_id'] for item in page['items']}
+            events = await self.event_store.events_by_ids(self.default_scene_id,ids,self.cutoff)
+            if {event.id for event in events} != ids:
+                return ToolResult.failure('目录原始来源不属于本场景或超出本轮截点','invalid_source')
+            shown.content = json.dumps(self.context.project_pending_page(page),ensure_ascii=False)
+            return shown
         if name == 'read_message_range':
             if shown.status not in {'ok', 'partial'}:
                 return shown
@@ -295,6 +324,12 @@ class RetrievalToolkit:
 
     async def _execute_raw(self,name,args):
         store=self.event_store;scopes=self.allowed_scopes
+        if name == 'read_pending_wakes':
+            if not self.context:
+                return ToolResult.failure('Pending sources require a conversation snapshot','invalid_context')
+            page = self.context.pending_wake_page(**args)
+            return ToolResult(content=json.dumps(page,ensure_ascii=False),
+                coverage='pending_wake_snapshot; as_of_rowid is its snapshot and next_after_rowid the directory cursor; locators are not evidence', evidence_kind='retrieval')
         if name == 'read_message_range':
             events = await store.events_by_ids(self.default_scene_id, [args['message_ref']], self.cutoff)
             if not events:

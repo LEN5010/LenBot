@@ -16,7 +16,7 @@ from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event, EventType
 from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.tools.results import ToolResult
-from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory
+from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
 
 
@@ -156,7 +156,6 @@ class InformationJobRunner:
                                      "sources": [source.model_dump() for source in result.sources], "content_length": len(result.content)})
                 assets.extend(asset for asset in result.attachments if asset not in tail_assets)
         prepared = await self.runtime.media_service.prepare_context_images(job["scene_id"], assets)
-        seen_assets = {item["asset_id"] for item in prepared["manifest"] if "block_index" in item}
         facts = {"current_time": datetime.fromtimestamp(store.clock(), timezone.utc).isoformat(),
                  "job_id": job["id"], "revision": job["revision"], "goal": job["goal"], "constraints": job["constraints"],
                  "source_event_ids": job["source_event_ids"], "source_messages": raw, "result_ids": job["result_ids"],
@@ -188,10 +187,10 @@ class InformationJobRunner:
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
         if checkpoint:
-            messages.extend(await restore_trajectory(checkpoint["messages"][2:], self.runtime.media_service, job["scene_id"], seen_assets=seen_assets))
+            messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service, job["scene_id"])
             if checkpoint["goal_revision"] != job["revision"]:
                 messages.append({"role": "user", "content": f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上原生交换保留旧版本的观察与结论，须按当前目标/约束重新核对；旧完成步骤不自动继承。'})
-        return messages, seen_assets
+        return messages, synchronize_image_window(messages)
 
     async def _run_job(self, job_id, scene_id):
         runtime, store, config = self.runtime, self.runtime.event_store, self.runtime.config
@@ -204,7 +203,7 @@ class InformationJobRunner:
         trace = {"job_id": job_id, "runs": []}
         limits = (config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds)
         pending_assets: list[str] = []
-        seen_assets: set[str] = set()
+        current_assets: set[str] = set()
 
         async def charge(expected, model_steps=0, tool_calls=0, enforce=True):
             nonlocal last_charge
@@ -287,7 +286,7 @@ class InformationJobRunner:
                 return str(ToolResult(content="进展已记录，未直接发送。" if event else "进展仍在冷却窗口内，未重复记录。",
                                       evidence_kind="model"))
             result = await toolkit.execute_result(name, arguments)
-            pending_assets.extend(asset_id for asset_id in result.attachments if asset_id not in seen_assets)
+            pending_assets.extend(asset_id for asset_id in result.attachments if asset_id not in current_assets)
             return str(result)
 
         async def observe():
@@ -296,8 +295,7 @@ class InformationJobRunner:
                 return None
             assets = list(dict.fromkeys(pending_assets))
             pending_assets.clear()
-            prepared = await runtime.media_service.prepare_context_images(scene_id, assets, limit=max(0, 6-len(seen_assets)))
-            seen_assets.update(item["asset_id"] for item in prepared["manifest"] if "block_index" in item)
+            prepared = await runtime.media_service.prepare_context_images(scene_id, assets, limit=6)
             return [{"role": "user", "content": [{"type": "text", "text": "工具读取的原始图片：" + json.dumps(prepared["manifest"], ensure_ascii=False)},
                                                     *prepared["blocks"]]}]
 
@@ -348,7 +346,7 @@ class InformationJobRunner:
                     if job["model_steps"] >= config.job_max_steps or remaining <= 0:
                         raise JobBudgetExhausted("Work budget exhausted")
                     async with asyncio.timeout(remaining):
-                        messages, seen_assets = await self._context(job)
+                        messages, current_assets = await self._context(job)
                         exchange_count = (job["checkpoint"] or {}).get("exchange_count", 0)
 
                         async def persist_exchange(trajectory):
@@ -367,6 +365,13 @@ class InformationJobRunner:
                             return config.job_max_steps-current["model_steps"]
 
                         compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count)
+
+                        async def prepare_request(trajectory, definitions):
+                            nonlocal current_assets
+                            current_assets = synchronize_image_window(trajectory)
+                            await compressor.prepare(trajectory, definitions)
+                            current_assets = synchronize_image_window(trajectory)
+
                         pending_assets.clear()
                         result = await AgentLoop(gateway).run(messages=messages,
                             tool_definitions=lambda: [*toolkit.get_tool_definitions(), *SKILL_TOOLS, REPORT_PROGRESS, UPDATE_WORK_STATE],
@@ -374,7 +379,7 @@ class InformationJobRunner:
                             proposal_tool_names={"report_progress", "update_work_state"}, max_steps=config.job_max_steps-job["model_steps"],
                             max_tool_calls=max(0, config.job_max_tool_calls-job["tool_calls"]), before_model=before_model,
                             before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace,
-                            exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=compressor.prepare)
+                            exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=prepare_request)
                     await save_result(result, revision)
                     return
                 except JobChanged:

@@ -714,8 +714,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         # 3. If event triggers a task, update task status atomically in the same transaction
         if task_id_to_trigger:
             await self._db.execute(
-                "UPDATE tasks SET status = ? WHERE id = ? AND scene_id = ? AND status = 'claimed';",
-                ("processing", task_id_to_trigger, event.scene_id)
+                "UPDATE tasks SET status = ? WHERE id = ? AND scene_id = ? AND status = 'claimed' AND trigger_event_id = ?;",
+                ("processing", task_id_to_trigger, event.scene_id, event.payload.get("trigger_event_id") or event.id)
             )
 
         await self._db.execute("DELETE FROM pending_runtime_events WHERE id=? AND scene_id=?",
@@ -1463,25 +1463,43 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             try:
                 await self._db.execute("UPDATE tasks SET status='delivery_unknown' WHERE status='awaiting_delivery'")
                 cursor = await self._db.execute(
-                    """SELECT t.id,t.scene_id,t.description,t.status,t.origin_mode,j.result_json
+                    """SELECT t.id,t.scene_id,t.description,t.status,t.origin_mode,t.trigger_event_id,j.result_json
                        FROM tasks t LEFT JOIN agent_jobs j ON j.id=t.id AND j.scene_id=t.scene_id
                        WHERE t.status IN ('processing','claimed','result_ready','review_required')"""
                 )
-                for task_id, scene_id, description, status, origin_mode, work_result in await cursor.fetchall():
+                for task_id, scene_id, description, status, origin_mode, trigger_event_id, work_result in await cursor.fetchall():
+                    if status == 'claimed':
+                        pending_due = await self._db.execute(
+                            """SELECT 1 FROM pending_runtime_events
+                               WHERE scene_id=? AND json_extract(event_json,'$.scene_id')=?
+                               AND json_extract(event_json,'$.event_type')=?
+                               AND json_extract(event_json,'$.payload.task_id')=?
+                               AND COALESCE(NULLIF(json_extract(event_json,'$.payload.trigger_event_id'),''),id)=?""",
+                            (scene_id, scene_id, EventType.TASK_DUE.value, task_id, trigger_event_id),
+                        )
+                        if await pending_due.fetchone():
+                            # The original claim has not entered the scene yet. Preserve
+                            # it so the pending TASK_DUE remains current when delivered.
+                            continue
                     # A persisted execution result survives process restart.
                     # Only unfinished execution needs an explicit resume.
                     recovered_status = 'result_ready' if status == 'result_ready' or work_result is not None else 'review_required'
                     await self._db.execute("UPDATE tasks SET status=? WHERE id=? AND scene_id=?",
                                            (recovered_status, task_id, scene_id))
                     pending = await self._db.execute(
-                        "SELECT 1 FROM pending_runtime_events WHERE json_extract(event_json,'$.payload.task_id')=?",
-                        (task_id,),
+                        """SELECT 1 FROM pending_runtime_events
+                           WHERE scene_id=? AND json_extract(event_json,'$.scene_id')=?
+                           AND json_extract(event_json,'$.event_type')=?
+                           AND json_extract(event_json,'$.payload.task_id')=?
+                           AND json_extract(event_json,'$.payload.trigger_event_id') IS ?""",
+                        (scene_id, scene_id, EventType.TASK_REVIEW.value, task_id, trigger_event_id),
                     )
                     if await pending.fetchone():
                         continue
                     event = Event(event_type=EventType.TASK_REVIEW, scene_id=scene_id,
                                   actor_id="system:recovery", payload={
                                       "task_id": task_id, "origin_mode": origin_mode,
+                                      "trigger_event_id": trigger_event_id,
                                       "recovered_status": recovered_status,
                                       "raw_text": f"重启后待核对任务：{description}。检查当前时间和结果，不要假定已完成。",
                                   })

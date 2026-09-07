@@ -31,6 +31,7 @@ class EpisodeMailbox:
         self._cancelled: bool = False
         self._cancellation_reason: Optional[str] = None
         self._cursor: int = 0
+        self._acknowledged_ids: set[str] = set()
 
     def post(self, event: Event) -> None:
         """Called by SceneActor worker when a new event arrives for this scene.
@@ -84,6 +85,12 @@ class EpisodeMailbox:
             rowid = self._interim_events[self._cursor].metadata.get("_rowid")
             if rowid is None or rowid > through_rowid:
                 break
+            self._cursor += 1
+
+    def acknowledge_events(self, event_ids) -> None:
+        """Advance only across fully read originals, leaving unselected holes."""
+        self._acknowledged_ids.update(event_ids)
+        while self._cursor < len(self._interim_events) and self._interim_events[self._cursor].id in self._acknowledged_ids:
             self._cursor += 1
 
     def get_interim_events(self) -> list[Event]:

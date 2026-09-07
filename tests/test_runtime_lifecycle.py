@@ -303,7 +303,8 @@ async def test_already_read_tool_receipt_does_not_make_a_control_proposal_stale(
     runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "observation.db")), clock=lambda: 100.0)
 
     class IsolatedCore:
-        async def run(self, session, events, through_rowid, episode_id, source_event_ids, *, observe, commit, trace):
+        async def run(self, session, events, through_rowid, episode_id, source_event_ids, *, observe, commit, trace, input_prepared):
+            input_prepared({event.id for event in events},{event.id for event in events})
             _result, event = await runtime.event_store.save_tool_observation(
                 SCENE, "read_history", {}, ToolResult(content="已读取的原话", evidence_kind="retrieval"),
             )
@@ -338,7 +339,8 @@ async def test_changed_knowledge_aborts_observe_without_consuming_input_or_repea
     runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "knowledge-change.db")), clock=lambda: 100.0)
 
     class IsolatedCore:
-        async def run(self, session, events, through_rowid, episode_id, source_event_ids, *, observe, commit, trace):
+        async def run(self, session, events, through_rowid, episode_id, source_event_ids, *, observe, commit, trace, input_prepared):
+            input_prepared({event.id for event in events},{event.id for event in events})
             calls.append(session.knowledge_revision)
             if len(calls) == 1:
                 entered.set()
@@ -414,6 +416,20 @@ async def test_attention_storage_sampling_inflight_and_delivery_survive_restart(
                             if isinstance(message.get('content'), str) and 'B先前的问题' in message['content'])
             ref = re.search(r'\[(M\d+) ', original).group(1)
             args = {'messages':[{'segments':[{'text':'接着回答B'}], 'reply_to':ref}]}
+        if len(requests) == 7:
+            messages = json.loads(request.content)['messages']
+            assert 'TOOL_ONLY_C' not in json.dumps(messages, ensure_ascii=False)
+            page = next(message['content'] for message in messages
+                        if isinstance(message.get('content'), str) and message['content'].startswith('待处理来源定位页'))
+            ref = json.loads(page.split('：', 1)[1])['items'][0]['message']
+            return httpx.Response(200, json=response(call('read_context', {'event_id':ref, 'before':0, 'after':0})))
+        if len(requests) == 8:
+            assert 'TOOL_ONLY_C' in json.dumps(json.loads(request.content)['messages'], ensure_ascii=False)
+            follow = Event(id='tool-read-follow', event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE,
+                actor_id='user:C', timestamp=now[0], payload={'raw_text':'那再补一句'})
+            await runtime.receive_event(follow)
+            await runtime.scene_manager._actors[SCENE]._queue.join()
+            assert follow.metadata['attention_reasons'] == ['in_flight_follow_up']
         return httpx.Response(200, json=response(call('finish_turn', args)))
 
     async def send(_action):
@@ -476,6 +492,22 @@ async def test_attention_storage_sampling_inflight_and_delivery_survive_restart(
         follow = await incoming('b-follow', '还有呢', actor='user:B')
         assert follow.metadata['attention_reasons'] == ['continuing_interaction']
         assert len(requests) == 6
+        # A pending source read through a tool also establishes in-flight attention.
+        runtime.config.conversation_recent_tokens = 500
+        providers = list(runtime.provider_registry._providers.values())
+        routing = runtime.provider_registry._routing
+        await runtime.provider_registry.apply_update(providers, None)
+        await incoming('tool-read-c', '小然，TOOL_ONLY_C ' + 'c'*750, actor='user:C')
+        await runtime.provider_registry.apply_update(providers, routing)
+        runtime.provider_registry._clients['fixture'] = client
+        await incoming('read-a', '小然，CURRENT_A ' + 'a'*750)
+        await settle(runtime)
+        assert len(requests) == 9
+        assert not runtime.scene_manager.get_session(SCENE).pending_wakes
+        assert 'user:C' not in runtime.scene_manager.get_session(SCENE).focused_participants
+        traces = await runtime.event_store.query_traces(scene_id=SCENE, kind='conversation')
+        read_trace = next(item for item in traces if item['payload']['burst']['source_event_ids'] == ['read-a'])
+        assert 'tool-read-c' in read_trace['payload']['conversation']['references']['read_messages']
         # Shut the model profile off to leave an actual unprocessed wake.
         await runtime.provider_registry.apply_update(list(runtime.provider_registry._providers.values()), None)
         await runtime.event_store.save_dynamic_config('provider_config', runtime.provider_registry.export())
@@ -552,5 +584,104 @@ async def test_late_control_candidate_continues_in_one_budget_without_side_effec
         assert len(calls) == 3 and len({item['episode_id'] for item in calls}) == 1
         trace = (await runtime.event_store.query_traces(scene_id=SCENE, kind='conversation'))[0]['payload']['conversation']
         assert trace['model_calls_used'] == 3 and trace['tool_calls_used'] == 2
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_backlogged_wakes_are_paged_and_progress_without_bypassing_unread_control(tmp_path):
+    """One capacity boundary uses real Context, native calls, Actor and Gate."""
+    import json
+    import re
+    import httpx
+    from openai import AsyncOpenAI
+    from runtime_support import configure_fixture_profile
+    from test_conversation_agent import response, call
+    from len_bot.cognition.call_store import estimate_request
+    from len_bot.tools.retrieval import RetrievalToolkit
+
+    requests = []
+    config = RuntimeConfig(db_path=str(tmp_path/'backlogged.db'), conversation_max_steps=4,
+                           attention_sample_probability=0)
+    runtime = AgentRuntime(config, clock=lambda:1000.0)
+    await runtime.start()
+    current_ref = None
+
+    async def model(request):
+        nonlocal current_ref
+        data = json.loads(request.content)
+        requests.append(data)
+        assert estimate_request(data['messages'],data['tools'])['input_tokens'] + data['max_completion_tokens'] <= config.conversation_context_tokens
+        if len(requests) == 1:
+            current = next(message['content'] for message in data['messages']
+                if isinstance(message.get('content'),str) and '新增请求：核对资料A' in message['content'])
+            current_ref = re.search(r'\[(M\d+) ',current).group(1)
+            page = next(message['content'] for message in data['messages']
+                        if isinstance(message.get('content'),str) and message['content'].startswith('待处理来源定位页'))
+            assert len(json.loads(page.split('：',1)[1])['items']) <= 10
+            answer = response(call('read_pending_wakes',{'after_rowid':0,'limit':2},'directory'))
+        elif len(requests) == 2:
+            answer = response(call('start_work',{'goal':'核对资料A','evidence':[current_ref]},'stage'),
+                call('finish_turn',{'messages':[{'segments':[{'text':'我去查'}],'ack_ref':'S1'}]},'blocked'))
+        elif len(requests) == 3:
+            rejected = next(message for message in data['messages'] if message.get('tool_call_id') == 'blocked')
+            assert json.loads(rejected['content'])['committed'] is False
+            answer = response(call('discard_proposal',{'proposal_ref':'S1'},'discard'),
+                              call('finish_turn',{'messages':[]},'finish'))
+        else:
+            assert len(requests) == 4
+            answer = response(call('finish_turn',{'messages':[]},'next-turn'))
+        return httpx.Response(200,json=answer)
+
+    try:
+        for index in range(999):
+            text = '小然，不要创建工作，先保留这些限制。' if index == 0 else f'小然，第{index}条待核对的补充条件。'
+            await runtime.receive_event(Event(id=f'backlog:{index:04}',event_type=EventType.GROUP_MESSAGE_RECEIVED,
+                scene_id=SCENE,actor_id='user:A',timestamp=1000,payload={'raw_text':text,'at_bot':True}))
+        actor = await runtime.scene_manager.get_or_create_actor(SCENE)
+        await actor._queue.join()
+        assert len(actor.session.pending_wakes) == 999
+        assert not await runtime.event_store.list_model_calls(SCENE)
+        await configure_fixture_profile(runtime)
+        client = AsyncOpenAI(api_key='fixture',base_url='https://fixture.invalid/v1',max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(model)))
+        runtime.provider_registry._clients['fixture'] = client
+        await runtime.receive_event(Event(id='backlog:0999',event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=SCENE,actor_id='user:A',timestamp=1000,payload={'raw_text':'小然，新增请求：核对资料A','at_bot':True}))
+        await settle(runtime)
+        assert len(requests) == 3
+        pending = {wake.event_id for wake in actor.session.pending_wakes}
+        assert 0 < len(pending) < 1000 and {'backlog:0000','backlog:0001'} <= pending
+        assert 'backlog:0999' not in pending
+        assert not await runtime.event_store.list_jobs(SCENE)
+        assert not runtime.shadow_would_send_log
+        traces = await runtime.event_store.query_traces(scene_id=SCENE,kind='conversation')
+        assert len(traces) == 1
+        read = set(traces[0]['payload']['conversation']['references']['read_messages'])
+        assert read.isdisjoint(pending) and len(read)+len(pending) == 1000
+
+        # Another legitimate wake makes further progress; unread originals stay durable.
+        await runtime.receive_event(Event(id='later-wake',event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=SCENE,actor_id='user:A',timestamp=1000,payload={'raw_text':'小然，继续核对上下文','at_bot':True}))
+        await settle(runtime)
+        assert len(requests) == 4 and len(actor.session.pending_wakes) < len(pending)
+        assert await runtime.event_store.event_exists('backlog:0000',SCENE)
+
+        # Catalog observations store canonical IDs and rebind locators in a new turn.
+        catalog = next(item for item in await runtime.event_store.list_tool_observations(SCENE)
+                       if item['tool_name'] == 'read_pending_wakes')
+        stored = await runtime.event_store.read_tool_observation(catalog['id'],[SCENE])
+        canonical = json.loads(stored.content)
+        assert [item['event_id'] for item in canonical['items']] == ['backlog:0000','backlog:0001']
+        assert all('message' not in item for item in canonical['items'])
+        context = ConversationContext(runtime,actor.session,actor.session.last_observed_event_rowid)
+        later = (await runtime.event_store.events_by_ids(SCENE,['later-wake'],context.refs.cutoff))[0]
+        context.event_message(later)
+        toolkit = RetrievalToolkit(runtime.event_store,[SCENE],SCENE,context=context)
+        locator = context.refs.register_result(catalog['id'])
+        page = await toolkit.execute_result('read_tool_result',{'result_id':locator})
+        refs = [item['message'] for item in json.loads(page.content)['items']]
+        assert [context.refs.locate_event(ref) for ref in refs] == ['backlog:0000','backlog:0001']
+        assert context.refs.read_events == {'later-wake'}
     finally:
         await runtime.stop()

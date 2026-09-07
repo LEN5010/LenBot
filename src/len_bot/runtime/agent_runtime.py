@@ -32,8 +32,6 @@ from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
-from len_bot.cognition.projection import estimate_tokens
-from len_bot.cognition.input_window import original_prefix
 from len_bot.scenes.actor import SceneCommitConflict
 from len_bot.scenes.manager import SceneManager
 from len_bot.scenes.models import SceneSession
@@ -551,43 +549,18 @@ class AgentRuntime:
         task.add_done_callback(finished)
 
     async def _read_initial_window(self, session: SceneSession, preferred_ids=()) -> tuple[list[Event], int, list[str]]:
+        """Fetch candidates only; ConversationContext owns all request packing."""
         cutoff = session.last_observed_event_rowid
-        required = await self.event_store.events_by_ids(
-            session.scene_id, [wake.event_id for wake in session.pending_wakes], cutoff)
-        priorities = {wake.event_id: wake.certain for wake in session.pending_wakes}
         preferred = set(preferred_ids)
-        required.sort(key=lambda event: (event.id not in preferred, not priorities[event.id], -event.metadata['_rowid']))
-        # A long backlog is not a global model-consumption queue. Required
-        # sources are packed first; unselected sources remain durable wakes.
-        selected = []
-        used = 0
-        required_budget = max(1000, self.config.conversation_context_tokens - 9000)
-        for event in required:
-            if required_budget - used < 200:
-                break
-            event = original_prefix(event, min(self.config.conversation_recent_tokens, required_budget - used - 150))
-            size = estimate_tokens(event.raw_text) + 150
-            if used + size > required_budget:
-                continue
-            selected.append(event)
-            used += size
-        current_ids = [event.id for event in selected]
-        if required and not selected:
-            raise ValueError('Required originals exceed this turn input budget; durable wake sources remain pending')
-        recent = await self.event_store.get_recent_events(session.scene_id, limit=_HISTORY_LIMIT, through_rowid=cutoff)
-        used = 0
-        extra = []
-        for event in reversed(recent):
-            if event.id in current_ids:
-                continue
-            size = estimate_tokens(event.raw_text) + 150
-            if used + size > self.config.conversation_recent_tokens:
-                break
-            extra.append(event)
-            used += size
-        events = sorted([*selected, *extra], key=lambda event: event.metadata['_rowid'])
-        events = await self.event_store.project_reply_context(session.scene_id, events, through_rowid=cutoff)
-        return events, cutoff, current_ids
+        sources = sorted(session.pending_wakes,
+            key=lambda wake:(wake.event_id not in preferred,not wake.certain,-wake.rowid))[:_READ_BATCH_LIMIT]
+        source_ids = [wake.event_id for wake in sources]
+        required = await self.event_store.events_by_ids(session.scene_id,source_ids,cutoff)
+        recent = await self.event_store.get_recent_events(session.scene_id,limit=_HISTORY_LIMIT,through_rowid=cutoff)
+        events = sorted({event.id:event for event in [*required,*recent]}.values(),
+                        key=lambda event:event.metadata['_rowid'])
+        events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
+        return events,cutoff,source_ids
 
     async def _run_conversation_loop(self, scene_id: str) -> None:
         while self._running and scene_id in self._pending_bursts:
@@ -611,8 +584,6 @@ class AgentRuntime:
         started = time.monotonic()
         trace: dict[str, Any] = {}
         session = actor.session.model_copy(deep=True)
-        mailbox.interaction_actors = {wake.actor_id for wake in session.pending_wakes
-                                      if wake.actor_id != self.bot_actor_id and wake.actor_id.startswith('user:')}
         trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
         observed, revision = session.last_observed_event_rowid, session.knowledge_revision
         source_ids: list[str] = []
@@ -624,8 +595,13 @@ class AgentRuntime:
             events, observed, source_ids = await self._read_initial_window(session, burst.source_event_ids)
             if any(_is_shadow_input(event) for event in events if event.id in source_ids):
                 mailbox.origin_mode = "shadow"
-            mailbox.acknowledge_through(observed)
-            delivered_ids = {event.id for event in events}
+            def input_prepared(provided_ids, read_ids):
+                delivered_ids.update(provided_ids)
+                delivered_ids.update(read_ids)
+                mailbox.acknowledge_events(read_ids)
+                mailbox.interaction_actors.update(wake.actor_id for wake in actor.session.pending_wakes
+                    if wake.event_id in provided_ids | read_ids and wake.actor_id != self.bot_actor_id
+                    and wake.actor_id.startswith('user:'))
 
             async def observe():
                 nonlocal observed, source_ids
@@ -634,24 +610,16 @@ class AgentRuntime:
                 current = actor.session.model_copy(deep=True)
                 if current.knowledge_revision != revision:
                     raise SceneCommitConflict("Knowledge changed during conversation; rebuild from the next real input")
-                pending_ids = {wake.event_id for wake in current.pending_wakes} - delivered_ids
-                if current.last_observed_event_rowid == observed and not pending_ids:
+                if current.last_observed_event_rowid == observed:
                     return None
                 additions = await self.event_store.get_events_since(scene_id, observed, limit=_READ_BATCH_LIMIT)
                 additions = [event for event in additions if event.metadata["_rowid"] <= current.last_observed_event_rowid]
                 cutoff = additions[-1].metadata["_rowid"] if additions else observed
-                missing = await self.event_store.events_by_ids(scene_id, pending_ids, cutoff)
-                additions = sorted({event.id: event for event in [*missing, *additions]}.values(),
-                                   key=lambda event: event.metadata['_rowid'])
                 additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=cutoff)
-                delivered_ids.update(event.id for event in additions)
-                mailbox.interaction_actors.update(event.actor_id for event in additions
-                    if event.event_type in HUMAN_INPUTS and event.metadata.get('attention_reasons'))
                 observed = cutoff
                 source_ids = list(dict.fromkeys([*source_ids, *(event.id for event in additions)]))
                 if any(_is_shadow_input(event) for event in additions):
                     mailbox.origin_mode = "shadow"
-                mailbox.acknowledge_through(observed)
                 return {"session": current, "events": additions, "through_rowid": observed,
                         "source_event_ids": list(source_ids)}
 
@@ -673,6 +641,7 @@ class AgentRuntime:
                 return decision
 
             if self.mock_turn_handler is not None:
+                input_prepared({event.id for event in events},{event.id for event in events})
                 outcome = await self.mock_turn_handler(session, events)
                 if not isinstance(outcome, EpisodeOutcome):
                     raise TypeError("mock_turn_handler must return EpisodeOutcome")
@@ -682,6 +651,7 @@ class AgentRuntime:
             else:
                 outcome = await self.social_core.run(
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
+                    input_prepared=input_prepared,
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")

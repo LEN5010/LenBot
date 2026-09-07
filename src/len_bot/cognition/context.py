@@ -8,7 +8,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from len_bot.cognition.projection import estimate_tokens, project_onebot_text
-from len_bot.cognition.input_window import prefix_end
+from len_bot.cognition.input_window import prefix_end, original_prefix
+from len_bot.cognition.call_store import estimate_request
 from len_bot.events.models import Event, EventType
 
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
@@ -172,6 +173,104 @@ class ConversationContext:
         self._facts = {}
         self.call_signals = {}
         self.required_originals = set()
+        self.provided_event_ids = set()
+        self.input_budget = runtime.config.conversation_context_tokens - runtime.config.conversation_output_tokens
+        self.tool_definitions = lambda: []
+        self.trajectory = None
+        if self.input_budget <= 0:
+            raise ValueError('Conversation context must leave input capacity after the configured output reserve')
+
+    def pending_wakes(self):
+        return [wake for wake in self.session.pending_wakes
+                if wake.rowid <= self.refs.cutoff and wake.event_id not in self.refs.read_events]
+
+    def pending_wake_page(self, after_rowid=0, limit=10):
+        """A bounded locator page; only original-reading tools grant evidence."""
+        if after_rowid < 0 or not 1 <= limit <= 20:
+            raise ValueError('Pending source pages need after_rowid >= 0 and limit 1..20')
+        unread = self.pending_wakes()
+        candidates = sorted((wake for wake in unread if wake.rowid > after_rowid), key=lambda wake:wake.rowid)
+        page = candidates[:limit]
+        return {'items':[{'event_id':wake.event_id,'rowid':wake.rowid,
+                          'reasons':wake.reasons,'certain':wake.certain} for wake in page],
+                'as_of_rowid':self.refs.cutoff,
+                'total_unread':len(unread),'remaining_after_page':len(candidates)-len(page),
+                'next_after_rowid':page[-1].rowid if len(candidates)>len(page) else None}
+
+    def project_pending_page(self, page):
+        return {**page,'items':[{'message':self.refs.register_event_locator(item['event_id']),
+                                'reasons':item['reasons'],'certain':item['certain']} for item in page['items']]}
+
+    def pending_notice(self):
+        unread = self.pending_wakes()
+        if not unread:
+            return []
+        return [{'role':'user','content':'尚有未完整读取的唤醒来源；数量不表示原文已读。'
+            '用read_pending_wakes按after_rowid分页定位，再用read_context或read_message_range读原话。'
+            '工作控制仍须读完未处理的确定唤醒；普通聊天只确认本轮实际读取的来源。'+
+            json.dumps({'unread_sources':len(unread),'first_after_rowid':0},ensure_ascii=False)}]
+
+    def request_tokens(self, messages, definitions=None):
+        definitions = self.tool_definitions() if definitions is None else definitions
+        return estimate_request(self.model_messages(messages), definitions)['input_tokens']
+
+    def check_request(self, messages, definitions):
+        self.limit_image_window(messages)
+        tokens = self.request_tokens(messages, definitions)
+        if tokens > self.input_budget:
+            raise ValueError('Conversation input, images and tool definitions exceed the input budget after output reserve; sources remain pending')
+        self.text_tokens = tokens
+        return tokens
+
+    def _projection_snapshot(self):
+        return {name:copy.deepcopy(getattr(self,name)) for name in
+                ('refs','attached','loaded_media','media_manifest','event_records','call_signals')}
+
+    def _restore_projection(self, snapshot):
+        for name,value in snapshot.items():
+            setattr(self,name,value)
+
+    async def pack_events(self, messages, events, current_ids, *, raw_tokens):
+        """One assembler chooses raw fragments against the actual request cost."""
+        current_ids = list(current_ids)
+        by_id = {event.id:event for event in events}
+        required = [by_id[ident] for ident in current_ids if ident in by_id and by_id[ident].event_type in CHAT_TYPES|CUE_TYPES]
+        optional = [event for event in reversed(events) if event.id not in current_ids and event.event_type in CHAT_TYPES]
+        packed = []
+        used_raw = 0
+        for event in [*required,*optional]:
+            current = event.id in current_ids
+            if used_raw >= raw_tokens:
+                break
+            cap = raw_tokens - used_raw
+            while cap > 0:
+                snapshot = self._projection_snapshot()
+                view = original_prefix(event, cap) if current else event
+                message = self.event_message(view, quote_tokens=cap)
+                images = await self.attachments(media_ids(view)) if current else []
+                chosen = [*packed,(view,message,images)]
+                bodies = [part for _,raw,pixels in chosen for part in [raw,*pixels]]
+                original_cost = self.request_tokens([message,*images], [])
+                footer = self.input_message([item for item,_,_ in chosen if item.id in current_ids])
+                candidate = [*messages,*bodies,footer,*self.pending_notice()]
+                if self.request_tokens(candidate) <= self.input_budget and (
+                        used_raw + original_cost <= raw_tokens or not packed and current):
+                    packed = chosen
+                    used_raw += original_cost
+                    self.provided_event_ids.add(event.id)
+                    if current:self.required_originals.add(event.id)
+                    break
+                self._restore_projection(snapshot)
+                if not current or packed:
+                    break
+                # Shrink only the first mandatory fragment inside this same
+                # assembly, never retry a model call or increase its budget.
+                cap //= 2
+        packed.sort(key=lambda item:item[0].metadata['_rowid'])
+        messages.extend(part for _,raw,images in packed for part in [raw,*images])
+        current = [event for event,_,_ in packed if event.id in current_ids]
+        if current:messages.append(self.input_message(current))
+        return current
 
     def project_text(self, text):
         def mention(match):
@@ -217,7 +316,7 @@ class ConversationContext:
         return [{'text':part['text']} if part['type']=='text'
                 else {'image':self.refs.register_media(part['asset_id'])} for part in segments]
 
-    def event_message(self, event):
+    def event_message(self, event, *, quote_tokens=None):
         ref = self.refs.register_event(event)
         self.event_records[event.id] = event
         sender = event.payload.get('sender') or {}
@@ -237,7 +336,7 @@ class ConversationContext:
         if quote and not quote.get('missing'):
             author = self.refs.register_actor(quote['actor_id'])
             quote_ref = self.refs._register(self.refs.events, quote['event_id'], 'M') if quote.get('rowid', self.refs.cutoff+1) <= self.refs.cutoff else ''
-            end = prefix_end(quote['text'], self.runtime.config.conversation_recent_tokens)
+            end = prefix_end(quote['text'], self.runtime.config.conversation_recent_tokens if quote_tokens is None else quote_tokens)
             if quote_ref:self.refs._record_event_range(quote['event_id'], 0, end, len(quote['text']))
             text += f"\n引用 {quote_ref} {author} 的原话：{self.project_text(quote['text'][:end])}"
             if end < len(quote['text']):
@@ -354,9 +453,10 @@ class ConversationContext:
             notes.append('；'.join(text for status,text in descriptions.items() if status in statuses)+'。')
         return {'role':'user','content':'\n'.join([*notes,json.dumps({**facts,**changes},ensure_ascii=False)])}
 
-    async def build(self, events, current_ids):
+    async def build(self, events, current_ids, *, tool_definitions=None):
         config = self.runtime.config
-        self.required_originals = set(current_ids)
+        if tool_definitions is not None:self.tool_definitions = tool_definitions
+        self.required_originals = set()
         for person in self.session.participants.values(): self.refs.register_actor(person.actor_id)
         system = f'''你以{config.identity_name}的角色口吻参与中文群聊。
 身份与兴趣：{config.identity_persona}
@@ -409,57 +509,49 @@ class ConversationContext:
             messages.append({'role':'user','content':'已明确表达、仍有效的相处要求（附来源的认识）：'+json.dumps(known,ensure_ascii=False)})
         facts=await self.facts_message()
         if facts:messages.append(facts)
-        # Summaries are caches with source locators, never read authorization.
-        summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id, limit=4, status='completed')
-        summary_views = []
-        summary_tokens = 0
-        for summary in summaries:
-            if summary['end_rowid'] > self.refs.cutoff:
-                continue
-            size = estimate_tokens(summary['summary'])
-            if summary_tokens + size > min(4000, config.conversation_context_tokens // 6):
-                continue
-            summary_tokens += size
-            summary_views.append({'range': [summary['start_rowid'], summary['start_offset'],
-                                             summary['end_rowid'], summary['end_offset']],
-                'summary': summary['summary'],
-                'sources': [self.refs.register_event_locator(event_id) for event_id in summary['key_event_ids']]})
+        # Current raw input gets capacity before optional history and locator pages.
+        current = await self.pack_events(messages, events, current_ids,
+                                         raw_tokens=config.conversation_recent_tokens)
+        if current_ids and not current:
+            raise ValueError('Configured persona, references and current facts leave no room for required original input after output reserve')
+        messages.extend(self.pending_notice())
+        if self.pending_wakes():
+            snapshot = self._projection_snapshot()
+            page = {'role':'user','content':'待处理来源定位页；位置不授予原文证据：'+
+                    json.dumps(self.project_pending_page(self.pending_wake_page()),ensure_ascii=False)}
+            if self.request_tokens([*messages,page]) <= self.input_budget:
+                messages.append(page)
+            else:
+                self._restore_projection(snapshot)
+        # Whole optional summaries are admitted only if the actual request fits.
         history_status = await self.runtime.event_store.list_history_status(self.session.scene_id)
         last = history_status.get('last_completed')
         coverage = {'initial_history_boundary':history_status['initial_history_boundary'],
                     'last_completed':{key:last[key] for key in ('start_rowid','start_offset','end_rowid','end_offset')} if last else None,
-                    'unsummarized_before_initial_boundary':bool(history_status['initial_history_boundary'])}
-        coverage['unfinished'] = [{key:item[key] for key in ('start_rowid','start_offset','end_rowid','end_offset','status')}
-                                 for item in history_status.get('unsuccessful', [])]
-        messages.append({'role':'user','content':'历史压缩视图（仅是非权威缓存，可能有未覆盖区间；'
-            '来源M只是位置，作为提案证据前必须读取原话；图片索引不表示看过像素）：'+
-            json.dumps({'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)})
-        waiting = [wake for wake in self.session.pending_wakes if wake.event_id not in current_ids]
-        if waiting:
-            messages.append({'role':'user','content':'尚未装入的唤醒原话（仅定位，不是已读；工作控制提交前须读取确定唤醒）：'+
-                json.dumps([{'message':self.refs.register_event_locator(wake.event_id),
-                             'reasons':wake.reasons,'certain':wake.certain} for wake in waiting],ensure_ascii=False)})
-        visible=[event for event in events if event.event_type in CHAT_TYPES or event.id in current_ids and event.event_type in CUE_TYPES]
-        used=sum(estimate_tokens(self._text(message)) for message in messages)
-        packed=[]
-        required=[event for event in visible if event.id in current_ids]
-        optional=[event for event in visible if event.id not in current_ids]
-        for event in [*required, *reversed(optional)]:
-            original=self.refs
-            self.refs=copy.deepcopy(original)
-            try:size=estimate_tokens(self.event_message(event)['content'])
-            finally:self.refs=original
-            if used+size > config.conversation_context_tokens-6000:
-                if event.id in current_ids:
-                    raise ValueError('Required original input exceeds this turn budget; its wake remains pending')
+                    'unsummarized_before_initial_boundary':bool(history_status['initial_history_boundary']),
+                    'unfinished_ranges':len(history_status.get('unsuccessful', []))}
+        summary_views = []
+        history_note = '历史压缩视图（非权威缓存；来源仅定位，提案证据须读取原话；图片索引不是像素）：'
+        def history_message():
+            return {'role':'user','content':history_note+json.dumps({'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
+        summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id, limit=4, status='completed')
+        summary_tokens = 0
+        for summary in summaries:
+            size = estimate_tokens(summary['summary'])
+            if summary['end_rowid'] > self.refs.cutoff or summary_tokens+size > config.conversation_recent_tokens:
                 continue
-            packed.append(event);used+=size
-        packed.sort(key=lambda event:event.metadata['_rowid'])
-        packed=[(event,self.event_message(event)) for event in packed]
-        messages.extend(msg for _,msg in packed)
-        self.text_tokens=used
-        current_assets=[asset for event,_ in packed if event.id in current_ids for asset in media_ids(event)]
-        messages.extend(await self.attachments(current_assets))
+            snapshot = self._projection_snapshot()
+            view = {'range':[summary['start_rowid'],summary['start_offset'],summary['end_rowid'],summary['end_offset']],
+                    'summary':summary['summary'],
+                    'sources':[self.refs.register_event_locator(ident) for ident in summary['key_event_ids']]}
+            summary_views.append(view)
+            if self.request_tokens([*messages,history_message()]) <= self.input_budget:
+                summary_tokens += size
+            else:
+                summary_views.pop()
+                self._restore_projection(snapshot)
+        history = history_message()
+        if self.request_tokens([*messages,history]) <= self.input_budget:messages.append(history)
         rejected = await self.runtime.event_store.uncommitted_job_attempts(
             self.session.scene_id, min((wake.rowid for wake in self.session.pending_wakes), default=self.refs.cutoff+1)-1, self.refs.cutoff)
         if rejected:
@@ -471,11 +563,12 @@ class ConversationContext:
                     sources = proposal.pop('source_event_ids', []) or []
                     proposal['source_messages'] = [ref for ref,event_id in self.refs.events.items()
                         if event_id in sources and event_id in self.refs.read_events]
-            messages.append({'role':'user','content':
+            failure = {'role':'user','content':
                 '前一轮处理这些输入时失败，全部暂存提案和消息均未提交，没有建立或修改工作，也没有发送那一轮的确认。'
                 '以下仅是失败记录，不是任务或执行授权；结合当前原话重新决定是否提出工作，或是否已被新要求取代：\n'
-                +json.dumps(rejected,ensure_ascii=False)})
-        messages.append(self.input_message([event for event,_ in packed if event.id in current_ids]))
+                +json.dumps(rejected,ensure_ascii=False)}
+            if self.request_tokens([*messages,failure]) <= self.input_budget:messages.append(failure)
+        self.check_request(messages, self.tool_definitions())
         return messages
 
     @staticmethod
