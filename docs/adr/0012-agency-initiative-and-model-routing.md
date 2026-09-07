@@ -1,5 +1,0 @@
-# Proactive Agency via Speaking Budget, Interest Scoring, and Model Escalation
-
-> **Status — 2026-09-05:** Partially superseded by ADR-0033/ADR-0034 (V4 Stage 3). The Speaking Budget and Interest Model were removed with the V3 attention module; per Invariant 10, normal participation is a Social Core judgement and the runtime retains only deterministic anti-loop/rate ceilings (`RuntimeGate.MAX_MESSAGES_PER_OUTCOME` / `MAX_CONSECUTIVE_BOT_MESSAGES`). The Normal→Deliberate `CognitionRouter` escalation half remains active in the production `SocialCognitionCore`.
-
-Autonomous bot initiative without strict boundaries inevitably degrades into conversational spam and annoying monologues. We decided that proactive behavior is governed by a strict Speaking Budget (which raises initiative cost with consecutive bot messages and recent frequency) combined with an explicit Interest Model. Waking for initiative enters the exact same Cognitive Episode and Runtime Gate pipeline as reactive replies. Furthermore, we implemented dynamic model escalation (switching from Normal to Deliberate models while preserving trajectory) triggered objectively by tool result complexity.

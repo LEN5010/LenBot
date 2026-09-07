@@ -1,3 +1,0 @@
-# Four-Tier Memory Hierarchy with Epistemic Evidence Gating
-
-Unconstrained LLM memory systems frequently suffer from belief drift, compounding hallucinations ("summary of a summary"), and irreversible fact overwrites. We decided on a strict 4-tier model: L0 Raw Events (immutable fact), L1 Episodes (bounded experiences with event pointers), L2 Semantic/Social Memory (epistemic beliefs with explicit certainty levels), and L3 Long Reflection. Every Memory Proposal must pass through an authoritative Memory Gate that verifies evidence provenance against raw events and manages semantic slot conflicts by superseding old entries rather than erasing history.

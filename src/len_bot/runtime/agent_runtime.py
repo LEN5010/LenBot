@@ -401,6 +401,16 @@ class AgentRuntime:
         human = event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED} and event.actor_id != self.bot_actor_id
         if human:
             self.metrics.inc_social("human_messages")
+            # A new human message supersedes an in-flight cognition attempt.
+            # Keep the event in the mailbox and pending burst; cancelling here
+            # prevents a long model call from finishing against an obsolete
+            # snapshot and repeatedly retrying a stale work delivery.
+            actor = self.scene_manager._actors.get(event.scene_id)
+            if self.mock_turn_handler is None and actor is not None and actor._active_mailbox is not None:
+                actor._active_mailbox.cancel("新消息已到达，保留未读输入并重新结合最新语境")
+                running_turn = self._conversation_tasks.get(event.scene_id)
+                if running_turn is not None and running_turn is not asyncio.current_task():
+                    running_turn.cancel()
         await self.job_runner.on_event(event)
         job_due = event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
         if not job_due:
@@ -484,7 +494,8 @@ class AgentRuntime:
             logger.exception("Reflection failed in %s", scene_id)
             await self.event_store.save_trace(
                 kind="reflection_error", scene_id=scene_id, ref_id=f"reflection:{uuid.uuid4().hex}",
-                payload={"error": str(error), "error_type": type(error).__name__},
+                payload={"error": str(error), "error_type": type(error).__name__,
+                         "cognition": getattr(error, "trace", {})},
             )
         finally:
             self._reflecting_scenes.discard(scene_id)
@@ -611,6 +622,11 @@ class AgentRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            if mailbox.is_cancelled() and mailbox.cancellation_reason() == "新消息已到达，保留未读输入并重新结合最新语境":
+                # This is deliberate supersession, not a failed model turn.
+                # The new event remains pending and will start the next burst.
+                self.metrics.inc_social("stale_outcomes_rejected")
+                return
             self.metrics.inc_social("cognition_failed")
             if isinstance(error, (SceneCommitConflict, CommitConflict)):
                 self.metrics.inc_social("stale_outcomes_rejected")

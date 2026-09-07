@@ -32,6 +32,34 @@ def _strip_tags(raw: str) -> str:
     return unescape(re.sub(r"\s+", " ", _TAG_STRIP.sub("", raw))).strip()
 
 
+def _query_terms(query: str) -> list[str]:
+    """Extract conservative lexical anchors for rejecting unrelated RSS rows."""
+    cleaned = re.sub(r"(?i)\bsite:[^\s]+", " ", query)
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]*|[\u4e00-\u9fff]+", cleaned):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+            if len(token) == 1:
+                terms.append(token)
+            else:
+                terms.extend(token[index:index + 2] for index in range(len(token) - 1))
+        else:
+            terms.append(token.casefold())
+    return list(dict.fromkeys(term for term in terms if term not in {"or", "and", "not"}))
+
+
+def _query_sites(query: str) -> list[str]:
+    return list(dict.fromkeys(site.casefold().strip('.') for site in re.findall(r"(?i)\bsite:([A-Za-z0-9.-]+)", query)))
+
+
+def _relevance_score(query: str, title: str, snippet: str, url: str) -> int:
+    terms = _query_terms(query)
+    parsed = urlparse(url)
+    # Exclude the URL query string: search providers may echo the user's
+    # query there even when the result body is unrelated.
+    haystack = f"{title} {snippet} {parsed.netloc} {parsed.path}".casefold()
+    return sum(term.casefold() in haystack for term in terms)
+
+
 class _MediaLinks(HTMLParser):
     def __init__(self, base_url):
         super().__init__()
@@ -126,15 +154,26 @@ class WebSearchToolPlugin(BasePlugin):
             return ToolResult(status='unsupported', error_code='search_unavailable', evidence_kind='external',
                 content='搜索服务未返回可读取结果，可能是服务限制或验证页面；本次无法核实，不能判断对象不存在。')
         lines, sources = [], []
-        for item in root.findall('./channel/item')[:max_results]:
+        sites = _query_sites(query)
+        candidates = []
+        for index, item in enumerate(root.findall('./channel/item')):
             title, url = _strip_tags(item.findtext('title') or ''), item.findtext('link') or ''
             if urlparse(url).scheme not in {'http', 'https'}:
                 continue
+            host = (urlparse(url).hostname or '').casefold().strip('.')
+            if sites and not any(host == site or host.endswith('.' + site) for site in sites):
+                continue
             snippet = _strip_tags(item.findtext('description') or '')
+            candidates.append((_relevance_score(query, title, snippet, url), index, title, url, snippet))
+        terms = _query_terms(query)
+        required = 1 if len(terms) <= 2 else 2
+        candidates = [row for row in candidates if row[0] >= required]
+        candidates.sort(key=lambda row: (-row[0], row[1]))
+        for _, _, title, url, snippet in candidates[:max_results]:
             lines.append(f"{len(lines) + 1}. {title}\n   URL: {url}\n   摘要: {snippet}")
             sources.append(ToolSource(url=url, title=title))
         if not lines:
-            return ToolResult(status='no_results', content='此次检索没有结果；保留原对象，不能推断现实不存在。', evidence_kind='external')
+            return ToolResult(status='no_results', content='此次检索没有与原查询相符的结果；保留原对象，不能推断现实不存在。', evidence_kind='external')
         return ToolResult(content="\n".join(lines), sources=sources, evidence_kind="external", coverage="search_snippets")
 
     async def _read_page(self, args: dict[str, Any]) -> ToolResult:

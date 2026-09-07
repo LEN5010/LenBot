@@ -126,7 +126,7 @@ async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
     plugin = runtime.plugin_host._plugins["web_search_tool"]
     monkeypatch.setattr(plugin._client, "get", fake_get)
 
-    result = await runtime.plugin_host.execute_tool("web_search", {"query": "test"})
+    result = await runtime.plugin_host.execute_tool("web_search", {"query": "标题"})
     assert "标题A" in result
     assert "https://example.com/a" in result
     assert "摘要B" in result
@@ -137,7 +137,7 @@ async def test_web_search_tool_executes_via_host_sandbox(tmp_path, monkeypatch):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(plugin._client, "get", failing_get)
-    err_result = await runtime.plugin_host.execute_tool("web_search", {"query": "test"})
+    err_result = await runtime.plugin_host.execute_tool("web_search", {"query": "标题"})
     assert ToolResult.model_validate_json(err_result).status == "error"
 
     # Health tracking recorded the crash

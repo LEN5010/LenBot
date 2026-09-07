@@ -264,12 +264,22 @@ class ProposalLedger:
         try:
             result=FinishTurn.model_validate(arguments)
             refs=self.context.refs;messages=[]
+            if self.proposal_refs and any(not item.ack_ref for item in result.messages):
+                raise ValueError('本轮新建工作尚未有结果；确认消息必须绑定实际暂存回执ack_ref，只表达查证安排，不要提前写结论')
             for item in result.messages:
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
                         '需要查询时先调用start_work取得staged回执，再调用finish_turn确认。')
-                parts=[{'type':'text','text':p.text} if p.text is not None else {'type':'image','asset_id':refs.media_id(p.image)} for p in item.segments]
+                parts=[]
+                for part in item.segments:
+                    if part.text is not None:
+                        parts.append({'type':'text','text':part.text})
+                    else:
+                        asset_id=refs.media_id(part.image)
+                        if asset_id not in self.context.loaded_media:
+                            raise ValueError('发送图片前必须先用read_media读取本轮选定的图片像素')
+                        parts.append({'type':'image','asset_id':asset_id})
                 reply=None
                 if item.reply_to:
                     event_id=refs.event_id(item.reply_to)

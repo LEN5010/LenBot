@@ -235,12 +235,20 @@ class MediaService:
         files = [{'sha256': digest, 'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
         return result, files
 
-    async def prepare_palette(self, scene_id: str) -> PreparedMediaContext:
+    async def prepare_palette(self, scene_id: str, *, include_pixels: bool = False) -> PreparedMediaContext:
         """A stable, scoped operator palette. Selection never depends on a message."""
         if not self.runtime.config.media_enabled:
             return {"blocks": [], "manifest": []}
         async with self._palette_locks.setdefault(scene_id, asyncio.Lock()):
             assets = await self.runtime.event_store.list_palette(scene_id)
+            if not include_pixels:
+                return {"blocks": [], "manifest": [
+                    {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
+                     "name": asset["description"][:40], "description": asset["description"][:40],
+                     "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"],
+                     "sha256": asset["sha256"], "status": "catalog_only"}
+                    for index, asset in enumerate(assets)
+                ]}
             fingerprint = json.dumps([{key: asset[key] for key in (
                 "id", "scope", "source_event_id", "sha256", "description", "tags", "enabled", "palette_order")}
                 for asset in assets], ensure_ascii=False, sort_keys=True)
