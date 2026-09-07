@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import io
 import json
 from types import SimpleNamespace
 from pathlib import Path
@@ -7,12 +9,14 @@ import httpx
 import pytest
 import pytest_asyncio
 from openai import AsyncOpenAI
+from PIL import Image
 
 from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.providers import RouteResolution
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
+from len_bot.media.service import MediaService
 from len_bot.runtime.job_runner import InformationJobRunner, JobContextExhausted, WorkGateway
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.tools.results import ToolResult, ToolSource
@@ -335,6 +339,104 @@ async def test_work_quote_and_tool_attachments_are_native_and_deduplicated(work_
     job = await runtime.event_store.get_job(job_id, "group:work")
     assert job["result"]["status"] == "completed" and len(requests) == 3
     assert [call[1] for call in runtime.media_service.calls] == [["quoted-image"], ["read-image"]]
+
+
+@pytest.mark.asyncio
+async def test_work_compressed_image_reread_and_seventh_image_use_current_pixels(work_runtime):
+    from len_bot.runtime.work_context import validate_complete_exchanges
+
+    root = Path(__file__).parents[1]
+    document = "\n".join((root / path).read_text() for path in (
+        "docs/architecture.md", "docs/implementation.md", "docs/adr/0044-native-conversation-and-evidence-ledger.md"))
+    assets, colors = [], [(index * 30, 20, 40) for index in range(7)]
+    compressed, phase = False, "initial"
+    original_id = None
+    window_order = []
+
+    def pixels(request):
+        loaded = []
+        for message in request["messages"]:
+            if not isinstance(message.get("content"), list):
+                continue
+            for part in message["content"]:
+                if part.get("type") == "image_url":
+                    with Image.open(io.BytesIO(base64.b64decode(part["image_url"]["url"].split(",", 1)[1]))) as picture:
+                        loaded.append(assets[colors.index(picture.getpixel((0, 0)))]["id"])
+        assert len(loaded) <= 6
+        return loaded
+
+    async def lookup(arguments):
+        return ToolResult(content=document, attachments=[assets[0]["id"]], coverage="image",
+                          sources=[ToolSource(url="https://fixture.invalid/illustrated-contracts")], evidence_kind="external")
+
+    async def respond(request, number):
+        nonlocal compressed, phase, original_id, window_order
+        names = {tool["function"]["name"] for tool in request["tools"]}
+        if "summarize_work_segment" in names:
+            payload = json.loads(request["messages"][1]["content"])
+            validate_complete_exchanges(payload["completed_exchanges"])
+            compressed = True
+            ids = [json.loads(item["content"])["result_id"] for item in payload["completed_exchanges"] if item["role"] == "tool"]
+            return completion(native_call("summarize_work_segment", {
+                "summary": "契约原文已读取，需回读原图核对证据。", "result_ids": ids, "unresolved": ["核对原图"]}))
+        validate_complete_exchanges(request["messages"])
+        loaded = pixels(request)
+        if phase == "initial":
+            phase = "reading"
+            return completion(native_call("fixture_read", {}, "illustration"), vendor_signature="image-source-signature")
+        if phase == "reading" and not compressed:
+            assert loaded == [assets[0]["id"]]
+            latest = next(json.loads(item["content"]) for item in reversed(request["messages"]) if item["role"] == "tool")
+            original_id = latest["result_id"]
+            assert latest["next_offset"] is not None
+            return completion(native_call("read_tool_result", {"result_id": latest["result_id"], "offset": latest["next_offset"], "limit": 5000}))
+        if phase == "reading":
+            assert assets[0]["id"] not in loaded
+            phase = "reread"
+            return completion(*(native_call("read_media", {"asset_id": asset["id"]}, f"image-{index}") for index, asset in enumerate(assets[:6])),
+                              vendor_signature="six-image-signature")
+        if phase == "reread":
+            assert set(loaded) == {asset["id"] for asset in assets[:6]}
+            window_order = loaded
+            phase = "seventh"
+            return completion(native_call("read_media", {"asset_id": assets[6]["id"]}, "seventh"))
+        if phase == "seventh":
+            assert loaded == [*window_order[1:], assets[6]["id"]]
+            manifest = next(json.loads(part["text"].removeprefix("工具读取的原始图片："))
+                            for message in request["messages"] if isinstance(message.get("content"), list)
+                            for part in message["content"] if part.get("type") == "text" and part["text"].startswith("工具读取的原始图片："))
+            old_image = next(item for item in manifest if item["asset_id"] == window_order[0])
+            evicted_asset = next(asset for asset in assets if asset["id"] == window_order[0])
+            assert old_image["status"] == "omitted" and old_image["coverage"] == "pixels_not_loaded"
+            assert old_image["source_coverage"] == "image" and old_image["source_event_id"] == evicted_asset["source_event_id"]
+            phase = "evicted_reread"
+            return completion(native_call("read_media", {"asset_id": evicted_asset["id"]}, "return-evicted"))
+        assert loaded == [*window_order[2:], assets[6]["id"], window_order[0]]
+        phase = "finished"
+        return finish_response(request, result_ids=list(dict.fromkeys([original_id, *result_ids(request)])))
+
+    runtime, requests = await work_runtime(respond, lookup=lookup, job_context_tokens=32000, work_output_tokens=4096,
+                                            job_compress_trigger=0.6, job_compress_target=0.4)
+    service = runtime.media_service = MediaService(runtime)
+    try:
+        for color in colors:
+            data = io.BytesIO()
+            Image.new("RGB", (16, 16), color).save(data, format="PNG")
+            assets.append(await service.upload(data.getvalue(), "group:work", "原始图表", []))
+        job_id = await create_job(runtime)
+        await runtime.job_runner._run_job(job_id, "group:work")
+        job = await runtime.event_store.get_job(job_id, "group:work")
+        assert compressed and phase == "finished", job["result"]
+        assert job["result"]["status"] == "completed" and job["model_steps"] == len(requests), job["result"]
+        original = await runtime.event_store.read_tool_observation(job["result_ids"][0], ["group:work"])
+        assert original.content == document and original.attachments == [assets[0]["id"]]
+        assert original.coverage == "image"
+        checkpoint = await runtime.event_store.read_job_checkpoint(job_id, "group:work")
+        assert "base64" not in json.dumps(checkpoint)
+        restored, current_assets = await runtime.job_runner._context(job)
+        assert set(pixels({"messages": restored})) == current_assets
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio
