@@ -31,6 +31,7 @@ class BurstAssembler:
         EventType.AGENT_JOB_FINISHED,
         EventType.AGENT_JOB_PROGRESS,
         EventType.USER_JOINED,
+        EventType.MESSAGE_SEND_FAILED,
     }
 
     def __init__(
@@ -52,8 +53,6 @@ class BurstAssembler:
         if event.metadata.get("obsolete_job_result"):
             return
         if event.event_type == EventType.REFLECTION_RECORDED and not event.metadata.get('needs_review'):
-            return
-        if event.event_type in self._CHAT_EVENT_TYPES and now - event.timestamp > self.config.max_ingest_lag_seconds:
             return
 
         bursts: list[Stimulus] = []

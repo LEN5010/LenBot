@@ -103,7 +103,16 @@ async def test_native_continuation_lossless_and_parallel_receipts_in_call_order(
         return {"result": "fast-result"}
 
     trace = {}
-    outcome = await run(gateway, tool_definitions=lambda: [definition("read")], execute_tool=execute, trace=trace)
+    checkpoints = []
+
+    async def save_exchange(trajectory):
+        checkpoints.append(trajectory)
+
+    outcome = await run(gateway, tool_definitions=lambda: [definition("read")], execute_tool=execute, trace=trace,
+                        exchange_checkpoint=save_exchange)
+    assert len(checkpoints) == 1
+    assert checkpoints[0][1] == original["choices"][0]["message"]
+    assert [item["tool_call_id"] for item in checkpoints[0] if item["role"] == "tool"] == ["slow", "fast"]
     assert outcome["messages"] == [{"text": "好了"}]
     assert finished == ["fast", "slow"]
     assert requests[1]["messages"][1] == original["choices"][0]["message"]
@@ -408,6 +417,10 @@ async def test_provider_binding_freezes_model_effort_and_connection():
     assert (bound.model, bound.reasoning_effort, bound.client.base_url.host) == ("first", "high", "first.invalid")
     assert (updated.model, updated.reasoning_effort, updated.client.base_url.host) == ("second", "low", "second.invalid")
     assert registry.resolve("work").model == updated.model
+    with pytest.raises(LookupError, match="maintenance.*not configured"):
+        registry.resolve("maintenance")
+    resumed = registry.resolve_profile(profile, role="work")
+    assert resumed.model == "first" and resumed.client.base_url.host == "second.invalid"
     assert "first-secret" not in json.dumps(registry.snapshot())
     with pytest.raises(ValueError, match="Unknown model role"):
         registry.resolve("deliberate")
@@ -424,3 +437,52 @@ async def test_provider_can_be_saved_before_profiles_are_selected():
     assert registry.has_live_provider() is False
     with pytest.raises(LookupError, match="No model profiles configured"):
         registry.resolve("conversation")
+
+
+@pytest.mark.asyncio
+async def test_provider_requests_are_durable_once_and_cancellation_has_unknown_usage(tmp_path):
+    from len_bot.events.store import EventStore
+
+    store = EventStore(str(tmp_path / "calls.db"))
+    await store.initialize()
+    entered = asyncio.Event()
+    calls = 0
+
+    async def handle(request):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            await asyncio.Event().wait()
+        body = response(call("finish_turn", '{"messages":[]}'))
+        body["usage"]["completion_tokens_details"] = {"reasoning_tokens": 5}
+        return httpx.Response(200, json=body)
+
+    client = AsyncOpenAI(api_key="fixture-secret", base_url="https://fixture.invalid/v1", max_retries=0,
+                         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+    gateway = ModelGateway(RouteResolution("fixture", "test", client), call_store=store,
+                           scene_id="group:accounting", episode_id="episode:accounting")
+    try:
+        trace = {}
+        await run(gateway, trace=trace)
+        record = (await store.list_model_calls())[0]
+        assert record["id"] == trace["steps"][0]["call_id"]
+        assert record["status"] == "completed" and record["usage"]["completion_tokens"] == 8
+        pending = asyncio.create_task(run(gateway))
+        await asyncio.wait_for(entered.wait(), 2)
+        assert any(row["status"] == "unconfirmed" for row in await store.list_model_calls())
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await store.close()
+        await store.initialize()
+        rows = await store.list_model_calls("group:accounting")
+        assert len(rows) == 2
+        cancelled = next(row for row in rows if row["status"] == "cancelled")
+        assert cancelled["usage"] is None and cancelled["ended_at"] is not None
+        totals = (await store.get_model_call_totals("group:accounting"))[0]
+        assert totals["calls"] == 2 and totals["cancelled"] == totals["unknown_usage"] == 1
+        assert totals["completion_tokens"] == 8 and totals["reasoning_tokens"] == 5
+    finally:
+        await client.close()
+        await store.close()

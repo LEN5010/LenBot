@@ -44,7 +44,7 @@ async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: 
 
 
 def _configuration(runtime):
-    snapshot = runtime.provider_registry.export()
+    snapshot = runtime.query_service.model_configuration()
     providers = [ProviderConfig.model_validate(item) for item in snapshot.get("providers", [])]
     routing = RoutingConfig.model_validate(snapshot["routing"]) if snapshot.get("routing") else None
     return providers, routing
@@ -85,8 +85,8 @@ async def delete_provider(provider_id: str, request: Request, user: str = Depend
     providers, routing = _configuration(runtime)
     if not any(provider.id == provider_id for provider in providers):
         raise HTTPException(404, "供应商不存在")
-    if routing and any(profile.provider_id == provider_id for profile in (routing.conversation, routing.work)):
-        raise HTTPException(409, "请先将对话和工作路由改到其他供应商")
+    if routing and any(profile is not None and profile.provider_id == provider_id for profile in (routing.conversation, routing.work, routing.maintenance)):
+        raise HTTPException(409, "请先将引用此供应商的模型配置改到其他供应商")
     await _persist_and_apply(runtime, [provider for provider in providers if provider.id != provider_id], routing)
     return {"success": True, "message": "供应商已删除"}
 
@@ -115,7 +115,7 @@ async def save_provider_models(provider_id: str, req: ProviderModelsUpdateReques
     if provider is None:
         raise HTTPException(404, "供应商不存在")
     selected = {model.strip() for model in req.models if model.strip()}
-    active = {profile.model for profile in (routing.conversation, routing.work) if profile.provider_id == provider_id} if routing else set()
+    active = {profile.model for profile in (routing.conversation, routing.work, routing.maintenance) if profile is not None and profile.provider_id == provider_id} if routing else set()
     provider.models = sorted(selected | active)
     await _persist_and_apply(runtime, providers, routing)
     message = "可选模型已保存" + ("；当前路由使用的模型已保留" if active - selected else "")
@@ -137,7 +137,7 @@ async def update_routing(req: RoutingConfig, request: Request, user: str = Depen
         await _persist_and_apply(runtime, providers, req)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    return {"success": True, "message": "对话与工作模型已保存，从下一次运行开始生效"}
+    return {"success": True, "message": "对话、工作与维护模型配置已保存，从下一次运行开始生效"}
 
 
 def _probe_tool(name, properties):
@@ -166,7 +166,8 @@ async def test_model_connection(req: ModelProfile, request: Request, user: str =
     client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url,
         timeout=provider.timeout_seconds, max_retries=0)
     gateway = ModelGateway(RouteResolution(provider_id=provider.id, model=req.model, client=client,
-        reasoning_effort=req.reasoning_effort), max_output_tokens=4096)
+        reasoning_effort=req.reasoning_effort), max_output_tokens=4096,
+        call_store=request.app.state.runtime.event_store, scene_id="", purpose="capability_probe")
     started = time.monotonic()
     checks = {"image_reading": False, "forced_tool": False, "tool_continuation": False}
     try:
@@ -205,3 +206,8 @@ async def test_model_connection(req: ModelProfile, request: Request, user: str =
 @router.get("/metrics")
 async def get_routing_metrics(request: Request, user: str = Depends(get_current_user)):
     return request.app.state.runtime.query_service.metrics()
+
+
+@router.get("/usage")
+async def get_model_usage(request: Request, scene_id: str | None = None, limit: int = 100, user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.model_usage(scene_id, limit)

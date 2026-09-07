@@ -31,6 +31,10 @@ class CommitConflict(RuntimeError):
     """The observed state changed; a proposal must not be repaired or sent."""
 
 
+class FreshInputConflict(CommitConflict):
+    """An uncommitted terminal saw new input; continue within this run budget."""
+
+
 class AgentProtocolError(RuntimeError):
     pass
 
@@ -93,6 +97,8 @@ class AgentLoop:
         observe: Callable[[], Awaitable[list[dict[str, Any]] | None]] | None = None,
         checkpoint: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
+        exchange_checkpoint: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+        remaining_steps: Callable[[], Awaitable[int]] | None = None,
         trace: dict[str, Any] | None = None,
     ) -> Any:
         if max_steps < 1 or max_tool_calls < 0:
@@ -122,6 +128,8 @@ class AgentLoop:
                                        "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
             else:
                 trajectory.append({"role": "user", "content": f"请使用原生工具调用完成本轮：{feedback}"})
+            if calls and exchange_checkpoint is not None:
+                await exchange_checkpoint(copy.deepcopy(trajectory))
 
         async def execute(call: ToolCall, arguments: dict[str, Any], item: dict) -> Any:
             nonlocal tool_calls_used
@@ -152,7 +160,10 @@ class AgentLoop:
             return result
 
         for step_index in range(max_steps):
-            forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls
+            remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
+            if remaining < 1:
+                raise AgentBudgetExhausted("No persistent model budget remains")
+            forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls or remaining == 1
             definitions = [] if forced_final else copy.deepcopy(tool_definitions())
             definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
             definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
@@ -164,6 +175,19 @@ class AgentLoop:
                     "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
                 )})
             request_messages = await prepare_request(trajectory, definitions) if prepare_request else None
+            if remaining_steps is not None:
+                remaining = await remaining_steps()
+                if remaining < 1:
+                    raise AgentBudgetExhausted("Context maintenance used the remaining model budget")
+                if remaining == 1 and not forced_final:
+                    forced_final = True
+                    definitions = [copy.deepcopy(terminal() if callable(terminal) else terminal)]
+                    known_names = {terminal_name}
+                    choice = {"type": "function", "function": {"name": terminal_name}}
+                    ending = {"role": "user", "content": f"本工作剩余最后一次模型调用，请调用 {terminal_name}，保留未核实事项。"}
+                    trajectory.append(ending)
+                    if request_messages is not None and request_messages is not trajectory:
+                        request_messages.append(copy.deepcopy(ending))
             if before_model is not None:
                 await before_model()
             audit["model_calls_used"] += 1
@@ -181,6 +205,7 @@ class AgentLoop:
                 audit["failure_reason"] = step["failure_reason"]
                 raise
             step.update({"latency_ms": response.latency_ms, "usage": _audit(response.usage),
+                         "call_id": response.call_id, "local_estimate": response.local_estimate,
                          "finish_reason": response.finish_reason,
                          "continuation_keys": list(response.continuation),
                          "continuation_sha256": _digest(response.continuation)})
@@ -271,6 +296,20 @@ class AgentLoop:
                 _, arguments, terminal_trace = terminal_calls[0]
                 try:
                     outcome = await finish(arguments)
+                except FreshInputConflict as exc:
+                    terminal_trace["status"] = "fresh_input_conflict"
+                    step["failure_reason"] = _error_text(exc)
+                    trajectory.append({"role": "tool", "tool_call_id": terminal_calls[0][0].id,
+                                       "content": json.dumps({"error": "fresh_input_conflict", "committed": False,
+                                                              "message": str(exc)}, ensure_ascii=False)})
+                    if observe is not None:
+                        additions = await observe()
+                        if additions:
+                            trajectory.extend(copy.deepcopy(additions))
+                            audit["interim_batches"] = audit.get("interim_batches", 0) + 1
+                    if exchange_checkpoint is not None:
+                        await exchange_checkpoint(copy.deepcopy(trajectory))
+                    continue
                 except TerminalArgumentError as exc:
                     terminal_trace["status"] = "invalid_arguments"
                     # Existing proposal receipts stay in the trajectory. Only
@@ -285,6 +324,8 @@ class AgentLoop:
                 terminal_trace["status"] = "accepted"
                 audit.pop("failure_reason", None)
                 return outcome
+            if exchange_checkpoint is not None:
+                await exchange_checkpoint(copy.deepcopy(trajectory))
             if observe is not None:
                 additions = await observe()
                 if additions:

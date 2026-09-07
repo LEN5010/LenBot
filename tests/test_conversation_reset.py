@@ -86,8 +86,9 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
             private_event = Event(event_type=EventType.PRIVATE_MESSAGE_RECEIVED, scene_id=private,
                                   actor_id="user:8", timestamp=time.time() - 120,
                                   payload={"raw_text": "旧的私聊内容：我喜欢喝茶"})
-            await runtime.receive_event(private_event)
             private_actor = await runtime.scene_manager.get_or_create_actor(private)
+            private_actor.attention_policy = None
+            private_actor.post_event(private_event)
             await private_actor._queue.join()
             result = await runtime.operator_outcome(private, EpisodeOutcome(decision_reason="测试种入有证据的旧认识",
                 memory_proposals=[MemoryProposal(subject="user:8", kind="preference", statement="用户8说喜欢喝茶",
@@ -152,8 +153,8 @@ async def test_authenticated_reset_cancels_old_cognition_and_resumes_without_his
 
 
 @pytest.mark.asyncio
-async def test_reset_waits_for_active_work_and_reflection_before_clearing_results(tmp_path):
-    entered = {role: asyncio.Event() for role in ("work", "reflection")}
+async def test_reset_waits_for_active_work_and_history_maintenance_before_clearing_results(tmp_path):
+    entered = {role: asyncio.Event() for role in ("work", "maintenance")}
     cancelled = {role: asyncio.Event() for role in entered}
     requests = []
 
@@ -164,7 +165,7 @@ async def test_reset_waits_for_active_work_and_reflection_before_clearing_result
         import json
         payload = json.loads(request.content)
         names = {tool["function"]["name"] for tool in payload["tools"]}
-        role = "reflection" if "finish_reflection" in names else "work"
+        role = "maintenance" if "finish_history_maintenance" in names else "work"
         requests.append(role)
         entered[role].set()
         try:
@@ -174,9 +175,14 @@ async def test_reset_waits_for_active_work_and_reflection_before_clearing_result
             raise
 
     runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "workers-reset.db"), bot_qq=42,
-        reflection_quiet_window_seconds=3600), mock_turn_handler=quiet, clock=lambda: 1000)
+        history_quiet_window_seconds=3600, history_min_tokens=1), mock_turn_handler=quiet, clock=lambda: 1000)
     await runtime.start()
     await configure_fixture_profile(runtime)
+    from len_bot.cognition.providers import RoutingConfig
+    saved = runtime.provider_registry.export()
+    routing = RoutingConfig.model_validate(saved['routing'])
+    routing = routing.model_copy(update={'maintenance':routing.work.model_copy()})
+    await runtime.provider_registry.apply_update(runtime.provider_registry._providers.values(), routing)
     model_client = AsyncOpenAI(api_key="fixture", base_url="https://fixture.invalid/v1", max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(model)))
     runtime.provider_registry._clients["fixture"] = model_client
@@ -192,8 +198,8 @@ async def test_reset_waits_for_active_work_and_reflection_before_clearing_result
         await runtime.scheduler.run_due(1000)
         await asyncio.wait_for(entered["work"].wait(), 3)
         runtime.mock_turn_handler = None
-        reflection = runtime._spawn_background_task(runtime._quiet_window_reflect(scene))
-        await asyncio.wait_for(entered["reflection"].wait(), 3)
+        reflection = runtime._spawn_background_task(runtime._maintain_history(scene))
+        await asyncio.wait_for(entered["maintenance"].wait(), 3)
         result = await asyncio.wait_for(runtime.reset_conversation_data("tester"), 5)
         assert result["success"]
         assert all(event.is_set() for event in cancelled.values())
@@ -202,7 +208,7 @@ async def test_reset_waits_for_active_work_and_reflection_before_clearing_result
         assert await runtime.event_store.get_recent_events(scene) == []
         assert await runtime.event_store.list_tool_observations(scene) == []
         assert runtime.scene_manager.get_session(scene) is None
-        assert sorted(requests) == ["reflection", "work"]
+        assert sorted(requests) == ["maintenance", "work"]
         assert runtime.provider_registry.snapshot()["routing"]["work"]["model"] == "fixture-model"
     finally:
         await runtime.stop()

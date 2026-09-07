@@ -10,10 +10,14 @@ from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
 from len_bot.events.models import Event, EventType
-from len_bot.events.store import EventStore, ReflectionConflictError
+from len_bot.events.store import EventStore
+from len_bot.memory.history import HistoryConflictError, history_source_text
 from len_bot.memory.models import MemoryProposal
 from len_bot.memory.store import MemoryStore
 from len_bot.runtime.gate import RuntimeGate
+from len_bot.runtime.attention import AttentionPolicy
+from len_bot.config import RuntimeConfig
+from len_bot.cognition.agent_loop import FreshInputConflict
 from len_bot.scenes.actor import SceneActor, SceneCommitConflict
 
 
@@ -37,7 +41,7 @@ async def scene(tmp_path):
     await store.initialize()
     memory = MemoryStore(store._db, store._write_lock, clock=store.clock)
     await memory.initialize()
-    actor = SceneActor(SCENE, BOT, store)
+    actor = SceneActor(SCENE, BOT, store, attention_policy=AttentionPolicy(RuntimeConfig(bot_qq=999, attention_sample_probability=0), store.clock))
     await actor.start()
     queue = RecordingQueue()
     gate = RuntimeGate(store, queue, bot_actor_id=BOT, origin_mode_provider=lambda: "live")
@@ -56,7 +60,7 @@ async def post(actor, event):
 
 def human(event_id="input:1", actor_id="user:A", **sender):
     return Event(id=event_id, event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE,
-                 actor_id=actor_id, timestamp=100.0, payload={"raw_text": "请认真回答", "sender": sender})
+                 actor_id=actor_id, timestamp=100.0, payload={"raw_text": "请认真回答", "at_bot": True, "sender": sender})
 
 
 def lease(actor, episode_id="episode:1"):
@@ -120,7 +124,7 @@ async def test_chat_commits_its_actual_read_cutoff_without_consuming_new_human_i
     second = await post(actor, human("input:2"))
     decision = await actor.commit_turn(reply(), read_cutoff, [first.id], 0, mailbox, gate)
     assert decision.accepted and len(queue.actions) == 1
-    assert actor.session.last_cognized_event_rowid == read_cutoff
+    assert [wake.event_id for wake in actor.session.pending_wakes] == [second.id]
     assert actor.session.last_observed_event_rowid == second.metadata["_rowid"]
     assert mailbox.has_unseen_interim()
     remaining = await store.get_events_since(SCENE, read_cutoff, event_types=[EventType.GROUP_MESSAGE_RECEIVED])
@@ -128,7 +132,8 @@ async def test_chat_commits_its_actual_read_cutoff_without_consuming_new_human_i
     assert (await store.load_scene_session(SCENE)) == actor.session.model_dump()
     await store.recover_social_work()
     pending = await store.pending_runtime_events()
-    assert len(pending) == 1 and pending[0].payload["source_event_ids"] == [second.id]
+    assert pending == []
+    assert (await store.load_scene_session(SCENE))["pending_wakes"][0]["event_id"] == second.id
 
 
 @pytest.mark.asyncio
@@ -149,7 +154,7 @@ async def test_control_and_fulfilment_never_commit_with_unread_input(scene, cont
         outcome.message_proposals[0].expect_reply = True
         outcome.message_proposals[0].reply_target = "user:A"
     before = actor.session.model_dump()
-    with pytest.raises(SceneCommitConflict, match="unread scene input"):
+    with pytest.raises(FreshInputConflict, match="unread scene input"):
         await actor.commit_turn(outcome, first.metadata["_rowid"], [first.id], 0, mailbox, gate)
     assert actor.session.model_dump() == before
     assert not queue.actions and not await store.scene_tasks(SCENE)
@@ -218,66 +223,100 @@ async def test_lost_lease_rejects_the_old_turn(scene):
 
 
 @pytest.mark.asyncio
-async def test_reflection_revision_conflict_does_not_write_beliefs_receipt_or_cursor(scene):
+async def test_history_revision_conflict_does_not_write_beliefs_receipt_or_coverage(scene):
     actor, store, memory, queue, gate = scene
     source = await post(actor, human())
+    batch = await store.begin_history_batch(SCENE, min_tokens=1)
     mailbox = lease(actor)
     outcome = EpisodeOutcome(decision_reason="保存明确反馈", memory_proposals=[belief(source.id)])
     await actor.commit_turn(outcome, source.metadata["_rowid"], [source.id], 0, mailbox, gate)
     before = actor.session.model_dump()
-    review = Event(id="reflection:stale", event_type=EventType.REFLECTION_RECORDED,
-                   scene_id=SCENE, actor_id="system:reflection", payload={"review_items": []})
-    with pytest.raises(ReflectionConflictError, match="Knowledge changed"):
-        await actor.commit_reflection(proposals=[belief(source.id)], source_event_ids=[source.id],
-                                      new_cursor_rowid=source.metadata["_rowid"], review_event=review,
-                                      expected_cursor_rowid=0, expected_revision=0)
+    review = Event(id="history:stale", event_type=EventType.REFLECTION_RECORDED,
+                   scene_id=SCENE, actor_id="system:maintenance", payload={"review_items": []})
+    with pytest.raises(HistoryConflictError, match="Knowledge changed"):
+        await actor.commit_history(batch_id=batch.id, proposals=[belief(source.id)], summary="A希望认真回应",
+                                   key_event_ids=[source.id], review_event=review, expected_revision=0)
     assert not queue.actions and len(await memory.query_memories([SCENE])) == 1
-    assert await memory.get_reflection_cursor(SCENE) == 0
+    assert not await store.list_history_batches(SCENE, status="completed")
     assert not await store.event_exists(review.id, SCENE)
     assert actor.session.model_dump() == before
 
 
 @pytest.mark.asyncio
-async def test_reflection_is_atomic_and_advances_only_its_own_source_cursor(scene):
+async def test_history_is_atomic_and_covers_only_its_original_batch(scene):
     actor, store, memory, _queue, _gate = scene
     source = await post(actor, human())
+    batch = await store.begin_history_batch(SCENE, min_tokens=1)
     later = await post(actor, human("input:2"))
-    review = Event(id="reflection:one", event_type=EventType.REFLECTION_RECORDED,
-                   scene_id=SCENE, actor_id="system:reflection", payload={"review_items": []})
-    committed = await actor.commit_reflection(proposals=[belief(source.id)], source_event_ids=[source.id],
-                                             new_cursor_rowid=source.metadata["_rowid"], review_event=review,
-                                             expected_cursor_rowid=0, expected_revision=0)
+    review = Event(id="history:one", event_type=EventType.REFLECTION_RECORDED,
+                   scene_id=SCENE, actor_id="system:maintenance", payload={"review_items": []})
+    committed = await actor.commit_history(batch_id=batch.id, proposals=[belief(source.id)],
+        summary="A希望认真回应", key_event_ids=[source.id], review_event=review, expected_revision=0)
     assert len(committed) == 1 and actor.session.knowledge_revision == 1
-    assert actor.session.last_cognized_event_rowid == 0
     assert actor.session.last_observed_event_rowid == later.metadata["_rowid"]
-    assert await memory.get_reflection_cursor(SCENE) == source.metadata["_rowid"]
+    summaries = await store.list_history_batches(SCENE, status="completed")
+    assert len(summaries) == 1 and summaries[0]["source_event_ids"] == [source.id]
     assert await store.load_scene_session(SCENE) == actor.session.model_dump()
-    duplicate = review.model_copy(update={"id": "reflection:duplicate"}, deep=True)
-    with pytest.raises(ReflectionConflictError, match="反思读取截点"):
-        await actor.commit_reflection(proposals=[], source_event_ids=[source.id], new_cursor_rowid=source.metadata["_rowid"],
-                                      review_event=duplicate, expected_cursor_rowid=0, expected_revision=1)
+    duplicate = review.model_copy(update={"id": "history:duplicate"}, deep=True)
+    with pytest.raises(HistoryConflictError, match="completed"):
+        await actor.commit_history(batch_id=batch.id, proposals=[], summary="重复结果", key_event_ids=[],
+                                   review_event=duplicate, expected_revision=1)
     assert not await store.event_exists(duplicate.id, SCENE)
+    next_batch = await store.begin_history_batch(SCENE, min_tokens=1)
+    assert next_batch.source_event_ids == [later.id]
     assert len(await memory.query_memories([SCENE])) == 1
 
 
 @pytest.mark.asyncio
-async def test_reflection_rolls_back_earlier_belief_when_a_later_source_is_invalid(scene):
+async def test_history_rolls_back_summary_and_earlier_belief_when_later_source_is_invalid(scene):
     actor, store, memory, _queue, _gate = scene
     source = await post(actor, human())
+    batch = await store.begin_history_batch(SCENE, min_tokens=1)
     before = actor.session.model_dump()
-    review = Event(id="reflection:invalid", event_type=EventType.REFLECTION_RECORDED,
-                   scene_id=SCENE, actor_id="system:reflection", payload={"review_items": []})
+    review = Event(id="history:invalid", event_type=EventType.REFLECTION_RECORDED,
+                   scene_id=SCENE, actor_id="system:maintenance", payload={"review_items": []})
     impossible = MemoryProposal(subject=BOT, kind="fact", statement="Bot能登录MC服务器",
                                 basis="reported", evidence=[source.id])
     with pytest.raises(ValueError, match="Bot capabilities"):
-        await actor.commit_reflection(proposals=[belief(source.id), impossible], source_event_ids=[source.id],
-                                      new_cursor_rowid=source.metadata["_rowid"], review_event=review,
-                                      expected_cursor_rowid=0, expected_revision=0)
+        await actor.commit_history(batch_id=batch.id, proposals=[belief(source.id), impossible],
+            summary="A希望认真回应", key_event_ids=[source.id], review_event=review, expected_revision=0)
     assert not await memory.query_memories([SCENE])
-    assert await memory.get_reflection_cursor(SCENE) == 0
+    assert not await store.list_history_batches(SCENE, status="completed")
     assert not await store.event_exists(review.id, SCENE)
     assert actor.session.model_dump() == before
     assert await store.load_scene_session(SCENE) == before
+    await store.fail_history_batch(batch.id, "ValueError")
+    await post(actor, human("input:2"))
+    assert await store.begin_history_batch(SCENE, min_tokens=1) is None
+    retried = await store.retry_history_batch(batch.id)
+    assert retried.model_dump() == batch.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_large_history_event_is_segmented_without_false_complete_evidence_or_replay(scene):
+    actor, store, memory, _queue, _gate = scene
+    source = human()
+    source.payload["raw_text"] = "活动条件：仅周末开放，尚未确认具体日期。" * 30
+    await post(actor, source)
+    original = history_source_text(source)
+    text = []
+    previous_end = 0
+    while batch := await store.begin_history_batch(SCENE, target_tokens=400, min_tokens=1):
+        assert batch.start_offset == previous_end
+        assert batch.source_event_ids == [source.id] and batch.complete_event_ids == []
+        assert (await store.load_history_batch(batch.id)).segments == batch.segments
+        review = Event(event_type=EventType.REFLECTION_RECORDED, scene_id=SCENE,
+                       actor_id="system:maintenance", payload={"review_items": []})
+        with pytest.raises(ValueError, match="completely read"):
+            await actor.commit_history(batch_id=batch.id, proposals=[belief(source.id)], summary="片段摘要",
+                key_event_ids=[source.id], review_event=review, expected_revision=0)
+        await actor.commit_history(batch_id=batch.id, proposals=[], summary="此片段提到周末开放，具体日期未确认。",
+            key_event_ids=[source.id], review_event=review, expected_revision=0)
+        text.append(batch.segments[0]["text"])
+        previous_end = batch.end_offset
+    assert "".join(text) == original and previous_end == len(original)
+    assert not await memory.query_memories([SCENE])
+    assert await store.begin_history_batch(SCENE, target_tokens=400, min_tokens=1) is None
 
 
 @pytest.mark.asyncio

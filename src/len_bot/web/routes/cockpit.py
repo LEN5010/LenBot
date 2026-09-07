@@ -62,6 +62,7 @@ async def jobs(request: Request, scene_id: str | None = None, user: str = Depend
 
 
 class JobControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
     goal: str | None = None
     constraints_add: list[str] = Field(default_factory=list)
@@ -241,3 +242,61 @@ async def delivery_scenes(req: DeliveryScenesRequest, request: Request, user: st
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"allowed_scenes": _service(request).delivery_settings()["allowed_scenes"]}
+
+
+@router.get("/skills")
+async def list_skills(request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    return await _service(request).skills(scene_id)
+
+
+@router.get("/skills/{skill_id}")
+async def get_skill(skill_id: str, scene_id: str, request: Request, version: int | None = None, user: str = Depends(get_current_user)):
+    result = await _service(request).skill(skill_id, scene_id, version)
+    if result is None:
+        raise HTTPException(404, "未找到本场景可读取的技能版本")
+    return result
+
+
+@router.get("/history-batches")
+async def list_history_batches(scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    return await _service(request).history_batches(scene_id)
+
+
+class SkillPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scene_id: str = Field(min_length=1)
+    expected_version: int = Field(ge=1)
+
+
+@router.post("/skills/{skill_id}/publish")
+async def publish_skill(skill_id: str, req: SkillPublishRequest, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    skill = await _service(request).skill(skill_id, req.scene_id, req.expected_version)
+    if skill is None or skill["scene_id"] != req.scene_id:
+        raise HTTPException(404, "未找到本场景的技能版本")
+    await runtime.record_operator_event(req.scene_id, "skill_publish", user,
+        {"skill_id": skill_id, "expected_version": req.expected_version})
+    try:
+        await runtime.event_store.publish_skill(skill_id, req.scene_id, req.expected_version)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"success": True, "skill": await _service(request).skill(skill_id, req.scene_id)}
+
+
+class HistoryRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scene_id: str = Field(min_length=1)
+
+
+@router.post("/history-batches/{batch_id}/retry")
+async def retry_history(batch_id: str, req: HistoryRetryRequest, request: Request, user: str = Depends(get_current_user)):
+    batch = await _service(request).history_batch(batch_id)
+    if batch is None or batch["scene_id"] != req.scene_id:
+        raise HTTPException(404, "未找到本场景的历史区间")
+    runtime = request.app.state.runtime
+    await runtime.record_operator_event(req.scene_id, "history_retry", user, {"batch_id": batch_id})
+    try:
+        await runtime.retry_history(batch_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"success": True, "message": "已请求重新处理此原始区间，请刷新查看结果"}

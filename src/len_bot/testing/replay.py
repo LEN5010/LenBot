@@ -32,7 +32,7 @@ class ReplayLab:
     async def run(self,events):
         with tempfile.TemporaryDirectory(prefix='lenbot-replay-') as directory:
             config=self.config.model_copy(update={'db_path':directory+'/replay.db','dashboard_enabled':False,
-                'message_pacing':False,'max_ingest_lag_seconds':2**31})
+                'message_pacing':False})
             runtime=AgentRuntime(config,mock_turn_handler=self.mock_turn_handler)
             await runtime.start()
             try:
