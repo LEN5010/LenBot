@@ -40,7 +40,7 @@ async def setup_runtime(tmp_path, **config):
     return rt
 
 
-async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_revision=None, fulfils_task_id=None, origin_mode="live"):
+async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_revision=None, fulfils_task_id=None, origin_mode="live", source_event_ids=None):
     actor = await rt.scene_manager.get_or_create_actor("group:jobs")
     mailbox = EpisodeMailbox(f"unit-job:{uuid.uuid4().hex}", actor.scene_id, actor.session.version)
     mailbox.origin_mode = origin_mode
@@ -50,7 +50,7 @@ async def submit(rt, proposal, *, content=None, task_ref=None, job_id=None, job_
     result.job_proposals = [proposal] if proposal else []
     try:
         return await actor.commit_turn(result, actor.session.last_observed_event_rowid,
-            ["source"], actor.session.knowledge_revision, mailbox, rt.runtime_gate)
+            source_event_ids or ["source"], actor.session.knowledge_revision, mailbox, rt.runtime_gate)
     finally:
         actor.release_episode_lease(mailbox.episode_id)
 
@@ -69,6 +69,48 @@ async def test_job_creation_and_ack_rollback_together(tmp_path):
         assert not await rt.event_store.scene_tasks("group:jobs")
         assert not await rt.event_store.list_jobs("group:jobs")
         assert rt.action_queue._queue.empty()
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_status", ["pending", "completed", "cancelled"])
+async def test_reused_proposal_ref_acknowledges_only_current_job(tmp_path, old_status):
+    rt = await setup_runtime(tmp_path)
+    sent = []
+
+    async def send(action):
+        sent.append(action)
+        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+
+    rt.action_queue.send_adapter = send
+    try:
+        assert (await submit(rt, create())).accepted
+        old_job = (await rt.event_store.list_jobs("group:jobs"))[0]
+        await rt.event_store.mark_task_status(old_job["id"], old_status)
+        source = Event(id="new-source", event_type=EventType.OPERATOR_ACTION,
+            scene_id="group:jobs", actor_id="operator:test", timestamp=1000)
+        await rt.commit_tool_observation(source)
+        proposal = JobProposal(proposal_id="work", goal="核实另一个问题", source_event_ids=[source.id])
+        decision = await submit(rt, proposal, content="我来查新问题", task_ref="work", source_event_ids=["source", source.id])
+        assert decision.accepted
+        await rt.action_queue._queue.join()
+        jobs = await rt.event_store.list_jobs("group:jobs")
+        new_job = next(job for job in jobs if job["id"] != old_job["id"])
+        assert len(sent) == 1
+        assert (sent[0].job_id, sent[0].job_revision) == (new_job["id"], new_job["revision"])
+        tasks = {row["id"]: row for row in await rt.event_store.scene_tasks("group:jobs")}
+        assert tasks[new_job["id"]]["payload"]["ack_action_id"] == sent[0].id
+        assert tasks[new_job["id"]]["status"] == "pending"
+        assert tasks[old_job["id"]]["status"] == old_status
+        # Reconfirming the same pending creation is idempotent and still binds its actual job.
+        await rt.scene_manager._actors["group:jobs"]._queue.join()
+        observed = await rt.event_store.get_recent_events("group:jobs")
+        assert (await submit(rt, proposal, content="新问题在查了", task_ref="work",
+                             source_event_ids=[event.id for event in observed])).accepted
+        await rt.action_queue._queue.join()
+        assert len(await rt.event_store.list_jobs("group:jobs")) == 2
+        assert [action.job_id for action in sent] == [new_job["id"], new_job["id"]]
     finally:
         await rt.stop()
 
