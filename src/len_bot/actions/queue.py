@@ -76,6 +76,7 @@ class ActionQueue:
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
                 "job_id": action.job_id, "job_revision": action.job_revision,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
+                "response_actor_ids": action.response_actor_ids,
                 "source_started_at": action.source_started_at}
 
     def _shadow(self, action):

@@ -31,7 +31,7 @@ async function load() { try { data.value = await api('/api/overview/stats'); err
         <div class="bento-card bento-col-4">
           <div class="bento-badge">对话模型</div>
           <div class="hero-model">{{ data.stats.conversation_model || '尚未设置' }}</div>
-          <div class="bento-desc">后台工作：{{ data.stats.work_model || '尚未设置' }}</div>
+          <div class="bento-desc">后台工作：{{ data.stats.work_model || '尚未设置' }}</div><div class="bento-desc">维护整理：{{ data.stats.maintenance_model || '尚未设置' }}</div><span class="tag" :class="data.stats.maintenance?.ready ? 'ok' : 'warn'">{{ data.stats.maintenance?.reason }}</span>
         </div>
         <div class="bento-card bento-col-7">
           <div class="bento-badge">本次运行中的互动</div>

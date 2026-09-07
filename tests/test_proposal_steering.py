@@ -37,13 +37,13 @@ async def test_new_cancellation_discards_staged_work_before_single_terminal_comm
         return {"session": h.actor.session.model_copy(deep=True), "events": [cancelled],
                 "through_rowid": cutoff, "source_event_ids": list(sources)}
 
-    async def commit(outcome):
+    async def commit(outcome, *, read_event_ids):
         # Use the production Actor/Gate binding from the harness through the
         # original run's closure-free Gate fixture.
         from len_bot.runtime.gate import RuntimeGate
         from types import SimpleNamespace
         gate = RuntimeGate(h.store, SimpleNamespace(enqueue=h.actions.append), bot_actor_id="user:99")
-        return await h.actor.commit_turn(outcome, cutoff, sources, snapshot.knowledge_revision, mailbox, gate)
+        return await h.actor.commit_turn(outcome, cutoff, sorted(read_event_ids), snapshot.knowledge_revision, mailbox, gate)
 
     trace = {}
     try:
@@ -57,7 +57,8 @@ async def test_new_cancellation_discards_staged_work_before_single_terminal_comm
     assert "不用查了" in str(requests[1]["messages"])
     assert result.job_proposals == [] and await h.store.list_jobs(h.actor.scene_id) == []
     assert [action.content for action in h.actions] == ["好，不查了"]
-    assert h.actor.session.last_cognized_event_rowid == observed[0].metadata["_rowid"]
+    committed = next(event for event in await h.store.get_recent_events(h.actor.scene_id) if event.id == "turn:steered")
+    assert observed[0].id in committed.payload["source_event_ids"]
     assert trace["tool_calls_used"] == 2
 
 

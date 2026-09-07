@@ -19,11 +19,16 @@ class RuntimeConfig(BaseModel):
     # Ingestion & Debounce
     debounce_idle_ms: int = Field(default=800, description="Sliding idle window (ms)")
     debounce_max_ms: int = Field(default=2500, description="Max debounce wait cap (ms)")
-    max_ingest_lag_seconds: int = Field(default=60, description="Events older than this skip stimulus")
     conversation_max_steps: int = Field(default=3, ge=1)
     conversation_max_tool_calls: int = Field(default=6, ge=1)
     conversation_context_tokens: int = Field(default=24_000, ge=4_000)
     conversation_output_tokens: int = Field(default=4096, ge=256)
+    conversation_recent_tokens: int = Field(default=4000, ge=500)
+    attention_keywords: list[str] = Field(default_factory=list)
+    attention_sample_window_seconds: float = Field(default=300.0, gt=0)
+    attention_sample_probability: float = Field(default=0.2, ge=0, le=1)
+    attention_keyword_cooldown_seconds: float = Field(default=60.0, ge=0)
+    attention_focus_seconds: float = Field(default=120.0, gt=0)
     max_context_images: int = Field(default=6, ge=1, le=6)
     work_output_tokens: int = Field(default=16384, ge=256)
     jobs_enabled: bool = Field(default_factory=lambda: os.getenv("JOBS_ENABLED", "true").lower() in {"true", "1", "yes"})
@@ -31,15 +36,17 @@ class RuntimeConfig(BaseModel):
     job_max_tool_calls: int = Field(default=24, ge=1)
     job_max_seconds: float = Field(default=300.0, gt=0)
     job_context_tokens: int = Field(default=64000, ge=4000)
+    job_compress_trigger: float = Field(default=0.7, gt=0, lt=1)
+    job_compress_target: float = Field(default=0.5, gt=0, lt=1)
+    maintenance_context_tokens: int = Field(default=24000, ge=4000)
+    maintenance_output_tokens: int = Field(default=4096, ge=256)
+    history_target_tokens: int = Field(default=8000, ge=100)
+    history_min_tokens: int = Field(default=2000, ge=1)
+    history_quiet_window_seconds: float = Field(default=150.0, gt=0)
     job_max_concurrent: int = Field(default=2, ge=1)
     media_enabled: bool = Field(default_factory=lambda: os.getenv("MEDIA_ENABLED", "true").lower() in {"true", "1", "yes"})
     message_pacing: bool = True
 
-    # Reflection (ADR-0019): quiet-window trigger, replacing message-count triggers
-    reflection_quiet_window_seconds: float = Field(
-        default=150.0,
-        description="Scene quiet time before micro-reflection fires on unreflected events"
-    )
     maintenance_interval_seconds: float = Field(
         default=60.0,
         description="Background maintenance of explicit open-loop expiry"

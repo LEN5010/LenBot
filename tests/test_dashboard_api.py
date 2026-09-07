@@ -61,6 +61,7 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         stats_data = stats_res.json()
         assert "total_events" in stats_data["stats"]
         assert "social_cognition" in stats_data["social_metrics"]
+        assert stats_data["stats"]["maintenance"] == {"configured": False, "ready": False, "reason": "未配置维护模型"}
 
         # 6. WebSocket status
         ws_res = await client.get("/api/websocket/status", headers=headers)
@@ -121,6 +122,7 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         routing_post = await client.post("/api/models/routing", headers=headers, json={
             "conversation": {"provider_id": "openai-main", "model": "gpt-4o-mini"},
             "work": {"provider_id": "openai-main", "model": "gpt-4o", "reasoning_effort": "high"},
+            "maintenance": None,
         })
         assert routing_post.status_code == 200
 
@@ -182,6 +184,23 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         await client.post('/api/settings/persona',headers=headers,json={
             'identity_name':'LenAdmin','identity_persona':'Custom test persona'})
         assert (await runtime.event_store.get_dynamic_config('persona_config'))['address_names']==['小然','然比']
+
+        attention_update = await client.patch('/api/settings/attention', json={
+            'attention_keywords': ['资料核对'], 'attention_sample_probability': 0,
+            'attention_sample_window_seconds': 600, 'conversation_recent_tokens': 3000,
+        })
+        assert attention_update.status_code == 200
+        assert runtime.config.attention_sample_probability == 0
+        assert (await runtime.event_store.get_dynamic_config('attention_config'))['attention_keywords'] == ['资料核对']
+        assert (await client.patch('/api/settings/attention', json={'sample_probability': 1})).status_code == 422
+        assert (await client.patch('/api/settings/attention', json={'attention_sample_probability': 1.1})).status_code == 422
+        assert (await client.patch('/api/settings/attention', json={'attention_keywords': None})).status_code == 422
+        usage = (await client.get('/api/models/usage')).json()
+        assert usage['totals'] == [] and usage['cost']['amount'] is None
+        assert usage['cost']['status'] == 'unverified'
+        skills = (await client.get('/api/cockpit/skills', params={'scene_id': 'group:isolated'})).json()
+        assert all(item['scope'] == 'global-safe' for item in skills['skills'])
+        assert (await client.get('/api/cockpit/history-batches', params={'scene_id': 'group:isolated'})).json() == []
 
         # 9. Plugins Subsystem (real registry only, ADR-0021)
         plugins_get = await client.get("/api/plugins/list", headers=headers)

@@ -30,12 +30,58 @@ class RuntimeQueryService:
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
         return result.page(offset).model_dump() if result else None
 
+    def attention_settings(self):
+        return {key: getattr(self.runtime.config, key) for key in (
+            "attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",
+            "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens")}
+
+    def maintenance_readiness(self):
+        snapshot = self.providers()
+        profile = snapshot["routing"]["maintenance"] if snapshot["routing"] else None
+        if profile is None:
+            return {"configured": False, "ready": False, "reason": "未配置维护模型"}
+        provider = next((item for item in snapshot["providers"] if item["id"] == profile["provider_id"]), None)
+        ready = bool(provider and provider["enabled"] and provider["api_key_masked"])
+        return {"configured": True, "ready": ready, "reason": "已就绪" if ready else "维护供应商未启用或未设置密钥"}
+
+    async def model_usage(self, scene_id=None, limit=100):
+        return {"totals": await self.runtime.event_store.get_model_call_totals(scene_id),
+                "calls": await self.runtime.event_store.list_model_calls(scene_id, limit=max(1, min(limit, 200))),
+                "cost": {"status": "unverified", "amount": None,
+                         "reason": "尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}}
+
+    async def history_batches(self, scene_id, limit=20):
+        return await self.runtime.event_store.list_history_batches(scene_id, limit=max(1, min(limit, 100)))
+
+    async def history_batch(self, batch_id):
+        try:
+            batch = await self.runtime.event_store.load_history_batch(batch_id)
+        except LookupError:
+            return None
+        return {"id": batch.id, "scene_id": batch.scene_id}
+
+    async def skills(self, scene_id=None):
+        return {"skills": await self.runtime.event_store.list_skills(scene_id),
+                "candidates": await self.runtime.event_store.list_skill_candidates(scene_id)}
+
+    async def skill(self, skill_id, scene_id, version=None):
+        return await self.runtime.event_store.read_skill(skill_id, scene_id, version=version)
+
+    def job_budget(self):
+        config = self.runtime.config
+        return {"max_model_steps": config.job_max_steps, "max_tool_calls": config.job_max_tool_calls,
+                "max_seconds": config.job_max_seconds, "context_tokens": config.job_context_tokens,
+                "output_tokens": config.work_output_tokens,
+                "effective_input_tokens": config.job_context_tokens - config.work_output_tokens,
+                "compression_trigger": config.job_compress_trigger, "compression_target": config.job_compress_target}
+
     async def jobs(self, scene_id=None):
-        return await self.runtime.event_store.list_jobs(scene_id)
+        return [{**job, "budget": self.job_budget()} for job in await self.runtime.event_store.list_jobs(scene_id)]
 
     async def job(self, job_id):
         task = await self.get_task(job_id)
-        return await self.runtime.event_store.get_job(job_id, task["scene_id"]) if task else None
+        job = await self.runtime.event_store.get_job(job_id, task["scene_id"]) if task else None
+        return {**job, "budget": self.job_budget()} if job else None
 
     async def media_assets(self, scene_id, query=""):
         rows = await self.runtime.event_store.list_media(list(dict.fromkeys([scene_id, "global-safe"])), query=query, include_disabled=True)
@@ -76,6 +122,8 @@ class RuntimeQueryService:
                 "onebot_connection_mode": rt.config.onebot_connection_mode,
                 "conversation_model": routing["routing"]["conversation"]["model"] if routing["routing"] else None,
                 "work_model": routing["routing"]["work"]["model"] if routing["routing"] else None,
+                "maintenance_model": routing["routing"]["maintenance"]["model"] if routing["routing"] and routing["routing"]["maintenance"] else None,
+                "maintenance": self.maintenance_readiness(),
                 "identity_name": rt.config.identity_name,
                 "bot_qq": rt.config.bot_qq,
                 "uptime_seconds": time.time() - getattr(rt, "_started_at", time.time()),
@@ -125,7 +173,8 @@ class RuntimeQueryService:
         return [{"scene_id": session.scene_id, "version": session.version,
                  "participant_count": len(session.participants), "last_event_at": session.last_event_at,
                  "last_bot_message_at": session.last_bot_message_at,
-                 "active_job_count": counts.get(session.scene_id, 0)} for session in sessions]
+                 "active_job_count": counts.get(session.scene_id, 0),
+                 "pending_wake_count": len(session.pending_wakes)} for session in sessions]
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:
         """Read the committed fact session without creating or changing an Actor."""
@@ -139,6 +188,9 @@ class RuntimeQueryService:
             "session": session.model_dump(mode="json"),
             "preferences": [item.model_dump(mode="json") for item in preferences],
             "jobs": await self.jobs(scene_id),
+            "history_batches": await self.history_batches(scene_id),
+            "history_status": await self.runtime.event_store.list_history_status(scene_id),
+            "maintenance": self.maintenance_readiness(),
             "recent_messages": [event for event in recent if event["event_type"] in {
                 "GROUP_MESSAGE_RECEIVED", "PRIVATE_MESSAGE_RECEIVED", "MESSAGE_SENT"}][:40],
             "recent_deliveries": [event for event in recent
@@ -156,7 +208,7 @@ class RuntimeQueryService:
         until: Optional[float] = None,
         limit: int = 50,
     ) -> list[dict]:
-        sql = "SELECT id, event_type, scene_id, actor_id, timestamp, payload FROM events WHERE 1=1"
+        sql = "SELECT id, event_type, scene_id, actor_id, timestamp, payload, metadata, rowid FROM events WHERE 1=1"
         params: list = []
         if scene_id:
             sql += " AND scene_id = ?"
@@ -179,7 +231,9 @@ class RuntimeQueryService:
         rows = await cursor.fetchall()
         return [
             {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3],
-             "timestamp": r[4], "payload": json.loads(r[5]) if r[5] else {}}
+             "timestamp": r[4], "payload": json.loads(r[5]) if r[5] else {}, "rowid": r[7],
+             "attention": {key: value for key, value in json.loads(r[6]).items()
+                           if key in {"attention_reasons", "attention_certain"}}}
             for r in rows
         ]
 
@@ -296,6 +350,10 @@ class RuntimeQueryService:
 
     async def provider_models(self, provider_id):
         return await self.runtime.provider_registry.list_models(provider_id)
+
+    def model_configuration(self) -> dict:
+        """Private control input; credentials never pass through a public response."""
+        return self.runtime.provider_registry.export()
 
     def providers(self) -> dict:
         return self.runtime.provider_registry.snapshot()

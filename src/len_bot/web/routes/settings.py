@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Request, Depends, HTTPException
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from len_bot.config import RuntimeConfig
 from len_bot.config import AddressName
 from len_bot.web.auth import get_current_user
 
@@ -68,3 +69,36 @@ async def update_persona_settings(req: PersonaSettingsRequest, request: Request,
         else:
             setattr(runtime.config, key, value)
     return {"success": True, "message": "人格与说话风格已保存，并立即生效"}
+
+
+class AttentionSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attention_keywords: list[str] | None = None
+    attention_sample_window_seconds: float | None = None
+    attention_sample_probability: float | None = None
+    attention_keyword_cooldown_seconds: float | None = None
+    attention_focus_seconds: float | None = None
+    conversation_recent_tokens: int | None = None
+
+
+@router.get("/attention")
+async def get_attention_settings(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.attention_settings()
+
+
+@router.patch("/attention")
+async def update_attention_settings(req: AttentionSettingsRequest, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    from pydantic import ValidationError
+    async with runtime.config_update_lock:
+        current = runtime.query_service.attention_settings()
+        values = {**current, **req.model_dump(exclude_unset=True)}
+        try:
+            validated = RuntimeConfig.model_validate({**runtime.config.model_dump(), **values})
+        except ValidationError as error:
+            raise HTTPException(422, error.errors(include_context=False)) from error
+        values = {key: getattr(validated, key) for key in current}
+        await runtime.event_store.save_dynamic_config("attention_config", values)
+        for key, value in values.items():
+            setattr(runtime.config, key, value)
+    return {"success": True, "message": "注意力参数已保存，下次扫描起生效", "settings": values}

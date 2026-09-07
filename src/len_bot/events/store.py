@@ -11,14 +11,12 @@ from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
+from len_bot.cognition.call_store import ModelCallStoreMixin
+from len_bot.memory.history import HistoryStoreMixin
 
 logger = logging.getLogger(__name__)
 
-class ReflectionConflictError(ValueError):
-    """A newer cursor or understanding requires a fresh quiet-window read."""
-
-
-class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCallStoreMixin, HistoryStoreMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -27,17 +25,29 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
+        upgrade_table = await (await self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_upgrades'")).fetchone()
+        if upgrade_table and await (await self._db.execute(
+                "SELECT 1 FROM schema_upgrades WHERE status!='completed'")).fetchone():
+            await self.close()
+            raise RuntimeError('离线结构升级尚未完成；保持停机并检查升级错误或恢复同批备份')
         retired = await (await self._db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('group_agent_sessions','scene_states','episodes')"
         )).fetchall()
         if retired:
             await self.close()
             raise RuntimeError("旧会话结构需要先停机备份并执行获准的 VNext Reset")
+        columns = await (await self._db.execute('PRAGMA table_info(scene_sessions)')).fetchall()
+        if any(column[1] == 'last_cognized_event_rowid' for column in columns):
+            await self.close()
+            raise RuntimeError('旧注意力结构需要停机备份后运行 uv run python -m len_bot.migrations.attention_work；禁止 Reset')
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
         await self.initialize_jobs()
         await self.initialize_media()
+        await self.initialize_model_calls()
+        await self.initialize_history()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -65,10 +75,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
         await self._db.execute("""CREATE TABLE IF NOT EXISTS scene_sessions (
             scene_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
-            last_observed_event_rowid INTEGER NOT NULL, last_cognized_event_rowid INTEGER NOT NULL,
+            last_observed_event_rowid INTEGER NOT NULL, attention_scanned_event_rowid INTEGER NOT NULL,
             state_json TEXT NOT NULL, updated_at REAL NOT NULL)""")
-        await self._db.execute("""CREATE TABLE IF NOT EXISTS reflection_cursors (
-            scene_id TEXT PRIMARY KEY, last_event_rowid INTEGER NOT NULL, updated_at REAL NOT NULL)""")
 
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS open_loops (
@@ -170,18 +178,21 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
 
     async def reset_conversation_data(self, event: Event) -> dict[str, int]:
         """Explicit operator reset; configuration and authored voice stay intact."""
-        tables = ("events_fts", "pending_runtime_events", "agent_jobs", "tool_observations",
-                  "media_assets", "traces", "reflection_cursors", "memories",
+        tables = ("events_fts", "pending_runtime_events", "job_exchanges", "skill_candidates",
+                  "skill_versions", "skills", "agent_jobs", "tool_observations",
+                  "media_assets", "traces", "history_batches", "history_origins", "model_calls", "memories",
                   "open_loops", "tasks", "scene_sessions", "events")
         async with self._write_lock:
             await self._db.execute("BEGIN IMMEDIATE")
             try:
                 counts = {}
                 for table in tables:
-                    where = " WHERE curated=0" if table == "media_assets" else (
+                    where = " WHERE skill_id IN (SELECT id FROM skills WHERE author='agent')" if table == 'skill_versions' else (
+                        " WHERE author='agent'" if table == 'skills' else (
+                        " WHERE curated=0" if table == "media_assets" else (
                         " WHERE id NOT IN (SELECT source_event_id FROM media_assets) AND "
                         "NOT (event_type='MEDIA_UPDATED' AND COALESCE(json_extract(payload,'$.asset_id') "
-                        "IN (SELECT id FROM media_assets),0))" if table == "events" else "")
+                        "IN (SELECT id FROM media_assets),0))" if table == "events" else "")))
                     counts[table] = (await (await self._db.execute(f"SELECT COUNT(*) FROM {table}{where}")).fetchone())[0]
                     await self._db.execute(f"DELETE FROM {table}{where}")
                 await self._db.execute("UPDATE voice_exemplars SET use_count=0,last_used_at=0")
@@ -463,7 +474,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             """SELECT ref_id,payload FROM traces
                WHERE scene_id=? AND kind='conversation_error'
                  AND json_extract(payload,'$.error_type') IN
-                     ('SceneCommitConflict','CommitConflict','AgentProtocolError','AgentBudgetExhausted','TruncatedModelOutput')
+                     ('SceneCommitConflict','FreshInputConflict','CommitConflict','AgentProtocolError','AgentBudgetExhausted','TruncatedModelOutput')
                  AND COALESCE(json_extract(payload,'$.gate.accepted'),0)=0
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))>?
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))<=?
@@ -530,62 +541,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
             ))
         return events
 
-    async def get_unreflected_events(self, scene_id: str, after_rowid: int = 0, limit: int = 30) -> list[Event]:
-        """ADR-0028, §10.1: retrieves unreflected events bounded strictly to batch limit (default 30).
-        Events are in immutable write order with `_rowid` attached to metadata."""
-        return await self.get_events_since(scene_id, after_rowid=after_rowid, limit=limit,
-            event_types=[EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED,
-                         EventType.MESSAGE_SENT, EventType.LIVE_STARTED, EventType.LIVE_ENDED,
-                         EventType.USER_JOINED, EventType.MESSAGE_SEND_FAILED])
-
-    async def commit_reflection_batch(
-        self, scene_id, proposals, source_event_ids, new_cursor_rowid, review_event,
-        expected_cursor_rowid, expected_revision, scene_state_data, *, bot_actor_id,
-    ):
-        """Actor-owned reflection: beliefs, receipt, factual session and cursor commit together."""
-        async with self._write_lock:
-            try:
-                await self._db.execute("BEGIN IMMEDIATE")
-                current = await (await self._db.execute(
-                    "SELECT json_extract(state_json,'$.knowledge_revision') FROM scene_sessions WHERE scene_id=?",
-                    (scene_id,))).fetchone()
-                if (current[0] if current else 0) != expected_revision:
-                    raise ReflectionConflictError("认识版本已变化")
-                cursor = await (await self._db.execute(
-                    "SELECT last_event_rowid FROM reflection_cursors WHERE scene_id=?", (scene_id,))).fetchone()
-                if (cursor[0] if cursor else 0) != expected_cursor_rowid:
-                    raise ReflectionConflictError("反思读取截点已变化")
-                if not source_event_ids or not await self.references_belong_to_scene(set(source_event_ids), scene_id, new_cursor_rowid):
-                    raise ValueError("Reflection needs readable original sources")
-                last = await (await self._db.execute(
-                    "SELECT max(rowid) FROM events WHERE scene_id=? AND id IN (SELECT value FROM json_each(?))",
-                    (scene_id, json.dumps(source_event_ids)))).fetchone()
-                if last[0] != new_cursor_rowid:
-                    raise ValueError("Reflection cutoff must match its last source")
-                if review_event.scene_id != scene_id or review_event.event_type != EventType.REFLECTION_RECORDED:
-                    raise ValueError("Invalid reflection receipt")
-                for item in review_event.payload.get("review_items", []):
-                    refs = item.get("source_event_ids", [])
-                    if not refs or not set(refs).issubset(source_event_ids):
-                        raise ValueError("Review item needs reflected sources")
-                committed = []
-                for proposal in proposals:
-                    await validate_memory_proposal(self._db, proposal, scene_id, new_cursor_rowid, bot_actor_id=bot_actor_id)
-                    committed.append(await commit_memory_proposal_core(
-                        self._db, proposal, scene_id, now=self.clock(), revision_event_id=review_event.id))
-                review_event.payload["memory_receipts"] = [
-                    await self._memory_receipt(proposal, item) for proposal, item in zip(proposals, committed)]
-                rowid = await self._write_scene_event(review_event, scene_state_data,
-                    advance_session_observation=bool(review_event.payload.get("review_items")))
-                await self._db.execute(
-                    "INSERT INTO reflection_cursors VALUES(?,?,?) ON CONFLICT(scene_id) DO UPDATE SET last_event_rowid=excluded.last_event_rowid,updated_at=excluded.updated_at",
-                    (scene_id, new_cursor_rowid, self.clock()))
-                await self._db.commit()
-                return committed, rowid
-            except BaseException:
-                await self._db.rollback()
-                raise
-
     @staticmethod
     def _retrieval_event(row):
         return {"id": row[0], "event_type": row[1], "scene_id": row[2], "actor_id": row[3],
@@ -651,6 +606,55 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         row = await (await self._db.execute(
             "SELECT state_json FROM scene_sessions WHERE scene_id=?", (scene_id,))).fetchone()
         return json.loads(row[0]) if row else None
+
+    async def event_actors(self, scene_id, event_ids):
+        if not event_ids:
+            return set()
+        rows = await (await self._db.execute(
+            'SELECT DISTINCT actor_id FROM events WHERE scene_id=? AND id IN (SELECT value FROM json_each(?))',
+            (scene_id, json.dumps(list(event_ids))))).fetchall()
+        return {row[0] for row in rows}
+
+    async def pending_response_actors(self, scene_id, bot_actor_id, after_timestamp):
+        """Short-lived in-flight response facts, never a confirmed interaction."""
+        rows = await (await self._db.execute("""SELECT DISTINCT person.value FROM events c,
+              json_each(c.payload,'$.response_actor_ids') response, json_each(response.value) person
+            WHERE c.scene_id=? AND c.event_type='CONVERSATION_COMMITTED' AND c.timestamp>=?
+              AND json_extract(c.metadata,'$.mode')='live'
+              AND json_array_length(c.payload,'$.outcome.message_proposals')>0
+              AND NOT EXISTS (SELECT 1 FROM events r WHERE r.scene_id=c.scene_id AND r.actor_id=?
+                AND r.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+                AND c.id='turn:'||json_extract(r.payload,'$.batch_id')
+                AND json_extract(r.payload,'$.batch_index')=CAST(response.key AS INTEGER))""",
+            (scene_id, after_timestamp, bot_actor_id))).fetchall()
+        return {row[0] for row in rows}
+
+    async def read_reply_actor(self, scene_id, message_id, read_event_ids):
+        row = await (await self._db.execute("""SELECT actor_id FROM events WHERE scene_id=?
+            AND CAST(json_extract(payload,'$.message_id') AS TEXT)=?
+            AND id IN (SELECT value FROM json_each(?)) ORDER BY rowid DESC LIMIT 1""",
+            (scene_id, str(message_id), json.dumps(list(read_event_ids))))).fetchone()
+        return row[0] if row else None
+
+    async def conversation_input_ids_since(self, scene_id, after_rowid, through_rowid, bot_actor_id):
+        from len_bot.runtime.attention import HUMAN_INPUTS, RUNTIME_INPUTS
+        types = [kind.value for kind in HUMAN_INPUTS | RUNTIME_INPUTS | {EventType.MESSAGE_SENT}]
+        rows = await (await self._db.execute("""SELECT id FROM events WHERE scene_id=? AND rowid>? AND rowid<=?
+            AND event_type IN (SELECT value FROM json_each(?))
+            AND NOT (event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED') AND actor_id=?)
+            AND COALESCE(json_extract(metadata,'$.obsolete_task_wake'),0)=0
+            AND COALESCE(json_extract(metadata,'$.obsolete_job_result'),0)=0
+            AND (event_type!='REFLECTION_RECORDED' OR json_extract(metadata,'$.needs_review')=1)
+            AND NOT (event_type='TASK_DUE' AND COALESCE(json_extract(payload,'$.payload.kind'),'')='agent_job')""",
+            (scene_id, after_rowid, through_rowid, json.dumps(types), bot_actor_id))).fetchall()
+        return {row[0] for row in rows}
+
+    async def events_by_ids(self, scene_id, event_ids, through_rowid):
+        rows = await (await self._db.execute(
+            'SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events '
+            'WHERE scene_id=? AND rowid<=? AND id IN (SELECT value FROM json_each(?)) ORDER BY rowid',
+            (scene_id, through_rowid, json.dumps(list(event_ids))))).fetchall()
+        return [Event.model_validate(self._retrieval_event(row)) for row in rows]
 
     async def commit_scene_event(
         self,
@@ -751,12 +755,19 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         persisted = dict(scene_state_data)
         if advance_session_observation:
             persisted["last_observed_event_rowid"] = event_rowid
+        # Event ingestion owns scanning; model/operator commits do not consume
+        # or rescan inputs. The rowid and wake enqueue persist together.
+        if event.event_type != EventType.CONVERSATION_COMMITTED:
+            persisted['attention_scanned_event_rowid'] = event_rowid
+            for wake in persisted.get('pending_wakes', []):
+                if wake['event_id'] == event.id:
+                    wake['rowid'] = event_rowid
         await self._db.execute(
             "INSERT INTO scene_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(scene_id) DO UPDATE SET "
             "version=excluded.version,last_observed_event_rowid=excluded.last_observed_event_rowid,"
-            "last_cognized_event_rowid=excluded.last_cognized_event_rowid,state_json=excluded.state_json,updated_at=excluded.updated_at",
+            "attention_scanned_event_rowid=excluded.attention_scanned_event_rowid,state_json=excluded.state_json,updated_at=excluded.updated_at",
             (event.scene_id, persisted.get("version", 0), persisted.get("last_observed_event_rowid", 0),
-             persisted.get("last_cognized_event_rowid", 0), json.dumps(persisted, ensure_ascii=False), self.clock()))
+             persisted.get("attention_scanned_event_rowid", 0), json.dumps(persisted, ensure_ascii=False), self.clock()))
 
         return event_rowid
 
@@ -1425,36 +1436,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin):
         return await cursor.fetchone() is not None
 
     async def recover_social_work(self) -> list[str]:
-        """Persist a review wake for an interrupted turn; never replay old sends."""
-        async with self._write_lock:
-            try:
-                cursor = await self._db.execute(
-                    "SELECT scene_id,last_observed_event_rowid,last_cognized_event_rowid FROM scene_sessions"
-                )
-                rows = await cursor.fetchall()
-                for scene_id, observed, cognized in rows:
-                    unseen = await self.get_events_since(scene_id, cognized, limit=12000,
-                        event_types=[EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED,
-                                     EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.REFLECTION_RECORDED,
-                                     EventType.LIVE_STARTED, EventType.LIVE_ENDED])
-                    unseen = [e for e in unseen if e.metadata['_rowid'] <= observed
-                              and (e.event_type != EventType.REFLECTION_RECORDED or e.metadata.get('needs_review'))]
-                    if not unseen:
-                        continue
-                    pending = await self._db.execute("SELECT 1 FROM pending_runtime_events WHERE scene_id=?", (scene_id,))
-                    if await pending.fetchone():
-                        continue
-                    event = Event(id=f"resume:{scene_id}:{observed}", event_type=EventType.TASK_REVIEW,
-                        scene_id=scene_id, actor_id="system:recovery", timestamp=self.clock(),
-                        payload={"source_event_ids": [e.id for e in unseen],
-                                 "raw_text": "重启前有输入尚未完成认知。结合当前时间、现有任务和最近原话核对；过期请求不要自动补发或重设相对时间。"})
-                    await self._db.execute("INSERT INTO pending_runtime_events VALUES (?,?,?)",
-                        (event.id, scene_id, event.model_dump_json()))
-                await self._db.commit()
-                return [r[0] for r in rows]
-            except BaseException:
-                await self._db.rollback()
-                raise
+        """Restore durable attention sources; delivery recovery stays in its ledger."""
+        rows = await (await self._db.execute('SELECT scene_id FROM scene_sessions')).fetchall()
+        return [row[0] for row in rows]
 
     async def claim_task_event(self, task_id: str, scene_id: str, event: Event) -> bool:
         async with self._write_lock:

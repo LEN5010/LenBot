@@ -119,6 +119,8 @@ async def test_job_recovery_requires_explicit_resume_and_retains_budget(tmp_path
     job = (await rt.event_store.list_jobs("group:jobs"))[0]
     await rt.scheduler.run_due(1000)
     await rt.scene_manager._actors["group:jobs"]._queue.join()
+    await rt.event_store.bind_job_model(job["id"], job["scene_id"], 1,
+        {"provider_id": "fixture", "model": "fixture-model", "reasoning_effort": "high"})
     await rt.commit_tool_observation(await rt.event_store.job_checkpoint(job["id"], job["scene_id"], 1, model_steps=2))
     if finished:
         event=await rt.event_store.complete_job(job['id'],job['scene_id'],1,JobResult(status='completed',summary='已验证的结果'))
@@ -157,7 +159,7 @@ class SlowDocumentPlugin(BasePlugin):
             self.calls += 1
             self.started.set()
             await self.release.wait()
-            return ToolResult(content="资料包含手机界面步骤", evidence_kind="external")
+            return ToolResult(content="资料包含手机界面步骤", sources=[{"url": "https://fixture.invalid/document"}], evidence_kind="external")
         context.register_tool("lookup_document", "读取测试资料", {"type": "object", "properties": {}}, lookup, read_only=True)
 
 
@@ -305,6 +307,8 @@ async def test_unfinished_result_is_explicit_and_resumes_with_observations_and_u
         await submit(rt, create())
         job = (await rt.event_store.list_jobs("group:jobs"))[0]
         await drain(rt)
+        await rt.event_store.bind_job_model(job["id"], job["scene_id"], 1,
+            {"provider_id": "fixture", "model": "fixture-model", "reasoning_effort": "high"})
         observation, event = await rt.event_store.save_tool_observation(job["scene_id"], "calculate", {},
             ToolResult(content="单次算式结果", coverage="arithmetic"), background_work=True)
         await rt.commit_tool_observation(event)
@@ -344,10 +348,11 @@ async def test_unfinished_result_is_explicit_and_resumes_with_observations_and_u
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("execution_status", ["completed", "partial"])
-async def test_completed_and_partial_results_deliver_without_becoming_resumable(tmp_path, execution_status):
+@pytest.mark.parametrize("delivery_status", [DeliveryStatus.SENT, DeliveryStatus.NOT_SENT])
+async def test_completed_and_partial_results_deliver_without_becoming_resumable(tmp_path, execution_status, delivery_status):
     rt = await setup_runtime(tmp_path)
     async def sent(action):
-        return DeliveryResult(status=DeliveryStatus.SENT, transport="test")
+        return DeliveryResult(status=delivery_status, transport="test")
     rt.action_queue.send_adapter = sent
     try:
         await submit(rt, create())
@@ -365,8 +370,13 @@ async def test_completed_and_partial_results_deliver_without_becoming_resumable(
         assert delivery.accepted and delivery.actions_enqueued == 1
         await drain(rt)
         current = await rt.event_store.get_job(job["id"], job["scene_id"])
-        assert current["status"] == "completed" and current["execution_status"] == execution_status
+        assert current["status"] == ("completed" if delivery_status == DeliveryStatus.SENT else "failed")
+        assert current["execution_status"] == execution_status
         assert not current["can_resume"]
+        restart = await submit(rt, JobProposal(operation="resume", job_id=job["id"], expected_revision=1, source_event_ids=["source"]))
+        assert not restart.accepted
+        retained = await rt.event_store.get_job(job["id"], job["scene_id"])
+        assert retained["revision"] == 1 and retained["result"] == current["result"]
     finally:
         await rt.stop()
 

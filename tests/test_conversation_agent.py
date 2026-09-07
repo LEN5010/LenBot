@@ -79,8 +79,9 @@ async def harness(tmp_path):
         mailbox=EpisodeMailbox(ident,actor.scene_id,actor.session.version)
         assert actor.acquire_episode_lease(ident,mailbox)
         audit={};snapshot=actor.session.model_copy(deep=True)
-        sources=[e.id for e in events if e.metadata['_rowid']>snapshot.last_cognized_event_rowid]
-        async def commit(outcome):return await actor.commit_turn(outcome,target,sources,snapshot.knowledge_revision,mailbox,gate)
+        committed={source for event in events if event.event_type==EventType.CONVERSATION_COMMITTED for source in event.payload['source_event_ids']}
+        sources=[e.id for e in events if e.id not in committed and e.event_type in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}]
+        async def commit(outcome, *, read_event_ids):return await actor.commit_turn(outcome,target,sorted(read_event_ids),snapshot.knowledge_revision,mailbox,gate)
         try:
             result=await SocialCognitionCore(runtime).run(snapshot,events,target,ident,sources,observe=observe,commit=commit,trace=audit)
             return result,audit
@@ -137,7 +138,7 @@ async def test_invalid_late_memory_rolls_back_staged_job_and_ack(harness):
     with pytest.raises(CommitConflict):await h.run()
     assert await h.store.list_jobs(h.actor.scene_id)==[] and not h.actions
     assert await h.memory.query_memories([h.actor.scene_id])==[]
-    assert h.actor.session.last_cognized_event_rowid==0
+    assert not await h.store.event_exists('turn:turn', h.actor.scene_id)
 
 
 @pytest.mark.asyncio
@@ -172,7 +173,8 @@ async def test_unknown_refs_are_repaired_once_without_sending_partial_output(har
     bad=response(call('finish_turn',{'messages':[{'segments':[{'image':'other-scene'}]}]}))
     requests=await h.setup([bad,bad])
     with pytest.raises(AgentProtocolError):await h.run()
-    assert len(requests)==2 and not h.actions and h.actor.session.last_cognized_event_rowid==0
+    assert len(requests)==2 and not h.actions
+    assert not await h.store.event_exists('turn:turn', h.actor.scene_id)
 
 
 @pytest.mark.asyncio
@@ -204,7 +206,8 @@ async def test_address_cues_are_read_facts_and_do_not_force_a_reply(harness,text
     _,trace=await h.run()
     assert trace['call_signals']==({event.id:signal} if signal else {})
     assert not h.actions
-    assert h.actor.session.last_cognized_event_rowid==event.metadata['_rowid']
+    committed=next(item for item in await h.store.get_recent_events(h.actor.scene_id) if item.event_type==EventType.CONVERSATION_COMMITTED)
+    assert event.id in committed.payload['source_event_ids']
 
 
 @pytest.mark.asyncio
@@ -265,3 +268,79 @@ async def test_read_media_reloads_evicted_pixels_and_identical_assets_keep_prove
     wire=context.model_messages(messages)
     assert sum(part['type']=='image_url' for message in wire for part in message['content'])==6
     assert all('_asset_id' not in part for message in wire for part in message['content'])
+
+
+@pytest.mark.asyncio
+async def test_long_original_ranges_require_full_read_before_work_evidence(harness):
+    """Range paging keeps one real source; a partial source cannot authorize work."""
+    from pathlib import Path
+    from len_bot.cognition.agent_loop import ToolArgumentError
+    from len_bot.cognition.proposals import ProposalLedger
+
+    h = harness
+    root = Path(__file__).parents[1]
+    original = '小然，请梳理这两份工程资料。\n' + '\n'.join(
+        (root / path).read_text() for path in ('docs/architecture.md', 'docs/implementation.md'))
+    event = await h.human(original, ident='long-original')
+    cutoff = h.actor.session.last_observed_event_rowid
+    context = ConversationContext(h.runtime, h.actor.session.model_copy(deep=True), cutoff)
+    toolkit = RetrievalToolkit(h.store, [h.actor.scene_id], h.actor.scene_id,
+        memory_store=h.memory, context=context, on_observation=h.receive)
+    assert 'read_message_range' not in {item['function']['name'] for item in toolkit.get_tool_definitions()}
+    # A summary/lookup locator can open the same range reader before any raw text.
+    reference = context.refs.register_event_locator(event.id)
+    assert 'read_message_range' in {item['function']['name'] for item in toolkit.get_tool_definitions()}
+    located = await toolkit.execute_result('read_context', {'event_id': reference, 'before': 0, 'after': 0})
+    assert json.loads(located.content)['range'] == [0, 0, len(original)]
+    assert located.coverage.startswith('original_message_locator') and event.id not in context.refs.read_events
+    first = event.model_copy(deep=True)
+    first.payload['raw_text'] = original[:400]
+    first.metadata['_text_range'] = {'start': 0, 'end': 400, 'total': len(original)}
+    context.event_message(first)
+    reference = context.refs.register_event_locator(event.id)
+    assert event.id not in context.refs.read_events
+    assert 'read_message_range' in {item['function']['name'] for item in toolkit.get_tool_definitions()}
+    ledger = ProposalLedger(context, 'range-evidence')
+    with pytest.raises(ToolArgumentError, match='尚未实际读取'):
+        await ledger.stage('start_work', {'goal': '梳理工程资料', 'evidence': [reference]})
+    assert not await h.store.list_jobs(h.actor.scene_id)
+
+    denied = await toolkit.execute_result('read_message_range', {'event_id': reference, 'offset': 400})
+    assert denied.error_code == 'invalid_arguments'
+    oversized = await toolkit.execute_result('read_message_range', {'message_ref': reference, 'offset': 400, 'limit': 8001})
+    assert oversized.error_code == 'invalid_arguments'
+    await h.receive(Event(id='foreign-range', event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id='group:foreign', actor_id='user:foreign', payload={'raw_text': '别群原话不能被范围读取'}))
+    foreign = context.refs.register_event_locator('foreign-range')
+    outside = await toolkit.execute_result('read_message_range', {'message_ref': foreign, 'offset': 0})
+    assert outside.error_code == 'not_found' and 'foreign-range' not in context.refs.read_events
+
+    offset, text = 400, original[:400]
+    while offset < len(original):
+        result = await toolkit.execute_result('read_message_range', {'message_ref': reference, 'offset': offset})
+        page = json.loads(result.content)
+        start, end, total = page['range']
+        assert start == offset and total == len(original) and end <= offset + 4000
+        assert page['text'] == original[start:end] and page['message_ref'] == reference
+        text += page['text']
+        offset = end
+        assert (event.id in context.refs.read_events) == (offset == len(original))
+        if offset < len(original):
+            assert page['next_offset'] == result.next_offset == offset
+    assert text == original and event.id not in context.refs.partial_events
+    assert 'read_message_range' in {item['function']['name'] for item in toolkit.get_tool_definitions()}  # Foreign locator remains unread.
+    saved = await h.store.list_tool_observations(h.actor.scene_id)
+    assert any(item['tool_name'] == 'read_message_range' for item in saved)
+    await ledger.stage('start_work', {'goal': '梳理工程资料', 'evidence': [reference]})
+    outcome = await ledger.finish({'messages': []})
+    mailbox = EpisodeMailbox('range-evidence', h.actor.scene_id, h.actor.session.version)
+    gate = RuntimeGate(h.store, SimpleNamespace(enqueue=h.actions.append), bot_actor_id=h.runtime.bot_actor_id)
+    assert h.actor.acquire_episode_lease(mailbox.episode_id, mailbox)
+    try:
+        decision = await h.actor.commit_turn(outcome, cutoff, sorted(context.refs.read_events),
+            h.actor.session.knowledge_revision, mailbox, gate)
+        assert decision.accepted and not h.actions
+        job = (await h.store.list_jobs(h.actor.scene_id))[0]
+        assert job['source_event_ids'] == [event.id]
+    finally:
+        h.actor.release_episode_lease(mailbox.episode_id)

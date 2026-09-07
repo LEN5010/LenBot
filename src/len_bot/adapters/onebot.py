@@ -348,11 +348,6 @@ class OneBotAdapter:
         else:
             return None
 
-        # Historical Ingestion Gate check (ADR-0008)
-        now = time.time()
-        if (now - msg_time) > self.config.max_ingest_lag_seconds:
-            etype = EventType.HISTORICAL_IMPORT
-
         at_bot = (
             f"[CQ:at,qq={self.config.bot_qq}]" in raw_text
             or any(s.get("type") == "at" and str(s.get("data", {}).get("qq")) == str(self.config.bot_qq)

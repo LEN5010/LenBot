@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import Field
 
-from len_bot.events.models import Event
+from len_bot.memory.history import HistoryBatch
 from len_bot.memory.models import MemoryModel, MemoryProposal
 from len_bot.memory.store import MemoryStore
 
@@ -16,6 +16,8 @@ class ReviewItem(MemoryModel):
 
 
 class ReflectionResult(MemoryModel):
+    summary: str = Field(min_length=1)
+    key_event_ids: list[str] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     review_items: list[ReviewItem] = Field(default_factory=list)
     trace: dict[str, Any] = Field(default_factory=dict, exclude=True)
@@ -27,28 +29,27 @@ class ReflectionEngine:
     def __init__(
         self,
         memory_store: MemoryStore,
-        memory_gate: Any = None,
         llm_reflector: Callable[..., Awaitable[ReflectionResult]] | None = None,
-        event_store: Any = None,
     ):
         self.memory_store = memory_store
         self.llm_reflector = llm_reflector
 
-    async def reflect_on_events(
-        self, scene_id: str, events: list[Event], context: dict | None = None,
+    async def maintain_batch(
+        self, scene_id: str, batch: HistoryBatch, context: dict | None = None,
     ) -> ReflectionResult:
-        if not events:
-            return ReflectionResult()
         if self.llm_reflector is None:
-            raise RuntimeError("Reflection requires a configured work-profile agent")
-        if any(event.scene_id != scene_id for event in events):
-            raise ValueError("Reflection input contains another scene")
-        result = await self.llm_reflector(events, context=context or {})
+            raise RuntimeError("History maintenance requires an explicitly configured maintenance profile")
+        if batch.scene_id != scene_id:
+            raise ValueError("Maintenance input contains another scene")
+        result = await self.llm_reflector(batch, context=context or {})
         if not isinstance(result, ReflectionResult):
-            raise TypeError("Reflector must return ReflectionResult")
-        known = {event.id for event in events}
+            raise TypeError("Maintenance must return ReflectionResult")
+        if not set(result.key_event_ids).issubset(batch.source_event_ids):
+            raise ValueError("Summary locations must come from its original batch")
+        known = set(batch.complete_event_ids)
         for proposal in result.memory_proposals:
-            proposal.scope = scene_id
+            if proposal.scope != scene_id:
+                raise ValueError("Maintenance proposal scope must match its source scene")
             if not set(proposal.evidence).issubset(known):
                 raise ValueError("Reflection memory evidence must come from its original event batch")
         for item in result.review_items:

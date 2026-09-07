@@ -10,43 +10,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from len_bot.cognition.agent_loop import AgentLoop, TerminalArgumentError, ToolArgumentError
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.jobs import JobResult, JobChanged, JobBudgetExhausted
-from len_bot.cognition.projection import estimate_tokens, project_event
+from len_bot.cognition.jobs import JobResult, JobChanged, JobBudgetExhausted, WorkState, SkillCandidate
+from len_bot.cognition.providers import ModelProfile
+from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event, EventType
 from len_bot.tools.retrieval import RetrievalToolkit
 from len_bot.tools.results import ToolResult
-
-
-class JobContextExhausted(RuntimeError):
-    pass
-
-
-def _request_tokens(messages, tools):
-    """Estimate text separately from native pixels; never count base64 as prose."""
-    images = 0
-
-    def text_only(value):
-        nonlocal images
-        if isinstance(value, dict):
-            if value.get("type") == "image_url":
-                images += 1
-                return {"type": "image_url"}
-            return {key: text_only(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [text_only(item) for item in value]
-        return value
-
-    text = json.dumps(text_only([messages, tools]), ensure_ascii=False)
-    return estimate_tokens(text) + images * 2000
+from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory
+from len_bot.skills.learning import maintain_candidates
 
 
 class WorkGateway(ModelGateway):
-    def __init__(self, binding, context_tokens, max_output_tokens):
-        super().__init__(binding, max_output_tokens=max_output_tokens)
+    def __init__(self, binding, context_tokens, max_output_tokens, **accounting):
+        super().__init__(binding, max_output_tokens=max_output_tokens, **accounting)
         self.context_tokens = context_tokens
 
     async def complete(self, messages, tools, tool_choice):
-        if _request_tokens(messages, tools) + self.max_output_tokens > self.context_tokens:
+        if request_tokens(messages, tools) + self.max_output_tokens > self.context_tokens:
             raise JobContextExhausted("工作资料超过上下文预算，已读取的结果引用保留")
         return await super().complete(messages, tools, tool_choice)
 
@@ -56,6 +36,14 @@ class WorkConclusion(BaseModel):
     summary: str = Field(max_length=4000, description="最终结论、简短完整依据与适用条件；省去草稿和已放弃的推理，未解决的矛盾放入 unresolved")
     result_ids: list[str]
     unresolved: list[str]
+    work_state: WorkState | None = None
+    skill_candidate: SkillCandidate | None = None
+
+
+class WorkStateUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: WorkState
+    skill_candidate: SkillCandidate | None = None
 
 
 FINISH_WORK = {
@@ -72,12 +60,21 @@ REPORT_PROGRESS = {
                        "required": ["summary", "result_ids"], "additionalProperties": False},
     },
 }
+UPDATE_WORK_STATE = {"type": "function", "function": {"name": "update_work_state",
+    "description": "保存简短计划、已完成步骤及观察依据、未决项与下一步；不改变目标、执行/送达状态或预算。可稀疏提出有实际证据的方法技能候选。",
+    "parameters": WorkStateUpdate.model_json_schema()}}
+SKILL_TOOLS = [
+    {"type": "function", "function": {"name": "find_skills", "description": "按名称与适用条件发现当前场景可用的方法文档，只返回目录。", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "read_skill", "description": "按需读取方法正文；同一工作固定首次读取的技能版本。方法不授予工具、发送或其他权限。", "parameters": {"type": "object", "properties": {"skill_id": {"type": "string"}}, "required": ["skill_id"], "additionalProperties": False}}},
+]
 
 
 class InformationJobRunner:
     def __init__(self, runtime):
         self.runtime = runtime
         self._tasks: dict[str, asyncio.Task] = {}
+        self._learning_tasks: dict[str, asyncio.Task] = {}
+        self._learning_dirty: set[str] = set()
         self._slots = asyncio.Semaphore(runtime.config.job_max_concurrent)
         self.running = True
 
@@ -96,12 +93,37 @@ class InformationJobRunner:
 
     async def stop(self):
         self.running = False
-        tasks = list(self._tasks.values())
+        tasks = [*self._tasks.values(), *self._learning_tasks.values()]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._learning_tasks.clear()
+        self._learning_dirty.clear()
+
+    async def resume_skill_candidates(self):
+        for scene_id in sorted({item["scene_id"] for item in await self.runtime.event_store.list_skill_candidates() if item["status"] == "pending"}):
+            self._start_learning(scene_id)
+
+    def _start_learning(self, scene_id):
+        existing = self._learning_tasks.get(scene_id)
+        if not self.running:
+            return
+        if existing is not None and not existing.done():
+            self._learning_dirty.add(scene_id)
+            return
+        task = asyncio.create_task(self._learn_scene(scene_id))
+        self._learning_tasks[scene_id] = task
+        task.add_done_callback(lambda done: self._learning_tasks.pop(scene_id, None) if self._learning_tasks.get(scene_id) is done else None)
+
+    async def _learn_scene(self, scene_id):
+        async with self._slots:
+            while self.running:
+                self._learning_dirty.discard(scene_id)
+                processed = await maintain_candidates(self.runtime, scene_id)
+                if not processed and scene_id not in self._learning_dirty:
+                    return
 
     async def _run_scene(self, scene_id):
         while self.running and self.runtime.config.jobs_enabled:
@@ -113,6 +135,9 @@ class InformationJobRunner:
 
     async def _context(self, job):
         store = self.runtime.event_store
+        checkpoint = await store.read_job_checkpoint(job["id"], job["scene_id"])
+        tail_assets = {block["asset_id"] for message in (checkpoint or {}).get("messages", [])[2:]
+                       if isinstance(message.get("content"), list) for block in message["content"] if block.get("type") == "work_image_reference"}
         events = []
         for event_id in job["source_event_ids"]:
             rows = await store.read_context(event_id, before=0, after=0, allowed_scopes=[job["scene_id"]])
@@ -124,17 +149,21 @@ class InformationJobRunner:
             media = [*event.metadata.get("media", []), *(event.metadata.get("quote_context") or {}).get("media", [])]
             assets.extend(item["asset_id"] for item in media if item.get("asset_id"))
         observations = []
-        for result_id in job["result_ids"][-8:]:
+        for result_id in job["result_ids"]:
             result = await store.read_tool_observation(result_id, [job["scene_id"]])
             if result:
-                observations.append(result.page(limit=1500).model_dump())
-                assets.extend(result.attachments)
+                observations.append({"result_id": result_id, "status": result.status, "coverage": result.coverage,
+                                     "sources": [source.model_dump() for source in result.sources], "content_length": len(result.content)})
+                assets.extend(asset for asset in result.attachments if asset not in tail_assets)
         prepared = await self.runtime.media_service.prepare_context_images(job["scene_id"], assets)
         seen_assets = {item["asset_id"] for item in prepared["manifest"] if "block_index" in item}
         facts = {"current_time": datetime.fromtimestamp(store.clock(), timezone.utc).isoformat(),
                  "job_id": job["id"], "revision": job["revision"], "goal": job["goal"], "constraints": job["constraints"],
                  "source_event_ids": job["source_event_ids"], "source_messages": raw, "result_ids": job["result_ids"],
-                 "recent_observations": observations, "image_manifest": prepared["manifest"],
+                 "observation_catalog": observations, "image_manifest": prepared["manifest"],
+                 "work_state": job["work_state"], "state_needs_revision": bool(job["work_state"] and job["work_state"]["goal_revision"] != job["revision"]),
+                 "checkpoint_goal_revision": checkpoint["goal_revision"] if checkpoint else None,
+                 "skills": [{key: skill[key] for key in ("id", "name", "applicability", "version")} for skill in await store.list_skills(job["scene_id"])],
                  "used_budget": {key: job[key] for key in ("model_steps", "tool_calls", "elapsed_seconds")}}
         messages = [{"role": "system", "content": (
             "你负责完成当前信息工作：读取原文、核对事实、计算和整理资料。"
@@ -151,10 +180,17 @@ class InformationJobRunner:
             "最小值或最大值的证明同时给出边界反例与覆盖全部情况的理由。可穷举的有限问题在提交前用 finite_check 检验最终结论和边界；变量范围与判定条件须覆盖原题。简单加减不能验证最优性；未完成必要验证就写入 unresolved。"
             "原始图片直接作为图像输入提供；不清楚的部分保留未核实项。"
             "有值得回到对话中的阶段性发现时调用 report_progress，进展是资料而非群聊台词。"
+            "通过 update_work_state 保存简短步骤、结果依据、未决项和下一步，不保存长篇思维过程。旧目标版本的完成步骤必须根据新条件重新判断；已有资料保留并可回读。"
+            "需要可复用方法时按目录 read_skill；技能只是方法文档而非权限或证据。无适用技能时继续正常工作。"
+            "只有实际工具观察或明确纠正支持可复用经验时，才在 update_work_state 或 finish_work 提出 skill_candidate；普通完成不必学习。人工技能不能自动覆盖。"
             "提交前核对最终结论与已验证的依据、数值、单位和条件是否一致；矛盾未解决时记录在 unresolved。"
             "结束本次工作时调用 finish_work，summary 给最终结论与简短完整依据，不重复草稿或已放弃的结论；result_ids 和 unresolved 显式提供列表。"
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
+        if checkpoint:
+            messages.extend(await restore_trajectory(checkpoint["messages"][2:], self.runtime.media_service, job["scene_id"], seen_assets=seen_assets))
+            if checkpoint["goal_revision"] != job["revision"]:
+                messages.append({"role": "user", "content": f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上原生交换保留旧版本的观察与结论，须按当前目标/约束重新核对；旧完成步骤不自动继承。'})
         return messages, seen_assets
 
     async def _run_job(self, job_id, scene_id):
@@ -174,18 +210,24 @@ class InformationJobRunner:
             nonlocal last_charge
             async with charge_lock:
                 now = time.monotonic()
-                event = await store.job_checkpoint(job_id, scene_id, expected, model_steps=model_steps, tool_calls=tool_calls,
-                    elapsed_seconds=now-last_charge, result_ids=toolkit.result_ids, limits=limits if enforce else None)
+                try:
+                    event = await store.job_checkpoint(job_id, scene_id, expected, model_steps=model_steps, tool_calls=tool_calls,
+                        elapsed_seconds=now-last_charge, result_ids=toolkit.result_ids, limits=limits if enforce else None)
+                except JobChanged:
+                    await store.record_job_elapsed(job_id, scene_id, now-last_charge)
+                    last_charge = now
+                    raise
                 last_charge = now
                 await runtime.commit_tool_observation(event)
 
-        async def commit_result(result, expected):
+        async def commit_result(result, expected, *, work_state=None, skill_candidate=None):
             await charge(expected, enforce=False)
-            event = await store.complete_job(job_id, scene_id, expected, result)
+            event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state, skill_candidate=skill_candidate)
             if event is None:
                 raise JobChanged("Job changed before result commit")
             await runtime.commit_tool_observation(event)
             runtime.metrics.inc_social("jobs_finished")
+            self._start_learning(scene_id)
             return result
 
         async def save_result(result, expected, *, error=None):
@@ -206,6 +248,29 @@ class InformationJobRunner:
             await charge(revision, tool_calls=1)
 
         async def execute_tool(name, arguments):
+            if name == "find_skills":
+                if set(arguments) != {"query"} or not isinstance(arguments["query"], str):
+                    raise ToolArgumentError("find_skills needs query")
+                query = arguments["query"].casefold()
+                found = [{key: skill[key] for key in ("id", "name", "applicability", "version")} for skill in await store.list_skills(scene_id)
+                         if query in (skill["name"] + " " + skill["applicability"]).casefold()]
+                return str(ToolResult(content=json.dumps(found, ensure_ascii=False), coverage="skill_catalog", evidence_kind="model"))
+            if name == "read_skill":
+                if set(arguments) != {"skill_id"} or not isinstance(arguments["skill_id"], str):
+                    raise ToolArgumentError("read_skill needs skill_id")
+                try:
+                    skill = await store.pin_job_skill(job_id, scene_id, revision, arguments["skill_id"])
+                except ValueError as error:
+                    raise ToolArgumentError(str(error)) from error
+                return str(ToolResult(content=json.dumps(skill, ensure_ascii=False), coverage="procedural_document_not_evidence", evidence_kind="model"))
+            if name == "update_work_state":
+                try:
+                    update = WorkStateUpdate.model_validate(arguments)
+                    await charge(revision)
+                    await store.update_work_state(job_id, scene_id, revision, update.state, update.skill_candidate)
+                except ValueError as error:
+                    raise ToolArgumentError(str(error)) from error
+                return str(ToolResult(content="工作进度已保存；现实完成和发送状态仍由运行时决定。", evidence_kind="model"))
             if name == "report_progress":
                 if set(arguments) != {"summary", "result_ids"} or not isinstance(arguments["summary"], str):
                     raise ToolArgumentError("report_progress needs summary and result_ids")
@@ -242,22 +307,16 @@ class InformationJobRunner:
                 toolkit.validate_conclusion_sources(conclusion.result_ids,conclusion.unresolved)
             except (ValidationError, ValueError) as error:
                 raise TerminalArgumentError(str(error)) from error
-            result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump())
-            return await commit_result(result, revision)
+            result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump(exclude={"work_state", "skill_candidate"}))
+            try:
+                return await commit_result(result, revision, work_state=conclusion.work_state, skill_candidate=conclusion.skill_candidate)
+            except ValueError as error:
+                raise TerminalArgumentError(str(error)) from error
 
         async def checkpoint(stage, payload):
             if runtime.evaluation_hook:
                 await runtime.evaluation_hook(stage, {"scene_id": scene_id, "job_id": job_id,
                                                      "job_revision": revision, **payload})
-
-        def record_metrics(run_trace):
-            for step in run_trace.get("steps", []):
-                if "latency_ms" in step:
-                    usage = step.get("usage", {})
-                    runtime.metrics.record_call("work", step["provider_id"], step["model"], step["latency_ms"] / 1000,
-                                                usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
-                elif step.get("failure_reason"):
-                    runtime.metrics.record_error("work", step["provider_id"], step["model"], step["failure_reason"])
 
         try:
             while self.running and config.jobs_enabled:
@@ -268,9 +327,18 @@ class InformationJobRunner:
                 run_trace = {"job_revision": revision}
                 trace["runs"].append(run_trace)
                 try:
+                    if job["model_steps"] >= config.job_max_steps or job["elapsed_seconds"] >= config.job_max_seconds:
+                        raise JobBudgetExhausted("Work budget exhausted")
                     if gateway is None:
-                        gateway = WorkGateway(runtime.provider_registry.resolve("work"), config.job_context_tokens,
-                                              config.work_output_tokens)
+                        if job["model_binding"]:
+                            binding = runtime.provider_registry.resolve_profile(ModelProfile.model_validate(job["model_binding"]), role="work")
+                        else:
+                            if job["model_steps"]:
+                                raise LookupError("旧工作缺少已确认的模型绑定，不能用当前默认型号猜测恢复；原进度、资料和预算已保留。")
+                            binding = runtime.provider_registry.resolve("work")
+                            await store.bind_job_model(job_id, scene_id, revision, {"provider_id": binding.provider_id, "model": binding.model, "reasoning_effort": binding.reasoning_effort})
+                        gateway = WorkGateway(binding, config.job_context_tokens, config.work_output_tokens,
+                                              call_store=store, scene_id=scene_id, job_id=job_id, purpose="work")
                     await toolkit.import_results(job["result_ids"])
                     await charge(revision, enforce=False)
                     job = await store.get_job(job_id, scene_id)
@@ -281,13 +349,32 @@ class InformationJobRunner:
                         raise JobBudgetExhausted("Work budget exhausted")
                     async with asyncio.timeout(remaining):
                         messages, seen_assets = await self._context(job)
+                        exchange_count = (job["checkpoint"] or {}).get("exchange_count", 0)
+
+                        async def persist_exchange(trajectory):
+                            nonlocal exchange_count
+                            latest = next((item for item in reversed(trajectory) if item.get("role") == "assistant"), None)
+                            if not latest or not latest.get("tool_calls"):
+                                return
+                            await charge(revision)
+                            exchange_count += 1
+                            await store.save_job_exchange(job_id, scene_id, revision, trajectory, exchange_count)
+
+                        async def remaining_steps():
+                            current = await store.get_job(job_id, scene_id)
+                            if not current or current["revision"] != revision or current["status"] != "processing":
+                                raise JobChanged("Work changed before request")
+                            return config.job_max_steps-current["model_steps"]
+
+                        compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count)
                         pending_assets.clear()
                         result = await AgentLoop(gateway).run(messages=messages,
-                            tool_definitions=lambda: [*toolkit.get_tool_definitions(), REPORT_PROGRESS],
+                            tool_definitions=lambda: [*toolkit.get_tool_definitions(), *SKILL_TOOLS, REPORT_PROGRESS, UPDATE_WORK_STATE],
                             execute_tool=execute_tool, terminal=FINISH_WORK, finish=finish,
-                            proposal_tool_names={"report_progress"}, max_steps=config.job_max_steps-job["model_steps"],
+                            proposal_tool_names={"report_progress", "update_work_state"}, max_steps=config.job_max_steps-job["model_steps"],
                             max_tool_calls=max(0, config.job_max_tool_calls-job["tool_calls"]), before_model=before_model,
-                            before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace)
+                            before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace,
+                            exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=compressor.prepare)
                     await save_result(result, revision)
                     return
                 except JobChanged:
@@ -296,6 +383,15 @@ class InformationJobRunner:
                     # binding never changes inside this work run.
                     run_trace["interrupted"] = "job_changed"
                     continue
+                except LookupError as error:
+                    result = JobResult(status="interrupted", summary="原工作绑定的模型不可用，未恢复执行。",
+                                       result_ids=toolkit.result_ids, unresolved=[str(error)])
+                    try:
+                        await commit_result(result, revision)
+                    except JobChanged:
+                        continue
+                    await save_result(result, revision, error=error)
+                    return
                 except (JobBudgetExhausted, TimeoutError, JobContextExhausted) as error:
                     result = JobResult(status="partial", summary="工作达到预算边界，保留已取得的资料。",
                                        result_ids=toolkit.result_ids, unresolved=[str(error) or "未能在时限内完成核实"])
@@ -314,8 +410,6 @@ class InformationJobRunner:
                         continue
                     await save_result(result, revision, error=error)
                     return
-                finally:
-                    record_metrics(run_trace)
         except asyncio.CancelledError:
             if revision is not None:
                 try:

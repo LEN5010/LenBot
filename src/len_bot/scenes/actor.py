@@ -1,4 +1,4 @@
-"""One writer for scene facts, conversation commits and reflection receipts."""
+"""One writer for scene facts, conversation commits and history-maintenance receipts."""
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
+from len_bot.cognition.agent_loop import FreshInputConflict
 from len_bot.events.models import Event, EventType
-from len_bot.events.store import ReflectionConflictError
+from len_bot.memory.history import HistoryConflictError
 from len_bot.runtime.gate import GateDecision
 from len_bot.scenes.models import SceneSession
 from len_bot.scenes.reducer import SceneReducer
+from len_bot.runtime.attention import HUMAN_INPUTS, record_scanned_event
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +35,18 @@ class CommitCommand:
 
 
 @dataclass
-class ReflectionCommand:
+class HistoryCommand:
     kwargs: dict
     future: asyncio.Future
 
 
 class SceneActor:
-    def __init__(self, scene_id, bot_actor_id, event_store, on_state_updated=None):
+    def __init__(self, scene_id, bot_actor_id, event_store, on_state_updated=None, *, attention_policy=None):
         self.scene_id = scene_id
         self.bot_actor_id = bot_actor_id
         self.event_store = event_store
         self.on_state_updated = on_state_updated
+        self.attention_policy = attention_policy
         self.session: SceneSession | None = None
         self._queue = asyncio.Queue()
         self._worker_task = None
@@ -75,6 +78,7 @@ class SceneActor:
     def acquire_episode_lease(self, episode_id, mailbox):
         if self._active_mailbox is not None:
             return False
+        mailbox.initial_observed_rowid = self.session.last_observed_event_rowid
         self._active_mailbox = mailbox
         return True
 
@@ -90,9 +94,9 @@ class SceneActor:
         self._queue.put_nowait(CommitCommand(outcome, through_rowid, source_event_ids, knowledge_revision, mailbox, gate, future, operator))
         return await future
 
-    async def commit_reflection(self, **kwargs):
+    async def commit_history(self, **kwargs):
         future = asyncio.get_running_loop().create_future()
-        self._queue.put_nowait(ReflectionCommand(kwargs, future))
+        self._queue.put_nowait(HistoryCommand(kwargs, future))
         return await future
 
     async def _process_loop(self):
@@ -102,8 +106,8 @@ class SceneActor:
                 if isinstance(item, CommitCommand):
                     result = await self._commit_turn(item)
                     if not item.future.done(): item.future.set_result(result)
-                elif isinstance(item, ReflectionCommand):
-                    result = await self._commit_reflection(item.kwargs)
+                elif isinstance(item, HistoryCommand):
+                    result = await self._commit_history(item.kwargs)
                     if not item.future.done(): item.future.set_result(result)
                 else:
                     await self._commit_event(item)
@@ -133,12 +137,33 @@ class SceneActor:
             event.event_type == EventType.TOOL_OBSERVATION_RECORDED) or (
             event.event_type == EventType.TASK_DUE and event.payload.get('payload', {}).get('kind') == 'agent_job')
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
+        if self.attention_policy:
+            participants = set()
+            in_flight = set(self._active_mailbox.interaction_actors) if self._active_mailbox else set()
+            if event.event_type in HUMAN_INPUTS:
+                in_flight.update(await self.event_store.pending_response_actors(self.scene_id, self.bot_actor_id,
+                    self.event_store.clock() - self.attention_policy.config.attention_focus_seconds))
+                jobs = await self.event_store.list_jobs(self.scene_id)
+                sources = {source for job in jobs if job['status'] in {
+                    'pending', 'claimed', 'processing', 'review_required', 'result_ready', 'awaiting_delivery',
+                } for source in job['source_event_ids']}
+                participants = await self.event_store.event_actors(self.scene_id, sources)
+                if not event.is_reply_bot:
+                    projected = await self.event_store.project_reply_context(
+                        self.scene_id, [event], through_rowid=self.session.last_observed_event_rowid)
+                    quote = projected[0].metadata.get('quote_context') or {}
+                    if not quote.get('missing') and quote.get('actor_id') == self.bot_actor_id:
+                        event.payload['reply_bot'] = True
+            self.attention_policy.apply(candidate, event, self.bot_actor_id,
+                in_flight=in_flight,
+                work_participants=participants)
         rowid = await self.event_store.commit_scene_event(
             event, candidate.model_dump(),
             task_id_to_trigger=event.payload.get('task_id') if event.event_type == EventType.TASK_DUE else None,
             associated_open_loop=event.metadata.get('associated_open_loop') if event.event_type == EventType.MESSAGE_SENT else None,
             advance_session_observation=not bookkeeping)
         if not bookkeeping: candidate.last_observed_event_rowid = rowid
+        record_scanned_event(candidate, event.id, rowid)
         self.session = candidate
         event.metadata['_rowid'] = rowid
         if self._active_mailbox: self._active_mailbox.post(event)
@@ -155,24 +180,36 @@ class SceneActor:
         state = self.session
         if state.knowledge_revision != item.knowledge_revision:
             raise SceneCommitConflict('Knowledge revision changed')
-        if not state.last_cognized_event_rowid <= item.through_rowid <= state.last_observed_event_rowid:
-            raise SceneCommitConflict('Read cutoff is outside the unconsumed range')
+        if not 0 <= item.through_rowid <= state.last_observed_event_rowid:
+            raise SceneCommitConflict('Read cutoff is outside the observed range')
         bounded = not item.outcome.requires_fresh_input()
-        if not bounded and item.through_rowid != state.last_observed_event_rowid:
-            raise SceneCommitConflict('Control or fulfilment proposal has unread scene input')
-        refs = set(item.source_event_ids)
+        read = set(item.source_event_ids)
+        if not item.operator and not bounded and (
+                item.through_rowid != state.last_observed_event_rowid
+                or any(wake.certain and wake.event_id not in read for wake in state.pending_wakes)):
+            raise FreshInputConflict('Control or fulfilment proposal has unread scene input; nothing committed')
+        if not item.operator and not bounded:
+            new_inputs = await self.event_store.conversation_input_ids_since(
+                self.scene_id, item.mailbox.initial_observed_rowid, state.last_observed_event_rowid, self.bot_actor_id)
+            if not new_inputs.issubset(read):
+                raise FreshInputConflict('Control or fulfilment proposal has partially unread new scene input; nothing committed')
+        refs = set()
         for proposal in item.outcome.task_proposals + item.outcome.job_proposals:
             refs.update(proposal.source_event_ids)
         for proposal in item.outcome.memory_proposals:
             refs.update(proposal.evidence)
-        if not await self.event_store.references_belong_to_scene(refs, self.scene_id, item.through_rowid):
+        if not refs.issubset(read):
+            raise SceneCommitConflict('Proposal evidence was located but not read in this turn')
+        if not await self.event_store.references_belong_to_scene(read, self.scene_id, item.through_rowid):
             raise SceneCommitConflict('Evidence is outside the scene or read cutoff')
         event = Event(id=event_id, event_type=EventType.CONVERSATION_COMMITTED, scene_id=self.scene_id,
                       actor_id='system:conversation', timestamp=self.event_store.clock(),
-                      payload={'source_event_ids': item.source_event_ids, 'outcome': item.outcome.model_dump(mode='json')},
+                      payload={'source_event_ids': item.source_event_ids,
+                               'outcome': item.outcome.model_dump(mode='json')},
                       metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode})
         candidate = SceneReducer.reduce(state, event, self.bot_actor_id)
-        candidate.last_cognized_event_rowid = state.last_cognized_event_rowid if item.operator else item.through_rowid
+        if not item.operator:
+            candidate.pending_wakes = [wake for wake in state.pending_wakes if wake.event_id not in read]
         if item.outcome.memory_proposals: candidate.knowledge_revision += 1
         decision = await item.gate.evaluate_and_commit(item.outcome, item.mailbox, state,
             scene_commit={'event': event, 'scene_state_data': candidate.model_dump(), 'advance_session_observation': False},
@@ -181,14 +218,17 @@ class SceneActor:
             self.session = candidate
         return decision
 
-    async def _commit_reflection(self, kwargs):
+    async def _commit_history(self, kwargs):
         if self.session.knowledge_revision != kwargs['expected_revision']:
-            raise ReflectionConflictError('Knowledge changed before reflection commit')
+            raise HistoryConflictError('Knowledge changed before reflection commit')
         event = kwargs['review_event']
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
         if kwargs['proposals']: candidate.knowledge_revision += 1
-        result, rowid = await self.event_store.commit_reflection_batch(self.scene_id, **kwargs,
+        if self.attention_policy:
+            self.attention_policy.apply(candidate, event, self.bot_actor_id)
+        result, rowid = await self.event_store.commit_history_batch(self.scene_id, **kwargs,
             scene_state_data=candidate.model_dump(), bot_actor_id=self.bot_actor_id)
+        record_scanned_event(candidate, event.id, rowid)
         if event.payload.get('review_items'):
             candidate.last_observed_event_rowid = rowid
         self.session = candidate

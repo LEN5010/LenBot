@@ -38,6 +38,8 @@ async def settle(runtime):
     for _ in range(20):
         for actor in list(runtime.scene_manager._actors.values()):
             await asyncio.wait_for(actor._queue.join(), 2)
+        for scene in list(runtime.burst_assembler._buffers):
+            await runtime.burst_assembler.flush_scene(scene)
         tasks = list(runtime._conversation_tasks.values())
         if tasks:
             await asyncio.wait_for(asyncio.gather(*tasks), 2)
@@ -61,7 +63,7 @@ async def test_unconfigured_runtime_records_inputs_without_creating_default_mode
         assert runtime.provider_registry.snapshot() == {"providers": [], "routing": None}
         assert await runtime.event_store.get_dynamic_config("provider_config") is None
         actor = runtime.scene_manager._actors[SCENE]
-        assert actor.session.last_cognized_event_rowid == 0
+        assert [wake.event_id for wake in actor.session.pending_wakes] == [event.id]
         assert await runtime.event_store.event_exists(event.id, SCENE)
         assert not runtime._conversation_tasks
         assert await runtime.event_store.query_traces(scene_id=SCENE) == []
@@ -124,7 +126,7 @@ async def test_input_arriving_during_a_turn_remains_for_the_next_turn(tmp_path):
         first = next(trace for trace in traces if trace["payload"]["conversation"]["source_event_ids"] == ["input:old"])
         newer = next(event for event in await runtime.event_store.get_recent_events(SCENE) if event.id == "input:new")
         assert first["payload"]["conversation"]["through_event_rowid"] < newer.metadata["_rowid"]
-        assert actor.session.last_cognized_event_rowid >= newer.metadata["_rowid"]
+        assert not actor.session.pending_wakes
     finally:
         release.set()
         await runtime.stop()
@@ -174,7 +176,8 @@ async def test_rejected_work_intent_is_visible_once_without_creating_a_job(tmp_p
         assert not [event for event in await runtime.event_store.get_recent_events(SCENE)
                     if event.event_type in {EventType.MESSAGE_SENT,EventType.ACTION_SHADOWED}]
         assert await runtime.event_store.uncommitted_job_attempts('group:other',0,1000) == []
-        consumed=actor.session.last_cognized_event_rowid
+        consumed=actor.session.last_observed_event_rowid
+        assert not actor.session.pending_wakes
         assert await runtime.event_store.uncommitted_job_attempts(SCENE,consumed,consumed) == []
         assert await runtime.event_store.uncommitted_job_attempts(SCENE,0,0) == []
     finally:
@@ -278,7 +281,7 @@ async def test_operator_effects_keep_unread_conversation_and_link_the_operator_e
         await actor._queue.join()
         event = await runtime.record_operator_event(SCENE, "inspect", "tester", {"operation": "cannot-override", "operator": "cannot-override"})
         result = await runtime.operator_outcome(SCENE, EpisodeOutcome(decision_reason="运营操作"), source_event_ids=[event.id])
-        assert result.accepted and actor.session.last_cognized_event_rowid == 0
+        assert result.accepted and [wake.event_id for wake in actor.session.pending_wakes] == [incoming.id]
         assert event.actor_id == "operator:tester" and event.payload["operation"] == "inspect"
         committed = [item for item in await runtime.event_store.get_recent_events(SCENE) if item.event_type == EventType.CONVERSATION_COMMITTED]
         assert committed[0].payload["source_event_ids"] == [event.id]
@@ -360,13 +363,13 @@ async def test_changed_knowledge_aborts_observe_without_consuming_input_or_repea
         resume.set()
         await settle(runtime)
         session = runtime.scene_manager._actors[SCENE].session
-        assert calls == [0] and session.last_cognized_event_rowid == 0 and session.knowledge_revision == 1
+        assert calls == [0] and [wake.event_id for wake in session.pending_wakes] == ["knowledge:input"] and session.knowledge_revision == 1
         traces = await runtime.event_store.query_traces(scene_id=SCENE, kind="conversation_error")
         assert len(traces) == 1 and traces[0]["payload"]["error_type"] == "SceneCommitConflict"
         await runtime.receive_event(human(event_id="knowledge:new-input"))
         await settle(runtime)
         assert calls == [0, 1]
-        assert runtime.scene_manager._actors[SCENE].session.last_cognized_event_rowid > 0
+        assert not runtime.scene_manager._actors[SCENE].session.pending_wakes
     finally:
         resume.set()
         await runtime.stop()
@@ -381,3 +384,173 @@ def test_mailbox_acknowledges_only_the_observed_snapshot():
     mailbox.acknowledge_through(1)
     assert mailbox.has_unseen_interim()
     assert [event.id for event in mailbox.fetch_unseen_interim_events()] == ["later"]
+
+
+@pytest.mark.asyncio
+async def test_attention_storage_sampling_inflight_and_delivery_survive_restart(tmp_path):
+    """One event chain protects the scheduling/delivery boundary, with real model plumbing."""
+    import httpx
+    import json
+    import re
+    from openai import AsyncOpenAI
+    from len_bot.actions.models import DeliveryResult, DeliveryStatus
+    from test_conversation_agent import response, call, text_reply
+    from runtime_support import configure_fixture_profile
+
+    now = [100.0]
+    draws, requests = [], []
+    send_started, release_send = asyncio.Event(), asyncio.Event()
+
+    def random_source():
+        draws.append(now[0])
+        return 1.0
+
+    async def model(request):
+        requests.append(request)
+        args = text_reply('嗯，你说') if len(requests) == 2 else {'messages':[]}
+        if len(requests) == 5:
+            messages = json.loads(request.content)['messages']
+            original = next(message['content'] for message in messages
+                            if isinstance(message.get('content'), str) and 'B先前的问题' in message['content'])
+            ref = re.search(r'\[(M\d+) ', original).group(1)
+            args = {'messages':[{'segments':[{'text':'接着回答B'}], 'reply_to':ref}]}
+        return httpx.Response(200, json=response(call('finish_turn', args)))
+
+    async def send(_action):
+        send_started.set()
+        await release_send.wait()
+        return DeliveryResult(status=DeliveryStatus.SENT, transport='isolated-receipt-fixture', message_id='receipt:1')
+
+    config = RuntimeConfig(db_path=str(tmp_path/'attention.db'), message_pacing=False,
+                           attention_keywords=['计算'], attention_sample_probability=.2)
+    runtime = AgentRuntime(config, clock=lambda:now[0], attention_random=random_source, send_adapter=send)
+    await runtime.start()
+    await configure_fixture_profile(runtime)
+    client = AsyncOpenAI(api_key='fixture', base_url='https://fixture.invalid/v1', max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(model)))
+    runtime.provider_registry._clients['fixture'] = client
+    await runtime.set_shadow_mode(False)
+
+    async def incoming(ident, text, actor='user:A'):
+        event = Event(id=ident, event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE,
+            actor_id=actor, timestamp=now[0], payload={'raw_text':text,'message_id':ident})
+        await runtime.receive_event(event)
+        await runtime.scene_manager._actors[SCENE]._queue.join()
+        await runtime.burst_assembler.flush_scene(SCENE)
+        if runtime._conversation_tasks:
+            await asyncio.gather(*list(runtime._conversation_tasks.values()))
+        return event
+
+    try:
+        for index in range(4):
+            await incoming('ambient:'+str(index), '今天一起吃饭')
+        assert len(draws) == 1 and not requests
+        assert not await runtime.event_store.query_traces(scene_id=SCENE, kind='conversation')
+        await incoming('keyword:1', '他们在讨论计算方法')
+        assert len(requests) == 1
+        await incoming('keyword:2', '继续讨论计算方法')
+        assert len(requests) == 1
+        await incoming('named', '小然在吗')
+        await asyncio.wait_for(send_started.wait(), 2)
+        session = runtime.scene_manager.get_session(SCENE)
+        assert session.focused_participants == {}
+        # The conversation has committed but transport is still waiting.
+        follow = await incoming('in-flight', '刚才的问题再补一句')
+        assert 'in_flight_follow_up' in follow.metadata['attention_reasons']
+        assert len(requests) == 3 and session.focused_participants == {}
+        release_send.set()
+        await runtime.action_queue._queue.join()
+        await runtime.scene_manager._actors[SCENE]._queue.join()
+        assert runtime.scene_manager.get_session(SCENE).focused_participants == {'user:A':220.0}
+        follow = await incoming('delivered-follow-up', '还有一个细节')
+        assert 'continuing_interaction' in follow.metadata['attention_reasons']
+        await runtime.receive_event(Event(event_type=EventType.MESSAGE_SENT, scene_id=SCENE,
+            actor_id=runtime.bot_actor_id, timestamp=now[0], metadata={'simulated':True},
+            payload={'response_actor_ids':['user:B'],'delivery_status':'sent'}))
+        await runtime.scene_manager._actors[SCENE]._queue.join()
+        assert 'user:B' not in runtime.scene_manager.get_session(SCENE).focused_participants
+        await incoming('old-b', 'B先前的问题', actor='user:B')
+        await incoming('quote-b', '小然，接一下刚才那句')
+        await settle(runtime)
+        assert runtime.scene_manager.get_session(SCENE).focused_participants['user:B'] == 220.0
+        follow = await incoming('b-follow', '还有呢', actor='user:B')
+        assert follow.metadata['attention_reasons'] == ['continuing_interaction']
+        assert len(requests) == 6
+        # Shut the model profile off to leave an actual unprocessed wake.
+        await runtime.provider_registry.apply_update(list(runtime.provider_registry._providers.values()), None)
+        await runtime.event_store.save_dynamic_config('provider_config', runtime.provider_registry.export())
+        await incoming('durable-wake', '小然，稍后处理这个问题')
+        saved = await runtime.event_store.load_scene_session(SCENE)
+        assert [item['event_id'] for item in saved['pending_wakes']] == ['durable-wake']
+        assert saved['attention_sample_window'] == 0
+    finally:
+        release_send.set()
+        await runtime.stop()
+    restored = AgentRuntime(config, clock=lambda:now[0], attention_random=random_source)
+    await restored.start()
+    try:
+        session = restored.scene_manager.get_session(SCENE)
+        assert session.model_dump() == saved
+        event = Event(id='restart-ambient', event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE,
+                      actor_id='user:C', timestamp=now[0], payload={'raw_text':'路过'})
+        await restored.receive_event(event)
+        await settle(restored)
+        assert len(draws) == 1
+        assert await restored.event_store.event_exists('ambient:0', SCENE)
+        assert [wake.event_id for wake in session.pending_wakes] == ['durable-wake']
+    finally:
+        await restored.stop()
+
+
+@pytest.mark.asyncio
+async def test_late_control_candidate_continues_in_one_budget_without_side_effects(tmp_path):
+    import json
+    import httpx
+    from openai import AsyncOpenAI
+    from runtime_support import configure_fixture_profile
+    from test_conversation_agent import response, call
+
+    requests = []
+    runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path/'fresh-candidate.db'),
+        conversation_max_steps=4, attention_sample_probability=0), clock=lambda:100.0)
+    await runtime.start()
+    await configure_fixture_profile(runtime)
+
+    async def model(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            result = response(call('start_work', {'goal':'核对资料A','evidence':['M1']}, 'stage'))
+        elif len(requests) == 2:
+            await runtime.receive_event(Event(id='cancel-before-commit', event_type=EventType.GROUP_MESSAGE_RECEIVED,
+                scene_id=SCENE, actor_id='user:A', timestamp=100,
+                payload={'raw_text':'不用查了，取消','message_id':'cancel-before-commit'}))
+            await runtime.scene_manager._actors[SCENE]._queue.join()
+            result = response(call('finish_turn', {'messages':[{'segments':[{'text':'我去查'}],'ack_ref':'S1'}]}, 'stale'))
+        else:
+            assert len(requests) == 3
+            assert '不用查了' in str(requests[-1]['messages'])
+            receipt = next(message for message in requests[-1]['messages'] if message.get('tool_call_id') == 'stale')
+            assert json.loads(receipt['content'])['committed'] is False
+            result = response(call('discard_proposal', {'proposal_ref':'S1'}, 'discard'),
+                              call('finish_turn', {'messages':[]}, 'final'))
+        return httpx.Response(200, json=result)
+
+    client = AsyncOpenAI(api_key='fixture', base_url='https://fixture.invalid/v1', max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(model)))
+    runtime.provider_registry._clients['fixture'] = client
+    try:
+        await runtime.receive_event(human('帮我核对资料A', 'work-original'))
+        await settle(runtime)
+        assert len(requests) == 3
+        assert not await runtime.event_store.list_jobs(SCENE)
+        assert not runtime.scene_manager.get_session(SCENE).pending_wakes
+        events = await runtime.event_store.get_recent_events(SCENE)
+        commits = [event for event in events if event.event_type == EventType.CONVERSATION_COMMITTED]
+        assert len(commits) == 1 and {'work-original','cancel-before-commit'} <= set(commits[0].payload['source_event_ids'])
+        assert not any(event.event_type in {EventType.MESSAGE_SENT,EventType.ACTION_SHADOWED} for event in events)
+        calls = await runtime.event_store.list_model_calls(SCENE)
+        assert len(calls) == 3 and len({item['episode_id'] for item in calls}) == 1
+        trace = (await runtime.event_store.query_traces(scene_id=SCENE, kind='conversation'))[0]['payload']['conversation']
+        assert trace['model_calls_used'] == 3 and trace['tool_calls_used'] == 2
+    finally:
+        await runtime.stop()
