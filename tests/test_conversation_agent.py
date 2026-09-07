@@ -142,19 +142,22 @@ async def test_invalid_late_memory_rolls_back_staged_job_and_ack(harness):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('segments',[[{'image':'P01'}],[{'text':'先说一句'},{'image':'P01'},{'text':'再接一句'}]])
-async def test_native_palette_can_be_selected_without_a_read_tool(harness,segments):
+async def test_native_palette_requires_a_read_tool_before_sending(harness,segments):
     h=harness;buf=io.BytesIO();Image.new('RGB',(30,30),'orange').save(buf,format='PNG')
     asset=await h.runtime.media_service.upload(buf.getvalue(),'global-safe','开心',['开心'])
     await h.runtime.media_service.edit(asset['id'],'global-safe','开心',['开心'],True,palette_order=1)
     original_example=[{'type':'text','text':'参考文字'},{'type':'image','asset_id':asset['id']}]
     example=await h.store.add_voice_example('',context='参考语境',segments=original_example)
     await h.human()
-    requests=await h.setup([response(call('finish_turn',{'messages':[{'segments':segments}]}))])
+    requests=await h.setup([
+        response(call('read_media', {'asset_id':'P01'}, 'read')),
+        response(call('finish_turn',{'messages':[{'segments':segments}]}))
+    ])
     _,trace=await h.run()
-    assert len(requests)==1
+    assert len(requests)==2
     assert [(part.type,part.text if part.type=='text' else part.asset_id) for part in h.actions[0].segments]==[
         ('text',part['text']) if 'text' in part else ('image',asset['id']) for part in segments]
-    assert any(p.get('type')=='image_url' for m in requests[0]['messages'] if isinstance(m['content'],list) for p in m['content'])
+    assert any(p.get('type')=='image_url' for m in requests[1]['messages'] if isinstance(m['content'],list) for p in m['content'])
     sample=next(m['content'] for m in requests[0]['messages'] if isinstance(m['content'],str) and m['content'].startswith('运营编写'))
     assert json.loads(sample.split('finish_turn 参数参考：')[-1])=={
         'messages':[{'segments':[{'text':'参考文字'},{'image':'P01'}]}]}
