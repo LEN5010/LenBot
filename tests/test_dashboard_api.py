@@ -87,7 +87,7 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
 
         unknown_api = await client.get("/api/this-route-does-not-exist", headers=headers)
         assert unknown_api.status_code == 404
-        assert "重启 LenBot" in unknown_api.json()["detail"]
+        assert unknown_api.json()["detail"] == "接口不存在"
 
         # 7. Provider & Routing management (ADR-0020)
         providers_get = await client.get("/api/models/providers", headers=headers)
@@ -199,8 +199,9 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         assert usage['totals'] == [] and usage['cost']['amount'] is None
         assert usage['cost']['status'] == 'unverified'
         skills = (await client.get('/api/cockpit/skills', params={'scene_id': 'group:isolated'})).json()
-        assert all(item['scope'] == 'global-safe' for item in skills['skills'])
-        assert (await client.get('/api/cockpit/history-batches', params={'scene_id': 'group:isolated'})).json() == []
+        assert all(item['scope'] == 'global-safe' for item in skills['items'])
+        history=(await client.get('/api/cockpit/history-batches', params={'scene_id':'group:isolated'})).json()
+        assert history['items'] == [] and history['total'] == 0
 
         # 9. Plugins Subsystem (real registry only, ADR-0021)
         plugins_get = await client.get("/api/plugins/list", headers=headers)
@@ -215,6 +216,23 @@ async def test_dashboard_auth_and_management(tmp_path, monkeypatch):
         })
         assert plugin_toggle.status_code == 200
         assert plugin_toggle.json()["enabled"] is True
+        # Public plugin forms keep secrets write-only; an omitted field preserves it.
+        secret_update=await client.post('/api/plugins/config',json={
+            'plugin_id':'bilibili_content','config':{'sessdata':'fixture-session-secret','bili_jct':'fixture-csrf-secret'}})
+        assert secret_update.status_code == 200
+        assert 'fixture-session-secret' not in secret_update.text and 'fixture-csrf-secret' not in secret_update.text
+        unchanged=await client.post('/api/plugins/config',json={'plugin_id':'bilibili_content','config':{}})
+        assert unchanged.json()['config_set'] == {'sessdata':True,'bili_jct':True}
+        assert runtime.plugin_host.get_plugin_config('bilibili_content')['sessdata'] == 'fixture-session-secret'
+        schema=next(item for item in runtime.plugin_host.status_snapshot() if item['id']=='bilibili_content')['config_schema']
+        schema['properties']['sessdata']['default']='fixture-schema-secret'
+        schema['default']={'sessdata':'fixture-schema-secret'}
+        public_plugins=await client.get('/api/plugins/list')
+        assert 'fixture-session-secret' not in public_plugins.text and 'fixture-csrf-secret' not in public_plugins.text
+        assert 'fixture-schema-secret' not in public_plugins.text
+        plugin=next(item for item in public_plugins.json() if item['id']=='bilibili_content')
+        assert set(plugin['secret_fields']) == {'sessdata','bili_jct'} and plugin['config']=={}
+
 
         # 10. Change Password & re-login
         change_pwd = await client.post("/api/auth/change_password", headers=headers, json={

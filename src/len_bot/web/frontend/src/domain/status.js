@@ -1,0 +1,20 @@
+const states = {
+  job_execution: { completed:['执行完成','success'], partial:['部分完成','warning'], failed:['执行失败','error'], interrupted:['已中断','warning'], cancelled:['已停止','default'], pending:['未开始','default'], running:['执行中','info'], processing:['执行中','info'] },
+  job_delivery: { pending:['待执行','default'], claimed:['已认领','info'], processing:['处理中','info'], review_required:['待核对','warning'], result_ready:['待回应','info'], awaiting_delivery:['待回执','warning'], completed:['已交付','success'], cancelled:['已停止','default'], failed:['未送达','error'], delivery_unknown:['送达未知','warning'], shadow_observed:['Shadow','default'] },
+  task: { pending:['待触发','info'], claimed:['已认领','info'], processing:['处理中','info'], result_ready:['待处理结果','info'], awaiting_delivery:['待回执','warning'], completed:['已兑现','success'], cancelled:['已取消','default'], failed:['失败','error'], delivery_unknown:['送达未知','warning'], review_required:['待核对','warning'], shadow_observed:['Shadow','default'] },
+  waiting: { active:['等待中','info'], resolved:['已结束','success'], expired:['已过期','default'], cancelled:['已取消','default'] },
+  memory: { active:['有效','success'], refuted:['已撤销','error'], superseded:['已替代','default'], expired:['已过期','default'] },
+  basis: { reported:['原话报告','info'], inferred:['有据推断','warning'] },
+  summary: { pending:['待维护','default'], processing:['维护中','info'], completed:['已覆盖','success'], failed:['失败','error'], interrupted:['已中断','warning'] },
+  attention: { stored_only:['仅存储','default'], pending:['待处理','info'], read:['本轮已读','info'], silence:['模型沉默','default'], expression:['提出表达','info'], sampled:['观察机会','info'] },
+  delivery: { sent:['已送达','success'], not_sent:['未送达','error'], rejected:['被拒绝','error'], unknown:['送达未知','warning'], shadow:['Shadow','default'], simulated:['模拟送达','default'], pending:['待回执','warning'] },
+  call: { completed:['请求完成','success'], failed:['请求失败','error'], cancelled:['已取消','warning'], unconfirmed:['未确认','warning'] },
+  skill_candidate: { pending:['候选待整理','default'], processing:['整理中','info'], saved:['已保存','success'], obsolete:['来源版本已过期','warning'], completed:['已保存','success'], failed:['整理失败','error'], interrupted:['已中断','warning'], rejected:['未采纳','default'] },
+  provider: { ready:['配置就绪','success'], enabled:['已启用','info'], disabled:['已停用','default'], missing:['未配置','warning'], unavailable:['配置未就绪','warning'] },
+  plugin: { loaded:['已加载','default'], enabled:['运行中','success'], disabled:['已停用','default'], error:['运行异常','error'] },
+}
+export function statusInfo(domain, status) {
+  if (status === null || status === undefined || status === '') return { label:'未记录', color:'default', known:true }
+  const item = states[domain]?.[status]
+  return item ? { label:item[0], color:item[1], known:true } : { label:`未识别 · ${status}`, color:'warning', known:false }
+}
