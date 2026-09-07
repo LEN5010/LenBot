@@ -1,8 +1,9 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
-import { api, fmtTime } from '../api.js'
+import { api, fmtTime, attentionReason } from '../api.js'
 
-const scenes = ref([]), detail = ref(null), error = ref(''), loadingScene = ref('')
+const scenes = ref([]), detail = ref(null), error = ref(''), loadingScene = ref(''), retryingBatch = ref(''), message = ref('')
+const focused = computed(() => Object.entries(detail.value?.session?.focused_participants || {}))
 const participants = computed(() => Object.values(detail.value?.session?.participants || {}))
 onMounted(load)
 async function load() {
@@ -18,6 +19,18 @@ async function openDetail(sceneId) {
   } catch (e) { error.value = e.message }
   finally { if (loadingScene.value === sceneId) loadingScene.value = '' }
 }
+async function retryHistory(batch) {
+  error.value = ''; message.value = ''; retryingBatch.value = batch.id
+  try {
+    const result = await api(`/api/cockpit/history-batches/${encodeURIComponent(batch.id)}/retry`, { method: 'POST', body: JSON.stringify({ scene_id: detail.value.session.scene_id }) })
+    message.value = result.message; await openDetail(detail.value.session.scene_id)
+  } catch (e) { error.value = e.message } finally { retryingBatch.value = '' }
+}
+function attentionLabel(event) {
+  const reasons = event.attention?.attention_reasons
+  return reasons === undefined ? '无调度记录' : reasons.length ? reasons.map(attentionReason).join('、') : '仅存储 · 未唤醒'
+}
+function batchStatus(status) { return { completed: '已覆盖', failed: '维护失败', processing: '正在维护', pending: '待处理', unconfirmed: '结束未确认' }[status] || status }
 function sender(event) {
   const participant = detail.value?.session?.participants?.[event.actor_id]
   return participant?.card || participant?.nickname || event.actor_id || '系统'
@@ -40,13 +53,14 @@ function deliveryLabel(event) {
 <template>
   <div class="scenes-view">
     <div class="toolbar"><div class="page-title"><h1>群聊状态</h1><p class="muted">查看事件形成的场景事实、正在进行的工作和真实发送回执。</p></div><button @click="load">刷新</button></div>
-    <p v-if="error" class="tag bad" role="alert">{{ error }}</p>
+    <p v-if="error" class="tag bad" role="alert">{{ error }}</p><p v-if="message" class="tag ok" role="status">{{ message }}</p>
     <div class="grid cards">
       <button v-for="scene in scenes" :key="scene.scene_id" type="button" class="card scene-card" :class="{ selected: detail?.session?.scene_id === scene.scene_id }" @click="openDetail(scene.scene_id)">
         <div class="scene-header"><h3><code>{{ scene.scene_id }}</code></h3><span class="tag">版本 {{ scene.version }}</span></div>
         <div class="kv"><span class="k">已记录成员</span><span class="v">{{ scene.participant_count }} 人</span></div>
         <div class="kv"><span class="k">最近事件</span><span class="v">{{ fmtTime(scene.last_event_at) }}</span></div>
         <div class="kv"><span class="k">最近实际发言</span><span class="v">{{ fmtTime(scene.last_bot_message_at) }}</span></div>
+        <div class="kv"><span class="k">待处理唤醒</span><span class="v">{{ scene.pending_wake_count }}</span></div>
         <div class="kv"><span class="k">进行中的工作</span><span class="v highlight">{{ scene.active_job_count }}</span></div>
       </button>
       <p v-if="!scenes.length" class="panel muted">还没有场景记录</p>
@@ -56,17 +70,31 @@ function deliveryLabel(event) {
       <section class="panel detail-panel"><div class="panel-header"><div><h2>{{ detail.session.scene_id }}</h2><p class="muted">{{ participants.length }} 位已记录成员 · 事实版本 {{ detail.session.version }}</p></div><button @click="detail = null">关闭详情</button></div>
         <div class="detail-facts"><span>最近事件：{{ fmtTime(detail.session.last_event_at) }}</span><span>最近实际发言：{{ fmtTime(detail.session.last_bot_message_at) }}</span><span>发言后新增群友消息：{{ detail.session.human_messages_since_bot }}</span></div>
       </section>
+      <section class="panel attention-panel">
+        <h2>注意力扫描与待处理来源</h2>
+        <p class="muted">扫描到事件位置 {{ detail.session.attention_scanned_event_rowid }}。扫描、摘要覆盖与本轮原文读取分别记录。</p>
+        <div class="table-scroll"><table><thead><tr><th>来源事件</th><th>参与者</th><th>唤醒原因</th><th>优先级</th></tr></thead><tbody><tr v-for="wake in detail.session.pending_wakes" :key="wake.event_id"><td><code>{{ wake.event_id }}</code><small>位置 {{ wake.rowid }}</small></td><td>{{ wake.actor_id || '运行事件' }}</td><td>{{ wake.reasons.map(attentionReason).join('、') }}</td><td><span class="tag" :class="wake.certain ? 'ok' : ''">{{ wake.certain ? '确定唤醒' : '旁听机会' }}</span></td></tr><tr v-if="!detail.session.pending_wakes?.length"><td colspan="4" class="muted">没有尚待处理的唤醒来源</td></tr></tbody></table></div>
+        <p class="muted">真实送达建立的连续关注：</p><div class="detail-facts"><span v-for="[actor, until] in focused" :key="actor">{{ actor }} · 截止 {{ fmtTime(until) }}</span><span v-if="!focused.length">暂无</span></div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>历史摘要覆盖</h2><span class="tag" :class="detail.maintenance?.ready ? 'ok' : 'warn'">{{ detail.maintenance?.reason }}</span></div>
+        <p class="muted">每条摘要对应原始事件范围；未列出的范围仍保存原文。摘要提供定位，不能代替实际读取作为工作或认识证据。</p>
+        <p v-if="detail.history_status?.initial_history_boundary" class="muted">升级时的原始历史边界：{{ detail.history_status.initial_history_boundary }}。边界之前的历史保留原文，没有据此标为已总结。</p>
+        <article v-for="batch in detail.history_batches || []" :key="batch.id" class="record"><div><span class="tag" :class="batch.status === 'completed' ? 'ok' : 'warn'">{{ batchStatus(batch.status) }}</span><strong>{{ batch.start_rowid }}:{{ batch.start_offset }} → {{ batch.end_rowid }}:{{ batch.end_offset }}</strong><span class="muted">版本 {{ batch.generation_version }}</span><time class="muted">{{ fmtTime(batch.completed_at || batch.created_at) }}</time></div><p v-if="batch.error_type" class="bad-text">{{ batch.error_type }} · 此区间未获得成功覆盖</p><p class="message-copy">{{ batch.summary }}</p><button v-if="['failed','pending'].includes(batch.status)" :disabled="!detail.maintenance?.ready || !!retryingBatch" @click="retryHistory(batch)">{{ retryingBatch === batch.id ? '正在请求…' : '重试此区间' }}</button><details><summary>原文定位</summary><p>来源 {{ batch.source_event_ids?.join('、') }}</p><p>关键原话 {{ batch.key_event_ids?.join('、') || '无额外定位' }}</p></details></article>
+        <p v-if="!detail.history_batches?.length" class="muted">尚未生成历史摘要；原文保留。</p>
+      </section>
       <div class="detail-grid">
         <section class="panel"><h2>参与者</h2><p class="muted">账号昵称和群名片来自消息事件，称呼偏好单独保留在认识中。</p><div class="table-scroll"><table><thead><tr><th>账号</th><th>昵称</th><th>群名片</th><th>群角色</th></tr></thead><tbody><tr v-for="person in participants" :key="person.actor_id"><td><code>{{ person.actor_id }}</code></td><td>{{ person.nickname || '—' }}</td><td>{{ person.card || '—' }}</td><td>{{ person.role || '—' }}</td></tr><tr v-if="!participants.length"><td colspan="4" class="muted">暂无参与者事实</td></tr></tbody></table></div></section>
         <section class="panel"><h2>称呼与互动偏好</h2><article v-for="memory in detail.preferences || []" :key="memory.id" class="record"><div><span class="tag">{{ basisLabel(memory.basis) }}</span><code>{{ memory.subject }}</code></div><p>{{ memory.statement }}</p><details><summary>来源与适用时间</summary><p>{{ memory.evidence?.join('、') || '未附来源' }}</p><p>到期时间：{{ memory.expires_at ? fmtTime(memory.expires_at) : '未设置' }}</p></details></article><p v-if="!detail.preferences?.length" class="muted">暂无有效的称呼与互动偏好</p></section>
         <section class="panel"><h2>信息工作</h2><article v-for="job in detail.jobs || []" :key="job.id" class="record"><div><span class="tag" :class="{ bad: job.execution_status === 'failed' }">{{ executionStatus(job.execution_status) }}</span><span class="tag">{{ jobStatus(job.status) }}</span><span class="muted">目标版本 {{ job.revision }}</span></div><p>{{ job.goal }}</p><p v-if="job.result?.summary" class="muted">{{ job.result.summary }}</p><details><summary>工作详情</summary><pre>{{ JSON.stringify(job, null, 2) }}</pre></details></article><p v-if="!detail.jobs?.length" class="muted">暂无信息工作</p></section>
         <section class="panel"><h2>消息是否送达</h2><article v-for="event in detail.recent_deliveries || []" :key="event.id" class="record"><div><span class="tag" :class="event.event_type === 'MESSAGE_SENT' ? 'ok' : 'warn'">{{ deliveryLabel(event) }}</span><time class="muted">{{ fmtTime(event.timestamp) }}</time></div><p class="message-copy">{{ eventText(event) }}</p><p v-if="event.payload?.error" class="bad-text">{{ event.payload.error }}</p><details><summary>回执详情</summary><pre>{{ JSON.stringify(event.payload, null, 2) }}</pre></details></article><p v-if="!detail.recent_deliveries?.length" class="muted">暂无发送回执</p></section>
       </div>
-      <section class="panel"><h2>近期原话</h2><article v-for="event in detail.recent_messages || []" :key="event.id" class="record"><div><strong>{{ sender(event) }}</strong><time class="muted">{{ fmtTime(event.timestamp) }}</time></div><p class="message-copy">{{ eventText(event) }}</p><details><summary>事件来源</summary><code>{{ event.id }}</code><p>{{ event.actor_id }}</p></details></article><p v-if="!detail.recent_messages?.length" class="muted">暂无近期原话</p></section>
+      <section class="panel"><h2>近期原话</h2><article v-for="event in detail.recent_messages || []" :key="event.id" class="record"><div><strong>{{ sender(event) }}</strong><time class="muted">{{ fmtTime(event.timestamp) }}</time></div><p class="message-copy">{{ eventText(event) }}</p><p class="muted">调度：{{ attentionLabel(event) }}</p><details><summary>事件来源</summary><code>{{ event.id }}</code><p>{{ event.actor_id }}</p></details></article><p v-if="!detail.recent_messages?.length" class="muted">暂无近期原话</p></section>
     </template>
   </div>
 </template>
 
 <style scoped>
+.attention-panel small { display:block;margin-top:6px;color:var(--muted) }.attention-panel td { overflow-wrap:anywhere }
 .scene-card { text-align:left;white-space:normal;color:var(--text);min-width:0;cursor:pointer }.scene-card:hover,.scene-card.selected { border-color:var(--border-accent) }.scene-header { display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px }.scene-header h3 { margin:0;overflow-wrap:anywhere }.detail-panel { margin-top:24px }.detail-facts { display:flex;gap:20px;flex-wrap:wrap;color:var(--text-soft);font-size:.86rem }.detail-grid { display:grid;grid-template-columns:1fr 1fr;gap:18px }.detail-grid .panel { min-width:0 }.record { padding:14px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere }.record:last-child { border-bottom:0 }.record>div { display:flex;gap:10px;align-items:center;flex-wrap:wrap }.record p { margin:9px 0;line-height:1.6 }.record time { font-size:.78rem }.message-copy { white-space:pre-wrap }.table-scroll { overflow-x:auto }details { font-size:.8rem;color:var(--muted) }summary { cursor:pointer }pre { white-space:pre-wrap;overflow-wrap:anywhere }@media(max-width:920px){.detail-grid{grid-template-columns:1fr}}
 </style>

@@ -187,6 +187,8 @@ async def test_reflection_has_no_execution_tool_and_only_stages_changes(ledger, 
     from len_bot.events.models import Event, EventType
     from len_bot.memory import reflector
     from len_bot.memory.reflection import ReflectionEngine
+    from len_bot.memory.history import HistoryBatch
+    from types import SimpleNamespace
 
     db, store = ledger
     existing = await commit(db, change())
@@ -197,24 +199,28 @@ async def test_reflection_has_no_execution_tool_and_only_stages_changes(ledger, 
 
         async def run(self, **kwargs):
             assert [tool["function"]["name"] for tool in kwargs["tool_definitions"]()] == ["query_memory"]
-            assert kwargs["terminal"]["function"]["name"] == "finish_reflection"
+            assert kwargs["terminal"]["function"]["name"] == "finish_history_maintenance"
             with pytest.raises(ToolArgumentError):
                 await kwargs["execute_tool"]("create_task", {})
             rows = await kwargs["execute_tool"]("query_memory", {"subject": "user:A"})
             assert [row["id"] for row in rows] == [existing.id]
             with pytest.raises(TerminalArgumentError):
-                await kwargs["finish"]({"memory_proposals": [change(evidence=["foreign"]).model_dump(exclude={"scope"})]})
+                await kwargs["finish"]({"summary": "原始片段", "memory_proposals": [change(evidence=["foreign"]).model_dump(exclude={"scope"})]})
             return await kwargs["finish"]({
+                "summary": "A明确要求认真回应；偏好期限尚未核对。", "key_event_ids": ["a"],
                 "memory_proposals": [change(statement="A明确希望认真回应").model_dump(exclude={"scope"})],
                 "review_items": [{"summary": "核对偏好是否只适用本次", "source_event_ids": ["a"]}],
             })
 
     monkeypatch.setattr(reflector, "ModelGateway", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(reflector, "AgentLoop", TestLoop)
-    engine = ReflectionEngine(store, llm_reflector=reflector.LLMReflector(lambda: object(), memory_store=store))
+    engine = ReflectionEngine(store, llm_reflector=reflector.LLMReflector(lambda: SimpleNamespace(role="maintenance"), memory_store=store))
     event = Event(id="a", event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE, actor_id="user:A", payload={"raw_text": "认真回答就好"})
+    batch = HistoryBatch(id="batch", scene_id=SCENE, start_rowid=1, start_offset=0,
+        end_rowid=1, end_offset=100, source_event_ids=[event.id], complete_event_ids=[event.id], estimated_tokens=10,
+        segments=[{"event_id": event.id, "text": event.raw_text}])
     before = db.total_changes
-    result = await engine.reflect_on_events(SCENE, [event])
+    result = await engine.maintain_batch(SCENE, batch)
     assert len(result.memory_proposals) == len(result.review_items) == 1
     assert result.memory_proposals[0].scope == SCENE
     assert db.total_changes == before
@@ -225,8 +231,12 @@ async def test_reflection_has_no_execution_tool_and_only_stages_changes(ledger, 
 async def test_reflection_does_not_generate_a_fake_success_when_unconfigured(ledger):
     from len_bot.events.models import Event, EventType
     from len_bot.memory.reflection import ReflectionEngine
+    from len_bot.memory.history import HistoryBatch
+    from types import SimpleNamespace
 
     _db, store = ledger
     event = Event(id="a", event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE, actor_id="user:A")
-    with pytest.raises(RuntimeError, match="configured work-profile"):
-        await ReflectionEngine(store).reflect_on_events(SCENE, [event])
+    batch = HistoryBatch(id="batch", scene_id=SCENE, start_rowid=1, start_offset=0,
+        end_rowid=1, end_offset=100, source_event_ids=[event.id], complete_event_ids=[event.id], estimated_tokens=10)
+    with pytest.raises(RuntimeError, match="configured maintenance profile"):
+        await ReflectionEngine(store).maintain_batch(SCENE, batch)

@@ -12,7 +12,7 @@ const emptyExample = () => ({ context: '', scene_id: '', tag: '', segments: [{ t
 const example = ref(emptyExample())
 const exampleMedia = ref([]), mediaQuery = ref(''), exampleSaving = ref(false)
 const persona = ref({ identity_name: '', identity_persona: '', identity_core: '', conversation_style: '', character_context: '' })
-const addressNames = ref('')
+const addressNames = ref(''), attention = ref(null), attentionKeywords = ref(''), attentionSaving = ref(false)
 const onebotForm = ref({
   connection_mode: 'forward_ws', action_transport: 'websocket',
   ws_url: 'ws://127.0.0.1:13001/', http_url: 'http://127.0.0.1:13000/',
@@ -43,6 +43,8 @@ async function load() {
       conversation_style: personaRes.conversation_style || '',
     }
     addressNames.value = personaRes.address_names.join('、')
+    attention.value = await api('/api/settings/attention')
+    attentionKeywords.value = attention.value.attention_keywords.join('\n')
     const onebotRes = await api('/api/websocket/status')
     onebot.value = onebotRes
     onebotForm.value = {
@@ -60,6 +62,15 @@ async function load() {
   } catch (e) {
     error.value = e.message
   }
+}
+
+async function saveAttention() {
+  error.value = ''; message.value = ''; attentionSaving.value = true
+  try {
+    const body = { ...attention.value, attention_keywords: [...new Set(attentionKeywords.value.split('\n').map(value => value.trim()).filter(Boolean))] }
+    const result = await api('/api/settings/attention', { method: 'PATCH', body: JSON.stringify(body) })
+    attention.value = result.settings; attentionKeywords.value = result.settings.attention_keywords.join('\n'); message.value = result.message
+  } catch (e) { error.value = e.message } finally { attentionSaving.value = false }
 }
 
 async function saveExample() {
@@ -249,7 +260,7 @@ async function resetConversationData() {
     <div class="toolbar">
       <div class="page-title">
         <h1>系统设置</h1>
-        <p class="muted">控制是否真实发送消息，并管理登录密码。</p>
+        <p class="muted">管理注意力、人格、连接与发送设置。</p>
       </div>
       <button class="primary" @click="load">
         <span>刷新</span>
@@ -288,7 +299,7 @@ async function resetConversationData() {
         </label>
         <label>呼唤昵称
           <input v-model="addressNames" placeholder="然比、小然" />
-          <small>用逗号或顿号分隔。叫名字、@或引用时优先回应，别人之间的闲聊通常旁听；接着聊不必重复叫名字。</small>
+          <small>用逗号或顿号分隔。叫名字、@或引用会唤醒对话判断，是否回应由模型决定；接着聊不必重复叫名字。</small>
         </label>
         <label class="wide">身份背景
           <textarea v-model="persona.identity_persona" rows="5" placeholder="例如：嘴有点损但没有恶意，熟人面前话多，对比赛和直播很感兴趣……"></textarea>
@@ -381,6 +392,20 @@ async function resetConversationData() {
         <button @click="testOneBotHttp">测试 HTTP 接口</button>
       </div>
     </div>
+
+    <section v-if="attention" class="panel attention-panel">
+      <h2>注意力与旁听</h2>
+      <p class="muted">关键词与低频抽样提供观察机会，对话模型决定回应或沉默。明确呼唤、连续互动和有效工作事件独立唤醒。</p>
+      <form class="connection-fields" @submit.prevent="saveAttention">
+        <label class="wide">运营关键词（每行一项）<textarea v-model="attentionKeywords" rows="3" placeholder="填写希望机器人留意的话题词" /></label>
+        <label>抽样窗口（秒）<input v-model.number="attention.attention_sample_window_seconds" type="number" min="1" step="1" required /></label>
+        <label>每窗口抽样概率（0—1）<input v-model.number="attention.attention_sample_probability" type="number" min="0" max="1" step="0.01" required /></label>
+        <label>关键词观察冷却（秒）<input v-model.number="attention.attention_keyword_cooldown_seconds" type="number" min="0" step="1" required /></label>
+        <label>送达后连续关注（秒）<input v-model.number="attention.attention_focus_seconds" type="number" min="1" step="1" required /></label>
+        <label>近期原话预算（文本 token）<input v-model.number="attention.conversation_recent_tokens" type="number" min="500" step="100" required /></label>
+        <div class="wide"><button class="primary" :disabled="attentionSaving">{{ attentionSaving ? '正在保存…' : '保存注意力参数' }}</button></div>
+      </form>
+    </section>
 
     <div v-if="shadow" class="panel">
       <div class="panel-header">
@@ -484,6 +509,7 @@ async function resetConversationData() {
   resize: vertical;
 }
 
+.attention-panel { margin:24px 0 }.attention-panel textarea { width:100%;resize:vertical }
 .connection-mode-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

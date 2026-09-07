@@ -56,7 +56,7 @@ async def test_blocked_send_is_visible_to_next_turn_and_late_receipt_stays_out_o
         return httpx.Response(200, json=terminal())
 
     runtime = AgentRuntime(RuntimeConfig(db_path=str(tmp_path / "pending.db"), bot_qq=99,
-        debounce_idle_ms=1, debounce_max_ms=2, message_pacing=False, reflection_quiet_window_seconds=3600),
+        debounce_idle_ms=1, debounce_max_ms=2, message_pacing=False, history_quiet_window_seconds=3600),
         send_adapter=send, clock=lambda: 1000)
     await runtime.start()
     await configure_fixture_profile(runtime)
@@ -97,7 +97,7 @@ async def test_blocked_send_is_visible_to_next_turn_and_late_receipt_stays_out_o
         assert refreshed[0]["body_source"] == "receipt"
         assert context.refs.cutoff == cutoff and delivered.metadata["_rowid"] > cutoff
         assert delivered.id not in context.refs.read_events and delivered.id not in context.refs.events.values()
-        assert runtime.scene_manager.get_session(SCENE).last_cognized_event_rowid == cutoff
+        assert not runtime.scene_manager.get_session(SCENE).pending_wakes
         assert await runtime.event_store.outbound_message_facts(SCENE, delivered.metadata["_rowid"], bot_actor_id=BOT) == []
         context.refs.cutoff=delivered.metadata['_rowid']
         cleared=await context.facts_message()
@@ -173,7 +173,7 @@ async def test_one_delivered_part_does_not_hide_other_approved_parts(store):
 
 def test_mentions_use_the_same_actor_handles_in_raw_and_quoted_messages():
     from types import SimpleNamespace
-    context = ConversationContext(SimpleNamespace(bot_actor_id=BOT), SceneSession(scene_id=SCENE), 10)
+    context = ConversationContext(SimpleNamespace(bot_actor_id=BOT, config=RuntimeConfig()), SceneSession(scene_id=SCENE), 10)
     event = Event(id="message", event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=SCENE, actor_id="user:1",
         payload={"raw_text": "[CQ:at,qq=99] 看看 [CQ:at,qq=22] [CQ:at,qq=all]"},
         metadata={"_rowid": 2, "quote_context": {"event_id": "quoted", "rowid": 1, "actor_id": "user:22",

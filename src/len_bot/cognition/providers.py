@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
-ModelRole = Literal["conversation", "work"]
+ModelRole = Literal["conversation", "work", "maintenance"]
 
 
 class ProviderConfig(BaseModel):
@@ -47,6 +47,7 @@ class RoutingConfig(BaseModel):
 
     conversation: ModelProfile
     work: ModelProfile
+    maintenance: ModelProfile | None = None
 
 
 @dataclass(frozen=True)
@@ -80,8 +81,8 @@ class ProviderRegistry:
             if provider.api_style != "openai":
                 raise ValueError(f"Unsupported provider API style: {provider.api_style}")
             seen.add(provider.id)
-        for target in (routing.conversation, routing.work) if routing is not None else ():
-            if target.provider_id not in seen:
+        for target in (routing.conversation, routing.work, routing.maintenance) if routing is not None else ():
+            if target is not None and target.provider_id not in seen:
                 raise ValueError(f"Route references unknown provider: {target.provider_id}")
         async with self._lock:
             new_providers = {provider.id: provider for provider in provider_list}
@@ -115,9 +116,20 @@ class ProviderRegistry:
     def resolve(self, role: ModelRole = "conversation") -> RouteResolution:
         if self._routing is None:
             raise LookupError("No model profiles configured")
-        if role not in ("conversation", "work"):
+        if role not in ("conversation", "work", "maintenance"):
             raise ValueError(f"Unknown model role: {role}")
         profile = getattr(self._routing, role)
+        if profile is None:
+            raise LookupError(f"Model profile {role!r} is not configured")
+        return self.resolve_profile(profile, role=role)
+
+    def resolve_profile(self, profile: ModelProfile, role: ModelRole = "work") -> RouteResolution:
+        """Resume a frozen profile using current credentials, never a default model."""
+        provider = self._providers.get(profile.provider_id)
+        if provider is None or not provider.enabled:
+            raise LookupError(f"Provider {profile.provider_id!r} is missing or disabled")
+        if provider.models and profile.model not in provider.models:
+            raise LookupError(f"Bound model {profile.model!r} is unavailable on {provider.id!r}")
         return RouteResolution(provider_id=profile.provider_id, model=profile.model,
                                reasoning_effort=profile.reasoning_effort, role=role,
                                client=self._client_for(profile.provider_id))

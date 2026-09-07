@@ -70,6 +70,7 @@ class RuntimeGate:
         self.scene_shadow_probe = None
         self.bot_actor_id = bot_actor_id
         self.jobs_enabled_probe = lambda: True
+        self.validate_job_resume = None
 
     async def evaluate_and_commit(
         self,
@@ -137,10 +138,30 @@ class RuntimeGate:
         # Resolve references before any transaction or visible acknowledgement.
         if not self.jobs_enabled_probe() and any(p.operation in {"create", "resume"} for p in outcome.job_proposals):
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
+        if self.validate_job_resume:
+            for proposal in outcome.job_proposals:
+                if proposal.operation == 'resume':
+                    try:
+                        await self.validate_job_resume(proposal.job_id, current_scene_state.scene_id)
+                    except (ValueError, LookupError) as error:
+                        return GateDecision(FinalDisposition.SILENCE, str(error), accepted=False)
         proposal_ids = [tp.proposal_id for tp in [*outcome.task_proposals, *outcome.job_proposals] if tp.proposal_id]
         if len(proposal_ids) != len(set(proposal_ids)):
             return GateDecision(FinalDisposition.SILENCE, "Duplicate task proposal references", accepted=False)
         action_ids = [str(uuid.uuid4()) for _ in outcome.message_proposals]
+        read_ids = scene_commit['event'].payload['source_event_ids'] if scene_commit else []
+        response_actors = []
+        for message in outcome.message_proposals:
+            targets = set()
+            if message.reply_to:
+                target = await self.event_store.read_reply_actor(current_scene_state.scene_id, message.reply_to, read_ids)
+                if target and target != self.bot_actor_id:
+                    targets.add(target)
+            if message.reply_target:
+                targets.add(message.reply_target)
+            response_actors.append(sorted(targets or mailbox.interaction_actors))
+        if scene_commit:
+            scene_commit['event'].payload['response_actor_ids'] = response_actors
         deliveries = {}
         acknowledgements = {}
         for index, message in enumerate(outcome.message_proposals):
@@ -256,6 +277,7 @@ class RuntimeGate:
                 batch_id=proposal_commit.episode_id,
                 batch_index=index, batch_size=len(outcome.message_proposals),
                 reply_to=msg.reply_to,
+                response_actor_ids=response_actors[index],
                 associated_open_loop=associated_loop,
                 origin_mode=action_origin,
                 job_id=job_id, job_revision=job_revision,

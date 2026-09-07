@@ -23,7 +23,7 @@ class ConfigStore:
 def panel(registry):
     app = FastAPI()
     app.state.runtime = SimpleNamespace(provider_registry=registry, config_update_lock=asyncio.Lock(), event_store=ConfigStore(),
-        query_service=SimpleNamespace(providers=registry.snapshot, provider_models=registry.list_models, metrics=lambda: {}))
+        query_service=SimpleNamespace(providers=registry.snapshot, model_configuration=registry.export, provider_models=registry.list_models, metrics=lambda: {}))
     app.include_router(models.router)
     return app
 
@@ -41,12 +41,13 @@ async def test_model_panel_accepts_unconfigured_provider_and_only_new_routing():
         assert 'fixture-key-not-real' not in json.dumps(public)
         assert (await client.post('/api/models/routing', json={'normal_provider_id': 'fixture', 'normal_model': 'old'})).status_code == 422
         routing = {'conversation': {'provider_id': 'fixture', 'model': 'chat', 'reasoning_effort': 'low'},
-                   'work': {'provider_id': 'fixture', 'model': 'work', 'reasoning_effort': 'high'}}
+                   'work': {'provider_id': 'fixture', 'model': 'work', 'reasoning_effort': 'high'},
+                   'maintenance': {'provider_id': 'fixture', 'model': 'maintain', 'reasoning_effort': None}}
         assert (await client.post('/api/models/routing', json=routing)).status_code == 200
         assert (await client.get('/api/models/routing')).json() == routing
         assert (await client.delete('/api/models/providers/fixture')).status_code == 409
         selected = await client.post('/api/models/providers/fixture/models', json={'models': []})
-        assert selected.json()['models'] == ['chat', 'work']
+        assert selected.json()['models'] == ['chat', 'maintain', 'work']
 
 
 @pytest.mark.asyncio
@@ -63,7 +64,8 @@ async def test_native_capability_check_keeps_opaque_continuation_without_scene_a
         async def close(self):
             closed.append(True)
     class Gateway:
-        def __init__(self, binding, max_output_tokens):
+        def __init__(self, binding, max_output_tokens, call_store, scene_id, purpose):
+            assert purpose == "capability_probe" and scene_id == ""
             assert binding.reasoning_effort == 'low'
             self.calls = 0
         async def complete(self, messages, tools, tool_choice):

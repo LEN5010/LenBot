@@ -67,11 +67,6 @@ class MemoryStore:
                 revision_evidence TEXT NOT NULL
             )""")
             await self._db.execute("CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(scope,subject,kind,status)")
-            await self._db.execute("""CREATE TABLE IF NOT EXISTS reflection_cursors (
-                scene_id TEXT PRIMARY KEY,
-                last_event_rowid INTEGER NOT NULL,
-                updated_at REAL NOT NULL
-            )""")
             await self._db.commit()
 
     async def query_memories(
@@ -135,9 +130,3 @@ class MemoryStore:
             [scene_id, *subjects, self.clock() if now is None else now],
         )).fetchall()
         return [memory_from_row(row) for row in rows]
-
-    async def get_reflection_cursor(self, scene_id: str) -> int:
-        row = await (await self._db.execute(
-            "SELECT last_event_rowid FROM reflection_cursors WHERE scene_id=?", (scene_id,),
-        )).fetchone()
-        return int(row[0]) if row else 0

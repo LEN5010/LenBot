@@ -33,7 +33,7 @@ async def panel(tmp_path):
     runtime = SimpleNamespace(event_store=store, memory_store=memories, config=RuntimeConfig(bot_qq=999),
         metrics=RuntimeMetrics(), shadow_mode=True, allowed_scenes={SCENE}, shadow_would_send_log=[], outcomes=[], operator_sources=[])
     runtime.provider_registry = SimpleNamespace(snapshot=lambda: {"providers": [], "routing": {
-        "conversation": {"provider_id": "p", "model": "chat"}, "work": {"provider_id": "p", "model": "research"}}})
+        "conversation": {"provider_id": "p", "model": "chat"}, "work": {"provider_id": "p", "model": "research"}, "maintenance": None}})
     runtime.query_service = RuntimeQueryService(runtime)
     sessions = {}
 
@@ -85,9 +85,10 @@ async def test_panel_reads_committed_fact_sessions_and_single_ledger(panel):
         JobProposal(proposal_id="job", goal="资料核对", source_event_ids=["source"])]))
     scenes = (await client.get("/api/cockpit/scenes")).json()["scenes"]
     assert scenes == [{"scene_id": SCENE, "version": 2, "participant_count": 1,
-                       "last_event_at": 901, "last_bot_message_at": 901, "active_job_count": 1}]
+                       "last_event_at": 901, "last_bot_message_at": 901, "active_job_count": 1, "pending_wake_count": 0}]
     detail = (await client.get(f"/api/cockpit/scenes/{SCENE}")).json()
-    assert set(detail) == {"session", "preferences", "jobs", "recent_messages", "recent_deliveries"}
+    assert set(detail) == {"session", "preferences", "jobs", "recent_messages", "recent_deliveries",
+                           "history_batches", "history_status", "maintenance"}
     assert detail["preferences"][0]["id"] == memory_id
     assert detail["session"]["participants"]["user:A"]["nickname"] == "A"
     assert detail["recent_deliveries"][0]["id"] == "delivered"
@@ -172,6 +173,15 @@ async def test_task_and_job_controls_use_operator_proposals_and_keep_version_che
     assert runtime.outcomes[-1].task_proposals[0].source_event_ids
     assert (await client.post(f"/api/cockpit/tasks/{task.id}/cancel")).status_code == 200
     assert (await runtime.query_service.get_task(task.id))["status"] == "cancelled"
+    await runtime.event_store.mark_task_status(job['id'], 'processing')
+    await runtime.event_store.save_job_exchange(job['id'], SCENE, 1, [
+        {'role': 'assistant', 'tool_calls': [{'id': 'opaque-call', 'type': 'function',
+            'function': {'name': 'read_result', 'arguments': '{}'},
+            'extra_content': {'provider_private': 'opaque-continuation-secret'}}]},
+        {'role': 'tool', 'tool_call_id': 'opaque-call', 'content': '已读取'}], 1)
+    public_jobs = await client.get('/api/cockpit/jobs', params={'scene_id': SCENE})
+    assert public_jobs.json()[0]['checkpoint']['exchange_count'] == 1
+    assert 'opaque-continuation-secret' not in public_jobs.text and 'checkpoint_data' not in public_jobs.text
     assert (await client.post(f"/api/cockpit/tasks/{job['id']}/cancel")).status_code == 409
     assert (await client.post(f"/api/cockpit/jobs/{job['id']}/cancel", json={"expected_revision": 3})).status_code == 409
     assert (await client.post(f"/api/cockpit/jobs/{job['id']}/cancel", json={"expected_revision": 1})).status_code == 200

@@ -6,6 +6,8 @@ import copy
 import json
 import time
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event
 from len_bot.tools.results import ToolResult
@@ -35,6 +37,19 @@ LOCAL_TOOLS=[
     tool('search_media','按名称和描述查询本群或运营发布的图片。',{'query':S,'curated_only':{'type':'boolean'}}),
     tool('read_media','装入图片I/P像素和来源；动图只覆盖首帧。',{'asset_id':S},['asset_id']),
 ]
+
+
+class MessageRangeArguments(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    message_ref: str = Field(min_length=1)
+    offset: int = Field(ge=0)
+    limit: int = Field(default=4000, ge=1, le=8000)
+
+
+READ_MESSAGE_RANGE = tool('read_message_range',
+    '按字符范围继续读取消息M的原话。使用上次next_offset；片段不代表整条已读，原文全部覆盖后才能作为提案证据。',
+    {'message_ref': {'type':'string','minLength':1}, 'offset': {'type':'integer','minimum':0},
+     'limit': {'type':'integer','minimum':1,'maximum':8000,'default':4000}}, ['message_ref','offset'])
 
 
 class RetrievalToolkit:
@@ -70,6 +85,9 @@ class RetrievalToolkit:
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
+        if self.context and (self.references.partial_events
+                             or set(self.references.events.values()) - self.references.read_events):
+            definitions.append(copy.deepcopy(READ_MESSAGE_RANGE))
         if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
         if self.read_only_only:
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
@@ -88,7 +106,7 @@ class RetrievalToolkit:
         return definitions
 
     def is_read_only(self,name):
-        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search'}: return True
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range'}: return True
         return bool(self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name)
                     and self.plugin_host.tool_capabilities(name)['read_only'])
 
@@ -115,7 +133,7 @@ class RetrievalToolkit:
     def _resolve_arguments(self,name,args):
         if not self.references:return args
         refs=self.references
-        for key,resolve in [('event_id',refs.locate_event),('actor_id',refs.actor_id),('asset_id',refs.media_id),
+        for key,resolve in [('event_id',refs.locate_event),('message_ref',refs.locate_event),('actor_id',refs.actor_id),('asset_id',refs.media_id),
                             ('subject',refs.actor_id),('result_id',refs.result_id)]:
             if args.get(key):args[key]=resolve(args[key])
         if args.get('job_id'):args['job_id']=refs.job(args['job_id'])['id']
@@ -124,6 +142,11 @@ class RetrievalToolkit:
     async def execute_result(self,name,arguments):
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
         if name not in definitions:return ToolResult.failure('本入口未开放此工具','capability_denied')
+        if name == 'read_message_range':
+            try:
+                arguments = MessageRangeArguments.model_validate(arguments).model_dump()
+            except ValidationError as error:
+                return ToolResult.failure(str(error), 'invalid_arguments')
         try:args=self._resolve_arguments(name,dict(arguments))
         except ValueError as error:return ToolResult.failure(str(error),'invalid_reference')
         if name=='read_tool_result':
@@ -190,6 +213,24 @@ class RetrievalToolkit:
         if offset<0 or not 1<=limit<=12000:raise ValueError('offset must be nonnegative; limit must be 1..12000')
         refs=self.references;shown=result.model_copy(deep=True)
         if shown.result_id:shown.result_id=refs.register_result(shown.result_id)
+        if name == 'read_message_range':
+            if shown.status not in {'ok', 'partial'}:
+                return shown
+            if offset:
+                return ToolResult.failure('此资料保存一个原话片段；继续原文请用read_message_range(message_ref, next_offset)。', 'invalid_arguments')
+            item = json.loads(shown.content)
+            events = await self.event_store.events_by_ids(self.default_scene_id, [item['event_id']], self.cutoff)
+            if not events:
+                return ToolResult.failure('原话不属于本场景或超出本轮截点', 'not_found')
+            event = events[0]
+            start, end, total = item['range']
+            if total != len(event.raw_text) or item['text'] != event.raw_text[start:end]:
+                return ToolResult.failure('原话片段与不可变来源不一致', 'invalid_source_range')
+            refs.register_event_range(event, start, end, total)
+            shown.content = json.dumps({'message_ref':refs.register_event_locator(event.id),
+                'actor':refs.register_actor(event.actor_id), 'range':[start,end,total],
+                'text':item['text'], 'next_offset':end if end < total else None}, ensure_ascii=False)
+            return shown
         local={'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs'}
         if name not in local:return shown.page(offset,limit)
         try:data=json.loads(shown.content)
@@ -226,7 +267,23 @@ class RetrievalToolkit:
             finally:self.context.refs=original
             candidate_text='\n'.join([*selected,candidate]) if history else json.dumps([*selected,candidate],ensure_ascii=False)
             if len(candidate_text)>limit:
-                if not selected:return ToolResult.failure(f'limit太小，无法完整展示此条记录和引用；请将limit调大，至少需要{len(candidate_text)}字符。','page_too_small')
+                if not selected:
+                    if not history:
+                        return ToolResult.failure(f'limit太小，无法完整展示此条记录和引用；请将limit调大，至少需要{len(candidate_text)}字符。','page_too_small')
+                    event = Event.model_validate(data[index])
+                    total = len(event.raw_text)
+                    refs.register_event_range(event, 0, 0, total)
+                    locator = {'message_ref':refs.register_event_locator(event.id),
+                        'actor':refs.register_actor(event.actor_id), 'range':[0,0,total], 'next_offset':0,
+                        'note':'本页只提供原话位置；请用read_message_range按字符范围读取，尚未授权整条证据。'}
+                    quote = event.metadata.get('quote_context')
+                    if quote and not quote.get('missing') and quote['rowid'] <= refs.cutoff:
+                        locator['quoted_message'] = {'message_ref':refs.register_event_locator(quote['event_id']),
+                            'actor':refs.register_actor(quote['actor_id']), 'total':len(quote['text'])}
+                    shown.content = json.dumps(locator, ensure_ascii=False)
+                    shown.truncated, shown.next_offset = True, 0
+                    shown.coverage = 'original_message_locator; use read_message_range(message_ref, next_offset)'
+                    return shown
                 break
             selected.append(project(data[index]))
             index+=1
@@ -238,6 +295,22 @@ class RetrievalToolkit:
 
     async def _execute_raw(self,name,args):
         store=self.event_store;scopes=self.allowed_scopes
+        if name == 'read_message_range':
+            events = await store.events_by_ids(self.default_scene_id, [args['message_ref']], self.cutoff)
+            if not events:
+                return ToolResult.failure('原话不属于本场景或超出本轮截点', 'not_found')
+            event = events[0]
+            start, total = args['offset'], len(event.raw_text)
+            if start > total:
+                return ToolResult.failure('offset超出原话长度', 'invalid_arguments')
+            end = min(total, start + args['limit'])
+            return ToolResult(status='partial' if start or end < total else 'ok',
+                content=json.dumps({'event_id':event.id, 'scene_id':event.scene_id,
+                    'actor_id':event.actor_id, 'rowid':event.metadata['_rowid'],
+                    'range':[start,end,total], 'text':event.raw_text[start:end]}, ensure_ascii=False),
+                truncated=end < total, next_offset=end if end < total else None,
+                coverage='original_message_range; next_offset is a raw-text character offset for read_message_range',
+                evidence_kind='retrieval')
         if name=='read_media':return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
         if name=='search_media':
             rows=await store.list_media([self.default_scene_id,'global-safe'],query=str(args.get('query','')),curated_only=bool(args.get('curated_only',True)))

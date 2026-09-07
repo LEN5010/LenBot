@@ -2,30 +2,35 @@
 import json
 import uuid
 
-from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResult
+from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResult, WorkState
 from len_bot.events.models import Event, EventType
 from len_bot.scheduler.models import TaskItem
+from len_bot.skills.store import SkillStoreMixin
 
 
 def _decode_job(row):
     if not row:
         return None
     fields = ["id", "scene_id", "revision", "goal", "constraints", "source_event_ids", "result_ids",
-              "model_steps", "tool_calls", "elapsed_seconds", "result", "updated_at", "status", "origin_mode", "created_at"]
+              "model_steps", "tool_calls", "elapsed_seconds", "result", "updated_at",
+              "work_state", "model_binding", "checkpoint_data", "compression", "skill_versions", "status", "origin_mode", "created_at"]
     data = dict(zip(fields, row))
-    for field in ("constraints", "source_event_ids", "result_ids", "result"):
+    for field in ("constraints", "source_event_ids", "result_ids", "result", "work_state", "model_binding", "checkpoint_data", "compression", "skill_versions"):
         data[field] = json.loads(data[field]) if data[field] else None
+    native = data.pop("checkpoint_data")
+    data["checkpoint"] = {key: native[key] for key in ("goal_revision", "exchange_count", "updated_at")} if native else None
+    data["skill_versions"] = data["skill_versions"] or {}
     # Task status describes response/delivery, not whether execution succeeded.
     data["execution_status"] = (data["result"] or {}).get("status") or {
         "pending": "pending", "claimed": "pending", "processing": "running",
         "review_required": "interrupted", "failed": "failed", "cancelled": "cancelled",
     }.get(data["status"], "unknown")
-    data["can_resume"] = data["status"] in {"review_required", "failed"} or (
-        data["status"] == "result_ready" and data["execution_status"] in {"failed", "interrupted"})
+    data["can_resume"] = (data["status"] in {"review_required", "failed", "result_ready"}
+                          and data["execution_status"] in {"failed", "interrupted"})
     return data
 
 
-class JobStoreMixin:
+class JobStoreMixin(SkillStoreMixin):
     async def initialize_jobs(self):
         await self._db.execute("""CREATE TABLE IF NOT EXISTS agent_jobs (
             id TEXT PRIMARY KEY, scene_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -34,6 +39,14 @@ class JobStoreMixin:
             tool_calls INTEGER NOT NULL DEFAULT 0, elapsed_seconds REAL NOT NULL DEFAULT 0,
             result_json TEXT, updated_at REAL NOT NULL)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_agent_jobs_scene ON agent_jobs(scene_id,updated_at)")
+        columns = {row[1] for row in await (await self._db.execute("PRAGMA table_info(agent_jobs)")).fetchall()}
+        for column in ("work_state_json", "model_binding_json", "checkpoint_json", "compression_json", "skill_versions_json"):
+            if column not in columns:
+                await self._db.execute(f"ALTER TABLE agent_jobs ADD COLUMN {column} TEXT")
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS job_exchanges (
+            job_id TEXT NOT NULL, scene_id TEXT NOT NULL, sequence INTEGER NOT NULL, goal_revision INTEGER NOT NULL,
+            messages_json TEXT NOT NULL, PRIMARY KEY(job_id,sequence))""")
+        await self.initialize_skills()
 
     async def get_job(self, job_id, scene_id):
         row = await (await self._db.execute("""SELECT j.*,t.status,t.origin_mode,t.created_at FROM agent_jobs j
@@ -158,7 +171,8 @@ class JobStoreMixin:
                     raise JobChanged("Job changed during execution")
                 steps, calls = job["model_steps"] + model_steps, job["tool_calls"] + tool_calls
                 elapsed = job["elapsed_seconds"] + max(0, elapsed_seconds)
-                if limits and (steps > limits[0] or calls > limits[1] or elapsed > limits[2]):
+                if limits and (steps > limits[0] or calls > limits[1] or elapsed > limits[2]
+                               or (model_steps and elapsed >= limits[2])):
                     raise JobBudgetExhausted("Work budget exhausted")
                 ids = list(dict.fromkeys(job["result_ids"] + list(result_ids)))
                 for result_id in ids:
@@ -173,7 +187,7 @@ class JobStoreMixin:
                 await self._db.rollback()
                 raise
 
-    async def complete_job(self, job_id, scene_id, revision, result: JobResult):
+    async def complete_job(self, job_id, scene_id, revision, result: JobResult, *, work_state=None, skill_candidate=None):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -183,6 +197,11 @@ class JobStoreMixin:
                     return None
                 if not set(result.result_ids).issubset(job["result_ids"]):
                     raise ValueError("Job summary cites observations it did not obtain")
+                if work_state is not None:
+                    self._validate_work_state(job, work_state)
+                    await self._db.execute("UPDATE agent_jobs SET work_state_json=? WHERE id=? AND scene_id=?", (work_state.model_dump_json(), job_id, scene_id))
+                if skill_candidate is not None:
+                    await self.add_skill_candidate_in_transaction(job, skill_candidate)
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (result.model_dump_json(), self.clock(), job_id, scene_id))
                 await self._db.execute("UPDATE tasks SET status='result_ready',payload=json_set(payload,'$.result',?) WHERE id=? AND scene_id=?",
@@ -194,3 +213,132 @@ class JobStoreMixin:
             except BaseException:
                 await self._db.rollback()
                 raise
+
+    @staticmethod
+    def _validate_work_state(job, state: WorkState):
+        if state.goal_revision != job["revision"]:
+            raise ValueError("Work state belongs to an obsolete goal")
+        ids = [*state.key_result_ids, *(ident for step in state.completed_steps for ident in step.result_ids)]
+        if not set(ids).issubset(job["result_ids"]):
+            raise ValueError("Completed work steps require this work's actual observations")
+
+    async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None):
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                job = await self.get_job(job_id, scene_id)
+                if not job or job["revision"] != revision or job["status"] != "processing":
+                    raise JobChanged("Work state belongs to obsolete work")
+                self._validate_work_state(job, state)
+                if skill_candidate is not None:
+                    await self.add_skill_candidate_in_transaction(job, skill_candidate)
+                await self._db.execute("UPDATE agent_jobs SET work_state_json=?,updated_at=? WHERE id=? AND scene_id=?",
+                    (state.model_dump_json(), self.clock(), job_id, scene_id))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def bind_job_model(self, job_id, scene_id, revision, binding):
+        async with self._write_lock:
+            cursor = await self._db.execute("""UPDATE agent_jobs SET model_binding_json=? WHERE id=? AND scene_id=? AND revision=?
+                AND model_binding_json IS NULL AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=agent_jobs.id AND status='processing')""",
+                (json.dumps(binding), job_id, scene_id, revision))
+            if cursor.rowcount != 1:
+                await self._db.rollback()
+                raise JobChanged("Work binding already exists or work changed")
+            await self._db.commit()
+
+    async def read_job_checkpoint(self, job_id, scene_id):
+        """Private runtime continuation; never expose it through presentation APIs."""
+        row = await (await self._db.execute("SELECT checkpoint_json FROM agent_jobs WHERE id=? AND scene_id=?", (job_id, scene_id))).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    async def save_job_exchange(self, job_id, scene_id, revision, trajectory, exchange_count):
+        from len_bot.runtime.work_context import archive_trajectory, validate_complete_exchanges
+        validate_complete_exchanges(trajectory)
+        native = {"goal_revision": revision, "exchange_count": exchange_count, "updated_at": self.clock(),
+                  "messages": archive_trajectory(trajectory)}
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute("""UPDATE agent_jobs SET checkpoint_json=?,updated_at=? WHERE id=? AND scene_id=? AND revision=?
+                    AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=agent_jobs.id AND status='processing')""",
+                    (json.dumps(native, ensure_ascii=False), self.clock(), job_id, scene_id, revision))
+                if cursor.rowcount != 1:
+                    raise JobChanged("Tool exchange belongs to obsolete work")
+                from len_bot.runtime.work_context import exchange_spans
+                spans = exchange_spans(trajectory)
+                if spans:
+                    _, end = spans[-1]
+                    start = spans[-2][1] if len(spans) > 1 else min(2, spans[-1][0])
+                    await self._db.execute("INSERT INTO job_exchanges VALUES(?,?,?,?,?)",
+                        (job_id, scene_id, exchange_count, revision, json.dumps(archive_trajectory(trajectory[start:end]), ensure_ascii=False)))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def save_job_compression(self, job_id, scene_id, revision, compression, *, trajectory=None):
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute("""UPDATE agent_jobs SET compression_json=? WHERE id=? AND scene_id=? AND revision=?
+                    AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=agent_jobs.id AND status='processing')""",
+                    (json.dumps(compression, ensure_ascii=False), job_id, scene_id, revision))
+                if cursor.rowcount != 1:
+                    raise JobChanged("Compression belongs to obsolete work")
+                if trajectory is not None:
+                    from len_bot.runtime.work_context import archive_trajectory, validate_complete_exchanges
+                    validate_complete_exchanges(trajectory)
+                    checkpoint = await self.read_job_checkpoint(job_id, scene_id)
+                    if checkpoint:
+                        checkpoint["messages"] = archive_trajectory(trajectory)
+                        await self._db.execute("UPDATE agent_jobs SET checkpoint_json=? WHERE id=? AND scene_id=?", (json.dumps(checkpoint, ensure_ascii=False), job_id, scene_id))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def pin_job_skill(self, job_id, scene_id, revision, skill_id):
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                job = await self.get_job(job_id, scene_id)
+                if not job or job["revision"] != revision or job["status"] != "processing":
+                    raise JobChanged("Skill read belongs to obsolete work")
+                skill = await self.read_skill(skill_id, scene_id, job["skill_versions"].get(skill_id))
+                if not skill:
+                    raise ValueError("Skill unavailable in this scene")
+                pins = {**job["skill_versions"], skill_id: skill["version"]}
+                await self._db.execute("UPDATE agent_jobs SET skill_versions_json=? WHERE id=? AND scene_id=?", (json.dumps(pins), job_id, scene_id))
+                await self._db.commit()
+                return skill
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def charge_skill_maintenance(self, job_id, scene_id, revision, *, model_steps=0, elapsed_seconds=0, limits=None):
+        """Learning uses the originating work budget, including after its result."""
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                job = await self.get_job(job_id, scene_id)
+                if not job or (model_steps and (job["revision"] != revision or job["status"] == "cancelled")):
+                    raise JobChanged("Skill source job changed")
+                steps, elapsed = job["model_steps"] + model_steps, job["elapsed_seconds"] + elapsed_seconds
+                if limits and (steps > limits[0] or elapsed > limits[2] or (model_steps and elapsed >= limits[2])):
+                    raise JobBudgetExhausted("Work budget exhausted before skill maintenance")
+                await self._db.execute("UPDATE agent_jobs SET model_steps=?,elapsed_seconds=? WHERE id=? AND scene_id=?", (steps, elapsed, job_id, scene_id))
+                await self._db.commit()
+                return {"model_steps": steps, "elapsed_seconds": elapsed}
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def record_job_elapsed(self, job_id, scene_id, elapsed_seconds):
+        """Append actual execution time after a version/cancellation boundary."""
+        async with self._write_lock:
+            await self._db.execute("UPDATE agent_jobs SET elapsed_seconds=elapsed_seconds+? WHERE id=? AND scene_id=?",
+                (max(0, elapsed_seconds), job_id, scene_id))
+            await self._db.commit()
