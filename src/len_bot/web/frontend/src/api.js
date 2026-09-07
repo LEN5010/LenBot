@@ -1,21 +1,37 @@
-// Shared API client: cookie session (same-origin).
+// Shared API client: cookie session (same-origin), no retries or optimistic writes.
+let onUnauthorized = () => {}
+export function setUnauthorizedHandler(handler) { onUnauthorized = handler }
+
 export async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) }
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json'
   }
   const res = await fetch(path, { ...options, headers, credentials: 'same-origin' })
-  if (res.status === 401) {
-    throw new Error('unauthorized')
+  const data = await res.json()
+  if (!res.ok) {
+    const error = new Error(Array.isArray(data.detail) ? data.detail.map(item => `${item.loc?.join('.') || '参数'}: ${item.msg}`).join('；') : data.detail || `HTTP ${res.status}`)
+    error.status = res.status
+    if (res.status === 401 && path !== '/api/auth/login') onUnauthorized()
+    throw error
   }
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(Array.isArray(data.detail) ? data.detail.map(item => `${item.loc?.join('.') || '参数'}: ${item.msg}`).join('；') : data.detail || `HTTP ${res.status}`)
   return data
 }
 
+export function queryString(values) {
+  return new URLSearchParams(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined)).toString()
+}
+
+export function sceneName(id) {
+  if (id === 'global-safe') return '公共素材'
+  if (!id) return '全部场景'
+  const [kind, ...parts] = id.split(':')
+  return `${kind === 'group' ? '群聊' : kind === 'private' ? '私聊' : kind} ${parts.join(':')}`
+}
+
 export function fmtTime(ts) {
-  if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString()
+  if (ts === null || ts === undefined) return '—'
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
 }
 
 export function fmtAgo(ts) {
