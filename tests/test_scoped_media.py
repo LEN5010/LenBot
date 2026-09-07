@@ -85,6 +85,14 @@ async def test_curated_upload_toggle_preview_and_typed_protocol(tmp_path):
             assert "resolved_images" not in prepared.model_dump()
             assert "resolved_sticker_ids" not in prepared.model_dump()
             partial = await rt.media_service.upload(picture(), "global-safe", "笑脸", ["开心"])
+            hidden=await rt.media_service.upload(picture(),"group:other","隐藏素材",["开心"])
+            pages=[(await client.get('/api/media',params={"scene_id":"group:a","query":"开心","curated":True,"enabled":True,
+                "page":page,"page_size":1})).json() for page in (1,2)]
+            assert all(page["total"]==2 for page in pages)
+            assert {page["items"][0]["id"] for page in pages}=={asset["id"],partial["id"]}
+            assert (await client.get(f"/api/media/{hidden['id']}",params={"scene_id":"group:a"})).status_code==404
+            assert "path" not in (await client.get(f"/api/media/{asset['id']}",params={"scene_id":"group:a"})).json()
+
             await rt.media_service.upload(picture(), "group:other", "本群素材", ["开心", "问候", "不存在"])
             kit = RetrievalToolkit(rt.event_store, ["group:a", "global-safe"], "group:a",
                                    media_service=rt.media_service, on_observation=rt.commit_tool_observation)

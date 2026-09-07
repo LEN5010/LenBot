@@ -70,6 +70,8 @@ async def panel(tmp_path):
     app = FastAPI()
     app.state.runtime = runtime
     app.include_router(router)
+    from len_bot.web.routes.models import router as model_router
+    app.include_router(model_router)
     token = create_session("admin")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
         client.cookies.set("session_token", token)
@@ -83,21 +85,28 @@ async def test_panel_reads_committed_fact_sessions_and_single_ledger(panel):
     runtime, client, memory_id = panel
     await runtime.operator_outcome(SCENE, EpisodeOutcome(decision_reason="seed job", job_proposals=[
         JobProposal(proposal_id="job", goal="资料核对", source_event_ids=["source"])]))
+    from len_bot.scenes.models import SceneSession
+    for scope in ("global-safe","system"):
+        session=SceneSession(scene_id=scope)
+        await runtime.event_store._db.execute("INSERT INTO scene_sessions VALUES(?,0,0,0,?,1000)",[scope,session.model_dump_json()])
+    await runtime.event_store._db.commit()
     scenes = (await client.get("/api/cockpit/scenes")).json()["scenes"]
-    assert scenes == [{"scene_id": SCENE, "version": 2, "participant_count": 1,
+    assert scenes == [{"scene_id": SCENE, "display_name": "群聊 panel", "scene_type": "group", "version": 2, "participant_count": 1,
                        "last_event_at": 901, "last_bot_message_at": 901, "active_job_count": 1, "pending_wake_count": 0}]
     detail = (await client.get(f"/api/cockpit/scenes/{SCENE}")).json()
-    assert set(detail) == {"session", "preferences", "jobs", "recent_messages", "recent_deliveries",
+    assert set(detail) == {"session", "preferences", "jobs", "sampled_at",
                            "history_batches", "history_status", "maintenance"}
     assert detail["preferences"][0]["id"] == memory_id
     assert detail["session"]["participants"]["user:A"]["nickname"] == "A"
-    assert detail["recent_deliveries"][0]["id"] == "delivered"
+    messages=(await client.get(f"/api/cockpit/scenes/{SCENE}/messages")).json()
+    assert messages["items"][0]["id"] == "delivered"
+    assert "pending_wakes" not in detail["session"] and detail["jobs"]["total"] == 1
     assert "social_world" not in json.dumps(detail)
     overview = await runtime.query_service.overview()
     assert overview["stats"]["conversation_model"] == "chat"
     assert overview["stats"]["work_model"] == "research"
     assert "normal_model" not in overview["stats"]
-    items = (await client.get("/api/cockpit/memories", params={"scope": SCENE})).json()
+    items = (await client.get("/api/cockpit/memories", params={"scope": SCENE})).json()["items"]
     assert items[0]["statement"] == "A明确希望少开玩笑" and items[0]["basis"] == "reported"
     assert "certainty" not in items[0] and "key" not in items[0]
     assert (await client.get("/api/cockpit/scenes/group:missing")).status_code == 404
@@ -112,7 +121,7 @@ async def test_authenticated_refutation_keeps_original_evidence_and_operator_rea
     assert memory["status"] == "refuted" and memory["evidence"] == ["source"]
     assert memory["statement"] == "A明确希望少开玩笑" and memory["revision_reason"] == "运营核对后认为理解过度"
     assert len(memory["revision_evidence"]) == 1 and memory["revision_evidence"] != ["source"]
-    evidence = (await runtime.query_service.query_events(event_type="OPERATOR_ACTION"))[0]
+    evidence = (await runtime.query_service.query_events(event_type="OPERATOR_ACTION"))["items"][0]
     assert evidence["actor_id"] == "operator:admin"
     assert evidence["payload"]["target_memory_id"] == memory_id
     assert evidence["payload"]["operator"] == "admin"
@@ -129,7 +138,7 @@ async def test_memory_control_requires_authentication_and_explicit_reason(panel)
         assert (await client.post(f"/api/cockpit/memories/{memory_id}/refute", json=payload)).status_code == 422
     client.cookies.clear()
     assert (await client.post(f"/api/cockpit/memories/{memory_id}/refute", json={"reason": "撤销"})).status_code == 401
-    assert not await runtime.query_service.query_events(event_type="OPERATOR_ACTION")
+    assert not (await runtime.query_service.query_events(event_type="OPERATOR_ACTION"))["items"]
     assert (await runtime.query_service.memory(memory_id))["status"] == "active"
 
 
@@ -166,7 +175,7 @@ async def test_task_and_job_controls_use_operator_proposals_and_keep_version_che
         [TaskProposal(proposal_id="reminder", description="稍后提醒", due_at=1100, source_event_ids=["source"])], [], [],
         job_proposals=[JobProposal(proposal_id="work", goal="查询", source_event_ids=["source"])], bot_actor_id=BOT)
     task = next(item for item in created[0] if not item.id.startswith("job_"))
-    job = (await runtime.query_service.jobs(SCENE))[0]
+    job = (await runtime.query_service.jobs(SCENE))["items"][0]
     assert (await client.post(f"/api/cockpit/tasks/{task.id}/trigger_now")).status_code == 200
     updated = await runtime.query_service.get_task(task.id)
     assert updated["due_at"] == 1001 and updated["status"] == "pending"
@@ -180,7 +189,7 @@ async def test_task_and_job_controls_use_operator_proposals_and_keep_version_che
             'extra_content': {'provider_private': 'opaque-continuation-secret'}}]},
         {'role': 'tool', 'tool_call_id': 'opaque-call', 'content': '已读取'}], 1)
     public_jobs = await client.get('/api/cockpit/jobs', params={'scene_id': SCENE})
-    assert public_jobs.json()[0]['checkpoint']['exchange_count'] == 1
+    assert public_jobs.json()["items"][0]['checkpoint']['exchange_count'] == 1
     assert 'opaque-continuation-secret' not in public_jobs.text and 'checkpoint_data' not in public_jobs.text
     assert (await client.post(f"/api/cockpit/tasks/{job['id']}/cancel")).status_code == 409
     assert (await client.post(f"/api/cockpit/jobs/{job['id']}/cancel", json={"expected_revision": 3})).status_code == 409
@@ -198,3 +207,83 @@ async def test_loop_resolution_uses_same_operator_submission_path(panel):
     assert (await runtime.query_service.open_loop("loop"))["status"] == "resolved"
     assert runtime.outcomes[-1].resolve_open_loop_ids == ["loop"]
     assert runtime.operator_sources[-1]
+
+
+@pytest.mark.asyncio
+async def test_read_pages_keep_rowid_snapshot_scope_and_usage_filters(panel):
+    runtime,client,_=panel
+    for index in range(53):
+        await runtime.event_store.append_event(Event(id=f"page:{index:03}",event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=SCENE,actor_id="user:A",timestamp=950,payload={"raw_text":f"原话 {index}","message_id":str(index),
+            "sender":{"nickname":"A"}},metadata={"attention_reasons":[],"attention_certain":False}))
+    first=(await client.get(f"/api/cockpit/scenes/{SCENE}/messages",params={"limit":20})).json()
+    assert len(first["items"])==20 and first["has_more"]
+    await runtime.event_store.append_event(Event(id="new-after-snapshot",event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=SCENE,actor_id="user:A",timestamp=950,payload={"raw_text":"截点之后"}))
+    seen=[item["id"] for item in first["items"]];page=first
+    while page["has_more"]:
+        page=(await client.get(f"/api/cockpit/scenes/{SCENE}/messages",params={"limit":20,
+            "before":page["next_before"],"snapshot_rowid":first["snapshot_rowid"]})).json()
+        seen.extend(item["id"] for item in page["items"])
+    assert len(seen)==len(set(seen))==55 and "new-after-snapshot" not in seen
+    exact=(await client.get(f"/api/cockpit/scenes/{SCENE}/messages",params={"event_id":"page:000","limit":1})).json()
+    assert exact["items"][0]["id"]=="page:000"
+    assert (await client.get('/api/cockpit/events/page:000',params={"scene_id":"group:other"})).status_code==404
+    await runtime.event_store.append_event(Event(id="foreign-quote",event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id="group:other",actor_id="user:foreign",timestamp=951,payload={"raw_text":"私有引用","message_id":"private-quote"}))
+    await runtime.event_store.append_event(Event(id="bad-quote",event_type=EventType.GROUP_MESSAGE_RECEIVED,
+        scene_id=SCENE,actor_id="user:A",timestamp=952,payload={"raw_text":"引用尚未在本群找到","reply_to_message_id":"private-quote"},
+        metadata={"quote_context":{"event_id":"foreign-quote","actor_id":"user:foreign","text":"私有引用"}}))
+    public=await client.get('/api/cockpit/events/bad-quote',params={"scene_id":SCENE})
+    assert public.json()["quote"]=={"missing":True} and "私有引用" not in public.text
+    await runtime.event_store.append_event(Event(id="simulated-receipt",event_type=EventType.MESSAGE_SENT,
+        scene_id=SCENE,actor_id=BOT,payload={"content":"模拟","delivery_status":"sent"},metadata={"simulated":True}))
+    simulated=(await client.get('/api/cockpit/events/simulated-receipt',params={"scene_id":SCENE})).json()
+    assert simulated["simulated"] is True and simulated["delivery_status"]=="sent"
+    assert (await client.get('/api/cockpit/events/delivered',params={"scene_id":SCENE})).json()["delivery_status"] is None
+    for scene,purpose,status,usage in ((SCENE,"conversation","completed",{"prompt_tokens":10,"completion_tokens":2,
+            "completion_tokens_details":{"reasoning_tokens":1},"prompt_tokens_details":{"cached_tokens":3}}),
+            (SCENE,"conversation","failed",None),(SCENE,"work","completed",{"prompt_tokens":50,"completion_tokens":8}),
+            ("group:other","conversation","completed",{"prompt_tokens":100,"completion_tokens":9})):
+        ident=await runtime.event_store.begin_model_call(scene_id=scene,episode_id="fixture-episode",job_id=None,batch_id=None,
+            role="work" if purpose=="work" else "conversation",purpose=purpose,provider_id="fixture",model="fixture",reasoning_effort=None,
+            estimate={"input_tokens":20})
+        await runtime.event_store.end_model_call(ident,status=status,usage=usage)
+    params={"scene_id":SCENE,"purpose":"conversation","since":1000,"until":1000,"page_size":1}
+    usage=(await client.get('/api/models/usage',params=params)).json()
+    next_usage=(await client.get('/api/models/usage',params={**params,"page":2})).json()
+    assert usage["total"]==2 and len(usage["items"])==1
+    assert usage["items"][0]["id"] != next_usage["items"][0]["id"] and usage["totals"]==next_usage["totals"]
+    total=usage["totals"][0]
+    assert total["calls"]==2 and total["unknown_usage"]==1
+    assert (total["prompt_tokens"],total["completion_tokens"],total["cached_tokens"],total["reasoning_tokens"])==(10,2,3,1)
+    assert usage["cost"]["amount"] is None
+    assert (await client.get('/api/models/usage/'+usage["items"][0]["id"],params={"scene_id":"group:other"})).status_code==404
+    assert (await client.get('/api/cockpit/jobs',params={"page_size":101})).status_code==422
+
+    # Selecting a public old version never exposes a newer scene-private skill.
+    body=json.dumps({"name":"范围技能","applicability":"分页查询","steps":["读取"],"verification":["核对"],"exclusions":[]},ensure_ascii=False)
+    await runtime.event_store._db.execute("INSERT INTO skills VALUES('scope-skill',?,?,2,'agent',1000)",[SCENE,SCENE])
+    await runtime.event_store._db.executemany("INSERT INTO skill_versions VALUES('scope-skill',?,?,?,1000,?)",
+        [(1,body,'{}','global-safe'),(2,body,'{}',SCENE)])
+    await runtime.event_store._db.commit()
+    public=(await client.get('/api/cockpit/skills/scope-skill',params={"scene_id":"group:other"})).json()
+    assert public["version"]==1 and [item["version"] for item in public["versions"]]==[1]
+    assert (await client.get('/api/cockpit/skills/scope-skill',params={"scene_id":"group:other","version":2})).status_code==404
+    own=(await client.get('/api/cockpit/skills/scope-skill',params={"scene_id":SCENE,"version":2})).json()
+    assert own["version"]==2 and [item["version"] for item in own["versions"]]==[2,1]
+
+    batch=await runtime.event_store.begin_history_batch(SCENE,target_tokens=300,min_tokens=1)
+    assert batch is not None
+    await runtime.event_store.fail_history_batch(batch.id,"TimeoutError")
+    await runtime.event_store.save_trace(kind="history_maintenance_error",scene_id=SCENE,ref_id=batch.id,payload={"error":"fixture timeout"})
+    for scope in (SCENE,"group:other"):
+        call_id=await runtime.event_store.begin_model_call(scene_id=scope,episode_id=None,job_id=None,batch_id=batch.id,
+            role="maintenance",purpose="history_maintenance",provider_id="fixture",model="fixture",reasoning_effort=None,estimate={"input_tokens":10})
+        await runtime.event_store.end_model_call(call_id,status="failed")
+    linked=(await client.get('/api/cockpit/relations',params={"scene_id":SCENE,"batch_id":batch.id})).json()
+    assert [item["id"] for item in linked["events"]]==list(reversed(batch.source_event_ids))
+    assert len(linked["calls"])==len(linked["traces"])==1 and linked["calls"][0]["scene_id"]==SCENE
+    assert linked["calls"][0]["batch_id"]==batch.id and linked["jobs"]==linked["actions"]==[]
+    assert linked["batches"][0]["start_rowid"]==batch.start_rowid and linked["batches"][0]["end_offset"]==batch.end_offset
+    assert (await client.get('/api/cockpit/relations',params={"scene_id":"group:other","batch_id":batch.id})).status_code==404

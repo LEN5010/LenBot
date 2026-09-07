@@ -70,32 +70,20 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     async def get_logs(level: str | None = None, limit: int = 200, user: str = Depends(get_current_user)):
         return app.state.log_ring.snapshot(level=level, limit=limit)
 
-    # Static assets: Vue build output takes precedence over the legacy page
+    # One Vue application uses hash history; assets and shell ship together.
     dist_dir = Path(__file__).parent / "static" / "dist"
-    if dist_dir.exists():
+    if (dist_dir / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=str(dist_dir / "assets")), name="assets")
 
-        @app.get("/{full_path:path}")
-        async def spa_fallback(full_path: str):
-            # The SPA shell is served publicly (login screen lives in it);
-            # every /api route remains auth-gated.
-            if full_path.startswith("api/"):
-                return JSONResponse(status_code=404, content={"detail": "接口不存在，请重启 LenBot 后再试"})
-            candidate = dist_dir / full_path
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(dist_dir / "index.html")
+    @app.get("/")
+    async def index():
+        entry = dist_dir / "index.html"
+        if not entry.is_file():
+            return JSONResponse(status_code=503, content={"detail": "控制面板尚未构建，请先在 frontend 目录执行 npm ci 和 npm run build"})
+        return FileResponse(entry, headers={"Cache-Control": "no-cache"})
 
-    else:
-        static_dir = Path(__file__).parent / "static"
-        if static_dir.exists():
-            app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-        @app.get("/")
-        async def index():
-            index_file = Path(__file__).parent / "static" / "index.html"
-            if index_file.exists():
-                return FileResponse(index_file)
-            return {"message": "Len Bot Control Plane Backend Running"}
+    @app.get("/{full_path:path}")
+    async def unknown_path(full_path: str):
+        return JSONResponse(status_code=404, content={"detail": "接口不存在" if full_path.startswith("api/") else "资源不存在"})
 
     return app

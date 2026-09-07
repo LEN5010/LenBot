@@ -25,7 +25,7 @@ class PluginConfigRequest(BaseModel):
 @router.get("/list")
 async def list_plugins(request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    return runtime.plugin_host.status_snapshot()
+    return runtime.query_service.plugins()
 
 
 @router.post("/toggle")
@@ -45,9 +45,11 @@ async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = 
 async def save_plugin_config(req: PluginConfigRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     try:
-        # Merge onto defaults so a partial form submit keeps unspecified defaults
-        config = runtime.plugin_host.set_plugin_config(req.plugin_id, req.config)
+        # Omitted fields keep their existing values, including credentials.
+        runtime.plugin_host.set_plugin_config(req.plugin_id, req.config)
     except KeyError:
         raise HTTPException(status_code=404, detail="Plugin not found")
     await runtime.save_plugin_state()
-    return {"success": True, "plugin_id": req.plugin_id, "config": config}
+    public=next(item for item in runtime.query_service.plugins() if item["id"]==req.plugin_id)
+    return {"success":True,"plugin_id":req.plugin_id,"config":public["config"],
+            "secret_fields":public["secret_fields"],"config_set":public["config_set"]}

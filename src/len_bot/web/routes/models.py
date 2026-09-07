@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from openai import AsyncOpenAI
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
@@ -209,5 +209,14 @@ async def get_routing_metrics(request: Request, user: str = Depends(get_current_
 
 
 @router.get("/usage")
-async def get_model_usage(request: Request, scene_id: str | None = None, limit: int = 100, user: str = Depends(get_current_user)):
-    return await request.app.state.runtime.query_service.model_usage(scene_id, limit)
+async def get_model_usage(request: Request, scene_id: str | None = None, since: float | None = None, until: float | None = None,
+                          purpose: str | None = None, status: str | None = None, page: int = Query(1,ge=1),
+                          page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.model_usage(scene_id,since=since,until=until,purpose=purpose,status=status,page=page,page_size=page_size)
+
+
+@router.get("/usage/{call_id}")
+async def model_call_detail(call_id: str, request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    result=await request.app.state.runtime.query_service.model_call(call_id,scene_id)
+    if result is None:raise HTTPException(404,"调用记录不存在")
+    return result

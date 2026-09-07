@@ -33,7 +33,9 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         return DeliveryResult(status=DeliveryStatus.SENT, transport="isolated-test")
 
     async def turn(session, events):
-        return turn_result(reason="User asked directly", content="看了一下，没问题")
+        outcome=turn_result(reason="User asked directly", content="看了一下，没问题")
+        outcome.message_proposals[0].reply_to="protocol-original"
+        return outcome
 
     runtime, client = await _make_runtime_and_client(
         RuntimeConfig(db_path=str(tmp_path / "trace.db")), mock_turn_handler=turn, send_adapter=send,
@@ -42,14 +44,15 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         scene_id = "group:trace"
         await allow_fake_delivery(runtime, scene_id)
         incoming = Event(event_type=EventType.GROUP_MESSAGE_RECEIVED, scene_id=scene_id,
-                         actor_id="user:A", payload={"raw_text": "@Bot 帮我看看这个", "at_bot": True})
+                         actor_id="user:A", payload={"raw_text": "@Bot 帮我看看这个", "at_bot": True,"message_id":"protocol-original"})
         await runtime.receive_event(incoming)
         await drain(runtime)
         response = await client.get("/api/cockpit/traces", params={"scene_id": scene_id, "kind": "conversation"})
         assert response.status_code == 200
-        rows = response.json()
-        assert len(rows) == 1
-        payload = rows[0]["payload"]
+        rows = response.json()["items"]
+        assert response.json()["total"] == len(rows) == 1 and "payload" not in rows[0]
+        detail=await client.get(f"/api/cockpit/traces/{rows[0]['id']}",params={"scene_id":scene_id})
+        payload = detail.json()["payload"]
         assert payload["result"]["disposition"] == "ACTION"
         assert payload["gate"]["accepted"] and payload["gate"]["disposition"] == "ACTION"
         assert payload["actions_enqueued"] == len(sent_actions) == 1
@@ -58,6 +61,27 @@ async def test_trace_captures_full_causal_chain(tmp_path):
         events = await runtime.event_store.get_recent_events(scene_id)
         delivery = next(event for event in events if event.event_type == EventType.MESSAGE_SENT)
         assert delivery.payload["action_id"] == sent_actions[0].id
+        await runtime.event_store.append_event(Event(id="unrelated-nearby",event_type=EventType.GROUP_MESSAGE_RECEIVED,
+            scene_id=scene_id,actor_id="user:B",timestamp=incoming.timestamp,payload={"raw_text":"附近但无引用关系"}))
+        await runtime.event_store.append_event(Event(id="foreign-batch",event_type=EventType.MESSAGE_SENT,
+            scene_id="group:other",actor_id=runtime.bot_actor_id,payload={"batch_id":rows[0]["ref_id"],"delivery_status":"sent"}))
+        linked=(await client.get('/api/cockpit/relations',params={"scene_id":scene_id,"event_id":incoming.id})).json()
+        assert {incoming.id,delivery.id} <= {item["id"] for item in linked["events"]}
+        assert not {"unrelated-nearby","foreign-batch"} & {item["id"] for item in linked["events"]}
+        assert linked["actions"][0]["receipt_event_ids"] == [delivery.id]
+        assert linked["actions"][0]["delivery_status"] == "sent"
+        projected=next(item for item in linked["events"] if item["id"]==delivery.id)
+        assert projected["quote"]["event_id"]==incoming.id and projected["quote"]["text"]==incoming.raw_text
+        assert (await client.get('/api/cockpit/relations',params={"scene_id":"group:other","event_id":incoming.id})).status_code==404
+        await runtime.event_store.save_trace(kind="conversation",scene_id=scene_id,ref_id="pending-episode",payload={
+            "gate":{"accepted":True,"action_ids":["pending-only"]},"continuation":{"thought_signature":"private-continuation"}})
+        pending=(await client.get('/api/cockpit/relations',params={"scene_id":scene_id,"action_id":"pending-only"})).json()
+        assert pending["actions"][0]["id"]=="pending-only" and pending["actions"][0]["delivery_status"] is None
+        assert pending["actions"][0]["receipt_event_ids"]==[]
+        trace_detail=await client.get('/api/cockpit/traces/'+pending["traces"][0]["id"],params={"scene_id":scene_id})
+        assert "private-continuation" not in trace_detail.text and "continuation" not in trace_detail.json()["payload"]
+
+
     finally:
         await client.aclose()
         await runtime.stop()
@@ -103,7 +127,7 @@ async def test_memory_chain_and_filtered_events_via_query_service(tmp_path):
                        actor_id="user:B", payload={"raw_text": "标记消息"})
         await runtime.receive_event(marker)
         await drain(runtime)
-        events = await runtime.query_service.query_events(scene_id=scene_id, actor_id="user:B")
+        events = (await runtime.query_service.query_events(scene_id=scene_id, actor_id="user:B"))["items"]
         assert len(events) == 1 and events[0]["id"] == marker.id
         assert events[0]["actor_id"] == "user:B"
     finally:

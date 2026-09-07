@@ -1,5 +1,5 @@
 """Authenticated curated-media operations; originals remain scope-bound."""
-from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -14,8 +14,23 @@ def public_asset(asset):
 
 
 @router.get("")
-async def list_media(request: Request, scene_id: str = "global-safe", query: str = "", user: str = Depends(get_current_user)):
-    return await request.app.state.runtime.query_service.media_assets(scene_id, query)
+async def list_media(request: Request, scene_id: str = "global-safe", query: str = "", curated: bool | None = None,
+                     enabled: bool | None = None, palette_only: bool = False, page: int = Query(1,ge=1),
+                     page_size: int = Query(48,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.media_assets(scene_id,query,curated=curated,enabled=enabled,
+                                                                     palette_only=palette_only,page=page,page_size=page_size)
+
+
+@router.get("/palette")
+async def media_palette(request: Request, scene_id: str = "global-safe", user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.media_palette(scene_id)
+
+
+@router.get("/{asset_id}")
+async def media_detail(asset_id: str, scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    result=await request.app.state.runtime.query_service.media_asset(asset_id,scene_id)
+    if result is None:raise HTTPException(404,"未找到本场景的素材")
+    return result
 
 
 @router.post("")

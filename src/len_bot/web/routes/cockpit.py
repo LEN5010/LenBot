@@ -1,5 +1,5 @@
-from typing import Optional
-from fastapi import APIRouter, Request, Depends, HTTPException
+from typing import Optional, Literal
+from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from len_bot.web.auth import get_current_user
 from len_bot.memory.models import MemoryProposal
@@ -23,9 +23,8 @@ def _service(request: Request):
 
 
 @router.get("/tool-results")
-async def tool_results(scene_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _service(request).tool_results(scene_id)
-
+async def tool_results(scene_id: str, request: Request, page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).tool_results(scene_id,page,page_size)
 
 @router.get("/tool-results/{result_id}")
 async def tool_result(result_id: str, scene_id: str, request: Request, offset: int = 0, user: str = Depends(get_current_user)):
@@ -40,7 +39,7 @@ async def tool_result(result_id: str, scene_id: str, request: Request, offset: i
 @router.get("/scenes")
 async def list_scenes(request: Request, user: str = Depends(get_current_user)):
     scenes = await _service(request).list_scenes()
-    return {"scenes": scenes}
+    return {"scenes": scenes, "total": len(scenes), "complete": True}
 
 
 @router.get("/scenes/{scene_id}")
@@ -51,14 +50,47 @@ async def get_scene_detail(scene_id: str, request: Request, user: str = Depends(
     return detail
 
 
+@router.get("/scenes/{scene_id}/messages")
+async def scene_messages(scene_id: str, request: Request, before: int | None = Query(None,ge=1), snapshot_rowid: int | None = Query(None,ge=0),
+                         event_id: str | None = None, limit: int = Query(50,ge=1,le=100), user: str = Depends(get_current_user)):
+    result=await _service(request).query_events(scene_id=scene_id,before=before,snapshot_rowid=snapshot_rowid,event_id=event_id,limit=limit,messages_only=True)
+    if result is None:raise HTTPException(404,"未找到本场景或消息")
+    return result
+
+
+@router.get("/scenes/{scene_id}/pending-wakes")
+async def pending_wakes(scene_id: str, request: Request, page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    result=await _service(request).pending_wakes(scene_id,page,page_size)
+    if result is None:raise HTTPException(404,"场景不存在")
+    return result
+
+
 @router.get("/tasks")
-async def list_tasks(request: Request, status: Optional[str] = None, user: str = Depends(get_current_user)):
-    return await _service(request).list_tasks(status=status)
+async def list_tasks(request: Request, status: str | None = None, scene_id: str | None = None, kind: Literal["reminder","agent_job"] = "reminder",
+                     page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).list_tasks(status=status,scene_id=scene_id,kind=kind,page=page,page_size=page_size)
+
+
+@router.get("/tasks/{task_id}")
+async def task_detail(task_id: str, request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    result=await _service(request).get_task(task_id,scene_id)
+    if result is None:raise HTTPException(404,"任务不存在")
+    return result
 
 
 @router.get("/jobs")
-async def jobs(request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
-    return await _service(request).jobs(scene_id)
+async def jobs(request: Request, scene_id: str | None = None, status: str | None = None, execution_status: str | None = None, query: str = "",
+               page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).jobs(scene_id,status=status,execution_status=execution_status,query=query,page=page,page_size=page_size)
+
+
+@router.get("/jobs/{job_id}")
+async def job_detail(job_id: str, request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    result=await _service(request).job(job_id,scene_id)
+    if result is None:raise HTTPException(404,"工作不存在")
+    return result
+
+
 
 
 class JobControlRequest(BaseModel):
@@ -132,9 +164,16 @@ async def trigger_task_now(task_id: str, request: Request, user: str = Depends(g
 
 
 @router.get("/loops")
-async def list_loops(request: Request, status: Optional[str] = None, user: str = Depends(get_current_user)):
-    return await _service(request).list_open_loops(status=status)
+async def list_loops(request: Request, status: str | None = None, scene_id: str | None = None,
+                     page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).list_open_loops(status=status,scene_id=scene_id,page=page,page_size=page_size)
 
+
+@router.get("/loops/{loop_id}")
+async def loop_detail(loop_id: str, request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    result=await _service(request).open_loop(loop_id,scene_id)
+    if result is None:raise HTTPException(404,"等待事项不存在")
+    return result
 
 @router.post("/loops/{loop_id}/resolve")
 async def resolve_loop(loop_id: str, request: Request, user: str = Depends(get_current_user)):
@@ -151,19 +190,20 @@ async def resolve_loop(loop_id: str, request: Request, user: str = Depends(get_c
 
 
 @router.get("/memories")
-async def list_memories(
-    request: Request,
-    status: Optional[str] = None,
-    scope: Optional[str] = None,
-    subject: Optional[str] = None,
-    user: str = Depends(get_current_user)
-):
-    return await _service(request).list_memories(status=status, scope=scope, subject=subject)
+async def list_memories(request: Request, status: str | None = None, scope: str | None = None, subject: str | None = None, kind: str | None = None,
+                        query: str = "", page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).list_memories(status=status,scope=scope,subject=subject,kind=kind,query=query,page=page,page_size=page_size)
 
+
+@router.get("/memories/{memory_id}")
+async def memory_detail(memory_id: str, request: Request, scope: str | None = None, user: str = Depends(get_current_user)):
+    result=await _service(request).memory(memory_id,scope)
+    if result is None:raise HTTPException(404,"认识不存在")
+    return result
 
 @router.get("/memories/{memory_id}/chain")
-async def memory_chain(memory_id: str, request: Request, user: str = Depends(get_current_user)):
-    chain = await _service(request).memory_chain(memory_id)
+async def memory_chain(memory_id: str, request: Request, scope: str | None = None, user: str = Depends(get_current_user)):
+    chain = await _service(request).memory_chain(memory_id,scope)
     if not chain:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"chain": chain}
@@ -186,33 +226,48 @@ async def refute_memory(memory_id: str, req: MemoryActionRequest, request: Reque
     return {"success": True, "memory_id": memory_id, "status": "refuted"}
 
 
+@router.get("/event-types")
+async def event_types(request: Request, user: str = Depends(get_current_user)):
+    return _service(request).event_types()
+
+
 @router.get("/events")
-async def query_events(
-    request: Request,
-    scene_id: Optional[str] = None,
-    actor_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    since: Optional[float] = None,
-    until: Optional[float] = None,
-    limit: int = 80,
-    user: str = Depends(get_current_user)
-):
-    return await _service(request).query_events(
-        scene_id=scene_id, actor_id=actor_id, event_type=event_type,
-        since=since, until=until, limit=limit,
-    )
+async def query_events(request: Request, scene_id: str | None = None, actor_id: str | None = None, event_type: str | None = None,
+                       since: float | None = None, until: float | None = None, before: int | None = Query(None,ge=1),
+                       snapshot_rowid: int | None = Query(None,ge=0), limit: int = Query(50,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).query_events(scene_id=scene_id,actor_id=actor_id,event_type=event_type,since=since,until=until,
+                                                before=before,snapshot_rowid=snapshot_rowid,limit=limit)
+
+
+@router.get("/events/{event_id}")
+async def event_detail(event_id: str, scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    result=await _service(request).event(event_id,scene_id)
+    if result is None:raise HTTPException(404,"未找到本场景的事件")
+    return result
 
 
 @router.get("/traces")
-async def list_traces(
-    request: Request,
-    scene_id: Optional[str] = None,
-    kind: Optional[str] = None,
-    limit: int = 50,
-    user: str = Depends(get_current_user)
-):
-    return await _service(request).query_traces(scene_id=scene_id, kind=kind, limit=limit)
+async def list_traces(request: Request, scene_id: str | None = None, kind: str | None = None, ref_id: str | None = None,
+                      since: float | None = None, until: float | None = None, page: int = Query(1,ge=1),
+                      page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).query_traces(scene_id=scene_id,kind=kind,ref_id=ref_id,since=since,until=until,page=page,page_size=page_size)
 
+
+@router.get("/traces/{trace_id}")
+async def trace_detail(trace_id: str, request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
+    result=await _service(request).trace(trace_id,scene_id)
+    if result is None:raise HTTPException(404,"记录不存在")
+    return result
+
+
+@router.get("/relations")
+async def relations(scene_id: str, request: Request, event_id: str | None = None, job_id: str | None = None,
+                    episode_id: str | None = None, action_id: str | None = None, batch_id: str | None = None, user: str = Depends(get_current_user)):
+    if sum(value is not None for value in (event_id,job_id,episode_id,action_id,batch_id)) != 1:
+        raise HTTPException(400,"请指定一个事件、工作、轮次、行动或维护批次引用")
+    result=await _service(request).relations(scene_id,event_id=event_id,job_id=job_id,episode_id=episode_id,action_id=action_id,batch_id=batch_id)
+    if result is None:raise HTTPException(404,"未找到本场景的关联对象")
+    return result
 
 @router.get("/shadow")
 async def shadow_log(request: Request, limit: int = 100, user: str = Depends(get_current_user)):
@@ -245,9 +300,15 @@ async def delivery_scenes(req: DeliveryScenesRequest, request: Request, user: st
 
 
 @router.get("/skills")
-async def list_skills(request: Request, scene_id: str | None = None, user: str = Depends(get_current_user)):
-    return await _service(request).skills(scene_id)
+async def list_skills(request: Request, scene_id: str | None = None, query: str = "", page: int = Query(1,ge=1),
+                      page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).skills(scene_id,query=query,page=page,page_size=page_size)
 
+
+@router.get("/skill-candidates")
+async def skill_candidates(request: Request, scene_id: str | None = None, status: str | None = None,
+                           page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).skill_candidates(scene_id,status=status,page=page,page_size=page_size)
 
 @router.get("/skills/{skill_id}")
 async def get_skill(skill_id: str, scene_id: str, request: Request, version: int | None = None, user: str = Depends(get_current_user)):
@@ -258,8 +319,17 @@ async def get_skill(skill_id: str, scene_id: str, request: Request, version: int
 
 
 @router.get("/history-batches")
-async def list_history_batches(scene_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _service(request).history_batches(scene_id)
+async def list_history_batches(scene_id: str, request: Request, page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).history_batches(scene_id,page,page_size)
+
+
+@router.get("/history-batches/{batch_id}")
+async def history_batch_detail(batch_id: str, scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    result=await _service(request).history_batch(batch_id)
+    if result is None or result["scene_id"] != scene_id:raise HTTPException(404,"未找到本场景的历史区间")
+    return result
+
+
 
 
 class SkillPublishRequest(BaseModel):

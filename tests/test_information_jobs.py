@@ -333,7 +333,7 @@ async def test_unfinished_result_is_explicit_and_resumes_with_observations_and_u
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(rt)), base_url="http://test") as client:
             await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-            displayed = (await client.get("/api/cockpit/jobs")).json()[0]
+            displayed = (await client.get("/api/cockpit/jobs")).json()["items"][0]
             assert displayed["can_resume"] and displayed["execution_status"] == execution_status
             response = await client.post(f"/api/cockpit/jobs/{job['id']}/resume", json={"expected_revision": 1})
             assert response.status_code == 200
@@ -399,7 +399,12 @@ async def test_progress_is_evidence_linked_bounded_and_panel_control_versioned(t
             await rt.event_store.report_job_progress(job["id"], "group:jobs", 1, "伪造资料", ["foreign"])
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(rt)), base_url="http://test") as client:
             await client.post("/api/auth/login", json={"username": "admin", "password": "lenbot123"})
-            assert len((await client.get("/api/cockpit/jobs")).json()) == 1
+            page = (await client.get("/api/cockpit/jobs")).json()
+            assert page["total"] == len(page["items"]) == 1
+            due = next(event for event in await rt.event_store.get_recent_events("group:jobs")
+                       if event.event_type == EventType.TASK_DUE and event.payload.get("task_id") == job["id"])
+            linked = (await client.get("/api/cockpit/relations", params={"scene_id":"group:jobs", "event_id":due.id})).json()
+            assert [item["id"] for item in linked["jobs"]] == [job["id"]]
             response = await client.post(f"/api/cockpit/jobs/{job['id']}/revise", json={"expected_revision": 1, "goal": "只整理确定的事实"})
             assert response.status_code == 200 and response.json()["job"]["revision"] == 2
             stale = await client.post(f"/api/cockpit/jobs/{job['id']}/cancel", json={"expected_revision": 1})

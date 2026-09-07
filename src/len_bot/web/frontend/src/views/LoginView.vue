@@ -1,162 +1,18 @@
 <script setup>
 import { ref } from 'vue'
-import { api } from '../api.js'
-
-const emit = defineEmits(['logged-in'])
-const username = ref('admin')
-const password = ref('')
-const error = ref('')
-const busy = ref(false)
-
-async function login() {
-  error.value = ''
-  busy.value = true
-  try {
-    const res = await api('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username: username.value, password: password.value }),
-    })
-    if (res.is_default_password) {
-      error.value = '当前为默认初始密码，登录后请尽快前往「设置」修改。'
-    }
-    emit('logged-in')
-  } catch (e) {
-    error.value = e.message === 'unauthorized' ? '账号或密码错误，请核对后重试' : (e.message || '登录失败')
-  } finally {
-    busy.value = false
-  }
-}
+import { useRoute, useRouter } from 'vue-router'
+import { login } from '../composables/useAuth.js'
+import { returnPath } from '../router/index.js'
+const route=useRoute(),router=useRouter()
+const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
+async function submit(){if(busy.value)return;busy.value=true;error.value='';try{await login(username.value,password.value);password.value='';await router.replace(returnPath(route.query.redirect))}catch(e){error.value=e.status===401?'用户名或密码不正确':e.message}finally{busy.value=false}}
 </script>
-
 <template>
-  <div class="login-wrap">
-    <div class="glow-orb"></div>
-    <form class="login-card" @submit.prevent="login">
-      <div class="brand-header">
-        <div class="logo-badge">L</div>
-        <h1>LenBot 管理中心</h1>
-        <p class="subtitle">查看和管理你的 QQ 机器人</p>
-      </div>
-      <label>
-        <span>管理员账号</span>
-        <input v-model="username" autocomplete="username" placeholder="请输入用户名" />
-      </label>
-      <label>
-        <span>访问密码</span>
-        <input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
-      </label>
-      <p v-if="error" class="error">{{ error }}</p>
-      <button class="primary submit-btn" :disabled="busy" type="submit">
-        {{ busy ? '正在登录…' : '登录' }}
-      </button>
-      <div class="login-footer">
-        <span>登录后即可查看机器人的运行情况</span>
-      </div>
-    </form>
-  </div>
+  <main class="login-page"><v-card class="login-card"><v-card-text>
+    <span class="login-mark">L</span><h1>登录 LenBot</h1><p class="muted">查看运行事实，管理工作与资料。</p>
+    <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
+    <form @submit.prevent="submit"><v-text-field v-model="username" label="用户名" autocomplete="username" required :disabled="busy" /><v-text-field v-model="password" label="密码" type="password" autocomplete="current-password" required :disabled="busy" /><v-btn type="submit" color="primary" block :loading="busy" :disabled="!username || !password">登录</v-btn></form>
+    <p class="login-note">使用现有管理账户登录</p>
+  </v-card-text></v-card></main>
 </template>
-
-<style scoped>
-.login-wrap {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-  background: var(--bg-gradient);
-  background-attachment: fixed;
-}
-
-.glow-orb {
-  position: absolute;
-  width: 520px;
-  height: 520px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.16) 0%, rgba(99, 102, 241, 0.08) 50%, transparent 70%);
-  border-radius: 50%;
-  filter: blur(60px);
-  pointer-events: none;
-}
-
-.login-card {
-  position: relative;
-  z-index: 1;
-  width: 390px;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(22px) saturate(135%);
-  -webkit-backdrop-filter: blur(22px) saturate(135%);
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  border-radius: var(--radius-lg);
-  padding: 38px 34px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  box-shadow: var(--shadow-bento);
-}
-
-.brand-header {
-  text-align: center;
-  margin-bottom: 6px;
-}
-
-.logo-badge {
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 10px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-size: 1.5rem;
-  font-weight: 800;
-  border-radius: 15px;
-  background: var(--accent-gradient);
-  box-shadow: 0 10px 24px var(--accent-glow);
-}
-
-.brand-header h1 {
-  font-size: 1.35rem;
-}
-
-.subtitle {
-  color: var(--muted);
-  font-size: 0.86rem;
-  margin: 6px 0 0;
-}
-
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 0.86rem;
-  color: var(--text-soft);
-  font-weight: 650;
-}
-
-label input {
-  padding: 10px 14px;
-}
-
-.submit-btn {
-  margin-top: 8px;
-  padding: 11px;
-  font-size: 0.95rem;
-  border-radius: var(--radius-sm);
-}
-
-.error {
-  color: var(--bad);
-  background: var(--bad-bg);
-  border: 1px solid rgba(220, 38, 38, 0.16);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  font-size: 0.84rem;
-  margin: 0;
-}
-
-.login-footer {
-  text-align: center;
-  font-size: 0.78rem;
-  color: var(--muted);
-  margin-top: 4px;
-}
-</style>
+<style scoped>.login-page{display:grid;place-items:center;min-height:100vh;padding:24px}.login-card{width:420px;max-width:100%;padding:20px}.login-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:10px;background:#2563eb;color:#fff;font-size:26px;font-weight:700;margin-bottom:24px}.login-card h1{font-size:25px;margin-bottom:8px}.login-card form{display:grid;gap:20px;margin-top:28px}.login-note{margin:24px 0 0;font-size:12px;color:var(--muted)}@media(max-width:600px){.login-card{padding:12px}.login-page{padding:16px}}</style>

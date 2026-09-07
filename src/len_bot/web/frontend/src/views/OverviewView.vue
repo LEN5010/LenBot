@@ -1,72 +1,50 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { api, fmtTime } from '../api.js'
-
-const data = ref(null)
-const error = ref('')
+import { computed,onMounted,onBeforeUnmount,ref } from 'vue'
+import { mdiRefresh,mdiArrowRight,mdiForumOutline,mdiDatabaseOutline,mdiClockOutline } from '@mdi/js'
+import { api,fmtTime,sceneName } from '../api.js'
+import { useAppState,refreshStatus } from '../composables/useAppState.js'
+import PageHeader from '../components/PageHeader.vue'
+import EntityLink from '../components/EntityLink.vue'
+import StatusBadge from '../components/StatusBadge.vue'
+const app=useAppState(),data=ref(null),review=ref(null),unknown=ref(null),unknownJobs=ref(null),failed=ref(null),error=ref(''),loading=ref(false)
+let sequence=0
+async function load(){const own=++sequence;loading.value=true;try{const result=await Promise.all([api('/api/overview/stats'),api('/api/cockpit/jobs?status=review_required&page_size=4'),api('/api/cockpit/tasks?status=delivery_unknown&page_size=4'),api('/api/cockpit/jobs?status=delivery_unknown&page_size=4'),api('/api/models/usage?status=failed&page_size=4')]);if(own===sequence){[data.value,review.value,unknown.value,unknownJobs.value,failed.value]=result;app.scenes=data.value.scenes;app.loadedScenes=true;error.value=''}}catch(e){if(own===sequence)error.value=e.message}finally{if(own===sequence)loading.value=false}}
+async function refresh(){await Promise.all([load(),refreshStatus()])}
+const roleNames={conversation:'对话',work:'后台工作',maintenance:'维护整理'}
+const hasIssues=computed(()=>review.value.total+unknown.value.total+unknownJobs.value.total+failed.value.total>0)
+const unknownCount=computed(()=>unknown.value.total+unknownJobs.value.total)
+const unknownItems=computed(()=>[...unknown.value.items.map(item=>({...item,entityType:'task'})),...unknownJobs.value.items.map(item=>({...item,description:item.goal,entityType:'job'}))])
 onMounted(load)
-async function load() { try { data.value = await api('/api/overview/stats'); error.value = '' } catch (e) { error.value = e.message } }
+onBeforeUnmount(()=>sequence++)
 </script>
-
 <template>
-  <div class="overview-view">
-    <div class="toolbar">
-      <div class="page-title"><h1>运行概览</h1><p class="muted">查看连接、发送配置和最近场景，模型调用与后台工作分别记录。</p></div>
-      <button @click="load">刷新</button>
-    </div>
-    <p v-if="error" class="tag bad">{{ error }}</p>
-
+  <div class="page-stack">
+    <PageHeader title="运行概览" description="先看当前连接与待处理事项，再查看对话、工作和持久资料。"><v-btn :prepend-icon="mdiRefresh" variant="outlined" :loading="loading" @click="refresh">刷新</v-btn></PageHeader>
+    <v-alert v-if="error" type="error" variant="tonal">读取失败：{{ error }}<span v-if="data">。下方保留 {{ fmtTime(data.sampled_at) }} 的结果。</span></v-alert>
+    <v-progress-linear v-if="loading && !data" indeterminate color="primary" />
     <template v-if="data">
-      <div class="bento-grid">
-        <div class="bento-card bento-col-4 primary-card">
-          <div class="bento-badge">QQ 连接</div>
-          <div class="hero-status"><span :class="data.stats.websocket_connected ? 'big-dot online' : 'big-dot'"></span>{{ data.stats.websocket_connected ? '已经连接' : '等待连接' }}</div>
-          <div class="bento-desc">{{ data.stats.websocket_connected ? '可以正常接收群消息' : data.stats.onebot_connection_mode === 'forward_ws' ? '正在主动连接 OneBot，断线后会自动重试' : '正在等待 OneBot 主动接入' }}</div>
-        </div>
-        <div class="bento-card bento-col-4">
-          <div class="bento-badge">消息发送</div>
-          <div class="hero-status">{{ data.stats.shadow_mode ? 'Shadow · 不实发' : '按实发名单发送' }}</div>
-          <div class="bento-desc">{{ data.stats.shadow_mode ? '正常处理对话，表达提案只记在后台' : '通过 Gate 的消息仅向实发名单中的场景投递' }}</div>
-        </div>
-        <div class="bento-card bento-col-4">
-          <div class="bento-badge">对话模型</div>
-          <div class="hero-model">{{ data.stats.conversation_model || '尚未设置' }}</div>
-          <div class="bento-desc">后台工作：{{ data.stats.work_model || '尚未设置' }}</div><div class="bento-desc">维护整理：{{ data.stats.maintenance_model || '尚未设置' }}</div><span class="tag" :class="data.stats.maintenance?.ready ? 'ok' : 'warn'">{{ data.stats.maintenance?.reason }}</span>
-        </div>
-        <div class="bento-card bento-col-7">
-          <div class="bento-badge">本次运行中的互动</div>
-          <div class="stats-row"><div><strong>{{ data.social_metrics.human_messages }}</strong><span>收到消息</span></div><div><strong>{{ data.social_metrics.social_cognition }}</strong><span>对话轮次</span></div><div><strong>{{ data.social_metrics.intentional_silence }}</strong><span>选择沉默</span></div><div><strong>{{ data.social_metrics.visible_messages }}</strong><span>实际发言</span></div></div>
-        </div>
-        <div class="bento-card bento-col-5">
-          <div class="bento-badge">持续记忆</div>
-          <div class="bento-hero-stat">{{ data.stats.memory_beliefs_count }}<span class="unit">条</span></div>
-          <div class="bento-desc">有来源的称呼、偏好、关系、事实与群体规范</div>
-        </div>
+      <div class="connection-grid">
+        <v-card class="connection-card"><v-card-text><div class="eyebrow">ONEBOT 连接</div><div class="connection-value"><span class="connection-dot" :class="{connected:data.stats.websocket_connected}"></span>{{ data.stats.websocket_connected?'已连接':'未连接' }}</div><p class="muted">{{ data.stats.websocket_connected?'连接已建立；送达仍以每条回执为准。':'当前没有可确认的 OneBot 连接。' }}</p><v-btn variant="text" color="primary" size="small" :append-icon="mdiArrowRight" :to="{name:'settings',query:{tab:'connection'}}">连接设置</v-btn></v-card-text></v-card>
+        <v-card class="connection-card"><v-card-text><div class="eyebrow">发送方式</div><div class="connection-value">{{ data.stats.shadow_mode?'Shadow 观察':'按名单实发' }}</div><p class="muted">{{ data.stats.shadow_mode?'表达只记录候选，不实际发送。':'通过 Gate 的表达仅向保存的实发场景投递。' }}</p><v-btn variant="text" color="primary" size="small" :append-icon="mdiArrowRight" :to="{name:'settings',query:{tab:'delivery'}}">发送设置</v-btn></v-card-text></v-card>
+        <v-card class="connection-card"><v-card-text><div class="eyebrow">运行记录与用量</div><div class="connection-value">费用未核实</div><p class="muted">所有用途统一查看，未知 usage 单独保留。</p><v-btn variant="text" color="primary" size="small" :append-icon="mdiArrowRight" :to="{name:'activity',query:{tab:'calls'}}">打开调用账</v-btn></v-card-text></v-card>
       </div>
-
-      <div class="panel">
-        <div class="panel-header"><div><h2>最近的群聊</h2><p class="muted">点开“群聊”页面可以查看更完整的上下文。</p></div><span class="tag">{{ data.scenes.length }} 个</span></div>
-        <table>
-          <thead><tr><th>场景</th><th>已记录成员</th><th>最近事件</th><th>进行中的工作</th></tr></thead>
-          <tbody>
-            <tr v-for="scene in data.scenes" :key="scene.scene_id"><td><code>{{ scene.scene_id }}</code></td><td>{{ scene.participant_count }}</td><td>{{ fmtTime(scene.last_event_at) }}</td><td>{{ scene.active_job_count }}</td></tr>
-            <tr v-if="!data.scenes.length"><td colspan="4" class="muted empty">还没有收到群聊消息</td></tr>
-          </tbody>
-        </table>
+      <v-card><v-card-text><div class="section-heading"><div><h2>需要留意</h2><p class="muted">来自当前工作、送达阶段与已记录请求，不将普通沉默计为异常。</p></div><v-chip v-if="!hasIssues" variant="tonal" size="small">暂无相关记录</v-chip></div><div class="issues-grid">
+        <section><div class="issue-title"><strong>待核对工作</strong><span>{{ review.total }}</span></div><div v-for="job in review.items" :key="job.id" class="issue-item"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" :label="job.goal" :copyable="false" /></div><p v-if="!review.total" class="muted">当前没有待核对工作</p><router-link v-else :to="{name:'jobs',query:{status:'review_required'}}">查看全部</router-link></section>
+        <section><div class="issue-title"><strong>送达未知</strong><span>{{ unknownCount }}</span></div><div v-for="task in unknownItems" :key="task.id" class="issue-item"><EntityLink :type="task.entityType" :id="task.id" :scene-id="task.scene_id" :label="task.description" :copyable="false" /></div><p v-if="!unknownCount" class="muted">当前没有未知送达事项</p><p v-else class="muted">未知送达不自动重发。</p></section>
+        <section><div class="issue-title"><strong>失败请求</strong><span>{{ failed.total }}</span></div><div v-for="call in failed.items" :key="call.id" class="issue-item"><EntityLink type="call" :id="call.id" :scene-id="call.scene_id" :label="`${call.purpose} · ${call.error_type || '请求失败'}`" :copyable="false" /></div><p v-if="!failed.total" class="muted">当前没有失败调用记录</p><router-link v-else :to="{name:'activity',query:{tab:'calls',status:'failed'}}">核对全部失败</router-link></section>
+      </div></v-card-text></v-card>
+      <section v-if="app.status" class="role-grid"><v-card v-for="(role,key) in app.status.roles" :key="key"><v-card-text><div class="role-heading"><h2>{{ roleNames[key] }}</h2><StatusBadge domain="provider" :status="role.ready?'ready':role.configured?'unavailable':'missing'" /></div><p class="role-model">{{ role.profile?.model || '尚未指定模型' }}</p><p class="muted">{{ role.profile?`${role.profile.provider_id} · ${role.profile.reasoning_effort}`:role.reason }}</p><router-link :to="{name:'models',query:{tab:'roles'}}">查看角色配置</router-link></v-card-text></v-card></section>
+      <div class="overview-bottom">
+        <v-card><v-card-text><div class="section-heading"><div><h2><v-icon :icon="mdiForumOutline" size="20" /> 本次运行中的互动</h2><p class="muted">{{ fmtTime(data.runtime_interval.since) }} 至 {{ fmtTime(data.runtime_interval.until) }} · 北京时间</p></div></div><div class="interaction-stats"><div><strong>{{ data.social_metrics.human_messages }}</strong><span>收到消息</span></div><div><strong>{{ data.social_metrics.social_cognition }}</strong><span>对话轮次</span></div><div><strong>{{ data.social_metrics.intentional_silence }}</strong><span>模型沉默</span></div><div><strong>{{ data.social_metrics.visible_messages }}</strong><span>实际发言</span></div></div><p class="muted footnote">这些内存计数随本次进程运行累计，与持久调用账的历史范围不同。</p></v-card-text></v-card>
+        <v-card><v-card-text><h2><v-icon :icon="mdiDatabaseOutline" size="20" /> 持久资料</h2><div class="persistent-stats"><span>原始事件<strong>{{ data.stats.total_events }}</strong></span><span>已有场景<strong>{{ data.stats.active_scenes }}</strong></span><span>有效认识<strong>{{ data.stats.memory_beliefs_count }}</strong></span><span>等待回应<strong>{{ data.stats.active_open_loops }}</strong></span></div></v-card-text></v-card>
       </div>
-
-      <details class="panel"><summary>查看运行明细</summary><div class="detail-grid"><span>累计事件 {{ data.stats.total_events }}</span><span>等待执行 {{ data.stats.pending_tasks }}</span><span>等待回复 {{ data.stats.active_open_loops }}</span><span>已运行 {{ Math.floor(data.stats.uptime_seconds / 60) }} 分钟</span></div></details>
+      <v-card><v-card-text><div class="section-heading"><div><h2>最近活动场景</h2><p class="muted">显示最近 {{ Math.min(6,data.scenes.length) }} 个场景；完整列表可在场景消息中浏览。</p></div><v-btn variant="text" color="primary" :append-icon="mdiArrowRight" :to="{name:'scenes'}">全部场景</v-btn></div><div class="recent-scene-list"><router-link v-for="scene in data.scenes.slice(0,6)" :key="scene.scene_id" class="recent-scene" :to="{name:'scene',params:{sceneId:scene.scene_id}}"><div class="scene-initial">{{ scene.scene_id.startsWith('private:')?'私':'群' }}</div><div class="scene-summary"><strong>{{ scene.display_name || sceneName(scene.scene_id) }}</strong><span>{{ scene.participant_count }} 位参与者 · {{ scene.active_job_count }} 项工作</span></div><div class="scene-timing"><span v-if="scene.pending_wake_count" class="pending-count">{{ scene.pending_wake_count }} 待处理</span><time>{{ fmtTime(scene.last_event_at) }}</time></div></router-link><p v-if="!data.scenes.length" class="empty-state">还没有保存的场景消息</p></div></v-card-text></v-card>
+      <p class="sample-note"><v-icon :icon="mdiClockOutline" size="14" /> 读取于 {{ fmtTime(data.sampled_at) }}（北京时间）</p>
     </template>
   </div>
 </template>
-
 <style scoped>
-.bento-col-4 { grid-column: span 4; }.bento-col-5 { grid-column: span 5; }.bento-col-7 { grid-column: span 7; }
-.primary-card { background: linear-gradient(145deg, rgba(237,246,255,.9), rgba(255,255,255,.78)); }
-.hero-status { margin: 15px 0 11px; display: flex; align-items: center; gap: 12px; color: var(--text); font-size: 1.45rem; font-weight: 780; letter-spacing: -.03em; }
-.big-dot { width: 13px; height: 13px; border-radius: 50%; background: #cbd5e1; box-shadow: 0 0 0 6px rgba(148,163,184,.13); }.big-dot.online { background: #10b981; box-shadow: 0 0 0 6px rgba(16,185,129,.12); }
-.hero-model { margin: 15px 0 11px; color: var(--text); font-size: 1.3rem; font-weight: 760; overflow-wrap: anywhere; }
-.stats-row { height: 100%; display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; gap: 12px; }.stats-row div { padding-right: 12px; border-right: 1px solid var(--border); }.stats-row div:last-child { border: 0; }.stats-row strong, .stats-row span { display: block; }.stats-row strong { color: var(--text); font-size: 1.8rem; }.stats-row span { margin-top: 4px; color: var(--muted); font-size: .78rem; }
-.unit { margin-left: 5px; color: var(--muted); font-size: 1rem; }.empty { padding: 28px; text-align: center; }.detail-grid { margin-top: 16px; display: flex; gap: 24px; flex-wrap: wrap; color: var(--muted); font-size: .86rem; }summary { color: var(--text); font-weight: 700; cursor: pointer; }
-@media (max-width: 980px) { .bento-col-4, .bento-col-5, .bento-col-7 { grid-column: span 12; } }@media (max-width: 620px) { .stats-row { grid-template-columns: 1fr 1fr; }.stats-row div { border: 0; } }
+.connection-grid,.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}.connection-card .v-card-text{padding:24px}.eyebrow{font-size:11px;font-weight:650;letter-spacing:.06em;color:var(--muted)}.connection-value{font-size:24px;font-weight:650;letter-spacing:-.03em;margin:16px 0 10px;display:flex;align-items:center;gap:10px}.connection-dot{width:10px;height:10px;border-radius:50%;background:#adb8c7}.connection-dot.connected{background:#16845c}.connection-card p{min-height:44px;line-height:1.7;font-size:13px;margin-bottom:12px}h2{font-size:16px;line-height:1.4;font-weight:650;margin:0 0 8px}.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}.section-heading p{font-size:12px;margin:0;line-height:1.6}.issues-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.issues-grid>section{min-width:0}.issue-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px}.issue-title span{background:#f2f5fa;padding:0 8px;border-radius:5px;font-size:12px}.issue-item{padding-block:8px;border-top:1px solid var(--line);font-size:13px}.issues-grid p,.issues-grid a{font-size:12px}.role-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}.role-model{font-size:16px;font-weight:600;margin:16px 0 6px;overflow-wrap:anywhere}.role-grid .muted,.role-grid a{font-size:12px}.overview-bottom{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}.interaction-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.interaction-stats strong{display:block;font-size:28px;font-weight:650}.interaction-stats span{font-size:12px;color:var(--muted)}.persistent-stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px}.persistent-stats span{display:flex;justify-content:space-between;font-size:13px}.footnote{font-size:11px;margin:20px 0 0}.recent-scene{display:flex;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}.recent-scene:hover{color:var(--primary)}.scene-initial{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:#edf2fa;color:#647c9b;flex:none;font-size:12px}.scene-summary{min-width:0;flex:1}.scene-summary strong{font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scene-summary span,.scene-timing{font-size:11px;color:var(--muted)}.scene-timing{display:grid;gap:4px;text-align:right}.pending-count{color:#326fa8}.sample-note{font-size:11px;color:var(--muted);margin:0;display:flex;align-items:center;gap:6px}
+@media(max-width:1200px){.connection-grid{grid-template-columns:1fr 1fr}.connection-grid>:last-child{grid-column:1/-1}.role-grid{gap:12px}.overview-bottom{grid-template-columns:1fr}}
+@media(max-width:700px){.connection-grid,.role-grid,.issues-grid{grid-template-columns:1fr}.connection-grid>:last-child{grid-column:auto}.connection-card p{min-height:0}.connection-card .v-card-text{padding:20px}.connection-value{font-size:22px}.interaction-stats{grid-template-columns:1fr 1fr}.scene-timing time{display:none}.issues-grid{gap:20px}.persistent-stats{grid-template-columns:1fr 1fr}}
 </style>

@@ -7,7 +7,11 @@ Mutating interventions use explicit operator events and proposal submission.
 """
 
 import json
+import copy
 import time
+import re
+from len_bot.events.models import Event, EventType
+from len_bot.tools.results import ToolResult
 from typing import Optional
 from len_bot.scenes.models import SceneSession
 from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
@@ -23,12 +27,52 @@ class RuntimeQueryService:
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
 
-    async def tool_results(self, scene_id, limit=100):
-        return await self.runtime.event_store.list_tool_observations(scene_id, limit)
+    async def _rows(self, sql, params=()):
+        cursor = await self.runtime.event_store._db.execute(sql, params)
+        names = [column[0] for column in cursor.description]
+        return [dict(zip(names, row)) for row in await cursor.fetchall()]
+
+    async def _page(self, select, source, params, order, page, page_size):
+        if page < 1 or not 1 <= page_size <= 100:
+            raise ValueError("page must be positive; page_size must be 1..100")
+        total = (await self._rows("SELECT COUNT(*) AS total " + source, params))[0]["total"]
+        items = await self._rows(select + " " + source + " ORDER BY " + order + " LIMIT ? OFFSET ?",
+                                 [*params, page_size, (page-1)*page_size])
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    @staticmethod
+    def _public(value):
+        # Public diagnostics never expose provider continuation or storage paths.
+        private = {"api_key", "password", "password_hash", "authorization", "access_token", "refresh_token",
+                   "token", "path", "locator", "base64", "checkpoint_data", "checkpoint_json", "messages_json",
+                   "continuation", "extra_content", "provider_private", "reasoning_content"}
+        if isinstance(value, dict):
+            return {key: RuntimeQueryService._public(item) for key,item in value.items()
+                    if key.lower() not in private and "signature" not in key.lower()}
+        if isinstance(value, list):
+            return [RuntimeQueryService._public(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(r"data:[^\s]+;base64,[A-Za-z0-9+/=]+", "[媒体正文省略]", value)
+        return value
+
+    @staticmethod
+    def scene_label(scene_id):
+        kind, _, ident = scene_id.partition(":")
+        label = {"group":"群聊", "private":"私聊"}.get(kind, "场景")
+        return {"display_name": f"{label} {ident or scene_id}", "scene_type": kind if kind in {"group","private"} else "other"}
+
+    async def tool_results(self, scene_id, page=1, page_size=30):
+        result = await self._page("SELECT id,event_id,tool_name,result_json,created_at", "FROM tool_observations WHERE scene_id=?",
+                                  [scene_id], "created_at DESC,id DESC", page, page_size)
+        for item in result["items"]:
+            observation = ToolResult.model_validate_json(item.pop("result_json"))
+            item["result"] = self._public(observation.model_dump(exclude={"content"}))
+            item["content_length"] = len(observation.content)
+        return result
 
     async def tool_result(self, scene_id, result_id, offset=0):
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
-        return result.page(offset).model_dump() if result else None
+        return self._public(result.page(offset).model_dump()) if result else None
 
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
@@ -44,28 +88,74 @@ class RuntimeQueryService:
         ready = bool(provider and provider["enabled"] and provider["api_key_masked"])
         return {"configured": True, "ready": ready, "reason": "已就绪" if ready else "维护供应商未启用或未设置密钥"}
 
-    async def model_usage(self, scene_id=None, limit=100):
-        return {"totals": await self.runtime.event_store.get_model_call_totals(scene_id),
-                "calls": await self.runtime.event_store.list_model_calls(scene_id, limit=max(1, min(limit, 200))),
-                "cost": {"status": "unverified", "amount": None,
-                         "reason": "尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}}
+    @staticmethod
+    def _call(item):
+        item = dict(item)
+        usage = item.pop("usage_json")
+        item["usage"] = json.loads(usage) if usage else None
+        item["estimate"] = json.loads(item.pop("estimate_json"))
+        return RuntimeQueryService._public(item)
 
-    async def history_batches(self, scene_id, limit=20):
-        return await self.runtime.event_store.list_history_batches(scene_id, limit=max(1, min(limit, 100)))
+    async def model_usage(self, scene_id=None, *, since=None, until=None, purpose=None, status=None, page=1, page_size=30):
+        source, params = "FROM model_calls WHERE 1=1", []
+        for column,value in (("scene_id",scene_id),("purpose",purpose),("status",status)):
+            if value is not None:
+                source += f" AND {column}=?"; params.append(value)
+        for op,value in ((">=",since),("<=",until)):
+            if value is not None:
+                source += f" AND started_at{op}?"; params.append(value)
+        result = await self._page("SELECT *", source, params, "started_at DESC,id DESC", page, page_size)
+        result["items"] = [self._call(item) for item in result["items"]]
+        known = "json_type(usage_json,'$.prompt_tokens') IN ('integer','real') AND json_type(usage_json,'$.completion_tokens') IN ('integer','real')"
+        fields = ["purpose", "disposition", "COUNT(*) AS calls"]
+        fields += [f"SUM(status='{name}') AS {name}" for name in ("completed","failed","cancelled","unconfirmed")]
+        fields += [f"SUM(CASE WHEN {known} THEN 0 ELSE 1 END) AS unknown_usage"]
+        for name,path in (("prompt_tokens","prompt_tokens"),("completion_tokens","completion_tokens"),
+                          ("cached_tokens","prompt_tokens_details.cached_tokens"),("reasoning_tokens","completion_tokens_details.reasoning_tokens")):
+            fields.append(f"SUM(CASE WHEN json_type(usage_json,'$.{path}') IN ('integer','real') THEN json_extract(usage_json,'$.{path}') ELSE 0 END) AS {name}")
+        fields.append("SUM(json_extract(estimate_json,'$.input_tokens')) AS estimated_input_tokens")
+        result["totals"] = await self._rows("SELECT " + ",".join(fields) + " " + source + " GROUP BY purpose,disposition ORDER BY purpose,disposition", params)
+        result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status}
+        result["cost"] = {"status":"unverified","amount":None,"reason":"尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}
+        return result
+
+    async def model_call(self, call_id, scene_id=None):
+        rows = await self._rows("SELECT * FROM model_calls WHERE id=? AND (? IS NULL OR scene_id=?)", [call_id,scene_id,scene_id])
+        return self._call(rows[0]) if rows else None
+
+    async def history_batches(self, scene_id, page=1, page_size=30):
+        result = await self._page("SELECT *", "FROM history_batches WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)
+        result["items"] = [self.runtime.event_store._history_row(item) for item in result["items"]]
+        return result
 
     async def history_batch(self, batch_id):
-        try:
-            batch = await self.runtime.event_store.load_history_batch(batch_id)
-        except LookupError:
-            return None
-        return {"id": batch.id, "scene_id": batch.scene_id}
+        rows = await self._rows("SELECT * FROM history_batches WHERE id=?", [batch_id])
+        return self.runtime.event_store._history_row(rows[0]) if rows else None
 
-    async def skills(self, scene_id=None):
-        return {"skills": await self.runtime.event_store.list_skills(scene_id),
-                "candidates": await self.runtime.event_store.list_skill_candidates(scene_id)}
+    async def skills(self, scene_id=None, *, query="", page=1, page_size=30):
+        source = """FROM skills s JOIN skill_versions v ON v.skill_id=s.id AND v.version=(
+            SELECT MAX(p.version) FROM skill_versions p WHERE p.skill_id=s.id AND (? IS NULL OR s.scene_id=? OR p.scope='global-safe'))
+            WHERE (?='' OR instr(lower(v.body_json),lower(?))>0)"""
+        result = await self._page("SELECT s.id,s.scene_id,v.scope,v.version,s.author,s.updated_at,v.created_at,v.body_json,v.source_json", source,
+                                  [scene_id,scene_id,query,query], "v.created_at DESC,s.id DESC",page,page_size)
+        for item in result["items"]:
+            body=json.loads(item.pop("body_json")); item["source"]=self._public(json.loads(item.pop("source_json")))
+            item.update(name=body["name"],applicability=body["applicability"])
+        return result
+
+    async def skill_candidates(self, scene_id=None, *, status=None, page=1, page_size=30):
+        result = await self._page("SELECT *", "FROM skill_candidates WHERE (? IS NULL OR scene_id=?) AND (? IS NULL OR status=?)",
+                                  [scene_id,scene_id,status,status], "created_at DESC,id DESC",page,page_size)
+        for item in result["items"]:
+            item["candidate"]=self._public(json.loads(item.pop("candidate_json")))
+        return result
 
     async def skill(self, skill_id, scene_id, version=None):
-        return await self.runtime.event_store.read_skill(skill_id, scene_id, version=version)
+        result = await self.runtime.event_store.read_skill(skill_id,scene_id,version=version)
+        if result is None:return None
+        result["versions"] = await self._rows("""SELECT v.version,v.scope,v.created_at FROM skill_versions v JOIN skills s ON s.id=v.skill_id
+            WHERE v.skill_id=? AND (s.scene_id=? OR v.scope='global-safe') ORDER BY v.version DESC""",[skill_id,scene_id])
+        return self._public(result)
 
     def job_budget(self):
         config = self.runtime.config
@@ -75,17 +165,54 @@ class RuntimeQueryService:
                 "effective_input_tokens": config.job_context_tokens - config.work_output_tokens,
                 "compression_trigger": config.job_compress_trigger, "compression_target": config.job_compress_target}
 
-    async def jobs(self, scene_id=None):
-        return [{**job, "budget": self.job_budget()} for job in await self.runtime.event_store.list_jobs(scene_id)]
+    async def jobs(self, scene_id=None, *, status=None, execution_status=None, query="", page=1, page_size=30):
+        source = """FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE (? IS NULL OR j.scene_id=?)
+            AND (? IS NULL OR t.status=?) AND (?='' OR instr(lower(j.goal),lower(?))>0)"""
+        params=[scene_id,scene_id,status,status,query,query]
+        if execution_status:
+            source += """ AND COALESCE(json_extract(j.result_json,'$.status'),CASE t.status WHEN 'pending' THEN 'pending'
+                WHEN 'claimed' THEN 'pending' WHEN 'processing' THEN 'running' WHEN 'review_required' THEN 'interrupted'
+                WHEN 'failed' THEN 'failed' WHEN 'cancelled' THEN 'cancelled' ELSE 'unknown' END)=?"""
+            params.append(execution_status)
+        result=await self._page("SELECT j.id,j.scene_id",source,params,"t.created_at DESC,j.id DESC",page,page_size)
+        items=[]
+        for item in result["items"]:
+            job=await self.runtime.event_store.get_job(item["id"],item["scene_id"])
+            items.append({**self._public(job),"budget":self.job_budget()})
+        result["items"]=items
+        return result
 
-    async def job(self, job_id):
-        task = await self.get_task(job_id)
-        job = await self.runtime.event_store.get_job(job_id, task["scene_id"]) if task else None
-        return {**job, "budget": self.job_budget()} if job else None
+    async def job(self, job_id, scene_id=None):
+        task=await self.get_task(job_id,scene_id)
+        job=await self.runtime.event_store.get_job(job_id,task["scene_id"]) if task else None
+        return {**self._public(job),"budget":self.job_budget()} if job else None
 
-    async def media_assets(self, scene_id, query=""):
-        rows = await self.runtime.event_store.list_media(list(dict.fromkeys([scene_id, "global-safe"])), query=query, include_disabled=True)
-        return [{key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at", "palette_order")} for asset in rows]
+    @staticmethod
+    def public_asset(asset):
+        return {key:asset[key] for key in ("id","scope","source_event_id","mime_type","description","tags","enabled","curated","created_at","palette_order")}
+
+    async def media_assets(self, scene_id, query="", *, curated=None, enabled=None, palette_only=False, page=1, page_size=48):
+        source="FROM media_assets WHERE scope IN (?, 'global-safe')";params=[scene_id]
+        for field,value in (("curated",curated),("enabled",enabled)):
+            if value is not None:source+=f" AND {field}=?";params.append(int(value))
+        if palette_only:source+=" AND palette_order IS NOT NULL AND curated=1 AND enabled=1"
+        terms=list(dict.fromkeys(query.split()))
+        if terms:
+            source+=" AND ("+" OR ".join("(instr(lower(description),lower(?))>0 OR instr(lower(tags_json),lower(?))>0)" for _ in terms)+")"
+            params.extend(value for term in terms for value in (term,term))
+        result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
+        for item in result["items"]:
+            item["tags"]=json.loads(item.pop("tags_json"));item["enabled"]=bool(item["enabled"]);item["curated"]=bool(item["curated"])
+        result["items"]=[self.public_asset(item) for item in result["items"]]
+        return result
+
+    async def media_asset(self, asset_id, scene_id):
+        asset=await self.runtime.event_store.get_media(asset_id,[scene_id,"global-safe"],include_disabled=True)
+        return self.public_asset(asset) if asset else None
+
+    async def media_palette(self, scene_id):
+        items=[self.public_asset(asset) for asset in await self.runtime.event_store.list_palette(scene_id)]
+        return {"items":items,"total":len(items),"complete":True}
 
     async def media_file(self, asset_id, scene_id):
         return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
@@ -131,6 +258,9 @@ class RuntimeQueryService:
             },
             "scenes": scenes,
             "social_metrics": social,
+            "sampled_at": self.current_time(),
+            "runtime_interval": {"since":getattr(rt,"_started_at",None),"until":self.current_time()},
+            "persistent_interval": (await self._rows("SELECT MIN(timestamp) AS since,MAX(timestamp) AS until FROM events"))[0],
         }
 
     def websocket_connected(self) -> bool:
@@ -161,164 +291,164 @@ class RuntimeQueryService:
     # ---------- Scenes ----------
 
     async def list_scenes(self) -> list[dict]:
-        rows = await (await self.runtime.event_store._db.execute(
-            "SELECT state_json FROM scene_sessions ORDER BY updated_at DESC,scene_id")).fetchall()
-        jobs = await self.jobs()
-        active_statuses = {"pending", "claimed", "processing", "review_required", "result_ready", "awaiting_delivery"}
-        counts: dict[str, int] = {}
-        for job in jobs:
-            if job["status"] in active_statuses:
-                counts[job["scene_id"]] = counts.get(job["scene_id"], 0) + 1
-        sessions = [SceneSession.model_validate_json(row[0]) for row in rows]
-        return [{"scene_id": session.scene_id, "version": session.version,
-                 "participant_count": len(session.participants), "last_event_at": session.last_event_at,
-                 "last_bot_message_at": session.last_bot_message_at,
-                 "active_job_count": counts.get(session.scene_id, 0),
-                 "pending_wake_count": len(session.pending_wakes)} for session in sessions]
+        rows=await self._rows("SELECT state_json FROM scene_sessions WHERE scene_id LIKE 'group:%' OR scene_id LIKE 'private:%' ORDER BY updated_at DESC,scene_id")
+        counts=await self._rows("""SELECT scene_id,COUNT(*) AS total FROM tasks WHERE json_extract(payload,'$.kind')='agent_job'
+            AND status IN ('pending','claimed','processing','review_required','result_ready','awaiting_delivery') GROUP BY scene_id""")
+        counts={item["scene_id"]:item["total"] for item in counts}
+        sessions=[SceneSession.model_validate_json(row["state_json"]) for row in rows]
+        return [{"scene_id":session.scene_id,**self.scene_label(session.scene_id),"version":session.version,
+            "participant_count":len(session.participants),"last_event_at":session.last_event_at,"last_bot_message_at":session.last_bot_message_at,
+            "active_job_count":counts.get(session.scene_id,0),"pending_wake_count":len(session.pending_wakes)} for session in sessions]
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:
-        """Read the committed fact session without creating or changing an Actor."""
-        raw_session = await self.runtime.event_store.load_scene_session(scene_id)
-        if raw_session is None:
-            return None
-        session = SceneSession.model_validate(raw_session)
-        preferences = await self.runtime.memory_store.interaction_preferences(scene_id, list(session.participants)) if self.runtime.memory_store else []
-        recent = await self.query_events(scene_id=scene_id, limit=160)
-        return {
-            "session": session.model_dump(mode="json"),
-            "preferences": [item.model_dump(mode="json") for item in preferences],
-            "jobs": await self.jobs(scene_id),
-            "history_batches": await self.history_batches(scene_id),
-            "history_status": await self.runtime.event_store.list_history_status(scene_id),
-            "maintenance": self.maintenance_readiness(),
-            "recent_messages": [event for event in recent if event["event_type"] in {
-                "GROUP_MESSAGE_RECEIVED", "PRIVATE_MESSAGE_RECEIVED", "MESSAGE_SENT"}][:40],
-            "recent_deliveries": [event for event in recent
-                                  if event["event_type"] in {"MESSAGE_SENT", "MESSAGE_SEND_FAILED", "ACTION_SHADOWED"}][:12],
-        }
+        raw=await self.runtime.event_store.load_scene_session(scene_id)
+        if raw is None:return None
+        session=SceneSession.model_validate(raw)
+        preferences=await self.runtime.memory_store.interaction_preferences(scene_id,list(session.participants)) if self.runtime.memory_store else []
+        public_session=session.model_dump(mode="json",exclude={"pending_wakes"})
+        public_session.update(self.scene_label(scene_id),pending_wake_count=len(session.pending_wakes))
+        status=await self.runtime.event_store.list_history_status(scene_id)
+        status["unsuccessful_count"]=len(status.pop("unsuccessful"))
+        return {"session":public_session,"preferences":[item.model_dump(mode="json") for item in preferences],
+            "jobs":await self.jobs(scene_id),"history_batches":await self.history_batches(scene_id),
+            "history_status":status,"maintenance":self.maintenance_readiness(),"sampled_at":self.current_time()}
+
+    async def pending_wakes(self, scene_id, page=1, page_size=30):
+        if not await self.runtime.event_store.load_scene_session(scene_id):return None
+        result = await self._page("""SELECT json_extract(w.value,'$.event_id') AS event_id,json_extract(w.value,'$.rowid') AS rowid,
+            json_extract(w.value,'$.actor_id') AS actor_id,json_extract(w.value,'$.reasons') AS reasons_json,
+            json_extract(w.value,'$.certain') AS certain""",
+            "FROM scene_sessions s,json_each(s.state_json,'$.pending_wakes') w WHERE s.scene_id=?",
+            [scene_id],"rowid DESC,event_id DESC",page,page_size)
+        for item in result["items"]:
+            item["reasons"]=json.loads(item.pop("reasons_json"));item["certain"]=bool(item["certain"])
+        return result
+
 
     # ---------- Events / Tasks / Loops / Memories ----------
 
-    async def query_events(
-        self,
-        scene_id: Optional[str] = None,
-        actor_id: Optional[str] = None,
-        event_type: Optional[str] = None,
-        since: Optional[float] = None,
-        until: Optional[float] = None,
-        limit: int = 50,
-    ) -> list[dict]:
-        sql = "SELECT id, event_type, scene_id, actor_id, timestamp, payload, metadata, rowid FROM events WHERE 1=1"
-        params: list = []
-        if scene_id:
-            sql += " AND scene_id = ?"
-            params.append(scene_id)
-        if actor_id:
-            sql += " AND actor_id = ?"
-            params.append(actor_id)
-        if event_type:
-            sql += " AND event_type = ?"
-            params.append(event_type)
-        if since is not None:
-            sql += " AND timestamp >= ?"
-            params.append(since)
-        if until is not None:
-            sql += " AND timestamp <= ?"
-            params.append(until)
-        sql += " ORDER BY rowid DESC LIMIT ?;"
-        params.append(max(1, min(limit, 1000)))
-        cursor = await self.runtime.event_store._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "event_type": r[1], "scene_id": r[2], "actor_id": r[3],
-             "timestamp": r[4], "payload": json.loads(r[5]) if r[5] else {}, "rowid": r[7],
-             "attention": {key: value for key, value in json.loads(r[6]).items()
-                           if key in {"attention_reasons", "attention_certain"}}}
-            for r in rows
-        ]
+    async def _event_views(self, rows, cutoff):
+        groups={}
+        for row in rows:
+            metadata=json.loads(row["metadata"]);metadata["_rowid"]=row["rowid"]
+            event=Event(id=row["id"],event_type=row["event_type"],scene_id=row["scene_id"],actor_id=row["actor_id"],
+                        timestamp=row["timestamp"],payload=json.loads(row["payload"]),metadata=metadata)
+            groups.setdefault(event.scene_id,[]).append(event)
+        views={}
+        for scene,events in groups.items():
+            for event in events:
+                payload=self._public(event.payload);metadata=event.metadata
+                delivery=payload.get("delivery_status")
+                if event.event_type==EventType.ACTION_SHADOWED:delivery="shadow"
+                elif payload.get("delivery_unknown"):delivery="unknown"
+                sender=payload.get("sender") or {}
+                quote=None
+                quote_rows=[]
+                reply_field="reply_to" if event.event_type in {EventType.MESSAGE_SENT,EventType.MESSAGE_SEND_FAILED,EventType.ACTION_SHADOWED} else "reply_to_message_id"
+                reference=payload.get(reply_field)
+                if reference is not None:
+                    quote_rows=await self._rows("SELECT *,rowid FROM events WHERE scene_id=? AND rowid<? AND CAST(json_extract(payload,'$.message_id') AS TEXT)=? ORDER BY rowid DESC LIMIT 1",
+                                                [scene,metadata["_rowid"],str(reference)])
+                    quote={"missing":True}
+                if quote_rows:
+                    original=quote_rows[0];original_payload=json.loads(original["payload"]);original_sender=original_payload.get("sender") or {}
+                    quote={"event_id":original["id"],"rowid":original["rowid"],"actor_id":original["actor_id"],
+                           "display_name":original_sender.get("card") or original_sender.get("nickname") or original["actor_id"],
+                           "text":original_payload.get("raw_text") or original_payload.get("content", ""),
+                           "media":json.loads(original["metadata"]).get("media",[])}
+                media=[]
+                for item in metadata.get("media",[]):
+                    asset=await self.media_asset(item["asset_id"],scene)
+                    if asset:media.append(asset)
+                if quote and not quote.get("missing"):
+                    quote_media=[]
+                    for item in quote.get("media",[]):
+                        asset=await self.media_asset(item["asset_id"],scene)
+                        if asset:quote_media.append(asset)
+                    quote={key:quote[key] for key in ("event_id","rowid","actor_id","display_name","text") if key in quote}
+                    quote["media"]=quote_media
+                human=event.event_type in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}
+                views[event.id]={"id":event.id,"rowid":metadata["_rowid"],"event_type":event.event_type.value,"scene_id":scene,
+                    "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
+                    "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain") if key in metadata},
+                    "display_name":sender.get("card") or sender.get("nickname") or event.actor_id,
+                    "scene_type":self.scene_label(scene)["scene_type"],
+                    "display_kind":"human" if human else "bot" if event.event_type==EventType.MESSAGE_SENT else "system",
+                    "delivery_status":delivery,"simulated":bool(metadata.get("simulated") or payload.get("origin_mode")=="simulated"),
+                    "origin_mode":payload.get("origin_mode") or metadata.get("mode"),"quote":quote,"media":media}
+        return [views[row["id"]] for row in rows]
 
-    async def list_tasks(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
-        sql = "SELECT id, scene_id, description, due_at, status, payload, created_at, wake_event_type FROM tasks"
-        params: list = []
-        if status:
-            sql += " WHERE status = ?"
-            params.append(status)
-        sql += " ORDER BY due_at ASC LIMIT ?;"
-        params.append(limit)
-        cursor = await self.runtime.event_store._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "scene_id": r[1], "description": r[2], "due_at": r[3], "status": r[4],
-             "payload": json.loads(r[5]) if r[5] else {}, "created_at": r[6], "wake_event_type": r[7]}
-            for r in rows
-        ]
+    async def query_events(self, scene_id=None, actor_id=None, event_type=None, since=None, until=None,
+                           limit=50, *, before=None, snapshot_rowid=None, messages_only=False, event_id=None):
+        if not 1 <= limit <= 100:raise ValueError("limit must be 1..100")
+        if messages_only and not await self.runtime.event_store.load_scene_session(scene_id):return None
+        if snapshot_rowid is None:
+            snapshot_rowid=(await self._rows("SELECT COALESCE(MAX(rowid),0) AS cutoff FROM events WHERE (? IS NULL OR scene_id=?)",[scene_id,scene_id]))[0]["cutoff"]
+        source="FROM events WHERE rowid<=?";params=[snapshot_rowid]
+        for field,value in (("scene_id",scene_id),("actor_id",actor_id),("event_type",event_type)):
+            if value is not None:source+=f" AND {field}=?";params.append(value)
+        for op,value in ((">=",since),("<=",until)):
+            if value is not None:source+=f" AND timestamp{op}?";params.append(value)
+        if messages_only:source+=" AND event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED','MESSAGE_SENT')"
+        if event_id is not None:
+            locate_sql="SELECT rowid FROM events WHERE id=? AND scene_id=? AND rowid<=?"
+            if messages_only:locate_sql+=" AND event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED','MESSAGE_SENT')"
+            located=await self._rows(locate_sql,[event_id,scene_id,snapshot_rowid])
+            if not located:return None
+            source+=" AND rowid<=?";params.append(located[0]["rowid"])
+        if before is not None:source+=" AND rowid<?";params.append(before)
+        rows=await self._rows("SELECT *,rowid "+source+" ORDER BY rowid DESC LIMIT ?",[*params,limit+1])
+        more=len(rows)>limit;rows=rows[:limit]
+        return {"items":await self._event_views(rows,snapshot_rowid),"next_before":rows[-1]["rowid"] if more else None,
+                "snapshot_rowid":snapshot_rowid,"has_more":more}
 
-    async def get_task(self, task_id: str) -> dict | None:
-        cursor = await self.runtime.event_store._db.execute(
-            "SELECT id,scene_id,description,due_at,status,payload,wake_event_type,wake_match_json FROM tasks WHERE id=?", (task_id,))
-        row = await cursor.fetchone()
-        return dict(id=row[0], scene_id=row[1], description=row[2], due_at=row[3], status=row[4],
-                    payload=json.loads(row[5]), wake_event_type=row[6],
-                    wake_match=json.loads(row[7]) if row[7] else None) if row else None
+    async def event(self, event_id, scene_id):
+        rows=await self._rows("SELECT *,rowid FROM events WHERE id=? AND scene_id=?",[event_id,scene_id])
+        return (await self._event_views(rows,rows[0]["rowid"]))[0] if rows else None
 
-    async def open_loop(self, loop_id: str) -> dict | None:
-        cursor = await self.runtime.event_store._db.execute(
-            "SELECT id,scene_id,status FROM open_loops WHERE id=?", (loop_id,))
-        row = await cursor.fetchone()
-        return {"id": row[0], "scene_id": row[1], "status": row[2]} if row else None
+    @staticmethod
+    def _task(item):
+        item["payload"]=RuntimeQueryService._public(json.loads(item["payload"]))
+        wake_match=item.pop("wake_match_json")
+        item["wake_match"]=json.loads(wake_match) if wake_match else None
+        return item
 
-    async def list_open_loops(self, status: Optional[str] = None, limit: int = 50) -> list[dict]:
-        sql = "SELECT id, scene_id, target_actor_id, intent, source_event_id, status, created_at, expires_at FROM open_loops"
-        params: list = []
-        if status:
-            sql += " WHERE status = ?"
-            params.append(status)
-        sql += " ORDER BY created_at DESC LIMIT ?;"
-        params.append(limit)
-        cursor = await self.runtime.event_store._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "scene_id": r[1], "target_actor_id": r[2], "intent": r[3],
-             "source_event_id": r[4], "status": r[5], "created_at": r[6], "expires_at": r[7]}
-            for r in rows
-        ]
+    async def list_tasks(self, status=None, *, scene_id=None, kind="reminder", page=1, page_size=30):
+        source="FROM tasks WHERE (? IS NULL OR status=?) AND (? IS NULL OR scene_id=?)";params=[status,status,scene_id,scene_id]
+        if kind=="reminder":source+=" AND COALESCE(json_extract(payload,'$.kind'),'reminder')!='agent_job'"
+        elif kind=="agent_job":source+=" AND json_extract(payload,'$.kind')='agent_job'"
+        result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
+        result["items"]=[self._task(item) for item in result["items"]]
+        return result
 
-    async def list_memories(
-        self,
-        status: Optional[str] = None,
-        scope: Optional[str] = None,
-        subject: Optional[str] = None,
-        limit: int = 50,
-    ) -> list[dict]:
-        if not self.runtime.memory_store:
-            return []
-        sql = f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE 1=1"
-        params: list = []
-        if status:
-            sql += " AND status = ?"
-            params.append(status)
-        if scope:
-            sql += " AND scope = ?"
-            params.append(scope)
-        if subject:
-            sql += " AND subject = ?"
-            params.append(subject)
-        sql += " ORDER BY created_at DESC,id LIMIT ?;"
-        params.append(max(1, min(limit, 200)))
-        cursor = await self.runtime.memory_store._db.execute(sql, params)
-        rows = await cursor.fetchall()
-        return [memory_from_row(row).model_dump(mode="json") for row in rows]
+    async def get_task(self, task_id, scene_id=None):
+        rows=await self._rows("SELECT * FROM tasks WHERE id=? AND (? IS NULL OR scene_id=?)",[task_id,scene_id,scene_id])
+        return self._task(rows[0]) if rows else None
 
-    async def memory(self, memory_id: str) -> dict | None:
-        if not self.runtime.memory_store:
-            return None
-        row = await (await self.runtime.memory_store._db.execute(
-            f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE id=?", (memory_id,))).fetchone()
-        return memory_from_row(row).model_dump(mode="json") if row else None
+    async def open_loop(self, loop_id, scene_id=None):
+        rows=await self._rows("SELECT * FROM open_loops WHERE id=? AND (? IS NULL OR scene_id=?)",[loop_id,scene_id,scene_id])
+        return rows[0] if rows else None
 
-    async def memory_chain(self, memory_id: str) -> list[dict]:
+    async def list_open_loops(self, status=None, *, scene_id=None, page=1, page_size=30):
+        return await self._page("SELECT *","FROM open_loops WHERE (? IS NULL OR status=?) AND (? IS NULL OR scene_id=?)",
+                                [status,status,scene_id,scene_id],"created_at DESC,id DESC",page,page_size)
+
+    async def list_memories(self, status=None, scope=None, subject=None, *, kind=None, query="", page=1, page_size=30):
+        source="FROM memories WHERE 1=1";params=[]
+        for field,value in (("status",status),("scope",scope),("subject",subject),("kind",kind)):
+            if value is not None:source+=f" AND {field}=?";params.append(value)
+        if query:source+=" AND instr(lower(statement),lower(?))>0";params.append(query)
+        result=await self._page("SELECT "+','.join(MEMORY_COLUMNS),source,params,"created_at DESC,id DESC",page,page_size)
+        result["items"]=[memory_from_row(tuple(item[column] for column in MEMORY_COLUMNS)).model_dump(mode="json") for item in result["items"]]
+        return result
+
+    async def memory(self, memory_id, scope=None):
+        rows=await self._rows("SELECT "+','.join(MEMORY_COLUMNS)+" FROM memories WHERE id=? AND (? IS NULL OR scope=?)",[memory_id,scope,scope])
+        return memory_from_row(tuple(rows[0][column] for column in MEMORY_COLUMNS)).model_dump(mode="json") if rows else None
+
+    async def memory_chain(self, memory_id: str, scope=None) -> list[dict]:
         """Include every merged predecessor, not just the first old semantic key."""
-        if not self.runtime.memory_store:
+        if not self.runtime.memory_store or await self.memory(memory_id,scope) is None:
             return []
         cursor = await self.runtime.memory_store._db.execute(
             f"""WITH RECURSIVE chain(id, scope, superseded_by) AS (
@@ -333,20 +463,188 @@ class RuntimeQueryService:
 
     # ---------- Trace / Metrics / Plugins / Shadow ----------
 
-    async def query_traces(
-        self,
-        scene_id: Optional[str] = None,
-        kind: Optional[str] = None,
-        ref_id: Optional[str] = None,
-        limit: int = 50,
-    ) -> list[dict]:
-        return await self.runtime.event_store.query_traces(scene_id=scene_id, kind=kind, ref_id=ref_id, limit=limit)
+    @staticmethod
+    def _trace(item, detail=False):
+        item=dict(item);payload=RuntimeQueryService._public(json.loads(item.pop("payload")))
+        conversation=payload.get("conversation") or {}
+        item["summary"]=(payload.get("error") or (payload.get("result") or {}).get("decision_reason")
+                         or conversation.get("failure_reason") or payload.get("kind") or item["kind"])[:300]
+        if detail:item["payload"]=payload
+        return item
+
+    async def query_traces(self, scene_id=None, kind=None, ref_id=None, *, since=None, until=None, page=1, page_size=30):
+        source="FROM traces WHERE 1=1";params=[]
+        for field,value in (("scene_id",scene_id),("kind",kind),("ref_id",ref_id)):
+            if value is not None:source+=f" AND {field}=?";params.append(value)
+        for op,value in ((">=",since),("<=",until)):
+            if value is not None:source+=f" AND created_at{op}?";params.append(value)
+        result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
+        result["items"]=[self._trace(item) for item in result["items"]]
+        return result
+
+    async def trace(self, trace_id, scene_id=None):
+        rows=await self._rows("SELECT * FROM traces WHERE id=? AND (? IS NULL OR scene_id=?)",[trace_id,scene_id,scene_id])
+        return self._trace(rows[0],True) if rows else None
+
+    def status(self):
+        snapshot=self.providers();profiles=snapshot["routing"] or {};roles={}
+        for role in ("conversation","work","maintenance"):
+            profile=profiles.get(role)
+            provider=next((item for item in snapshot["providers"] if profile and item["id"]==profile["provider_id"]),None)
+            ready=bool(provider and provider["enabled"] and provider["api_key_masked"])
+            roles[role]={"configured":profile is not None,"ready":ready,"profile":profile,
+                         "reason":"已就绪" if ready else "未配置模型" if profile is None else "供应商未启用或未设置密钥"}
+        return {"sampled_at":self.current_time(),"running":bool(getattr(self.runtime,"_running",False)),
+                "onebot":self.onebot_status(),"shadow_mode":self.runtime.shadow_mode,
+                "allowed_scenes":sorted(self.runtime.allowed_scenes),"roles":roles}
+
+    @staticmethod
+    def event_types():
+        return {"items":[kind.value for kind in EventType],"complete":True}
+
+    async def relations(self, scene_id, *, event_id=None, job_id=None, episode_id=None, action_id=None, batch_id=None):
+        """Follow stored identifiers only; timestamps never establish a relation."""
+        limit=50
+        event_ids={event_id} if event_id else set()
+        job_ids={job_id} if job_id else set()
+        episode_ids={episode_id} if episode_id else set()
+        action_ids={action_id} if action_id else set()
+        result_ids=set()
+        truncated={}
+
+        def membership(column, values):
+            values=sorted(values)
+            return (column+" IN ("+','.join('?' for _ in values)+")",values) if values else ("0",[])
+
+        async def linked(select, source, clauses, order, label):
+            sql=" OR ".join(clause for clause,_ in clauses)
+            params=[scene_id,*(value for _,values in clauses for value in values)]
+            rows=await self._rows(select+" "+source+" AND ("+sql+") ORDER BY "+order+" LIMIT ?",[*params,limit+1])
+            truncated[label]=truncated.get(label,False) or len(rows)>limit
+            return rows[:limit]
+
+        if batch_id is not None:
+            batch=await self.history_batch(batch_id)
+            if batch is None or batch["scene_id"] != scene_id:return None
+            sources=set(batch["source_event_ids"])|set(batch["key_event_ids"])
+            events=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[membership("id",sources)],"rowid DESC","events")
+            calls=await linked("SELECT *","FROM model_calls WHERE scene_id=?",[membership("batch_id",{batch_id})],"started_at DESC,id DESC","calls")
+            traces=await linked("SELECT *","FROM traces WHERE scene_id=? AND kind IN ('history_maintenance','history_maintenance_error')",
+                                [membership("ref_id",{batch_id})],"created_at DESC,id DESC","traces")
+            located={key:batch[key] for key in ("id","scene_id","status","start_rowid","start_offset","end_rowid","end_offset","key_event_ids","generation_version")}
+            located["offset_basis"]="history_source_text"
+            return {"events":await self._event_views(events,batch["end_rowid"]),"calls":[self._call(row) for row in calls],
+                    "traces":[self._trace(row) for row in traces],"jobs":[],"actions":[],"tool_results":[],"batches":[located],
+                    "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches")},
+                    "truncated":{**truncated,"jobs":False,"actions":False,"tool_results":False,"batches":False}}
+
+        if event_id and await self.event(event_id,scene_id) is None:return None
+        if job_id and await self.job(job_id,scene_id) is None:return None
+        if episode_id:
+            exists=await self._rows("""SELECT id FROM traces WHERE scene_id=? AND ref_id=? UNION ALL
+                SELECT id FROM model_calls WHERE scene_id=? AND episode_id=? UNION ALL
+                SELECT id FROM events WHERE scene_id=? AND (id=? OR json_extract(payload,'$.batch_id')=?) LIMIT 1""",
+                [scene_id,episode_id,scene_id,episode_id,scene_id,'turn:'+episode_id,episode_id])
+            if not exists:return None
+        if action_id:
+            receipts=await self._rows("SELECT id FROM events WHERE scene_id=? AND json_extract(payload,'$.action_id')=? LIMIT 1",[scene_id,action_id])
+            approvals=await self._rows("""SELECT ref_id FROM traces WHERE scene_id=? AND EXISTS(
+                SELECT 1 FROM json_each(payload,'$.gate.action_ids') WHERE value=?) ORDER BY created_at DESC,id DESC LIMIT 1""",[scene_id,action_id])
+            if not receipts and not approvals:return None
+            episode_ids.update(item["ref_id"] for item in approvals)
+
+        # A committed turn explicitly records all originals read in that turn.
+        source_clause,source_values=membership("value",event_ids)
+        commits=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
+            membership("id",event_ids|{'turn:'+ident for ident in episode_ids}),
+            ("event_type='CONVERSATION_COMMITTED' AND EXISTS(SELECT 1 FROM json_each(payload,'$.source_event_ids') WHERE "+source_clause+")",source_values),
+            membership("json_extract(payload,'$.batch_id')",episode_ids),
+            membership("json_extract(payload,'$.action_id')",action_ids)],"rowid DESC","events")
+        for event in commits:
+            event_ids.add(event["id"]);payload=json.loads(event["payload"])
+            if event["event_type"]=="CONVERSATION_COMMITTED" and event["id"].startswith('turn:'):
+                episode_ids.add(event["id"][5:]);event_ids.update(payload.get("source_event_ids",[]))
+            if payload.get("batch_id"):episode_ids.add(payload["batch_id"])
+            if payload.get("job_id"):job_ids.add(payload["job_id"])
+            for task_id in (payload.get("task_id"), payload.get("fulfils_task_id")):
+                if task_id and await self.job(task_id, scene_id):job_ids.add(task_id)
+            if payload.get("action_id"):action_ids.add(payload["action_id"])
+            if payload.get("result_id"):result_ids.add(payload["result_id"])
+            reply_field="reply_to" if event["event_type"] in {"MESSAGE_SENT","MESSAGE_SEND_FAILED","ACTION_SHADOWED"} else "reply_to_message_id"
+            if payload.get(reply_field) is not None:
+                quoted=await self._rows("SELECT id FROM events WHERE scene_id=? AND rowid<? AND CAST(json_extract(payload,'$.message_id') AS TEXT)=? ORDER BY rowid DESC LIMIT 1",
+                                        [scene_id,event["rowid"],str(payload[reply_field])])
+                if quoted:event_ids.add(quoted[0]["id"])
+        source_clause,source_values=membership("value",event_ids)
+        job_rows=await linked("SELECT j.id,j.scene_id,j.source_event_ids_json,j.result_ids_json,t.origin_episode_id",
+            "FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE j.scene_id=?",[
+                membership("j.id",job_ids),membership("t.origin_episode_id",episode_ids),
+                ("EXISTS(SELECT 1 FROM json_each(j.source_event_ids_json) WHERE "+source_clause+")",source_values)],"t.created_at DESC,j.id DESC","jobs")
+        for job in job_rows:
+            job_ids.add(job["id"]);event_ids.update(json.loads(job["source_event_ids_json"]));result_ids.update(json.loads(job["result_ids_json"]))
+            if job["origin_episode_id"]:episode_ids.add(job["origin_episode_id"])
+        trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[membership("ref_id",episode_ids|job_ids)],"created_at DESC,id DESC","traces")
+        for row in trace_rows:
+            payload=json.loads(row["payload"]);conversation=payload.get("conversation") or {}
+            refs=conversation.get("references") or {}
+            result_ids.update((refs.get("results") or {}).values())
+            action_ids.update((payload.get("gate") or {}).get("action_ids",[]))
+        observations=await linked("SELECT *","FROM tool_observations WHERE scene_id=?",[
+            membership("id",result_ids),membership("event_id",event_ids)],"created_at DESC,id DESC","tool_results")
+        event_ids.update(row["event_id"] for row in observations)
+        event_ids.update('turn:'+ident for ident in episode_ids)
+        events=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
+            membership("id",event_ids),membership("json_extract(payload,'$.job_id')",job_ids),
+            membership("json_extract(payload,'$.batch_id')",episode_ids),membership("json_extract(payload,'$.action_id')",action_ids)],"rowid DESC","events")
+        calls=await linked("SELECT *","FROM model_calls WHERE scene_id=?",[
+            membership("episode_id",episode_ids),membership("job_id",job_ids)],"started_at DESC,id DESC","calls")
+        cutoff=max((row["rowid"] for row in events),default=0)
+        event_views=await self._event_views(events,cutoff)
+        actions={ident:{"id":ident,"scene_id":scene_id,"episode_id":None,"job_id":None,"origin_mode":None,
+                        "delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in action_ids}
+        for event in reversed(event_views):
+            ident=event["payload"].get("action_id")
+            if not ident:continue
+            action=actions.setdefault(ident,{"id":ident,"scene_id":scene_id,"receipt_event_ids":[]})
+            action.update(delivery_status=event["delivery_status"],simulated=event["simulated"],origin_mode=event["origin_mode"],
+                          episode_id=event["payload"].get("batch_id"),job_id=event["payload"].get("job_id"))
+            action["receipt_event_ids"].append(event["id"])
+        tools=[]
+        for row in observations:
+            result=ToolResult.model_validate_json(row["result_json"])
+            tools.append({"id":row["id"],"event_id":row["event_id"],"scene_id":scene_id,"tool_name":row["tool_name"],
+                          "created_at":row["created_at"],"status":result.status,"coverage":result.coverage,"content_length":len(result.content)})
+        return {"events":event_views,"traces":[self._trace(row) for row in trace_rows],"calls":[self._call(row) for row in calls],
+                "jobs":[await self.job(row["id"],scene_id) for row in job_rows],"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
+                "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches")},
+                "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
 
     def metrics(self) -> dict:
         return self.runtime.metrics.snapshot()
 
     def plugins(self) -> list[dict]:
-        return self.runtime.plugin_host.status_snapshot()
+        result=copy.deepcopy(self.runtime.plugin_host.status_snapshot())
+        credential_names={"sessdata","bili_jct","api_key","access_token","refresh_token","token","password","secret","cookie","authorization"}
+        for item in result:
+            properties=item["config_schema"].get("properties",{})
+            secrets={name for name,field in properties.items() if name.lower() in credential_names
+                     or field.get("writeOnly") or field.get("format")=="password"}
+            secrets.update(name for name in item["config"] if name.lower() in credential_names)
+            item["secret_fields"]=sorted(secrets)
+            item["config_set"]={name:bool(item["config"].get(name,item["default_config"].get(name))) for name in secrets}
+            hidden_values=[]
+            if secrets:
+                for key in ("default","example","examples"):item["config_schema"].pop(key,None)
+            for name in secrets:
+                for config in (item["config"],item["default_config"]):
+                    value=config.pop(name,None)
+                    if isinstance(value,str) and value:hidden_values.append(value)
+                if name in properties:
+                    properties[name]["writeOnly"]=True
+                    for key in ("default","example","examples"):properties[name].pop(key,None)
+            if item.get("last_error"):
+                for value in hidden_values:item["last_error"]=item["last_error"].replace(value,"[已隐藏凭据]")
+        return result
 
     async def provider_models(self, provider_id):
         return await self.runtime.provider_registry.list_models(provider_id)

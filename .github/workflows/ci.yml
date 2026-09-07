@@ -25,3 +25,18 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/len_bot/web/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: src/len_bot/web/frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build control panel
+        working-directory: src/len_bot/web/frontend
+        run: npm run build
