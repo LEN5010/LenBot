@@ -107,7 +107,7 @@ async def test_operator_palette_has_fixed_order_limit_and_invalidates_cache(medi
     await service.upload(picture(), "group:a", "没选入目录", [])
     palette = await store.list_palette("group:a")
     assert [asset["id"] for asset in palette] == [asset["id"] for asset in assets[:20]]
-    first = await service.prepare_palette("group:a")
+    first = await service.prepare_palette("group:a", include_pixels=True)
     assert [item["ref"] for item in first["manifest"]] == [f"P{i:02d}" for i in range(1, 21)]
     assert all(item["status"] == "included" for item in first["manifest"])
     with decoded(first["blocks"][0]) as image:
@@ -116,13 +116,13 @@ async def test_operator_palette_has_fixed_order_limit_and_invalidates_cache(medi
         raise AssertionError("Unchanged palette must reuse its derived sheet")
     with monkeypatch.context() as patch:
         patch.setattr(service, "_prepare_asset", no_io)
-        assert await service.prepare_palette("group:a") == first
+        assert await service.prepare_palette("group:a", include_pixels=True) == first
     await service.edit(assets[0]["id"], "global-safe", "已停用", [], False)
-    updated = await service.prepare_palette("group:a")
+    updated = await service.prepare_palette("group:a", include_pixels=True)
     assert assets[0]["id"] not in [item["asset_id"] for item in updated["manifest"]]
     assert updated["manifest"][0]["asset_id"] == assets[1]["id"]
     await service.edit(assets[1]["id"], "global-safe", "重命名", [], True, palette_order=30)
-    renamed = await service.prepare_palette("group:a")
+    renamed = await service.prepare_palette("group:a", include_pixels=True)
     assert renamed["manifest"][0]["asset_id"] == assets[2]["id"]
     await service.edit(assets[2]["id"], "global-safe", "移出", [], True, palette_order=None)
     assert assets[2]["id"] not in [asset["id"] for asset in await store.list_palette("group:a")]
@@ -140,7 +140,7 @@ async def test_reset_keeps_curated_originals_order_and_source_but_clears_derived
     incoming_asset, _ = await service.get_bytes(incoming.metadata["media"][0]["asset_id"], "group:a")
     derived = service.root / "unused-derived.png"
     derived.write_bytes(picture("yellow"))
-    await service.prepare_palette("group:a")
+    await service.prepare_palette("group:a", include_pixels=True)
     reset = Event(event_type=EventType.OPERATOR_ACTION, scene_id="system", actor_id="operator:test", payload={"command": "reset"})
     await store.reset_conversation_data(reset)
     await service.reset_cache()

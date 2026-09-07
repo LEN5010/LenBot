@@ -40,7 +40,7 @@ onMounted(load)
     <p class="muted">global-safe 素材可在所有场景使用，群内图片保持原场景范围。支持 PNG、JPEG、WEBP、GIF，最大 10MB。</p>
     <p v-if="error" class="tag bad" role="alert">{{ error }}</p><p v-if="message" class="tag ok" role="status">{{ message }}</p>
     <form class="panel" @submit.prevent="upload"><h2>添加运营素材</h2><div class="toolbar"><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="file = $event.target.files[0]" required /><input v-model="description" placeholder="描述用途或情绪" /><input v-model="tags" placeholder="标签，空格分隔" /><button class="primary" :disabled="busy || !file">上传到当前范围</button></div></form>
-    <p class="muted">固定目录按运营顺序最多展示 20 项，模型可直接选择原图发送；未选入目录的素材仍可检索。停用素材会退出当前目录。</p>
+    <p class="muted">固定目录按运营顺序最多展示 20 项，模型先按文字索引选择，再读取所选原图；未选入目录的素材仍可检索。停用素材会退出当前目录。</p>
     <div class="media-grid"><button v-for="asset in assets" :key="asset.id" class="panel media-card" :class="{ selected: selected?.id === asset.id }" @click="select(asset)"><img :src="preview(asset)" :alt="asset.description || '图片预览'" loading="lazy" /><strong>{{ asset.description || '群内图片' }}</strong><span class="muted">{{ asset.scope }} · {{ asset.enabled ? '已启用' : '已停用' }}</span><span v-if="asset.palette_order != null" class="tag" :class="asset.enabled ? 'ok' : 'warn'">目录顺序 {{ asset.palette_order }}</span><span class="tags-text">{{ asset.tags?.join(' · ') }}</span></button></div>
     <p v-if="!assets.length" class="muted">当前范围没有匹配素材</p>
     <section v-if="selected" class="panel"><div class="panel-header"><h2>素材详情</h2><button @click="selected = null">关闭</button></div><p class="muted asset-id">{{ selected.id }}</p><img class="detail-image" :src="preview(selected)" :alt="selected.description || '素材预览'" />
