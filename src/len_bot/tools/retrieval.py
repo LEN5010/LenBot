@@ -8,9 +8,10 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.cognition.projection import project_event
+from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event
 from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolResult
@@ -25,7 +26,7 @@ def tool(name, description, properties, required=()):
 
 S={'type':'string'}
 N={'type':'number'}
-I={'type':'integer','minimum':1,'maximum':50}
+I={'type':'integer','minimum':1}
 LOCAL_TOOLS=[
     tool('search_messages','按文字查找本群已读截点之前的原话。',{'query':S,'limit':I},['query']),
     tool('read_context','读取消息M前后的本群原话。',{'event_id':S,'before':I,'after':I},['event_id']),
@@ -35,8 +36,8 @@ LOCAL_TOOLS=[
         'subject':S,'kind':{'type':'string','enum':['address','preference','relationship','fact','group_norm']},
         'query':S,'include_history':{'type':'boolean'}}),
     tool('query_jobs','读取本群工作的实际版本、资料和进展。',{'job_id':S}),
-    tool('read_tool_result','继续阅读已获得的资料R；offset使用上次next_offset。',{'result_id':S,
-        'offset':{'type':'integer','minimum':0},'limit':{'type':'integer','minimum':1,'maximum':12000}},['result_id']),
+    tool('read_tool_result','继续阅读已获得的资料R；offset使用上次next_offset。',{'result_id':{'type':'string','minLength':1},
+        'offset':{'type':'integer','minimum':0},'limit':I},['result_id']),
     tool('search_media','按名称和描述查询本群或运营发布的图片。',{'query':S,'curated_only':{'type':'boolean'}}),
     tool('read_media','装入图片I/P像素和来源；动图只覆盖首帧。',{'asset_id':S},['asset_id']),
 ]
@@ -46,24 +47,31 @@ class MessageRangeArguments(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     message_ref: str = Field(min_length=1)
     offset: int = Field(ge=0)
-    limit: int = Field(default=4000, ge=1, le=8000)
+    limit: int = Field(ge=1)
 
 
 class PendingWakeArguments(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', strict=True)
     after_rowid: int = Field(default=0, ge=0)
-    limit: int = Field(default=10, ge=1, le=20)
+    limit: int = Field(ge=1)
+
+
+class ToolResultArguments(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    result_id: str = Field(min_length=1)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(ge=1)
 
 
 READ_PENDING_WAKES = tool('read_pending_wakes',
     '分页定位当前场景尚未完整读取的唤醒来源；使用next_after_rowid继续。目录不是原文证据，随后用read_context或read_message_range读取。',
-    {'after_rowid':{'type':'integer','minimum':0}, 'limit':{'type':'integer','minimum':1,'maximum':20}})
+    {'after_rowid':{'type':'integer','minimum':0}, 'limit':I})
 
 
 READ_MESSAGE_RANGE = tool('read_message_range',
     '按字符范围继续读取消息M的原话。使用上次next_offset；片段不代表整条已读，原文全部覆盖后才能作为提案证据。',
     {'message_ref': {'type':'string','minLength':1}, 'offset': {'type':'integer','minimum':0},
-     'limit': {'type':'integer','minimum':1,'maximum':8000,'default':4000}}, ['message_ref','offset'])
+     'limit': I}, ['message_ref','offset'])
 
 
 @dataclass(frozen=True)
@@ -78,7 +86,7 @@ class ObservationPage:
 class RetrievalToolkit:
     def __init__(self,event_store,allowed_scopes,default_scene_id,memory_store=None,plugin_host=None,
                  bot_qq='',on_observation=None,checkpoint=None,media_service=None,
-                 context=None, *, page_chars: int, max_chars: int, read_concurrency: int,
+                 context=None, *, config: RuntimeConfig,
                  call_context: Callable[[], PluginCallContext]):
         self.event_store=event_store
         # Historical and tool observations are always local. global-safe applies only to media.
@@ -93,8 +101,9 @@ class RetrievalToolkit:
         self.media_service=media_service
         self.context=context
         self.call_context = call_context
-        self.page_chars = page_chars
-        self.max_chars = max_chars
+        self.config = config
+        self.page_chars = config.tool_result_page_chars
+        self.max_chars = config.tool_result_max_chars
         if context and context.refs.scene_id != default_scene_id:
             raise ValueError('Conversation context belongs to another scene')
         self.discovered_tools=set()
@@ -102,22 +111,51 @@ class RetrievalToolkit:
         self.observations={}
         self.external_attempted=False
         self.unavailable_tools=set()
-        self._parallel = asyncio.Semaphore(read_concurrency)
+        self._parallel = asyncio.Semaphore(config.tool_read_concurrency)
 
     @property
     def references(self): return self.context.refs if self.context else None
     @property
     def cutoff(self): return self.references.cutoff if self.references else self.call_context().cutoff_rowid
 
+    def _pagination_parameters(self, name):
+        config = self.config
+        if name in {'read_tool_result', 'read_message_range'}:
+            minimum, maximum, default = 1, self.max_chars, self.page_chars
+        elif name in {'search_messages', 'query_timeline', 'query_person_history'}:
+            minimum, maximum, default = 1, config.retrieval_max_limit, config.retrieval_default_limit
+        elif name == 'read_pending_wakes':
+            minimum, maximum, default = 1, config.pending_wakes_max_limit, config.pending_wakes_default_limit
+        elif name == 'read_context':
+            bounds = {'type':'integer', 'minimum':0, 'maximum':config.read_context_max_neighbors,
+                      'default':config.read_context_default_neighbors}
+            return {'before':dict(bounds), 'after':dict(bounds)}
+        else:
+            return {}
+        return {'limit': {'type':'integer', 'minimum':minimum, 'maximum':maximum, 'default':default}}
+
+    def _read_arguments(self, name, arguments):
+        values = dict(arguments)
+        for field, bounds in self._pagination_parameters(name).items():
+            value = values.get(field, bounds['default'])
+            if type(value) is not int or not bounds['minimum'] <= value <= bounds['maximum']:
+                raise ValueError(f"{field} must be an integer in {bounds['minimum']}..{bounds['maximum']}")
+            values[field] = value
+        schema = {'read_message_range':MessageRangeArguments,
+                  'read_pending_wakes':PendingWakeArguments,
+                  'read_tool_result':ToolResultArguments}.get(name)
+        return schema.model_validate(values).model_dump() if schema is not None else values
+
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
-        read_result = next(item for item in definitions if item['function']['name'] == 'read_tool_result')
-        read_result['function']['parameters']['properties']['limit']['maximum'] = self.max_chars
         if self.context and self.context.pending_wakes():
             definitions.append(copy.deepcopy(READ_PENDING_WAKES))
         if self.context and (self.references.partial_events
                              or set(self.references.events.values()) - self.references.read_events):
             definitions.append(copy.deepcopy(READ_MESSAGE_RANGE))
+        for definition in definitions:
+            function = definition['function']
+            function['parameters']['properties'].update(self._pagination_parameters(function['name']))
         if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
         if self.call_context().role == 'work':
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
@@ -164,26 +202,17 @@ class RetrievalToolkit:
 
     async def execute_observation(self, name, arguments) -> ObservationPage:
         """Fetch and persist in parallel; references are granted only when presented."""
-        if name == 'read_pending_wakes':
-            try:
-                arguments = PendingWakeArguments.model_validate(arguments).model_dump()
-            except ValidationError as error:
-                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
         if name not in definitions:return ObservationPage(name, ToolResult.failure('本入口未开放此工具','capability_denied'), limit=self.page_chars)
-        if name == 'read_message_range':
-            try:
-                arguments = MessageRangeArguments.model_validate(arguments).model_dump()
-            except ValidationError as error:
-                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
+        try:
+            arguments = self._read_arguments(name, arguments)
+        except ValueError as error:
+            return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
         try:args=self._resolve_arguments(name,dict(arguments))
         except ValueError as error:return ObservationPage(name, ToolResult.failure(str(error),'invalid_reference'), limit=self.page_chars)
         if name=='read_tool_result':
-            offset, limit = int(args.get('offset', 0)), int(args.get('limit', self.page_chars))
-            if offset < 0 or not 1 <= limit <= self.max_chars:
-                return ObservationPage(name, ToolResult.failure(
-                    f'offset must be nonnegative; limit must be 1..{self.max_chars}', 'invalid_arguments'), limit=self.page_chars)
-            result=await self.event_store.read_tool_observation(args.get('result_id',''),self.allowed_scopes)
+            offset, limit = args['offset'], args['limit']
+            result=await self.event_store.read_tool_observation(args['result_id'],self.allowed_scopes)
             if result is None:return ObservationPage(name, ToolResult.failure('资料不存在或不属于本群','not_found'), limit=self.page_chars)
             call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
             return ObservationPage(call[0] if call else '',result,offset=offset,limit=limit)
@@ -193,8 +222,9 @@ class RetrievalToolkit:
             matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions(self.call_context(), kind='read') if
                 self.is_read_only(t['function']['name']) and t['function']['name'] not in self.unavailable_tools
                 and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
-            self.discovered_tools.update(matches[:8])
-            return ObservationPage(name, ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog'), limit=self.page_chars)
+            selected = matches[:self.config.tool_discovery_limit]
+            self.discovered_tools.update(selected)
+            return ObservationPage(name, ToolResult(status='ok' if selected else 'no_results',content=json.dumps(selected,ensure_ascii=False),coverage='tool_catalog'), limit=self.page_chars)
         if self.checkpoint:
             await self.checkpoint('before_tool', {'scene_id':self.default_scene_id,'name':name,'arguments':args})
         start = time.monotonic()
@@ -332,7 +362,7 @@ class RetrievalToolkit:
             return {'ref':ref,**item}
 
         selected=[]
-        index=min(offset,len(data))
+        index=offset
         while index<len(data):
             original=self.context.refs
             self.context.refs=copy.deepcopy(original)
@@ -392,7 +422,8 @@ class RetrievalToolkit:
                 evidence_kind='retrieval')
         if name=='read_media':return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
         if name=='search_media':
-            rows=await store.list_media([self.default_scene_id,'global-safe'],query=str(args.get('query','')),curated_only=bool(args.get('curated_only',True)))
+            rows=await store.list_media([self.default_scene_id,'global-safe'],query=str(args.get('query','')),
+                curated_only=bool(args.get('curated_only',True)), limit=self.config.media_search_limit)
             records = [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')}} for x in rows]
             return ToolResult(status='ok' if records else 'no_results', content=json.dumps(records, ensure_ascii=False),
                               coverage='media_catalog', evidence_kind='retrieval')
@@ -410,14 +441,15 @@ class RetrievalToolkit:
                               coverage='current_jobs', evidence_kind='retrieval')
         if name=='calculate':return calculate(args.get('expression',''))
         if name=='finite_check':return await asyncio.to_thread(finite_check,**args)
-        rows=None;limit=max(1,min(int(args.get('limit',15)),50))
-        if name=='search_messages':rows=await store.search_messages(str(args.get('query','')),scopes,limit,through_rowid=self.cutoff)
-        elif name=='read_context':rows=await store.read_context(str(args.get('event_id','')),int(args.get('before',3)),int(args.get('after',3)),scopes,through_rowid=self.cutoff)
-        elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,float(args['start_time']),float(args['end_time']),scopes,limit,through_rowid=self.cutoff)
-        elif name=='query_person_history':rows=await store.query_person_history(str(args.get('actor_id','')),scopes,limit,through_rowid=self.cutoff)
+        rows=None
+        if name=='search_messages':rows=await store.search_messages(str(args.get('query','')),scopes,args['limit'],through_rowid=self.cutoff)
+        elif name=='read_context':rows=await store.read_context(str(args.get('event_id','')),args['before'],args['after'],scopes,through_rowid=self.cutoff)
+        elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,float(args['start_time']),float(args['end_time']),scopes,args['limit'],through_rowid=self.cutoff)
+        elif name=='query_person_history':rows=await store.query_person_history(str(args.get('actor_id','')),scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='query_memory':
             if not self.memory_store:return ToolResult(status='unsupported',content='未配置认识账本')
-            memories=await self.memory_store.query_memories(scopes,subject=args.get('subject'),kind=args.get('kind'),query=args.get('query'),include_superseded=bool(args.get('include_history',False)))
+            memories=await self.memory_store.query_memories(scopes,subject=args.get('subject'),kind=args.get('kind'),query=args.get('query'),
+                include_superseded=bool(args.get('include_history',False)), limit=self.config.retrieval_default_limit)
             return ToolResult(status='ok' if memories else 'no_results',
                               content=json.dumps([m.model_dump(mode='json') for m in memories], ensure_ascii=False),
                               coverage='memory_ledger', evidence_kind='retrieval')

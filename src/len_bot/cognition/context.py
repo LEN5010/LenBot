@@ -184,10 +184,11 @@ class ConversationContext:
         return [wake for wake in self.session.pending_wakes
                 if wake.rowid <= self.refs.cutoff and wake.event_id not in self.refs.read_events]
 
-    def pending_wake_page(self, after_rowid=0, limit=10):
+    def pending_wake_page(self, *, limit: int, after_rowid=0):
         """A bounded locator page; only original-reading tools grant evidence."""
-        if after_rowid < 0 or not 1 <= limit <= 20:
-            raise ValueError('Pending source pages need after_rowid >= 0 and limit 1..20')
+        maximum = self.runtime.config.pending_wakes_max_limit
+        if after_rowid < 0 or not 1 <= limit <= maximum:
+            raise ValueError(f'Pending source pages need after_rowid >= 0 and limit 1..{maximum}')
         unread = self.pending_wakes()
         candidates = sorted((wake for wake in unread if wake.rowid > after_rowid), key=lambda wake:wake.rowid)
         page = candidates[:limit]
@@ -483,7 +484,8 @@ class ConversationContext:
         self.refs.active_loops.clear()
         loop_views = [{'ref':self.refs.register_loop(x),'target':self.refs.register_actor(x['target_actor_id']),
                        'intent':x['intent']} for x in loops]
-        outbound = await store.outbound_message_facts(scene,self.refs.cutoff,bot_actor_id=self.runtime.bot_actor_id)
+        outbound = await store.outbound_message_facts(scene,self.refs.cutoff,bot_actor_id=self.runtime.bot_actor_id,
+            limit=self.runtime.config.conversation_outbound_limit)
         for item in outbound:
             item['segments']=self.model_segments(item['segments'])
         facts={key:value for key,value in {'work':job_views,'tasks':task_views,'open_loops':loop_views,'outbound':outbound}.items() if value}
@@ -581,7 +583,7 @@ class ConversationContext:
         if self.pending_wakes():
             snapshot = self._projection_snapshot()
             page = {'role':'user','content':'待处理来源定位页；位置不授予原文证据：'+
-                    json.dumps(self.project_pending_page(self.pending_wake_page()),ensure_ascii=False)}
+                    json.dumps(self.project_pending_page(self.pending_wake_page(limit=config.pending_wakes_default_limit)),ensure_ascii=False)}
             if self.request_tokens([*messages,page]) <= self.input_budget:
                 messages.append(page)
             else:
@@ -597,7 +599,8 @@ class ConversationContext:
         history_note = '历史压缩视图（非权威缓存；来源仅定位，提案证据须读取原话；图片索引不是像素）：'
         def history_message():
             return {'role':'user','content':history_note+json.dumps({'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
-        summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id, limit=4, status='completed')
+        summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
+            limit=config.conversation_summary_limit, status='completed')
         summary_tokens = 0
         for summary in summaries:
             size = estimate_tokens(summary['summary'])

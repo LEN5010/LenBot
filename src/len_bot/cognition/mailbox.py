@@ -19,7 +19,7 @@ class EpisodeMailbox:
         self.episode_id = episode_id
         self.scene_id = scene_id
         self.base_scene_version = base_scene_version
-        # ADR-0029: burst event that triggered this episode; attached to dependent open loops.
+        # The real triggering event also owns any resulting wait for a reply.
         self.origin_stimulus_id = origin_stimulus_id
         self.origin_mode = "live"
         self.output_kind = 'chat'
@@ -39,7 +39,7 @@ class EpisodeMailbox:
 
     def post(self, event: Event) -> None:
         """Called by SceneActor worker when a new event arrives for this scene.
-        ADR-0026: Only accepts conversational messages (GROUP_MESSAGE_RECEIVED / PRIVATE_MESSAGE_RECEIVED).
+        Only accepts group/private messages admitted to ordinary conversation.
         Internal, state, task, and sensor fact events are discarded.
         """
         allowed = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
@@ -68,13 +68,13 @@ class EpisodeMailbox:
         return bool(self._unconsumed_follow_ups)
 
     def consume_follow_ups(self) -> list[Event]:
-        """Destructive method: ONLY consumed by ReActAgentCore during cognition ReAct steps."""
+        """Return and clear follow-up events already selected by the current episode."""
         consumed = list(self._unconsumed_follow_ups)
         self._unconsumed_follow_ups.clear()
         return consumed
 
     def has_unseen_interim(self) -> bool:
-        """Non-destructive query (ADR-0026, §6): returns True if unread interim events exist."""
+        """Whether newly arrived conversation input remains unread."""
         return len(self._interim_events) > self._cursor
 
     def fetch_unseen_interim_events(self) -> list[Event]:

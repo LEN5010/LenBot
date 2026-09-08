@@ -225,7 +225,8 @@ class SceneActor:
                                'origin_event_id': item.mailbox.origin_stimulus_id,
                                'outcome': item.outcome.model_dump(mode='json')},
                       metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode,
-                                'conversation_excluded': native_output})
+                                'operator_control': item.operator,
+                                'conversation_excluded': native_output or item.operator})
         candidate = SceneReducer.reduce(state, event, self.bot_actor_id)
         if not item.operator and not native_output:
             candidate.pending_wakes = [wake for wake in state.pending_wakes if wake.event_id not in read]

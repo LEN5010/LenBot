@@ -177,7 +177,7 @@ class WebSearchToolPlugin(BasePlugin):
         if not url.startswith(("http://", "https://")):
             return ToolResult.failure("read_page requires an absolute http(s) URL.", "invalid_arguments")
 
-        # SSRF Guard (ADR-0030, §21.4)
+        # Apply the existing allowed public-network URL policy before reading.
         allowed, reason = validate_url(url)
         if not allowed:
             logger.warning("SSRF blocked read_page attempt for %s: %s", url, reason)

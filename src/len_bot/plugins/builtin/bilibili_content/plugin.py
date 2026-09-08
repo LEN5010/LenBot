@@ -1,4 +1,4 @@
-"""Bilibili Content Tool Plugin (ADR-0021 and ADR-0030).
+"""Read public Bilibili content through explicit native work tools.
 
 Cognition-invoked agentic tools for querying public Bilibili video details,
 search results, and dynamic feeds.

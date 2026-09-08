@@ -34,8 +34,7 @@ class SocialCognitionCore:
         toolkit=RetrievalToolkit(runtime.event_store,[session.scene_id],session.scene_id,
             memory_store=runtime.memory_store,plugin_host=runtime.plugin_host,bot_qq=runtime.config.bot_qq,
             media_service=runtime.media_service,context=context,on_observation=runtime.commit_tool_observation,
-            page_chars=runtime.config.tool_result_page_chars, max_chars=runtime.config.tool_result_max_chars,
-            read_concurrency=runtime.config.tool_read_concurrency, call_context=plugin_context)
+            config=runtime.config, call_context=plugin_context)
         pending_exchange=None
         def definitions():
             return (toolkit.get_tool_definitions() + ledger.definitions()

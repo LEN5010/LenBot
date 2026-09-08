@@ -135,7 +135,8 @@ async def control_job(job_id: str, operation: str, req: JobControlRequest, reque
     event = await runtime.record_operator_event(job["scene_id"], f"job_{operation}", user,
         {"job_id": job_id, **req.model_dump()})
     proposal = JobProposal(operation=operation, job_id=job_id, expected_revision=req.expected_revision,
-        goal=req.goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove, source_event_ids=[event.id])
+        goal=req.goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove,
+        source_event_ids=[event.id], requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'])
     decision = await runtime.operator_outcome(job["scene_id"], EpisodeOutcome(disposition=FinalDisposition.SILENCE,
         decision_reason="运营修改信息工作", job_proposals=[proposal]), source_event_ids=[event.id])
     if not decision.accepted:
@@ -271,9 +272,11 @@ async def event_detail(event_id: str, scene_id: str, request: Request, user: str
 
 @router.get("/traces")
 async def list_traces(request: Request, scene_id: str | None = None, kind: str | None = None, ref_id: str | None = None,
+                      episode_id: str | None = None,
                       since: float | None = None, until: float | None = None, page: int = Query(1,ge=1),
                       page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
-    return await _service(request).query_traces(scene_id=scene_id,kind=kind,ref_id=ref_id,since=since,until=until,page=page,page_size=page_size)
+    return await _service(request).query_traces(scene_id=scene_id,kind=kind,ref_id=ref_id,episode_id=episode_id,
+        since=since,until=until,page=page,page_size=page_size)
 
 
 @router.get("/traces/{trace_id}")

@@ -36,6 +36,7 @@ class LLMReflector:
         resolver: Callable,
         *,
         memory_store: MemoryStore | None = None,
+        memory_limit: int,
         max_steps: int,
         max_tool_calls: int,
         call_store=None,
@@ -47,6 +48,7 @@ class LLMReflector:
         self.context_tokens = context_tokens
         self.output_tokens = output_tokens
         self.memory_store = memory_store
+        self.memory_limit = memory_limit
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
 
@@ -85,7 +87,7 @@ class LLMReflector:
                 raise ToolArgumentError(str(error)) from error
             rows = await self.memory_store.query_memories(
                 [scene_id], subject=lookup.subject, query=lookup.query,
-                include_superseded=lookup.include_history, limit=15,
+                include_superseded=lookup.include_history, limit=self.memory_limit,
             )
             return ToolResult(status="ok" if rows else "no_results",
                               content=json.dumps([item.model_dump(mode="json") for item in rows], ensure_ascii=False),

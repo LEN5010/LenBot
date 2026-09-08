@@ -76,8 +76,10 @@ class MemoryStore:
         kind: str | None = None,
         query: str | None = None,
         include_superseded: bool = False,
-        limit: int = 15,
+        *, limit: int,
     ) -> list[MemoryItem]:
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Memory search requires a positive integer limit')
         scopes = list(dict.fromkeys(allowed_scopes))
         if not scopes:
             return []
@@ -97,7 +99,7 @@ class MemoryStore:
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{escaped}%")
         sql += " ORDER BY created_at DESC,id LIMIT ?"
-        params.append(max(1, min(limit, 200)))
+        params.append(limit)
         rows = await (await self._db.execute(sql, params)).fetchall()
         return [memory_from_row(row) for row in rows]
 

@@ -1,7 +1,6 @@
-from typing import Any, Optional, Callable, Awaitable, Literal
+from typing import Any, Callable, Awaitable, Literal
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
 from len_bot.events.models import Event
-from len_bot.actions.models import ActionItem
 from len_bot.tools.results import ToolResult
 
 class PluginContext:
@@ -50,15 +49,6 @@ class PluginContext:
             roles=roles,
             deferred=deferred,
         )
-
-    def register_action_interceptor(
-        self,
-        interceptor: Callable[[ActionItem], Awaitable[Optional[ActionItem]]]
-    ) -> None:
-        """Action Interceptor: registers pre-flight inspection on outbound actions."""
-        if not self.has_permission(PluginPermission.INTERCEPT_ACTION):
-            raise PermissionError(f"Plugin '{self.manifest.id}' lacks 'intercept_action' permission.")
-        self._host.register_action_interceptor(self.manifest.id, interceptor)
 
 class BasePlugin:
     manifest: PluginManifest

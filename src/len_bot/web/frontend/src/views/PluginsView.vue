@@ -14,7 +14,7 @@ const dirty=computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==origi
 const {confirmLeave}=useUnsavedChanges(dirty)
 onBeforeRouteUpdate((to,from)=>to.query.id===from.query.id||confirmLeave())
 let requestId=0
-const permissionLabels={emit_event:'提交观察事件',register_tool:'提供原生工具',intercept_action:'检查待发行动'}
+const permissionLabels={emit_event:'提交观察事件',register_tool:'提供原生工具'}
 const eventLabels={LIVE_STARTED:'发现直播开始',LIVE_ENDED:'发现直播结束'}
 const toolLabels={web_search:'搜索网页',read_page:'读取网页',get_video_info:'查询视频信息',search_bilibili:'搜索哔哩哔哩',get_dynamic_feed:'查询用户动态',get_live_schedule:'查询直播日程',get_live_status:'查询实际直播状态',get_asoul_dynamics:'该源已抓取的最新动态',search_asoul_dynamics:'搜索动态',read_asoul_dynamic:'读取动态详情',get_asoul_on_this_day:'历史同日',search_asoul_fanart:'搜索二创',get_random_asoul_fanart:'随机查询二创',summarize_group_chat:'创建本群总结工作',read_group_chat_window:'读取总结范围原话'}
 const commandFields=[{key:'calendar_today',title:'今日范围命令词'},{key:'calendar_tomorrow',title:'明日范围命令词'},{key:'calendar_week',title:'自然周范围命令词'}]
@@ -116,7 +116,7 @@ load()
     <v-progress-linear v-if="loading" indeterminate />
     <div class="plugin-list">
       <v-card v-for="plugin in plugins" :key="plugin.id" class="pa-5">
-        <div class="plugin-heading"><div class="plugin-title"><p class="muted mb-2">{{ ({sensory:'信息监测',tool:'查询与工作工具',scheduled:'计划能力',interceptor:'行动检查',hybrid:'组合能力'})[plugin.plugin_type]||plugin.plugin_type }}</p><h2>{{ plugin.name }}</h2></div><StatusBadge domain="plugin" :status="plugin.state" /></div>
+        <div class="plugin-heading"><div class="plugin-title"><p class="muted mb-2">{{ ({sensory:'信息监测',tool:'查询与工作工具',scheduled:'计划能力',hybrid:'组合能力'})[plugin.plugin_type]||plugin.plugin_type }}</p><h2>{{ plugin.name }}</h2></div><StatusBadge domain="plugin" :status="plugin.state" /></div>
         <p class="clamp-2 plugin-description">{{ plugin.description }}</p>
         <div class="plugin-meta"><span>{{ plugin.configured?'已配置':'未配置' }}</span><span>全局{{ plugin.enabled?'启用':'停用' }}</span><span>开放 {{ plugin.open_scenes.filter(scene=>scene.enabled).length }} 个已启用群</span></div>
         <div class="source-summary"><span>最近成功获取 {{ fmtTime(plugin.source_status.last_success_at) }}</span><span>最近失败 {{ fmtTime(plugin.source_status.last_error_at) }}</span></div>

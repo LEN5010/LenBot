@@ -38,7 +38,7 @@ async function load(){
   try{
     let value
     if(tab.value==='calls')value=await api('/api/models/usage?'+queryString({...args(),purpose:route.query.purpose,status:route.query.status,page:page.value,page_size:30}))
-    else if(tab.value==='turns')value=await api('/api/cockpit/traces?'+queryString({...args(),kind:route.query.kind,ref_id:route.query.episode,page:page.value,page_size:30}))
+    else if(tab.value==='turns')value=await api('/api/cockpit/traces?'+queryString({...args(),kind:route.query.kind,episode_id:route.query.episode,page:page.value,page_size:30}))
     else if(tab.value==='events')value=await api('/api/cockpit/events?'+queryString({...args(),actor_id:route.query.actor,event_type:route.query.event_type,limit:50,before:route.query.before,snapshot_rowid:route.query.snapshot}))
     else value=await api('/api/logs?'+queryString({level:route.query.level,limit:200}))
     if(own===sequence){data.value=value;updatedAt.value=Date.now()/1000}

@@ -13,11 +13,11 @@ class ActionQueue:
     """Per-scene ordering with bounded global delivery and batch failure semantics."""
     def __init__(self, event_store: EventStore,
                  send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
-                 on_action_event=None, bot_actor_id="system:action_queue", action_interceptor=None,
+                 on_action_event=None, bot_actor_id="system:action_queue", prepare_action=None,
                  shadow_probe=None, shadow_recorder=None, *, max_concurrent: int):
         self.event_store, self.send_adapter = event_store, send_adapter
         self.on_action_event, self.bot_actor_id = on_action_event, bot_actor_id
-        self.action_interceptor = action_interceptor
+        self.prepare_action = prepare_action
         self.shadow_probe, self.shadow_recorder = shadow_probe, shadow_recorder
         self._queue: asyncio.Queue[ActionItem] = asyncio.Queue()
         self._worker_task = None
@@ -114,10 +114,8 @@ class ActionQueue:
         if action.batch_id in self._failed_batches:
             return await self._reject(action, "同组前一片段未确认送达，停止剩余片段")
         try:
-            if self.action_interceptor:
-                action = await self.action_interceptor(action)
-            if action is None:
-                return await self._reject(original, "发送被检查阻止")
+            if self.prepare_action:
+                action = await self.prepare_action(action)
             await self._validate(action)
         except Exception as error:
             return await self._reject(original, f"发送检查失败：{error}")
