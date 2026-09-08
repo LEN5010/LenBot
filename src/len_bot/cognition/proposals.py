@@ -120,7 +120,7 @@ TOOLS={
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。'),
     'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料，部分结果不因此重开。'),
-    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，可把ack_ref复制到finish_turn的确认消息。'),
+    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，把ack_ref复制到finish_turn的确认消息。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),
     'remember':(Remember,'保存有原话证据的明确称呼、偏好或相处要求。'),
@@ -144,7 +144,7 @@ FINISH_TURN={
     'type':'function',
     'function':{
         'name':'finish_turn',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。片段只填text或image，不填type。引用工作进展或结果时填work_ref，最终交付再填delivery_ref。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。片段只填text或image，不填type。新建事项确认须将暂存回执S填入ack_ref；已存在工作J的进展或结果用work_ref，可履约工作J或提醒T的最终交付用delivery_ref。只使用当前提供的引用字段和枚举值。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
                 'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
@@ -152,8 +152,6 @@ FINISH_TURN={
                                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'}}),
                     'description':'恰好一个字段：{"text":"一句回应"}或{"image":"本轮图片引用"}；可单图或按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
-                'work_ref':{'type':'string','description':'本条进展或结果所依据的工作J'},
-                'delivery_ref':{'type':'string','description':'送达后完成的工作J或提醒T；失败工作不能履约'},
                 'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
                                         'intent':{'type':'string','minLength':1}},('target','intent')),
             },('segments',))},
@@ -196,10 +194,24 @@ class ProposalLedger:
 
     def terminal_definition(self):
         result=copy.deepcopy(FINISH_TURN)
+        refs=self.context.refs
+        message=result['function']['parameters']['properties']['messages']['items']
+        props=message['properties']
         if self.proposal_refs:
-            props=result['function']['parameters']['properties']['messages']['items']['properties']
             props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
-                'description':'复制新建工作或提醒的暂存回执；此消息与对应提案一起提交，不能单独确认'}
+                'description':'复制新建工作或提醒的暂存回执S；每条消息必须绑定，每个回执只确认一次。需要多段确认时写在同一消息的segments中；消息与提案一起提交，不提前写工作结论'}
+            message['required'].append('ack_ref')
+        job_refs=sorted(ref for ref,job in refs.jobs.items()
+            if job['status'] in {'pending','claimed','processing','result_ready','awaiting_delivery','review_required','failed'})
+        if job_refs:
+            props['work_ref']={'type':'string','enum':job_refs,
+                'description':'本条进展或结果所依据的已存在工作J；暂存回执S只能填ack_ref'}
+        delivery_refs=sorted(list(refs.tasks)
+            + [ref for ref,job in refs.jobs.items() if job['status']=='result_ready'
+               and job['execution_status'] in {'completed','partial'}])
+        if delivery_refs:
+            props['delivery_ref']={'type':'string','enum':delivery_refs,
+                'description':'本条真实送达后完成的实际工作J或提醒T；暂存回执S只能填ack_ref'}
         return result
 
     def definitions(self):
@@ -293,7 +305,8 @@ class ProposalLedger:
             result=FinishTurn.model_validate(arguments)
             refs=self.context.refs;messages=[]
             if self.proposal_refs and any(not item.ack_ref for item in result.messages):
-                raise ValueError('本轮新建工作尚未有结果；确认消息必须绑定实际暂存回执ack_ref，只表达查证安排，不要提前写结论')
+                raise ValueError('本轮仍有新建事项；每条确认消息必须填写暂存回执中的ack_ref。当前可用：'
+                    + ', '.join(sorted(self.proposal_refs)) + '；这些S引用不能填入work_ref或delivery_ref。')
             for item in result.messages:
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
