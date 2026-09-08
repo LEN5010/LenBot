@@ -5,18 +5,18 @@ import asyncio
 import copy
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
 from len_bot.cognition.projection import project_event
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event
 from len_bot.plugins.models import PluginCallContext
-from len_bot.tools.results import DisplayedRange, ToolNextCall, ToolResult
+from len_bot.tools.results import DisplayedRange, ToolFieldError, ToolNextCall, ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
 from len_bot.tools.finite_check import FINITE_CHECK_TOOL, finite_check
 
@@ -267,15 +267,30 @@ class RetrievalToolkit:
         refs=self.references
         for key,resolve in [('event_id',refs.locate_event),('message_ref',refs.locate_event),('actor_id',refs.actor_id),('asset_id',refs.media_id),
                             ('subject',refs.actor_id),('result_id',refs.result_id)]:
-            if args.get(key):args[key]=resolve(args[key])
-        if args.get('job_id'):args['job_id']=refs.job(args['job_id'])['id']
+            if args.get(key):
+                try:
+                    args[key]=resolve(args[key])
+                except ValueError:
+                    return ToolResult.failure(f'{key}须使用本轮已提供的对应引用；先定位资料，不能自拟标识。',
+                        'invalid_reference', stage='references', details=[ToolFieldError(loc=[key],
+                            type='invalid_reference', message='引用未出现在本轮可定位资料中')])
+        if args.get('job_id'):
+            try:
+                args['job_id']=refs.job(args['job_id'])['id']
+            except ValueError:
+                return ToolResult.failure('job_id须使用本轮已提供的工作引用；先用query_jobs读取工作目录。',
+                    'invalid_reference', stage='references', details=[ToolFieldError(loc=['job_id'],
+                        type='invalid_reference', message='工作引用未出现在本轮可定位资料中')])
         return args
 
-    async def execute_result(self, name, arguments) -> ToolResult:
-        page = await self.execute_observation(name, arguments)
-        return await self._present(page.name, page.result, page.offset, page.limit, page.coordinate_unit)
+    async def execute_result(self, name, arguments, *, tool_call_id=None) -> ToolResult:
+        page = await self.execute_observation(name, arguments, tool_call_id=tool_call_id)
+        result = await self._present(page.name, page.result, page.offset, page.limit, page.coordinate_unit)
+        if result.status == 'error' and result.result_id is None:
+            return (await self.error_observation(name, arguments, result, tool_call_id=tool_call_id)).result
+        return result
 
-    async def execute_observation(self, name, arguments) -> ObservationPage:
+    async def execute_observation(self, name, arguments, *, tool_call_id=None) -> ObservationPage:
         """Fetch and persist in parallel; references are granted only when presented."""
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
         registered_read=bool(self.plugin_host and self.plugin_host.has_registered_tool(name)
@@ -285,23 +300,45 @@ class RetrievalToolkit:
         # and scene/role access remain authoritative at execution time.
         if (registered_read and not self.plugin_host.has_tool(name,self.call_context())) or (
                 not registered_read and name not in definitions):
-            return ObservationPage(name, ToolResult.failure('本入口未开放此工具','capability_denied'), limit=self.page_chars)
+            return await self.error_observation(name, arguments, ToolResult.failure(
+                '本入口未开放此工具','capability_denied', stage='availability'), tool_call_id=tool_call_id)
         try:
             arguments = self._read_arguments(name, arguments)
+        except ValidationError as error:
+            return await self.error_observation(name, arguments, ToolResult.validation_failure(error), tool_call_id=tool_call_id)
         except ValueError as error:
-            return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
-        try:args=self._resolve_arguments(name,dict(arguments))
-        except ValueError as error:return ObservationPage(name, ToolResult.failure(str(error),'invalid_reference'), limit=self.page_chars)
+            return await self.error_observation(name, arguments, ToolResult.failure(
+                str(error), 'invalid_arguments', stage='arguments'), tool_call_id=tool_call_id)
+        args=self._resolve_arguments(name,dict(arguments))
+        if isinstance(args, ToolResult):
+            return await self.error_observation(name, arguments, args, tool_call_id=tool_call_id)
         if name=='read_tool_result':
             offset, limit = args['offset'], args['limit']
             result=await self.event_store.read_tool_observation(args['result_id'],self.allowed_scopes)
-            if result is None:return ObservationPage(name, ToolResult.failure('资料不存在或不属于本群','not_found'), limit=self.page_chars)
+            if result is None:
+                return await self.error_observation(name, args, ToolResult.failure(
+                    '资料不存在或不属于本群','not_found', stage='references'), tool_call_id=tool_call_id)
             self.observations[result.result_id]=result
             if result.result_id not in self.result_ids:self.result_ids.append(result.result_id)
             self._discover_continuation(result)
             call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
             if args['coordinate_unit']=='characters' and offset>len(result.content):
-                return ObservationPage(name,ToolResult.failure('offset超出已保存正文长度','invalid_arguments'),limit=self.page_chars)
+                return await self.error_observation(name, args, ToolResult.failure(
+                    'offset超出已保存正文长度','invalid_arguments', stage='arguments',
+                    details=[ToolFieldError(loc=['offset'],type='out_of_range',message='offset超出已保存正文长度')]),
+                    tool_call_id=tool_call_id)
+            if args['coordinate_unit']=='records':
+                try:
+                    records=json.loads(result.content)
+                except ValueError:
+                    records=None
+                if call and call[0]=='read_pending_wakes' and isinstance(records,dict):
+                    records=records['items']
+                if not isinstance(records,list) or offset>len(records):
+                    return await self.error_observation(name, args, ToolResult.failure(
+                        '资料不是记录数组或offset超出记录数；按返回的坐标单位续读。','invalid_arguments', stage='arguments',
+                        details=[ToolFieldError(loc=['coordinate_unit','offset'],type='invalid_record_range',
+                            message='记录坐标与所读资料或范围不一致')]), tool_call_id=tool_call_id)
             return ObservationPage(call[0] if call and args['coordinate_unit']=='records' else 'read_tool_result',result,offset=offset,limit=limit,
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
@@ -320,12 +357,12 @@ class RetrievalToolkit:
                     'expanded_catalog_limit': self.config.tool_discovery_limit,
                     'note': '下次请求提供选中工具的完整Schema；较早展开项可再次搜索。' if selected else '未匹配当前允许的能力；可用所列类别换一种表达。'}, ensure_ascii=False),
                 coverage='tool_catalog',evidence_kind='retrieval')
-            return await self.store_observation(name,args,result)
+            return await self.store_observation(name,args,result,tool_call_id=tool_call_id)
         if self.checkpoint:
             await self.checkpoint('before_tool', {'scene_id':self.default_scene_id,'name':name,'arguments':args})
         start = time.monotonic()
         media_files = []
-        invocation = self.call_context()
+        invocation = replace(self.call_context(), tool_call_id=tool_call_id)
         plugin_tool = bool(self.plugin_host and self.plugin_host.has_registered_tool(name))
         async with self._parallel:
             if plugin_tool:
@@ -337,8 +374,10 @@ class RetrievalToolkit:
                         result, media_files = await self.media_service.read_web_media(args.get('url', ''), args.get('page'))
                     else:
                         result = await self._execute_raw(name, args)
+                except ValidationError as error:
+                    result = ToolResult.validation_failure(error, stage='execution', code='invalid_result')
                 except Exception as error:
-                    result = ToolResult.failure(str(error), type(error).__name__)
+                    result = ToolResult.failure(str(error), type(error).__name__, stage='execution')
         result.duration_ms = round((time.monotonic()-start)*1000, 2)
         if result.evidence_kind == 'external':
             self.external_attempted = True
@@ -349,10 +388,23 @@ class RetrievalToolkit:
             if result.error_code == 'search_unavailable':
                 self.unavailable_tools.add(name)
                 result.content += '\n本次工作已确认搜索服务未提供可读取结果；可读取已有链接，未核实部分写入unresolved。'
-        return await self.store_observation(name,args,result,media_files=media_files)
+        return await self.store_observation(name,args,result,media_files=media_files,tool_call_id=tool_call_id)
 
-    async def store_observation(self,name,args,result,*,media_files=()):
+    async def error_observation(self,name,args,result,*,tool_call_id=None):
+        """Persist a returned error once, using the same observation path as reads."""
+        page=result if isinstance(result,ObservationPage) else None
+        result=page.result if page else result
+        if result.result_id:
+            return page or ObservationPage('read_tool_result', result, limit=self.page_chars)
+        result=result.error_context(name,tool_call_id)
+        return await self.store_observation(name,args,result,tool_call_id=tool_call_id)
+
+    async def store_observation(self,name,args,result,*,media_files=(),tool_call_id=None):
         invocation = self.call_context()
+        result = result.error_context(name,tool_call_id)
+        if result.tool_name is None or result.tool_call_id is None:
+            result = result.model_copy(update={'tool_name': result.tool_name or name,
+                                              'tool_call_id': result.tool_call_id or tool_call_id})
         result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, args, result,
             background_work=invocation.role == 'work', media_files=media_files)
         self.result_ids.append(result.result_id)
@@ -367,8 +419,8 @@ class RetrievalToolkit:
             plugin = self.plugin_host.get_plugin('group_summary')
             page_chars = min(plugin.config.page_chars,self.max_chars)
         local_records = {'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs','read_pending_wakes'}
-        return ObservationPage(name, result, limit=page_chars,
-                               coordinate_unit='records' if self.context and name in local_records else 'characters')
+        return ObservationPage('read_tool_result' if result.status == 'error' else name, result, limit=page_chars,
+                               coordinate_unit='records' if self.context and name in local_records and result.status != 'error' else 'characters')
 
     def validate_conclusion_sources(self, result_ids, unresolved):
         """Validate evidence availability, not the semantic truth of a conclusion."""
@@ -399,6 +451,8 @@ class RetrievalToolkit:
             source_truncated=page.result.truncated,
             coverage='result_locator; content not read', evidence_kind=page.result.evidence_kind,
             error_code=page.result.error_code, fetched_at=page.result.fetched_at,
+            tool_name=page.result.tool_name,tool_call_id=page.result.tool_call_id,error_stage=page.result.error_stage,
+            error_details=page.result.error_details,http_status=page.result.http_status,correction=page.result.correction,
             observation_event_id=page.result.observation_event_id, cached=page.result.cached)
 
     async def _present(self, name, result, offset, limit, coordinate_unit='characters'):
@@ -638,7 +692,10 @@ class RetrievalToolkit:
         if name=='search_media':
             rows=await store.list_media([self.default_scene_id,'global-safe'],query=args['query'],
                 curated_only=args['curated_only'], limit=self.config.media_search_limit)
-            records = [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')}} for x in rows]
+            usage = await self.media_service.recent_usage(self.default_scene_id, [item['id'] for item in rows],
+                through_rowid=self.cutoff)
+            records = [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')},
+                        **usage[x['id']]} for x in rows]
             return ToolResult(status='ok' if records else 'no_results', content=json.dumps(records, ensure_ascii=False),
                               coverage='media_catalog', evidence_kind='retrieval')
         if name=='query_jobs':

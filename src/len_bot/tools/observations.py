@@ -21,7 +21,10 @@ class ObservationStoreMixin:
         event = Event(id=result.observation_event_id, event_type=EventType.TOOL_OBSERVATION_RECORDED,
                       scene_id=scene_id, actor_id="system:tools", timestamp=self.clock(), metadata={"background_work": background_work}, payload={
                           "result_id": result.result_id, "tool_name": tool_name,
+                          "tool_call_id": result.tool_call_id,
                           "status": result.status, "sources": [s.model_dump() for s in result.sources],
+                          **({'error_code': result.error_code, 'error_stage': result.error_stage,
+                              'http_status': result.http_status} if result.status in {'error','unsupported'} else {}),
                           "independent_evidence": result.evidence_kind == "external" and result.status in {"ok", "partial"},
                           **({'media': result.attachments} if result.attachments else {}),
                       })
@@ -37,7 +40,8 @@ class ObservationStoreMixin:
                         raise ValueError('Tool image is not available in this scene')
                 await self._db.execute("INSERT INTO tool_observations VALUES(?,?,?,?,?,?,?)", (
                     result.result_id, scene_id, event.id, tool_name,
-                    json.dumps(arguments, ensure_ascii=False), result.model_dump_json(), self.clock()))
+                    json.dumps({} if result.status in {'error','unsupported'} else arguments, ensure_ascii=False),
+                    result.model_dump_json(round_trip=True), self.clock()))
                 await self._db.execute("INSERT INTO pending_runtime_events VALUES(?,?,?)", (event.id, scene_id, event.model_dump_json()))
                 await self._db.commit()
             except BaseException:

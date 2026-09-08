@@ -1,7 +1,10 @@
 """Stage one normal work proposal or read its immutable current-group window."""
 from __future__ import annotations
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from datetime import datetime
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
@@ -23,8 +26,14 @@ class SummarizeArguments(BaseModel):
     @classmethod
     def timestamp_string(cls, value):
         if not isinstance(value, str):
-            raise ValueError("时间必须填写含时区的ISO字符串")
-        return value
+            raise PydanticCustomError('datetime_type', "时间必须填写含时区的ISO字符串")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            raise PydanticCustomError('datetime_parsing', "时间必须是合法的ISO日期时间字符串") from None
+        if parsed.utcoffset() is None:
+            raise PydanticCustomError('timezone_aware', "时间必须包含明确时区")
+        return parsed
 
     @model_validator(mode="after")
     def ordered_range(self):
@@ -66,12 +75,18 @@ class GroupSummaryPlugin(BasePlugin):
             available=lambda call: call.job_id is not None and call.work_operation == 'group_summary',
             kind="read", roles=("work",))
 
-    async def summarize(self, values: SummarizeArguments, call: PluginCallContext) -> dict:
+    async def summarize(self, values: SummarizeArguments, call: PluginCallContext) -> ToolResult | dict:
         if call.ledger is None or call.role != "conversation":
             raise ValueError("总结提案只在当前对话Ledger中暂存")
         if call.scene_id != call.ledger.context.refs.scene_id or call.episode_id != call.ledger.episode_id:
             raise ValueError("总结提案不属于当前对话")
-        return await call.ledger.stage_group_summary(**values.model_dump())
+        try:
+            return await call.ledger.stage_group_summary(**values.model_dump())
+        except ValidationError as error:
+            return ToolResult.validation_failure(error, tool_name='summarize_group_chat', tool_call_id=call.tool_call_id)
+        except ValueError as error:
+            return ToolResult.failure(str(error), 'invalid_reference', stage='references',
+                tool_name='summarize_group_chat', tool_call_id=call.tool_call_id)
 
     async def read_window(self, values: ReadWindowArguments, call: PluginCallContext) -> ToolResult:
         return await self.service.read_window(values.cursor, call)

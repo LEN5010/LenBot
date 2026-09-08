@@ -42,11 +42,14 @@ async def validate_memory_proposal(
     if not scene_id or not bot_actor_id:
         raise ValueError("Memory validation requires scene and Bot identity")
     mp.scope = scene_id
+    targets = [await _load_target(db, memory_id, scene_id) for memory_id in mp.target_memory_ids]
     if mp.operation == "refute":
-        target = await _load_target(db, mp.target_memory_ids[0], scene_id)
+        target = targets[0]
         if mp.subject and mp.subject != target.subject:
             raise ValueError("Refutation subject does not match its target")
         mp.subject, mp.kind, mp.basis = target.subject, target.kind, target.basis
+    if any(item.subject != mp.subject or item.kind != mp.kind for item in targets):
+        raise ValueError("A revision preserves subject and kind; refute and create to correct attribution")
     if mp.subject == bot_actor_id:
         raise ValueError("Bot capabilities and real-world experiences belong to runtime facts, not social memory")
     if mp.subject != scene_id:

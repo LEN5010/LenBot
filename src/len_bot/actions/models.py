@@ -1,6 +1,6 @@
 from enum import StrEnum
 from typing import Optional, Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 import uuid
 from len_bot.media.models import MessageSegment, segment_text
 
@@ -50,9 +50,17 @@ class ActionItem(BaseModel):
     associated_open_loop: Optional[dict[str, Any]] = None
     origin_mode: str = "live"
     acknowledges_task_id: str | None = None
+    operation_ref: str | None = Field(default=None, min_length=1)
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None
+
+    @model_validator(mode="after")
+    def operation_confirmation(self):
+        if self.operation_ref and (self.acknowledges_task_id or self.fulfils_task_id
+                                   or not self.batch_id or not self.origin_event_id or self.output_kind != 'chat'):
+            raise ValueError("An operation confirmation needs its own committed turn and human source, without creation or fulfilment relations")
+        return self
 
     @computed_field
     @property

@@ -75,6 +75,7 @@ class ActionQueue:
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
                 "job_id": action.job_id, "job_revision": action.job_revision,
                 "acknowledges_task_id": action.acknowledges_task_id,
+                "operation_ref": action.operation_ref,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
                 "response_actor_ids": action.response_actor_ids,
                 "output_kind": action.output_kind, "requester_qq_uid": action.requester_qq_uid,
@@ -103,7 +104,9 @@ class ActionQueue:
         return True
 
     async def _validate(self, action):
-        if action.job_id:
+        if action.operation_ref:
+            await self.event_store.validate_operation_message(action)
+        elif action.job_id:
             await self.event_store.validate_job_message(action.scene_id, action.job_id, action.job_revision, bool(action.fulfils_task_id))
         if self.validate_before_send:
             await self.validate_before_send(action)
@@ -111,7 +114,7 @@ class ActionQueue:
     @staticmethod
     def _request_key(action):
         return (action.origin_event_id,
-                action.job_id or action.fulfils_task_id or action.acknowledges_task_id)
+                action.job_id or action.fulfils_task_id or action.acknowledges_task_id or action.operation_ref)
 
     def _request_failed(self, action):
         return self._request_key(action) in self._failed_requests.get((action.scene_id, action.batch_id), ())

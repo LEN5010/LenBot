@@ -180,12 +180,13 @@ class WorkSegment(BaseModel):
 
 
 class WorkCompressor:
-    def __init__(self, runtime, job_id, scene_id, revision, charge, exchange_count):
+    def __init__(self, runtime, job_id, scene_id, revision, charge, exchange_count, *, config=None):
         self.runtime, self.job_id, self.scene_id, self.revision = runtime, job_id, scene_id, revision
         self.charge, self.exchange_count = charge, exchange_count
+        self.config = config if config is not None else runtime.config.model_copy(deep=True)
 
     async def prepare(self, messages, tools, *, reserved=()):
-        config, store = self.runtime.config, self.runtime.event_store
+        config, store = self.config, self.runtime.event_store
         input_budget = config.job_context_tokens - config.work_output_tokens
         def cost(candidate):
             return request_tokens([*candidate,*reserved],tools)
@@ -215,6 +216,7 @@ class WorkCompressor:
                     result['content'] = prior + '正文已外置，此处只保留定位；实际采用范围见 observation_reads，精确内容按 next_call 回读。'
                     result['coverage'] = 'result_locator; archived_body'
                     result['displayed_range'] = None
+                    result.pop('evidence_span', None)
                     result['next_offset'] = offset
                     result['next_call'] = {'name': 'read_tool_result', 'arguments': {
                         'result_id': result['result_id'], 'offset': offset,

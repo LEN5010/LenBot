@@ -1,6 +1,6 @@
 # 运行手册
 
-面向运营者。行为含义见[产品文档](product.md)，本次切换的已完成项和未确认项见[当前任务](iteration.md)。
+面向运营者。行为含义见[产品文档](product.md)，当前实施状态与未确认项见[当前任务](iteration.md)。
 
 ## 初始化与启动
 
@@ -39,6 +39,18 @@ uv run len-bot
 
 OneBot 显式选择主动／反向 WebSocket 与发送通道，保存后需正常重启生效。插件参数保存同样按页面提示重启；HTTP 检查只检查当前正在使用的接口，不证明尚未生效的新连接可用。模型能力检查由运营主动发起，会产生真实模型请求，浏览或刷新页面不会。
 
+五项执行预算保存后用于新的对话或工作执行段，正在等待的对话使用开始时的快照；工作恢复保留原有步骤、工具、时间和模型绑定。运行参数页分别显示已保存配置与当前进程有效预算。旧版本服务仍统一提示重启时，文件中的新值尚未生效，必须在获准升级后再核对有效值。监听、并发等需要重建组件的改动仍按页面提示手动重启。
+
+| 根 runtime 字段 | 当前样例初始上限 |
+|---|---:|
+| conversation_max_steps | 8 |
+| conversation_max_tool_calls | 16 |
+| job_max_steps | 24 |
+| job_max_tool_calls | 48 |
+| job_max_seconds | 600 |
+
+这些上限包含失败尝试和实际请求，终结占模型步骤但不占普通工具次数；提高上限不等于效果已验证，也不自动重开任何工作。模型单次超时、上下文与输出、维护角色和并发分别配置，不随五项执行预算自动扩大。每次请求的实际剩余值见 Trace，供应商费用继续以调用账为准。
+
 工作进展冷却由 runtime.job_progress_interval_seconds 决定，正常等待回应的存续时间由 runtime.open_loop_ttl_seconds 决定。原话和工具资料共用现有字符页参数；消息检索、原文邻居、待处理目录、工具发现、摘要／发送事实候选与媒体检索的条数也从 runtime 读取。Schema 展示与实际查询使用同一组值，越界请求明确失败；具体参数和分页坐标见[架构](architecture.md)。
 
 全局暂停实发使用 Shadow；停用一个群则关闭“本群设置”的启用字段。聊天群／播报群快捷操作只填实际 chat、命令与公告等字段，不保存另一份 mode。QQ 回复白名单只在系统设置维护；白名单不会强制每条回复。恢复只修改运营明确选定的值，不从文档复制群号。已记录的候选不补发，unknown 不重试或更换通道。不要把结果就绪、任务到期或工具完成当成发送成功。
@@ -60,45 +72,15 @@ cp -R /绝对路径/media /绝对备份目录/media
 cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 ```
 
-当前媒体目录位于数据库同目录的 `media`。已保存资产的 ID、原路径和来源持续使用；不要重新下载、批量编号或改写历史事件。方案 A 已删除配置数据库表、旧升级表和媒体摘要列，已转换实例不重复执行；旧迁移与 correction 命令退出日常操作。
+当前媒体目录位于数据库同目录的 `media`。已保存资产的 ID、原路径和来源持续使用；不要重新下载、批量编号或改写历史事件。
 
-### 请求来源与工具观察升级
+### 更新当前实例
 
-采用本轮 Agent 与工具改进时，先按本节停机并普通备份实际数据库、媒体和根配置，再更新同批代码、文档与前端产物。新请求来源、处理集合、交付关系与读取范围使用既有 JSON 字段，不新增表或列，不需要为本轮另做 SQL 迁移。旧记录的独立请求来源缺失就显示未知，原身份与证据保留，不自动推断或写回。
+先按本节停机并普通备份实际数据库、媒体和根配置，再更新同批代码、文档与前端产物。当前请求来源、处理集合、交付关系、操作确认、读取范围和预算 Trace 使用既有 JSON 字段，没有新增表或列，本批更新不需要 SQL 迁移。旧记录缺少独立请求来源或读取范围时显示未知，原身份与证据保留，不自动推断或写回。
 
-没有新的升级命令，也不需要 Reset、改用样例配置、更换模型或强制开放插件。启动仍使用[初始化与启动](#初始化与启动)中的现有命令，并取得当次授权；备份、代码更新、启动和实群核对分别记录是否实际完成，结果只写[当前任务](iteration.md)。
+若实例仍使用更早的数据库或配置结构，先确认其实际版本，按对应 Git 版本的运行资料单独核对转换条件；本手册不提供脱离版本的通用补写 SQL。不要让当前代码猜测旧结构，也不通过 Reset 或复制样例消除差异。
 
-### 尚未转换的旧版实例
-
-以下步骤只用于仍处在对应旧结构的实例，现行实例不重复执行。
-
-从 A 进入 B 时，先离线把旧 delivery.allowed_scenes 的真实群逐项对应到 scenes，再移除旧名单字段；不得从样例导入群或改全局 Shadow。新 time、members、插件具体参数由运营填写，未决定的插件明确 false/null。旧直播参数的 scene_id/room_ids 不能猜成员 UID 或自动启用订阅；停用且未就绪的插件可先标为未配置，待运营填写后再启用。实际转换与加载状态只记[当前任务](iteration.md)。
-
-旧信息工作需要一次性补齐明确业务字段。只在停机备份后对 A 的指定数据库离线执行，保留原 ID、原文和预算；缺少已保存请求人的旧工作保持 null，不从证据中的“最后一个人”猜请求者：
-
-```sql
-BEGIN IMMEDIATE;
-UPDATE tasks SET payload=json_set(payload,
-  '$.work_operation','information',
-  '$.requester_qq_uid',CASE
-    WHEN json_extract(payload,'$.requester_id') LIKE 'user:%'
-      AND length(json_extract(payload,'$.requester_id'))>5
-      AND substr(json_extract(payload,'$.requester_id'),6) NOT GLOB '*[^0-9]*'
-    THEN substr(json_extract(payload,'$.requester_id'),6) ELSE NULL END,
-  '$.summary_range',NULL,'$.summary_coverage',NULL)
-WHERE json_extract(payload,'$.kind')='agent_job'
-  AND json_type(payload,'$.work_operation') IS NULL;
-UPDATE tasks SET payload=json_set(payload,'$.requester_qq_uid',CASE
-    WHEN json_extract(payload,'$.requester_id') LIKE 'user:%'
-      AND length(json_extract(payload,'$.requester_id'))>5
-      AND substr(json_extract(payload,'$.requester_id'),6) NOT GLOB '*[^0-9]*'
-    THEN substr(json_extract(payload,'$.requester_id'),6) ELSE NULL END)
-WHERE json_extract(payload,'$.kind')='reminder'
-  AND json_type(payload,'$.requester_qq_uid') IS NULL;
-COMMIT;
-```
-
-这是显式离线转换，不在启动时自动修补。实际执行与核对状态只记当前任务。
+启动使用[初始化与启动](#初始化与启动)中的现有命令，并取得当次授权。备份、代码更新、启动和实群核对分别记录是否实际完成，当前结果只写[当前任务](iteration.md)。
 
 回退同时恢复匹配的代码、配置、数据库与媒体；不要让旧代码打开新结构或只还原数据库。备份、运行日志与 PID 放在本地运维目录，不进入 Git。
 
@@ -108,7 +90,7 @@ COMMIT;
 
 插件页的全局启用与“场景消息 → 目标群 → 本群设置 → 本群开放插件”分别保存。全局启用后，还需在目标群加入相应插件，Agent 才能取得该群的工具：自然询问日程需要 `asoul_calendar`，动态查询需要 `asoul_dynamics`，按时段总结需要 `group_summary`。全局启用不会自动修改任何群的开放列表；运行日志中的“加载插件成功”也不代表本群已开放。加入插件也不自动开放精确命令或订阅公告，继续按下述字段分别保存。
 
-日程的本轮确认来源为 `https://asoul.love/calendar.ics`。命令词在日程插件中映射 calendar_today、calendar_tomorrow、calendar_week，再由每群 commands 开放。评论日程时引用实际日程响应；要提问 Agent 或修改、取消工作时另发明确消息。无引用的“好耶”等内容不作隐藏语义分类。源返回空日程和请求失败含义不同，失败时先看源状态；不换来源或改发文字。
+日程读取根配置 `plugins.asoul_calendar.config.source_url` 指定的单一 ICS 来源，来源说明见[日程移植说明](../src/len_bot/plugins/builtin/asoul_calendar/SOURCE.md)。命令词在日程插件中映射 calendar_today、calendar_tomorrow、calendar_week，再由每群 commands 开放。评论日程时引用实际日程响应；要提问 Agent 或修改、取消工作时另发明确消息。无引用的“好耶”等内容不作隐藏语义分类。源返回空日程和请求失败含义不同，失败时先看源状态；不换来源或改发文字。
 
 直播配置的 source_timezone 用来解释源给出的无偏移开播时间，业务时区独立保存。成员订阅选择已填写的真实主播，群的 live_started 公告和 mention_all 分别开启；@全体的账号条件由运营在实际群确认，不自动修权限或去掉提及重发。首次采样只建立基线，不补报当时已经开播的场次。是否实际生成、发送和送达分别看来源事件、公告 trace 与 action 回执。
 
@@ -118,10 +100,10 @@ COMMIT;
 |---|---|
 | 没有回复 | 从原话查看注意力、当前 pending、已读和明确处理来源，再看对应调用、提交与发送回执；按请求原话区分同轮多人事项 |
 | 对话失败或超时 | 记录原话、时间、场景和调用 ID，查看实际型号、错误与预算；不自动换型号或补发 |
-| 工具查不到或返回失败 | 先看本群开放插件与当前可用状态，再看工具观察的错误码和参数；调用已返回不表示观察成功，no_results 与 timeout 分别处理 |
-| 工具资料过长 | 查看 result_id、坐标单位、实际采用范围和本地正文续页；源端下一批与本地续读分开，面板查看不发起源端工具调用 |
+| 工具查不到或返回失败 | 先看本群开放插件与当前可用状态，再看工具观察的错误阶段、具体字段、HTTP 状态及调用 ID；调用已返回不表示观察成功，no_results 与 timeout 分别处理 |
+| 工具资料过长 | 查看 result_id、坐标单位、实际采用范围、可复制的 evidence_span 和本地正文续页；源端下一批与本地续读分开，面板查看不发起源端工具调用 |
 | 工作迟迟未交付 | 核对当前版本结果、请求原话、完成事件、交付 action 和原回执；创建确认不是结果送达，已有完整结果不为重送而恢复执行 |
-| 中断工作 | 查看具体 reason、WorkState、已有资料范围、原绑定、剩余预算和完整检查点，再显式恢复符合条件的工作；不新建同目标工作清零预算 |
+| 中断工作 | 查看具体 reason、WorkState、已有资料范围、原绑定、剩余预算和完整检查点，并核对操作确认是否有已提交回执，再显式恢复符合条件的工作；不新建同目标工作清零预算 |
 | 维护失败 | 在场景查看失败原文范围，处理具体原因后显式重试；不删除失败范围或伪造覆盖 |
 | 技能没有新增 | 在经验候选查看状态和原因；skipped 是正常未保存，failed／interrupted 才表示维护没有完成 |
 | 认识不准确 | 查看原始依据与修订链，运营撤销填写理由；保留原陈述与操作来源 |
@@ -132,7 +114,7 @@ COMMIT;
 
 ## Reset 与前端构建
 
-Reset 是独立的破坏性管理动作，需要当次明确授权。本轮不执行。操作会先停止认知、维护、工作与投递，再清理原话、Session、摘要、自动认识和技能、任务、工作及检查点、调用账、工具资料与聊天媒体；保留登录、根配置、人工样例和运营素材及来源，追加管理记录。它不改变 Shadow、群设置或白名单。
+Reset 是独立的破坏性管理动作，需要当次明确授权。操作会先停止认知、维护、工作与投递，再清理原话、Session、摘要、自动认识和技能、任务、工作及检查点、调用账、工具资料与聊天媒体；保留登录、根配置、人工样例和运营素材及来源，追加管理记录。它不改变 Shadow、群设置或白名单。
 
 修改前端后，在 `src/len_bot/web/frontend` 执行：
 
@@ -141,4 +123,4 @@ npm ci
 npm run build
 ```
 
-产物位于 `src/len_bot/web/static/dist`，与同批 API 一起交付。按本轮范围实际操作改动页面；不运行 pytest、自动截图、回放任务或断言式临时脚本。
+产物位于 `src/len_bot/web/static/dist`，与同批 API 一起交付。按改动范围人工核对页面，检查方式遵循[工程约束](../AGENTS.md)。

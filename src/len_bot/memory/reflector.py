@@ -78,7 +78,7 @@ class LLMReflector:
                 },
             }]
 
-        async def execute(name: str, arguments: dict) -> ToolResult:
+        async def execute(name: str, arguments: dict, *, tool_call_id=None) -> ToolResult:
             if name != "query_memory" or self.memory_store is None:
                 raise ToolArgumentError("Reflection has only a scoped memory-read tool")
             try:

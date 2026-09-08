@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
-from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message
+from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.jobs import JobResult, JobChanged, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan
+from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event, EventType
@@ -263,6 +263,8 @@ class InformationJobRunner:
             "提交前核对最终结论与已验证的依据、数值、单位和条件是否一致；矛盾未解决时记录在 unresolved。"
             "结束本次工作时调用 finish_work，summary 给最终结论与简短完整依据，不重复草稿或已放弃的结论；result_ids、evidence_spans 和 unresolved 显式提供列表。"
             "evidence_spans用实际展示的result_id/start/end/coordinate_unit关联结论与资料位置；来源只是取得或定位时不能冒充已读。"
+            "直接复制每页evidence_span，可合并同一result_id同一坐标单位的已读连续范围。正文总长不授予全长引用：总长10842但仅展示[0,6000)时，只能引用已读段或继续读取。"
+            "committed=false表示候选尚未生效；在原剩余预算内依照具体错误缩小引用或续读，再用新调用ID提交。"
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
         if checkpoint:
@@ -284,14 +286,14 @@ class InformationJobRunner:
         return messages, synchronize_image_window(messages, self.runtime.config.max_context_images)
 
     async def _run_job(self, job_id, scene_id):
-        runtime, store, config = self.runtime, self.runtime.event_store, self.runtime.config
+        runtime, store, config = self.runtime, self.runtime.event_store, self.runtime.config.model_copy(deep=True)
         job = None
         work_cutoff = 0
 
-        def plugin_context():
+        def plugin_context(tool_call_id=None):
             return PluginCallContext(scene_id=scene_id, requester_qq_uid=job["requester_qq_uid"],
                 now=runtime.clock(), cutoff_rowid=work_cutoff, episode_id=None, job_id=job_id, role="work",
-                work_operation=job['work_operation'])
+                work_operation=job['work_operation'], tool_call_id=tool_call_id)
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
@@ -300,7 +302,8 @@ class InformationJobRunner:
         last_charge = time.monotonic()
         charge_lock = asyncio.Lock()
         revision, gateway = None, None
-        trace = {"job_id": job_id, "runs": []}
+        trace = {"job_id": job_id, "runs": [], "budget_snapshot": {"model_calls_limit":config.job_max_steps,
+            "tool_calls_limit":config.job_max_tool_calls,"elapsed_seconds_limit":config.job_max_seconds}}
         limits = (config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds)
         pending_presentations: list[dict] = []
         pending_additions: list[dict] = []
@@ -337,10 +340,17 @@ class InformationJobRunner:
             event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state, skill_candidate=skill_candidate)
             if event is None:
                 raise JobChanged("Job changed before result commit")
-            await runtime.commit_tool_observation(event)
-            runtime.metrics.inc_social("jobs_finished")
-            if job["work_operation"] != "group_summary":
-                self._start_learning(scene_id)
+            try:
+                await runtime.commit_tool_observation(event)
+                runtime.metrics.inc_social("jobs_finished")
+                if job["work_operation"] != "group_summary":
+                    self._start_learning(scene_id)
+            except Exception as error:
+                await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
+                    payload={**trace,'job_revision':expected,'result':result.model_dump(),
+                             'result_committed':True,'error_stage':'completion_publication',
+                             'error_type':type(error).__name__,'error':_error_text(error)})
+                raise
             return result
 
         async def save_result(result, expected, *, error=None):
@@ -375,7 +385,7 @@ class InformationJobRunner:
             require_current_access()
             await charge(revision, tool_calls=1)
 
-        async def execute_tool(name, arguments) -> ToolResult | ObservationPage:
+        async def execute_tool(name, arguments, *, tool_call_id=None) -> ToolResult | ObservationPage:
             if name == "find_skills":
                 try:values=find_arguments.model_validate(arguments)
                 except ValueError as error:raise ToolArgumentError(str(error)) from error
@@ -384,7 +394,7 @@ class InformationJobRunner:
                     coverage='skill_catalog; source offset is a record index',evidence_kind='model',
                     source_next_call=ToolNextCall(name='find_skills',arguments={'query':values.query,
                         'offset':found['next_offset'],'limit':values.limit}) if found['next_offset'] is not None else None)
-                return await toolkit.store_observation(name,values.model_dump(),result)
+                return await toolkit.store_observation(name,values.model_dump(),result,tool_call_id=tool_call_id)
             if name == "read_skill":
                 try:
                     values=ReadSkillArguments.model_validate(arguments)
@@ -392,7 +402,7 @@ class InformationJobRunner:
                 except ValueError as error:
                     raise ToolArgumentError(str(error)) from error
                 return await toolkit.store_observation(name,values.model_dump(),ToolResult(
-                    content=json.dumps(skill,ensure_ascii=False),coverage='procedural_document_not_evidence',evidence_kind='model'))
+                    content=json.dumps(skill,ensure_ascii=False),coverage='procedural_document_not_evidence',evidence_kind='model'),tool_call_id=tool_call_id)
             if name == "update_work_state":
                 try:
                     update = WorkStateUpdate.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
@@ -414,7 +424,22 @@ class InformationJobRunner:
                     await runtime.commit_tool_observation(event)
                 return ToolResult(content="进展已记录，未直接发送。" if event else "进展仍在冷却窗口内，未重复记录。",
                                   evidence_kind="model")
-            return await toolkit.execute_observation(name, arguments)
+            return await toolkit.execute_observation(name, arguments,tool_call_id=tool_call_id)
+
+        async def record_tool_result(call, arguments, result):
+            raw=result.result if isinstance(result,ObservationPage) else result
+            if isinstance(raw,ToolResult) and raw.status in {'error','unsupported'}:
+                return await toolkit.error_observation(call.name,arguments,result,tool_call_id=call.id)
+            return result
+
+        async def budget_state():
+            current = await store.get_job(job_id,scene_id)
+            if not current or current['revision'] != revision or current['status'] != 'processing':
+                raise JobChanged('Work changed before budget snapshot')
+            return {'model_calls_limit':config.job_max_steps,'model_calls_used':current['model_steps'],
+                    'tool_calls_limit':config.job_max_tool_calls,'tool_calls_used':current['tool_calls'],
+                    'elapsed_seconds_limit':config.job_max_seconds,
+                    'elapsed_seconds_used':round(current['elapsed_seconds']+time.monotonic()-last_charge,3)}
 
         async def observe():
             await charge(revision)
@@ -422,15 +447,41 @@ class InformationJobRunner:
             pending_additions.clear()
             return additions or None
 
+        async def evidence_correction(result_ids):
+            current = await store.get_job(job_id,scene_id)
+            if not current or current['revision'] != revision or current['status'] != 'processing':
+                raise JobChanged('Work changed while explaining rejected evidence')
+            allowed, continuations = [], []
+            for ident in dict.fromkeys(result_ids):
+                units = current['observation_reads'].get(ident,{})
+                for unit, recorded in units.items():
+                    offset = 0
+                    for start,end in recorded['ranges']:
+                        allowed.append({'result_id':ident,'coordinate_unit':unit,'start':start,'end':end})
+                        if start<=offset:offset=max(offset,end)
+                    if offset < recorded['total']:
+                        continuations.append({'name':'read_tool_result','arguments':{
+                            'result_id':ident,'offset':offset,'coordinate_unit':unit,'limit':config.tool_result_page_chars}})
+                if not units and ident in toolkit.observations:
+                    continuations.append({'name':'read_tool_result','arguments':{
+                        'result_id':ident,'offset':0,'coordinate_unit':'characters','limit':config.tool_result_page_chars}})
+            return {'allowed_evidence_spans':allowed,'next_calls':continuations,
+                    'meaning':'仅这些已提供范围可引用；总长度不授予全文依据。按当前问题缩小引用或续读。'}
+
         async def finish(arguments):
             try:
                 conclusion = WorkConclusion.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
-                toolkit.validate_conclusion_sources(conclusion.result_ids,conclusion.unresolved)
-            except (ValidationError, ValueError) as error:
+            except ValidationError as error:
                 raise TerminalArgumentError(str(error)) from error
+            try:
+                toolkit.validate_conclusion_sources(conclusion.result_ids,conclusion.unresolved)
+            except ValueError as error:
+                raise TerminalArgumentError(str(error), correction=await evidence_correction(conclusion.result_ids)) from error
             result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump(exclude={"skill_candidate"}))
             if job["work_operation"] == "group_summary":
                 current = await store.get_job(job_id, scene_id)
+                if not current or current['revision'] != revision or current['status'] != 'processing':
+                    raise JobChanged('Summary work changed before conclusion')
                 coverage = current["summary_coverage"]
                 if conclusion.skill_candidate is not None:
                     raise TerminalArgumentError("群聊总结不创建技能候选")
@@ -441,8 +492,8 @@ class InformationJobRunner:
                         f'仅完整读取 {coverage["read_messages"]} 条；剩余原文尚未读取，不是全时段完整总结。')
             try:
                 return await commit_result(result, revision, work_state=conclusion.work_state, skill_candidate=conclusion.skill_candidate)
-            except ValueError as error:
-                raise TerminalArgumentError(str(error)) from error
+            except JobResultRejected as error:
+                raise TerminalArgumentError(str(error), correction=await evidence_correction(conclusion.result_ids)) from error
 
         async def checkpoint(stage, payload):
             if stage == "after_model":
@@ -462,12 +513,18 @@ class InformationJobRunner:
                                                      "job_revision": revision, **payload})
 
         try:
-            while self.running and config.jobs_enabled:
+            while self.running and runtime.config.jobs_enabled:
+                config = runtime.config.model_copy(deep=True)
+                limits = (config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds)
                 job = await store.get_job(job_id, scene_id)
                 if not job or job["status"] != "processing":
                     return
                 revision = job["revision"]
-                run_trace = {"job_revision": revision}
+                run_trace = {"job_revision": revision, 'budget_snapshot': {
+                    'model_calls_limit':config.job_max_steps,'tool_calls_limit':config.job_max_tool_calls,
+                    'elapsed_seconds_limit':config.job_max_seconds,
+                    'model_calls_used':job['model_steps'],'tool_calls_used':job['tool_calls'],
+                    'elapsed_seconds_used':job['elapsed_seconds']}}
                 trace["runs"].append(run_trace)
                 try:
                     work_cutoff = (job["summary_range"]["snapshot_rowid"] if job["summary_range"] is not None
@@ -518,7 +575,7 @@ class InformationJobRunner:
                                 raise JobChanged("Work changed before request")
                             return config.job_max_steps-current["model_steps"]
 
-                        compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count)
+                        compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config)
                         presentation = WorkToolPresentation(runtime, scene_id)
 
                         def work_definitions():
@@ -582,6 +639,11 @@ class InformationJobRunner:
                             require_current_access()
                             await compressor.prepare(trajectory, definitions)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images)
+
+                        async def finalize_request(trajectory, definitions):
+                            nonlocal current_assets
+                            current_assets = synchronize_image_window(trajectory, config.max_context_images)
+                            presentation.check_request(trajectory,definitions)
                             pending_presentations[:]=toolkit.read_presentations(trajectory)
                             run_trace['context_plan']={'input_budget_tokens':config.job_context_tokens-config.work_output_tokens,
                                 'estimated_input_tokens':request_tokens(trajectory,definitions),
@@ -597,7 +659,8 @@ class InformationJobRunner:
                             max_tool_calls=max(0, config.job_max_tool_calls-job["tool_calls"]), before_model=before_model,
                             before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace,
                             exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=prepare_request,
-                            prepare_tool_results=prepare_tool_results)
+                            prepare_tool_results=prepare_tool_results, finalize_request=finalize_request,
+                            budget_state=budget_state, record_tool_result=record_tool_result)
                     await save_result(result, revision)
                     return
                 except JobChanged:
@@ -633,6 +696,15 @@ class InformationJobRunner:
                             if isinstance(error,TimeoutError) else error.budget_kind)+'_budget_exhausted'
                     result = await retained_result('interrupted','工作在预算边界中断，已有资料与进度保留。',reason,
                         str(error) or '未能在原执行时限内形成完整结果')
+                    try:
+                        await commit_result(result, revision)
+                    except JobChanged:
+                        continue
+                    await save_result(result, revision, error=error)
+                    return
+                except TerminalArgumentError as error:
+                    result = await retained_result('interrupted','最后的结果候选未能提交，已有资料与进度保留。',
+                        'final_candidate_invalid_arguments', _error_text(error))
                     try:
                         await commit_result(result, revision)
                     except JobChanged:

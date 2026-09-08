@@ -32,11 +32,18 @@ class ReplyExpectation(StrictModel):
 class TurnMessage(StrictModel):
     segments:list[TurnPart]=Field(min_length=1,max_length=12)
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    source: str|None=Field(default=None,description='本条回应对应的已读人类请求M；与显示引用reply_to分别表达。ack_ref或work_ref已明确来源时可省略')
+    source: str|None=Field(default=None,description='本条回应对应的已读人类请求M；操作确认必须来自该操作的原话证据，与显示引用reply_to分别表达')
     ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
+    operation_ref: str|None=Field(default=None,description='复制本轮控制工作、提醒或记忆操作返回的proposal_ref；只确认这项操作实际提交后的结果')
     delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
+
+    @model_validator(mode='after')
+    def one_message_relation(self):
+        if sum(value is not None for value in (self.ack_ref,self.operation_ref,self.delivery_ref,self.work_ref)) > 1:
+            raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
+        return self
 
 class FinishTurn(StrictModel):
     messages:list[TurnMessage]=Field(max_length=3,description='零至三条；空列表表示沉默')
@@ -121,9 +128,9 @@ class DiscardProposal(StrictModel):
 
 TOOLS={
     'start_work':(StartWork,'建立后台只读工作：查询陌生概念、外部或当前事实，也用于计算、解题和整理。先调用本工具，再把回执中的ack_ref复制到finish_turn的确认消息；引用由工具生成，无需自拟。'),
-    'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。'),
-    'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。'),
-    'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料，部分结果不因此重开。'),
+    'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。取得回执后用operation_ref确认本次操作，不用work_ref确认新版本。'),
+    'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。确认消息用本回执的operation_ref，不同时交付旧结果。'),
+    'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料。取得回执后用operation_ref确认，部分结果不因此重开。'),
     'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，把ack_ref复制到finish_turn的确认消息。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),
@@ -148,7 +155,7 @@ FINISH_TURN={
     'type':'function',
     'function':{
         'name':'finish_turn',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。片段只填text或image，不填type。新建事项确认须将暂存回执S填入ack_ref；已存在工作J的进展或结果用work_ref，可履约工作J或提醒T的最终交付用delivery_ref。只使用当前提供的引用字段和枚举值。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text或image，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
                 'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
@@ -156,7 +163,7 @@ FINISH_TURN={
                                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'}}),
                     'description':'恰好一个字段：{"text":"一句回应"}或{"image":"本轮图片引用"}；可单图或按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
-                'source':{'type':'string','description':'本条回应对应的已读人类请求M；多人轮次且无法从ack_ref/work_ref/reply_to确定时必须填写'},
+                'source':{'type':'string','description':'本条回应对应的已读人类请求M；操作确认须来自该操作的原话证据，多人来源不能互换'},
                 'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
                                         'intent':{'type':'string','minLength':1}},('target','intent')),
             },('segments',))},
@@ -229,18 +236,28 @@ class ProposalLedger:
         if self.proposal_refs:
             props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
                 'description':'仅对应新建事项的确认消息填写；复制实际暂存回执S，每个回执只确认一次。其他人的普通回复不填；不提前写工作结论'}
-        job_refs=sorted(ref for ref,job in refs.jobs.items()
+        operation_refs = sorted(ref for ref,(collection,value) in self.staged.items()
+            if collection=='memories' or collection in {'jobs','tasks'} and value.operation!='create')
+        if operation_refs:
+            props['operation_ref']={'type':'string','enum':operation_refs,
+                'description':'复制本轮控制或记忆操作已返回的proposal_ref；只确认这一项实际操作，不能与ack_ref/work_ref/delivery_ref组合'}
+        controlled_jobs={proposal.job_id for proposal in self.jobs if proposal.operation!='create'}
+        job_refs=sorted(ref for ref,job in refs.jobs.items() if job['id'] not in controlled_jobs
             if not (job['status']=='result_ready' and job['execution_status'] in {'completed','partial'}
                      and job['delivery_action_id'] is None))
         if job_refs:
             props['work_ref']={'type':'string','enum':job_refs,
                 'description':'本条状态说明或按需引用的实际工作J；旧事项不因此重开。首次待交付结果用delivery_ref，暂存回执S只填ack_ref'}
         delivery_refs=sorted(list(refs.tasks)
-            + [ref for ref,job in refs.jobs.items() if job['status']=='result_ready'
+            + [ref for ref,job in refs.jobs.items() if job['id'] not in controlled_jobs and job['status']=='result_ready'
                and job['execution_status'] in {'completed','partial'} and job['delivery_action_id'] is None])
         if delivery_refs:
             props['delivery_ref']={'type':'string','enum':delivery_refs,
                 'description':'本条真实送达后完成的实际工作J或提醒T；暂存回执S只能填ack_ref'}
+        relations=[name for name in ('ack_ref','operation_ref','work_ref','delivery_ref') if name in props]
+        if len(relations)>1:
+            message['allOf']=[{'not':{'required':[left,right]}}
+                for index,left in enumerate(relations) for right in relations[index+1:]]
         return result
 
     def definitions(self):
@@ -270,6 +287,11 @@ class ProposalLedger:
                 return {'status':'discarded','proposal_ref':model.proposal_ref,
                         'note':'仅撤回本轮尚未提交的提案，未修改任何实际工作或提醒；其余暂存提案仍待finish_turn统一提交'}
             evidence=[refs.event_id(ref) for ref in getattr(model,'evidence',[])]
+            if name in {'revise_work','cancel_work','resume_work','update_reminder','cancel_reminder'}:
+                originals=await self.context.runtime.event_store.events_by_ids(refs.scene_id,evidence,refs.cutoff)
+                if not any(event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                           and event.actor_id.startswith('user:') and event.actor_id!=refs.bot_actor_id for event in originals):
+                    raise ValueError('控制操作必须有本轮实际读过的人类请求原话；系统工作完成事件不能单独授权恢复、修订或取消')
             proposal_ref=f'S{self._next_handle}'
             if name=='start_work':
                 source=await self.request_source(model.request_source)
@@ -291,7 +313,7 @@ class ProposalLedger:
                     if model.focus is not None:
                         values['focus'] = model.focus
                     summary_range = GroupSummaryRange.model_validate(values)
-                value=JobProposal(operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
+                value=JobProposal(proposal_id=proposal_ref,operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
                     job_id=job['id'],expected_revision=job['revision'],source_event_ids=evidence,
                     goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]),
                     requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'], summary_range=summary_range)
@@ -305,17 +327,17 @@ class ProposalLedger:
                     payload={'kind':'reminder','requester_qq_uid':source.actor_id.removeprefix('user:')},origin_episode_id=self.episode_id)
             elif name in {'update_reminder','cancel_reminder'}:
                 collection='tasks'
-                value=TaskProposal(operation='update' if name=='update_reminder' else 'cancel',
+                value=TaskProposal(proposal_id=proposal_ref,operation='update' if name=='update_reminder' else 'cancel',
                     task_id=refs.task_id(model.reminder_ref),due_at=getattr(model,'due_at',None),description=getattr(model,'description',''),source_event_ids=evidence)
             elif name in {'remember','supersede_memory'}:
                 collection='memories'
-                value=MemoryProposal(operation='create' if name=='remember' else 'supersede',
+                value=MemoryProposal(proposal_id=proposal_ref,operation='create' if name=='remember' else 'supersede',
                     subject=refs.actor_id(model.subject),kind=model.kind,statement=model.statement,basis='reported',
                     evidence=evidence,expires_at=model.expires_at,scope=refs.scene_id,reason=getattr(model,'reason',''),
                     target_memory_ids=[refs.memory_id(r) for r in getattr(model,'memory_refs',[])])
             elif name=='refute_memory':
                 collection='memories'
-                value=MemoryProposal(operation='refute',target_memory_ids=[refs.memory_id(model.memory_ref)],
+                value=MemoryProposal(proposal_id=proposal_ref,operation='refute',target_memory_ids=[refs.memory_id(model.memory_ref)],
                     reason=model.reason,evidence=evidence,scope=refs.scene_id)
             elif name=='resolve_wait':
                 collection='loops';value=refs.loop_id(model.wait_ref)
@@ -328,6 +350,7 @@ class ProposalLedger:
             self.staged[proposal_ref]=(collection,value)
             return {'status':'staged','proposal_ref':proposal_ref,
                     **({'ack_ref':proposal_ref} if creation else {}),
+                    **({'operation_ref':proposal_ref} if collection in {'jobs','tasks','memories'} and not creation else {}),
                     'note':'尚未提交；可用discard_proposal撤回本条，finish_turn统一提交剩余提案。此引用不是实际工作J或提醒T'}
         except (ValueError,KeyError) as error:
             raise ToolArgumentError(str(error)) from error
@@ -346,11 +369,28 @@ class ProposalLedger:
             source_candidates = [event for event in source_candidates
                 if event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
                 and event.actor_id.startswith('user:') and event.actor_id != refs.bot_actor_id]
+            controlled_jobs=[proposal.job_id for proposal in self.jobs if proposal.operation!='create']
+            controlled_tasks=[proposal.task_id for proposal in self.tasks if proposal.operation!='create']
+            changed_memories=[ident for proposal in self.memories for ident in proposal.target_memory_ids]
+            if any(len(values)!=len(set(values)) for values in (controlled_jobs,controlled_tasks,changed_memories)):
+                raise ValueError('同一轮对同一工作、提醒或认识目标只能保留一项操作；用discard_proposal撤回重复或冲突提案')
+            confirmed_operations=set()
             for item in result.messages:
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
                         '需要查询时先调用start_work取得staged回执，再调用finish_turn确认。')
+                operation=None
+                operation_sources=[]
+                if item.operation_ref:
+                    operation=self.staged.get(item.operation_ref)
+                    if (operation is None or operation[0] not in {'jobs','tasks','memories'}
+                            or operation[0]!='memories' and operation[1].operation=='create'):
+                        raise ValueError('operation_ref只能引用本轮控制工作、提醒或记忆操作已经返回的proposal_ref；新建工作或提醒用ack_ref')
+                    if item.operation_ref in confirmed_operations:
+                        raise ValueError('同一操作回执只能对应一条确认消息')
+                    confirmed_operations.add(item.operation_ref)
+                    operation_sources=(operation[1].evidence if operation[0]=='memories' else operation[1].source_event_ids)
                 parts=[]
                 for part in item.segments:
                     if part.text is not None:
@@ -358,7 +398,10 @@ class ProposalLedger:
                     else:
                         asset_id=refs.media_id(part.image)
                         if asset_id not in self.context.loaded_media:
-                            raise ValueError('发送图片前必须先用read_media读取本轮选定的图片像素')
+                            raise TerminalArgumentError('发送图片前必须先用read_media读取本轮选定的图片像素',
+                                correction={'next_calls':[{'name':'read_media','arguments':{'asset_id':part.image}}],
+                                            'loaded_images':[reference for reference,ident in refs.media.items()
+                                                             if ident in self.context.loaded_media]})
                         parts.append({'type':'image','asset_id':asset_id})
                 reply=None
                 if item.reply_to:
@@ -368,7 +411,8 @@ class ProposalLedger:
                     reply=rows[0]['payload'].get('message_id') if rows else None
                     if reply is None:raise ValueError('引用消息没有可回复的协议message_id')
                     reply=str(reply)
-                job=refs.job(item.work_ref) if item.work_ref else None
+                job=(refs.job(operation[1].job_id) if operation and operation[0]=='jobs'
+                     else refs.job(item.work_ref) if item.work_ref else None)
                 delivery=None
                 if item.delivery_ref:
                     if item.delivery_ref in refs.tasks or item.delivery_ref in refs.tasks.values():delivery=refs.task_id(item.delivery_ref)
@@ -376,7 +420,11 @@ class ProposalLedger:
                         target=refs.job(item.delivery_ref)
                         if job and job['id']!=target['id']:raise ValueError('履约与工作引用不一致')
                         job=target;delivery=job['id']
-                if (job and job['status']=='result_ready' and job['execution_status'] in {'completed','partial'}
+                if job and job['id'] in controlled_jobs and not item.operation_ref:
+                    raise ValueError('该工作在本轮有未提交控制；状态确认用对应operation_ref，不能同时按旧work_ref或delivery_ref发送旧版本内容')
+                if delivery and delivery in controlled_tasks:
+                    raise ValueError('本轮修改或取消的提醒不能同时按旧状态履约')
+                if (job and not operation and job['status']=='result_ready' and job['execution_status'] in {'completed','partial'}
                         and job['delivery_action_id'] is None and not delivery):
                     raise ValueError('该工作已有首次待交付结果；使用delivery_ref绑定本条结果与真实送达关系，不要仅填work_ref')
                 acknowledgement = self.staged[item.ack_ref][1] if item.ack_ref else None
@@ -385,6 +433,16 @@ class ProposalLedger:
                     if source_id and source_id != acknowledgement.request_source_event_id:
                         raise ValueError('确认消息来源必须与该新建事项的请求原话一致')
                     source_id = acknowledgement.request_source_event_id
+                elif operation and not source_id:
+                    related=[event for event in source_candidates if event.id in operation_sources]
+                    if len(related)==1:
+                        source_id=related[0].id
+                    else:
+                        originals=await self.context.runtime.event_store.events_by_ids(refs.scene_id,operation_sources,refs.cutoff)
+                        humans=[event for event in originals if event.id in refs.read_events
+                                and event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                                and event.actor_id.startswith('user:') and event.actor_id!=refs.bot_actor_id]
+                        if len(humans)==1:source_id=humans[0].id
                 elif job and not source_id:
                     source_id = job['request_source_event_id']
                 elif delivery and not source_id:
@@ -402,13 +460,15 @@ class ProposalLedger:
                     source_id = source_candidates[0].id
                 if not source_id:
                     raise ValueError('本条消息缺少明确请求归属；用source填写对应的已读人类消息M')
+                if operation and source_id not in operation_sources:
+                    raise ValueError('操作确认的source必须是该操作实际读取的原话证据，不能借用另一人的请求')
                 source = await self.request_event(source_id)
                 requester = source.actor_id.removeprefix('user:')
                 # An explicit follow-up may come from another participant.
                 # Message ownership follows that human source; the referenced
                 # work keeps its own original requester and revision.
                 expectation=item.expect_reply
-                messages.append(MessageProposal(segments=parts,reply_to=reply,task_ref=item.ack_ref,fulfils_task_id=delivery,
+                messages.append(MessageProposal(segments=parts,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
                     job_id=job['id'] if job else None,job_revision=job['revision'] if job else None,
                     expect_reply=bool(expectation),reply_target=refs.actor_id(expectation.target) if expectation else None,
@@ -422,5 +482,7 @@ class ProposalLedger:
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
                 handled_source_event_ids=handled,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
+        except TerminalArgumentError:
+            raise
         except (ValueError,KeyError) as error:
             raise TerminalArgumentError(str(error)) from error

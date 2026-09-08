@@ -8,7 +8,7 @@ from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
 from len_bot.plugins.models import PluginCallContext, PluginToolDefinition
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.tools.results import ToolResult
+from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
 
 logger = logging.getLogger(__name__)
@@ -216,21 +216,45 @@ class PluginHost:
             })
         return out
 
-    def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
-        ptool = self._tools.get(name)
-        if not ptool:
-            return False
-        plugin = self._plugins.get(ptool.plugin_id)
-        configured = self.runtime.config_store.current.plugins.get(ptool.plugin_id)
+    def _plugin_availability(self, plugin_id: str, call_context: PluginCallContext) -> str:
+        plugin = self._plugins.get(plugin_id)
+        configured = self.runtime.config_store.current.plugins.get(plugin_id)
+        if configured is None or configured.config is None:
+            return 'unconfigured'
+        if not configured.enabled or plugin is None or not plugin.manifest.enabled:
+            return 'plugin_disabled'
         requesters = call_context.requester_qq_uids if call_context.role == 'conversation' else (call_context.requester_qq_uid,)
-        return bool(
-            plugin and plugin.manifest.enabled and configured and configured.enabled
-            and configured.config is not None and call_context.role in ptool.roles
-            and self.runtime.scene_policy.plugin_allowed(call_context.scene_id, ptool.plugin_id, call_context.role)
-            and any(self.runtime.scene_policy.chat_allowed(call_context.scene_id, requester) for requester in requesters)
-            and (ptool.kind == "read" or call_context.ledger is not None)
-            and (ptool.available is None or ptool.available(call_context))
-        )
+        if (not self.runtime.scene_policy.plugin_allowed(call_context.scene_id, plugin_id, call_context.role)
+                or not any(self.runtime.scene_policy.chat_allowed(call_context.scene_id, requester) for requester in requesters)):
+            return 'scene_not_enabled'
+        return 'callable'
+
+    @staticmethod
+    def _tool_applies(tool: PluginToolDefinition, call_context: PluginCallContext) -> bool:
+        return (call_context.role in tool.roles and (tool.kind == 'read' or call_context.ledger is not None)
+                and (tool.available is None or tool.available(call_context)))
+
+    def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
+        tool = self._tools.get(name)
+        return bool(tool and self._plugin_availability(tool.plugin_id, call_context) == 'callable'
+                    and self._tool_applies(tool, call_context))
+
+    def capability_facts(self, call_context: PluginCallContext) -> list[dict[str, Any]]:
+        """Explain current capability state without publishing hidden schemas or entry points."""
+        from len_bot.plugins.builtin import BUILTIN_PLUGIN_INFO
+
+        facts = []
+        for plugin_id in sorted(set(self._plugins) | set(self.runtime.config_store.current.plugins)):
+            plugin = self._plugins.get(plugin_id)
+            candidates = [tool for tool in self._tools.values() if tool.plugin_id == plugin_id
+                          and self._tool_applies(tool, call_context)]
+            if plugin is not None and not candidates:
+                continue
+            status = self._plugin_availability(plugin_id, call_context)
+            name = plugin.manifest.name if plugin else BUILTIN_PLUGIN_INFO[plugin_id]['name']
+            facts.append({'plugin_id': plugin_id, 'name': name, 'status': status,
+                          'purposes': sorted({tool.purpose for tool in candidates})})
+        return facts
 
     def has_registered_tool(self, name: str) -> bool:
         """Identify the responsible boundary even after availability changed."""
@@ -292,15 +316,17 @@ class PluginHost:
         """The plugin boundary records execution failures as failed observations."""
         ptool = self._tools.get(tool_name)
         if not ptool:
-            return ToolResult.failure(f"Tool '{tool_name}' not found.", "not_found")
+            return ToolResult.failure(f"Tool '{tool_name}' not found.", "not_found", stage='availability',
+                tool_name=tool_name, tool_call_id=call_context.tool_call_id)
 
         if not self.has_tool(tool_name, call_context):
-            return ToolResult.failure(f"Plugin tool '{tool_name}' is not available for this scene and role.", "capability_denied")
+            return ToolResult.failure(f"Plugin tool '{tool_name}' is not available for this scene and role.", "capability_denied",
+                stage='availability', tool_name=tool_name, tool_call_id=call_context.tool_call_id)
 
         try:
             parsed = ptool.parameter_model.model_validate_json(json.dumps(arguments, ensure_ascii=False), strict=True)
         except ValidationError as error:
-            return ToolResult.failure(f"{tool_name}: {error}", "invalid_arguments")
+            return ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id)
         try:
             self.record_plugin_run(ptool.plugin_id)
             result = await asyncio.wait_for(
@@ -311,24 +337,26 @@ class PluginHost:
                 return result
             if not isinstance(result, ToolResult):
                 raise TypeError(f"Plugin tool '{tool_name}' must return ToolResult")
-            return result
-        except httpx.TimeoutException:
-            self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' network request timed out")
-            return ToolResult.failure(f"{tool_name}: 本次来源请求超时，未取得结果；不表示整个能力永久不可用。", 'timeout')
+            return result.error_context(tool_name, call_context.tool_call_id)
+        except httpx.TimeoutException as error:
+            result = ToolResult.failure(f"{type(error).__name__}: {error}；本次来源请求超时，未取得结果；不表示整个能力永久不可用。", 'timeout',
+                sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
         except httpx.HTTPStatusError as error:
             code = error.response.status_code
-            self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' upstream returned HTTP {code}")
-            return ToolResult.failure(f'{tool_name}: 来源返回 HTTP {code}。', 'not_found' if code in {404,410} else 'http_error')
-        except httpx.RequestError:
-            self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' network request failed")
-            return ToolResult.failure(f'{tool_name}: 本次网络请求失败，未取得来源。','network_error')
+            result = ToolResult.failure(f'来源返回 HTTP {code}：{error}', 'not_found' if code in {404,410} else 'http_error',
+                http_status=code, sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
+        except httpx.RequestError as error:
+            result = ToolResult.failure(f'{type(error).__name__}: {error}；本次网络请求失败，未取得来源。','network_error',
+                sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
         except asyncio.TimeoutError:
-            self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' timed out after {ptool.timeout_seconds}s")
-            logger.error("Tool '%s' from plugin '%s' timed out after %.1fs", tool_name, ptool.plugin_id, ptool.timeout_seconds)
-            return ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout")
+            result = ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout", stage='execution')
+        except ValidationError as error:
+            result = ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id,
+                stage='execution', code='invalid_result')
         except ValueError as error:
-            return ToolResult.failure(f"{tool_name}: {error}", "request_failed")
+            result = ToolResult.failure(f"{type(error).__name__}: {error}", "request_failed", stage='execution')
         except Exception as e:
-            self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' crashed: {type(e).__name__} ({e})")
-            logger.exception("Tool '%s' from plugin '%s' crashed: %s", tool_name, ptool.plugin_id, e)
-            return ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__)
+            result = ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__, stage='execution')
+        result = result.error_context(tool_name, call_context.tool_call_id)
+        self.record_plugin_error(ptool.plugin_id, result.content)
+        return result

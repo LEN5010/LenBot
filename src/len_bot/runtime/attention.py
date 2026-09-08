@@ -21,22 +21,31 @@ RUNTIME_INPUTS = {
 }
 
 
+def is_real_send(event, bot_actor_id):
+    return (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
+            and not event.metadata.get('simulated') and event.payload.get('delivery_status') == 'sent'
+            and not event.payload.get('delivery_unknown') and event.payload.get('origin_mode') == 'live')
+
+
 class AttentionPolicy:
     def __init__(self, config, clock, random_source=random.random):
         self.config, self.clock, self.random_source = config, clock, random_source
 
-    def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=()):
+    def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=(),
+              awaiting_response=(), focus_renewal_actors=()):
         now = self.clock()
         state.focused_participants = {actor: until for actor, until in state.focused_participants.items() if until > now}
         if event.metadata.get('conversation_excluded'):
             event.metadata['attention_reasons'] = []
             event.metadata['attention_certain'] = False
             return
-        if (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
-                and not event.metadata.get('simulated') and event.payload.get('delivery_status', 'sent') == 'sent'):
-            for actor in event.payload.get('response_actor_ids', []):
+        if is_real_send(event, bot_actor_id):
+            renewed = []
+            for actor in sorted(set(focus_renewal_actors)):
                 if actor != bot_actor_id:
                     state.focused_participants[actor] = now + self.config.attention_focus_seconds
+                    renewed.append(actor)
+            event.metadata['focus_renewed_actor_ids'] = renewed
 
         reasons = []
         certain = False
@@ -56,11 +65,12 @@ class AttentionPolicy:
                 reasons.append('address_name')
             if event.actor_id in state.focused_participants:
                 reasons.append('continuing_interaction')
-                state.focused_participants[event.actor_id] = now + self.config.attention_focus_seconds
             if event.actor_id in in_flight:
                 reasons.append('in_flight_follow_up')
             if event.actor_id in work_participants:
                 reasons.append('work_participant')
+            if event.actor_id in awaiting_response:
+                reasons.append('awaiting_response')
             certain = bool(reasons)
             if not certain:
                 if (any(word and word.casefold() in text for word in self.config.attention_keywords)

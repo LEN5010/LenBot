@@ -22,6 +22,7 @@ class PluginCallContext:
     ledger: ProposalLedger | None = None
     work_operation: str | None = None
     requester_qq_uids: tuple[str, ...] = ()
+    tool_call_id: str | None = None
 
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"

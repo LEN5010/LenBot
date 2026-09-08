@@ -2,7 +2,7 @@
 import json
 import uuid
 
-from len_bot.cognition.jobs import GroupSummaryRange, JobChanged, JobBudgetExhausted, JobResult, ResultPresentation, WorkState
+from len_bot.cognition.jobs import GroupSummaryRange, JobChanged, JobBudgetExhausted, JobResultRejected, JobResult, ResultPresentation, WorkState
 from len_bot.events.models import Event, EventType
 from len_bot.scheduler.models import TaskItem
 from len_bot.skills.store import SkillStoreMixin
@@ -73,9 +73,9 @@ class JobStoreMixin(SkillStoreMixin):
         await self._db.execute("INSERT INTO pending_runtime_events VALUES(?,?,?)", (event.id, scene_id, event.model_dump_json()))
         return event
 
-    async def apply_job_proposals_in_transaction(self, proposals, scene_id, episode_id, origin_mode):
-        """Caller owns BEGIN/COMMIT and all accompanying session/message proposals."""
-        tasks, references = [], {}
+    async def validate_job_proposals_in_transaction(self, proposals, scene_id):
+        """Read every control's original version before any operation is applied."""
+        observed = {}
         for proposal in proposals:
             sources = list(dict.fromkeys(proposal.source_event_ids))
             rows = await (await self._db.execute(
@@ -98,6 +98,29 @@ class JobStoreMixin(SkillStoreMixin):
                         or request[1] != 'user:' + proposal.requester_qq_uid
                         or proposal.request_source_event_id not in sources):
                     raise ValueError('Work requester must match its explicit human request source')
+                continue
+            if proposal.job_id in observed:
+                raise ValueError('One transaction cannot control the same work more than once')
+            current = await self.get_job(proposal.job_id, scene_id)
+            if not current or current["revision"] != proposal.expected_revision:
+                raise JobChanged("Job version conflict or outside scene")
+            if proposal.requester_qq_uid != current['requester_qq_uid']:
+                raise ValueError('Work controls cannot replace the original requester')
+            if current["status"] in {"completed", "cancelled", "shadow_observed", "delivery_unknown"}:
+                raise ValueError("Job is no longer editable")
+            if proposal.operation == "resume" and not current["can_resume"]:
+                raise ValueError("Only interrupted or failed work can resume")
+            if proposal.summary_range is not None and current["work_operation"] != "group_summary":
+                raise ValueError("Only group summary work has a summary range")
+            observed[proposal.job_id] = current
+        return observed
+
+    async def apply_job_proposals_in_transaction(self, proposals, scene_id, episode_id, origin_mode, observed):
+        """Apply the caller's already validated operations in its transaction."""
+        tasks, references = [], {}
+        for proposal in proposals:
+            sources = list(dict.fromkeys(proposal.source_event_ids))
+            if proposal.operation == "create":
                 stable = f"{scene_id}:{proposal.request_source_event_id}:{proposal.proposal_id}"
                 job_id = "job_" + uuid.uuid5(uuid.NAMESPACE_URL, stable).hex[:20]
                 summary_range = proposal.summary_range.model_dump(mode="json") if proposal.summary_range is not None else None
@@ -134,15 +157,9 @@ class JobStoreMixin(SkillStoreMixin):
                 await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, 1, {"operation": "create"})
                 continue
             job_id = proposal.job_id
-            current = await self.get_job(job_id, scene_id)
-            if not current or current["revision"] != proposal.expected_revision:
-                raise ValueError("Job version conflict or outside scene")
-            if proposal.requester_qq_uid != current['requester_qq_uid']:
-                raise ValueError('Work controls cannot replace the original requester')
-            if current["status"] in {"completed", "cancelled", "shadow_observed", "delivery_unknown"}:
-                raise ValueError("Job is no longer editable")
-            if proposal.operation == "resume" and not current["can_resume"]:
-                raise ValueError("Only interrupted or failed work can resume")
+            current = observed[job_id]
+            if proposal.proposal_id:
+                references[proposal.proposal_id] = job_id
             revision = current["revision"] + 1
             goal = proposal.goal.strip() if proposal.goal else current["goal"]
             constraints = [value for value in current["constraints"] if value not in proposal.constraints_remove]
@@ -150,8 +167,6 @@ class JobStoreMixin(SkillStoreMixin):
             source_ids = list(dict.fromkeys(current["source_event_ids"] + sources))
             result_ids = list(dict.fromkeys(current["result_ids"] + proposal.result_ids))
             if proposal.summary_range is not None:
-                if current["work_operation"] != "group_summary":
-                    raise ValueError("Only group summary work has a summary range")
                 updated_range = proposal.summary_range.model_dump(mode="json")
                 if updated_range != current["summary_range"]:
                     source_changed = any(updated_range[key] != current["summary_range"][key]
@@ -300,7 +315,7 @@ class JobStoreMixin(SkillStoreMixin):
     async def validate_job_message(self, scene_id, job_id, revision, fulfil=False):
         job = await self.get_job(job_id, scene_id)
         if not job or job["revision"] != revision:
-            raise ValueError("Reply refers to a missing work or obsolete revision")
+            raise JobChanged("Reply refers to a missing work or obsolete revision")
         if fulfil and (job["status"] not in {"result_ready", "awaiting_delivery"}
                        or job["execution_status"] not in {"completed", "partial"}):
             raise ValueError("Job fulfilment requires a completed or partial result ready for delivery")
@@ -366,20 +381,23 @@ class JobStoreMixin(SkillStoreMixin):
                 if not job or job["revision"] != revision or job["status"] != "processing":
                     await self._db.rollback()
                     return None
-                if not set(result.result_ids).issubset(job["result_ids"]):
-                    raise ValueError("Job summary cites observations it did not obtain")
-                await self._validate_evidence_spans(job, result.evidence_spans, result.result_ids)
-                if result.work_state is not None:
-                    await self._validate_work_state(job, result.work_state)
-                if work_state is not None:
-                    if work_state.goal_revision != revision:
-                        raise ValueError('Work state belongs to an obsolete goal')
-                    await self._validate_work_state(job, work_state)
-                    await self._db.execute("UPDATE agent_jobs SET work_state_json=? WHERE id=? AND scene_id=?", (work_state.model_dump_json(), job_id, scene_id))
-                if skill_candidate is not None:
-                    if job["work_operation"] == "group_summary":
-                        raise ValueError("Group summaries do not create procedural skills")
-                    await self.add_skill_candidate_in_transaction(job, skill_candidate)
+                try:
+                    if not set(result.result_ids).issubset(job["result_ids"]):
+                        raise ValueError("Job summary cites observations it did not obtain")
+                    await self._validate_evidence_spans(job, result.evidence_spans, result.result_ids)
+                    if result.work_state is not None:
+                        await self._validate_work_state(job, result.work_state)
+                    if work_state is not None:
+                        if work_state.goal_revision != revision:
+                            raise ValueError('Work state belongs to an obsolete goal')
+                        await self._validate_work_state(job, work_state)
+                        await self._db.execute("UPDATE agent_jobs SET work_state_json=? WHERE id=? AND scene_id=?", (work_state.model_dump_json(), job_id, scene_id))
+                    if skill_candidate is not None:
+                        if job["work_operation"] == "group_summary":
+                            raise ValueError("Group summaries do not create procedural skills")
+                        await self.add_skill_candidate_in_transaction(job, skill_candidate)
+                except ValueError as error:
+                    raise JobResultRejected(str(error)) from error
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (result.model_dump_json(), self.clock(), job_id, scene_id))
                 await self._db.execute("UPDATE tasks SET status='result_ready',payload=json_set(payload,'$.result',?) WHERE id=? AND scene_id=?",

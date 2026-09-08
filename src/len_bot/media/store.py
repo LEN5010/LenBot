@@ -73,6 +73,30 @@ class MediaStoreMixin:
             ORDER BY palette_order, created_at, id LIMIT ?""", (scene_id, limit))).fetchall()
         return [_asset(row) for row in rows]
 
+    async def recent_media_sends(self, scene_id: str, *, bot_actor_id: str, limit: int, through_rowid: int | None = None):
+        """Count each asset once per real sent message in the bounded scene window."""
+        if not scene_id or not bot_actor_id or type(limit) is not int or limit < 1:
+            raise ValueError('Recent media use requires a scene, Bot identity and positive send window')
+        if through_rowid is not None and (type(through_rowid) is not int or through_rowid < 0):
+            raise ValueError('Recent media use requires a nonnegative read cutoff')
+        rows = await (await self._db.execute("""SELECT timestamp,payload FROM events
+            WHERE scene_id=? AND actor_id=? AND event_type='MESSAGE_SENT'
+              AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
+              AND json_extract(payload,'$.origin_mode')='live'
+              AND json_extract(payload,'$.delivery_status')='sent'
+              AND COALESCE(json_extract(payload,'$.delivery_unknown'),0)=0
+              AND (? IS NULL OR rowid<=?)
+            ORDER BY rowid DESC LIMIT ?""", (scene_id, bot_actor_id, through_rowid, through_rowid, limit))).fetchall()
+        usage = {}
+        for index, (timestamp, encoded) in enumerate(rows):
+            payload = json.loads(encoded)
+            assets = {segment['asset_id'] for segment in payload.get('segments', []) if segment['type'] == 'image'}
+            for asset_id in assets:
+                record = usage.setdefault(asset_id, {'last_sent_at': timestamp, 'recent_send_count': 0,
+                                                     'used_in_last_reply': index == 0})
+                record['recent_send_count'] += 1
+        return usage
+
     async def list_media(self, allowed_scopes, *, limit: int, query="", curated_only=False, include_disabled=False):
         if type(limit) is not int or limit < 1:
             raise ValueError('Media search requires a positive integer limit')

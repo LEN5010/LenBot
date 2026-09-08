@@ -61,12 +61,18 @@ class RuntimeQueryService:
         label = {"group":"群聊", "private":"私聊"}.get(kind, "场景")
         return {"display_name": f"{label} {ident or scene_id}", "scene_type": kind if kind in {"group","private"} else "other"}
 
+    @staticmethod
+    def _observation_view(observation):
+        excluded = set() if observation.status in {'error', 'unsupported'} else {'content'}
+        return {**RuntimeQueryService._public(observation.model_dump(exclude=excluded)),
+                'content_length': len(observation.content)}
+
     async def tool_results(self, scene_id, page=1, page_size=30):
         result = await self._page("SELECT id,event_id,tool_name,result_json,created_at", "FROM tool_observations WHERE scene_id=?",
                                   [scene_id], "created_at DESC,id DESC", page, page_size)
         for item in result["items"]:
             observation = ToolResult.model_validate_json(item.pop("result_json"))
-            item["result"] = self._public(observation.model_dump(exclude={"content"}))
+            item["result"] = self._observation_view(observation)
             item["content_length"] = len(observation.content)
         return result
 
@@ -329,12 +335,14 @@ class RuntimeQueryService:
         return status
 
     def runtime_settings(self):
+        from len_bot.config import EXECUTION_BUDGET_FIELDS
         excluded = {"ws_host", "ws_port", "address_names", "character_context",
                     "conversation_style", "dashboard_secret_key", "dashboard_default_admin_password"}
         values = self.runtime.config_store.current.runtime.model_dump()
         settings = {key:value for key,value in values.items()
                     if key not in excluded and not key.startswith(("identity_", "onebot_"))}
-        return {"settings":settings, "requires_restart":self.runtime.restart_required}
+        return {"settings":settings, "requires_restart":self.runtime.restart_required,
+                "effective_budgets":{key:getattr(self.runtime.config,key) for key in sorted(EXECUTION_BUDGET_FIELDS)}}
 
     # ---------- Scenes ----------
 
@@ -575,6 +583,15 @@ class RuntimeQueryService:
         if not rows:
             return None
         result = self._trace(rows[0], True)
+        if result['kind'] in {'conversation', 'conversation_error'} and result.get('ref_id'):
+            commits = await self._rows("SELECT id,timestamp,payload FROM events WHERE id=? AND scene_id=? AND event_type='CONVERSATION_COMMITTED'",
+                ['turn:' + result['ref_id'], result['scene_id']])
+            if commits:
+                commit = commits[0]
+                receipts = self._public(json.loads(commit['payload']).get('operation_receipts', {}))
+                result['operation_receipts'] = [{**receipt, 'proposal_ref': reference,
+                    'commit_event_id': commit['id'], 'committed_at': commit['timestamp'], 'episode_id': result['ref_id']}
+                    for reference, receipt in receipts.items()]
         observed = {}
         for run in self._trace_runs(result["kind"], result["payload"]):
             for step in run.get("steps", []):
@@ -584,8 +601,7 @@ class RuntimeQueryService:
                         continue
                     if result_id not in observed:
                         observation = await self.runtime.event_store.read_tool_observation(result_id, [result["scene_id"]])
-                        observed[result_id] = ({**self._public(observation.model_dump(exclude={"content"})),
-                                                "content_length": len(observation.content)} if observation else None)
+                        observed[result_id] = self._observation_view(observation) if observation else None
                     # Stored source metadata is distinct from the exact range
                     # presented to the model in the recorded exchange.
                     call["stored_observation"] = observed[result_id]
@@ -697,6 +713,10 @@ class RuntimeQueryService:
             if payload.get("action_id"):action_ids.add(payload["action_id"])
             if payload.get("origin_event_id"):event_ids.add(payload["origin_event_id"])
             if payload.get("result_id"):result_ids.add(payload["result_id"])
+            for receipt in payload.get('operation_receipts', {}).values():
+                event_ids.update(receipt['source_event_ids'])
+                if receipt['kind'] == 'work':job_ids.add(receipt['target_id'])
+                if receipt['action_id']:action_ids.add(receipt['action_id'])
             reply_field="reply_to" if event["event_type"] in {"MESSAGE_SENT","MESSAGE_SEND_FAILED","ACTION_SHADOWED"} else "reply_to_message_id"
             if payload.get(reply_field) is not None:
                 quoted=await self._rows("SELECT id FROM events WHERE scene_id=? AND rowid<? AND CAST(json_extract(payload,'$.message_id') AS TEXT)=? ORDER BY rowid DESC LIMIT 1",
@@ -775,33 +795,45 @@ class RuntimeQueryService:
                           episode_id=event["payload"].get("batch_id"),job_id=event["payload"].get("job_id"),
                           job_revision=event["payload"].get("job_revision"),origin_event_id=event["payload"].get("origin_event_id"),
                           requester_qq_uid=event["payload"].get("requester_qq_uid"),
+                          operation_ref=event['payload'].get('operation_ref'),
                           acknowledges_task_id=event["payload"].get("acknowledges_task_id", action.get("acknowledges_task_id")),
                           fulfils_task_id=event["payload"].get("fulfils_task_id"))
             action["receipt_event_ids"].append(event["id"])
         tools=[]
         for row in observations:
             result=ToolResult.model_validate_json(row["result_json"])
-            tools.append({"id":row["id"],"event_id":row["event_id"],"scene_id":scene_id,"tool_name":row["tool_name"],
-                          "created_at":row["created_at"],"status":result.status,"error_code":result.error_code,
-                          "sources":self._public([source.model_dump() for source in result.sources]),
-                          "coverage":result.coverage,"content_length":len(result.content)})
+            tools.append({**self._observation_view(result), "id":row["id"],"event_id":row["event_id"],
+                          "scene_id":scene_id,"tool_name":row["tool_name"],"created_at":row["created_at"]})
         turns = []
+        operations = []
         for event in event_views:
             if event["event_type"] != "CONVERSATION_COMMITTED":
                 continue
             payload = event["payload"]
+            episode = event['id'][5:] if event['id'].startswith('turn:') else None
+            for reference, receipt in payload.get('operation_receipts', {}).items():
+                operation = {**receipt, 'proposal_ref': reference, 'commit_event_id': event['id'],
+                             'committed_at': event['timestamp'], 'episode_id': episode}
+                operations.append(operation)
+                action = actions.get(receipt['action_id'])
+                if (action is not None and (not action.get('episode_id') or action['episode_id'] == episode)
+                        and action.get('operation_ref') in {None, reference}):
+                    action['operation_receipt'] = operation
+                    action['operation_ref'] = reference
+                    action['episode_id'] = episode
             turns.append({"event_id":event["id"], "episode_id":event["id"][5:] if event["id"].startswith("turn:") else None,
                           "read_source_event_ids":payload.get("source_event_ids", []),
                           "handled_source_event_ids":payload.get("handled_source_event_ids"),
-                          "outcome":payload.get("outcome")})
+                          "outcome":payload.get("outcome"), 'operation_receipts': payload.get('operation_receipts', {})})
         session = await self.runtime.event_store.load_scene_session(scene_id) if event_id else None
         source_handling = ({"event_id":event_id,
                             "pending":any(wake["event_id"] == event_id for wake in session.get("pending_wakes", [])) if session else None}
                            if event_id else None)
+        truncated['operation_receipts'] = len(operations) > limit
         return {"events":event_views,"traces":[self._trace(row) for row in trace_rows],"calls":[self._call(row) for row in calls],
                 "jobs":jobs,"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
-                "turns":turns,"source_handling":source_handling,
-                "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches")},
+                "turns":turns,"source_handling":source_handling,'operation_receipts':operations[:limit],
+                "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches","operation_receipts")},
                 "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
 
     def metrics(self) -> dict:

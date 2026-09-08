@@ -12,6 +12,7 @@ from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
 from len_bot.cognition.call_store import ModelCallStoreMixin
+from len_bot.cognition.models import EpisodeOutcome, MessageProposal, OperationReceipt
 from len_bot.memory.history import HistoryStoreMixin
 from len_bot.scheduler.models import TaskItem, TaskStatus
 
@@ -1069,24 +1070,22 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         self,
         episode_id: str,
         scene_id: str,
-        task_proposals: list[Any],
-        resolve_open_loop_ids: list[str],
-        memory_proposals: list[Any],
+        outcome: EpisodeOutcome,
         deliveries: dict[str, str] | None = None,
         acknowledgements: dict[str, str] | None = None,
+        operation_confirmations: dict[str, str] | None = None,
         scene_commit: dict | None = None,
-        job_proposals=None,
-        job_messages=None,
         origin_mode="live",
         bot_actor_id: str = "",
         through_rowid: int | None = None,
-    ) -> tuple[list[Any], list[str], list[Any]]:
+    ) -> tuple[list[Any], list[str], list[Any], EpisodeOutcome]:
         """
         V2 Atomic Proposal Commit (ADR-0003 & ADR-0011 Closure):
         Executes an all-or-nothing atomic durable commit for an EpisodeOutcome
         within a single SQLite transaction under write_lock.
         If any mutation fails, the entire transaction is rolled back.
-        Returns: (committed_tasks, resolved_loop_ids, committed_memories)
+        Returns the committed objects and the same resolved outcome written to
+        the conversation event. A rejected transaction never mutates its input.
         """
         if not self._db:
             raise RuntimeError("Database not initialized")
@@ -1099,16 +1098,45 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         committed_tasks: list[TaskItem] = []
         resolved_loop_ids: list[str] = []
         committed_memories: list[MemoryItem] = []
+        resolved_outcome = outcome.model_copy(deep=True)
+        task_proposals = resolved_outcome.task_proposals
+        job_proposals = resolved_outcome.job_proposals
+        memory_proposals = resolved_outcome.memory_proposals
+        job_messages = resolved_outcome.message_proposals
+        resolve_open_loop_ids = resolved_outcome.resolve_open_loop_ids
+        operation_confirmations = operation_confirmations or {}
+        if origin_mode == "shadow":
+            for proposal in task_proposals:
+                proposal.origin_mode = "shadow"
 
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                for mp in memory_proposals:
-                    await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
-
-                # 2. Insert Tasks
-                job_tasks, proposal_tasks = await self.apply_job_proposals_in_transaction(job_proposals or [], scene_id, episode_id, origin_mode)
-                committed_tasks.extend(job_tasks)
+                operation_proposals = {}
+                all_refs = set()
+                creation_refs = set()
+                for kind, proposals in (("work",job_proposals),("reminder",task_proposals),("memory",memory_proposals)):
+                    for proposal in proposals:
+                        reference = proposal.proposal_id
+                        if reference:
+                            if reference in all_refs:
+                                raise ValueError("Each transaction proposal needs a distinct turn-local reference")
+                            all_refs.add(reference)
+                            if kind == "memory" or proposal.operation != "create":
+                                operation_proposals[reference] = (kind,proposal)
+                            else:
+                                creation_refs.add(reference)
+                if not set(acknowledgements or {}).issubset(creation_refs):
+                    raise ValueError("Creation acknowledgement cannot confirm a control or memory operation")
+                if not set(operation_confirmations).issubset(operation_proposals):
+                    raise ValueError("Operation confirmation does not refer to this transaction's control or memory proposal")
+                confirmation_refs=[message.operation_ref for message in job_messages if message.operation_ref]
+                if len(confirmation_refs)!=len(set(confirmation_refs)) or set(confirmation_refs)!=set(operation_confirmations):
+                    raise ValueError("Each operation confirmation must have exactly one matching action")
+                if operation_confirmations and scene_commit is None:
+                    raise ValueError("Operation confirmation requires a committed conversation event")
+                observed_jobs = await self.validate_job_proposals_in_transaction(job_proposals,scene_id)
+                task_states = {}
                 for tp in task_proposals:
                     if tp.payload.get("kind") == "agent_job":
                         raise ValueError("Use typed job_proposals for information work")
@@ -1118,28 +1146,88 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         placeholders = ",".join("?" for _ in set(tp.source_event_ids))
                         evidence = await self._db.execute(
                             f"SELECT count(*) FROM events WHERE scene_id=? AND id IN ({placeholders})",
-                            [scene_id, *set(tp.source_event_ids)],
-                        )
+                            [scene_id, *set(tp.source_event_ids)])
                         if (await evidence.fetchone())[0] != len(set(tp.source_event_ids)):
                             raise ValueError("Task evidence outside scene")
+                    if tp.operation == "create":
+                        if not tp.description.strip():
+                            raise ValueError("Task description is empty")
+                        request = await (await self._db.execute(
+                            'SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?',
+                            (tp.request_source_event_id,scene_id))).fetchone()
+                        if (request is None or request[0] not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                                or request[1] == bot_actor_id or not request[1].startswith('user:')
+                                or request[1] != tp.requester_id
+                                or request[1].removeprefix('user:') != tp.payload.get('requester_qq_uid')
+                                or tp.request_source_event_id not in tp.source_event_ids):
+                            raise ValueError('Reminder requester must match its explicit human request source')
+                        if tp.due_at is not None and tp.due_at < now:
+                            raise ValueError("Task time is already past; review the promise instead")
+                        continue
+                    if tp.task_id in task_states:
+                        raise ValueError("One transaction cannot control the same reminder more than once")
+                    existing = await (await self._db.execute(
+                        "SELECT status,payload,due_at FROM tasks WHERE id=? AND scene_id=?",
+                        (tp.task_id, scene_id))).fetchone()
+                    if existing is None:
+                        raise ValueError("Task not found in this scene")
+                    status, payload, due_at = existing[0], json.loads(existing[1]), existing[2]
+                    if payload.get("kind") == "agent_job":
+                        raise ValueError("Use versioned job controls for information work")
+                    if status not in {"pending", "claimed", "processing", "review_required", "result_ready"}:
+                        raise ValueError("Task no longer editable")
+                    if tp.operation == "update" and (tp.due_at is None or tp.due_at < now):
+                        raise ValueError("Task update requires absolute due_at")
+                    if tp.operation == "result" and not tp.result:
+                        raise ValueError("Task result cannot be empty")
+                    task_states[tp.task_id] = (status,payload,due_at)
+                targets = [ident for mp in memory_proposals for ident in mp.target_memory_ids]
+                if len(targets) != len(set(targets)):
+                    raise ValueError("One transaction cannot change the same memory target more than once")
+                for mp in memory_proposals:
+                    await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
+                    if mp.operation != "refute" and mp.expires_at is not None and mp.expires_at <= now:
+                        raise ValueError("An already expired preference or belief cannot become active")
+                for message in job_messages:
+                    for segment in message.segments:
+                        if segment.type == "image" and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
+                            raise ValueError("Message image is disabled or outside the scene")
+                    if message.operation_ref:
+                        if message.operation_ref not in operation_confirmations:
+                            raise ValueError("Operation confirmation is missing its actual action binding")
+                        kind, proposal = operation_proposals[message.operation_ref]
+                        sources = proposal.evidence if kind == "memory" else proposal.source_event_ids
+                        original = await (await self._db.execute(
+                            "SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?",
+                            (message.source_event_id,scene_id))).fetchone()
+                        if (message.source_event_id not in sources or original is None
+                                or original[0] not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                                or original[1] == bot_actor_id or original[1] != 'user:' + (message.requester_qq_uid or '')
+                                or message.source_event_id not in scene_commit['event'].payload['source_event_ids']):
+                            raise ValueError("Operation confirmation must retain its own actual human request source")
+                        if kind == "work":
+                            if message.job_id != proposal.job_id or message.job_revision != proposal.expected_revision:
+                                raise ValueError("Work operation confirmation must use that operation's observed work and revision")
+                        elif message.job_id is not None:
+                            raise ValueError("A reminder or memory confirmation cannot claim another work")
+                    elif message.job_id in observed_jobs:
+                        raise ValueError("A controlled work cannot also send old work content or fulfil an old result in the same transaction")
+                    if message.fulfils_task_id in task_states:
+                        raise ValueError("A changed reminder cannot also fulfil its previous state in the same transaction")
+                    if message.job_id:
+                        await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
+                    elif message.fulfils_task_id and await self.get_job(message.fulfils_task_id, scene_id):
+                        raise ValueError("Job delivery requires job_id and job_revision")
+
+                # 2. Insert Tasks
+                job_tasks, proposal_tasks = await self.apply_job_proposals_in_transaction(job_proposals, scene_id, episode_id, origin_mode, observed_jobs)
+                committed_tasks.extend(job_tasks)
+                for tp in task_proposals:
                     if tp.operation != "create":
                         if tp.proposal_id:
                             proposal_tasks[tp.proposal_id] = tp.task_id
-                        row = await self._db.execute(
-                            "SELECT status,payload,due_at FROM tasks WHERE id=? AND scene_id=?",
-                            (tp.task_id, scene_id),
-                        )
-                        existing = await row.fetchone()
-                        if existing is None:
-                            raise ValueError("Task not found in this scene")
-                        status, payload, due_at = existing[0], json.loads(existing[1]), existing[2]
-                        if payload.get("kind") == "agent_job":
-                            raise ValueError("Use versioned job controls for information work")
-                        if status not in {"pending", "claimed", "processing", "review_required", "result_ready"}:
-                            raise ValueError("Task no longer editable")
+                        status, payload, due_at = task_states[tp.task_id]
                         if tp.operation == "update":
-                            if tp.due_at is None or tp.due_at < now:
-                                raise ValueError("Task update requires absolute due_at")
                             status, due_at = "pending", tp.due_at
                             payload.pop("result", None)
                         elif tp.operation == "cancel":
@@ -1148,8 +1236,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                             status = "failed"
                             payload["error"] = tp.result or tp.description
                         else:
-                            if not tp.result:
-                                raise ValueError("Task result cannot be empty")
                             status = "result_ready"
                             payload["result"] = tp.result
                         await self._db.execute(
@@ -1158,19 +1244,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                             (status, due_at, tp.description, tp.description, json.dumps(payload, ensure_ascii=False), tp.origin_mode, tp.task_id, scene_id),
                         )
                         continue
-                    if not tp.description.strip():
-                        raise ValueError("Task description is empty")
-                    request = await (await self._db.execute(
-                        'SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?',
-                        (tp.request_source_event_id,scene_id))).fetchone()
-                    if (request is None or request[0] not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
-                            or request[1] == bot_actor_id or not request[1].startswith('user:')
-                            or request[1] != tp.requester_id
-                            or request[1].removeprefix('user:') != tp.payload.get('requester_qq_uid')
-                            or tp.request_source_event_id not in tp.source_event_ids):
-                        raise ValueError('Reminder requester must match its explicit human request source')
-                    if tp.due_at is not None and tp.due_at < now:
-                        raise ValueError("Task time is already past; review the promise instead")
                     tp.payload = {**tp.payload, "requester_id": tp.requester_id,
                                   "request_source_event_id": tp.request_source_event_id,
                                   "target_actor_id": tp.target_actor_id,
@@ -1255,19 +1328,37 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
 
                 # 4. Commit Memory Proposals with Unified Validation & Conflict Resolution (ADR-0025, §13)
                 for mp in memory_proposals:
-                    await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
                     mem_item = await commit_memory_proposal_core(self._db, mp, scene_id, now=now,
                         revision_event_id=scene_commit["event"].id if scene_commit else None)
                     committed_memories.append(mem_item)
 
-                for message in job_messages or []:
-                    for segment in message.segments:
-                        if segment.type == "image" and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
-                            raise ValueError("Message image is disabled or outside the scene")
-                    if message.job_id:
-                        await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
-                    elif message.fulfils_task_id and await self.get_job(message.fulfils_task_id, scene_id):
-                        raise ValueError("Job delivery requires job_id and job_revision")
+                memory_results = {proposal.proposal_id:item for proposal,item in zip(memory_proposals,committed_memories)
+                                  if proposal.proposal_id}
+                operation_receipts = {}
+                for reference,(kind,proposal) in operation_proposals.items():
+                    reminder_values = {}
+                    if kind == "memory":
+                        item = memory_results[reference]
+                        target_id, revision, status = item.id, item.revision, item.status.value
+                        sources = proposal.evidence
+                    elif kind == "work":
+                        job = await self.get_job(proposal.job_id,scene_id)
+                        target_id, revision, status = job["id"], job["revision"], job["status"]
+                        sources = proposal.source_event_ids
+                    else:
+                        row = await (await self._db.execute("SELECT id,status,due_at,description FROM tasks WHERE id=? AND scene_id=?",
+                            (proposal.task_id,scene_id))).fetchone()
+                        target_id, revision, status = row[0], None, row[1]
+                        reminder_values = {'reminder_due_at':row[2],'reminder_description':row[3]}
+                        sources = proposal.source_event_ids
+                    operation_receipts[reference] = OperationReceipt(proposal_ref=reference,kind=kind,
+                        operation=proposal.operation,target_id=target_id,revision=revision,result_status=status,
+                        source_event_ids=sources,action_id=operation_confirmations.get(reference),**reminder_values)
+                for message in job_messages:
+                    if message.operation_ref:
+                        receipt = operation_receipts[message.operation_ref]
+                        if receipt.kind == "work":
+                            message.job_revision = receipt.revision
                 for task_id, action_id in (deliveries or {}).items():
                     cursor = await self._db.execute(
                         """UPDATE tasks SET status='awaiting_delivery',
@@ -1282,13 +1373,16 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         raise ValueError("Task is not ready for fulfilment")
 
                 if scene_commit is not None:
+                    scene_commit["event"].payload["outcome"] = resolved_outcome.model_dump(mode="json")
+                    scene_commit["event"].payload["operation_receipts"] = {
+                        reference:receipt.model_dump(mode="json") for reference,receipt in operation_receipts.items()}
                     scene_commit["event"].payload["memory_receipts"] = [
                         await self._memory_receipt(mp, item) for mp, item in zip(memory_proposals, committed_memories)]
                     await self._write_scene_event(**scene_commit)
 
                 # 5. Commit all mutations atomically in one transaction!
                 await self._db.commit()
-                return committed_tasks, resolved_loop_ids, committed_memories
+                return committed_tasks, resolved_loop_ids, committed_memories, resolved_outcome
             except BaseException:
                 await self._db.rollback()
                 raise
@@ -1296,8 +1390,57 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
     async def _memory_receipt(self, proposal, item):
         return {"id": item.id, "subject": item.subject, "kind": item.kind,
                 "statement": item.statement, "basis": item.basis, "status": item.status,
+                "revision":item.revision,"proposal_ref":proposal.proposal_id,
                 "operation": proposal.operation, "reason": proposal.reason,
                 "evidence": proposal.evidence, "target_memory_ids": proposal.target_memory_ids}
+
+    async def validate_operation_message(self, action):
+        """Confirm a durable operation receipt, without treating it as old work content."""
+        if not action.operation_ref or not action.batch_id:
+            raise ValueError("Operation confirmation has no committed turn reference")
+        row = await (await self._db.execute(
+            "SELECT payload FROM events WHERE id=? AND scene_id=? AND event_type='CONVERSATION_COMMITTED'",
+            ('turn:' + action.batch_id,action.scene_id))).fetchone()
+        if row is None:
+            raise ValueError("Operation confirmation has no committed conversation")
+        payload = json.loads(row[0])
+        raw = payload.get('operation_receipts', {}).get(action.operation_ref)
+        if raw is None:
+            raise ValueError("Operation confirmation does not belong to this committed turn")
+        receipt = OperationReceipt.model_validate(raw)
+        if receipt.proposal_ref != action.operation_ref or receipt.action_id != action.id:
+            raise ValueError("Operation confirmation action does not match its committed receipt")
+        messages = [MessageProposal.model_validate(item) for item in payload['outcome']['message_proposals']
+                    if item.get('operation_ref') == action.operation_ref]
+        if len(messages) != 1:
+            raise ValueError("Operation receipt must have one committed confirmation message")
+        message = messages[0]
+        if (message.source_event_id != action.origin_event_id or message.requester_qq_uid != action.requester_qq_uid
+                or action.origin_event_id not in receipt.source_event_ids
+                or message.job_id != action.job_id or message.job_revision != action.job_revision
+                or message.reply_to != action.reply_to
+                or [item.model_dump(mode='json') for item in message.segments] != [item.model_dump(mode='json') for item in action.segments]):
+            raise ValueError("Operation confirmation changed its committed source, version or message")
+        if receipt.kind == 'work':
+            if receipt.target_id != action.job_id or receipt.revision != action.job_revision:
+                raise ValueError("Operation receipt belongs to another work or revision")
+            # Cancelled is a valid result of this operation. Only a later work
+            # revision invalidates its confirmation; normal execution progress
+            # after a resume does not undo the fact that it was resumed.
+            await self.validate_job_message(action.scene_id,receipt.target_id,receipt.revision)
+        elif receipt.kind == 'memory':
+            current = await (await self._db.execute("SELECT revision,status FROM memories WHERE id=? AND scope=?",
+                (receipt.target_id,action.scene_id))).fetchone()
+            if current is None or current[0] != receipt.revision or current[1] != receipt.result_status:
+                raise ValueError("Memory operation result changed before its confirmation was sent")
+        else:
+            current = await (await self._db.execute("SELECT status,due_at,description FROM tasks WHERE id=? AND scene_id=?",
+                (receipt.target_id,action.scene_id))).fetchone()
+            if (current is None or current[1] != receipt.reminder_due_at or current[2] != receipt.reminder_description
+                    or receipt.operation == 'cancel' and current[0] != 'cancelled'
+                    or receipt.operation != 'cancel' and current[0] == 'cancelled'):
+                raise ValueError("Reminder operation result changed before its confirmation was sent")
+        return receipt
 
     async def scene_tasks(self, scene_id: str) -> list[dict]:
         cursor = await self._db.execute(
