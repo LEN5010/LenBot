@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
 class ScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    start_at: AwareDatetime
-    end_at: AwareDatetime
-    member: str | None = Field(min_length=1)
+    start_at: AwareDatetime = Field(description="带明确时区的ISO日期时间，包含起点")
+    end_at: AwareDatetime = Field(description="带明确时区的ISO日期时间，不包含终点；须晚于start_at")
+    member: str | None = Field(min_length=1, description="已配置成员名称或别名；null读取全部，包括团体署名，团体不展开为个人名单。")
 
     @model_validator(mode="after")
     def increasing_range(self):

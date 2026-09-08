@@ -139,13 +139,6 @@ class SceneActor:
             event.event_type == EventType.TOOL_OBSERVATION_RECORDED) or (
             event.event_type == EventType.TASK_DUE and event.payload.get('payload', {}).get('kind') == 'agent_job')
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
-        if self.classify_event and event.event_type == EventType.OPERATOR_ACTION and event.payload.get('policy_changed'):
-            pending = await self.event_store.events_by_ids(self.scene_id,
-                [wake.event_id for wake in candidate.pending_wakes], self.session.last_observed_event_rowid)
-            for source in pending:
-                await self.classify_event(source, self.session.last_observed_event_rowid)
-            admitted = {source.id for source in pending if not source.metadata.get('conversation_excluded')}
-            candidate.pending_wakes = [wake for wake in candidate.pending_wakes if wake.event_id in admitted]
         if self.attention_policy:
             participants = set()
             in_flight = set(self._active_mailbox.interaction_actors) if self._active_mailbox else set()
@@ -195,23 +188,37 @@ class SceneActor:
             raise SceneCommitConflict('Knowledge revision changed')
         if not 0 <= item.through_rowid <= state.last_observed_event_rowid:
             raise SceneCommitConflict('Read cutoff is outside the observed range')
-        bounded = not item.outcome.requires_fresh_input()
         read = set(item.source_event_ids)
-        if not item.operator and not native_output and not bounded:
-            if any(wake.certain and wake.event_id not in read for wake in state.pending_wakes):
-                raise FreshInputConflict('Control or fulfilment proposal has an unread certain wake; nothing committed')
+        handled = set(item.outcome.handled_source_event_ids)
+        if handled and (item.operator or native_output):
+            raise SceneCommitConflict('Operator and native outputs cannot handle conversation wake sources')
+        if not handled.issubset(read):
+            raise SceneCommitConflict('Handled wake sources were not actually read in this turn')
+        pending_ids = {wake.event_id for wake in state.pending_wakes}
+        if not handled.issubset(pending_ids):
+            raise SceneCommitConflict('Handled sources are not currently pending in this scene')
         refs = set()
         for proposal in item.outcome.task_proposals + item.outcome.job_proposals:
             refs.update(proposal.source_event_ids)
+            if proposal.request_source_event_id:
+                refs.add(proposal.request_source_event_id)
+        for message in item.outcome.message_proposals:
+            if message.source_event_id:
+                refs.add(message.source_event_id)
         for proposal in item.outcome.memory_proposals:
             refs.update(proposal.evidence)
         if not refs.issubset(read):
             raise SceneCommitConflict('Proposal evidence was located but not read in this turn')
         if not await self.event_store.references_belong_to_scene(read, self.scene_id, item.through_rowid):
             raise SceneCommitConflict('Evidence is outside the scene or read cutoff')
+        if not item.operator and not native_output and item.outcome.requires_fresh_input():
+            related = await self._related_unread_wakes(item.outcome, read, state, item.gate.scene_policy)
+            if related:
+                raise FreshInputConflict('Control or fulfilment has unread related input: ' + ', '.join(related))
         event = Event(id=event_id, event_type=EventType.CONVERSATION_COMMITTED, scene_id=self.scene_id,
                       actor_id='system:conversation', timestamp=self.event_store.clock(),
                       payload={'source_event_ids': item.source_event_ids,
+                               'handled_source_event_ids': item.outcome.handled_source_event_ids,
                                'output_kind': item.mailbox.output_kind,
                                'origin_event_id': item.mailbox.origin_stimulus_id,
                                'outcome': item.outcome.model_dump(mode='json')},
@@ -219,8 +226,6 @@ class SceneActor:
                                 'operator_control': item.operator,
                                 'conversation_excluded': native_output or item.operator})
         candidate = SceneReducer.reduce(state, event, self.bot_actor_id)
-        if not item.operator and not native_output:
-            candidate.pending_wakes = [wake for wake in state.pending_wakes if wake.event_id not in read]
         if item.outcome.memory_proposals: candidate.knowledge_revision += 1
         decision = await item.gate.evaluate_and_commit(item.outcome, item.mailbox, state,
             scene_commit={'event': event, 'scene_state_data': candidate.model_dump(), 'advance_session_observation': False},
@@ -228,6 +233,102 @@ class SceneActor:
         if decision.accepted:
             self.session = candidate
         return decision
+
+    async def _related_unread_wakes(self, outcome, read, state, scene_policy):
+        """Require related input, using stored request and reply links only."""
+        unread_ids = [wake.event_id for wake in state.pending_wakes if wake.certain and wake.event_id not in read]
+        if not unread_ids:
+            return []
+        source_ids = set()
+        request_ids = set()
+        task_ids = set()
+        requesters = set()
+        message_ids = set()
+
+        def requester(qq_uid):
+            if qq_uid is not None:
+                requesters.add(f'user:{qq_uid}')
+
+        def request_source(event_id):
+            if event_id:
+                request_ids.add(event_id)
+                source_ids.add(event_id)
+
+        for proposal in outcome.job_proposals:
+            source_ids.update(proposal.source_event_ids)
+            request_source(proposal.request_source_event_id)
+            requester(proposal.requester_qq_uid)
+            if proposal.job_id:
+                task_ids.add(proposal.job_id)
+        for proposal in outcome.task_proposals:
+            source_ids.update(proposal.source_event_ids)
+            request_source(proposal.request_source_event_id)
+            if proposal.requester_id:
+                requesters.add(proposal.requester_id)
+            if proposal.task_id:
+                task_ids.add(proposal.task_id)
+        for message in outcome.message_proposals:
+            if not (message.task_ref or message.fulfils_task_id or message.job_id or message.expect_reply):
+                continue
+            request_source(message.source_event_id)
+            requester(message.requester_qq_uid)
+            if message.reply_to:
+                message_ids.add(str(message.reply_to))
+            if message.expect_reply and message.reply_target:
+                requesters.add(message.reply_target)
+            task_ids.update(ident for ident in (message.job_id, message.fulfils_task_id) if ident)
+        if task_ids:
+            for task in await self.event_store.scene_tasks(self.scene_id):
+                if task['id'] not in task_ids:
+                    continue
+                payload = task['payload']
+                requester(payload.get('requester_qq_uid'))
+                request_source(payload.get('request_source_event_id'))
+                source_ids.update(payload.get('source_event_ids', []))
+        if outcome.resolve_open_loop_ids:
+            for loop in await self.event_store.get_active_open_loops(self.scene_id):
+                if loop['id'] not in outcome.resolve_open_loop_ids:
+                    continue
+                requesters.add(loop['target_actor_id'])
+                source_ids.add(loop['source_event_id'])
+                if loop['source_stimulus_id']:
+                    source_ids.add(loop['source_stimulus_id'])
+
+        sources = await self.event_store.events_by_ids(self.scene_id, source_ids, state.last_observed_event_rowid)
+        for source in sources:
+            if source.id in request_ids and source.event_type in HUMAN_INPUTS:
+                requesters.add(source.actor_id)
+            if source.payload.get('message_id') is not None:
+                message_ids.add(str(source.payload['message_id']))
+        pending = await self.event_store.events_by_ids(self.scene_id, unread_ids, state.last_observed_event_rowid)
+        if scene_policy:
+            pending = [event for event in pending if event.metadata.get('interaction') == 'chat'
+                       and scene_policy.chat_allowed(self.scene_id,event.metadata.get('requester_qq_uid'))]
+        projected = await self.event_store.project_reply_context(self.scene_id, pending,
+            through_rowid=state.last_observed_event_rowid)
+        quoted_ids = {event.metadata['quote_context']['event_id'] for event in projected
+                      if event.metadata.get('quote_context') and not event.metadata['quote_context'].get('missing')}
+        quoted = {event.id: event for event in await self.event_store.events_by_ids(
+            self.scene_id, quoted_ids, state.last_observed_event_rowid)}
+
+        def linked_payload(payload):
+            return (any(payload.get(key) in task_ids for key in ('job_id', 'task_id', 'fulfils_task_id'))
+                    or any(payload.get(key) in source_ids for key in ('source_event_id', 'origin_event_id', 'request_source_event_id'))
+                    or payload.get('reply_to') is not None and str(payload['reply_to']) in message_ids)
+
+        related = []
+        for event in projected:
+            quote_id = (event.metadata.get('quote_context') or {}).get('event_id')
+            original = quoted.get(quote_id)
+            reply_to = event.payload.get('reply_to_message_id')
+            if (event.id in source_ids
+                    or event.event_type in HUMAN_INPUTS and event.actor_id in requesters
+                    or linked_payload(event.payload)
+                    or reply_to is not None and str(reply_to) in message_ids
+                    or quote_id in source_ids
+                    or original is not None and linked_payload(original.payload)):
+                related.append(event.id)
+        return related
 
     async def _commit_history(self, kwargs):
         if self.session.knowledge_revision != kwargs['expected_revision']:

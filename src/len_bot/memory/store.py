@@ -5,14 +5,17 @@ memory never increments a score or otherwise changes its apparent reliability.
 """
 
 import asyncio
+import heapq
 import json
+import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import aiosqlite
 
 from len_bot.memory.models import MemoryItem
+from len_bot.tools.discovery import rank_discovery
 
 
 MEMORY_COLUMNS = (
@@ -77,9 +80,23 @@ class MemoryStore:
         query: str | None = None,
         include_superseded: bool = False,
         *, limit: int,
+        start_time: float | None = None,
+        end_time: float | None = None,
+        subject_aliases: Mapping[tuple[str, str], Sequence[str]] | None = None,
     ) -> list[MemoryItem]:
+        """Filter ledger facts first, then rank text within those identities.
+
+        Times cover creation of a ledger record, with an exclusive end. Aliases
+        must come from the caller's same-scene participant facts; they help find
+        records but never replace a subject ID or establish a new relationship.
+        """
         if type(limit) is not int or limit < 1:
             raise ValueError('Memory search requires a positive integer limit')
+        for value in (start_time, end_time):
+            if value is not None and (type(value) not in {int, float} or not math.isfinite(value)):
+                raise ValueError('Memory time bounds must be finite timestamps')
+        if start_time is not None and end_time is not None and start_time >= end_time:
+            raise ValueError('Memory end_time must be later than start_time')
         scopes = list(dict.fromkeys(allowed_scopes))
         if not scopes:
             return []
@@ -94,14 +111,48 @@ class MemoryStore:
         if kind is not None:
             sql += " AND kind=?"
             params.append(kind)
-        if query:
-            sql += " AND statement LIKE ? ESCAPE '\\'"
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            params.append(f"%{escaped}%")
-        sql += " ORDER BY created_at DESC,id LIMIT ?"
-        params.append(limit)
-        rows = await (await self._db.execute(sql, params)).fetchall()
-        return [memory_from_row(row) for row in rows]
+        if start_time is not None:
+            sql += " AND created_at>=?"
+            params.append(start_time)
+        if end_time is not None:
+            sql += " AND created_at<?"
+            params.append(end_time)
+        sql += " ORDER BY created_at DESC,id"
+        if not query or not query.strip():
+            rows = await (await self._db.execute(sql + " LIMIT ?", [*params, limit])).fetchall()
+            return [memory_from_row(row) for row in rows]
+
+        address_sql = f"""SELECT scope,subject,statement FROM memories
+            WHERE scope IN ({','.join('?' for _ in scopes)}) AND kind='address'
+              AND basis='reported' AND status='active' AND (expires_at IS NULL OR expires_at>?)"""
+        address_params: list[Any] = [*scopes, self.clock()]
+        if subject is not None:
+            address_sql += " AND subject=?"
+            address_params.append(subject)
+        address_terms: dict[tuple[str, str], list[str]] = {}
+        async with self._db.execute(address_sql, address_params) as cursor:
+            async for scope, identity, statement in cursor:
+                address_terms.setdefault((scope, identity), []).append(statement)
+
+        # Only retain the requested number of best matches while visiting the
+        # already scoped/type/time/status-filtered ledger. No hidden recent-row
+        # cutoff can prevent an older but more relevant fact from being found.
+        ranked: list[tuple[tuple[int, ...], float, str, MemoryItem]] = []
+        async with self._db.execute(sql, params) as cursor:
+            async for row in cursor:
+                memory = memory_from_row(row)
+                identity = (memory.scope, memory.subject)
+                aliases = tuple(subject_aliases.get(identity, ())) if subject_aliases else ()
+                score = rank_discovery(query, name=memory.subject, aliases=aliases,
+                    keywords=tuple(address_terms.get(identity, ())), description=memory.statement)
+                if score is None:
+                    continue
+                entry = (score, memory.created_at, memory.id, memory)
+                if len(ranked) < limit:
+                    heapq.heappush(ranked, entry)
+                else:
+                    heapq.heappushpop(ranked, entry)
+        return [entry[3] for entry in sorted(ranked, reverse=True)]
 
     async def get_memory_in_scopes(self, memory_id: str, allowed_scopes: list[str]) -> MemoryItem | None:
         scopes = list(dict.fromkeys(allowed_scopes))

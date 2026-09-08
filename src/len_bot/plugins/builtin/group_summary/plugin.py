@@ -1,8 +1,6 @@
 """Stage one normal work proposal or read its immutable current-group window."""
 from __future__ import annotations
 
-import json
-
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -18,6 +16,7 @@ class SummarizeArguments(BaseModel):
     start_at: AwareDatetime = Field(description="含明确时区的ISO日期时间；范围含起点")
     end_at: AwareDatetime = Field(description="含明确时区的ISO日期时间；范围不含终点")
     focus: str = Field(description="本次要关注的事件或话题；空字符串表示按主要事件组织")
+    request_source: str = Field(description="提出本次总结委托的已读人类消息M；据此确定请求人")
     evidence: list[str] = Field(min_length=1, description="本轮实际读过、明确要求总结的消息M引用")
 
     @field_validator("start_at", "end_at", mode="before")
@@ -56,22 +55,23 @@ class GroupSummaryPlugin(BasePlugin):
         self.service = GroupSummaryService(context.event_store, self.config)
         context.register_tool(
             "summarize_group_chat", "暂存当前群的时间范围总结工作；finish_turn提交后才启动。",
-            SummarizeArguments.model_json_schema(), self.summarize,
+            SummarizeArguments, self.summarize,
+            purpose="按明确请求总结本群已保存的聊天", aliases=("群总结", "总结群聊", "今天群里发生了什么"),
+            keywords=("群聊", "总结", "回顾", "聊天记录"),
             kind="proposal", roles=("conversation",))
         context.register_tool(
             "read_group_chat_window", "分页读取当前总结工作固定范围和快照内的本群原话；不能指定其它群或自行改范围。",
-            ReadWindowArguments.model_json_schema(), self.read_window,
+            ReadWindowArguments, self.read_window,
+            purpose="读取当前群总结工作固定范围的下一批原话", aliases=("群聊窗口",), keywords=("群总结", "原话", "分页"),
+            available=lambda call: call.job_id is not None and call.work_operation == 'group_summary',
             kind="read", roles=("work",))
 
-    async def summarize(self, arguments: dict, call: PluginCallContext) -> ToolResult:
-        values = SummarizeArguments.model_validate(arguments)
+    async def summarize(self, values: SummarizeArguments, call: PluginCallContext) -> dict:
         if call.ledger is None or call.role != "conversation":
             raise ValueError("总结提案只在当前对话Ledger中暂存")
         if call.scene_id != call.ledger.context.refs.scene_id or call.episode_id != call.ledger.episode_id:
             raise ValueError("总结提案不属于当前对话")
-        receipt = call.ledger.stage_group_summary(**values.model_dump())
-        return ToolResult(content=json.dumps(receipt, ensure_ascii=False), coverage="staged_proposal", evidence_kind="model")
+        return await call.ledger.stage_group_summary(**values.model_dump())
 
-    async def read_window(self, arguments: dict, call: PluginCallContext) -> ToolResult:
-        values = ReadWindowArguments.model_validate(arguments)
+    async def read_window(self, values: ReadWindowArguments, call: PluginCallContext) -> ToolResult:
         return await self.service.read_window(values.cursor, call)

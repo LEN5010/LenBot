@@ -4,7 +4,7 @@ import logging
 import re
 from html import unescape
 from html.parser import HTMLParser
-from typing import Any
+from pydantic import BaseModel, ConfigDict, Field
 from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
 
@@ -81,6 +81,16 @@ class _MediaLinks(HTMLParser):
                 self.pdfs.append(url)
 
 
+class WebSearchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    query: str = Field(min_length=1, max_length=500, pattern=r"\S", description="搜索关键词；可包含 site: 官方域名限定")
+
+
+class ReadPageArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    url: str = Field(pattern=r"^https?://[^\s/?#]+(?:[/?#][^\s]*)?$", description="完整 HTTP(S) 网页、文本或 PDF 地址")
+
+
 class WebSearchToolPlugin(BasePlugin):
     def __init__(self, *, config: dict, enabled: bool):
         super().__init__(manifest=PluginManifest(
@@ -105,26 +115,18 @@ class WebSearchToolPlugin(BasePlugin):
         context.register_tool(
             name="web_search",
             description="通过Bing联网搜索，返回标题、链接与摘要。保留问题中的公司、型号与时间；摘要用于定位原始来源，可在query中使用site:限定官方站点。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"}
-                },
-                "required": ["query"]
-            },
+            parameter_model=WebSearchArguments,
+            purpose="搜索公开网页与来源", aliases=("联网搜索", "网页搜索", "上网查"),
+            keywords=("搜索", "联网", "网页", "资料", "官方", "查询"),
             handler=self._web_search,
             kind="read", roles=("work",),
         )
         context.register_tool(
             name="read_page",
             description="读取网页、文本、JSON或PDF文本，保留图表和PDF链接。长内容用read_tool_result续读；图表数值或PDF页面排版用read_web_media查看原图。需登录或仅脚本渲染的页面可能不可读。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "要读取的网页地址"}
-                },
-                "required": ["url"]
-            },
+            parameter_model=ReadPageArguments,
+            purpose="读取网页与 PDF 正文", aliases=("读网页", "读PDF", "读取链接"),
+            keywords=("网页", "原文", "正文", "链接", "PDF", "文档"),
             handler=self._read_page,
             kind="read", roles=("work",),
         )
@@ -132,10 +134,8 @@ class WebSearchToolPlugin(BasePlugin):
     async def on_unload(self) -> None:
         await self._client.aclose()
 
-    async def _web_search(self, args: dict[str, Any], call_context: PluginCallContext) -> ToolResult:
-        query = str(args.get("query", "")).strip()
-        if not query or len(query) > 500:
-            return ToolResult.failure("query须为1至500字符。", "invalid_arguments")
+    async def _web_search(self, args: WebSearchArguments, call_context: PluginCallContext) -> ToolResult:
+        query = args.query
         max_results = self.manifest.config["max_results"]
 
         resp = await self._client.get(SEARCH_URL, params={"q": query, "format": "rss"})
@@ -172,10 +172,8 @@ class WebSearchToolPlugin(BasePlugin):
             return ToolResult(status='no_results', content='此次检索没有与原查询相符的结果；保留原对象，不能推断现实不存在。', evidence_kind='external')
         return ToolResult(content="\n".join(lines), sources=sources, evidence_kind="external", coverage="search_snippets")
 
-    async def _read_page(self, args: dict[str, Any], call_context: PluginCallContext) -> ToolResult:
-        url = str(args.get("url", "")).strip()
-        if not url.startswith(("http://", "https://")):
-            return ToolResult.failure("read_page requires an absolute http(s) URL.", "invalid_arguments")
+    async def _read_page(self, args: ReadPageArguments, call_context: PluginCallContext) -> ToolResult:
+        url = args.url
 
         # Apply the existing allowed public-network URL policy before reading.
         allowed, reason = validate_url(url)
@@ -186,6 +184,9 @@ class WebSearchToolPlugin(BasePlugin):
         final_url, headers, body = await fetch_public(self._client, url, max_bytes=MAX_PDF_BYTES)
         media_type = headers.get("content-type", "").split(";")[0].lower()
         source = ToolSource(url=final_url)
+        if media_type.startswith('image/'):
+            return ToolResult(status='unsupported', content='资源是图片，当前正文工具没有采用像素或登记可发送资产；请把来源URL交read_web_media读取原图。',
+                sources=[source], evidence_kind='external', error_code='image_requires_media_reader', coverage='image_url_only')
         if media_type == 'application/pdf' or body.startswith(b'%PDF-'):
             document = await read_pdf(body)
             content = (f"PDF共{document['page_count']}页，提取到第{document['pages_extracted']}页；以下为文本层，图表与列布局需用read_web_media指定页码核对。\n"

@@ -7,6 +7,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.cognition.agent_loop import _error_text
+from len_bot.cognition.jobs import JobChanged
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.call_store import estimate_request
 
@@ -21,7 +22,7 @@ def request_tokens(messages, tools):
 
 def exchange_spans(messages):
     """Return only whole assistant-call/tool-result groups; reject orphans."""
-    spans, index = [], 0
+    spans, index, seen_ids = [], 0, set()
     while index < len(messages):
         message = messages[index]
         if message.get("role") == "tool":
@@ -31,8 +32,12 @@ def exchange_spans(messages):
             ids = [call["id"] for call in calls]
             end = index + 1 + len(ids)
             group = messages[index+1:end]
-            if len(set(ids)) != len(ids) or len(group) != len(ids) or any(item.get("role") != "tool" for item in group) or {item.get("tool_call_id") for item in group} != set(ids):
+            if (any(not isinstance(ident, str) or not ident.strip() for ident in ids)
+                    or len(set(ids)) != len(ids) or seen_ids.intersection(ids)
+                    or len(group) != len(ids) or any(item.get("role") != "tool" for item in group)
+                    or [item.get("tool_call_id") for item in group] != ids):
                 raise ValueError("Incomplete or reordered native tool exchange")
+            seen_ids.update(ids)
             spans.append((index, end))
             index = end
         else:
@@ -179,43 +184,53 @@ class WorkCompressor:
         self.runtime, self.job_id, self.scene_id, self.revision = runtime, job_id, scene_id, revision
         self.charge, self.exchange_count = charge, exchange_count
 
-    async def prepare(self, messages, tools):
+    async def prepare(self, messages, tools, *, reserved=()):
         config, store = self.runtime.config, self.runtime.event_store
         input_budget = config.job_context_tokens - config.work_output_tokens
-        before = request_tokens(messages, tools)
+        def cost(candidate):
+            return request_tokens([*candidate,*reserved],tools)
+        before = cost(messages)
         if before <= input_budget * config.job_compress_trigger:
             return None
         candidate = copy.deepcopy(messages)
         spans = exchange_spans(candidate)
         job = await store.get_job(self.job_id, self.scene_id)
+        if not job or job['revision'] != self.revision or job['status'] != 'processing':
+            raise JobChanged('Work changed before context compression')
         required = set((job["work_state"] or {}).get("key_result_ids", []))
         # Archive old long bodies first. The most recent exchanges stay native.
         for start, end in spans[:-2]:
-            calls = {call["id"]: call for call in candidate[start]["tool_calls"]}
             for message in candidate[start+1:end]:
                 try:
                     result = json.loads(message["content"])
                 except (ValueError, TypeError):
                     continue
-                if result.get("result_id") and result["result_id"] not in required and len(result.get("content", "")) > 900:
-                    call = calls[message["tool_call_id"]]
-                    arguments = json.loads(call["function"]["arguments"])
-                    offset = arguments.get("offset", 0) if call["function"]["name"] == "read_tool_result" else 0
-                    read_end = offset + len(result["content"])
-                    result["content"] = (result["content"][:600] + f"\n本完整工具交换实际读取了原始正文字符 [{offset},{read_end})；"
-                        f"此处仅保留节选，全文已归档。精确内容用 read_tool_result(result_id, offset={offset}) 回读；next_offset 仍表示原已读页后的续读位置。")
+                if (isinstance(result, dict) and result.get("result_id") and result["result_id"] not in required
+                        and isinstance(result.get('content'), str) and len(result['content']) > 900):
+                    displayed = result.get('displayed_range')
+                    unit = result.get('coordinate_unit', 'characters')
+                    offset = displayed['start'] if displayed else 0
+                    prior = (f"此回执原展示范围为 {unit} [{displayed['start']},{displayed['end']}) / {displayed['total']}。"
+                             if displayed else '此历史回执未记录展示范围。')
+                    result['content'] = prior + '正文已外置，此处只保留定位；实际采用范围见 observation_reads，精确内容按 next_call 回读。'
+                    result['coverage'] = 'result_locator; archived_body'
+                    result['displayed_range'] = None
+                    result['next_offset'] = offset
+                    result['next_call'] = {'name': 'read_tool_result', 'arguments': {
+                        'result_id': result['result_id'], 'offset': offset,
+                        'limit': config.tool_result_page_chars, 'coordinate_unit': unit}}
                     result["truncated"] = True
                     message["content"] = json.dumps(result, ensure_ascii=False)
-        if request_tokens(candidate, tools) <= input_budget * config.job_compress_target:
+        if cost(candidate) <= input_budget * config.job_compress_target:
             messages[:] = candidate
             return None
         if len(spans) < 3:
-            if request_tokens(candidate, tools) > input_budget:
+            if cost(candidate) > input_budget:
                 raise JobContextExhausted("没有可压缩的完整旧工具区间，资料引用保留")
             messages[:] = candidate
             return None
         if job["model_steps"] >= config.job_max_steps - 1:
-            if request_tokens(candidate, tools) > input_budget:
+            if cost(candidate) > input_budget:
                 raise JobContextExhausted("剩余工作预算仅可终结，不能额外压缩")
             messages[:] = candidate
             return None
@@ -223,10 +238,10 @@ class WorkCompressor:
         if compression.get("status") == "failed":
             raise JobContextExhausted(compression["error"])
         start = spans[0][0]
-        compacted_before = request_tokens(candidate, tools)
+        compacted_before = cost(candidate)
         start_exchange = self.exchange_count() - len(spans) + 1
         if any(item["end_exchange"] >= start_exchange for item in compression["segments"]):
-            if request_tokens(candidate, tools) > input_budget:
+            if cost(candidate) > input_budget:
                 raise JobContextExhausted("旧区间已压缩，不能反复总结同一段")
             messages[:] = candidate
             return None
@@ -265,12 +280,14 @@ class WorkCompressor:
             replacement = {"role": "user", "content": "旧工作区间摘要（非新增证据，原资料按 result_id 回读）：" + json.dumps(entry, ensure_ascii=False)}
             candidate[start:end] = [replacement]
             synchronize_image_window(candidate, config.max_context_images)
-            after = request_tokens(candidate, tools)
+            after = cost(candidate)
             if after >= compacted_before or after > input_budget:
                 raise JobContextExhausted("工作压缩未形成有效可用窗口")
             compression = {"segments": [*compression["segments"], entry], "status": "ready", "error": None}
             await store.save_job_compression(self.job_id, self.scene_id, self.revision, compression, trajectory=candidate)
             messages[:] = candidate
+        except JobChanged:
+            raise
         except Exception as error:
             compression = {**compression, "status": "failed", "error": f"工作压缩失败：{_error_text(error)}"}
             await store.save_job_compression(self.job_id, self.scene_id, self.revision, compression)

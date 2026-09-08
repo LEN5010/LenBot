@@ -3,6 +3,8 @@ import asyncio
 import json
 import logging
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from len_bot.events.models import Event, EventType
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
@@ -11,6 +13,11 @@ from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
 
 logger = logging.getLogger(__name__)
+
+
+class LiveStatusArguments(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    member: str | None = Field(min_length=1, description='已配置的监测成员名称或别名；null读取全部监测对象')
 
 
 class BilibiliLiveSensor(BasePlugin):
@@ -33,8 +40,8 @@ class BilibiliLiveSensor(BasePlugin):
         self.context = context
         self.runtime = context._runtime
         context.register_tool('get_live_status', '读取配置监测对象的实际直播状态及采样时间；member=null表示全部监测对象。',
-            {'type': 'object', 'properties': {'member': {'type': ['string', 'null']}},
-             'required': ['member'], 'additionalProperties': False}, self.get_status,
+            LiveStatusArguments, self.get_status,
+            purpose='查询实际直播状态', aliases=('开播状态', '谁在直播'), keywords=('直播', '开播', '下播', '房间', '状态'),
             kind='read', roles=('conversation', 'work'))
         if self.manifest.enabled:
             await self.on_enable()
@@ -114,8 +121,8 @@ class BilibiliLiveSensor(BasePlugin):
         if not sample.is_live or sample.room_id != room_id or sample.started_at != started_at:
             raise ValueError('源已不再报告该直播场次，停止旧邀请')
 
-    async def get_status(self, arguments, call_context):
-        name = arguments['member']
+    async def get_status(self, arguments: LiveStatusArguments, call_context):
+        name = arguments.member
         members = self.runtime.scene_policy.monitored_members()
         if name is not None:
             members = [member for member in members if name == member.name or name in member.aliases]

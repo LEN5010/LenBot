@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from len_bot.config_store import MemberSettings
 
 
+class DynamicsLookupError(ValueError):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class SourceSnapshot:
     data: dict
@@ -51,7 +57,7 @@ class DynamicsClient:
         matches = [member for member in self.members
                    if key in {member.name.casefold(), *(alias.casefold() for alias in member.aliases)}]
         if len(matches) != 1:
-            raise ValueError("Unknown or ambiguous configured dynamics member; use null explicitly for all members")
+            raise DynamicsLookupError("找不到唯一的已配置动态成员；请保留原对象并使用已配置名称或别名，只有明确查询全员才填null。", "member_not_found")
         return "uid:" + str(matches[0].bilibili_uid)
 
     async def _request(self, endpoint: str, params: dict[str, Any], response_type, *, ttl: float,
@@ -93,22 +99,23 @@ class DynamicsClient:
             ttl=self.config.on_this_day_cache_ttl_seconds)
 
     async def fanart(self, *, query: str | None, character: str | None, content_type: str | None,
-                     category: str | None, kind: str | None, cursor: str | None, random: bool):
+                     category: str | None, kind: str | None, cursor: str | None, random: bool,
+                     sort: str | None, limit: int):
         params = {"q": query, "character": character, "contentType": content_type, "category": category,
-                  "kind": kind, "cursor": cursor, "limit": 1 if random else self.config.default_limit}
+                  "kind": kind, "cursor": cursor, "limit": limit}
         if random:
             params["random"] = 1
         else:
-            params["sort"] = self.config.fanart_sort
+            params["sort"] = sort
         return await self._request("/fanart", params, RandomFanartPage if random else FanartPage,
             ttl=self.config.cache_ttl_seconds, cache=not random)
 
     def read_obtained_dynamic(self, dynamic_id: str) -> SourceSnapshot:
         snapshot = self._records.get(dynamic_id)
         if snapshot is None:
-            raise ValueError("This source record has not been retrieved; query latest dynamics or search first")
+            raise DynamicsLookupError("尚未取得这条源记录。请先用get_asoul_dynamics或search_asoul_dynamics读取包含该dynamic_id的列表；当前工具没有独立详情接口。", "source_record_not_obtained")
         if time.time() >= snapshot.expires_at:
-            raise ValueError("This source record is stale; refresh the original list query before reading it")
+            raise DynamicsLookupError("这条已取得记录已过期；请沿原成员与筛选条件刷新列表后再回读，不能把旧缓存视为最新动态。", "source_record_stale")
         # This is the same source-provided record, not a fabricated full-detail API.
         return snapshot
 
