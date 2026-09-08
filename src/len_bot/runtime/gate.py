@@ -82,7 +82,6 @@ class RuntimeGate:
         current_scene_state: SceneSession,
         proposal_commit: Optional[ProposalCommit] = None,
         scene_commit: dict | None = None,
-        bounded_chat: bool = False,
         operator_control: bool = False,
     ) -> GateDecision:
         if proposal_commit is None:
@@ -102,28 +101,13 @@ class RuntimeGate:
                 and not self.scene_policy.chat_allowed(current_scene_state.scene_id, mailbox.requester_qq_uid)):
             return GateDecision(FinalDisposition.SILENCE, 'This requester no longer has chat eligibility in this group', accepted=False)
 
-        # 1. Freshness Validation (Serialized through SceneActor single-writer queue)
+        # SceneActor owns input freshness; Gate still honors explicit cancellation.
         if mailbox.is_cancelled():
             reason = mailbox.cancellation_reason() or "Episode cancelled by steering"
             logger.info("Gate rejected response due to cancellation: %s", reason)
             if self.metrics:
                 self.metrics.inc_social("cancellations_honored")
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
-
-        if mailbox.has_follow_up() and not bounded_chat:
-            logger.info("Gate rejected response due to pending follow-up superseding this outcome")
-            return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome", accepted=False)
-
-        # Unread inputs invalidate a control or fulfilment candidate.
-        if mailbox.has_unseen_interim() and not bounded_chat:
-            logger.info("Gate rejected response due to unread interim events (semantic staleness)")
-            if self.metrics:
-                self.metrics.inc_social("stale_outcomes_rejected")
-            return GateDecision(
-                FinalDisposition.SILENCE,
-                "Gate rejected stale response: unread interim events arrived during deliberation",
-                accepted=False
-            )
 
         if outcome.disposition == FinalDisposition.ACTION:
             if len(outcome.message_proposals) > MAX_MESSAGES_PER_OUTCOME:

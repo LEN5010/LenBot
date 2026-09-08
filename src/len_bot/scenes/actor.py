@@ -175,7 +175,6 @@ class SceneActor:
         record_scanned_event(candidate, event.id, rowid)
         self.session = candidate
         event.metadata['_rowid'] = rowid
-        if self._active_mailbox: self._active_mailbox.post(event)
         if self.on_state_updated: await self.on_state_updated(candidate, event)
 
     async def _commit_turn(self, item):
@@ -225,7 +224,7 @@ class SceneActor:
         if item.outcome.memory_proposals: candidate.knowledge_revision += 1
         decision = await item.gate.evaluate_and_commit(item.outcome, item.mailbox, state,
             scene_commit={'event': event, 'scene_state_data': candidate.model_dump(), 'advance_session_observation': False},
-            bounded_chat=bounded, operator_control=item.operator)
+            operator_control=item.operator)
         if decision.accepted:
             self.session = candidate
         return decision
