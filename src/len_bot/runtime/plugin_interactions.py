@@ -122,6 +122,7 @@ def _mailbox(runtime, event, kind):
 async def handle_calendar_command(runtime, event):
     mailbox = _mailbox(runtime, event, 'command')
     audit = {'command_id': mailbox.command_id, 'source_event_id': event.id, 'episode_id': mailbox.episode_id}
+    decision = None
     try:
         await validate_native_origin(runtime, mailbox, event.scene_id)
         plugin = runtime.plugin_host.get_plugin('asoul_calendar')
@@ -130,12 +131,15 @@ async def handle_calendar_command(runtime, event):
         decision = await _commit_expression(runtime, event, mailbox, [MessageSegment(type='image', asset_id=asset['id'])])
         audit.update({'state': 'committed', 'action_ids': decision.action_ids,
                       'schedule': result.schedule.model_dump(mode='json'), 'asset_id': asset['id']})
+        await runtime.runtime_gate.publish_committed(decision, mailbox)
     except asyncio.CancelledError:
         audit.update(state='interrupted')
         raise
     except Exception as error:
         audit.update(state='failed', error=str(error), error_type=type(error).__name__)
     finally:
+        if decision and decision.accepted:
+            audit.update(state='committed', gate=decision.record())
         await runtime.event_store.save_trace(kind='calendar_command', scene_id=event.scene_id,
             ref_id=event.id, payload=audit)
 
@@ -144,6 +148,7 @@ async def handle_live_announcement(runtime, event):
     mailbox = _mailbox(runtime, event, 'announcement')
     audit = {'source_event_id': event.id, 'member': event.payload['member'],
              'episode_id': mailbox.episode_id, 'state': 'generating'}
+    decision = None
     terminal = {'type': 'function', 'function': {'name': 'finish_announcement',
         'description': '提交当前订阅群这一场真实开播的邀请正文。',
         'parameters': {'type': 'object', 'properties': {'text': {'type': 'string', 'minLength': 1}},
@@ -170,6 +175,7 @@ async def handle_live_announcement(runtime, event):
             return trajectory
 
         async def finish(arguments):
+            nonlocal decision
             if set(arguments) != {'text'} or not isinstance(arguments['text'], str) or not arguments['text'].strip():
                 raise ValueError('公告需要一段非空正文')
             decision = await _commit_expression(runtime, event, mailbox,
@@ -187,13 +193,16 @@ async def handle_live_announcement(runtime, event):
                     execute_tool=execute, terminal=terminal, finish=finish,
                     max_steps=config.announcement_max_steps, max_tool_calls=config.announcement_max_tool_calls,
                     prepare_request=prepare_request, trace=audit)
+        await runtime.runtime_gate.publish_committed(decision, mailbox)
     except asyncio.CancelledError:
         audit.update(state='interrupted')
         raise
     except Exception as error:
         audit.update(state='failed', error=str(error), error_type=type(error).__name__)
     finally:
+        if decision and decision.accepted:
+            audit.update(state='committed', gate=decision.record())
         await runtime.event_store.set_model_call_disposition(mailbox.episode_id,
-            'expression' if audit['state'] == 'committed' else 'rejected')
+            'expression' if decision and decision.accepted else 'rejected')
         await runtime.event_store.save_trace(kind='live_announcement', scene_id=event.scene_id,
             ref_id=event.id, payload=audit)

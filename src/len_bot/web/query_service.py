@@ -546,6 +546,10 @@ class RuntimeQueryService:
         item=dict(item);payload=RuntimeQueryService._public(json.loads(item.pop("payload")))
         conversation=payload.get("conversation") or {}
         result = payload.get("result") or {}
+        gate = payload.get('gate') or {}
+        publication = gate.get('publication') or {}
+        item['committed'] = gate.get('committed')
+        item['publication_status'] = publication.get('status')
         item["summary"]=(payload.get("error") or result.get("decision_reason") or result.get("reason")
                          or conversation.get("failure_reason") or result.get("summary") or payload.get("kind") or item["kind"])[:300]
         item["result_status"] = result.get("status")
@@ -555,6 +559,11 @@ class RuntimeQueryService:
             item["summary"] = f"{label} · {state} · {payload.get('member') or payload.get('command_id', '')}"
             if payload.get("error"):
                 item["summary"] += " · " + payload["error"][:200]
+        if gate.get('committed') and publication.get('status') in {'failed', 'interrupted'}:
+            state = '发布失败' if publication['status'] == 'failed' else '发布中断'
+            item['summary'] = f"已提交，{state} · {publication.get('phase')} · {publication.get('error')}"[:300]
+        elif gate.get('committed') and item['kind'] == 'conversation_error':
+            item['summary'] = '已提交，后续处理异常 · ' + item['summary']
         calls = [call for run in RuntimeQueryService._trace_runs(item["kind"], payload)
                  for step in run.get("steps", []) for call in step.get("tool_calls", [])]
         observations = [call.get("observation_status") or (call.get("observation") or {}).get("status") for call in calls]
@@ -682,7 +691,12 @@ class RuntimeQueryService:
                 OR (kind IN ('calendar_command','live_announcement') AND EXISTS(
                     SELECT 1 FROM json_each(payload,'$.action_ids') WHERE value=?)))
                 ORDER BY created_at DESC,id DESC LIMIT 1""",[scene_id,action_id,action_id])
-            if not receipts and not approvals and not deliveries:return None
+            committed_actions=await self._rows("""SELECT id FROM events WHERE scene_id=?
+                AND event_type='CONVERSATION_COMMITTED'
+                AND EXISTS(SELECT 1 FROM json_each(payload,'$.action_ids') WHERE value=?)""",[scene_id,action_id])
+            if not receipts and not approvals and not deliveries and not committed_actions:return None
+            event_ids.update(item['id'] for item in committed_actions)
+            episode_ids.update(item['id'][5:] for item in committed_actions)
             job_ids.update(item["id"] for item in deliveries)
             for item in approvals:
                 if item["kind"] in {"calendar_command", "live_announcement"}:
@@ -703,6 +717,8 @@ class RuntimeQueryService:
             membership("json_extract(payload,'$.action_id')",action_ids)],"rowid DESC","events")
         for event in commits:
             event_ids.add(event["id"]);payload=json.loads(event["payload"])
+            if event['event_type'] == 'CONVERSATION_COMMITTED':
+                action_ids.update(payload.get('action_ids', []))
             if event["event_type"]=="CONVERSATION_COMMITTED" and event["id"].startswith('turn:'):
                 episode_ids.add(event["id"][5:]);event_ids.update(payload.get("source_event_ids",[]))
                 event_ids.update(payload.get("handled_source_event_ids", []))
@@ -781,7 +797,29 @@ class RuntimeQueryService:
         actions={ident:{"id":ident,"scene_id":scene_id,"episode_id":None,"job_id":None,"origin_mode":None,
                         "job_revision":None,"origin_event_id":None,"request_source_event_id":None,"requester_qq_uid":None,
                         "acknowledges_task_id":None,"fulfils_task_id":None,
-                        "delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in sorted(action_ids)}
+                        "publication_status":None,"delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in sorted(action_ids)}
+        for event in event_views:
+            if event['event_type'] != 'CONVERSATION_COMMITTED':
+                continue
+            payload = event['payload']
+            for ident, message in zip(payload.get('action_ids', []), payload.get('outcome', {}).get('message_proposals', [])):
+                if ident in actions:
+                    actions[ident].update(episode_id=event['id'][5:], commit_event_id=event['id'],
+                        origin_event_id=message.get('source_event_id') or payload.get('origin_event_id'),
+                        requester_qq_uid=message.get('requester_qq_uid'),
+                        job_id=message.get('job_id'), job_revision=message.get('job_revision'),
+                        operation_ref=message.get('operation_ref'), fulfils_task_id=message.get('fulfils_task_id'))
+        for row in reversed(trace_rows):
+            payload = json.loads(row['payload'])
+            gate = payload.get('gate') or {}
+            publication = gate.get('publication') or {}
+            for published in publication.get('actions', []):
+                action = actions.get(published['action_id'])
+                if action is not None:
+                    action.update({key: published.get(key) for key in ('origin_event_id', 'requester_qq_uid',
+                        'job_id', 'job_revision', 'operation_ref', 'fulfils_task_id', 'acknowledges_task_id')})
+                    action.update(publication_status=published['status'], publication_phase=publication.get('phase'),
+                        publication_error=publication.get('error'), commit_event_id=gate.get('commit_event_id'))
         for job in jobs:
             if job.get("delivery_action_id") in actions:
                 actions[job["delivery_action_id"]].update(job_id=job["id"], request_source_event_id=job.get("request_source_event_id"))

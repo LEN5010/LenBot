@@ -6,11 +6,22 @@ import sys
 from len_bot.config_store import ConfigStore
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.adapters.onebot import OneBotAdapter
+from len_bot.tools.results import error_message
+
+
+class HTTPRequestLogFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = error_message(record.getMessage())
+        record.args = ()
+        return True
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+for http_logger in ('httpx', 'httpx2'):
+    logging.getLogger(http_logger).addFilter(HTTPRequestLogFilter())
 logger = logging.getLogger("len_bot")
 
 async def run_app():

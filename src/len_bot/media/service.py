@@ -18,7 +18,7 @@ from len_bot.media.models import PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
-from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
+from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource, error_message, error_source_url
 
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 
@@ -162,7 +162,11 @@ class MediaService:
             "coverage": "first_frame" if animated else "image", "width": width, "height": height}
 
     @staticmethod
-    def _media_error(asset_id, error):
+    def _media_error(asset_id, error, *, source_url=None):
+        error_type = type(error).__name__
+        http_status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+        if isinstance(error, (httpx.HTTPStatusError, httpx.RequestError)):
+            source_url = str(error.request.url)
         if isinstance(error, (httpx.TimeoutException, TimeoutError)):
             code, reason = 'timeout', f'本次媒体读取超时：{error}'
         elif isinstance(error, httpx.HTTPStatusError):
@@ -175,8 +179,11 @@ class MediaService:
         elif isinstance(error, OSError):
             code, reason = 'media_io_error', f'媒体文件读写失败：{error}'
         else:
-            code, reason = 'media_unavailable', f'媒体读取失败：{type(error).__name__}: {error}'
-        return {"asset_id": asset_id, "status": "error", "error_code": code, "reason": reason}
+            code, reason = 'media_unavailable', f'媒体读取失败：{error}'
+        return {"asset_id": asset_id, "status": "error", "error_code": code, "error_type": error_type,
+                "error_stage": "execution", "http_status": http_status,
+                "source_url": error_source_url(source_url) if source_url else None,
+                "reason": error_message(f'{error_type}: {reason}')}
 
     async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
@@ -208,7 +215,10 @@ class MediaService:
             _, manifest = await self._prepare_asset(asset_id, scene_id)
         except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
             failure = self._media_error(asset_id, error)
-            return ToolResult.failure(failure["reason"], failure["error_code"])
+            return ToolResult.failure(failure["reason"], failure["error_code"], stage='execution',
+                tool_name='read_media', http_status=failure['http_status'],
+                sources=[ToolSource(url=failure['source_url'], title='本次媒体读取来源')]
+                if failure['source_url'] else [])
         manifest['status'] = 'prepared'
         manifest['note'] = '图片已取得并准备；是否进入当前模型以本次请求的图片清单为准。'
         return ToolResult(content=json.dumps(manifest, ensure_ascii=False), attachments=[asset_id],
@@ -236,13 +246,17 @@ class MediaService:
                 else:
                     if page is not None:
                         return ToolResult(status='error', error_code='invalid_arguments', evidence_kind='external',
-                            content='仅PDF支持page页码；图片请省略page或填null。', sources=[ToolSource(url=final_url)]), []
+                            error_stage='arguments', tool_name='read_web_media',
+                            content='仅PDF支持page页码；图片请省略page或填null。',
+                            sources=[ToolSource(url=error_source_url(final_url))]), []
                     description, source_url, coverage = '网页原始图片', final_url, 'web_image'
                 mime, path = await self._store_bytes(data)
         except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError, TimeoutError) as error:
-            failure = self._media_error(None, error)
+            failure = self._media_error(None, error, source_url=url)
             return ToolResult(status='error', content=failure['reason'], error_code=failure['error_code'],
-                sources=[ToolSource(url=url)], evidence_kind='external'), []
+                error_stage='execution', tool_name='read_web_media', http_status=failure['http_status'],
+                sources=[ToolSource(url=failure['source_url'], title='本次媒体读取来源')]
+                if failure['source_url'] else [], evidence_kind='external'), []
         result = ToolResult(content=description+'已取得并验证，资产随本次观察登记，attachments提供场景资产引用，可用read_media回读。'
             '像素是否装入以当前请求的图片清单为准；动图只采用首帧，未识别或未覆盖的细节不能当作已核实。',
             sources=[ToolSource(url=source_url, title=description)], evidence_kind='external', coverage=coverage,
