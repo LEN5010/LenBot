@@ -602,20 +602,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             (scene_id, str(message_id), json.dumps(list(read_event_ids))))).fetchone()
         return row[0] if row else None
 
-    async def conversation_input_ids_since(self, scene_id, after_rowid, through_rowid, bot_actor_id):
-        from len_bot.runtime.attention import HUMAN_INPUTS, RUNTIME_INPUTS
-        types = [kind.value for kind in HUMAN_INPUTS | RUNTIME_INPUTS | {EventType.MESSAGE_SENT}]
-        rows = await (await self._db.execute("""SELECT id FROM events WHERE scene_id=? AND rowid>? AND rowid<=?
-            AND event_type IN (SELECT value FROM json_each(?))
-            AND NOT (event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED') AND actor_id=?)
-            AND COALESCE(json_extract(metadata,'$.obsolete_task_wake'),0)=0
-            AND COALESCE(json_extract(metadata,'$.obsolete_job_result'),0)=0
-            AND COALESCE(json_extract(metadata,'$.conversation_excluded'),0)=0
-            AND (event_type!='REFLECTION_RECORDED' OR json_extract(metadata,'$.needs_review')=1)
-            AND NOT (event_type='TASK_DUE' AND COALESCE(json_extract(payload,'$.payload.kind'),'')='agent_job')""",
-            (scene_id, after_rowid, through_rowid, json.dumps(types), bot_actor_id))).fetchall()
-        return {row[0] for row in rows}
-
     async def events_by_ids(self, scene_id, event_ids, through_rowid):
         rows = await (await self._db.execute(
             'SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events '

@@ -79,7 +79,6 @@ class SceneActor:
     def acquire_episode_lease(self, episode_id, mailbox):
         if self._active_mailbox is not None:
             return False
-        mailbox.initial_observed_rowid = self.session.last_observed_event_rowid
         self._active_mailbox = mailbox
         return True
 
@@ -200,15 +199,8 @@ class SceneActor:
         bounded = not item.outcome.requires_fresh_input()
         read = set(item.source_event_ids)
         if not item.operator and not native_output and not bounded:
-            newer = await self.event_store.conversation_input_ids_since(
-                self.scene_id, item.through_rowid, state.last_observed_event_rowid, self.bot_actor_id)
-            if newer or any(wake.certain and wake.event_id not in read for wake in state.pending_wakes):
-                raise FreshInputConflict('Control or fulfilment proposal has unread scene input; nothing committed')
-        if not item.operator and not native_output and not bounded:
-            new_inputs = await self.event_store.conversation_input_ids_since(
-                self.scene_id, item.mailbox.initial_observed_rowid, state.last_observed_event_rowid, self.bot_actor_id)
-            if not new_inputs.issubset(read):
-                raise FreshInputConflict('Control or fulfilment proposal has partially unread new scene input; nothing committed')
+            if any(wake.certain and wake.event_id not in read for wake in state.pending_wakes):
+                raise FreshInputConflict('Control or fulfilment proposal has an unread certain wake; nothing committed')
         refs = set()
         for proposal in item.outcome.task_proposals + item.outcome.job_proposals:
             refs.update(proposal.source_event_ids)
