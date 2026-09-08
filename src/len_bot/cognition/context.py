@@ -230,6 +230,55 @@ class ConversationContext:
         for name,value in snapshot.items():
             setattr(self,name,value)
 
+    async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=()):
+        """Share remaining request capacity across a complete native tool group.
+
+        The caller installs matching locator responses first. Trial pages never
+        grant read evidence; only accepted pages and their pixels are retained.
+        """
+        images = []
+
+        def cost(extra=()):
+            candidate = copy.deepcopy([*messages,*images,*extra,*reserved])
+            snapshot = self._projection_snapshot()
+            try:
+                self.limit_image_window(candidate)
+                return self.request_tokens(candidate, definitions())
+            finally:
+                self._restore_projection(snapshot)
+
+        self.check_request(copy.deepcopy([*messages,*reserved]), definitions())
+        for position,index in enumerate(indexes):
+            base = cost()
+            target = base + max(0, self.input_budget-base)//(len(indexes)-position)
+            original = messages[index]['content']
+            snapshot = self._projection_snapshot()
+            best, low, high = 0, 1, limits[position]
+            # Try the requested page first, then bound the page by actual token
+            # cost, including any newly exposed management schemas and pixels.
+            limit = high
+            while low <= high:
+                self._restore_projection(copy.deepcopy(snapshot))
+                page = await render(position, limit)
+                pixels = await self.attachments(page.attachments)
+                messages[index]['content'] = str(page)
+                fits = cost(pixels) <= target
+                if fits and page.error_code != 'page_too_small':
+                    best = limit
+                if fits:
+                    low = limit + 1
+                else:
+                    high = limit - 1
+                limit = (low+high)//2
+            self._restore_projection(snapshot)
+            messages[index]['content'] = original
+            if best:
+                page = await render(position, best)
+                images.extend(await self.attachments(page.attachments))
+                messages[index]['content'] = str(page)
+        messages.extend(images)
+        self.check_request(messages, definitions())
+
     async def pack_events(self, messages, events, current_ids, *, raw_tokens):
         """One assembler chooses raw fragments against the actual request cost."""
         current_ids = list(current_ids)
@@ -433,17 +482,18 @@ class ConversationContext:
         facts={key:value for key,value in {'work':job_views,'tasks':task_views,'open_loops':loop_views,'outbound':outbound}.items() if value}
         # Empty categories are omitted initially, but later disappearance must
         # explicitly supersede a state already shown in this native trajectory.
-        changes={key:[] for key in self._facts if key not in facts}
+        changes={key:value for key,value in facts.items() if self._facts.get(key) != value}
+        changes.update({key:[] for key in self._facts if key not in facts})
         self._facts=facts
-        if not facts and not changes:return None
+        if not changes:return None
         notes=['运行事实（更新此前对应状态，不是群友新消息或原话证据）：']
-        if job_views:
+        if changes.get('work'):
             notes.append('execution_status是执行结局；response_phase=result_ready仅表示等待对话处理，尚未交付。'
                          'failed/interrupted未完成，不能履约；partial保留未决项。can_resume可提出恢复，已用预算不重置。'
                          'result_refs是原始观察，单次算式或检索不等于完整论证；详细约束和预算可用query_jobs读取。'
                          '已有结果只有在当前原话明确承接或请求时才交付；无关新话题中保持待回应，不反复插入旧结果。')
-        if loop_views:notes.append('open_loops是实际送达后建立的等待回应。')
-        if outbound:
+        if changes.get('open_loops'):notes.append('open_loops是实际送达后建立的等待回应。')
+        if changes.get('outbound'):
             statuses={item['status'] for item in outbound}
             descriptions={'pending':'pending已获准但尚无回执，避免重复回答',
                           'sent':'sent为新到的真实送达回执',
@@ -451,7 +501,7 @@ class ConversationContext:
                           'unknown':'unknown无法确认是否送达，不自动重发',
                           'shadow':'shadow未实际发送', 'simulated_sent':'simulated_sent仅是模拟送达'}
             notes.append('；'.join(text for status,text in descriptions.items() if status in statuses)+'。')
-        return {'role':'user','content':'\n'.join([*notes,json.dumps({**facts,**changes},ensure_ascii=False)])}
+        return {'role':'user','content':'\n'.join([*notes,json.dumps(changes,ensure_ascii=False)])}
 
     async def build(self, events, current_ids, *, tool_definitions=None):
         config = self.runtime.config
