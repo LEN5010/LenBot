@@ -279,6 +279,9 @@ class AgentLoop:
                 except FreshInputConflict as exc:
                     terminal_trace["status"] = "fresh_input_conflict"
                     step["failure_reason"] = _error_text(exc)
+                    if step_index == max_steps - 1 or remaining == 1:
+                        audit["failure_reason"] = step["failure_reason"]
+                        raise
                     trajectory.append({"role": "tool", "tool_call_id": terminal_calls[0][0].id,
                                        "content": json.dumps({"error": "fresh_input_conflict", "committed": False,
                                                               "message": str(exc)}, ensure_ascii=False)})

@@ -28,7 +28,6 @@ class EpisodeMailbox:
         self.announcement_member: str | None = None
         self.source_started_at: float | None = None
         self.interaction_actors: set[str] = set()
-        self.initial_observed_rowid: int | None = None
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self._interim_events: list[Event] = []
         self._unconsumed_follow_ups: list[Event] = []
