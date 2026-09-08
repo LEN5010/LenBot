@@ -7,6 +7,7 @@ import StatusBadge from './StatusBadge.vue'
 import ObservationDetails from './ObservationDetails.vue'
 import BudgetDetails from './BudgetDetails.vue'
 import OperationReceipts from './OperationReceipts.vue'
+import { publicationActionLabel } from '../domain/activity.js'
 const props=defineProps({trace:{type:Object,required:true}})
 const isConversation=computed(()=>['conversation','conversation_error'].includes(props.trace.kind))
 const isNative=computed(()=>['calendar_command','live_announcement'].includes(props.trace.kind))
@@ -15,7 +16,10 @@ const runs=computed(()=>props.trace.kind.startsWith('agent_job')?props.trace.pay
 const steps=computed(()=>runs.value.flatMap((run,index)=>(run.steps || []).map(step=>({...step,run_revision:run.job_revision,run_index:index+1}))))
 const candidate=computed(()=>[...steps.value].reverse().find(step=>step.terminal_candidate)?.terminal_candidate || runs.value[0]?.terminal_candidate)
 const messages=computed(()=>props.trace.payload.result?.message_proposals || candidate.value?.messages || [])
-const decision=computed(()=>props.trace.payload.gate?.accepted===true?'Actor / Gate 已接受':props.trace.payload.gate?.accepted===false?'Actor / Gate 已拒绝':'没有提交回执')
+const decision=computed(()=>props.trace.payload.gate?.committed===true?'对话事务已提交':props.trace.payload.gate?.accepted===true?'Actor / Gate 已接受':props.trace.payload.gate?.accepted===false?'Actor / Gate 已拒绝':'没有提交回执')
+const publication=computed(()=>props.trace.payload.gate?.publication)
+const publicationState=computed(()=>({pending:'等待发布',completed:'发布步骤已完成',failed:'已提交，发布失败',interrupted:'已提交，发布中断',not_repeated:'此前已提交，本次未重复发布'})[publication.value?.status] || publication.value?.status)
+const publicationPhase=computed(()=>({not_started:'尚未开始',commit_acknowledgement:'等待提交回执时已取消',awaiting_publication:'等待前一轮完成发布',action_preparation:'组织待发消息',scheduler_schedule:'登记调度任务',scheduler_sync:'同步调度任务',action_enqueue:'消息入队',completed:'已完成',previous_commit:'已有提交'})[publication.value?.phase] || publication.value?.phase)
 const failure=computed(()=>props.trace.payload.error || props.trace.payload.failure_reason || runs.value.find(run=>run.failure_reason)?.failure_reason)
 const references=computed(()=>runs.value.map((run,index)=>({index:index+1,...(run.references || {})})).filter(run=>run.messages || run.results))
 const budgets=computed(()=>{
@@ -33,6 +37,16 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
     <v-alert v-if="failure" type="error" variant="tonal">{{ failure }}</v-alert>
     <div class="trace-facts"><span v-if="isConversation">{{ decision }}</span><span v-else-if="isNative">{{ nativeState }}</span><span v-else-if="trace.kind==='history_maintenance'">摘要与认识已提交</span><span v-else-if="trace.kind==='history_maintenance_error'">历史维护未完成</span><span v-else>执行记录 · 交付状态见行动回执</span><span class="muted">{{ fmtTime(trace.created_at) }}</span></div>
     <p v-if="trace.payload.gate?.reason" class="readable-copy">{{ trace.payload.gate.reason }}</p>
+    <section v-if="publication"><h3>{{ publicationState }}</h3>
+      <EntityLink v-if="trace.payload.gate.commit_event_id" type="event" :id="trace.payload.gate.commit_event_id" :scene-id="trace.scene_id" label="读取已提交事务" />
+      <p>发布阶段：{{ publicationPhase }}。实际送达以行动回执为准。</p>
+      <v-alert v-if="publication.error" type="error" variant="tonal">{{ publication.error_type }}：{{ publication.error }}</v-alert>
+      <p v-if="publication.scheduled_task_ids?.length">本次已登记的调度任务：{{ publication.scheduled_task_ids.join('、') }}</p>
+      <article v-for="action in publication.actions || []" :key="action.action_id" class="candidate-message">
+        <strong>第 {{ action.batch_index+1 }} 条 · {{ publicationActionLabel(action.status) }}</strong>
+        <div class="trace-links"><code>{{ action.action_id }}</code><EntityLink type="episode" :id="trace.payload.gate.commit_event_id?.slice(5)" :scene-id="trace.scene_id" label="同轮行动与回执" /><EntityLink v-if="action.origin_event_id" type="event" :id="action.origin_event_id" :scene-id="trace.scene_id" label="本条请求来源" /></div>
+      </article>
+    </section>
     <BudgetDetails v-for="item in budgets" :key="item.index" :budget="item.budget" :title="`执行段 ${item.index} 的预算快照`" />
     <OperationReceipts :items="trace.operation_receipts || []" :scene-id="trace.scene_id" />
     <section v-if="isConversation"><h3>终结候选</h3><p class="muted">候选表达与真实送达分别记录，下方内容不代表已经发到群聊。</p><article v-for="(message,index) in messages" :key="index" class="candidate-message"><span class="muted">第 {{ index+1 }} 条候选</span><p>{{ messageText(message) }}</p><div class="trace-links"><EntityLink v-if="messageSource(message)" type="event" :id="messageSource(message)" :scene-id="trace.scene_id" label="本条请求来源" /><span v-else-if="message.source" class="muted">本轮来源引用 {{ message.source }}，没有保存可回查的原话映射</span><span v-else class="muted">本条请求来源未记录</span><span v-if="message.requester_qq_uid">请求者 QQ {{ message.requester_qq_uid }}</span><v-chip v-if="message.operation_ref" size="small" variant="tonal">操作确认引用 {{ message.operation_ref }}</v-chip><span v-if="message.job_revision">消息绑定版本 {{ message.job_revision }}</span></div></article><p v-if="!messages.length">{{ candidate && Array.isArray(candidate.messages)?'本候选没有消息，表示模型选择沉默。':'没有可确认的消息候选。' }}</p><ResourceViewer v-if="trace.payload.result?.handled_source_event_ids" title="本轮提交处理的原话 ID" :content="trace.payload.result.handled_source_event_ids" /></section>

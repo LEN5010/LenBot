@@ -10,7 +10,7 @@ from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.agent_loop import FreshInputConflict
 from len_bot.events.models import Event, EventType
 from len_bot.memory.history import HistoryConflictError
-from len_bot.runtime.gate import GateDecision
+from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
 from len_bot.scenes.models import SceneSession
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
@@ -92,7 +92,23 @@ class SceneActor:
     async def commit_turn(self, outcome, through_rowid, source_event_ids, knowledge_revision, mailbox, gate, *, operator=False):
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(CommitCommand(outcome, through_rowid, source_event_ids, knowledge_revision, mailbox, gate, future, operator))
-        return await future
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # The Actor may already be committing in its independent worker.
+            # Recover that one decision; never repeat the transaction or send.
+            if not mailbox.is_cancelled():
+                mailbox.cancel('Caller cancelled while awaiting commit')
+            decision = await asyncio.shield(future)
+            if not decision.accepted:
+                raise
+            decision.publication.status = 'interrupted'
+            decision.publication.phase = 'commit_acknowledgement'
+            decision.publication.error = 'Caller cancelled while awaiting the committed turn'
+            decision.publication.error_type = 'CancelledError'
+            # The caller first receives the durable decision. Publication then
+            # propagates cancellation without preparing or enqueueing actions.
+            return decision
 
     async def commit_history(self, **kwargs):
         future = asyncio.get_running_loop().create_future()
@@ -221,7 +237,15 @@ class SceneActor:
             raise SceneCommitConflict(item.mailbox.cancellation_reason())
         event_id = 'turn:' + item.mailbox.episode_id
         if await self.event_store.event_exists(event_id, self.scene_id):
-            return GateDecision(FinalDisposition.SILENCE, 'Turn already committed', accepted=True)
+            saved = (await self.event_store.read_context(event_id, 0, 0, [self.scene_id]))[0]
+            outcome = EpisodeOutcome.model_validate(saved['payload']['outcome'])
+            decision = GateDecision(outcome.disposition, 'Turn already committed; publication is not repeated',
+                committed_proposal=CommittedProposal(episode_id=item.mailbox.episode_id,
+                    scene_id=self.scene_id, outcome=outcome))
+            decision.commit_event_id = event_id
+            decision.action_ids = saved['payload'].get('action_ids', [])
+            decision.publication = PublicationRecord(status='not_repeated', phase='previous_commit')
+            return decision
         state = self.session
         if not native_output and state.knowledge_revision != item.knowledge_revision:
             raise SceneCommitConflict('Knowledge revision changed')
@@ -270,6 +294,8 @@ class SceneActor:
             scene_commit={'event': event, 'scene_state_data': candidate.model_dump(), 'advance_session_observation': False},
             operator_control=item.operator)
         if decision.accepted:
+            # No Scheduler or Action publication runs inside this commit. The
+            # caller receives this durable decision after the Actor adopts it.
             self.session = candidate
         return decision
 

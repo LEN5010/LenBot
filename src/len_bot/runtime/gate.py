@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
-from typing import Optional, Any, Callable
+from dataclasses import asdict, dataclass, field
+from typing import Optional, Any, Callable, Literal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.scenes.models import SceneSession
@@ -32,6 +33,36 @@ class CommittedProposal:
     resolved_loop_ids: list[str] = field(default_factory=list)
     committed_memories: list[MemoryItem] = field(default_factory=list)
     outcome: Optional[EpisodeOutcome] = None
+    origin_mode: str = "live"
+    response_actor_ids: list[list[str]] = field(default_factory=list)
+    source_started_at: list[float | None] = field(default_factory=list)
+
+
+@dataclass
+class ActionPublication:
+    action_id: str
+    batch_index: int
+    origin_event_id: str | None
+    requester_qq_uid: str | None
+    job_id: str | None
+    job_revision: int | None
+    operation_ref: str | None
+    fulfils_task_id: str | None
+    acknowledges_task_id: str | None = None
+    status: Literal["not_enqueued", "enqueued", "enqueue_unknown"] = "not_enqueued"
+
+
+@dataclass
+class PublicationRecord:
+    status: Literal["pending", "completed", "failed", "interrupted", "not_repeated"] = "pending"
+    phase: Literal["not_started", "awaiting_publication", "action_preparation", "scheduler_schedule",
+                   "scheduler_sync", "action_enqueue", "completed", "previous_commit",
+                   "commit_acknowledgement"] = "not_started"
+    scheduler_status: Literal["not_required", "not_started", "synchronized", "failed", "interrupted"] = "not_required"
+    scheduled_task_ids: list[str] = field(default_factory=list)
+    actions: list[ActionPublication] = field(default_factory=list)
+    error: str | None = None
+    error_type: str | None = None
 
 class GateDecision:
     def __init__(
@@ -48,6 +79,15 @@ class GateDecision:
         self.committed_proposal = committed_proposal
         self.accepted = accepted
         self.action_ids: list[str] = []
+        self.commit_event_id: str | None = None
+        self.publication: PublicationRecord | None = None
+
+    def record(self) -> dict:
+        return {"accepted": self.accepted, "committed": self.committed_proposal is not None,
+                "commit_event_id": self.commit_event_id, "disposition": self.disposition.value,
+                "reason": self.reason, "action_ids": self.action_ids,
+                "actions_enqueued": self.actions_enqueued,
+                "publication": asdict(self.publication) if self.publication else None}
 
 class RuntimeGate:
     def __init__(
@@ -74,6 +114,7 @@ class RuntimeGate:
         self.validate_job_resume = None
         self.validate_native_origin = None
         self.scene_policy = None
+        self._publication_locks: dict[str, asyncio.Lock] = {}
 
     async def evaluate_and_commit(
         self,
@@ -195,6 +236,7 @@ class RuntimeGate:
             response_actors.append(sorted(targets))
         if scene_commit:
             scene_commit['event'].payload['response_actor_ids'] = response_actors
+            scene_commit['event'].payload['action_ids'] = action_ids
         deliveries = {}
         acknowledgements = {}
         operation_confirmations = {}
@@ -233,18 +275,6 @@ class RuntimeGate:
                 through_rowid=(scene_commit["event"].metadata["through_event_rowid"]
                                if scene_commit else current_scene_state.last_observed_event_rowid),
             )
-            outcome = resolved_outcome
-            proposal_commit.outcome = resolved_outcome
-            if resolved_loops and self.metrics:
-                self.metrics.inc_social("openloops_resolved", len(resolved_loops))
-            committed_proposal = CommittedProposal(
-                episode_id=proposal_commit.episode_id,
-                scene_id=proposal_commit.scene_id,
-                committed_tasks=committed_tasks,
-                resolved_loop_ids=resolved_loops,
-                committed_memories=committed_mems,
-                outcome=proposal_commit.outcome
-            )
         except Exception as e:
             logger.warning(
                 "Atomic proposal commit transaction failed and rolled back on Scene %s: %s",
@@ -256,34 +286,109 @@ class RuntimeGate:
                 accepted=False
             )
 
-        # 3. External Side-Effect Distribution (Scheduler): only register in heap after DB commit succeeds!
-        if self.scheduler and committed_tasks:
-            for item in committed_tasks:
-                self.scheduler.schedule_task(item)
-        if self.scheduler and (outcome.task_proposals or outcome.job_proposals):
-            await self.scheduler._sync_from_db()
-            self.scheduler._wake_event.set()
+        # A returned decision describes the durable transaction only. The Actor
+        # adopts its scene candidate before the caller starts publication.
+        proposal_commit.outcome = resolved_outcome
+        committed_proposal = CommittedProposal(
+            episode_id=proposal_commit.episode_id, scene_id=proposal_commit.scene_id,
+            committed_tasks=committed_tasks, resolved_loop_ids=resolved_loops,
+            committed_memories=committed_mems, outcome=resolved_outcome,
+            origin_mode=curr_origin, response_actor_ids=response_actors,
+            source_started_at=[source_events[message.source_event_id].timestamp
+                if message.source_event_id in source_events else mailbox.source_started_at
+                for message in resolved_outcome.message_proposals],
+        )
+        decision = GateDecision(resolved_outcome.disposition,
+            ("Operator controls committed: " if operator_control else "Conversation committed: ")
+            + resolved_outcome.decision_reason, committed_proposal=committed_proposal)
+        decision.action_ids = action_ids
+        decision.commit_event_id = scene_commit['event'].id if scene_commit else None
+        decision.publication = PublicationRecord(
+            scheduler_status="not_started" if self.scheduler and (
+                resolved_outcome.task_proposals or resolved_outcome.job_proposals) else "not_required",
+            actions=[ActionPublication(action_id=action_ids[index], batch_index=index,
+                origin_event_id=message.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
+                requester_qq_uid=message.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
+                job_id=message.job_id, job_revision=message.job_revision,
+                operation_ref=message.operation_ref, fulfils_task_id=message.fulfils_task_id)
+                for index, message in enumerate(resolved_outcome.message_proposals)],
+        )
+        return decision
 
-        # A no-message commit changes state without enqueueing an expression.
-        if outcome.disposition == FinalDisposition.SILENCE:
-            reason = (f"Operator controls committed: {outcome.decision_reason}" if operator_control
-                      else f"Model selected SILENCE: {outcome.decision_reason}")
-            return GateDecision(
-                FinalDisposition.SILENCE,
-                reason,
-                committed_proposal=committed_proposal
-            )
+    async def publish_committed(self, decision: GateDecision, mailbox: EpisodeMailbox) -> None:
+        """Publish this accepted turn once, preserving every durable action ID."""
+        committed = decision.committed_proposal
+        publication = decision.publication
+        if not decision.accepted or committed is None or publication is None:
+            raise ValueError("Publication requires an accepted, committed proposal")
+        if publication.status == "interrupted" and publication.phase == "commit_acknowledgement":
+            raise asyncio.CancelledError(publication.error)
+        if publication.status == "not_repeated":
+            return
+        if publication.status != "pending" or publication.phase != "not_started":
+            raise ValueError("This committed turn's publication has already been attempted")
+        if committed.episode_id != mailbox.episode_id or committed.scene_id != mailbox.scene_id:
+            raise ValueError("Publication mailbox does not belong to the committed turn")
+        publication.phase = "awaiting_publication"
+        try:
+            # Actor commits are ordered; keep their publication in the same
+            # per-scene order when preparation or Scheduler sync must await.
+            lock = self._publication_locks.setdefault(committed.scene_id, asyncio.Lock())
+            async with lock:
+                publication.phase = "action_preparation"
+                # Complete every action before any is enqueued. No partial batch is
+                # published merely because a later message cannot be assembled.
+                actions = await self._prepare_actions(decision, mailbox)
+                for action, record in zip(actions, publication.actions):
+                    record.job_id, record.job_revision = action.job_id, action.job_revision
+                    record.acknowledges_task_id = action.acknowledges_task_id
+                if self.scheduler and publication.scheduler_status == "not_started":
+                    publication.phase = "scheduler_schedule"
+                    for task in committed.committed_tasks:
+                        self.scheduler.schedule_task(task)
+                        publication.scheduled_task_ids.append(task.id)
+                    publication.phase = "scheduler_sync"
+                    await self.scheduler._sync_from_db()
+                    self.scheduler._wake_event.set()
+                    publication.scheduler_status = "synchronized"
+                publication.phase = "action_enqueue"
+                for action, record in zip(actions, publication.actions):
+                    # If enqueue raises after accepting, no success receipt was
+                    # returned. Keep that action distinct from untouched actions.
+                    record.status = "enqueue_unknown"
+                    self.action_queue.enqueue(action)
+                    record.status = "enqueued"
+                    decision.actions_enqueued += 1
+                publication.phase = "completed"
+                publication.status = "completed"
+        except (Exception, asyncio.CancelledError) as error:
+            interrupted = isinstance(error, asyncio.CancelledError)
+            publication.status = "interrupted" if interrupted else "failed"
+            publication.error = str(error) or type(error).__name__
+            publication.error_type = type(error).__name__
+            if publication.phase in {"scheduler_schedule", "scheduler_sync"}:
+                publication.scheduler_status = "interrupted" if interrupted else "failed"
+            logger.error("Committed turn %s publication %s at %s: %s; actions=%s",
+                committed.episode_id, publication.status, publication.phase,
+                publication.error, [(item.action_id, item.status) for item in publication.actions])
+            if interrupted:
+                raise
 
-        # 5. External Side-Effect Distribution (ActionQueue): enqueue message actions with dependent Open Loops
-        actions_count = 0
+    async def _prepare_actions(self, decision: GateDecision, mailbox: EpisodeMailbox) -> list[ActionItem]:
+        committed = decision.committed_proposal
+        outcome = committed.outcome
+        scene_id = committed.scene_id
+        action_ids = decision.action_ids
+        actions = []
         now = self.event_store.clock()
-        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries or acknowledgements or outcome.job_proposals else {}
+        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(scene_id)} if any(
+            message.fulfils_task_id or message.task_ref for message in outcome.message_proposals) else {}
         for index, msg in enumerate(outcome.message_proposals):
             associated_loop = None
             if mailbox.output_kind == 'chat' and msg.expect_reply and msg.reply_target:
                 associated_loop = {
                     "id": f"loop_{uuid.uuid4().hex[:10]}",
-                    "scene_id": current_scene_state.scene_id,
+                    "scene_id": scene_id,
                     "target_actor_id": msg.reply_target,
                     "intent": msg.reply_intent or "general_response",
                     "source_event_id": "", # Will be filled by SceneActor on MESSAGE_SENT
@@ -295,10 +400,10 @@ class RuntimeGate:
 
             action_type = (
                 ActionType.SEND_PRIVATE_MESSAGE
-                if current_scene_state.scene_id.startswith("private:")
+                if scene_id.startswith("private:")
                 else ActionType.SEND_GROUP_MESSAGE
             )
-            action_origin = "shadow" if (curr_origin == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
+            action_origin = "shadow" if (committed.origin_mode == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
             if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
                 action_origin = "shadow"
             job_id, job_revision = msg.job_id, msg.job_revision
@@ -306,44 +411,34 @@ class RuntimeGate:
             if msg.task_ref:
                 # Proposal refs repeat across turns; the transaction binds this unique action ID.
                 task = next((row for row in task_rows.values() if row["payload"].get("ack_action_id") == action_ids[index]), None)
-                acknowledged_task_id = task['id'] if task else None
-                if task and task["payload"].get("kind") == "agent_job":
-                    job = await self.event_store.get_job(task["id"], current_scene_state.scene_id)
-                    job_id, job_revision = job["id"], job["revision"]
+                if task is None:
+                    raise ValueError('Committed acknowledgement task is missing')
+                acknowledged_task_id = task['id']
             segments = list(msg.segments)
-            if mailbox.output_kind == 'announcement' and self.scene_policy.scene(current_scene_state.scene_id).mention_all:
+            if mailbox.output_kind == 'announcement' and self.scene_policy.scene(scene_id).mention_all:
                 segments.insert(0, AllMentionSegment())
             action = ActionItem(
-                source_started_at=(source_events[msg.source_event_id].timestamp
-                    if msg.source_event_id in source_events else mailbox.source_started_at),
+                source_started_at=committed.source_started_at[index],
                 id=action_ids[index],
                 fulfils_task_id=msg.fulfils_task_id,
                 acknowledges_task_id=acknowledged_task_id,
                 operation_ref=msg.operation_ref,
                 action_type=action_type,
-                scene_id=current_scene_state.scene_id,
+                scene_id=scene_id,
                 segments=segments,
                 output_kind=mailbox.output_kind,
                 requester_qq_uid=msg.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
                 origin_event_id=msg.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
                 command_id=mailbox.command_id,
                 announcement_member=mailbox.announcement_member,
-                batch_id=proposal_commit.episode_id,
+                batch_id=committed.episode_id,
                 batch_index=index, batch_size=len(outcome.message_proposals),
                 reply_to=msg.reply_to,
-                response_actor_ids=response_actors[index],
+                response_actor_ids=committed.response_actor_ids[index],
                 associated_open_loop=associated_loop,
                 origin_mode=action_origin,
                 job_id=job_id, job_revision=job_revision,
             )
-            self.action_queue.enqueue(action)
-            actions_count += 1
+            actions.append(action)
 
-        decision = GateDecision(
-            FinalDisposition.ACTION,
-            f"Approved {actions_count} message proposals",
-            actions_enqueued=actions_count,
-            committed_proposal=committed_proposal
-        )
-        decision.action_ids = action_ids
-        return decision
+        return actions

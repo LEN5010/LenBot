@@ -124,7 +124,7 @@ LOCAL_TOOLS = [
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
     read_tool('query_memory', '按需读取本群认识及其来源；已撤销的认识不是当前事实。'),
-    read_tool('query_jobs', '读取本群工作的实际版本、资料和进展。'),
+    read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
     read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
     read_tool('search_media', '按名称和描述查询本群或运营发布的图片。'),
     read_tool('read_media', '装入图片I/P像素和来源；动图只覆盖首帧。'),
@@ -339,7 +339,7 @@ class RetrievalToolkit:
                         '资料不是记录数组或offset超出记录数；按返回的坐标单位续读。','invalid_arguments', stage='arguments',
                         details=[ToolFieldError(loc=['coordinate_unit','offset'],type='invalid_record_range',
                             message='记录坐标与所读资料或范围不一致')]), tool_call_id=tool_call_id)
-            return ObservationPage(call[0] if call and args['coordinate_unit']=='records' else 'read_tool_result',result,offset=offset,limit=limit,
+            return ObservationPage(call[0] if call and (args['coordinate_unit']=='records' or call[0]=='query_jobs') else 'read_tool_result',result,offset=offset,limit=limit,
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
             matches, categories = self.plugin_host.search_tools(args['query'], self.call_context(),
@@ -419,8 +419,11 @@ class RetrievalToolkit:
             plugin = self.plugin_host.get_plugin('group_summary')
             page_chars = min(plugin.config.page_chars,self.max_chars)
         local_records = {'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs','read_pending_wakes'}
+        records = self.context and name in local_records and result.status != 'error'
+        if name == 'query_jobs' and args.get('job_id'):
+            records = False
         return ObservationPage('read_tool_result' if result.status == 'error' else name, result, limit=page_chars,
-                               coordinate_unit='records' if self.context and name in local_records and result.status != 'error' else 'characters')
+                               coordinate_unit='records' if records else 'characters')
 
     def validate_conclusion_sources(self, result_ids, unresolved):
         """Validate evidence availability, not the semantic truth of a conclusion."""
@@ -455,9 +458,82 @@ class RetrievalToolkit:
             error_details=page.result.error_details,http_status=page.result.http_status,correction=page.result.correction,
             observation_event_id=page.result.observation_event_id, cached=page.result.cached)
 
+    @staticmethod
+    def _record_ranges(content):
+        """Locate records in the saved JSON text, without reserializing offsets."""
+        decoder = json.JSONDecoder()
+
+        def skip_space(position):
+            while position < len(content) and content[position] in ' \t\r\n':
+                position += 1
+            return position
+
+        position = skip_space(0)
+        if content[position] != '[':
+            raise ValueError('Saved records must be a JSON array')
+        ranges = []
+        position = skip_space(position + 1)
+        while content[position] != ']':
+            start = position
+            _, position = decoder.raw_decode(content, position)
+            ranges.append((start, position))
+            position = skip_space(position)
+            if content[position] == ',':
+                position = skip_space(position + 1)
+        return ranges
+
+    def _job_locator(self, job):
+        refs = self.references
+        return {'ref': refs.register_job(job), 'job_id': job['id'], 'revision': job['revision'],
+                'status': job['status'], 'execution_status': job['execution_status'],
+                'can_resume': job['can_resume'], 'work_operation': job['work_operation'],
+                'requester': refs.register_actor('user:' + job['requester_qq_uid']) if job['requester_qq_uid'] else None,
+                'request_source': refs.register_event_locator(job['request_source_event_id']) if job['request_source_event_id'] else None,
+                'goal_preview': job['goal'][:160], 'details_not_provided': True}
+
+    def _job_character_page(self, result, offset, limit):
+        """A control locator accompanies only the exact saved JSON fragment."""
+        shown = result.page(offset, limit)
+        shown.result_id = self.references.register_result(result.result_id)
+        if shown.next_call:
+            shown.next_call.arguments['result_id'] = shown.result_id
+        jobs = json.loads(result.content)
+        positions = self._record_ranges(result.content)
+        end = shown.displayed_range.end
+        locators = [self._job_locator(job)
+                    for job, (start, stop) in zip(jobs, positions) if start < end and stop > offset]
+        # IDs are locations, not original human speech or retrieved bodies.
+        # Grant them only after their complete literal appeared across actual
+        # prior pages and this candidate page, including a split at a page edge.
+        ranges = sorted([*self.presented_ranges.get(result.result_id, {}).get('characters', []), (offset, end)])
+        merged = []
+        for start, stop in ranges:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+            else:
+                merged.append((start, stop))
+        for job in jobs:
+            for identifiers, register in ((job['result_ids'], self.references.register_result),
+                                          (job['source_event_ids'], self.references.register_event_locator)):
+                for ident in identifiers:
+                    literal = json.dumps(ident, ensure_ascii=False)
+                    position = result.content.find(literal)
+                    while position != -1:
+                        if any(start <= position and position + len(literal) <= stop for start, stop in merged):
+                            register(ident)
+                            break
+                        position = result.content.find(literal, position + len(literal))
+        shown.content = ('工作定位（不是完整详情或原话证据）：' + json.dumps(locators, ensure_ascii=False)
+                         + '\n以下仅为已保存JSON正文的characters片段；displayed_range不包含上方定位：\n' + shown.content)
+        shown.coverage = 'job_detail_page; displayed_range covers only the saved JSON fragment'
+        return self._with_source_continuation(result, shown)
+
     async def _present(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
+        if (self.context and name == 'query_jobs' and coordinate_unit == 'characters'
+                and result.status in {'ok', 'partial', 'no_results'}):
+            return self._job_character_page(result, offset, limit)
         if not self.context and coordinate_unit == 'records':
             try:data=json.loads(result.content)
             except ValueError:data=None
@@ -465,7 +541,8 @@ class RetrievalToolkit:
                 return ToolResult.failure('资料不是记录数组或offset超出记录数；请按返回的坐标单位续读','invalid_arguments')
             end=offset
             while end<len(data) and len(json.dumps(data[offset:end+1],ensure_ascii=False))<=limit:end+=1
-            if end==offset and end<len(data):return ToolResult.failure('limit不足以完整展示一条记录','page_too_small')
+            if end==offset and end<len(data):
+                return ToolResult.failure('limit不足以完整展示一条记录','page_too_small',stage='presentation')
             return result.model_copy(update={'content':json.dumps(data[offset:end],ensure_ascii=False),
                 'coordinate_unit':'records','displayed_range':DisplayedRange(start=offset,end=end,total=len(data)),
                 'next_offset':end if end<len(data) else None,'truncated':end<len(data),
@@ -492,7 +569,8 @@ class RetrievalToolkit:
                 trial={**page,'items':page['items'][offset:end+1]}
                 if len(json.dumps(self.context.project_pending_page(trial),ensure_ascii=False))>limit:break
                 end+=1
-            if end==offset and end<len(page['items']):return ToolResult.failure('limit不足以显示一条来源位置','page_too_small')
+            if end==offset and end<len(page['items']):
+                return ToolResult.failure('limit不足以显示一条来源位置','page_too_small',stage='presentation')
             shown.content = json.dumps(self.context.project_pending_page({**page,'items':page['items'][offset:end]}),ensure_ascii=False)
             shown.coordinate_unit='records'
             shown.displayed_range=DisplayedRange(start=offset,end=end,total=len(page['items']))
@@ -545,8 +623,9 @@ class RetrievalToolkit:
             return shown.page(offset, limit)
         if offset>len(data):return ToolResult.failure('offset超出当前已保存记录数','invalid_arguments')
         history=name in {'search_messages','read_context','query_timeline','query_person_history'}
+        record_positions = self._record_ranges(result.content) if name == 'query_jobs' else None
 
-        def project(raw):
+        def project(raw, index):
             item=copy.deepcopy(raw);refs=self.references
             if history:
                 event=Event.model_validate(item)
@@ -561,23 +640,25 @@ class RetrievalToolkit:
                 item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
                 return {'ref':ref,**item}
-            ref=refs.register_job(item)
-            item.pop('id')
-            item['result_ids']=[refs.register_result(r) for r in item['result_ids']]
-            return {'ref':ref,**item}
+            return {**self._job_locator(item), 'detail_next_call': {'name': 'read_tool_result', 'arguments': {
+                'result_id': shown.result_id, 'offset': record_positions[index][0], 'limit': limit,
+                'coordinate_unit': 'characters'}}}
 
         selected=[]
         index=offset
         while index<len(data):
             original=self.context.refs
             self.context.refs=copy.deepcopy(original)
-            try:candidate=project(data[index])
+            try:candidate=project(data[index], index)
             finally:self.context.refs=original
             candidate_text='\n'.join([*selected,candidate]) if history else json.dumps([*selected,candidate],ensure_ascii=False)
             if len(candidate_text)>limit:
                 if not selected:
                     if not history:
-                        return ToolResult.failure(f'limit太小，无法完整展示此条记录和引用；请将limit调大，至少需要{len(candidate_text)}字符。','page_too_small')
+                        if name == 'query_jobs':
+                            return self._job_character_page(result, record_positions[index][0], limit)
+                        return ToolResult.failure(f'limit太小，无法完整展示此条记录和引用；至少需要{len(candidate_text)}字符。',
+                                                  'page_too_small',stage='presentation')
                     event = Event.model_validate(data[index])
                     total = len(event.raw_text)
                     refs.register_event_range(event, 0, 0, total)
@@ -597,16 +678,18 @@ class RetrievalToolkit:
                         'message_ref':refs.register_event_locator(event.id),'offset':0,'limit':limit})
                     return shown
                 break
-            selected.append(project(data[index]))
+            selected.append(project(data[index], index))
             index+=1
         shown.content='\n'.join(selected) if history else json.dumps(selected,ensure_ascii=False)
         shown.truncated=index<len(data)
         shown.next_offset=index if shown.truncated else None
         shown.coordinate_unit='records'
-        shown.displayed_range=DisplayedRange(start=offset,end=index,total=len(data))
+        shown.displayed_range=DisplayedRange(start=offset,end=index,total=len(data)) if name != 'query_jobs' else None
         shown.next_call=ToolNextCall(name='read_tool_result',arguments={
             'result_id':shown.result_id,'offset':index,'limit':limit,'coordinate_unit':'records'}) if index<len(data) else None
         shown.coverage='record_page; offset is the next record index' if shown.truncated or offset else shown.coverage
+        if name == 'query_jobs':
+            shown.coverage = 'job_directory_locator; detail_next_call reads saved JSON, directory is not a full record read'
         return shown
 
     def _with_source_continuation(self, original, shown):
