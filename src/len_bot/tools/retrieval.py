@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import time
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -61,6 +62,15 @@ READ_MESSAGE_RANGE = tool('read_message_range',
     '按字符范围继续读取消息M的原话。使用上次next_offset；片段不代表整条已读，原文全部覆盖后才能作为提案证据。',
     {'message_ref': {'type':'string','minLength':1}, 'offset': {'type':'integer','minimum':0},
      'limit': {'type':'integer','minimum':1,'maximum':8000,'default':4000}}, ['message_ref','offset'])
+
+
+@dataclass(frozen=True)
+class ObservationPage:
+    """Stored observation awaiting a budgeted, scene-scoped presentation."""
+    name: str
+    result: ToolResult
+    offset: int = 0
+    limit: int = 6000
 
 
 class RetrievalToolkit:
@@ -155,36 +165,44 @@ class RetrievalToolkit:
         return args
 
     async def execute_result(self,name,arguments):
+        page = await self.execute_observation(name, arguments)
+        return await self._present(page.name, page.result, page.offset, page.limit)
+
+    async def execute_observation(self,name,arguments):
+        """Fetch and persist in parallel; references are granted only when presented."""
         if name == 'read_pending_wakes':
             try:
                 arguments = PendingWakeArguments.model_validate(arguments).model_dump()
             except ValidationError as error:
-                return ToolResult.failure(str(error), 'invalid_arguments')
+                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'))
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
-        if name not in definitions:return ToolResult.failure('本入口未开放此工具','capability_denied')
+        if name not in definitions:return ObservationPage(name, ToolResult.failure('本入口未开放此工具','capability_denied'))
         if name == 'read_message_range':
             try:
                 arguments = MessageRangeArguments.model_validate(arguments).model_dump()
             except ValidationError as error:
-                return ToolResult.failure(str(error), 'invalid_arguments')
+                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'))
         try:args=self._resolve_arguments(name,dict(arguments))
-        except ValueError as error:return ToolResult.failure(str(error),'invalid_reference')
+        except ValueError as error:return ObservationPage(name, ToolResult.failure(str(error),'invalid_reference'))
         if name=='read_tool_result':
+            offset,limit=int(args.get('offset',0)),int(args.get('limit',6000))
+            if offset<0 or not 1<=limit<=12000:
+                return ObservationPage(name,ToolResult.failure('offset must be nonnegative; limit must be 1..12000','invalid_arguments'))
             result=await self.event_store.read_tool_observation(args.get('result_id',''),self.allowed_scopes)
-            if result is None:return ToolResult.failure('资料不存在或不属于本群','not_found')
+            if result is None:return ObservationPage(name, ToolResult.failure('资料不存在或不属于本群','not_found'))
             call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
-            return (await self._present(call[0] if call else '',result,offset=int(args.get('offset',0)),limit=int(args.get('limit',6000))))
+            return ObservationPage(call[0] if call else '',result,offset=offset,limit=limit)
         if name=='tool_search':
             query=str(args.get('query','')).casefold().strip()
-            if not query:return ToolResult.failure('query不能为空','invalid_arguments')
+            if not query:return ObservationPage(name, ToolResult.failure('query不能为空','invalid_arguments'))
             matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions() if
                 self.is_read_only(t['function']['name']) and t['function']['name'] not in self.unavailable_tools
                 and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
             self.discovered_tools.update(matches[:8])
-            return ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog')
+            return ObservationPage(name, ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog'))
         refresh=bool(args.pop('refresh',False));key=json.dumps([name,args],ensure_ascii=False,sort_keys=True)
         async with self._call_locks.setdefault(key,asyncio.Lock()):
-            if not refresh and key in self._cache:return await self._present(name,self._cache[key].model_copy(update={'cached':True}))
+            if not refresh and key in self._cache:return ObservationPage(name,self._cache[key].model_copy(update={'cached':True}))
             if self.checkpoint:await self.checkpoint('before_tool',{'scene_id':self.default_scene_id,'name':name,'arguments':args})
             start=time.monotonic()
             media_files=[]
@@ -211,7 +229,7 @@ class RetrievalToolkit:
             if self.on_observation:await self.on_observation(event)
             if self.checkpoint:await self.checkpoint('after_tool',{'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
             if self.plugin_host and self.plugin_host.has_tool(name) and result.status in {'ok','no_results','partial'}:self._cache[key]=result
-        return await self._present(name,result)
+        return ObservationPage(name,result)
 
     def validate_conclusion_sources(self, result_ids, unresolved):
         """Validate evidence availability, not the semantic truth of a conclusion."""
@@ -227,6 +245,17 @@ class RetrievalToolkit:
             or item.coverage in {'arithmetic','finite_enumeration'} for item in sources
         ):
             raise ValueError('外部查询尚无成功读取的来源；搜索摘要、本地对话和自己的确认不能证明外部事实。请读取相关原始来源，或将未核实部分写入unresolved，结论只保留已验证内容。')
+
+    def observation_locator(self, page):
+        if not page.result.result_id:
+            return page.result.page(page.offset, page.limit)
+        return ToolResult(status='partial' if page.result.status in {'ok','partial'} else page.result.status,
+            result_id=self.references.register_result(page.result.result_id),
+            content='本轮输入额度有限，正文尚未装入；用read_tool_result按result_id和next_offset继续读取。',
+            truncated=True, next_offset=page.offset,
+            coverage='result_locator; content not read', evidence_kind=page.result.evidence_kind,
+            error_code=page.result.error_code, fetched_at=page.result.fetched_at,
+            observation_event_id=page.result.observation_event_id, cached=page.result.cached)
 
     async def _present(self,name,result,offset=0,limit=6000):
         if not self.context:return result.page(offset,limit)
@@ -255,10 +284,13 @@ class RetrievalToolkit:
             start, end, total = item['range']
             if total != len(event.raw_text) or item['text'] != event.raw_text[start:end]:
                 return ToolResult.failure('原话片段与不可变来源不一致', 'invalid_source_range')
+            end = min(end, start + limit)
             refs.register_event_range(event, start, end, total)
             shown.content = json.dumps({'message_ref':refs.register_event_locator(event.id),
                 'actor':refs.register_actor(event.actor_id), 'range':[start,end,total],
-                'text':item['text'], 'next_offset':end if end < total else None}, ensure_ascii=False)
+                'text':event.raw_text[start:end], 'next_offset':end if end < total else None}, ensure_ascii=False)
+            shown.truncated = end < total
+            shown.next_offset = end if end < total else None
             return shown
         local={'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs'}
         if name not in local:return shown.page(offset,limit)

@@ -47,6 +47,13 @@ class TruncatedModelOutput(AgentProtocolError):
     pass
 
 
+def final_step_message(terminal_name: str) -> dict:
+    return {"role": "user", "content": (
+        f"本轮已经到最后一步，当前只开放 {terminal_name}。"
+        "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
+    )}
+
+
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, default=str).encode()).hexdigest()
 
@@ -97,6 +104,7 @@ class AgentLoop:
         observe: Callable[[], Awaitable[list[dict[str, Any]] | None]] | None = None,
         checkpoint: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
+        prepare_tool_results: Callable[[list[dict], list[tuple[ToolCall, Any]]], Awaitable[list[Any]]] | None = None,
         exchange_checkpoint: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
         remaining_steps: Callable[[], Awaitable[int]] | None = None,
         trace: dict[str, Any] | None = None,
@@ -122,10 +130,21 @@ class AgentLoop:
             audit["contract_repairs"].append({"step": step["step"], "reason": step["failure_reason"]})
             feedback = getattr(error, "model_message", str(error))
             if calls:
-                for call in calls:
-                    result = (receipts or {}).get(call.id, {"error": "invalid_arguments", "message": feedback})
+                responses = [(call, (receipts or {}).get(call.id, {"error": "invalid_arguments", "message": feedback})) for call in calls]
+                if prepare_tool_results is not None:
+                    shown = await prepare_tool_results(trajectory, responses)
+                    if len(shown) != len(calls):
+                        raise AgentProtocolError("Tool repair must retain every matching response")
+                    responses = [(call, result) for call,result in zip(calls,shown)]
+                for call,result in responses:
+                    if prepare_tool_results is not None and call.id in (receipts or {}):
+                        item = next(item for item in step['tool_calls'] if item['id'] == call.id)
+                        record_result(item, result)
                     trajectory.append({"role": "tool", "tool_call_id": call.id,
                                        "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
+                if prepare_tool_results is not None and observe is not None:
+                    additions = await observe()
+                    if additions:trajectory.extend(copy.deepcopy(additions))
             else:
                 trajectory.append({"role": "user", "content": f"请使用原生工具调用完成本轮：{feedback}"})
             if calls and exchange_checkpoint is not None:
@@ -150,6 +169,11 @@ class AgentLoop:
                     raise
                 return {"error": type(exc).__name__, "message": str(exc)}
             item["status"] = "completed"
+            if prepare_tool_results is None:
+                record_result(item, result)
+            return result
+
+        def record_result(item, result):
             item["result_sha256"] = _digest(result)
             try:
                 observation = json.loads(result) if isinstance(result, str) else result
@@ -157,7 +181,6 @@ class AgentLoop:
                 observation = None
             if isinstance(observation, dict) and observation.get('status') in {'ok','partial','no_results','error','unsupported'}:
                 item['observation']={key:observation[key] for key in ('status','error_code','coverage','result_id') if key in observation}
-            return result
 
         for step_index in range(max_steps):
             remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
@@ -170,10 +193,7 @@ class AgentLoop:
             known_names = {definition["function"]["name"] for definition in definitions}
             choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
             if forced_final:
-                trajectory.append({"role": "user", "content": (
-                    f"本轮已经到最后一步，当前只开放 {terminal_name}。"
-                    "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
-                )})
+                trajectory.append(final_step_message(terminal_name))
             request_messages = await prepare_request(trajectory, definitions) if prepare_request else None
             if remaining_steps is not None:
                 remaining = await remaining_steps()
@@ -289,7 +309,13 @@ class AgentLoop:
                 step["failure_reason"] = _error_text(exc)
                 audit["failure_reason"] = step["failure_reason"]
                 raise
-            for (call, _, _), result in zip(executions, results):
+            if prepare_tool_results is not None and not terminal_calls:
+                results = await prepare_tool_results(trajectory, [(entry[0], result) for entry, result in zip(executions, results)])
+                if len(results) != len(executions):
+                    raise AgentProtocolError("Tool presentation must retain every matching response")
+            for (call, _, item), result in zip(executions, results):
+                if prepare_tool_results is not None:
+                    record_result(item, result)
                 trajectory.append({"role": "tool", "tool_call_id": call.id,
                                    "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
             if terminal_calls:
