@@ -647,7 +647,6 @@ class AgentRuntime:
             def input_prepared(provided_ids, read_ids):
                 delivered_ids.update(provided_ids)
                 delivered_ids.update(read_ids)
-                mailbox.acknowledge_events(read_ids)
                 mailbox.interaction_actors.update(wake.actor_id for wake in actor.session.pending_wakes
                     if wake.event_id in provided_ids | read_ids and wake.actor_id != self.bot_actor_id
                     and wake.actor_id.startswith('user:'))
