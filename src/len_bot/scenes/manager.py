@@ -4,11 +4,12 @@ from len_bot.scenes.actor import SceneActor
 
 
 class SceneManager:
-    def __init__(self, bot_actor_id, event_store, on_state_updated=None, attention_policy=None):
+    def __init__(self, bot_actor_id, event_store, on_state_updated=None, attention_policy=None, classify_event=None):
         self.bot_actor_id = bot_actor_id
         self.event_store = event_store
         self.on_state_updated = on_state_updated
         self.attention_policy = attention_policy
+        self.classify_event = classify_event
         self._actors = {}
         self._lock = asyncio.Lock()
 
@@ -16,7 +17,7 @@ class SceneManager:
         async with self._lock:
             if scene_id not in self._actors:
                 actor = SceneActor(scene_id, self.bot_actor_id, self.event_store, self.on_state_updated,
-                                   attention_policy=self.attention_policy)
+                                   attention_policy=self.attention_policy, classify_event=self.classify_event)
                 await actor.start()
                 self._actors[scene_id] = actor
             return self._actors[scene_id]

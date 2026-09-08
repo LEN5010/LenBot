@@ -41,12 +41,13 @@ class HistoryCommand:
 
 
 class SceneActor:
-    def __init__(self, scene_id, bot_actor_id, event_store, on_state_updated=None, *, attention_policy=None):
+    def __init__(self, scene_id, bot_actor_id, event_store, on_state_updated=None, *, attention_policy=None, classify_event=None):
         self.scene_id = scene_id
         self.bot_actor_id = bot_actor_id
         self.event_store = event_store
         self.on_state_updated = on_state_updated
         self.attention_policy = attention_policy
+        self.classify_event = classify_event
         self.session: SceneSession | None = None
         self._queue = asyncio.Queue()
         self._worker_task = None
@@ -127,6 +128,8 @@ class SceneActor:
             raise ValueError('Event belongs to another scene')
         if await self.event_store.event_exists(event.id, self.scene_id):
             return
+        if self.classify_event:
+            await self.classify_event(event, self.session.last_observed_event_rowid)
         if event.event_type == EventType.TASK_DUE and event.payload.get('task_id'):
             event.metadata['obsolete_task_wake'] = not await self.event_store.task_due_is_current(event)
         if event.event_type in {EventType.AGENT_JOB_FINISHED, EventType.AGENT_JOB_PROGRESS}:
@@ -137,6 +140,13 @@ class SceneActor:
             event.event_type == EventType.TOOL_OBSERVATION_RECORDED) or (
             event.event_type == EventType.TASK_DUE and event.payload.get('payload', {}).get('kind') == 'agent_job')
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
+        if self.classify_event and event.event_type == EventType.OPERATOR_ACTION and event.payload.get('policy_changed'):
+            pending = await self.event_store.events_by_ids(self.scene_id,
+                [wake.event_id for wake in candidate.pending_wakes], self.session.last_observed_event_rowid)
+            for source in pending:
+                await self.classify_event(source, self.session.last_observed_event_rowid)
+            admitted = {source.id for source in pending if not source.metadata.get('conversation_excluded')}
+            candidate.pending_wakes = [wake for wake in candidate.pending_wakes if wake.event_id in admitted]
         if self.attention_policy:
             participants = set()
             in_flight = set(self._active_mailbox.interaction_actors) if self._active_mailbox else set()
@@ -170,7 +180,12 @@ class SceneActor:
         if self.on_state_updated: await self.on_state_updated(candidate, event)
 
     async def _commit_turn(self, item):
-        if not item.operator and self._active_mailbox is not item.mailbox:
+        native_output = item.mailbox.output_kind in {'command', 'announcement'}
+        if native_output:
+            if item.operator or item.outcome.task_proposals or item.outcome.job_proposals or item.outcome.memory_proposals or item.outcome.resolve_open_loop_ids:
+                raise SceneCommitConflict('A command or announcement may only submit its own expression')
+            await item.gate.validate_native_origin(item.mailbox, self.scene_id)
+        if not item.operator and not native_output and self._active_mailbox is not item.mailbox:
             raise SceneCommitConflict('Episode lease changed')
         if item.mailbox.is_cancelled():
             raise SceneCommitConflict(item.mailbox.cancellation_reason())
@@ -178,17 +193,18 @@ class SceneActor:
         if await self.event_store.event_exists(event_id, self.scene_id):
             return GateDecision(FinalDisposition.SILENCE, 'Turn already committed', accepted=True)
         state = self.session
-        if state.knowledge_revision != item.knowledge_revision:
+        if not native_output and state.knowledge_revision != item.knowledge_revision:
             raise SceneCommitConflict('Knowledge revision changed')
         if not 0 <= item.through_rowid <= state.last_observed_event_rowid:
             raise SceneCommitConflict('Read cutoff is outside the observed range')
         bounded = not item.outcome.requires_fresh_input()
         read = set(item.source_event_ids)
-        if not item.operator and not bounded and (
-                item.through_rowid != state.last_observed_event_rowid
-                or any(wake.certain and wake.event_id not in read for wake in state.pending_wakes)):
-            raise FreshInputConflict('Control or fulfilment proposal has unread scene input; nothing committed')
-        if not item.operator and not bounded:
+        if not item.operator and not native_output and not bounded:
+            newer = await self.event_store.conversation_input_ids_since(
+                self.scene_id, item.through_rowid, state.last_observed_event_rowid, self.bot_actor_id)
+            if newer or any(wake.certain and wake.event_id not in read for wake in state.pending_wakes):
+                raise FreshInputConflict('Control or fulfilment proposal has unread scene input; nothing committed')
+        if not item.operator and not native_output and not bounded:
             new_inputs = await self.event_store.conversation_input_ids_since(
                 self.scene_id, item.mailbox.initial_observed_rowid, state.last_observed_event_rowid, self.bot_actor_id)
             if not new_inputs.issubset(read):
@@ -205,15 +221,18 @@ class SceneActor:
         event = Event(id=event_id, event_type=EventType.CONVERSATION_COMMITTED, scene_id=self.scene_id,
                       actor_id='system:conversation', timestamp=self.event_store.clock(),
                       payload={'source_event_ids': item.source_event_ids,
+                               'output_kind': item.mailbox.output_kind,
+                               'origin_event_id': item.mailbox.origin_stimulus_id,
                                'outcome': item.outcome.model_dump(mode='json')},
-                      metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode})
+                      metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode,
+                                'conversation_excluded': native_output})
         candidate = SceneReducer.reduce(state, event, self.bot_actor_id)
-        if not item.operator:
+        if not item.operator and not native_output:
             candidate.pending_wakes = [wake for wake in state.pending_wakes if wake.event_id not in read]
         if item.outcome.memory_proposals: candidate.knowledge_revision += 1
         decision = await item.gate.evaluate_and_commit(item.outcome, item.mailbox, state,
             scene_commit={'event': event, 'scene_state_data': candidate.model_dump(), 'advance_session_observation': False},
-            bounded_chat=bounded)
+            bounded_chat=bounded, operator_control=item.operator)
         if decision.accepted:
             self.session = candidate
         return decision

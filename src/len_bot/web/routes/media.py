@@ -4,7 +4,6 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from len_bot.web.auth import get_current_user
-from len_bot.media.service import MAX_IMAGE_BYTES
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -36,7 +35,7 @@ async def media_detail(asset_id: str, scene_id: str, request: Request, user: str
 @router.post("")
 async def upload_media(request: Request, file: UploadFile = File(...), scope: str = Form("global-safe"),
                        description: str = Form(""), tags: str = Form(""), user: str = Depends(get_current_user)):
-    data = await file.read(MAX_IMAGE_BYTES+1)
+    data = await file.read(request.app.state.runtime.config.media_max_image_bytes+1)
     try:
         asset = await request.app.state.runtime.media_service.upload(data, scope, description, list(dict.fromkeys(tags.split())))
     except ValueError as error:

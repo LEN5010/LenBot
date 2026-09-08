@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { mdiRobotOutline, mdiInformationOutline, mdiClose } from '@mdi/js'
 import { fmtTime,attentionReason } from '../api.js'
+import { interactionReason } from '../domain/activity.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 const props=defineProps({event:{type:Object,required:true},selected:Boolean})
@@ -11,6 +12,7 @@ const text=computed(()=>props.event.payload.raw_text ?? props.event.payload.cont
 const name=computed(()=>props.event.display_name || props.event.actor_id)
 const reasons=computed(()=>props.event.attention.attention_reasons || [])
 const attentionText=computed(()=>Object.hasOwn(props.event.attention,'attention_reasons')?(reasons.value.length?reasons.value.map(attentionReason).join(' · '):'仅存储 · 未产生独立唤醒'):'没有保存注意力判定')
+const interactionText=computed(()=>props.event.interaction&&props.event.interaction.interaction_reason!=='chat_eligible'?interactionReason(props.event.interaction.interaction_reason):'')
 const imageUrl=asset=>`/api/media/${encodeURIComponent(asset.id)}/file?scene_id=${encodeURIComponent(props.event.scene_id)}`
 </script>
 <template>
@@ -22,7 +24,7 @@ const imageUrl=asset=>`/api/media/${encodeURIComponent(asset.id)}/file?scene_id=
       <p v-if="text" class="message-text" :class="{collapsed:!expanded && text.length>800}">{{ text }}</p>
       <v-btn v-if="text.length>800" size="small" variant="text" color="primary" @click="expanded=!expanded">{{ expanded?'收起全文':`展开全文（${text.length} 字）` }}</v-btn>
       <div v-if="event.media.length" class="message-images"><button v-for="asset in event.media" :key="asset.id" type="button" class="image-button" :aria-label="`查看原图：${asset.description || '图片'}`" @click="image=asset"><v-img :src="imageUrl(asset)" :alt="asset.description || '消息原图'" width="180" height="160" contain><template #error><span class="image-error">原图不可读</span></template></v-img></button></div>
-      <footer class="message-footer"><span v-if="event.display_kind==='human'" class="attention-copy">{{ attentionText }}</span><span v-else class="attention-copy">{{ event.display_kind==='system'?'系统资料，不代表群聊发言':'' }}</span><v-btn size="small" variant="text" :prepend-icon="mdiInformationOutline" @click="emit('inspect',event)">查看关联</v-btn></footer>
+      <footer class="message-footer"><span v-if="interactionText" class="attention-copy">{{ interactionText }}</span><span v-else-if="event.display_kind==='human'" class="attention-copy">{{ attentionText }}</span><span v-else class="attention-copy">{{ event.display_kind==='system'?'系统资料，不代表群聊发言':'' }}</span><v-btn size="small" variant="text" :prepend-icon="mdiInformationOutline" @click="emit('inspect',event)">查看关联</v-btn></footer>
     </div>
     <v-dialog :model-value="!!image" max-width="960" @update:model-value="!$event && (image=null)"><v-card v-if="image"><v-card-title class="image-title"><span>消息原图</span><v-btn :icon="mdiClose" variant="text" aria-label="关闭原图" @click="image=null" /></v-card-title><v-card-text><img class="original-image" :src="imageUrl(image)" :alt="image.description || '消息原图'" /><p class="muted">{{ image.description }}</p><EntityLink type="media" :id="image.id" :scene-id="event.scene_id" label="素材来源与详情" /></v-card-text></v-card></v-dialog>
   </article>

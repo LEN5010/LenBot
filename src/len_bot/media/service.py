@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import copy
-import hashlib
 import io
 import json
 import shutil
@@ -13,39 +11,37 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageOps
 
-from len_bot.media.models import MessageSegment, PreparedMediaContext, segment_text
+from len_bot.media.models import PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolResult, ToolSource
 
-MAX_IMAGE_BYTES = 10_000_000
-MAX_IMAGE_PIXELS = 20_000_000
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 
 
-def validate_image(data: bytes):
-    if not data or len(data) > MAX_IMAGE_BYTES:
-        raise ValueError("图片为空或超过10MB上限")
+def validate_image(data: bytes, *, max_bytes: int, max_pixels: int):
+    if not data or len(data) > max_bytes:
+        raise ValueError(f"图片为空或超过 {max_bytes} 字节上限")
     with Image.open(io.BytesIO(data)) as image:
         if image.format not in FORMATS:
             raise ValueError("仅支持PNG、JPEG、WEBP和GIF")
-        if image.width * image.height > MAX_IMAGE_PIXELS:
+        if image.width * image.height > max_pixels:
             raise ValueError("图片像素超过上限")
         mime_type = FORMATS[image.format]
         image.verify()
     return mime_type
 
 
-def prepare_image(data: bytes):
-    validate_image(data)
+def prepare_image(data: bytes, *, max_bytes: int, max_pixels: int, max_dimension: int):
+    validate_image(data, max_bytes=max_bytes, max_pixels=max_pixels)
     with Image.open(io.BytesIO(data)) as image:
         animated = getattr(image, "n_frames", 1) > 1
         image.seek(0)
         frame = ImageOps.exif_transpose(image).convert("RGBA")
-        frame.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+        frame.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
         background = Image.new("RGBA", frame.size, "white")
         background.alpha_composite(frame)
         output = io.BytesIO()
@@ -58,42 +54,19 @@ def image_block(data: bytes):
         "url": "data:image/png;base64," + base64.b64encode(data).decode(), "detail": "high"}}
 
 
-def render_palette(images):
-    """A numbered contact sheet; the actual assets stay separate and sendable."""
-    sheet = Image.new("RGB", (1600, 1400), "#eeeeee")
-    draw = ImageDraw.Draw(sheet)
-    font = ImageFont.load_default(size=24)
-    for index, data in enumerate(images):
-        x, y = index % 5 * 320, index // 5 * 350
-        draw.rectangle((x+8, y+8, x+312, y+342), fill="white")
-        draw.text((x+20, y+16), f"P{index+1:02d}", fill="#222222", font=font)
-        if data is None:
-            draw.text((x+60, y+180), "unavailable", fill="#777777", font=font)
-            continue
-        with Image.open(io.BytesIO(data)) as image:
-            image.thumbnail((288, 282), Image.Resampling.LANCZOS)
-            sheet.paste(image, (x+(320-image.width)//2, y+56+(282-image.height)//2))
-    output = io.BytesIO()
-    sheet.save(output, format="PNG")
-    return output.getvalue()
-
-
 class MediaService:
     def __init__(self, runtime):
         self.runtime = runtime
         self.root = (Path(runtime.config.db_path).resolve().parent / "media").resolve()
-        self._client = httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+        self._client = httpx.AsyncClient(timeout=runtime.config.media_request_timeout_seconds,
+                                       follow_redirects=False, trust_env=False)
         self._locks: dict[str, asyncio.Lock] = {}
-        self._palette_cache = {}
-        self._palette_locks: dict[str, asyncio.Lock] = {}
-        self._io_slots = asyncio.Semaphore(3)
+        self._io_slots = asyncio.Semaphore(runtime.config.media_io_concurrency)
 
     async def close(self):
         await self._client.aclose()
 
     async def reset_cache(self):
-        self._palette_cache.clear()
-        self._palette_locks.clear()
         self._locks.clear()
         retained = {Path(path).resolve() for path in await self.runtime.event_store.retained_media_paths()}
         if self.root.exists():
@@ -112,18 +85,19 @@ class MediaService:
 
     async def _store_bytes(self, data):
         try:
-            mime = await asyncio.to_thread(validate_image, data)
+            mime = await asyncio.to_thread(validate_image, data,
+                max_bytes=self.runtime.config.media_max_image_bytes,
+                max_pixels=self.runtime.config.media_max_image_pixels)
         except (OSError, Image.DecompressionBombError) as error:
             raise ValueError("图片内容无法验证") from error
-        digest = hashlib.sha256(data).hexdigest()
         suffix = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}[mime]
-        path = self.root / f"{digest}.{suffix}"
+        file_id = uuid.uuid4().hex
+        path = self.root / f"{file_id}.{suffix}"
         self.root.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            temporary = self.root / f".{uuid.uuid4().hex}.tmp"
-            await asyncio.to_thread(temporary.write_bytes, data)
-            await asyncio.to_thread(temporary.replace, path)
-        return digest, mime, str(path)
+        temporary = self.root / f".{file_id}.tmp"
+        await asyncio.to_thread(temporary.write_bytes, data)
+        await asyncio.to_thread(temporary.replace, path)
+        return mime, str(path)
 
     async def get_bytes(self, asset_id, scene_id, *, include_disabled=False):
         async with self._locks.setdefault(asset_id, asyncio.Lock()), self._io_slots:
@@ -132,36 +106,44 @@ class MediaService:
                 raise ValueError("图片不存在、已停用或不在本场景中")
             if asset["path"]:
                 path = Path(asset["path"]).resolve()
-                if not path.is_relative_to(self.root) or not path.is_file() or path.stat().st_size > MAX_IMAGE_BYTES:
+                if (not path.is_relative_to(self.root) or not path.is_file()
+                        or path.stat().st_size > self.runtime.config.media_max_image_bytes):
                     raise ValueError("图片缓存不可用")
                 data = await asyncio.to_thread(path.read_bytes)
-                if hashlib.sha256(data).hexdigest() != asset["sha256"]:
-                    raise ValueError("图片缓存完整性检查失败")
                 return asset, data
             locator = asset["locator"]
             if locator.startswith("base64://"):
-                if len(locator) > MAX_IMAGE_BYTES * 4 // 3 + 100:
+                if len(locator) > self.runtime.config.media_max_image_bytes * 4 // 3 + 100:
                     raise ValueError("图片超过上限")
                 data = base64.b64decode(locator.removeprefix("base64://"), validate=True)
             elif locator.startswith(("https://", "http://")):
-                _, _, data = await fetch_public(self._client, locator, max_bytes=MAX_IMAGE_BYTES)
+                _, _, data = await fetch_public(self._client, locator, max_bytes=self.runtime.config.media_max_image_bytes)
             else:
                 raise ValueError("图片只有平台文件标识，没有可读取地址；不会读取任意本地路径")
-            digest, mime, path = await self._store_bytes(data)
-            event = await self.runtime.event_store.save_media_file(asset_id, asset["scope"], digest, mime, path)
+            mime, path = await self._store_bytes(data)
+            event = await self.runtime.event_store.save_media_file(asset_id, asset["scope"], mime, path)
             await self.runtime.commit_tool_observation(event)
-            asset.update(sha256=digest, mime_type=mime, path=path)
+            asset.update(mime_type=mime, path=path)
             return asset, data
 
     async def upload(self, data, scope, description, tags):
         if scope != "global-safe" and not scope.startswith(("group:", "private:")):
             raise ValueError("请选择群聊、私聊或global-safe素材范围")
-        digest, mime, path = await self._store_bytes(data)
+        mime, path = await self._store_bytes(data)
         asset_id = "image_" + uuid.uuid4().hex
-        event = await self.runtime.event_store.save_media_file(asset_id, scope, digest, mime, path,
+        event = await self.runtime.event_store.save_media_file(asset_id, scope, mime, path,
             description=description, tags=tags, curated=True)
         await self.runtime.commit_tool_observation(event)
         return await self.runtime.event_store.get_media(asset_id, [scope])
+
+    async def save_generated(self, data: bytes, scene_id: str, source_event_id: str, description: str):
+        """Store a command image as source-owned output, never as a curated example."""
+        mime, path = await self._store_bytes(data)
+        asset_id = 'image_' + uuid.uuid4().hex
+        event = await self.runtime.event_store.save_generated_media(
+            asset_id, scene_id, source_event_id, mime, path, description)
+        await self.runtime.commit_tool_observation(event)
+        return await self.runtime.event_store.get_media(asset_id, [scene_id])
 
     async def edit(self, asset_id, scope, description, tags, enabled, *, palette_order=PALETTE_UNCHANGED):
         event = await self.runtime.event_store.edit_media(asset_id, scope, description, tags, enabled,
@@ -171,19 +153,22 @@ class MediaService:
 
     async def _prepare_asset(self, asset_id, scene_id):
         asset, data = await self.get_bytes(asset_id, scene_id)
-        prepared, animated, width, height = await asyncio.to_thread(prepare_image, data)
+        prepared, animated, width, height = await asyncio.to_thread(prepare_image, data,
+            max_bytes=self.runtime.config.media_max_image_bytes,
+            max_pixels=self.runtime.config.media_max_image_pixels,
+            max_dimension=self.runtime.config.media_max_dimension)
         return prepared, {"asset_id": asset_id, "status": "included", "source_event_id": asset["source_event_id"],
-            "sha256": asset["sha256"], "coverage": "first_frame" if animated else "image", "width": width, "height": height}
+            "coverage": "first_frame" if animated else "image", "width": width, "height": height}
 
     @staticmethod
     def _media_error(asset_id, error):
         return {"asset_id": asset_id, "status": "error",
             "reason": str(error) if isinstance(error, ValueError) else f"图片读取失败：{type(error).__name__}"}
 
-    async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], limit: int = 6) -> PreparedMediaContext:
+    async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0 or limit > 6:
-            raise ValueError("Image limit must be between 0 and 6")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= self.runtime.config.max_context_images:
+            raise ValueError("Image limit must be within the configured image window")
         result: PreparedMediaContext = {"blocks": [], "manifest": []}
         for asset_id in dict.fromkeys(asset_ids):
             if not self.runtime.config.media_enabled:
@@ -229,58 +214,29 @@ class MediaService:
             if page is not None:
                 raise ValueError('仅PDF支持page页码参数')
             description, source_url, coverage = '网页原始图片', final_url, 'web_image'
-        digest, mime, path = await self._store_bytes(data)
+        mime, path = await self._store_bytes(data)
         result = ToolResult(content=description+'；像素将进入当前模型，未识别或未覆盖的细节不能当作已核实。',
             sources=[ToolSource(url=source_url, title=description)], evidence_kind='external', coverage=coverage)
-        files = [{'sha256': digest, 'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
+        files = [{'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
         return result, files
 
-    async def prepare_palette(self, scene_id: str, *, include_pixels: bool = False) -> PreparedMediaContext:
-        """A stable, scoped operator palette. Selection never depends on a message."""
+    async def prepare_palette(self, scene_id: str) -> PreparedMediaContext:
+        """The operator's fixed, scoped catalog with stable asset references."""
         if not self.runtime.config.media_enabled:
             return {"blocks": [], "manifest": []}
-        async with self._palette_locks.setdefault(scene_id, asyncio.Lock()):
-            assets = await self.runtime.event_store.list_palette(scene_id)
-            if not include_pixels:
-                return {"blocks": [], "manifest": [
-                    {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
-                     "name": asset["description"][:40], "description": asset["description"][:40],
-                     "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"],
-                     "sha256": asset["sha256"], "status": "catalog_only"}
-                    for index, asset in enumerate(assets)
-                ]}
-            fingerprint = json.dumps([{key: asset[key] for key in (
-                "id", "scope", "source_event_id", "sha256", "description", "tags", "enabled", "palette_order")}
-                for asset in assets], ensure_ascii=False, sort_keys=True)
-            cached = self._palette_cache.get(scene_id)
-            if cached and cached[0] == fingerprint:
-                return {"blocks": [image_block(cached[1])] if cached[1] else [],
-                    "manifest": copy.deepcopy(cached[2])}
-            manifest, images = [], []
-            for index, asset in enumerate(assets):
-                entry = {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
-                    "name": asset["description"][:40], "description": asset["description"][:40],
-                    "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"], "sha256": asset["sha256"]}
-                try:
-                    prepared, details = await self._prepare_asset(asset["id"], scene_id)
-                except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
-                    entry.update(self._media_error(asset["id"], error))
-                    images.append(None)
-                else:
-                    entry.update(details, block_index=0)
-                    images.append(prepared)
-                manifest.append(entry)
-            sheet = await asyncio.to_thread(render_palette, images) if any(images) else None
-            if not any(item["status"] == "error" for item in manifest):
-                self._palette_cache[scene_id] = (fingerprint, sheet, manifest)
-            return {"blocks": [image_block(sheet)] if sheet else [], "manifest": copy.deepcopy(manifest)}
+        assets = await self.runtime.event_store.list_palette(scene_id,
+            limit=self.runtime.config.media_palette_limit)
+        manifest = [
+            {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
+             "name": asset["description"][:40], "description": asset["description"][:40],
+             "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"],
+             "status": "catalog_only"}
+            for index, asset in enumerate(assets)
+        ]
+        return {"blocks": [], "manifest": manifest}
 
     async def prepare_action(self, action):
-        segments = action.segments or [MessageSegment(type="text", text=action.content)]
-        if action.segments and action.content != segment_text(action.segments):
-            if any(segment.type == "image" for segment in segments):
-                raise ValueError("含图片消息的拦截器必须同步修改segments")
-            segments = [MessageSegment(type="text", text=action.content)]
+        segments = action.segments
         images = {}
         sticker_ids = set()
         for segment in segments:

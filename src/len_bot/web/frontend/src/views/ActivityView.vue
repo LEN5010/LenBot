@@ -22,7 +22,7 @@ const resource=ref(null),resourceError=ref(''),resourceLoading=ref(false)
 let sequence=0,detailSequence=0,resourceSequence=0
 const detailScene=computed(()=>route.query.object_scene || scene.value)
 const selectedId=computed(()=>route.query.id || ''),resourceId=computed(()=>route.query.result || '')
-const traceKinds=[['conversation','对话'],['conversation_error','对话失败'],['agent_job','信息工作'],['agent_job_error','工作失败'],['history_maintenance','历史维护'],['history_maintenance_error','历史维护失败'],['work_compression','工作压缩'],['skill_maintenance','技能整理']].map(([value,title])=>({value,title}))
+const traceKinds=[['conversation','对话'],['conversation_error','对话失败'],['calendar_command','日程命令'],['live_announcement','订阅开播邀请'],['agent_job','信息工作'],['agent_job_error','工作失败'],['history_maintenance','历史维护'],['history_maintenance_error','历史维护失败'],['work_compression','工作压缩'],['skill_maintenance','技能整理']].map(([value,title])=>({value,title}))
 const callStatuses=[['completed','请求完成'],['failed','请求失败'],['cancelled','已取消'],['unconfirmed','未确认']].map(([value,title])=>({value,title}))
 const knownUsage=computed(()=>data.value?.totals.reduce((sum,row)=>({prompt:sum.prompt+row.prompt_tokens,output:sum.output+row.completion_tokens,unknown:sum.unknown+row.unknown_usage,cached:sum.cached+row.cached_tokens,reasoning:sum.reasoning+row.reasoning_tokens}),{prompt:0,output:0,unknown:0,cached:0,reasoning:0}))
 const items=computed(()=>tab.value==='logs'?data.value:data.value?.items)
@@ -60,6 +60,7 @@ async function loadDetail(){
       if(value.kind.startsWith('agent_job'))relationArgs.job_id=value.ref_id
       else if(value.kind.startsWith('history_maintenance'))relationArgs.batch_id=value.ref_id
       else if(['conversation','conversation_error'].includes(value.kind))relationArgs.episode_id=value.ref_id
+      else if(['calendar_command','live_announcement'].includes(value.kind))relationArgs.event_id=value.ref_id
       else return
     }
     else if(value.episode_id)relationArgs.episode_id=value.episode_id
@@ -113,7 +114,7 @@ onBeforeUnmount(()=>{sequence++;detailSequence++;resourceSequence++})
       </v-card>
       <v-pagination v-if="['calls','turns'].includes(tab) && data.total>data.page_size" :model-value="page" :length="Math.ceil(data.total/data.page_size)" :total-visible="smAndDown?3:7" @update:model-value="navigate({page:$event,id:undefined})" />
       <div v-if="tab==='events'" class="cursor-actions"><v-btn v-if="route.query.cursors" variant="outlined" :prepend-icon="mdiArrowLeft" @click="previousEvents">返回上一页</v-btn><v-btn :disabled="!data.has_more" variant="outlined" @click="nextEvents">读取更早事件</v-btn><v-btn v-if="route.query.snapshot" variant="text" @click="navigate({before:undefined,snapshot:undefined,cursors:undefined,id:undefined})">回到最新</v-btn></div>
-      <p class="sample-time">读取于 {{ fmtTime(updatedAt) }}（北京时间）</p>
+      <p class="sample-time">读取于 {{ fmtTime(updatedAt) }}</p>
     </template>
     <v-dialog :model-value="!!selectedId" :fullscreen="smAndDown" max-width="1000" scrollable @update:model-value="!$event && closeDetail()"><v-card><v-card-title class="detail-heading"><span>{{ tab==='calls'?'调用详情':tab==='turns'?'对话与执行过程':'事件原文与关联' }}</span><v-btn :icon="mdiClose" variant="text" aria-label="关闭详情" @click="closeDetail" /></v-card-title><v-card-text class="detail-body"><v-progress-linear v-if="detailLoading" indeterminate color="primary" /><v-alert v-if="detailError" type="error" variant="tonal">{{ detailError }}</v-alert>
       <template v-if="selected">

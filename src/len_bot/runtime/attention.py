@@ -28,6 +28,10 @@ class AttentionPolicy:
     def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=()):
         now = self.clock()
         state.focused_participants = {actor: until for actor, until in state.focused_participants.items() if until > now}
+        if event.metadata.get('conversation_excluded'):
+            event.metadata['attention_reasons'] = []
+            event.metadata['attention_certain'] = False
+            return
         if (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
                 and not event.metadata.get('simulated') and event.payload.get('delivery_status', 'sent') == 'sent'):
             for actor in event.payload.get('response_actor_ids', []):

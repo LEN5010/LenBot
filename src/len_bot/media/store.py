@@ -25,7 +25,7 @@ def image_locators(event):
 def _asset(row):
     if row is None:
         return None
-    data = dict(zip(["id", "scope", "source_event_id", "locator", "sha256", "mime_type", "path", "description", "tags", "enabled", "curated", "created_at", "palette_order"], row))
+    data = dict(zip(["id", "scope", "source_event_id", "locator", "mime_type", "path", "description", "tags", "enabled", "curated", "created_at", "palette_order"], row, strict=True))
     data["tags"] = json.loads(data["tags"])
     data["enabled"], data["curated"] = bool(data["enabled"]), bool(data["curated"])
     return data
@@ -35,13 +35,10 @@ class MediaStoreMixin:
     async def initialize_media(self):
         await self._db.execute("""CREATE TABLE IF NOT EXISTS media_assets (
             id TEXT PRIMARY KEY, scope TEXT NOT NULL, source_event_id TEXT NOT NULL,
-            locator TEXT NOT NULL DEFAULT '', sha256 TEXT, mime_type TEXT, path TEXT,
+            locator TEXT NOT NULL DEFAULT '', mime_type TEXT, path TEXT,
             description TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
             enabled INTEGER NOT NULL DEFAULT 1, curated INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
             palette_order INTEGER CHECK(palette_order >= 0))""")
-        columns = await (await self._db.execute("PRAGMA table_info(media_assets)")).fetchall()
-        if "palette_order" not in {column[1] for column in columns}:
-            await self._db.execute("ALTER TABLE media_assets ADD COLUMN palette_order INTEGER CHECK(palette_order >= 0)")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_media_assets_scope ON media_assets(scope,created_at)")
 
     async def register_event_media_in_transaction(self, event):
@@ -69,11 +66,11 @@ class MediaStoreMixin:
         return [row[0] for row in await (await self._db.execute(
             "SELECT path FROM media_assets WHERE curated=1 AND path IS NOT NULL")).fetchall()]
 
-    async def list_palette(self, scene_id: str):
+    async def list_palette(self, scene_id: str, *, limit: int):
         """The operator's fixed palette, including only this scene and global-safe."""
         rows = await (await self._db.execute("""SELECT * FROM media_assets
             WHERE scope IN (?, 'global-safe') AND curated=1 AND enabled=1 AND palette_order IS NOT NULL
-            ORDER BY palette_order, created_at, id LIMIT 20""", (scene_id,))).fetchall()
+            ORDER BY palette_order, created_at, id LIMIT ?""", (scene_id, limit))).fetchall()
         return [_asset(row) for row in rows]
 
     async def list_media(self, allowed_scopes, *, query="", curated_only=False, include_disabled=False, limit=40):
@@ -99,20 +96,40 @@ class MediaStoreMixin:
         params.append(min(max(1, limit), 100))
         return [_asset(row) for row in await (await self._db.execute(sql, params)).fetchall()]
 
-    async def save_media_file(self, asset_id, scope, sha256, mime_type, path, *, description=None, tags=None, curated=False):
+    async def save_media_file(self, asset_id, scope, mime_type, path, *, description=None, tags=None, curated=False):
         event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scope, actor_id="system:media", timestamp=self.clock(),
-            payload={"asset_id": asset_id, "sha256": sha256, "curated": curated})
+            payload={"asset_id": asset_id, "curated": curated})
         async with self._write_lock:
             try:
                 if curated:
-                    await self._db.execute("""INSERT INTO media_assets(id,scope,source_event_id,sha256,mime_type,path,description,tags_json,curated,created_at)
-                        VALUES(?,?,?,?,?,?,?,?,1,?)""", (asset_id, scope, event.id, sha256, mime_type, path, description or "", json.dumps(tags or [], ensure_ascii=False), self.clock()))
+                    await self._db.execute("""INSERT INTO media_assets(id,scope,source_event_id,mime_type,path,description,tags_json,curated,created_at)
+                        VALUES(?,?,?,?,?,?,?,1,?)""", (asset_id, scope, event.id, mime_type, path, description or "", json.dumps(tags or [], ensure_ascii=False), self.clock()))
                 else:
-                    cursor = await self._db.execute("UPDATE media_assets SET sha256=?,mime_type=?,path=? WHERE id=? AND scope=?",
-                        (sha256, mime_type, path, asset_id, scope))
+                    cursor = await self._db.execute("UPDATE media_assets SET mime_type=?,path=? WHERE id=? AND scope=?",
+                        (mime_type, path, asset_id, scope))
                     if cursor.rowcount != 1:
                         raise ValueError("Media source is not in this scene")
                 await self._db.execute("INSERT INTO pending_runtime_events VALUES(?,?,?)", (event.id, scope, event.model_dump_json()))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+        return event
+
+    async def save_generated_media(self, asset_id, scene_id, source_event_id, mime_type, path, description):
+        event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scene_id, actor_id='system:media',
+            timestamp=self.clock(), payload={'asset_id': asset_id, 'curated': False, 'source_event_id': source_event_id})
+        async with self._write_lock:
+            try:
+                source = await (await self._db.execute('SELECT 1 FROM events WHERE id=? AND scene_id=?',
+                                                       (source_event_id, scene_id))).fetchone()
+                if not source:
+                    raise ValueError('Generated image source is outside this scene')
+                await self._db.execute('''INSERT INTO media_assets
+                    (id,scope,source_event_id,mime_type,path,description,tags_json,curated,created_at)
+                    VALUES(?,?,?,?,?,?,'[]',0,?)''',
+                    (asset_id, scene_id, source_event_id, mime_type, path, description, self.clock()))
+                await self._db.execute('INSERT INTO pending_runtime_events VALUES(?,?,?)', (event.id, scene_id, event.model_dump_json()))
                 await self._db.commit()
             except BaseException:
                 await self._db.rollback()

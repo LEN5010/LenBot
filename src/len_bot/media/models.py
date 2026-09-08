@@ -24,13 +24,5 @@ class MessageSegment(BaseModel):
         return self
 
 
-def segment_text(segments):
+def segment_text(segments: list[MessageSegment]) -> str:
     return "".join(segment.text if segment.type == "text" else "[图片]" for segment in segments)
-
-
-def normalize_message_body(message):
-    if message.segments:
-        message.content = segment_text(message.segments)
-    if not message.content.strip():
-        raise ValueError("A message needs nonempty content or image segments")
-    return message

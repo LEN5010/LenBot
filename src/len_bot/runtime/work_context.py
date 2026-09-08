@@ -67,8 +67,8 @@ def _image_contexts(messages):
                 raise ValueError("Work image lacks a stored asset manifest")
 
 
-def synchronize_image_window(messages, image_limit=6):
-    """Derive current pixels from the trajectory, retaining the newest six assets."""
+def synchronize_image_window(messages, image_limit):
+    """Retain the newest asset pixels within the configured image window."""
     contexts = list(_image_contexts(messages))
     pixels = []
     for content, _, _, _, manifest in contexts:
@@ -129,7 +129,7 @@ def archive_trajectory(messages):
     return archived
 
 
-async def restore_trajectory(messages, media_service, scene_id, *, image_limit=6):
+async def restore_trajectory(messages, media_service, scene_id, *, image_limit):
     restored = copy.deepcopy(messages)
     current_assets = synchronize_image_window(restored, image_limit)
     for content, manifest_block, prefix, facts, manifest in _image_contexts(restored):
@@ -264,7 +264,7 @@ class WorkCompressor:
             entry = {"start_exchange": start_exchange, "end_exchange": end_exchange, "goal_revision": self.revision, **segment.model_dump()}
             replacement = {"role": "user", "content": "旧工作区间摘要（非新增证据，原资料按 result_id 回读）：" + json.dumps(entry, ensure_ascii=False)}
             candidate[start:end] = [replacement]
-            synchronize_image_window(candidate)
+            synchronize_image_window(candidate, config.max_context_images)
             after = request_tokens(candidate, tools)
             if after >= compacted_before or after > input_budget:
                 raise JobContextExhausted("工作压缩未形成有效可用窗口")

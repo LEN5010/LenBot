@@ -1,17 +1,19 @@
-import time
-import uuid
-from typing import Any, Optional, Callable, Awaitable
-from len_bot.plugins.models import PluginManifest, PluginPermission
+from typing import Any, Optional, Callable, Awaitable, Literal
+from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
 from len_bot.events.models import Event
-from len_bot.cognition.models import TaskProposal
 from len_bot.actions.models import ActionItem
-from len_bot.scheduler.models import TaskItem, TaskStatus
+from len_bot.tools.results import ToolResult
 
 class PluginContext:
     def __init__(self, manifest: PluginManifest, runtime: Any, host: Any):
         self.manifest = manifest
         self._runtime = runtime
         self._host = host
+
+    @property
+    def event_store(self):
+        """Built-in data readers use the store's scene-scoped query methods."""
+        return self._runtime.event_store
 
     def has_permission(self, perm: PluginPermission) -> bool:
         return perm in self.manifest.permissions
@@ -28,8 +30,10 @@ class PluginContext:
         name: str,
         description: str,
         parameters: dict[str, Any],
-        handler: Callable[[dict[str, Any]], Awaitable[Any]],
-        read_only: bool = False,
+        handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]],
+        *,
+        kind: Literal["read", "proposal"],
+        roles: tuple[Literal["conversation", "work"], ...],
         deferred: bool = False,
     ) -> None:
         """Tool Registration: registers an agentic tool for Cognition."""
@@ -42,7 +46,8 @@ class PluginContext:
             parameters=parameters,
             handler=handler,
             timeout_seconds=self.manifest.timeout_seconds,
-            read_only=read_only,
+            kind=kind,
+            roles=roles,
             deferred=deferred,
         )
 
@@ -72,3 +77,6 @@ class BasePlugin:
 
     async def on_disable(self) -> None:
         pass
+
+    def source_status(self) -> dict[str, Any]:
+        return {}

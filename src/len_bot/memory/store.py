@@ -46,7 +46,7 @@ class MemoryStore:
         async with self.write_lock:
             columns = await (await self._db.execute("PRAGMA table_info(memories)")).fetchall()
             if columns and {row[1] for row in columns} != set(MEMORY_COLUMNS):
-                raise RuntimeError("Old memory schema requires the approved conversation reset before initialization")
+                raise RuntimeError("非现行认识结构；保持停机，使用对应旧版本完成离线处理后再启动")
             await self._db.execute("""CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 scope TEXT NOT NULL,

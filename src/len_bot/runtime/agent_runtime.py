@@ -6,7 +6,6 @@ import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
 import logging
-import re
 import time
 from typing import Any
 import uuid
@@ -19,6 +18,7 @@ from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RoutingConfig
 from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.config import RuntimeConfig
+from len_bot.config_store import ConfigStore, RootConfig
 from len_bot.events.builder import BurstAssembler
 from len_bot.events.models import Event, EventType, Stimulus, StimulusType
 from len_bot.events.store import EventStore
@@ -32,6 +32,8 @@ from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
+from len_bot.runtime.scene_policy import ScenePolicy, conversation_visible
+from len_bot.runtime.plugin_interactions import classify_event, handle_calendar_command, handle_live_announcement, validate_native_origin
 from len_bot.scenes.actor import SceneCommitConflict
 from len_bot.scenes.manager import SceneManager
 from len_bot.scenes.models import SceneSession
@@ -39,8 +41,6 @@ from len_bot.scheduler.engine import TaskScheduler
 from len_bot.state.open_loops import OpenLoopManager
 
 logger = logging.getLogger(__name__)
-_READ_BATCH_LIMIT = 200
-_HISTORY_LIMIT = 200
 
 
 def _is_shadow_input(event: Event) -> bool:
@@ -66,8 +66,11 @@ class AgentRuntime:
         mock_turn_handler: Callable[[SceneSession, list[Event]], Awaitable[EpisodeOutcome]] | None = None,
         clock=time.time,
         attention_random=None,
+        *, config_store: ConfigStore,
     ):
         self.config, self.clock = config, clock
+        self.config_store = config_store
+        self.restart_required = False
         self.mock_turn_handler = mock_turn_handler
         self.evaluation_hook = None
         self.config_update_lock = asyncio.Lock()
@@ -83,19 +86,19 @@ class AgentRuntime:
         self.provider_registry = ProviderRegistry()
         self.provider_configuration_error: str | None = None
         self.plugin_host = PluginHost(runtime=self)
+        self.scene_policy = ScenePolicy(config_store)
         self.metrics = RuntimeMetrics()
-        self.shadow_mode = True
-        self.allowed_scenes = {"group:126300994"}
+        self.shadow_mode = config_store.current.delivery.shadow
         self.shadow_would_send_log: deque[dict] = deque(maxlen=500)
         self.action_queue = ActionQueue(
             self.event_store, send_adapter=send_adapter, on_action_event=self._on_action_event,
             bot_actor_id=self.bot_actor_id, action_interceptor=self.prepare_outbound_action,
             shadow_probe=lambda: self.shadow_mode, shadow_recorder=self._record_shadow_action,
+            max_concurrent=config.action_max_concurrent,
         )
-        self.action_queue.scene_shadow_probe = self.is_scene_shadow
         self.action_queue.pacing = config.message_pacing
         self.action_queue.validate_before_send = self.validate_outbound_action
-        self.scheduler = TaskScheduler(self.event_store, self.receive_event, sweep_interval=5.0, metrics=self.metrics)
+        self.scheduler = TaskScheduler(self.event_store, self.receive_event, sweep_interval=config.scheduler_interval_seconds, metrics=self.metrics)
         self.scheduler.jobs_enabled_probe = self._work_enabled
         self.open_loop_manager = OpenLoopManager(self.event_store)
         self.runtime_gate = RuntimeGate(
@@ -103,19 +106,21 @@ class AgentRuntime:
             origin_mode_provider=lambda: "shadow" if self.shadow_mode else "live",
             bot_actor_id=self.bot_actor_id,
         )
-        self.runtime_gate.scene_shadow_probe = self.is_scene_shadow
         self.runtime_gate.jobs_enabled_probe = self._work_enabled
         self.runtime_gate.validate_job_resume = self._validate_job_resume
+        self.runtime_gate.scene_policy = self.scene_policy
+        self.runtime_gate.validate_native_origin = lambda mailbox, scene: validate_native_origin(self, mailbox, scene)
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
             self.attention_policy.random_source = attention_random
         self.scene_manager = SceneManager(self.bot_actor_id, self.event_store, self._on_scene_event_committed,
-                                          attention_policy=self.attention_policy)
+                                          attention_policy=self.attention_policy,
+                                          classify_event=lambda event, cutoff: classify_event(self, event, cutoff))
         self.burst_assembler = BurstAssembler(config, self._on_burst, clock=clock)
         self.social_core = SocialCognitionCore(self)
         self.job_runner = InformationJobRunner(self)
         self.media_service = MediaService(self)
-        self._cognition_semaphore = asyncio.Semaphore(2)
+        self._cognition_semaphore = asyncio.Semaphore(config.conversation_max_concurrent)
         self._last_gate_decision: GateDecision | None = None
         self._started_at = self.clock()
         self._onebot_adapter = None
@@ -137,7 +142,7 @@ class AgentRuntime:
         snapshot = self.provider_registry.snapshot()
         profile = (snapshot.get("routing") or {}).get(role)
         return bool(profile and any(
-            provider["id"] == profile["provider_id"] and provider["enabled"]
+            provider["id"] == profile["provider_id"] and provider["enabled"] and provider["api_key_masked"]
             for provider in snapshot["providers"]
         ))
 
@@ -154,7 +159,6 @@ class AgentRuntime:
             raise ValueError('This pre-upgrade work has no recorded model binding; cannot guess a provider for resume')
 
     def update_bot_identity(self, bot_qq: int) -> None:
-        self.config.bot_qq = bot_qq
         self.bot_actor_id = f"user:{bot_qq}"
         self.action_queue.bot_actor_id = self.bot_actor_id
         self.runtime_gate.bot_actor_id = self.bot_actor_id
@@ -175,46 +179,27 @@ class AgentRuntime:
                 lambda: self.provider_registry.resolve("maintenance"), memory_store=self.memory_store,
                 call_store=self.event_store, context_tokens=self.config.maintenance_context_tokens,
                 output_tokens=self.config.maintenance_output_tokens,
+                max_steps=self.config.maintenance_max_steps, max_tool_calls=self.config.maintenance_max_tool_calls,
             ),
         )
         await self._start_workers(recover=True)
 
     async def _load_configuration(self) -> None:
-        saved = await self.event_store.get_dynamic_config("onebot_config") or {}
-        for field in (
-            "onebot_connection_mode", "onebot_action_transport", "onebot_ws_url",
-            "onebot_http_url", "onebot_access_token", "ws_host", "ws_port",
-        ):
-            if field in saved:
-                setattr(self.config, field, saved[field])
-        persona = await self.event_store.get_dynamic_config("persona_config") or {}
-        for field in ("character_context", "identity_name", "identity_core", "identity_persona", "conversation_style", "address_names"):
-            if field in persona:
-                setattr(self.config, field, persona[field])
-        if "bot_qq" in persona:
-            self.update_bot_identity(persona["bot_qq"])
+        models = self.config_store.current.models
+        await self.provider_registry.apply_update(models.providers, models.routing)
 
-        attention = await self.event_store.get_dynamic_config("attention_config") or {}
-        for field in ("attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",
-                      "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens"):
-            if field in attention:
-                setattr(self.config, field, attention[field])
-        saved = await self.event_store.get_dynamic_config("provider_config")
-        if saved:
-            try:
-                providers = [ProviderConfig.model_validate(provider) for provider in saved.get("providers", [])]
-                await self.provider_registry.apply_update(providers, None)
-                routing = RoutingConfig.model_validate(saved["routing"]) if saved.get("routing") else None
-                await self.provider_registry.apply_update(providers, routing)
-            except (ValueError, TypeError, KeyError):
-                self.provider_configuration_error = "保存的模型配置不符合 conversation/work/maintenance 契约，请在面板明确配置。"
-                logger.warning(self.provider_configuration_error)
-        shadow = await self.event_store.get_dynamic_config("shadow_config")
-        if shadow is not None:
-            self.shadow_mode = bool(shadow["enabled"])
-        scenes = await self.event_store.get_dynamic_config("delivery_scenes")
-        if scenes is not None:
-            self.allowed_scenes = set(scenes["scene_ids"])
+    async def update_runtime_settings(self, values: dict, *, live: bool) -> None:
+        async with self.config_update_lock:
+            data = self.config_store.current.model_dump()
+            data["runtime"].update(values)
+            candidate = RootConfig.model_validate(data)
+            self.config_store.save(candidate)
+            if live:
+                self.config = self.config.model_copy(update={key: getattr(candidate.runtime, key) for key in values})
+                self.attention_policy.config = self.config
+                self.burst_assembler.config = self.config
+            else:
+                self.restart_required = True
 
     async def _start_workers(self, *, recover: bool) -> None:
         self.job_runner = InformationJobRunner(self)
@@ -227,6 +212,7 @@ class AgentRuntime:
         await self.job_runner.resume_skill_candidates()
         for scene_id in restored:
             actor = await self.scene_manager.get_or_create_actor(scene_id)
+            await self.record_operator_event(scene_id, 'apply_scene_settings', 'runtime', {'policy_changed': True})
             self._schedule_history_maintenance(actor.session)
             pending = await self.event_store.events_by_ids(scene_id,
                 [wake.event_id for wake in actor.session.pending_wakes], actor.session.last_observed_event_rowid)
@@ -235,41 +221,81 @@ class AgentRuntime:
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def _load_builtin_plugins(self) -> None:
-        from len_bot.plugins.builtin import BUILTIN_PLUGINS
+        from len_bot.plugins.builtin import get_builtin_plugins
 
-        saved = await self.event_store.get_dynamic_config("plugins_state") or {}
-        for plugin_id, factory in BUILTIN_PLUGINS.items():
-            plugin = factory()
-            state = saved.get(plugin_id, {})
-            plugin.manifest.config = state.get("config", dict(plugin.manifest.default_config))
-            plugin.manifest.enabled = state.get("enabled", True)
-            try:
-                await self.plugin_host.load_plugin(plugin)
-            except Exception:
-                logger.exception("Failed to load builtin plugin %s", plugin_id)
+        settings = self.config_store.current.plugins
+        factories = get_builtin_plugins()
+        if set(settings) != set(factories):
+            raise ValueError("plugins must explicitly configure every installed builtin plugin")
+        for plugin_id, factory in factories.items():
+            state = settings[plugin_id]
+            if state.config is None:
+                continue
+            if plugin_id in {'asoul_calendar', 'asoul_dynamics'} and self.config_store.current.time is None:
+                continue  # Explicitly unconfigured and disabled; RootConfig refuses enablement.
+            kwargs = {'config': state.config, 'enabled': state.enabled}
+            if plugin_id in {'asoul_calendar', 'asoul_dynamics', 'bilibili_live_sensor', 'group_summary'}:
+                kwargs['config'] = state.parsed_config
+            if plugin_id in {'asoul_calendar', 'asoul_dynamics'}:
+                kwargs.update(time_settings=self.config_store.current.time, members=self.config_store.current.members)
+            plugin = factory(**kwargs)
+            await self.plugin_host.load_plugin(plugin)
 
-    async def save_plugin_state(self) -> None:
-        state = {plugin_id: {"enabled": plugin.manifest.enabled, "config": plugin.manifest.config}
-                 for plugin_id, plugin in self.plugin_host._plugins.items()}
-        await self.event_store.save_dynamic_config("plugins_state", state)
+    async def update_plugin_settings(self, plugin_id, *, enabled=None, values=None):
+        async with self.config_update_lock:
+            data = self.config_store.current.model_dump()
+            state = data["plugins"][plugin_id]
+            if enabled is not None:
+                state["enabled"] = enabled
+            if values is not None:
+                state["config"] = {**(state['config'] or {}), **values}
+            candidate = RootConfig.model_validate(data)
+            self.config_store.save(candidate)
+            if self.plugin_host.has_plugin(plugin_id):
+                self.plugin_host.set_plugin_config(plugin_id, candidate.plugins[plugin_id].config)
+            if enabled is True and self.plugin_host.has_plugin(plugin_id):
+                await self.plugin_host.enable_plugin(plugin_id)
+            elif enabled is False:
+                await self.plugin_host.disable_plugin(plugin_id)
+            if values is not None:
+                self.restart_required = True
+            if not self.plugin_host.has_plugin(plugin_id):
+                self.restart_required = True
 
     async def set_shadow_mode(self, enabled: bool) -> None:
         async with self.config_update_lock:
-            if enabled:
-                self.shadow_mode = True
-            await self.event_store.save_dynamic_config("shadow_config", {"enabled": bool(enabled)})
-            self.shadow_mode = bool(enabled)
+            data = self.config_store.current.model_dump()
+            data["delivery"]["shadow"] = enabled
+            candidate = RootConfig.model_validate(data)
+            self.config_store.save(candidate)
+            self.shadow_mode = enabled
 
-    def is_scene_shadow(self, scene_id: str) -> bool:
-        return not self.action_queue.simulated and scene_id not in self.allowed_scenes
-
-    async def set_delivery_scenes(self, scene_ids: list[str]) -> None:
-        if any(not re.fullmatch(r"group:[1-9][0-9]*", scene_id) for scene_id in scene_ids):
-            raise ValueError("实发群名单必须是有效的 QQ 群号")
-        scenes = set(scene_ids)
+    async def update_root_settings(self, section: str, values) -> None:
+        if section not in {'access', 'time', 'members'}:
+            raise ValueError('Unknown settings section')
         async with self.config_update_lock:
-            await self.event_store.save_dynamic_config("delivery_scenes", {"scene_ids": sorted(scenes)})
-            self.allowed_scenes = scenes
+            data = self.config_store.current.model_dump()
+            data[section] = values
+            self.config_store.save(RootConfig.model_validate(data))
+            if section in {'time', 'members'}:
+                self.restart_required = True
+
+    async def update_scene_settings(self, scene_id: str, values: dict) -> None:
+        async with self.config_update_lock:
+            data = self.config_store.current.model_dump()
+            data['scenes'][scene_id] = values
+            self.config_store.save(RootConfig.model_validate(data))
+        actor = self.scene_manager._actors.get(scene_id)
+        if actor:
+            if not self.scene_policy.enabled(scene_id):
+                if actor._active_mailbox:
+                    actor._active_mailbox.cancel('Group disabled by operator')
+                self._pending_bursts.pop(scene_id, None)
+            if not self.scene_policy.maintenance_allowed(scene_id):
+                timer = self._history_timers.pop(scene_id, None)
+                if timer:
+                    timer.cancel()
+            await self.record_operator_event(scene_id, 'scene_settings', 'panel', {'policy_changed': True})
 
     async def _record_shadow_action(self, action: ActionItem) -> None:
         self.metrics.inc_social("would_send")
@@ -360,7 +386,7 @@ class AgentRuntime:
                 raise RuntimeError("Runtime is not accepting events")
             if self.event_store._db is None:
                 raise RuntimeError("Runtime event store is closed")
-            if self.shadow_mode or self.is_scene_shadow(event.scene_id):
+            if self.shadow_mode or event.scene_id.startswith('private:'):
                 event.metadata["delivery_origin"] = "shadow"
             await self.scene_manager.dispatch_event(event)
 
@@ -394,7 +420,7 @@ class AgentRuntime:
         session = actor.session.model_copy(deep=True)
         episode_id = f"operator:{uuid.uuid4().hex}"
         mailbox = EpisodeMailbox(episode_id, scene_id, session.version)
-        mailbox.origin_mode = "shadow" if self.shadow_mode or self.is_scene_shadow(scene_id) else "live"
+        mailbox.origin_mode = "shadow" if self.shadow_mode or scene_id.startswith('private:') else "live"
         evidence = list(dict.fromkeys(
             [*(source_event_ids or [])]
             + [event_id for proposal in [*outcome.task_proposals, *outcome.job_proposals] for event_id in proposal.source_event_ids]
@@ -412,6 +438,14 @@ class AgentRuntime:
         return await self.media_service.prepare_action(action) if action else None
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
+        if action.output_kind == 'chat':
+            if not self.scene_policy.chat_allowed(action.scene_id, action.requester_qq_uid):
+                raise ValueError('本群已停用或请求者没有普通对话资格')
+        else:
+            await validate_native_origin(self, action, action.scene_id)
+        if any(segment.type == 'at_all' for segment in action.segments) and (
+                action.output_kind != 'announcement' or not self.scene_policy.scene(action.scene_id).mention_all):
+            raise ValueError('本群当前公告未开启全体提及')
         for segment in action.segments:
             if segment.type == "image" and (
                 not self.config.media_enabled
@@ -430,12 +464,23 @@ class AgentRuntime:
         human = event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED} and event.actor_id != self.bot_actor_id
         if human:
             self.metrics.inc_social("human_messages")
+        if event.metadata.get('interaction') == 'calendar_command':
+            if event.metadata.get('command_allowed'):
+                self._spawn_background_task(handle_calendar_command(self, event))
+            return
+        if event.event_type == EventType.LIVE_STARTED and event.payload.get('notification'):
+            if self.scene_policy.announcement_allowed(event.scene_id, event.payload['member']):
+                self._spawn_background_task(handle_live_announcement(self, event))
+            await self.scheduler.on_event(event)
+            return
+        if not self.scene_policy.enabled(event.scene_id):
+            return
         await self.job_runner.on_event(event)
         job_due = event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
         if not job_due and event.metadata.get("attention_reasons"):
             await self.burst_assembler.ingest(event)
         await self.scheduler.on_event(event)
-        if human or event.event_type == EventType.MESSAGE_SENT:
+        if (human or event.event_type == EventType.MESSAGE_SENT) and conversation_visible(event):
             self._schedule_history_maintenance(session)
             if self._can_maintain_history():
                 self._spawn_background_task(self._maintain_history(session.scene_id, quiet=False))
@@ -444,7 +489,7 @@ class AgentRuntime:
         return bool(self.history_engine and self.mock_turn_handler is None and self.has_model_profile("maintenance"))
 
     def _schedule_history_maintenance(self, session: SceneSession) -> None:
-        if not self._running or not self._can_maintain_history():
+        if not self._running or not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(session.scene_id):
             return
         previous = self._history_timers.pop(session.scene_id, None)
         if previous:
@@ -474,12 +519,12 @@ class AgentRuntime:
         self._spawn_background_task(self._maintain_history(batch.scene_id, retry_batch=batch))
 
     async def _maintain_history(self, scene_id: str, *, quiet=True, retry_batch=None) -> None:
-        if scene_id in self._maintaining_history_scenes or not self._can_maintain_history():
+        if scene_id in self._maintaining_history_scenes or not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(scene_id):
             return
         self._maintaining_history_scenes.add(scene_id)
         batch = retry_batch
         try:
-            while self._running and self._can_maintain_history():
+            while self._running and self._can_maintain_history() and self.scene_policy.maintenance_allowed(scene_id):
                 actor = await self.scene_manager.get_or_create_actor(scene_id)
                 if actor.has_active_episode():
                     self._schedule_history_maintenance(actor.session)
@@ -499,7 +544,7 @@ class AgentRuntime:
                     payload={'batch_id':batch.id,
                         'review_items':[item.model_dump() for item in result.review_items],
                         'raw_text':'历史核对：'+'；'.join(item.summary for item in result.review_items) if result.review_items else '',
-                        'origin_mode':'shadow' if self.shadow_mode or self.is_scene_shadow(scene_id) else 'live'})
+                        'origin_mode':'shadow' if self.shadow_mode else 'live'})
                 await actor.commit_history(batch_id=batch.id, proposals=result.memory_proposals,
                     summary=result.summary, key_event_ids=result.key_event_ids,
                     review_event=review_event, expected_revision=revision)
@@ -524,11 +569,11 @@ class AgentRuntime:
             self._maintaining_history_scenes.discard(scene_id)
 
     async def _on_burst(self, burst: Stimulus) -> None:
-        if not self._running:
+        if not self._running or not self.scene_policy.enabled(burst.scene_id):
             return
         if self.mock_turn_handler is None and not self.has_model_profile("conversation"):
             return
-        if self.shadow_mode or self.is_scene_shadow(burst.scene_id):
+        if self.shadow_mode:
             burst.origin_mode = "shadow"
         self.metrics.inc_social("bursts_total")
         pending = self._pending_bursts.get(burst.scene_id)
@@ -553,11 +598,11 @@ class AgentRuntime:
         cutoff = session.last_observed_event_rowid
         preferred = set(preferred_ids)
         sources = sorted(session.pending_wakes,
-            key=lambda wake:(wake.event_id not in preferred,not wake.certain,-wake.rowid))[:_READ_BATCH_LIMIT]
+            key=lambda wake:(wake.event_id not in preferred,not wake.certain,-wake.rowid))[:self.config.conversation_read_batch_limit]
         source_ids = [wake.event_id for wake in sources]
         required = await self.event_store.events_by_ids(session.scene_id,source_ids,cutoff)
-        recent = await self.event_store.get_recent_events(session.scene_id,limit=_HISTORY_LIMIT,through_rowid=cutoff)
-        events = sorted({event.id:event for event in [*required,*recent]}.values(),
+        recent = await self.event_store.get_recent_events(session.scene_id,limit=self.config.conversation_history_limit,through_rowid=cutoff,conversation_only=True)
+        events = sorted({event.id:event for event in [*required,*recent] if conversation_visible(event)}.values(),
                         key=lambda event:event.metadata['_rowid'])
         events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
         return events,cutoff,source_ids
@@ -578,6 +623,8 @@ class AgentRuntime:
         mailbox = EpisodeMailbox(episode_id, scene_id, actor.session.version,
                                  origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
         mailbox.origin_mode = burst.origin_mode
+        mailbox.requester_qq_uid = next((event.metadata.get('requester_qq_uid') for event in reversed(burst.events)
+                                        if event.metadata.get('requester_qq_uid') is not None), None)
         mailbox.source_started_at = min((event.timestamp for event in burst.events), default=self.clock())
         if not actor.acquire_episode_lease(episode_id, mailbox):
             raise SceneCommitConflict(f"Concurrent conversation in {scene_id}")
@@ -605,16 +652,17 @@ class AgentRuntime:
 
             async def observe():
                 nonlocal observed, source_ids
-                if mailbox.is_cancelled() or not self._running:
+                if mailbox.is_cancelled() or not self._running or not self.scene_policy.chat_allowed(scene_id, mailbox.requester_qq_uid):
                     raise asyncio.CancelledError()
                 current = actor.session.model_copy(deep=True)
                 if current.knowledge_revision != revision:
                     raise SceneCommitConflict("Knowledge changed during conversation; rebuild from the next real input")
                 if current.last_observed_event_rowid == observed:
                     return None
-                additions = await self.event_store.get_events_since(scene_id, observed, limit=_READ_BATCH_LIMIT)
+                additions = await self.event_store.get_events_since(scene_id, observed, limit=self.config.conversation_read_batch_limit)
                 additions = [event for event in additions if event.metadata["_rowid"] <= current.last_observed_event_rowid]
                 cutoff = additions[-1].metadata["_rowid"] if additions else observed
+                additions = [event for event in additions if conversation_visible(event)]
                 additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=cutoff)
                 observed = cutoff
                 source_ids = list(dict.fromkeys([*source_ids, *(event.id for event in additions)]))
@@ -651,7 +699,7 @@ class AgentRuntime:
             else:
                 outcome = await self.social_core.run(
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
-                    input_prepared=input_prepared,
+                    input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid,
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")

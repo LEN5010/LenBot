@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Optional, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
-from len_bot.media.models import MessageSegment, normalize_message_body
+from len_bot.media.models import MessageSegment, segment_text
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
@@ -10,8 +10,7 @@ class FinalDisposition(StrEnum):
 
 class MessageProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    content: str = Field(default="", exclude=True)
-    segments: list[MessageSegment] = Field(default_factory=list)
+    segments: list[MessageSegment] = Field(min_length=1)
     reply_to: Optional[str] = Field(default=None, description="OneBot message_id to quote-reply")
     expect_reply: bool = Field(default=False, description="Whether this message expects an answer from a specific user")
     reply_target: Optional[str] = Field(default=None, description="Actor ID expected to respond (e.g. user:123)")
@@ -22,8 +21,14 @@ class MessageProposal(BaseModel):
     job_revision: int | None = None
 
     @model_validator(mode="after")
-    def normalize_body(self):
-        return normalize_message_body(self)
+    def validate_body(self):
+        if not self.content.strip():
+            raise ValueError("A message needs nonempty text or image segments")
+        return self
+
+    @property
+    def content(self) -> str:
+        return segment_text(self.segments)
 
 class TaskProposal(BaseModel):
     operation: str = "create"
