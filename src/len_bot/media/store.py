@@ -73,7 +73,9 @@ class MediaStoreMixin:
             ORDER BY palette_order, created_at, id LIMIT ?""", (scene_id, limit))).fetchall()
         return [_asset(row) for row in rows]
 
-    async def list_media(self, allowed_scopes, *, query="", curated_only=False, include_disabled=False, limit=40):
+    async def list_media(self, allowed_scopes, *, limit: int, query="", curated_only=False, include_disabled=False):
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Media search requires a positive integer limit')
         if not allowed_scopes:
             return []
         sql = f"SELECT * FROM media_assets WHERE scope IN ({','.join('?' for _ in allowed_scopes)})"
@@ -93,7 +95,7 @@ class MediaStoreMixin:
             order = "(" + "+".join(matches) + ") DESC," + order
             params += term_params
         sql += " ORDER BY " + order + " LIMIT ?"
-        params.append(min(max(1, limit), 100))
+        params.append(limit)
         return [_asset(row) for row in await (await self._db.execute(sql, params)).fetchall()]
 
     async def save_media_file(self, asset_id, scope, mime_type, path, *, description=None, tags=None, curated=False):

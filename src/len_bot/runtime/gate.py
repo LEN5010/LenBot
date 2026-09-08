@@ -1,10 +1,9 @@
 import logging
 import uuid
-import time
 from dataclasses import dataclass, field
 from typing import Optional, Any, Callable
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
-from len_bot.cognition.mailbox import EpisodeMailbox, SteeringType
+from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.scenes.models import SceneSession
 from len_bot.actions.models import ActionItem, ActionType, AllMentionSegment
 from len_bot.actions.queue import ActionQueue
@@ -60,6 +59,8 @@ class RuntimeGate:
         metrics: Optional[Any] = None,
         origin_mode_provider: Optional[Callable[[], str]] = None,
         bot_actor_id: str = "",
+        *,
+        open_loop_ttl_seconds: float,
     ):
         self.event_store = event_store
         self.action_queue = action_queue
@@ -68,6 +69,7 @@ class RuntimeGate:
         self.metrics = metrics
         self.origin_mode_provider = origin_mode_provider
         self.bot_actor_id = bot_actor_id
+        self.open_loop_ttl_seconds = open_loop_ttl_seconds
         self.jobs_enabled_probe = lambda: True
         self.validate_job_resume = None
         self.validate_native_origin = None
@@ -92,9 +94,11 @@ class RuntimeGate:
                 mailbox=mailbox
             )
 
-        passive_operator_control = (operator_control and not outcome.message_proposals
-            and all(proposal.operation == 'cancel' for proposal in [*outcome.job_proposals, *outcome.task_proposals]))
-        if (self.scene_policy and mailbox.output_kind == 'chat' and not passive_operator_control
+        # The Actor supplies operator_control for authenticated management.
+        # It permits state changes without creating a QQ conversation identity.
+        if operator_control and (outcome.disposition != FinalDisposition.SILENCE or outcome.message_proposals):
+            return GateDecision(FinalDisposition.SILENCE, 'Operator controls cannot submit messages', accepted=False)
+        if (self.scene_policy and mailbox.output_kind == 'chat' and not operator_control
                 and not self.scene_policy.chat_allowed(current_scene_state.scene_id, mailbox.requester_qq_uid)):
             return GateDecision(FinalDisposition.SILENCE, 'This requester no longer has chat eligibility in this group', accepted=False)
 
@@ -110,7 +114,7 @@ class RuntimeGate:
             logger.info("Gate rejected response due to pending follow-up superseding this outcome")
             return GateDecision(FinalDisposition.SILENCE, "Gate rejected stale response: pending follow-up supersedes this outcome", accepted=False)
 
-        # ADR-0026 / §8.2: Gate last window check: if unread interim events arrived, reject as stale
+        # Unread inputs invalidate a control or fulfilment candidate.
         if mailbox.has_unseen_interim() and not bounded_chat:
             logger.info("Gate rejected response due to unread interim events (semantic staleness)")
             if self.metrics:
@@ -135,7 +139,7 @@ class RuntimeGate:
                     accepted=False,
                 )
 
-        # ADR-0021 & ADR-0029: Origin Mode Tracking (live vs shadow)
+        # Carry the actual live/shadow origin into the transaction.
         curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
         if mailbox.origin_mode == "shadow":
             curr_origin = "shadow"
@@ -236,11 +240,13 @@ class RuntimeGate:
             await self.scheduler._sync_from_db()
             self.scheduler._wake_event.set()
 
-        # 4. Check if model explicitly chose SILENCE
+        # A no-message commit changes state without enqueueing an expression.
         if outcome.disposition == FinalDisposition.SILENCE:
+            reason = (f"Operator controls committed: {outcome.decision_reason}" if operator_control
+                      else f"Model selected SILENCE: {outcome.decision_reason}")
             return GateDecision(
                 FinalDisposition.SILENCE,
-                f"Model selected SILENCE: {outcome.decision_reason}",
+                reason,
                 committed_proposal=committed_proposal
             )
 
@@ -260,7 +266,7 @@ class RuntimeGate:
                     "source_stimulus_id": getattr(mailbox, "origin_stimulus_id", None),
                     "status": "active",
                     "created_at": now,
-                    "expires_at": now + 86400.0 # 24h TTL
+                    "expires_at": now + self.open_loop_ttl_seconds,
                 }
 
             action_type = (

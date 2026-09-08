@@ -353,7 +353,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         return projected
 
     async def outbound_message_facts(
-        self, scene_id: str, through_rowid: int, *, bot_actor_id: str, limit: int = 8,
+        self, scene_id: str, through_rowid: int, *, bot_actor_id: str, limit: int,
     ) -> list[dict[str, Any]]:
         """Read approved expressions and their latest same-scene receipt atomically.
 
@@ -365,6 +365,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         """
         if not scene_id or not bot_actor_id or through_rowid < 0:
             raise ValueError("Outbound facts require a scene, Bot identity and read cutoff")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("Outbound facts require a positive integer limit")
         rows = await (await self._db.execute(
             """WITH approved AS (
                 SELECT rowid AS approval_rowid,id,timestamp,payload,metadata,substr(id,6) AS batch_id
@@ -386,7 +388,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             )
             WHERE r.rowid IS NULL OR r.event_type!='MESSAGE_SENT' OR r.rowid>?
             ORDER BY a.approval_rowid,CAST(m.key AS INTEGER)""",
-            (scene_id, max(1, min(limit, 20)), scene_id, bot_actor_id, through_rowid),
+            (scene_id, limit, scene_id, bot_actor_id, through_rowid),
         )).fetchall()
         facts = []
         for approval_id, approved_at, batch_id, approval_metadata, index, message_json, receipt_rowid, receipt_id, kind, receipt_at, receipt_json, receipt_metadata in rows:
@@ -502,7 +504,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         return {"id": row[0], "event_type": row[1], "scene_id": row[2], "actor_id": row[3],
                 "timestamp": row[4], "payload": json.loads(row[5]), "metadata": {**json.loads(row[7]), "_rowid": row[6]}}
 
-    async def search_messages(self, query, allowed_scopes, limit=20, through_rowid=None):
+    async def search_messages(self, query, allowed_scopes, limit: int, through_rowid=None):
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Message search requires a positive integer limit')
         if not allowed_scopes: return []
         placeholders = ",".join("?" for _ in allowed_scopes)
         # FTS input is literal text; quotes/operators from chat cannot alter the query.
@@ -513,10 +517,12 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             FROM events_fts f JOIN events e ON f.event_id=e.id
             WHERE {clause} AND e.scene_id IN ({placeholders})
               AND (? IS NULL OR e.rowid<=?) ORDER BY e.rowid DESC LIMIT ?""",
-            [term,*allowed_scopes,through_rowid,through_rowid,max(1,min(limit,50))])
+            [term,*allowed_scopes,through_rowid,through_rowid,limit])
         return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
-    async def read_context(self, event_id, before=3, after=3, allowed_scopes=None, through_rowid=None):
+    async def read_context(self, event_id, before: int, after: int, allowed_scopes, through_rowid=None):
+        if type(before) is not int or type(after) is not int or before < 0 or after < 0:
+            raise ValueError('Context neighbor counts must be nonnegative integers')
         if not allowed_scopes: return []
         placeholders=",".join("?" for _ in allowed_scopes)
         target=await (await self._db.execute(f"""
@@ -529,7 +535,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             cursor=await self._db.execute(f"""
                 SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
                 WHERE scene_id=? AND rowid {operator} ? AND (? IS NULL OR rowid<=?)
-                ORDER BY rowid {order} LIMIT ?""",[target[2],target[6],through_rowid,through_rowid,max(0,min(limit,25))])
+                ORDER BY rowid {order} LIMIT ?""",[target[2],target[6],through_rowid,through_rowid,limit])
             rows.extend(await cursor.fetchall())
         return [self._retrieval_event(r) for r in sorted([*rows,target],key=lambda r:r[6])]
 
@@ -541,21 +547,25 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             [scene_id,*ids,through_event_rowid,through_event_rowid])
         return {r[0] for r in await cursor.fetchall()} == set(reference_ids)
 
-    async def query_timeline(self, scene_id, start_time, end_time, allowed_scopes=None, limit=20, through_rowid=None):
+    async def query_timeline(self, scene_id, start_time, end_time, allowed_scopes, limit: int, through_rowid=None):
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Timeline reads require a positive integer limit')
         if not allowed_scopes or scene_id not in allowed_scopes: return []
         cursor=await self._db.execute("""
             SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
             WHERE scene_id=? AND timestamp>=? AND timestamp<=? AND (? IS NULL OR rowid<=?)
-            ORDER BY rowid LIMIT ?""",[scene_id,start_time,end_time,through_rowid,through_rowid,max(1,min(limit,50))])
+            ORDER BY rowid LIMIT ?""",[scene_id,start_time,end_time,through_rowid,through_rowid,limit])
         return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
-    async def query_person_history(self, actor_id, allowed_scopes=None, limit=15, through_rowid=None):
+    async def query_person_history(self, actor_id, allowed_scopes, limit: int, through_rowid=None):
+        if type(limit) is not int or limit < 1:
+            raise ValueError('Person history reads require a positive integer limit')
         if not allowed_scopes: return []
         placeholders=",".join("?" for _ in allowed_scopes)
         cursor=await self._db.execute(f"""
             SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events
             WHERE actor_id=? AND scene_id IN ({placeholders}) AND (? IS NULL OR rowid<=?)
-            ORDER BY rowid DESC LIMIT ?""",[actor_id,*allowed_scopes,through_rowid,through_rowid,max(1,min(limit,50))])
+            ORDER BY rowid DESC LIMIT ?""",[actor_id,*allowed_scopes,through_rowid,through_rowid,limit])
         return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
     async def load_scene_session(self, scene_id):

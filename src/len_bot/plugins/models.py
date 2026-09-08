@@ -24,13 +24,11 @@ class PluginCallContext:
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"
     REGISTER_TOOL = "register_tool"
-    INTERCEPT_ACTION = "intercept_action"
 
 class PluginType(StrEnum):
     SENSORY = "sensory"
     TOOL = "tool"
     SCHEDULED = "scheduled"
-    INTERCEPTOR = "interceptor"
     HYBRID = "hybrid"
 
 class PluginManifest(BaseModel):
@@ -41,9 +39,9 @@ class PluginManifest(BaseModel):
     plugin_type: PluginType = PluginType.HYBRID
     permissions: list[PluginPermission] = Field(default_factory=list)
     enabled: bool
-    timeout_seconds: float = 5.0
+    timeout_seconds: float
     config: dict[str, Any]
-    # ADR-0021 §15.1: declarative manifest surface for the Control Plane
+    # The configured plugin schema is also the control panel's editing surface.
     config_schema: dict[str, Any] = Field(default_factory=dict, description="JSON schema driving the config UI")
     emitted_events: list[str] = Field(default_factory=list)
     registered_tools: list[str] = Field(default_factory=list)
@@ -54,7 +52,7 @@ class PluginToolDefinition(BaseModel):
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]]
-    timeout_seconds: float = 5.0
+    timeout_seconds: float
     kind: Literal["read", "proposal"]
     roles: tuple[Literal["conversation", "work"], ...]
     deferred: bool = False

@@ -1,8 +1,7 @@
-"""Plugin management API (ADR-0021).
+"""Manage the declared builtin catalog through the root configuration.
 
-Serves ONLY the real PluginHost registry — the mock RESERVED_PLUGINS list is
-deleted. Config forms are driven by each manifest's config_schema; enable state
-and config are stored in the root configuration file.
+RuntimeQueryService distinguishes configured entries from loaded plugins;
+save responses retain the actual restart requirement and source status.
 """
 
 from fastapi import APIRouter, Request, Depends, HTTPException

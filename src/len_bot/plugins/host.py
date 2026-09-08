@@ -1,11 +1,10 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional, Callable, Awaitable, Literal
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginToolDefinition
+from dataclasses import dataclass
+from typing import Any, Callable, Awaitable, Literal
+from len_bot.plugins.models import PluginCallContext, PluginToolDefinition
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.actions.models import ActionItem
 from len_bot.tools.results import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PluginRuntimeStatus:
-    """ADR-0021 §15.4: per-plugin health & error state for the Control Plane."""
+    """Actual plugin lifecycle and execution status for the control panel."""
     state: str = "loaded"  # loaded / enabled / disabled / error
     last_error: str = ""
     error_count: int = 0
@@ -32,14 +31,13 @@ RESERVED_CORE_TOOLS: frozenset[str] = frozenset({
 
 
 class PluginHost:
-    """Manages plugin lifecycle, sandboxed tool execution, and action interception (ADR-0016)."""
+    """Own plugin lifecycle and scoped native tool execution."""
 
     def __init__(self, runtime: Any = None):
         self.runtime = runtime
         self._plugins: dict[str, BasePlugin] = {}
         self._plugin_contexts: dict[str, PluginContext] = {}
         self._tools: dict[str, PluginToolDefinition] = {}
-        self._interceptors: dict[str, Callable[[ActionItem], Awaitable[Optional[ActionItem]]]] = {}
         self._status: dict[str, PluginRuntimeStatus] = {}
 
     def register_plugin_tool(
@@ -49,7 +47,7 @@ class PluginHost:
         description: str,
         parameters: dict[str, Any],
         handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]],
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float,
         *,
         kind: Literal["read", "proposal"],
         roles: tuple[Literal["conversation", "work"], ...],
@@ -57,7 +55,7 @@ class PluginHost:
     ) -> None:
         if name in RESERVED_CORE_TOOLS:
             raise ValueError(
-                f"Cannot register tool '{name}': tool name is reserved for core agent retrieval (ADR-0030, §21.2)."
+                f"Cannot register tool '{name}': tool name is reserved for core agent retrieval."
             )
         self._tools[name] = PluginToolDefinition(
             plugin_id=plugin_id,
@@ -68,14 +66,6 @@ class PluginHost:
             timeout_seconds=timeout_seconds, kind=kind, roles=roles, deferred=deferred,
         )
         logger.info("Plugin '%s' registered tool '%s'", plugin_id, name)
-
-    def register_action_interceptor(
-        self,
-        plugin_id: str,
-        interceptor: Callable[[ActionItem], Awaitable[Optional[ActionItem]]]
-    ) -> None:
-        self._interceptors[plugin_id] = interceptor
-        logger.info("Plugin '%s' registered action interceptor", plugin_id)
 
     async def load_plugin(self, plugin: BasePlugin) -> None:
         pid = plugin.manifest.id
@@ -109,9 +99,7 @@ class PluginHost:
         for t in tools_to_remove:
             self._tools.pop(t, None)
 
-        # Clean up interceptors
-        self._interceptors.pop(plugin_id, None)
-        logger.info("Unloaded plugin '%s' and cleaned up tools/interceptors", plugin_id)
+        logger.info("Unloaded plugin '%s' and cleaned up its tools", plugin_id)
 
     async def unload_all(self) -> None:
         for pid in list(self._plugins.keys()):
@@ -156,7 +144,7 @@ class PluginHost:
             logger.error("Plugin '%s' error state: %s", plugin_id, error)
 
     def has_plugin(self, plugin_id: str) -> bool:
-        """ADR-0022: public membership check so routes never touch `_plugins` directly."""
+        """Public membership lookup for lifecycle and configuration callers."""
         return plugin_id in self._plugins
 
     def get_plugin(self, plugin_id: str) -> BasePlugin | None:
@@ -175,7 +163,7 @@ class PluginHost:
         return dict(config)
 
     def status_snapshot(self) -> list[dict[str, Any]]:
-        """Control Plane view: real registry only — no mock entries (ADR-0021)."""
+        """Control panel projection of the plugins actually loaded."""
         out = []
         for pid, plugin in self._plugins.items():
             status = self._status.get(pid, PluginRuntimeStatus())
@@ -268,19 +256,3 @@ class PluginHost:
             self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' crashed: {type(e).__name__} ({e})")
             logger.exception("Tool '%s' from plugin '%s' crashed: %s", tool_name, ptool.plugin_id, e)
             return ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__)
-
-    async def intercept_action(self, action: ActionItem) -> Optional[ActionItem]:
-        """Runs action through active interceptors in sequence with fault protection."""
-        current_action = action
-        for pid, interceptor in list(self._interceptors.items()):
-            plugin = self._plugins.get(pid)
-            if not plugin or not plugin.manifest.enabled:
-                continue
-            try:
-                current_action = await asyncio.wait_for(interceptor(current_action), timeout=3.0)
-                if current_action is None:
-                    logger.info("Action %s blocked by plugin interceptor '%s'", action.id, pid)
-                    return None
-            except Exception as e:
-                logger.error("Error in action interceptor from plugin '%s': %s", pid, e)
-        return current_action
