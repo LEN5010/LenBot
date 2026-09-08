@@ -73,8 +73,8 @@ async def harness(tmp_path):
         event=Event(id=ident,event_type=EventType.GROUP_MESSAGE_RECEIVED,scene_id=actor.scene_id,actor_id='user:1',
             timestamp=store.clock(),payload={'message_id':ident,'raw_text':text,'sender':{'nickname':'阿明'}},metadata=metadata or {})
         await receive(event);return event
-    async def run(ident='turn',observe=None):
-        events=await store.get_recent_events(actor.scene_id)
+    async def run(ident='turn',observe=None,initial_events=None):
+        events=initial_events if initial_events is not None else await store.get_recent_events(actor.scene_id)
         target=actor.session.last_observed_event_rowid
         mailbox=EpisodeMailbox(ident,actor.scene_id,actor.session.version)
         assert actor.acquire_episode_lease(ident,mailbox)
@@ -245,6 +245,82 @@ async def test_paged_beliefs_only_grant_references_for_complete_visible_records(
     second=await toolkit._present('query_memory',ToolResult(content=json.dumps(items,ensure_ascii=False)),offset=page.next_offset)
     assert json.loads(second.content)[0]['ref']=='B2'
     assert context.refs.memory_id('B2')=='memory:1'
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_pages_share_request_budget_and_keep_unread_evidence(harness):
+    import re
+    from len_bot.cognition.call_store import estimate_request
+    from len_bot.cognition.jobs import JobProposal
+    from len_bot.tools.results import ToolResult
+
+    h=harness
+    originals=[await h.human(f'历史资料第{i}段：'+('需要核实的原始资料。'*240),ident=f'old:{i}') for i in range(12)]
+    question=await h.human('查一下之前的资料',ident='current')
+    results=[]
+    for index,name in enumerate(['read_context','search_messages','read_context']):
+        content=json.dumps([event.model_dump(mode='json') for event in originals[index*4:index*4+4]],ensure_ascii=False)
+        result,event=await h.store.save_tool_observation(h.actor.scene_id,name,{},ToolResult(content=content))
+        await h.receive(event)
+        results.append(result)
+    await h.store.commit_proposal_transaction('seed-work',h.actor.scene_id,[],[],[],
+        job_proposals=[JobProposal(proposal_id='seed',goal='核对已有资料',source_event_ids=[question.id],
+            result_ids=[result.result_id for result in results])])
+    first=response(*(call('read_tool_result',{'result_id':f'R{i+1}'},f'read:{i}') for i in range(3)),
+        call('query_jobs',{},'jobs'),reasoning_content='先核对原文再作判断。'*180,
+        native_state={'signature':'opaque-provider-signature','version':3})
+    continuation=first['choices'][0]['message']
+    paged=[]
+
+    async def read_next_page():
+        tool_messages=[message for message in requests[-1]['messages'] if message['role']=='tool']
+        assert [message['tool_call_id'] for message in tool_messages]==['read:0','read:1','read:2','jobs']
+        paged.extend(json.loads(message['content']) for message in tool_messages[:3])
+        page=next(page for page in paged if page['truncated'])
+        return response(call('read_tool_result',{'result_id':page['result_id'],'offset':page['next_offset']},'continue'))
+
+    requests=await h.setup([first,read_next_page,response(call('finish_turn',{'messages':[]}))])
+
+    async def observe():
+        # New tool observations advance storage, while the work facts stay unchanged.
+        return {'session':h.actor.session.model_copy(deep=True),
+            'through_rowid':h.actor.session.last_observed_event_rowid,'events':[]}
+
+    _,audit=await h.run(observe=observe,initial_events=[question])
+    assert len(requests)==audit['model_calls_used']==3
+    assert audit['tool_calls_used']==5 and not audit['contract_repairs']
+    assert all(estimate_request(request['messages'],request['tools'])['input_tokens']<=19904 for request in requests)
+    assert next(message for message in requests[-1]['messages'] if message.get('tool_calls')==continuation['tool_calls'])==continuation
+    assert len([message for message in requests[-1]['messages'] if str(message['content']).startswith('运行事实')])==1
+    assert any(page['truncated'] and page['next_offset'] is not None for page in paged)
+    read=set(audit['references']['read_messages'])
+    assert question.id in read and set(event.id for event in originals)-read
+    visible_refs={ref for message in requests[-1]['messages'] if message['role']=='tool'
+        for ref in re.findall(r'\[(M\d+) ',json.loads(message['content'])['content'])}
+    assert read=={question.id,*(audit['references']['messages'][ref] for ref in visible_refs)}
+    # Raw originals and stored observations remain complete after bounded presentation.
+    for result in results:
+        saved=await h.store.read_tool_observation(result.result_id,[h.actor.scene_id])
+        assert saved.content==result.content
+    assert not h.actions
+
+
+@pytest.mark.asyncio
+async def test_runtime_facts_only_emit_changed_categories_and_explicit_removal(harness):
+    from len_bot.cognition.jobs import JobProposal
+
+    h=harness;source=await h.human()
+    await h.store.commit_proposal_transaction('seed-facts',h.actor.scene_id,[],[],[],
+        job_proposals=[JobProposal(proposal_id='seed',goal='核实资料',source_event_ids=[source.id])])
+    context=ConversationContext(h.runtime,h.actor.session,h.actor.session.last_observed_event_rowid)
+    initial=await context.facts_message()
+    assert '核实资料' in initial['content']
+    assert await context.facts_message() is None
+    job=(await h.store.list_jobs(h.actor.scene_id))[0]
+    await h.store.mark_task_status(job['id'],'cancelled')
+    removed=await context.facts_message()
+    assert json.loads(removed['content'].split('\n')[-1])=={'work':[]}
+    assert await context.facts_message() is None
 
 
 @pytest.mark.asyncio
