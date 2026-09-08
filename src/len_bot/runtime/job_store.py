@@ -219,7 +219,7 @@ class JobStoreMixin(SkillStoreMixin):
             raise ValueError("Job fulfilment requires a completed or partial result ready for delivery")
         return job
 
-    async def report_job_progress(self, job_id, scene_id, revision, summary, result_ids):
+    async def report_job_progress(self, job_id, scene_id, revision, summary, result_ids, *, min_interval_seconds):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -230,7 +230,7 @@ class JobStoreMixin(SkillStoreMixin):
                     raise ValueError("Progress needs concise findings and obtained result IDs")
                 row = await (await self._db.execute("SELECT payload FROM tasks WHERE id=? AND scene_id=?", (job_id, scene_id))).fetchone()
                 payload = json.loads(row[0])
-                if payload.get("progress_at") is not None and self.clock()-payload["progress_at"] < 30:
+                if payload.get("progress_at") is not None and self.clock()-payload["progress_at"] < min_interval_seconds:
                     await self._db.rollback()
                     return None
                 await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.progress',?,'$.progress_at',?) WHERE id=? AND scene_id=?",

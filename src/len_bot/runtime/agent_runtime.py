@@ -92,7 +92,7 @@ class AgentRuntime:
         self.shadow_would_send_log: deque[dict] = deque(maxlen=500)
         self.action_queue = ActionQueue(
             self.event_store, send_adapter=send_adapter, on_action_event=self._on_action_event,
-            bot_actor_id=self.bot_actor_id, action_interceptor=self.prepare_outbound_action,
+            bot_actor_id=self.bot_actor_id, prepare_action=self.prepare_outbound_action,
             shadow_probe=lambda: self.shadow_mode, shadow_recorder=self._record_shadow_action,
             max_concurrent=config.action_max_concurrent,
         )
@@ -105,6 +105,7 @@ class AgentRuntime:
             self.event_store, self.action_queue, scheduler=self.scheduler, metrics=self.metrics,
             origin_mode_provider=lambda: "shadow" if self.shadow_mode else "live",
             bot_actor_id=self.bot_actor_id,
+            open_loop_ttl_seconds=config.open_loop_ttl_seconds,
         )
         self.runtime_gate.jobs_enabled_probe = self._work_enabled
         self.runtime_gate.validate_job_resume = self._validate_job_resume
@@ -180,6 +181,7 @@ class AgentRuntime:
                 call_store=self.event_store, context_tokens=self.config.maintenance_context_tokens,
                 output_tokens=self.config.maintenance_output_tokens,
                 max_steps=self.config.maintenance_max_steps, max_tool_calls=self.config.maintenance_max_tool_calls,
+                memory_limit=self.config.retrieval_default_limit,
             ),
         )
         await self._start_workers(recover=True)
@@ -413,6 +415,7 @@ class AgentRuntime:
     async def operator_outcome(
         self, scene_id: str, outcome: EpisodeOutcome, *, source_event_ids: list[str] | None = None,
     ) -> GateDecision:
+        """Commit panel controls; the Actor/Gate receives no fabricated QQ identity."""
         await self._ingestion_ready.wait()
         if not self._running:
             raise RuntimeError("Runtime is not running")
@@ -433,9 +436,8 @@ class AgentRuntime:
         self._last_gate_decision = decision
         return decision
 
-    async def prepare_outbound_action(self, action: ActionItem):
-        action = await self.plugin_host.intercept_action(action)
-        return await self.media_service.prepare_action(action) if action else None
+    async def prepare_outbound_action(self, action: ActionItem) -> ActionItem:
+        return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
         if action.output_kind == 'chat':

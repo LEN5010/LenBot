@@ -50,8 +50,8 @@ class ModelGateway:
         self.job_id = job_id
         self.batch_id = batch_id
         self.purpose = purpose or binding.role
-        if self.purpose not in {"conversation", "work", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
-            raise ValueError("Maintenance requests need an explicit accounting purpose")
+        if self.purpose not in {"conversation", "announcement", "work", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
+            raise ValueError(f"Unsupported model-call accounting purpose: {self.purpose}")
 
     async def complete(
         self,

@@ -265,8 +265,7 @@ class InformationJobRunner:
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
             checkpoint=runtime.evaluation_hook, media_service=runtime.media_service,
-            page_chars=config.tool_result_page_chars, max_chars=config.tool_result_max_chars,
-            read_concurrency=config.tool_read_concurrency, call_context=plugin_context)
+            config=config, call_context=plugin_context)
         last_charge = time.monotonic()
         charge_lock = asyncio.Lock()
         revision, gateway = None, None
@@ -361,7 +360,8 @@ class InformationJobRunner:
                     raise ToolArgumentError("result_ids must be an array of observed result IDs")
                 try:
                     toolkit.validate_conclusion_sources(result_ids,[])
-                    event = await store.report_job_progress(job_id, scene_id, revision, arguments["summary"], result_ids)
+                    event = await store.report_job_progress(job_id, scene_id, revision, arguments["summary"], result_ids,
+                        min_interval_seconds=config.job_progress_interval_seconds)
                 except ValueError as error:
                     raise ToolArgumentError(str(error)) from error
                 if event:

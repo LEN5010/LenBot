@@ -524,10 +524,13 @@ class RuntimeQueryService:
         if detail:item["payload"]=payload
         return item
 
-    async def query_traces(self, scene_id=None, kind=None, ref_id=None, *, since=None, until=None, page=1, page_size=30):
+    async def query_traces(self, scene_id=None, kind=None, ref_id=None, *, episode_id=None, since=None, until=None, page=1, page_size=30):
         source="FROM traces WHERE 1=1";params=[]
         for field,value in (("scene_id",scene_id),("kind",kind),("ref_id",ref_id)):
             if value is not None:source+=f" AND {field}=?";params.append(value)
+        if episode_id is not None:
+            source += " AND ((kind IN ('conversation','conversation_error') AND ref_id=?) OR json_extract(payload,'$.episode_id')=?)"
+            params.extend([episode_id, episode_id])
         for op,value in ((">=",since),("<=",until)):
             if value is not None:source+=f" AND created_at{op}?";params.append(value)
         result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
