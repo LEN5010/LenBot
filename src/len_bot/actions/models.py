@@ -49,6 +49,7 @@ class ActionItem(BaseModel):
     response_actor_ids: list[str] = Field(default_factory=list)
     associated_open_loop: Optional[dict[str, Any]] = None
     origin_mode: str = "live"
+    acknowledges_task_id: str | None = None
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None

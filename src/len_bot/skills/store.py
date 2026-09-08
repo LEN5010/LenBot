@@ -6,7 +6,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from len_bot.cognition.jobs import SkillCandidate
+from len_bot.cognition.jobs import JobChanged, SkillCandidate
+from len_bot.tools.discovery import rank_discovery
 
 
 class SkillDraft(BaseModel):
@@ -16,6 +17,12 @@ class SkillDraft(BaseModel):
     steps: list[str] = Field(min_length=1, max_length=12)
     verification: list[str] = Field(min_length=1, max_length=12)
     exclusions: list[str] = Field(default_factory=list, max_length=12)
+
+
+class SkillSkip(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=1, max_length=1000,
+                        description="说明候选为何不产生新增方法或有效修订，例如重复、一次性答案、来源不足或暂时故障。")
 
 
 # These authored methods are extracted from the existing worker's verification
@@ -61,6 +68,23 @@ class SkillStoreMixin:
         return [{"id": r[0], "scene_id": r[1], "scope": r[2], "version": r[3], "author": r[4], "updated_at": r[5],
                  **json.loads(r[6]), "source": json.loads(r[7])} for r in rows]
 
+    async def find_skills(self, scene_id: str, query: str, *, limit: int, offset: int = 0):
+        """Return a ranked directory page; reading and version pinning stay separate."""
+        if type(limit) is not int or limit < 1 or type(offset) is not int or offset < 0:
+            raise ValueError("Skill search requires a positive limit and nonnegative record offset")
+        ranked = []
+        for skill in await self.list_skills(scene_id):
+            score = rank_discovery(query, name=skill["name"], aliases=(skill["id"],),
+                keywords=(skill["applicability"],),
+                description=" ".join([*skill["steps"], *skill["verification"], *skill["exclusions"]]))
+            if score is not None:
+                ranked.append((score, skill))
+        ranked.sort(key=lambda item: (tuple(-part for part in item[0]), item[1]["id"]))
+        end = min(offset + limit, len(ranked))
+        return {"items": [{key: skill[key] for key in ("id", "name", "applicability", "exclusions", "version", "author", "scope")}
+                          for _, skill in ranked[offset:end]],
+                "offset": offset, "total": len(ranked), "next_offset": end if end < len(ranked) else None}
+
     async def read_skill(self, skill_id, scene_id, version=None):
         row = await (await self._db.execute("""SELECT s.id,s.scene_id,v.scope,v.version,s.author,s.updated_at,v.body_json,v.source_json
             FROM skills s JOIN skill_versions v ON v.skill_id=s.id AND v.version=COALESCE(?,
@@ -85,7 +109,7 @@ class SkillStoreMixin:
             raise ValueError("Skill candidate must cite this work's actual observations")
         for result_id in candidate.result_ids:
             observation = await self.read_tool_observation(result_id, [job["scene_id"]])
-            if observation is None or observation.status not in {"ok", "partial", "error", "unsupported"}:
+            if observation is None:
                 raise ValueError("Skill evidence unavailable")
         if not set(candidate.correction_event_ids).issubset(job["source_event_ids"]):
             raise ValueError("Correction must locate original input to this work")
@@ -114,6 +138,29 @@ class SkillStoreMixin:
                 (status, error, self.clock(), candidate_id, scene_id))
             await self._db.commit()
 
+    async def skip_skill_candidate(self, candidate_id: str, scene_id: str, decision: SkillSkip):
+        """Commit a normal no-write outcome against the same candidate and work version."""
+        async with self._write_lock:
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                row = await (await self._db.execute(
+                    "SELECT job_id,job_revision,status FROM skill_candidates WHERE id=? AND scene_id=?",
+                    (candidate_id, scene_id))).fetchone()
+                if not row or row[2] != "processing":
+                    raise ValueError("Candidate is not awaiting a maintenance result")
+                job = await self.get_job(row[0], scene_id)
+                if not job or job["revision"] != row[1] or job["status"] == "cancelled":
+                    raise JobChanged("Candidate source work changed before commit")
+                # The existing outcome-text column also retains a normal skip
+                # reason; status distinguishes it from a maintenance failure.
+                await self._db.execute(
+                    "UPDATE skill_candidates SET status='skipped',error=?,updated_at=? WHERE id=? AND scene_id=?",
+                    (decision.reason, self.clock(), candidate_id, scene_id))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
     async def save_skill_draft(self, candidate_id, scene_id, draft: SkillDraft):
         async with self._write_lock:
             try:
@@ -123,8 +170,11 @@ class SkillStoreMixin:
                     raise ValueError("Candidate is not awaiting a maintenance result")
                 job = await self.get_job(row[0], scene_id)
                 if not job or job["revision"] != row[1] or job["status"] == "cancelled":
-                    raise ValueError("Candidate source work changed before commit")
+                    raise JobChanged("Candidate source work changed before commit")
                 candidate = SkillCandidate.model_validate_json(row[2])
+                for result_id in candidate.result_ids:
+                    if await self.read_tool_observation(result_id, [scene_id]) is None:
+                        raise ValueError("Candidate evidence unavailable; choose skip_skill when sources are insufficient")
                 skill_id = candidate.skill_id or "skill_" + uuid.uuid4().hex[:20]
                 version = 1
                 if candidate.skill_id:

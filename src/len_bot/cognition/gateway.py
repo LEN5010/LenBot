@@ -85,7 +85,7 @@ class ModelGateway:
             raw = await self.binding.client.chat.completions.with_raw_response.create(**request)
             # Preserve provider-native signatures and continuation fields.
             body = raw.http_response.json()
-            usage = body.get("usage") or None
+            usage = (body.get("usage") or None) if isinstance(body, dict) else None
             response = self._parse_response(body, round((time.monotonic() - started) * 1000))
         except BaseException as error:
             if call_id is not None:
@@ -107,18 +107,33 @@ class ModelGateway:
     @staticmethod
     def _parse_response(body: dict, latency_ms: int) -> GatewayResponse:
         try:
+            if not isinstance(body, dict) or not isinstance(body.get('choices'), list) or not body['choices']:
+                raise ValueError('Expected a nonempty choices array')
             choice = body["choices"][0]
+            if not isinstance(choice, dict):
+                raise ValueError('Expected a choice object')
             continuation = choice["message"]
             if not isinstance(continuation, dict) or continuation.get("role") != "assistant":
                 raise ValueError("Expected an assistant message")
             calls = []
-            for call in continuation.get("tool_calls") or []:
+            native_calls = continuation.get('tool_calls')
+            if native_calls is None:
+                native_calls = []
+            if not isinstance(native_calls, list):
+                raise ValueError('Expected a native tool-call array')
+            for call in native_calls:
+                if not isinstance(call, dict):
+                    raise ValueError('Expected a native tool-call object')
                 if call.get("type") != "function":
                     raise ValueError("Unsupported native tool-call type")
                 function = call["function"]
+                if not isinstance(function, dict):
+                    raise ValueError('Expected a native tool function object')
                 tool_call = ToolCall(id=call["id"], name=function["name"], arguments=function["arguments"])
                 if not all(isinstance(value, str) for value in (tool_call.id, tool_call.name, tool_call.arguments)):
                     raise ValueError("Native tool-call id, name and arguments must be strings")
+                if not tool_call.id.strip() or not tool_call.name.strip():
+                    raise ValueError('Native tool-call id and name must be nonempty')
                 calls.append(tool_call)
             if len({call.id for call in calls}) != len(calls):
                 raise ValueError("Duplicate native tool-call IDs")

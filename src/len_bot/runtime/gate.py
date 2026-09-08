@@ -97,9 +97,39 @@ class RuntimeGate:
         # It permits state changes without creating a QQ conversation identity.
         if operator_control and (outcome.disposition != FinalDisposition.SILENCE or outcome.message_proposals):
             return GateDecision(FinalDisposition.SILENCE, 'Operator controls cannot submit messages', accepted=False)
-        if (self.scene_policy and mailbox.output_kind == 'chat' and not operator_control
-                and not self.scene_policy.chat_allowed(current_scene_state.scene_id, mailbox.requester_qq_uid)):
-            return GateDecision(FinalDisposition.SILENCE, 'This requester no longer has chat eligibility in this group', accepted=False)
+        read_ids = scene_commit['event'].payload['source_event_ids'] if scene_commit else []
+        source_events = {}
+        if mailbox.output_kind == 'chat' and not operator_control:
+            ids = {message.source_event_id for message in outcome.message_proposals if message.source_event_id}
+            ids.update(outcome.handled_source_event_ids)
+            if not ids.issubset(read_ids):
+                return GateDecision(FinalDisposition.SILENCE, 'Message request source was not read in this turn', accepted=False)
+            source_events = {event.id:event for event in await self.event_store.events_by_ids(
+                current_scene_state.scene_id, list(ids), current_scene_state.last_observed_event_rowid)}
+            requesters = set()
+            requesters.update(event.actor_id.removeprefix('user:') for event in source_events.values()
+                if event.id in outcome.handled_source_event_ids and event.actor_id.startswith('user:') and event.actor_id != self.bot_actor_id)
+            for message in outcome.message_proposals:
+                source = source_events.get(message.source_event_id)
+                if (source is None or source.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                        or source.actor_id == self.bot_actor_id or not message.requester_qq_uid
+                        or source.actor_id != 'user:' + message.requester_qq_uid):
+                    return GateDecision(FinalDisposition.SILENCE, 'Each chat message needs its own human request source', accepted=False)
+                requesters.add(message.requester_qq_uid)
+                if message.job_id and message.fulfils_task_id:
+                    job=await self.event_store.get_job(message.job_id,current_scene_state.scene_id)
+                    if job:requesters.add(job['requester_qq_uid'])
+            requesters.update(proposal.requester_qq_uid for proposal in outcome.job_proposals)
+            task_rows = {task['id']:task for task in await self.event_store.scene_tasks(current_scene_state.scene_id)}
+            for proposal in outcome.task_proposals:
+                if proposal.operation == 'create':
+                    requesters.add(proposal.payload.get('requester_qq_uid'))
+                elif proposal.task_id in task_rows:
+                    requesters.add(task_rows[proposal.task_id]['payload'].get('requester_qq_uid'))
+            if self.scene_policy and (not self.scene_policy.enabled(current_scene_state.scene_id)
+                    or any(not self.scene_policy.chat_allowed(current_scene_state.scene_id, requester)
+                           for requester in requesters)):
+                return GateDecision(FinalDisposition.SILENCE, 'A request source no longer has chat eligibility in this group', accepted=False)
 
         # SceneActor owns input freshness; Gate still honors explicit cancellation.
         if mailbox.is_cancelled():
@@ -116,7 +146,8 @@ class RuntimeGate:
                     "Gate rejected hard anti-spam ceiling: too many messages in one outcome",
                     accepted=False,
                 )
-            if mailbox.output_kind == 'chat' and current_scene_state.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
+            if (mailbox.output_kind == 'chat' and current_scene_state.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES
+                    and not all(message.fulfils_task_id for message in outcome.message_proposals)):
                 return GateDecision(
                     FinalDisposition.SILENCE,
                     "Gate rejected hard anti-loop ceiling: consecutive bot messages",
@@ -145,7 +176,6 @@ class RuntimeGate:
         if len(proposal_ids) != len(set(proposal_ids)):
             return GateDecision(FinalDisposition.SILENCE, "Duplicate task proposal references", accepted=False)
         action_ids = [str(uuid.uuid4()) for _ in outcome.message_proposals]
-        read_ids = scene_commit['event'].payload['source_event_ids'] if scene_commit else []
         response_actors = []
         for message in outcome.message_proposals:
             targets = set()
@@ -158,7 +188,9 @@ class RuntimeGate:
                     targets.add(target)
             if message.reply_target:
                 targets.add(message.reply_target)
-            response_actors.append(sorted(targets or mailbox.interaction_actors))
+            if message.requester_qq_uid:
+                targets.add('user:' + message.requester_qq_uid)
+            response_actors.append(sorted(targets))
         if scene_commit:
             scene_commit['event'].payload['response_actor_ids'] = response_actors
         deliveries = {}
@@ -237,7 +269,7 @@ class RuntimeGate:
         # 5. External Side-Effect Distribution (ActionQueue): enqueue message actions with dependent Open Loops
         actions_count = 0
         now = self.event_store.clock()
-        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries or outcome.job_proposals else {}
+        task_rows = {row['id']: row for row in await self.event_store.scene_tasks(current_scene_state.scene_id)} if deliveries or acknowledgements or outcome.job_proposals else {}
         for index, msg in enumerate(outcome.message_proposals):
             associated_loop = None
             if mailbox.output_kind == 'chat' and msg.expect_reply and msg.reply_target:
@@ -247,7 +279,7 @@ class RuntimeGate:
                     "target_actor_id": msg.reply_target,
                     "intent": msg.reply_intent or "general_response",
                     "source_event_id": "", # Will be filled by SceneActor on MESSAGE_SENT
-                    "source_stimulus_id": getattr(mailbox, "origin_stimulus_id", None),
+                    "source_stimulus_id": msg.source_event_id,
                     "status": "active",
                     "created_at": now,
                     "expires_at": now + self.open_loop_ttl_seconds,
@@ -262,9 +294,11 @@ class RuntimeGate:
             if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
                 action_origin = "shadow"
             job_id, job_revision = msg.job_id, msg.job_revision
+            acknowledged_task_id = None
             if msg.task_ref:
                 # Proposal refs repeat across turns; the transaction binds this unique action ID.
                 task = next((row for row in task_rows.values() if row["payload"].get("ack_action_id") == action_ids[index]), None)
+                acknowledged_task_id = task['id'] if task else None
                 if task and task["payload"].get("kind") == "agent_job":
                     job = await self.event_store.get_job(task["id"], current_scene_state.scene_id)
                     job_id, job_revision = job["id"], job["revision"]
@@ -272,15 +306,17 @@ class RuntimeGate:
             if mailbox.output_kind == 'announcement' and self.scene_policy.scene(current_scene_state.scene_id).mention_all:
                 segments.insert(0, AllMentionSegment())
             action = ActionItem(
-                source_started_at=mailbox.source_started_at,
+                source_started_at=(source_events[msg.source_event_id].timestamp
+                    if msg.source_event_id in source_events else mailbox.source_started_at),
                 id=action_ids[index],
                 fulfils_task_id=msg.fulfils_task_id,
+                acknowledges_task_id=acknowledged_task_id,
                 action_type=action_type,
                 scene_id=current_scene_state.scene_id,
                 segments=segments,
                 output_kind=mailbox.output_kind,
-                requester_qq_uid=mailbox.requester_qq_uid,
-                origin_event_id=mailbox.origin_stimulus_id,
+                requester_qq_uid=msg.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
+                origin_event_id=msg.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
                 command_id=mailbox.command_id,
                 announcement_member=mailbox.announcement_member,
                 batch_id=proposal_commit.episode_id,

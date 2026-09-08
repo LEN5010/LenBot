@@ -31,7 +31,10 @@ async def tool_results(scene_id: str, request: Request, page: int = Query(1,ge=1
 async def tool_result(result_id: str, scene_id: str, request: Request, offset: int = 0, user: str = Depends(get_current_user)):
     if offset < 0:
         raise HTTPException(400, "offset must be nonnegative")
-    result = await _service(request).tool_result(scene_id, result_id, offset)
+    try:
+        result = await _service(request).tool_result(scene_id, result_id, offset)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     if result is None:
         raise HTTPException(404, "未找到本场景的资料")
     return result

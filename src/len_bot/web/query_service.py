@@ -72,7 +72,14 @@ class RuntimeQueryService:
 
     async def tool_result(self, scene_id, result_id, offset=0):
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
-        return self._public(result.page(offset, self.runtime.config.tool_result_page_chars).model_dump()) if result else None
+        if result is None:
+            return None
+        page = self._public(result.page(offset, self.runtime.config.tool_result_page_chars).model_dump())
+        page["content_length"] = len(result.content)
+        if result.source_next_call:
+            page["source_next_call"] = self._public(result.source_next_call.model_dump())
+            page["source_next_call_note"] = "源端下一批，仅位置未取得"
+        return page
 
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
@@ -178,6 +185,9 @@ class RuntimeQueryService:
                                   [scene_id,scene_id,status,status], "created_at DESC,id DESC",page,page_size)
         for item in result["items"]:
             item["candidate"]=self._public(json.loads(item.pop("candidate_json")))
+            item["skip_reason"] = item["error"] if item["status"] == "skipped" else None
+            if item["status"] == "skipped":
+                item["error"] = None
         return result
 
     async def skill(self, skill_id, scene_id, version=None):
@@ -208,6 +218,9 @@ class RuntimeQueryService:
         items=[]
         for item in result["items"]:
             job=await self.runtime.event_store.get_job(item["id"],item["scene_id"])
+            if job['can_resume']:
+                job['resume_issue']=self.runtime.job_resume_issue(job)
+                job['can_resume']=job['resume_issue'] is None
             items.append({**self._public(job),"budget":self.job_budget()})
         result["items"]=items
         return result
@@ -215,6 +228,9 @@ class RuntimeQueryService:
     async def job(self, job_id, scene_id=None):
         task=await self.get_task(job_id,scene_id)
         job=await self.runtime.event_store.get_job(job_id,task["scene_id"]) if task else None
+        if job and job['can_resume']:
+            job['resume_issue']=self.runtime.job_resume_issue(job)
+            job['can_resume']=job['resume_issue'] is None
         return {**self._public(job),"budget":self.job_budget()} if job else None
 
     @staticmethod
@@ -510,17 +526,34 @@ class RuntimeQueryService:
     # ---------- Trace / Metrics / Plugins / Shadow ----------
 
     @staticmethod
+    def _trace_runs(kind, payload):
+        if kind.startswith("agent_job"):
+            return payload.get("runs") or []
+        if kind.startswith("history_maintenance"):
+            return [payload.get("cognition") or {}]
+        return [payload.get("conversation") or payload]
+
+    @staticmethod
     def _trace(item, detail=False):
         item=dict(item);payload=RuntimeQueryService._public(json.loads(item.pop("payload")))
         conversation=payload.get("conversation") or {}
-        item["summary"]=(payload.get("error") or (payload.get("result") or {}).get("decision_reason")
-                         or conversation.get("failure_reason") or payload.get("kind") or item["kind"])[:300]
+        result = payload.get("result") or {}
+        item["summary"]=(payload.get("error") or result.get("decision_reason") or result.get("reason")
+                         or conversation.get("failure_reason") or result.get("summary") or payload.get("kind") or item["kind"])[:300]
+        item["result_status"] = result.get("status")
         if item["kind"] in {"calendar_command", "live_announcement"}:
             label = "日程命令" if item["kind"] == "calendar_command" else "开播邀请"
             state = {"generating":"生成中", "committed":"已提交待回执", "failed":"失败", "interrupted":"已中断"}.get(payload.get("state"), payload.get("state", ""))
             item["summary"] = f"{label} · {state} · {payload.get('member') or payload.get('command_id', '')}"
             if payload.get("error"):
                 item["summary"] += " · " + payload["error"][:200]
+        calls = [call for run in RuntimeQueryService._trace_runs(item["kind"], payload)
+                 for step in run.get("steps", []) for call in step.get("tool_calls", [])]
+        observations = [call.get("observation_status") or (call.get("observation") or {}).get("status") for call in calls]
+        item["tool_outcomes"] = {"returned": sum(call.get("status") == "completed" for call in calls),
+                                 "errors": sum(status in {"error", "unsupported"} or call.get("status") in {"error", "invalid_arguments"}
+                                               for call, status in zip(calls, observations)),
+                                 "no_results": observations.count("no_results")}
         if detail:item["payload"]=payload
         return item
 
@@ -539,7 +572,24 @@ class RuntimeQueryService:
 
     async def trace(self, trace_id, scene_id=None):
         rows=await self._rows("SELECT * FROM traces WHERE id=? AND (? IS NULL OR scene_id=?)",[trace_id,scene_id,scene_id])
-        return self._trace(rows[0],True) if rows else None
+        if not rows:
+            return None
+        result = self._trace(rows[0], True)
+        observed = {}
+        for run in self._trace_runs(result["kind"], result["payload"]):
+            for step in run.get("steps", []):
+                for call in step.get("tool_calls", []):
+                    result_id = (call.get("observation") or {}).get("result_id")
+                    if not result_id:
+                        continue
+                    if result_id not in observed:
+                        observation = await self.runtime.event_store.read_tool_observation(result_id, [result["scene_id"]])
+                        observed[result_id] = ({**self._public(observation.model_dump(exclude={"content"})),
+                                                "content_length": len(observation.content)} if observation else None)
+                    # Stored source metadata is distinct from the exact range
+                    # presented to the model in the recorded exchange.
+                    call["stored_observation"] = observed[result_id]
+        return result
 
     def status(self):
         snapshot=self.providers();profiles=snapshot["routing"] or {};roles={}
@@ -608,12 +658,16 @@ class RuntimeQueryService:
             if not exists:return None
         if action_id:
             receipts=await self._rows("SELECT id FROM events WHERE scene_id=? AND json_extract(payload,'$.action_id')=? LIMIT 1",[scene_id,action_id])
+            deliveries=await self._rows("""SELECT id FROM tasks WHERE scene_id=? AND
+                (json_extract(payload,'$.delivery_action_id')=? OR json_extract(payload,'$.ack_action_id')=?) LIMIT 1""",
+                [scene_id,action_id,action_id])
             approvals=await self._rows("""SELECT ref_id,kind,payload FROM traces WHERE scene_id=? AND (
                 EXISTS(SELECT 1 FROM json_each(payload,'$.gate.action_ids') WHERE value=?)
                 OR (kind IN ('calendar_command','live_announcement') AND EXISTS(
                     SELECT 1 FROM json_each(payload,'$.action_ids') WHERE value=?)))
                 ORDER BY created_at DESC,id DESC LIMIT 1""",[scene_id,action_id,action_id])
-            if not receipts and not approvals:return None
+            if not receipts and not approvals and not deliveries:return None
+            job_ids.update(item["id"] for item in deliveries)
             for item in approvals:
                 if item["kind"] in {"calendar_command", "live_announcement"}:
                     event_ids.add(item["ref_id"])
@@ -628,15 +682,17 @@ class RuntimeQueryService:
         commits=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
             membership("id",event_ids|{'turn:'+ident for ident in episode_ids}),
             ("event_type='CONVERSATION_COMMITTED' AND EXISTS(SELECT 1 FROM json_each(payload,'$.source_event_ids') WHERE "+source_clause+")",source_values),
+            membership("json_extract(payload,'$.origin_event_id')", event_ids),
             membership("json_extract(payload,'$.batch_id')",episode_ids),
             membership("json_extract(payload,'$.action_id')",action_ids)],"rowid DESC","events")
         for event in commits:
             event_ids.add(event["id"]);payload=json.loads(event["payload"])
             if event["event_type"]=="CONVERSATION_COMMITTED" and event["id"].startswith('turn:'):
                 episode_ids.add(event["id"][5:]);event_ids.update(payload.get("source_event_ids",[]))
+                event_ids.update(payload.get("handled_source_event_ids", []))
             if payload.get("batch_id"):episode_ids.add(payload["batch_id"])
             if payload.get("job_id"):job_ids.add(payload["job_id"])
-            for task_id in (payload.get("task_id"), payload.get("fulfils_task_id")):
+            for task_id in (payload.get("task_id"), payload.get("fulfils_task_id"), payload.get("acknowledges_task_id")):
                 if task_id and await self.job(task_id, scene_id):job_ids.add(task_id)
             if payload.get("action_id"):action_ids.add(payload["action_id"])
             if payload.get("origin_event_id"):event_ids.add(payload["origin_event_id"])
@@ -650,10 +706,23 @@ class RuntimeQueryService:
         job_rows=await linked("SELECT j.id,j.scene_id,j.source_event_ids_json,j.result_ids_json,t.origin_episode_id",
             "FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE j.scene_id=?",[
                 membership("j.id",job_ids),membership("t.origin_episode_id",episode_ids),
+                membership("json_extract(t.payload,'$.delivery_action_id')", action_ids),
+                membership("json_extract(t.payload,'$.ack_action_id')", action_ids),
+                membership("json_extract(t.payload,'$.delivery_event_id')", event_ids),
                 ("EXISTS(SELECT 1 FROM json_each(j.source_event_ids_json) WHERE "+source_clause+")",source_values)],"t.created_at DESC,j.id DESC","jobs")
+        jobs = []
         for job in job_rows:
             job_ids.add(job["id"]);event_ids.update(json.loads(job["source_event_ids_json"]));result_ids.update(json.loads(job["result_ids_json"]))
             if job["origin_episode_id"]:episode_ids.add(job["origin_episode_id"])
+            detail = await self.job(job["id"], scene_id)
+            if detail:
+                jobs.append(detail)
+                for field in ("request_source_event_id", "delivery_event_id"):
+                    if detail.get(field):
+                        event_ids.add(detail[field])
+                for field in ("delivery_action_id", "ack_action_id"):
+                    if detail.get(field):
+                        action_ids.add(detail[field])
         native_clause, native_values = membership("ref_id", event_ids)
         native_episode_clause, native_episode_values = membership("json_extract(payload,'$.episode_id')", episode_ids)
         trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[
@@ -666,6 +735,12 @@ class RuntimeQueryService:
             refs=conversation.get("references") or {}
             result_ids.update((refs.get("results") or {}).values())
             action_ids.update((payload.get("gate") or {}).get("action_ids",[]))
+            for run in self._trace_runs(row["kind"], payload):
+                for step in run.get("steps", []):
+                    for call in step.get("tool_calls", []):
+                        observed_id = (call.get("observation") or {}).get("result_id")
+                        if observed_id:
+                            result_ids.add(observed_id)
             if row["kind"] in {"calendar_command", "live_announcement"}:
                 action_ids.update(payload.get("action_ids", []))
                 if payload.get("source_event_id"):
@@ -684,21 +759,48 @@ class RuntimeQueryService:
         cutoff=max((row["rowid"] for row in events),default=0)
         event_views=await self._event_views(events,cutoff)
         actions={ident:{"id":ident,"scene_id":scene_id,"episode_id":None,"job_id":None,"origin_mode":None,
-                        "delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in action_ids}
+                        "job_revision":None,"origin_event_id":None,"request_source_event_id":None,"requester_qq_uid":None,
+                        "acknowledges_task_id":None,"fulfils_task_id":None,
+                        "delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in sorted(action_ids)}
+        for job in jobs:
+            if job.get("delivery_action_id") in actions:
+                actions[job["delivery_action_id"]].update(job_id=job["id"], request_source_event_id=job.get("request_source_event_id"))
+            if job.get("ack_action_id") in actions:
+                actions[job["ack_action_id"]].update(acknowledges_task_id=job["id"], request_source_event_id=job.get("request_source_event_id"))
         for event in reversed(event_views):
             ident=event["payload"].get("action_id")
             if not ident:continue
             action=actions.setdefault(ident,{"id":ident,"scene_id":scene_id,"receipt_event_ids":[]})
             action.update(delivery_status=event["delivery_status"],simulated=event["simulated"],origin_mode=event["origin_mode"],
-                          episode_id=event["payload"].get("batch_id"),job_id=event["payload"].get("job_id"))
+                          episode_id=event["payload"].get("batch_id"),job_id=event["payload"].get("job_id"),
+                          job_revision=event["payload"].get("job_revision"),origin_event_id=event["payload"].get("origin_event_id"),
+                          requester_qq_uid=event["payload"].get("requester_qq_uid"),
+                          acknowledges_task_id=event["payload"].get("acknowledges_task_id", action.get("acknowledges_task_id")),
+                          fulfils_task_id=event["payload"].get("fulfils_task_id"))
             action["receipt_event_ids"].append(event["id"])
         tools=[]
         for row in observations:
             result=ToolResult.model_validate_json(row["result_json"])
             tools.append({"id":row["id"],"event_id":row["event_id"],"scene_id":scene_id,"tool_name":row["tool_name"],
-                          "created_at":row["created_at"],"status":result.status,"coverage":result.coverage,"content_length":len(result.content)})
+                          "created_at":row["created_at"],"status":result.status,"error_code":result.error_code,
+                          "sources":self._public([source.model_dump() for source in result.sources]),
+                          "coverage":result.coverage,"content_length":len(result.content)})
+        turns = []
+        for event in event_views:
+            if event["event_type"] != "CONVERSATION_COMMITTED":
+                continue
+            payload = event["payload"]
+            turns.append({"event_id":event["id"], "episode_id":event["id"][5:] if event["id"].startswith("turn:") else None,
+                          "read_source_event_ids":payload.get("source_event_ids", []),
+                          "handled_source_event_ids":payload.get("handled_source_event_ids"),
+                          "outcome":payload.get("outcome")})
+        session = await self.runtime.event_store.load_scene_session(scene_id) if event_id else None
+        source_handling = ({"event_id":event_id,
+                            "pending":any(wake["event_id"] == event_id for wake in session.get("pending_wakes", [])) if session else None}
+                           if event_id else None)
         return {"events":event_views,"traces":[self._trace(row) for row in trace_rows],"calls":[self._call(row) for row in calls],
-                "jobs":[await self.job(row["id"],scene_id) for row in job_rows],"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
+                "jobs":jobs,"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
+                "turns":turns,"source_handling":source_handling,
                 "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches")},
                 "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
 
