@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { mdiClose } from '@mdi/js'
 import { fmtTime, attentionReason } from '../api.js'
+import { interactionReason } from '../domain/activity.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import ResourceViewer from './ResourceViewer.vue'
@@ -42,6 +43,12 @@ const disposition = value => ({ SILENCE: 'silence', ACTION: 'expression' }[value
         <div class="inspector-identity"><strong>{{ event.display_name || event.actor_id }}</strong><time>{{ fmtTime(event.timestamp) }}</time><EntityLink type="event" :id="event.id" :scene-id="event.scene_id" /><span>原始位置 {{ event.rowid }} · {{ event.event_type }}</span></div>
         <div class="inspector-badges"><StatusBadge v-if="event.delivery_status" domain="delivery" :status="event.delivery_status" /><StatusBadge v-if="event.simulated" domain="delivery" status="simulated" /></div>
         <ResourceViewer title="消息全文" :content="event.payload.raw_text ?? event.payload.content ?? '此事件没有文字正文。'" />
+        <template v-if="event.interaction">
+          <h3>交互归属</h3><p>{{ interactionReason(event.interaction.interaction_reason) }}</p>
+          <p v-if="event.interaction.requester_qq_uid">原请求者 QQ：{{ event.interaction.requester_qq_uid }}</p>
+          <p v-if="event.interaction.command_id">日程命令：{{ event.interaction.command_id }}</p>
+          <EntityLink v-if="event.interaction.calendar_parent_event_id" type="event" :id="event.interaction.calendar_parent_event_id" :scene-id="event.scene_id" label="查看实际引用的日程交互" />
+        </template>
         <h3>注意力与本轮读取</h3>
         <template v-if="hasAttention"><p v-if="event.attention.attention_reasons.length">{{ event.attention.attention_reasons.map(attentionReason).join(' · ') }}</p><p v-else><StatusBadge domain="attention" status="stored_only" /> 未产生独立唤醒</p><v-chip v-if="event.attention.attention_reasons.length" size="small" variant="tonal">{{ Object.hasOwn(event.attention, 'attention_certain') ? (event.attention.attention_certain ? '确定唤醒来源' : '观察机会') : '未记录唤醒确定性' }}</v-chip></template>
         <p v-else class="muted-copy">没有保存注意力判定。</p>

@@ -55,3 +55,5 @@ node_modules/
 # Local trial state and recovery copies
 /.backups/
 /.runtime/
+/lenbot.config.json
+/.lenbot-config-*.json

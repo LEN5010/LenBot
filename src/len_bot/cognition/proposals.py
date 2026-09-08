@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import copy
-import json
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
-from len_bot.cognition.jobs import JobProposal
+from len_bot.cognition.jobs import GroupSummaryRange, JobProposal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
 from len_bot.memory.models import MemoryProposal
 
@@ -54,6 +53,17 @@ class ReviseWork(Evidence):
     goal:str|None=None
     constraints_add:list[str]=Field(default_factory=list)
     constraints_remove:list[str]=Field(default_factory=list)
+    start_at: AwareDatetime | None = None
+    end_at: AwareDatetime | None = None
+    focus: str | None = None
+
+    @model_validator(mode='after')
+    def range_pair(self):
+        if (self.start_at is None) != (self.end_at is None):
+            raise ValueError('修订总结时间时必须同时提供start_at和end_at')
+        if self.start_at is not None and self.start_at >= self.end_at:
+            raise ValueError('总结范围必须满足start_at < end_at')
+        return self
 
 class ControlWork(Evidence):
     work_ref:str
@@ -153,31 +163,36 @@ FINISH_TURN={
 }
 
 
-def argument_feedback(error, image_ref=None):
-    if not isinstance(error, ValidationError):
-        return str(error)[:1000]
-    issues=error.errors(include_url=False,include_input=False,include_context=False)
-    lines=[]
-    for issue in issues[:4]:
-        path=''.join(f'[{part}]' if isinstance(part,int) else ('.' if i else '')+str(part)
-                     for i,part in enumerate(issue['loc'])) or 'arguments'
-        lines.append(f"{path}: {issue['msg']}")
-    if any('segments' in issue['loc'] for issue in issues):
-        hint='每个片段只填一个内容字段，不填type：{"text":"一句回应"}'
-        if image_ref:
-            hint+=' 或 '+json.dumps({'image':image_ref},ensure_ascii=False)
-        lines.append(hint+'。')
-    return '\n'.join(lines)[:1000]
-
-
 class ProposalLedger:
-    def __init__(self,context,episode_id):
+    def __init__(self, context, episode_id, requester_qq_uid):
         self.context=context
         self.episode_id=episode_id
+        self.requester_qq_uid = requester_qq_uid
         self.jobs=[];self.tasks=[];self.memories=[];self.loops=[]
         self.proposal_refs=set()
         self.staged={}
         self._next_handle=1
+
+    def stage_group_summary(self, *, start_at, end_at, focus, evidence):
+        refs = self.context.refs
+        if not refs.scene_id.startswith('group:') or not self.requester_qq_uid:
+            raise ToolArgumentError('群聊总结需要当前群中的真实请求者')
+        sources = [refs.event_id(reference) for reference in evidence]
+        request = GroupSummaryRange(start_at=start_at, end_at=end_at, focus=focus,
+            snapshot_rowid=refs.cutoff, snapshot_at=self.context.runtime.clock(),
+            bot_actor_id=self.context.runtime.bot_actor_id)
+        proposal_ref = f'S{self._next_handle}'
+        proposal = JobProposal(proposal_id=proposal_ref,
+            goal=f'总结本群 [{request.start_at.isoformat()}, {request.end_at.isoformat()}) 的已保存群聊。关注：{focus}',
+            source_event_ids=sources, requester_qq_uid=self.requester_qq_uid,
+            work_operation='group_summary', summary_range=request)
+        self._next_handle += 1
+        self.jobs.append(proposal)
+        self.proposal_refs.add(proposal_ref)
+        self.staged[proposal_ref] = ('jobs', proposal)
+        return {'status':'staged', 'proposal_ref':proposal_ref, 'ack_ref':proposal_ref,
+                'summary_range':request.model_dump(mode='json'),
+                'note':'本群总结尚未创建工作；finish_turn提交后才进入原工作运行器，确认消息必须使用本轮ack_ref。'}
 
     def terminal_definition(self):
         result=copy.deepcopy(FINISH_TURN)
@@ -218,19 +233,32 @@ class ProposalLedger:
             if name=='start_work':
                 collection='jobs'
                 value=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
-                    source_event_ids=evidence,result_ids=[refs.result_id(r) for r in model.result_refs])
+                    source_event_ids=evidence,result_ids=[refs.result_id(r) for r in model.result_refs],
+                    requester_qq_uid=self.requester_qq_uid)
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
                 collection='jobs'
+                summary_range = None
+                if name == 'revise_work' and (model.start_at is not None or model.focus is not None):
+                    if job['work_operation'] != 'group_summary':
+                        raise ValueError('只有总结工作可以修订总结范围或focus')
+                    values = dict(job['summary_range'])
+                    if model.start_at is not None:
+                        values.update(start_at=model.start_at, end_at=model.end_at,
+                                      snapshot_rowid=refs.cutoff, snapshot_at=self.context.runtime.clock())
+                    if model.focus is not None:
+                        values['focus'] = model.focus
+                    summary_range = GroupSummaryRange.model_validate(values)
                 value=JobProposal(operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
                     job_id=job['id'],expected_revision=job['revision'],source_event_ids=evidence,
-                    goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]))
+                    goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]),
+                    requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'], summary_range=summary_range)
             elif name=='schedule_reminder':
                 collection='tasks'
                 value=TaskProposal(proposal_id=proposal_ref,description=model.description,due_at=model.due_at,
                     delay_seconds=model.delay_seconds,
                     requester_id=refs.actor_id(model.requester),target_actor_id=refs.actor_id(model.target or model.requester),
-                    source_event_ids=evidence,payload={'kind':'reminder'},origin_episode_id=self.episode_id)
+                    source_event_ids=evidence,payload={'kind':'reminder','requester_qq_uid':self.requester_qq_uid},origin_episode_id=self.episode_id)
             elif name in {'update_reminder','cancel_reminder'}:
                 collection='tasks'
                 value=TaskProposal(operation='update' if name=='update_reminder' else 'cancel',
@@ -258,7 +286,7 @@ class ProposalLedger:
                     **({'ack_ref':proposal_ref} if creation else {}),
                     'note':'尚未提交；可用discard_proposal撤回本条，finish_turn统一提交剩余提案。此引用不是实际工作J或提醒T'}
         except (ValueError,KeyError) as error:
-            raise ToolArgumentError(str(error),model_message=argument_feedback(error)) from error
+            raise ToolArgumentError(str(error)) from error
 
     async def finish(self,arguments):
         try:
@@ -305,5 +333,4 @@ class ProposalLedger:
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
         except (ValueError,KeyError) as error:
-            feedback=argument_feedback(error,next(iter(self.context.refs.media),None))
-            raise TerminalArgumentError(str(error),model_message=feedback) from error
+            raise TerminalArgumentError(str(error)) from error

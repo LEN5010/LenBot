@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import signal
+import os
 import sys
-from len_bot.config import RuntimeConfig
+from len_bot.config_store import ConfigStore
 from len_bot.runtime.agent_runtime import AgentRuntime
 from len_bot.adapters.onebot import OneBotAdapter
 
@@ -13,8 +14,14 @@ logging.basicConfig(
 logger = logging.getLogger("len_bot")
 
 async def run_app():
-    config = RuntimeConfig()
-    runtime = AgentRuntime(config)
+    # The SDK reads ambient headers independently of HTTPX trust_env.
+    # This process uses only the operator configuration for provider settings.
+    for name in ("OPENAI_API_KEY", "OPENAI_ADMIN_KEY", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID",
+                 "OPENAI_WEBHOOK_SECRET", "OPENAI_BASE_URL", "OPENAI_CUSTOM_HEADERS"):
+        os.environ.pop(name, None)
+    config_store = ConfigStore.load()
+    config = config_store.current.runtime
+    runtime = AgentRuntime(config, config_store=config_store)
     adapter = OneBotAdapter(
         config,
         on_event=runtime.receive_event,
@@ -55,7 +62,6 @@ async def run_app():
   🤖 Len Bot - Native Conversation and Work Runtime
 ======================================================================
   ● Web 管理面板 (Dashboard):  {"http://" + config.dashboard_host + ":" + str(config.dashboard_port) if config.dashboard_enabled else "Disabled"}
-  ● 默认管理员凭据:           admin / lenbot123
   ● OneBot v11 消息连接:      {onebot_link}
   ● OneBot v11 发送方式:      {action_transport}
   ● 数据库路径:               {config.db_path}

@@ -14,7 +14,7 @@ class ActionQueue:
     def __init__(self, event_store: EventStore,
                  send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
                  on_action_event=None, bot_actor_id="system:action_queue", action_interceptor=None,
-                 shadow_probe=None, shadow_recorder=None):
+                 shadow_probe=None, shadow_recorder=None, *, max_concurrent: int):
         self.event_store, self.send_adapter = event_store, send_adapter
         self.on_action_event, self.bot_actor_id = on_action_event, bot_actor_id
         self.action_interceptor = action_interceptor
@@ -24,7 +24,7 @@ class ActionQueue:
         self._running = False
         self._scene_queues = {}
         self._scene_workers = {}
-        self._delivery_slots = asyncio.Semaphore(4)
+        self._delivery_slots = asyncio.Semaphore(max_concurrent)
         self._failed_batches = set()
         self._attempted = set()
         self._enqueued_at = {}
@@ -33,7 +33,6 @@ class ActionQueue:
         self.pacing = False
         self.sleep = asyncio.sleep
         self.validate_before_send = None
-        self.scene_shadow_probe = None
 
     async def start(self):
         self._running = True
@@ -77,11 +76,14 @@ class ActionQueue:
                 "job_id": action.job_id, "job_revision": action.job_revision,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
                 "response_actor_ids": action.response_actor_ids,
+                "output_kind": action.output_kind, "requester_qq_uid": action.requester_qq_uid,
+                "origin_event_id": action.origin_event_id, "command_id": action.command_id,
+                "announcement_member": action.announcement_member,
                 "source_started_at": action.source_started_at}
 
     def _shadow(self, action):
-        return (action.origin_mode == "shadow" or bool(self.shadow_probe and self.shadow_probe())
-                or bool(self.scene_shadow_probe and self.scene_shadow_probe(action.scene_id)))
+        return (action.origin_mode == "shadow" or action.scene_id.startswith('private:')
+                or bool(self.shadow_probe and self.shadow_probe()))
 
     async def _reject(self, action, reason, *, unknown=False):
         await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,

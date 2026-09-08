@@ -92,12 +92,14 @@ class HistoryStoreMixin:
             boundary = origin[0] if origin else 0
             after_rowid, after_offset = last if last else (boundary, None)
             events = await self.get_events_since(scene_id, after_rowid=max(0, after_rowid - (1 if last else 0)),
-                                                  limit=1000, event_types=_HISTORY_TYPES)
+                                                  limit=1000, event_types=_HISTORY_TYPES, conversation_only=True)
             segments = []
             used = 0
             full_block = False
             for event in events:
                 rowid = event.metadata["_rowid"]
+                if event.metadata.get('conversation_excluded'):
+                    continue
                 text = history_source_text(event)
                 start = after_offset if rowid == after_rowid and after_offset is not None else 0
                 if start >= len(text):

@@ -1,7 +1,25 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING
 from pydantic import BaseModel, Field
-import time
+from len_bot.tools.results import ToolResult
+
+if TYPE_CHECKING:
+    from len_bot.cognition.proposals import ProposalLedger
+
+
+@dataclass(frozen=True)
+class PluginCallContext:
+    scene_id: str
+    requester_qq_uid: str | None
+    now: float
+    cutoff_rowid: int
+    episode_id: str | None
+    job_id: str | None
+    role: Literal["conversation", "work"]
+    ledger: ProposalLedger | None = None
 
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"
@@ -22,12 +40,11 @@ class PluginManifest(BaseModel):
     description: str = ""
     plugin_type: PluginType = PluginType.HYBRID
     permissions: list[PluginPermission] = Field(default_factory=list)
-    enabled: bool = True
+    enabled: bool
     timeout_seconds: float = 5.0
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any]
     # ADR-0021 §15.1: declarative manifest surface for the Control Plane
     config_schema: dict[str, Any] = Field(default_factory=dict, description="JSON schema driving the config UI")
-    default_config: dict[str, Any] = Field(default_factory=dict)
     emitted_events: list[str] = Field(default_factory=list)
     registered_tools: list[str] = Field(default_factory=list)
 
@@ -36,7 +53,8 @@ class PluginToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Any  # Callable[[dict[str, Any]], Awaitable[str]]
+    handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]]
     timeout_seconds: float = 5.0
-    read_only: bool = False
+    kind: Literal["read", "proposal"]
+    roles: tuple[Literal["conversation", "work"], ...]
     deferred: bool = False

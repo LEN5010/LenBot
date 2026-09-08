@@ -1,7 +1,6 @@
 """Scene-local, evidence-linked skill proposals and immutable revisions."""
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 
@@ -99,8 +98,13 @@ class SkillStoreMixin:
             if not skill or skill["author"] != "agent" or skill["scene_id"] != job["scene_id"] or skill["version"] != candidate.expected_version:
                 raise ValueError("Cannot revise foreign, authored or outdated skill")
         encoded = candidate.model_dump_json()
-        ident = "skill_candidate_" + hashlib.sha256(f'{job["id"]}:{job["revision"]}:{encoded}'.encode()).hexdigest()[:24]
-        await self._db.execute("INSERT OR IGNORE INTO skill_candidates VALUES(?,?,?,?,?,'pending',NULL,NULL,?,?)",
+        existing = await (await self._db.execute("""SELECT id FROM skill_candidates
+            WHERE scene_id=? AND job_id=? AND job_revision=? AND candidate_json=?
+            ORDER BY created_at,id LIMIT 1""", (job["scene_id"], job["id"], job["revision"], encoded))).fetchone()
+        if existing is not None:
+            return existing[0]
+        ident = "skill_candidate_" + uuid.uuid4().hex
+        await self._db.execute("INSERT INTO skill_candidates VALUES(?,?,?,?,?,'pending',NULL,NULL,?,?)",
             (ident, job["scene_id"], job["id"], job["revision"], encoded, self.clock(), self.clock()))
         return ident
 

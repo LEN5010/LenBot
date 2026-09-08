@@ -45,7 +45,7 @@ class RuntimeQueryService:
         # Public diagnostics never expose provider continuation or storage paths.
         private = {"api_key", "password", "password_hash", "authorization", "access_token", "refresh_token",
                    "token", "path", "locator", "base64", "checkpoint_data", "checkpoint_json", "messages_json",
-                   "continuation", "extra_content", "provider_private", "reasoning_content"}
+                   "continuation", "extra_content", "provider_private", "reasoning_content", "read_result_ranges"}
         if isinstance(value, dict):
             return {key: RuntimeQueryService._public(item) for key,item in value.items()
                     if key.lower() not in private and "signature" not in key.lower()}
@@ -72,12 +72,42 @@ class RuntimeQueryService:
 
     async def tool_result(self, scene_id, result_id, offset=0):
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
-        return self._public(result.page(offset).model_dump()) if result else None
+        return self._public(result.page(offset, self.runtime.config.tool_result_page_chars).model_dump()) if result else None
 
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
             "attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",
             "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens")}
+
+    def access_settings(self):
+        return self.runtime.config_store.current.access.model_dump()
+
+    def time_settings(self):
+        settings = self.runtime.config_store.current.time
+        return settings.model_dump() if settings is not None else None
+
+    def member_settings(self):
+        return [member.model_dump() for member in self.runtime.config_store.current.members]
+
+    def scene_settings(self, scene_id):
+        if not re.fullmatch(r"group:[1-9][0-9]*", scene_id):
+            raise ValueError("本群设置只接受 group:实际QQ群号")
+        settings = self.runtime.config_store.current.scenes.get(scene_id)
+        if settings is None:
+            effect = "本群未配置，不产生新认知与发送；已有原话保留。"
+        elif not settings.enabled:
+            effect = "本群已停用，不产生新认知、命令回复或公告；已有原话保留。"
+        elif settings.chat:
+            effect = "普通成员可正常互动，命令与公告按本群选项执行。"
+        else:
+            effect = "普通成员闲聊仅保存；QQ 白名单仍可正常提问，命令与公告按本群选项执行。"
+        if self.runtime.shadow_mode:
+            effect += " 当前全局 Shadow 开启，不实际发送。"
+        return {"scene_id": scene_id, "configured": settings is not None,
+                "settings": settings.model_dump() if settings is not None else None,
+                "effect": effect, "members": self.member_settings(),
+                "plugins": [{key: item[key] for key in ("id", "name", "configured", "enabled")}
+                            for item in self.plugins()]}
 
     def maintenance_readiness(self):
         snapshot = self.providers()
@@ -211,7 +241,7 @@ class RuntimeQueryService:
         return self.public_asset(asset) if asset else None
 
     async def media_palette(self, scene_id):
-        items=[self.public_asset(asset) for asset in await self.runtime.event_store.list_palette(scene_id)]
+        items=[self.public_asset(asset) for asset in await self.runtime.event_store.list_palette(scene_id, limit=self.runtime.config.media_palette_limit)]
         return {"items":items,"total":len(items),"complete":True}
 
     async def media_file(self, asset_id, scene_id):
@@ -222,7 +252,7 @@ class RuntimeQueryService:
             "character_context","identity_name","identity_core","identity_persona","conversation_style","address_names","bot_qq")}
 
     async def preview_diana_persona(self):
-        return await self.runtime.event_store.preview_diana_persona()
+        return await self.runtime.event_store.preview_diana_persona(palette_limit=self.runtime.config.media_palette_limit)
 
     # ---------- Overview ----------
 
@@ -247,8 +277,8 @@ class RuntimeQueryService:
                 "memory_beliefs_count": memory_count,
                 "websocket_connected": self.websocket_connected(),
                 "onebot_connection_mode": rt.config.onebot_connection_mode,
-                "conversation_model": routing["routing"]["conversation"]["model"] if routing["routing"] else None,
-                "work_model": routing["routing"]["work"]["model"] if routing["routing"] else None,
+                "conversation_model": routing["routing"]["conversation"]["model"] if routing["routing"] and routing["routing"]["conversation"] else None,
+                "work_model": routing["routing"]["work"]["model"] if routing["routing"] and routing["routing"]["work"] else None,
                 "maintenance_model": routing["routing"]["maintenance"]["model"] if routing["routing"] and routing["routing"]["maintenance"] else None,
                 "maintenance": self.maintenance_readiness(),
                 "identity_name": rt.config.identity_name,
@@ -268,25 +298,27 @@ class RuntimeQueryService:
         return bool(adapter and adapter.connected)
 
     def onebot_status(self) -> dict:
-        adapter = getattr(self.runtime, "_onebot_adapter", None)
-        if adapter:
-            return adapter.status()
-        config = self.runtime.config
-        return {
-            "connection_mode": config.onebot_connection_mode,
-            "action_transport": config.onebot_action_transport,
-            "ws_url": config.onebot_ws_url,
-            "http_url": config.onebot_http_url,
-            "host": config.ws_host,
-            "port": config.ws_port,
-            "connected": False,
-            "remote_address": None,
-            "server_status": "stopped",
-            "connector_status": "stopped",
-            "last_error": None,
-            "access_token_set": bool(config.onebot_access_token),
-            "echo_counter": 0,
+        adapter = self.runtime._onebot_adapter
+        configured = self.runtime.config_store.current.runtime
+        status = adapter.status() if adapter else {
+            "connected": False, "remote_address": None, "server_status": "stopped",
+            "connector_status": "stopped", "last_error": None, "echo_counter": 0,
         }
+        status["active_connection"] = {key:status.get(key) for key in
+            ("connection_mode", "action_transport", "ws_url", "http_url", "host", "port")}
+        status.update(connection_mode=configured.onebot_connection_mode,
+            action_transport=configured.onebot_action_transport, ws_url=configured.onebot_ws_url,
+            http_url=configured.onebot_http_url, host=configured.ws_host, port=configured.ws_port,
+            access_token_set=bool(configured.onebot_access_token), requires_restart=self.runtime.restart_required)
+        return status
+
+    def runtime_settings(self):
+        excluded = {"ws_host", "ws_port", "address_names", "character_context",
+                    "conversation_style", "dashboard_secret_key", "dashboard_default_admin_password"}
+        values = self.runtime.config_store.current.runtime.model_dump()
+        settings = {key:value for key,value in values.items()
+                    if key not in excluded and not key.startswith(("identity_", "onebot_"))}
+        return {"settings":settings, "requires_restart":self.runtime.restart_required}
 
     # ---------- Scenes ----------
 
@@ -296,9 +328,20 @@ class RuntimeQueryService:
             AND status IN ('pending','claimed','processing','review_required','result_ready','awaiting_delivery') GROUP BY scene_id""")
         counts={item["scene_id"]:item["total"] for item in counts}
         sessions=[SceneSession.model_validate_json(row["state_json"]) for row in rows]
-        return [{"scene_id":session.scene_id,**self.scene_label(session.scene_id),"version":session.version,
+        items = [{"scene_id":session.scene_id,**self.scene_label(session.scene_id),"version":session.version,
             "participant_count":len(session.participants),"last_event_at":session.last_event_at,"last_bot_message_at":session.last_bot_message_at,
-            "active_job_count":counts.get(session.scene_id,0),"pending_wake_count":len(session.pending_wakes)} for session in sessions]
+            "active_job_count":counts.get(session.scene_id,0),"pending_wake_count":len(session.pending_wakes),
+            "has_history": True} for session in sessions]
+        known = {item["scene_id"] for item in items}
+        for scene_id in self.runtime.config_store.current.scenes:
+            if scene_id not in known:
+                items.append({"scene_id": scene_id, **self.scene_label(scene_id), "version": None,
+                              "participant_count": 0, "last_event_at": None, "last_bot_message_at": None,
+                              "active_job_count": 0, "pending_wake_count": 0, "has_history": False})
+        for item in items:
+            settings = self.runtime.config_store.current.scenes.get(item["scene_id"])
+            item["settings"] = settings.model_dump() if settings is not None else None
+        return items
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:
         raw=await self.runtime.event_store.load_scene_session(scene_id)
@@ -371,6 +414,9 @@ class RuntimeQueryService:
                 views[event.id]={"id":event.id,"rowid":metadata["_rowid"],"event_type":event.event_type.value,"scene_id":scene,
                     "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
                     "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain") if key in metadata},
+                    "interaction": {key:metadata[key] for key in ("interaction", "interaction_reason", "requester_qq_uid",
+                                       "command_id", "calendar_parent_event_id", "conversation_excluded") if key in metadata}
+                                   if "interaction" in metadata else None,
                     "display_name":sender.get("card") or sender.get("nickname") or event.actor_id,
                     "scene_type":self.scene_label(scene)["scene_type"],
                     "display_kind":"human" if human else "bot" if event.event_type==EventType.MESSAGE_SENT else "system",
@@ -469,6 +515,12 @@ class RuntimeQueryService:
         conversation=payload.get("conversation") or {}
         item["summary"]=(payload.get("error") or (payload.get("result") or {}).get("decision_reason")
                          or conversation.get("failure_reason") or payload.get("kind") or item["kind"])[:300]
+        if item["kind"] in {"calendar_command", "live_announcement"}:
+            label = "日程命令" if item["kind"] == "calendar_command" else "开播邀请"
+            state = {"generating":"生成中", "committed":"已提交待回执", "failed":"失败", "interrupted":"已中断"}.get(payload.get("state"), payload.get("state", ""))
+            item["summary"] = f"{label} · {state} · {payload.get('member') or payload.get('command_id', '')}"
+            if payload.get("error"):
+                item["summary"] += " · " + payload["error"][:200]
         if detail:item["payload"]=payload
         return item
 
@@ -494,9 +546,14 @@ class RuntimeQueryService:
             ready=bool(provider and provider["enabled"] and provider["api_key_masked"])
             roles[role]={"configured":profile is not None,"ready":ready,"profile":profile,
                          "reason":"已就绪" if ready else "未配置模型" if profile is None else "供应商未启用或未设置密钥"}
+        scenes = self.runtime.config_store.current.scenes
         return {"sampled_at":self.current_time(),"running":bool(getattr(self.runtime,"_running",False)),
                 "onebot":self.onebot_status(),"shadow_mode":self.runtime.shadow_mode,
-                "allowed_scenes":sorted(self.runtime.allowed_scenes),"roles":roles}
+                "scene_counts": {"configured": len(scenes),
+                                 "enabled": sum(scene.enabled for scene in scenes.values()),
+                                 "chat_enabled": sum(scene.enabled and scene.chat for scene in scenes.values())},
+                "business_timezone": self.runtime.config_store.current.time.timezone if self.runtime.config_store.current.time else None,
+                "roles":roles}
 
     @staticmethod
     def event_types():
@@ -548,10 +605,20 @@ class RuntimeQueryService:
             if not exists:return None
         if action_id:
             receipts=await self._rows("SELECT id FROM events WHERE scene_id=? AND json_extract(payload,'$.action_id')=? LIMIT 1",[scene_id,action_id])
-            approvals=await self._rows("""SELECT ref_id FROM traces WHERE scene_id=? AND EXISTS(
-                SELECT 1 FROM json_each(payload,'$.gate.action_ids') WHERE value=?) ORDER BY created_at DESC,id DESC LIMIT 1""",[scene_id,action_id])
+            approvals=await self._rows("""SELECT ref_id,kind,payload FROM traces WHERE scene_id=? AND (
+                EXISTS(SELECT 1 FROM json_each(payload,'$.gate.action_ids') WHERE value=?)
+                OR (kind IN ('calendar_command','live_announcement') AND EXISTS(
+                    SELECT 1 FROM json_each(payload,'$.action_ids') WHERE value=?)))
+                ORDER BY created_at DESC,id DESC LIMIT 1""",[scene_id,action_id,action_id])
             if not receipts and not approvals:return None
-            episode_ids.update(item["ref_id"] for item in approvals)
+            for item in approvals:
+                if item["kind"] in {"calendar_command", "live_announcement"}:
+                    event_ids.add(item["ref_id"])
+                    audit = json.loads(item["payload"])
+                    if audit.get("episode_id"):
+                        episode_ids.add(audit["episode_id"])
+                else:
+                    episode_ids.add(item["ref_id"])
 
         # A committed turn explicitly records all originals read in that turn.
         source_clause,source_values=membership("value",event_ids)
@@ -569,6 +636,7 @@ class RuntimeQueryService:
             for task_id in (payload.get("task_id"), payload.get("fulfils_task_id")):
                 if task_id and await self.job(task_id, scene_id):job_ids.add(task_id)
             if payload.get("action_id"):action_ids.add(payload["action_id"])
+            if payload.get("origin_event_id"):event_ids.add(payload["origin_event_id"])
             if payload.get("result_id"):result_ids.add(payload["result_id"])
             reply_field="reply_to" if event["event_type"] in {"MESSAGE_SENT","MESSAGE_SEND_FAILED","ACTION_SHADOWED"} else "reply_to_message_id"
             if payload.get(reply_field) is not None:
@@ -583,12 +651,24 @@ class RuntimeQueryService:
         for job in job_rows:
             job_ids.add(job["id"]);event_ids.update(json.loads(job["source_event_ids_json"]));result_ids.update(json.loads(job["result_ids_json"]))
             if job["origin_episode_id"]:episode_ids.add(job["origin_episode_id"])
-        trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[membership("ref_id",episode_ids|job_ids)],"created_at DESC,id DESC","traces")
+        native_clause, native_values = membership("ref_id", event_ids)
+        native_episode_clause, native_episode_values = membership("json_extract(payload,'$.episode_id')", episode_ids)
+        trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[
+            membership("ref_id",episode_ids|job_ids),
+            ("kind IN ('calendar_command','live_announcement') AND " + native_clause, native_values),
+            ("kind IN ('calendar_command','live_announcement') AND " + native_episode_clause, native_episode_values)],
+            "created_at DESC,id DESC","traces")
         for row in trace_rows:
             payload=json.loads(row["payload"]);conversation=payload.get("conversation") or {}
             refs=conversation.get("references") or {}
             result_ids.update((refs.get("results") or {}).values())
             action_ids.update((payload.get("gate") or {}).get("action_ids",[]))
+            if row["kind"] in {"calendar_command", "live_announcement"}:
+                action_ids.update(payload.get("action_ids", []))
+                if payload.get("source_event_id"):
+                    event_ids.add(payload["source_event_id"])
+                if payload.get("episode_id"):
+                    episode_ids.add(payload["episode_id"])
         observations=await linked("SELECT *","FROM tool_observations WHERE scene_id=?",[
             membership("id",result_ids),membership("event_id",event_ids)],"created_at DESC,id DESC","tool_results")
         event_ids.update(row["event_id"] for row in observations)
@@ -623,27 +703,53 @@ class RuntimeQueryService:
         return self.runtime.metrics.snapshot()
 
     def plugins(self) -> list[dict]:
-        result=copy.deepcopy(self.runtime.plugin_host.status_snapshot())
+        from len_bot.config_store import PLUGIN_CONFIG_TYPES
+        from len_bot.plugins.builtin import BUILTIN_PLUGIN_INFO
+
+        active = {item["id"]: item for item in self.runtime.plugin_host.status_snapshot()}
+        result = []
+        root = self.runtime.config_store.current
+        for plugin_id, metadata in BUILTIN_PLUGIN_INFO.items():
+            saved = root.plugins[plugin_id]
+            loaded = active.get(plugin_id)
+            item = copy.deepcopy(loaded) if loaded is not None else {
+                "id": plugin_id, **metadata, "version": None, "permissions": [],
+                "state": "unconfigured" if saved.config is None else "not_loaded",
+                "last_error": "", "error_count": 0, "last_event_at": None, "last_run_at": None,
+                "source_status": {},
+            }
+            item["active_enabled"] = bool(loaded and loaded["enabled"])
+            item["enabled"] = saved.enabled
+            item["configured"] = saved.config is not None
+            item["config"] = copy.deepcopy(saved.config)
+            item["config_schema"] = PLUGIN_CONFIG_TYPES[plugin_id].model_json_schema()
+            item["open_scenes"] = [{"scene_id": scene_id, "enabled": scene.enabled}
+                                   for scene_id, scene in root.scenes.items() if plugin_id in scene.plugins]
+            result.append(item)
         credential_names={"sessdata","bili_jct","api_key","access_token","refresh_token","token","password","secret","cookie","authorization"}
         for item in result:
+            config = item["config"]
             properties=item["config_schema"].get("properties",{})
             secrets={name for name,field in properties.items() if name.lower() in credential_names
                      or field.get("writeOnly") or field.get("format")=="password"}
-            secrets.update(name for name in item["config"] if name.lower() in credential_names)
+            secrets.update(name for name in (config or {}) if name.lower() in credential_names)
             item["secret_fields"]=sorted(secrets)
-            item["config_set"]={name:bool(item["config"].get(name,item["default_config"].get(name))) for name in secrets}
+            item["config_set"]={name:bool(config and config.get(name)) for name in secrets}
             hidden_values=[]
             if secrets:
                 for key in ("default","example","examples"):item["config_schema"].pop(key,None)
             for name in secrets:
-                for config in (item["config"],item["default_config"]):
-                    value=config.pop(name,None)
-                    if isinstance(value,str) and value:hidden_values.append(value)
+                value = config.pop(name, None) if config is not None else None
+                if isinstance(value,str) and value:hidden_values.append(value)
                 if name in properties:
                     properties[name]["writeOnly"]=True
                     for key in ("default","example","examples"):properties[name].pop(key,None)
             if item.get("last_error"):
                 for value in hidden_values:item["last_error"]=item["last_error"].replace(value,"[已隐藏凭据]")
+            source = item["source_status"]
+            if source.get("last_error"):
+                for value in hidden_values:
+                    source["last_error"] = source["last_error"].replace(value, "[已隐藏凭据]")
         return result
 
     async def provider_models(self, provider_id):
@@ -660,5 +766,4 @@ class RuntimeQueryService:
         return list(self.runtime.shadow_would_send_log)[-limit:][::-1]
 
     def delivery_settings(self) -> dict:
-        return {"enabled": self.runtime.shadow_mode,
-                "allowed_scenes": sorted(self.runtime.allowed_scenes)}
+        return {"enabled": self.runtime.shadow_mode}

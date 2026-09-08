@@ -1,0 +1,1 @@
+import{a$ as t,n as u,p as f,q as a}from"./index-BncQA-GY.js";function d(e){const n=()=>!a(e)||window.confirm("有尚未保存的修改。放弃这些修改并离开？"),o=r=>{a(e)&&(r.preventDefault(),r.returnValue="")};return t(n),u(()=>window.addEventListener("beforeunload",o)),f(()=>window.removeEventListener("beforeunload",o)),{confirmLeave:n}}export{d as u};

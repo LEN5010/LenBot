@@ -4,26 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from len_bot.cognition.gateway import ModelGateway, ToolCall
+from len_bot.tools.results import ToolResult
+from len_bot.tools.retrieval import ObservationPage
 
 
-class ModelArgumentError(ValueError):
-    def __init__(self, message: str, *, model_message: str | None = None):
-        super().__init__(message)
-        self.model_message = model_message or message
+class TerminalArgumentError(ValueError):
+    """The terminal proposal has invalid arguments; this run ends."""
 
 
-class TerminalArgumentError(ModelArgumentError):
-    """The terminal proposal needs a model-correctable parameter repair."""
-
-
-class ToolArgumentError(ModelArgumentError):
+class ToolArgumentError(ValueError):
     """A nonterminal tool rejected its arguments before applying a proposal."""
 
 
@@ -54,21 +49,17 @@ def final_step_message(terminal_name: str) -> dict:
     )}
 
 
-def _digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, default=str).encode()).hexdigest()
-
-
-def _audit(value: Any, key: str = "") -> Any:
+def _trace_value(value: Any, key: str = "") -> Any:
     """Keep useful arguments and candidates without credential/media payloads."""
     lowered = key.lower()
     if any(word in lowered for word in ("signature", "api_key", "password", "secret", "authorization", "base64")) or lowered in {"token", "access_token", "refresh_token"}:
-        return {"redacted": True, "sha256": _digest(value)}
+        return {"omitted": True}
     if isinstance(value, dict):
-        return {name: _audit(item, str(name)) for name, item in value.items()}
+        return {name: _trace_value(item, str(name)) for name, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_audit(item) for item in value]
+        return [_trace_value(item) for item in value]
     if isinstance(value, str) and (";base64," in value or re.fullmatch(r"[A-Za-z0-9+/=]{256,}", value)):
-        return {"redacted": True, "sha256": _digest(value)}
+        return {"omitted": True}
     return value
 
 
@@ -93,7 +84,7 @@ class AgentLoop:
         *,
         messages: list[dict[str, Any]],
         tool_definitions: Callable[[], list[dict[str, Any]]],
-        execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        execute_tool: Callable[[str, dict[str, Any]], Awaitable[ToolResult | ObservationPage | dict[str, Any]]],
         terminal: dict[str, Any] | Callable[[], dict[str, Any]],
         finish: Callable[[dict[str, Any]], Awaitable[Any]],
         proposal_tool_names: set[str] | frozenset[str] = frozenset(),
@@ -104,7 +95,7 @@ class AgentLoop:
         observe: Callable[[], Awaitable[list[dict[str, Any]] | None]] | None = None,
         checkpoint: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
-        prepare_tool_results: Callable[[list[dict], list[tuple[ToolCall, Any]]], Awaitable[list[Any]]] | None = None,
+        prepare_tool_results: Callable[[list[dict], list[tuple[ToolCall, ToolResult | ObservationPage | dict[str, Any]]]], Awaitable[list[str]]] | None = None,
         exchange_checkpoint: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
         remaining_steps: Callable[[], Awaitable[int]] | None = None,
         trace: dict[str, Any] | None = None,
@@ -114,41 +105,8 @@ class AgentLoop:
         terminal_name = (terminal() if callable(terminal) else terminal)["function"]["name"]
         trajectory = copy.deepcopy(messages)
         audit = trace if trace is not None else {}
-        audit.update({"steps": [], "model_calls_used": 0, "tool_calls_used": 0,
-                      "contract_repairs": [], "latency_ms": 0})
-        repair_used = False
+        audit.update({"steps": [], "model_calls_used": 0, "tool_calls_used": 0, "latency_ms": 0})
         tool_calls_used = 0
-
-        async def repair(error: Exception, calls: tuple[ToolCall, ...], step: dict,
-                         receipts: dict[str, Any] | None = None) -> None:
-            nonlocal repair_used
-            step["failure_reason"] = _error_text(error)
-            audit["failure_reason"] = step["failure_reason"]
-            if repair_used or audit["model_calls_used"] >= max_steps:
-                raise AgentProtocolError(step["failure_reason"]) from error
-            repair_used = True
-            audit["contract_repairs"].append({"step": step["step"], "reason": step["failure_reason"]})
-            feedback = getattr(error, "model_message", str(error))
-            if calls:
-                responses = [(call, (receipts or {}).get(call.id, {"error": "invalid_arguments", "message": feedback})) for call in calls]
-                if prepare_tool_results is not None:
-                    shown = await prepare_tool_results(trajectory, responses)
-                    if len(shown) != len(calls):
-                        raise AgentProtocolError("Tool repair must retain every matching response")
-                    responses = [(call, result) for call,result in zip(calls,shown)]
-                for call,result in responses:
-                    if prepare_tool_results is not None and call.id in (receipts or {}):
-                        item = next(item for item in step['tool_calls'] if item['id'] == call.id)
-                        record_result(item, result)
-                    trajectory.append({"role": "tool", "tool_call_id": call.id,
-                                       "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
-                if prepare_tool_results is not None and observe is not None:
-                    additions = await observe()
-                    if additions:trajectory.extend(copy.deepcopy(additions))
-            else:
-                trajectory.append({"role": "user", "content": f"请使用原生工具调用完成本轮：{feedback}"})
-            if calls and exchange_checkpoint is not None:
-                await exchange_checkpoint(copy.deepcopy(trajectory))
 
         async def execute(call: ToolCall, arguments: dict[str, Any], item: dict) -> Any:
             nonlocal tool_calls_used
@@ -165,22 +123,19 @@ class AgentLoop:
             except Exception as exc:
                 item["failure_reason"] = _error_text(exc)
                 item["status"] = "error"
-                if call.name in proposal_tool_names:
-                    raise
-                return {"error": type(exc).__name__, "message": str(exc)}
+                raise
             item["status"] = "completed"
-            if prepare_tool_results is None:
-                record_result(item, result)
+            record_result(item, result)
             return result
 
         def record_result(item, result):
-            item["result_sha256"] = _digest(result)
-            try:
-                observation = json.loads(result) if isinstance(result, str) else result
-            except (ValueError, TypeError):
-                observation = None
-            if isinstance(observation, dict) and observation.get('status') in {'ok','partial','no_results','error','unsupported'}:
-                item['observation']={key:observation[key] for key in ('status','error_code','coverage','result_id') if key in observation}
+            if isinstance(result, ObservationPage):
+                result = result.result
+            if isinstance(result, ToolResult):
+                item['observation'] = result.model_dump(
+                    include={'status', 'error_code', 'coverage', 'result_id', 'observation_event_id'}, exclude_none=True)
+            elif isinstance(result, dict) and 'status' in result:
+                item['receipt'] = {key: result[key] for key in ('status', 'proposal_ref', 'ack_ref') if key in result}
 
         for step_index in range(max_steps):
             remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
@@ -224,11 +179,10 @@ class AgentLoop:
                 step["failure_reason"] = _error_text(exc)
                 audit["failure_reason"] = step["failure_reason"]
                 raise
-            step.update({"latency_ms": response.latency_ms, "usage": _audit(response.usage),
+            step.update({"latency_ms": response.latency_ms, "usage": response.usage,
                          "call_id": response.call_id, "local_estimate": response.local_estimate,
                          "finish_reason": response.finish_reason,
-                         "continuation_keys": list(response.continuation),
-                         "continuation_sha256": _digest(response.continuation)})
+                         "continuation_keys": list(response.continuation)})
             audit["latency_ms"] += response.latency_ms
             if response.finish_reason == "length":
                 step["failure_reason"] = "Model output truncated; candidate discarded"
@@ -250,11 +204,11 @@ class AgentLoop:
                     if not isinstance(arguments, dict):
                         raise ValueError("Expected an object")
                 except (TypeError, ValueError):
-                    item["arguments"] = {"invalid_json_object": True, "sha256": _digest(call.arguments)}
+                    item["arguments"] = {"invalid_json_object": True, "omitted": True}
                     item["status"] = "invalid_arguments"
                     argument_errors.append(ToolArgumentError(f"Arguments for {call.name} must be a valid JSON object"))
                 else:
-                    item["arguments"] = _audit(arguments)
+                    item["arguments"] = _trace_value(arguments)
                     parsed.append((call, arguments, item))
                 if call.name == terminal_name:
                     step["terminal_candidate"] = item["arguments"]
@@ -278,8 +232,9 @@ class AgentLoop:
                 if forced_final and not terminal_calls:
                     raise TerminalArgumentError(f"No model budget remains; call {terminal_name}")
             except (TerminalArgumentError, ToolArgumentError) as exc:
-                await repair(exc, calls, step)
-                continue
+                step["failure_reason"] = _error_text(exc)
+                audit["failure_reason"] = step["failure_reason"]
+                raise
             if checkpoint is not None:
                 await checkpoint("after_model", copy.deepcopy(step))
 
@@ -287,24 +242,17 @@ class AgentLoop:
             # are only staged; the terminal is resolved after all are staged.
             executions = [entry for entry in parsed if entry[0].name != terminal_name]
             results: list[Any] = []
-            receipts: dict[str, Any] = {}
             try:
                 if any(call.name in proposal_tool_names for call, _, _ in executions):
                     for call, arguments, item in executions:
                         result = await execute(call, arguments, item)
                         results.append(result)
-                        receipts[call.id] = result
                 else:
                     results = await asyncio.gather(*(execute(call, arguments, item) for call, arguments, item in executions),
                                                    return_exceptions=True)
-                    receipts = {entry[0].id: result for entry, result in zip(executions, results)
-                                if not isinstance(result, BaseException)}
                     failures = [result for result in results if isinstance(result, BaseException)]
                     if failures:
                         raise failures[0]
-            except ToolArgumentError as exc:
-                await repair(exc, calls, step, receipts)
-                continue
             except Exception as exc:
                 step["failure_reason"] = _error_text(exc)
                 audit["failure_reason"] = step["failure_reason"]
@@ -314,10 +262,16 @@ class AgentLoop:
                 if len(results) != len(executions):
                     raise AgentProtocolError("Tool presentation must retain every matching response")
             for (call, _, item), result in zip(executions, results):
-                if prepare_tool_results is not None:
-                    record_result(item, result)
+                if isinstance(result, ToolResult):
+                    content = result.model_dump_json(exclude_none=True)
+                elif isinstance(result, str):
+                    content = result
+                elif isinstance(result, dict):
+                    content = json.dumps(result, ensure_ascii=False)
+                else:
+                    raise AgentProtocolError("A stored observation requires presentation before the next model request")
                 trajectory.append({"role": "tool", "tool_call_id": call.id,
-                                   "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)})
+                                   "content": content})
             if terminal_calls:
                 _, arguments, terminal_trace = terminal_calls[0]
                 try:
@@ -338,10 +292,9 @@ class AgentLoop:
                     continue
                 except TerminalArgumentError as exc:
                     terminal_trace["status"] = "invalid_arguments"
-                    # Existing proposal receipts stay in the trajectory. Only
-                    # the terminal call needs a matching rejection receipt.
-                    await repair(exc, (terminal_calls[0][0],), step)
-                    continue
+                    step["failure_reason"] = _error_text(exc)
+                    audit["failure_reason"] = step["failure_reason"]
+                    raise
                 except Exception as exc:
                     terminal_trace["status"] = "rejected"
                     step["failure_reason"] = _error_text(exc)

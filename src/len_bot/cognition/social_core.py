@@ -8,26 +8,38 @@ from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.proposals import ProposalLedger, TOOLS
 from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
+from len_bot.tools.results import ToolResult
+from len_bot.plugins.models import PluginCallContext
 
 
 class SocialCognitionCore:
     def __init__(self,runtime):
         self.runtime=runtime
 
-    async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None):
+    async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None, *, requester_qq_uid):
         runtime=self.runtime
         binding=runtime.provider_registry.resolve('conversation')
         audit=trace if trace is not None else {}
         audit.update({'mode':'live','path':'conversation','model':binding.model,'provider_id':binding.provider_id,
                       'reasoning_effort':binding.reasoning_effort})
         context=ConversationContext(runtime,session,through_rowid)
-        ledger=ProposalLedger(context,episode_id)
+        ledger=ProposalLedger(context, episode_id, requester_qq_uid)
+
+        def plugin_context():
+            return PluginCallContext(scene_id=session.scene_id, requester_qq_uid=requester_qq_uid,
+                now=runtime.clock(), cutoff_rowid=context.refs.cutoff, episode_id=episode_id,
+                job_id=None, role='conversation', ledger=ledger)
+
+        plugin_proposals = runtime.plugin_host.proposal_tool_names()
         toolkit=RetrievalToolkit(runtime.event_store,[session.scene_id],session.scene_id,
             memory_store=runtime.memory_store,plugin_host=runtime.plugin_host,bot_qq=runtime.config.bot_qq,
-            media_service=runtime.media_service,context=context,on_observation=runtime.commit_tool_observation)
+            media_service=runtime.media_service,context=context,on_observation=runtime.commit_tool_observation,
+            page_chars=runtime.config.tool_result_page_chars, max_chars=runtime.config.tool_result_max_chars,
+            read_concurrency=runtime.config.tool_read_concurrency, call_context=plugin_context)
         pending_exchange=None
         def definitions():
-            return toolkit.get_tool_definitions()+ledger.definitions()
+            return (toolkit.get_tool_definitions() + ledger.definitions()
+                    + runtime.plugin_host.get_tool_definitions(plugin_context(), kind='proposal'))
         def request_definitions():
             if next_is_final():return [ledger.terminal_definition()]
             return [*definitions(),ledger.terminal_definition()]
@@ -38,6 +50,8 @@ class SocialCognitionCore:
 
         async def execute(name,args):
             if name in TOOLS:return await ledger.stage(name,args)
+            if name in plugin_proposals:
+                return await runtime.plugin_host.execute_tool(name, args, plugin_context())
             return await toolkit.execute_observation(name,args)
 
         async def append_update(trajectory):
@@ -70,6 +84,8 @@ class SocialCognitionCore:
                     pages.append(result)
                     result=toolkit.observation_locator(result)
                     content=str(result)
+                elif isinstance(result, ToolResult):
+                    content = result.model_dump_json(exclude_none=True)
                 else:content=result if isinstance(result,str) else json.dumps(result,ensure_ascii=False)
                 messages.append({'role':'tool','tool_call_id':call.id,'content':content})
             tool_end=len(messages)
@@ -133,7 +149,7 @@ class SocialCognitionCore:
                 call_store=runtime.event_store, scene_id=session.scene_id, episode_id=episode_id,
                 purpose='conversation')).run(
                 messages=messages,tool_definitions=definitions,
-                execute_tool=execute,terminal=ledger.terminal_definition,finish=finish,proposal_tool_names=set(TOOLS),
+                execute_tool=execute,terminal=ledger.terminal_definition,finish=finish,proposal_tool_names=set(TOOLS) | plugin_proposals,
                 max_steps=runtime.config.conversation_max_steps,max_tool_calls=runtime.config.conversation_max_tool_calls,
                 observe=incorporate,prepare_request=prepare_request,prepare_tool_results=prepare_tool_results,
                 checkpoint=getattr(runtime,'evaluation_hook',None),trace=audit)

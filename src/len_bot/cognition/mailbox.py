@@ -22,6 +22,10 @@ class EpisodeMailbox:
         # ADR-0029: burst event that triggered this episode; attached to dependent open loops.
         self.origin_stimulus_id = origin_stimulus_id
         self.origin_mode = "live"
+        self.output_kind = 'chat'
+        self.requester_qq_uid: str | None = None
+        self.command_id: str | None = None
+        self.announcement_member: str | None = None
         self.source_started_at: float | None = None
         self.interaction_actors: set[str] = set()
         self.initial_observed_rowid: int | None = None
@@ -39,7 +43,7 @@ class EpisodeMailbox:
         Internal, state, task, and sensor fact events are discarded.
         """
         allowed = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
-        if event.event_type not in allowed:
+        if event.event_type not in allowed or event.metadata.get('conversation_excluded'):
             return
 
         self._interim_events.append(event)

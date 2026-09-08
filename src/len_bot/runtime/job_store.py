@@ -2,7 +2,7 @@
 import json
 import uuid
 
-from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResult, WorkState
+from len_bot.cognition.jobs import GroupSummaryRange, JobChanged, JobBudgetExhausted, JobResult, WorkState
 from len_bot.events.models import Event, EventType
 from len_bot.scheduler.models import TaskItem
 from len_bot.skills.store import SkillStoreMixin
@@ -13,13 +13,16 @@ def _decode_job(row):
         return None
     fields = ["id", "scene_id", "revision", "goal", "constraints", "source_event_ids", "result_ids",
               "model_steps", "tool_calls", "elapsed_seconds", "result", "updated_at",
-              "work_state", "model_binding", "checkpoint_data", "compression", "skill_versions", "status", "origin_mode", "created_at"]
+              "work_state", "model_binding", "checkpoint_data", "compression", "skill_versions", "status", "origin_mode", "created_at", "task_payload"]
     data = dict(zip(fields, row))
     for field in ("constraints", "source_event_ids", "result_ids", "result", "work_state", "model_binding", "checkpoint_data", "compression", "skill_versions"):
         data[field] = json.loads(data[field]) if data[field] else None
     native = data.pop("checkpoint_data")
     data["checkpoint"] = {key: native[key] for key in ("goal_revision", "exchange_count", "updated_at")} if native else None
     data["skill_versions"] = data["skill_versions"] or {}
+    task_payload = json.loads(data.pop("task_payload"))
+    for field in ("work_operation", "requester_qq_uid", "summary_range", "summary_coverage"):
+        data[field] = task_payload[field]
     # Task status describes response/delivery, not whether execution succeeded.
     data["execution_status"] = (data["result"] or {}).get("status") or {
         "pending": "pending", "claimed": "pending", "processing": "running",
@@ -37,25 +40,23 @@ class JobStoreMixin(SkillStoreMixin):
             goal TEXT NOT NULL, constraints_json TEXT NOT NULL, source_event_ids_json TEXT NOT NULL,
             result_ids_json TEXT NOT NULL, model_steps INTEGER NOT NULL DEFAULT 0,
             tool_calls INTEGER NOT NULL DEFAULT 0, elapsed_seconds REAL NOT NULL DEFAULT 0,
-            result_json TEXT, updated_at REAL NOT NULL)""")
+            result_json TEXT, updated_at REAL NOT NULL,
+            work_state_json TEXT, model_binding_json TEXT, checkpoint_json TEXT,
+            compression_json TEXT, skill_versions_json TEXT)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_agent_jobs_scene ON agent_jobs(scene_id,updated_at)")
-        columns = {row[1] for row in await (await self._db.execute("PRAGMA table_info(agent_jobs)")).fetchall()}
-        for column in ("work_state_json", "model_binding_json", "checkpoint_json", "compression_json", "skill_versions_json"):
-            if column not in columns:
-                await self._db.execute(f"ALTER TABLE agent_jobs ADD COLUMN {column} TEXT")
         await self._db.execute("""CREATE TABLE IF NOT EXISTS job_exchanges (
             job_id TEXT NOT NULL, scene_id TEXT NOT NULL, sequence INTEGER NOT NULL, goal_revision INTEGER NOT NULL,
             messages_json TEXT NOT NULL, PRIMARY KEY(job_id,sequence))""")
         await self.initialize_skills()
 
     async def get_job(self, job_id, scene_id):
-        row = await (await self._db.execute("""SELECT j.*,t.status,t.origin_mode,t.created_at FROM agent_jobs j
+        row = await (await self._db.execute("""SELECT j.*,t.status,t.origin_mode,t.created_at,t.payload FROM agent_jobs j
             JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE j.id=? AND j.scene_id=?""", (job_id, scene_id))).fetchone()
         return _decode_job(row)
 
     async def list_jobs(self, scene_id=None):
         clause, params = (" WHERE j.scene_id=?", (scene_id,)) if scene_id is not None else ("", ())
-        rows = await (await self._db.execute("SELECT j.*,t.status,t.origin_mode,t.created_at FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id" + clause + " ORDER BY t.created_at", params)).fetchall()
+        rows = await (await self._db.execute("SELECT j.*,t.status,t.origin_mode,t.created_at,t.payload FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id" + clause + " ORDER BY t.created_at", params)).fetchall()
         return [_decode_job(row) for row in rows]
 
     async def _queue_job_event(self, kind, job_id, scene_id, revision, payload=None):
@@ -91,7 +92,11 @@ class JobStoreMixin(SkillStoreMixin):
                     if existing["goal"] != proposal.goal or existing["status"] not in {"pending", "claimed", "processing"}:
                         raise ValueError("Job creation reference has already been used; inspect the existing job")
                     continue
-                payload = {"kind": "agent_job", "proposal_id": proposal.proposal_id, "source_event_ids": sources}
+                summary_range = proposal.summary_range.model_dump(mode="json") if proposal.summary_range is not None else None
+                coverage = await self._new_summary_coverage(scene_id, proposal.summary_range) if summary_range is not None else None
+                payload = {"kind": "agent_job", "proposal_id": proposal.proposal_id, "source_event_ids": sources,
+                           "work_operation":proposal.work_operation, "requester_qq_uid":proposal.requester_qq_uid,
+                           "summary_range":summary_range, "summary_coverage":coverage}
                 task = TaskItem(id=job_id, scene_id=scene_id, description=proposal.goal,
                     due_at=self.clock(), payload=payload, origin_episode_id=episode_id, origin_mode=origin_mode)
                 await self._db.execute("""INSERT INTO tasks(id,scene_id,description,due_at,status,source_event_id,payload,created_at,origin_episode_id,origin_mode)
@@ -118,6 +123,20 @@ class JobStoreMixin(SkillStoreMixin):
             constraints = list(dict.fromkeys(constraints + proposal.constraints_add))
             source_ids = list(dict.fromkeys(current["source_event_ids"] + sources))
             result_ids = list(dict.fromkeys(current["result_ids"] + proposal.result_ids))
+            if proposal.summary_range is not None:
+                if current["work_operation"] != "group_summary":
+                    raise ValueError("Only group summary work has a summary range")
+                updated_range = proposal.summary_range.model_dump(mode="json")
+                if updated_range != current["summary_range"]:
+                    source_changed = any(updated_range[key] != current["summary_range"][key]
+                        for key in ("start_at", "end_at", "snapshot_rowid", "bot_actor_id"))
+                    coverage = await self._new_summary_coverage(scene_id, proposal.summary_range) if source_changed else current["summary_coverage"]
+                    await self._db.execute("""UPDATE tasks SET payload=json_set(payload,
+                        '$.summary_range',json(?),'$.summary_coverage',json(?)) WHERE id=? AND scene_id=?""",
+                        (json.dumps(updated_range, ensure_ascii=False), json.dumps(coverage), job_id, scene_id))
+                    if proposal.goal is None:
+                        goal = (f'总结本群 [{updated_range["start_at"]}, {updated_range["end_at"]}) '
+                                f'的已保存群聊。关注：{updated_range["focus"]}')
             status = "cancelled" if proposal.operation == "cancel" else "processing" if current["status"] == "processing" else "pending"
             await self._db.execute("""UPDATE agent_jobs SET revision=?,goal=?,constraints_json=?,source_event_ids_json=?,result_ids_json=?,result_json=NULL,updated_at=? WHERE id=? AND scene_id=?""",
                 (revision, goal, json.dumps(constraints, ensure_ascii=False), json.dumps(source_ids), json.dumps(result_ids), self.clock(), job_id, scene_id))
@@ -127,6 +146,69 @@ class JobStoreMixin(SkillStoreMixin):
                 (status, self.clock(), goal, origin_mode, job_id, scene_id))
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
+
+    async def _new_summary_coverage(self, scene_id, request: GroupSummaryRange):
+        counts = await self.group_summary_statistics(scene_id,
+            start_at=request.start_at.timestamp(), end_at=request.end_at.timestamp(),
+            cutoff_rowid=request.snapshot_rowid, bot_actor_id=request.bot_actor_id)
+        return {"matched_messages":counts["message_count"], "participants":counts["participant_count"],
+                "matched_characters":counts["character_count"], "read_messages":0, "read_characters":0,
+                "read_event_ids":[], "read_result_ranges":{}, "complete":counts["message_count"] == 0}
+
+    async def record_summary_reads(self, job_id, scene_id, revision, presentations):
+        """Record only original ranges adopted into this work's next request."""
+        async with self._write_lock:
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                job = await self.get_job(job_id, scene_id)
+                if job is None or job["revision"] != revision or job["status"] != "processing":
+                    raise JobChanged("Summary read belongs to an obsolete work run")
+                if job["work_operation"] != "group_summary":
+                    raise ValueError("Summary coverage belongs only to group summary work")
+                coverage = job["summary_coverage"]
+                read_ids = set(coverage["read_event_ids"])
+                for result_id, start, end in presentations:
+                    if result_id not in job["result_ids"]:
+                        raise ValueError("Summary read references an unobserved result")
+                    call = await self.tool_observation_call(result_id, scene_id)
+                    if call is None or call[0] != "read_group_chat_window":
+                        continue
+                    result = await self.read_tool_observation(result_id, [scene_id])
+                    if result is None or result.coverage != "group_summary_window" or result.status not in {"ok", "no_results"}:
+                        continue
+                    lines = result.content.split("\n")
+                    header = json.loads(lines[0])
+                    source_range = header["range"]
+                    if header["job_id"] != job_id or any(source_range[key] != job["summary_range"][key]
+                        for key in ("start_at", "end_at", "snapshot_rowid", "bot_actor_id")):
+                        continue
+                    if not 0 <= start <= end <= len(result.content):
+                        raise ValueError("Summary read exceeds the original observation")
+                    ranges = sorted([*coverage["read_result_ranges"].get(result_id, []), [start, end]])
+                    merged = []
+                    for left, right in ranges:
+                        if merged and left <= merged[-1][1]:
+                            merged[-1][1] = max(merged[-1][1], right)
+                        else:
+                            merged.append([left, right])
+                    coverage["read_result_ranges"][result_id] = merged
+                    position = len(lines[0]) + 1
+                    for line in lines[1:]:
+                        record = json.loads(line)
+                        finish = position + len(line)
+                        if record["event_id"] not in read_ids and any(left <= position and right >= finish for left, right in merged):
+                            read_ids.add(record["event_id"])
+                            coverage["read_characters"] += len(record["text"])
+                        position = finish + 1
+                coverage["read_event_ids"] = sorted(read_ids)
+                coverage["read_messages"] = len(read_ids)
+                coverage["complete"] = len(read_ids) == coverage["matched_messages"]
+                await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.summary_coverage',json(?)) WHERE id=? AND scene_id=?",
+                    (json.dumps(coverage, ensure_ascii=False), job_id, scene_id))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     async def validate_job_message(self, scene_id, job_id, revision, fulfil=False):
         job = await self.get_job(job_id, scene_id)
@@ -201,6 +283,8 @@ class JobStoreMixin(SkillStoreMixin):
                     self._validate_work_state(job, work_state)
                     await self._db.execute("UPDATE agent_jobs SET work_state_json=? WHERE id=? AND scene_id=?", (work_state.model_dump_json(), job_id, scene_id))
                 if skill_candidate is not None:
+                    if job["work_operation"] == "group_summary":
+                        raise ValueError("Group summaries do not create procedural skills")
                     await self.add_skill_candidate_in_transaction(job, skill_candidate)
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (result.model_dump_json(), self.clock(), job_id, scene_id))
@@ -231,6 +315,8 @@ class JobStoreMixin(SkillStoreMixin):
                     raise JobChanged("Work state belongs to obsolete work")
                 self._validate_work_state(job, state)
                 if skill_candidate is not None:
+                    if job["work_operation"] == "group_summary":
+                        raise ValueError("Group summaries do not create procedural skills")
                     await self.add_skill_candidate_in_transaction(job, skill_candidate)
                 await self._db.execute("UPDATE agent_jobs SET work_state_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (state.model_dump_json(), self.clock(), job_id, scene_id))

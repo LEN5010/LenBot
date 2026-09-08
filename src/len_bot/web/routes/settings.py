@@ -1,12 +1,69 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, Body
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
-from len_bot.config import RuntimeConfig
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.config import AddressName
+from len_bot.config_store import AccessSettings, TimeSettings, MemberSettings
 from len_bot.web.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+async def save_runtime_settings(runtime, values, *, live):
+    try:
+        await runtime.update_runtime_settings(values, live=live)
+    except ValidationError as error:
+        raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except OSError as error:
+        raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
+
+
+async def save_root_section(runtime, section, values):
+    try:
+        await runtime.update_root_settings(section, values)
+    except ValidationError as error:
+        raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except OSError as error:
+        raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
+
+
+@router.get("/access")
+async def access_settings(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.access_settings()
+
+
+@router.put("/access")
+async def update_access_settings(values: AccessSettings, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    await save_root_section(runtime, "access", values.model_dump())
+    return {"settings": runtime.query_service.access_settings(), "requires_restart": False,
+            "message": "QQ 回复白名单已保存，在已启用群中生效；不会强制每条消息回复"}
+
+
+@router.get("/time")
+async def time_settings(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.time_settings()
+
+
+@router.put("/time")
+async def update_time_settings(request: Request, values: TimeSettings | None = Body(...), user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    await save_root_section(runtime, "time", values.model_dump() if values is not None else None)
+    return {"settings": runtime.query_service.time_settings(), "requires_restart": runtime.restart_required,
+            "message": "业务时间设置已写入根文件，按页面提示重启后用于新查询"}
+
+
+@router.get("/members")
+async def member_settings(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.member_settings()
+
+
+@router.put("/members")
+async def update_member_settings(request: Request, values: list[MemberSettings] = Body(...), user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    await save_root_section(runtime, "members", [member.model_dump() for member in values])
+    return {"settings": runtime.query_service.member_settings(), "requires_restart": runtime.restart_required,
+            "message": "成员名称、别名与 B 站身份已写入根文件，重启后用于新查询与采集"}
 
 
 @router.post("/reset")
@@ -15,38 +72,19 @@ async def reset_conversation_data(request: Request, user: str = Depends(get_curr
     request.app.state.log_ring.clear()
     return result
 
-class PersonaPresetRequest(BaseModel):
-    preview_token: str
-
-
 @router.get("/persona/diana")
 async def preview_diana(request: Request, user: str = Depends(get_current_user)):
     return await request.app.state.runtime.query_service.preview_diana_persona()
 
 
-@router.post("/persona/diana")
-async def apply_diana(req: PersonaPresetRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    try:
-        applied = await runtime.event_store.apply_diana_persona(runtime.config.bot_qq, req.preview_token)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if applied:
-        from len_bot.cognition.diana import PERSONA
-        saved = await runtime.event_store.get_dynamic_config("persona_config")
-        for key in PERSONA:
-            setattr(runtime.config, key, saved[key])
-    return {"success": True, "applied": applied,
-            "message": "新版嘉然人格与6组图文表达示例已应用，人工修改已保留" if applied else "已应用过新版嘉然人格，保留你的后续编辑"}
-
 class PersonaSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     character_context: Optional[str] = None
     identity_name: str
     identity_persona: str
     identity_core: Optional[str] = None
     conversation_style: Optional[str] = None
     address_names: list[AddressName]|None = Field(default=None,max_length=32)
-    bot_qq: Optional[int] = None
 
 @router.get("/persona")
 async def get_persona_settings(request: Request, user: str = Depends(get_current_user)):
@@ -58,16 +96,11 @@ async def update_persona_settings(req: PersonaSettingsRequest, request: Request,
     values = {
         key: getattr(runtime.config, key) for key in
         ("character_context", "identity_name", "identity_core", "identity_persona",
-         "conversation_style", "address_names", "bot_qq")
+         "conversation_style", "address_names")
     }
     values.update({key: value.strip() if isinstance(value, str) else value
                    for key, value in req.model_dump(exclude_none=True).items()})
-    await runtime.event_store.save_dynamic_config("persona_config", values)
-    for key, value in values.items():
-        if key == "bot_qq":
-            runtime.update_bot_identity(value)
-        else:
-            setattr(runtime.config, key, value)
+    await save_runtime_settings(runtime, values, live=True)
     return {"success": True, "message": "人格与说话风格已保存，并立即生效"}
 
 
@@ -89,16 +122,22 @@ async def get_attention_settings(request: Request, user: str = Depends(get_curre
 @router.patch("/attention")
 async def update_attention_settings(req: AttentionSettingsRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    from pydantic import ValidationError
-    async with runtime.config_update_lock:
-        current = runtime.query_service.attention_settings()
-        values = {**current, **req.model_dump(exclude_unset=True)}
-        try:
-            validated = RuntimeConfig.model_validate({**runtime.config.model_dump(), **values})
-        except ValidationError as error:
-            raise HTTPException(422, error.errors(include_context=False)) from error
-        values = {key: getattr(validated, key) for key in current}
-        await runtime.event_store.save_dynamic_config("attention_config", values)
-        for key, value in values.items():
-            setattr(runtime.config, key, value)
-    return {"success": True, "message": "注意力参数已保存，下次扫描起生效", "settings": values}
+    current = runtime.query_service.attention_settings()
+    values = {**current, **req.model_dump(exclude_unset=True)}
+    await save_runtime_settings(runtime, values, live=True)
+    return {"success": True, "message": "注意力参数已写入根配置，下次扫描起生效", "settings": values}
+
+
+@router.get("/runtime")
+async def runtime_parameters(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.runtime_settings()
+
+
+@router.patch("/runtime")
+async def update_runtime_parameters(values: dict, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    current = runtime.query_service.runtime_settings()["settings"]
+    if set(values) != set(current):
+        raise HTTPException(422, "运行参数节必须完整填写页面提供的字段")
+    await save_runtime_settings(runtime, values, live=False)
+    return {**runtime.query_service.runtime_settings(), "message": "运行参数已写入根配置，重启后生效"}

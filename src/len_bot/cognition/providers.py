@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
@@ -13,13 +13,14 @@ ModelRole = Literal["conversation", "work", "maintenance"]
 
 
 class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
-    api_style: str = Field(default="openai", description="OpenAI-compatible chat completions")
+    api_style: Literal["openai"]
     base_url: str
-    api_key: str = Field(default="", description="Write-only; never echoed back by the API")
-    enabled: bool = True
-    timeout_seconds: float = 60.0
-    models: list[str] = Field(default_factory=list)
+    api_key: str = Field(description="Write-only; never echoed back by the API")
+    enabled: bool
+    timeout_seconds: float = Field(gt=0)
+    models: list[str]
 
 
 class ModelProfile(BaseModel):
@@ -27,7 +28,7 @@ class ModelProfile(BaseModel):
 
     provider_id: str
     model: str
-    reasoning_effort: str | None = None
+    reasoning_effort: str | None
 
     @field_validator("provider_id", "model")
     @classmethod
@@ -45,9 +46,9 @@ class ModelProfile(BaseModel):
 class RoutingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    conversation: ModelProfile
-    work: ModelProfile
-    maintenance: ModelProfile | None = None
+    conversation: ModelProfile | None
+    work: ModelProfile | None
+    maintenance: ModelProfile | None
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class RouteResolution:
     role: ModelRole = "conversation"
 
 
-def _connection_fingerprint(provider: ProviderConfig) -> tuple:
+def connection_key(provider: ProviderConfig) -> tuple:
     return (provider.api_style, provider.base_url, provider.api_key, provider.timeout_seconds)
 
 
@@ -68,7 +69,7 @@ class ProviderRegistry:
         self._providers: dict[str, ProviderConfig] = {}
         self._routing: RoutingConfig | None = None
         self._clients: dict[str, AsyncOpenAI] = {}
-        self._fingerprints: dict[str, tuple] = {}
+        self._connection_keys: dict[str, tuple] = {}
         self._lock = asyncio.Lock()
 
     async def apply_update(self, providers: list[ProviderConfig], routing: RoutingConfig | None) -> None:
@@ -88,29 +89,30 @@ class ProviderRegistry:
             new_providers = {provider.id: provider for provider in provider_list}
             for provider_id in list(self._clients):
                 provider = new_providers.get(provider_id)
-                if provider is None or _connection_fingerprint(provider) != self._fingerprints.get(provider_id):
+                if provider is None or connection_key(provider) != self._connection_keys.get(provider_id):
                     # A running gateway owns its client until that run ends.
                     self._clients.pop(provider_id)
-                    self._fingerprints.pop(provider_id, None)
+                    self._connection_keys.pop(provider_id, None)
             self._providers = new_providers
             self._routing = routing.model_copy(deep=True) if routing is not None else None
         if routing is None:
             logger.info("Providers updated: %d provider(s), model profiles not configured", len(provider_list))
         else:
-            logger.info("Model profiles updated: conversation=%s/%s work=%s/%s",
-                        routing.conversation.provider_id, routing.conversation.model,
-                        routing.work.provider_id, routing.work.model)
+            logger.info("Model profiles updated: %s", routing.model_dump())
 
     def _client_for(self, provider_id: str) -> AsyncOpenAI:
         provider = self._providers.get(provider_id)
         if provider is None or not provider.enabled:
             raise LookupError(f"Provider '{provider_id}' is missing or disabled")
+        if not provider.api_key.strip():
+            raise LookupError(f"Provider '{provider_id}' has no configured API key")
         client = self._clients.get(provider.id)
         if client is None:
-            client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url,
-                                 timeout=provider.timeout_seconds, max_retries=0)
+            client = AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url,
+                                 timeout=provider.timeout_seconds, max_retries=0,
+                                 http_client=DefaultAsyncHttpxClient(trust_env=False))
             self._clients[provider.id] = client
-            self._fingerprints[provider.id] = _connection_fingerprint(provider)
+            self._connection_keys[provider.id] = connection_key(provider)
         return client
 
     def resolve(self, role: ModelRole = "conversation") -> RouteResolution:
@@ -139,13 +141,13 @@ class ProviderRegistry:
         return sorted({str(item.id) for item in response.data if getattr(item, "id", None)})
 
     def has_live_provider(self) -> bool:
-        if self._routing is None:
+        if self._routing is None or self._routing.conversation is None:
             return False
         provider = self._providers.get(self._routing.conversation.provider_id)
         if provider is None or not provider.enabled:
             return False
         key = provider.api_key.strip()
-        return bool(key) and key != "missing"
+        return bool(key)
 
     def export(self) -> dict:
         return {"providers": [provider.model_dump() for provider in self._providers.values()],
