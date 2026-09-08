@@ -12,7 +12,7 @@ import uuid
 
 from len_bot.actions.models import ActionItem, DeliveryResult
 from len_bot.actions.queue import ActionQueue
-from len_bot.cognition.agent_loop import CommitConflict, FreshInputConflict
+from len_bot.cognition.agent_loop import CommitConflict, FreshInputConflict, _error_text
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RoutingConfig
@@ -208,16 +208,19 @@ class AgentRuntime:
         await self.provider_registry.apply_update(models.providers, models.routing)
 
     async def update_runtime_settings(self, values: dict, *, live: bool) -> None:
+        from len_bot.config import EXECUTION_BUDGET_FIELDS
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data["runtime"].update(values)
             candidate = RootConfig.model_validate(data)
             self.config_store.save(candidate)
-            if live:
-                self.config = self.config.model_copy(update={key: getattr(candidate.runtime, key) for key in values})
+            live_keys = set(values) if live else set(values) & EXECUTION_BUDGET_FIELDS
+            if live_keys:
+                self.config = self.config.model_copy(update={key: getattr(candidate.runtime, key) for key in live_keys})
                 self.attention_policy.config = self.config
                 self.burst_assembler.config = self.config
-            else:
+            if not live and any(getattr(candidate.runtime, key) != getattr(self.config, key)
+                                for key in values if key not in live_keys):
                 self.restart_required = True
 
     async def _start_workers(self, *, recover: bool) -> None:
@@ -758,10 +761,10 @@ class AgentRuntime:
             self.metrics.inc_social("cognition_failed")
             if isinstance(error, (SceneCommitConflict, CommitConflict)):
                 self.metrics.inc_social("stale_outcomes_rejected")
-            logger.exception("Conversation failed in %s", scene_id)
+            logger.error("Conversation failed in %s: %s", scene_id, _error_text(error))
             await self.event_store.save_trace(
                 kind="conversation_error", scene_id=scene_id, ref_id=episode_id,
-                payload={"error": str(error), "error_type": type(error).__name__, "conversation": trace,
+                payload={"error": _error_text(error), "error_type": type(error).__name__, "conversation": trace,
                          "source_event_ids": source_ids, "observed_rowid": observed,
                          "gate": self._gate_record(decision), "elapsed_ms": round((time.monotonic() - started) * 1000)},
             )

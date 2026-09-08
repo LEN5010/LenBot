@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
 from len_bot.media.models import MessageSegment, segment_text
@@ -7,6 +7,35 @@ from len_bot.media.models import MessageSegment, segment_text
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
     ACTION = "ACTION"
+
+
+class OperationReceipt(BaseModel):
+    """The committed result behind one turn-local control confirmation."""
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["committed"] = "committed"
+    proposal_ref: str = Field(min_length=1)
+    kind: Literal["work", "reminder", "memory"]
+    operation: Literal["revise", "resume", "cancel", "update", "create", "refute", "supersede"]
+    target_id: str = Field(min_length=1)
+    revision: int | None = Field(default=None, ge=1)
+    result_status: str = Field(min_length=1)
+    source_event_ids: list[str] = Field(min_length=1)
+    action_id: str | None = None
+    reminder_due_at: float | None = None
+    reminder_description: str | None = None
+
+    @model_validator(mode="after")
+    def target_version(self):
+        allowed = {"work":{"revise","resume","cancel"}, "reminder":{"update","cancel"},
+                   "memory":{"create","refute","supersede"}}
+        if self.operation not in allowed[self.kind]:
+            raise ValueError("Operation does not belong to its committed target kind")
+        if self.kind in {"work", "memory"} and self.revision is None:
+            raise ValueError("Work and memory operation receipts require the committed revision")
+        if self.kind == "reminder" and (self.reminder_due_at is None or self.reminder_description is None):
+            raise ValueError("Reminder operation receipts require the committed schedule and description")
+        return self
+
 
 class MessageProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -16,6 +45,7 @@ class MessageProposal(BaseModel):
     reply_target: Optional[str] = Field(default=None, description="Actor ID expected to respond (e.g. user:123)")
     reply_intent: Optional[str] = Field(default=None, description="Topic or intent of expected answer")
     task_ref: str | None = None
+    operation_ref: str | None = Field(default=None, min_length=1)
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None
@@ -26,6 +56,10 @@ class MessageProposal(BaseModel):
     def validate_body(self):
         if not self.content.strip():
             raise ValueError("A message needs nonempty text or image segments")
+        if sum(value is not None for value in (self.task_ref, self.operation_ref, self.fulfils_task_id)) > 1:
+            raise ValueError("Creation acknowledgement, operation confirmation and fulfilment are separate message relations")
+        if (self.job_id is None) != (self.job_revision is None):
+            raise ValueError("A job message needs its actual work ID and observed revision together")
         return self
 
     @property
@@ -78,5 +112,5 @@ class EpisodeOutcome(BaseModel):
 
     def requires_fresh_input(self) -> bool:
         return bool(self.task_proposals or self.job_proposals or self.resolve_open_loop_ids
-                    or any(m.task_ref or m.fulfils_task_id or m.expect_reply or m.job_id
+                    or any(m.task_ref or m.operation_ref or m.fulfils_task_id or m.expect_reply or m.job_id
                            for m in self.message_proposals))

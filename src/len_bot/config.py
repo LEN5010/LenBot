@@ -4,6 +4,12 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 AddressName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
+# These limits are captured by a new conversation or work execution segment.
+EXECUTION_BUDGET_FIELDS = frozenset({
+    'conversation_max_steps', 'conversation_max_tool_calls',
+    'job_max_steps', 'job_max_tool_calls', 'job_max_seconds',
+})
+
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
     bot_qq: int = Field(gt=0, description="The Bot's QQ account ID")
