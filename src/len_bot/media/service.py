@@ -250,17 +250,25 @@ class MediaService:
         files = [{'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
         return result, files
 
-    async def prepare_palette(self, scene_id: str) -> PreparedMediaContext:
+    async def recent_usage(self, scene_id: str, asset_ids: Sequence[str], *, through_rowid: int | None = None):
+        """Recent means the existing bounded send window, not the asset's lifetime."""
+        usage = await self.runtime.event_store.recent_media_sends(scene_id, bot_actor_id=self.runtime.bot_actor_id,
+            limit=self.runtime.config.conversation_outbound_limit, through_rowid=through_rowid)
+        return {asset_id: dict(usage.get(asset_id, {'last_sent_at': None, 'recent_send_count': 0,
+                                                 'used_in_last_reply': False})) for asset_id in dict.fromkeys(asset_ids)}
+
+    async def prepare_palette(self, scene_id: str, *, through_rowid: int | None = None) -> PreparedMediaContext:
         """The operator's fixed, scoped catalog with stable asset references."""
         if not self.runtime.config.media_enabled:
             return {"blocks": [], "manifest": []}
         assets = await self.runtime.event_store.list_palette(scene_id,
             limit=self.runtime.config.media_palette_limit)
+        usage = await self.recent_usage(scene_id, [asset['id'] for asset in assets], through_rowid=through_rowid)
         manifest = [
             {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
              "name": asset["description"][:40], "description": asset["description"][:40],
              "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"],
-             "status": "catalog_only"}
+             "status": "catalog_only", **usage[asset['id']]}
             for index, asset in enumerate(assets)
         ]
         return {"blocks": [], "manifest": manifest}

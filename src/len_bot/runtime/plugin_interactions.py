@@ -177,7 +177,7 @@ async def handle_live_announcement(runtime, event):
             audit.update(state='committed', action_ids=decision.action_ids)
             return decision
 
-        async def execute(name, arguments):
+        async def execute(name, arguments, *, tool_call_id=None):
             raise ValueError(f'公告未开放资料工具：{name}')
 
         async with runtime._cognition_semaphore:

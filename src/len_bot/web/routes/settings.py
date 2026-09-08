@@ -140,4 +140,5 @@ async def update_runtime_parameters(values: dict, request: Request, user: str = 
     if set(values) != set(current):
         raise HTTPException(422, "运行参数节必须完整填写页面提供的字段")
     await save_runtime_settings(runtime, values, live=False)
-    return {**runtime.query_service.runtime_settings(), "message": "运行参数已写入根配置，重启后生效"}
+    return {**runtime.query_service.runtime_settings(),
+            "message": "运行参数已写入根配置；五项执行预算用于新对话和新工作执行段，其他待生效改动需手动重启"}

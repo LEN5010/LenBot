@@ -130,6 +130,10 @@ class JobChanged(RuntimeError):
     pass
 
 
+class JobResultRejected(ValueError):
+    """Result validation failed inside a transaction that was rolled back."""
+
+
 class JobBudgetExhausted(RuntimeError):
     def __init__(self,message,*,budget_kind='model_steps'):
         super().__init__(message)

@@ -13,7 +13,7 @@ from len_bot.memory.history import HistoryConflictError
 from len_bot.runtime.gate import GateDecision
 from len_bot.scenes.models import SceneSession
 from len_bot.scenes.reducer import SceneReducer
-from len_bot.runtime.attention import HUMAN_INPUTS, record_scanned_event
+from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
 
 logger = logging.getLogger(__name__)
 
@@ -141,24 +141,34 @@ class SceneActor:
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
         if self.attention_policy:
             participants = set()
+            waiting = set()
+            focus_renewals = set()
             in_flight = set(self._active_mailbox.interaction_actors) if self._active_mailbox else set()
             if event.event_type in HUMAN_INPUTS:
                 in_flight.update(await self.event_store.pending_response_actors(self.scene_id, self.bot_actor_id,
                     self.event_store.clock() - self.attention_policy.config.attention_focus_seconds))
                 jobs = await self.event_store.list_jobs(self.scene_id)
-                sources = {source for job in jobs if job['status'] in {
+                participants = {'user:' + job['requester_qq_uid'] for job in jobs if job['requester_qq_uid'] and job['status'] in {
                     'pending', 'claimed', 'processing', 'review_required', 'result_ready', 'awaiting_delivery',
-                } for source in job['source_event_ids']}
-                participants = await self.event_store.event_actors(self.scene_id, sources)
+                }}
+                active_loops = [loop for loop in await self.event_store.get_active_open_loops(self.scene_id)
+                                if loop['expires_at'] > self.event_store.clock()]
+                loop_sources = await self.event_store.events_by_ids(self.scene_id,
+                    {loop['source_event_id'] for loop in active_loops}, self.session.last_observed_event_rowid)
+                delivered = {source.id for source in loop_sources if is_real_send(source, self.bot_actor_id)}
+                waiting = {loop['target_actor_id'] for loop in active_loops if loop['source_event_id'] in delivered}
                 if not event.is_reply_bot:
                     projected = await self.event_store.project_reply_context(
                         self.scene_id, [event], through_rowid=self.session.last_observed_event_rowid)
                     quote = projected[0].metadata.get('quote_context') or {}
                     if not quote.get('missing') and quote.get('actor_id') == self.bot_actor_id:
                         event.payload['reply_bot'] = True
+            elif event.event_type == EventType.MESSAGE_SENT:
+                focus_renewals = await self._focus_renewal_actors(event)
             self.attention_policy.apply(candidate, event, self.bot_actor_id,
                 in_flight=in_flight,
-                work_participants=participants)
+                work_participants=participants, awaiting_response=waiting,
+                focus_renewal_actors=focus_renewals)
         rowid = await self.event_store.commit_scene_event(
             event, candidate.model_dump(),
             task_id_to_trigger=event.payload.get('task_id') if event.event_type == EventType.TASK_DUE else None,
@@ -169,6 +179,35 @@ class SceneActor:
         self.session = candidate
         event.metadata['_rowid'] = rowid
         if self.on_state_updated: await self.on_state_updated(candidate, event)
+
+    async def _focus_renewal_actors(self, event):
+        """Renew from this delivered message's real request or work relation."""
+        if event.metadata.get('conversation_excluded') or not is_real_send(event, self.bot_actor_id):
+            return set()
+        responders = set(event.payload.get('response_actor_ids', []))
+        related = set()
+        source_id = event.payload.get('origin_event_id')
+        if source_id:
+            sources = await self.event_store.events_by_ids(self.scene_id, [source_id], self.session.last_observed_event_rowid)
+            for source in sources:
+                if source.event_type not in HUMAN_INPUTS:
+                    continue
+                reasons = set(source.metadata.get('attention_reasons', []))
+                if (source.event_type == EventType.PRIVATE_MESSAGE_RECEIVED or source.is_mention_bot or source.is_reply_bot
+                        or reasons.intersection({'mention', 'reply_to_bot', 'private_message', 'awaiting_response'})):
+                    related.add(source.actor_id)
+        task_ids = {event.payload[key] for key in ('job_id', 'fulfils_task_id', 'acknowledges_task_id')
+                    if event.payload.get(key)}
+        if task_ids:
+            for task in await self.event_store.scene_tasks(self.scene_id):
+                if task['id'] not in task_ids:
+                    continue
+                payload = task['payload']
+                if payload.get('requester_qq_uid'):
+                    related.add('user:' + payload['requester_qq_uid'])
+                if payload.get('target_actor_id'):
+                    related.add(payload['target_actor_id'])
+        return responders.intersection(related)
 
     async def _commit_turn(self, item):
         native_output = item.mailbox.output_kind in {'command', 'announcement'}
@@ -268,7 +307,7 @@ class SceneActor:
             if proposal.task_id:
                 task_ids.add(proposal.task_id)
         for message in outcome.message_proposals:
-            if not (message.task_ref or message.fulfils_task_id or message.job_id or message.expect_reply):
+            if not (message.task_ref or message.operation_ref or message.fulfils_task_id or message.job_id or message.expect_reply):
                 continue
             request_source(message.source_event_id)
             requester(message.requester_qq_uid)

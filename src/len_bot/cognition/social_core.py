@@ -19,25 +19,30 @@ class SocialCognitionCore:
 
     async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None, *, requester_qq_uid):
         runtime=self.runtime
+        config=runtime.config.model_copy(deep=True)
         binding=runtime.provider_registry.resolve('conversation')
         audit=trace if trace is not None else {}
         audit.update({'mode':'live','path':'conversation','model':binding.model,'provider_id':binding.provider_id,
-                      'reasoning_effort':binding.reasoning_effort})
+                      'reasoning_effort':binding.reasoning_effort,
+                      'budget_snapshot':{'model_calls_limit':config.conversation_max_steps,
+                                         'tool_calls_limit':config.conversation_max_tool_calls}})
         context=ConversationContext(runtime,session,through_rowid)
         context.add_current_sources(events,source_event_ids)
         ledger=ProposalLedger(context, episode_id)
 
-        def plugin_context():
+        def plugin_context(tool_call_id=None):
             return PluginCallContext(scene_id=session.scene_id, requester_qq_uid=requester_qq_uid,
                 now=runtime.clock(), cutoff_rowid=context.refs.cutoff, episode_id=episode_id,
                 job_id=None, role='conversation', ledger=ledger,
-                requester_qq_uids=tuple(sorted(context.requester_qq_uids)))
+                requester_qq_uids=tuple(sorted(context.requester_qq_uids)), tool_call_id=tool_call_id)
+
+        context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context())
 
         plugin_proposals = runtime.plugin_host.proposal_tool_names()
         toolkit=RetrievalToolkit(runtime.event_store,[session.scene_id],session.scene_id,
-            memory_store=runtime.memory_store,plugin_host=runtime.plugin_host,bot_qq=runtime.config.bot_qq,
+            memory_store=runtime.memory_store,plugin_host=runtime.plugin_host,bot_qq=config.bot_qq,
             media_service=runtime.media_service,context=context,on_observation=runtime.commit_tool_observation,
-            config=runtime.config, call_context=plugin_context)
+            config=config, call_context=plugin_context)
         pending_exchange=None
         pending_presentations=[]
         def definitions():
@@ -47,22 +52,30 @@ class SocialCognitionCore:
             if next_is_final():return [ledger.terminal_definition()]
             return [*definitions(),ledger.terminal_definition()]
         def next_is_final():
-            return (audit.get('model_calls_used',0)>=runtime.config.conversation_max_steps-1
-                    or audit.get('tool_calls_used',0)>=runtime.config.conversation_max_tool_calls)
+            return (audit.get('model_calls_used',0)>=config.conversation_max_steps-1
+                    or audit.get('tool_calls_used',0)>=config.conversation_max_tool_calls)
         try:
             messages=await context.build(events,source_event_ids,tool_definitions=request_definitions)
         except BaseException:
             audit['context_plan']=copy.deepcopy(context.context_plan)
             raise
 
-        async def execute(name,args):
+        async def execute(name,args,*,tool_call_id=None):
             if name in TOOLS:return await ledger.stage(name,args)
             if name in plugin_proposals:
-                return await runtime.plugin_host.execute_tool(name, args, plugin_context())
-            return await toolkit.execute_observation(name,args)
+                return await runtime.plugin_host.execute_tool(name, args, plugin_context(tool_call_id))
+            return await toolkit.execute_observation(name,args,tool_call_id=tool_call_id)
+
+        async def record_tool_result(call, arguments, result):
+            raw=result.result if isinstance(result,ObservationPage) else result
+            if isinstance(raw,ToolResult) and raw.status in {'error','unsupported'}:
+                page=await toolkit.error_observation(call.name,arguments,result,tool_call_id=call.id)
+                context.refs.register_result(page.result.result_id)
+                return page
+            return result
 
         async def append_update(trajectory):
-            can_absorb=runtime.config.conversation_max_steps-audit['model_calls_used']>=1
+            can_absorb=config.conversation_max_steps-audit['model_calls_used']>=1
             update=await observe() if observe and can_absorb else None
             if update:
                 context.session=update['session']
@@ -76,7 +89,7 @@ class SocialCognitionCore:
                 context.externalize_old_tool_bodies(trajectory)
                 context.release_optional_context(trajectory)
                 await context.pack_events(trajectory,[by_id[ident] for ident in provided_ids],provided_ids,
-                    raw_tokens=runtime.config.conversation_recent_tokens)
+                    raw_tokens=config.conversation_recent_tokens)
                 await context.install_facts(trajectory)
                 await context.install_preferences(trajectory)
                 if ledger.jobs or ledger.tasks:
@@ -132,7 +145,7 @@ class SocialCognitionCore:
             context.check_request(trajectory,request_definitions())
             return None
 
-        async def prepare_request(trajectory,definitions):
+        async def finalize_request(trajectory,definitions):
             nonlocal pending_presentations
             context.trajectory=trajectory
             if context.request_tokens(trajectory,definitions)>context.input_budget:
@@ -150,7 +163,7 @@ class SocialCognitionCore:
             audit['context_plan']=copy.deepcopy(context.context_plan)
             audit['estimated_context_tokens']=tokens
             audit['input_budget_tokens']=context.input_budget
-            audit['output_reserved_tokens']=runtime.config.conversation_output_tokens
+            audit['output_reserved_tokens']=config.conversation_output_tokens
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
             if input_prepared:
@@ -180,19 +193,20 @@ class SocialCognitionCore:
             if commit:
                 decision=await commit(outcome, read_event_ids=context.refs.read_events)
                 if not decision.accepted:raise CommitConflict(decision.reason)
+                return decision.committed_proposal.outcome
             return outcome
 
         try:
-            return await AgentLoop(ModelGateway(binding,max_output_tokens=runtime.config.conversation_output_tokens,
+            return await AgentLoop(ModelGateway(binding,max_output_tokens=config.conversation_output_tokens,
                 call_store=runtime.event_store, scene_id=session.scene_id, episode_id=episode_id,
                 purpose='conversation')).run(
                 messages=messages,tool_definitions=definitions,
                 execute_tool=execute,terminal=ledger.terminal_definition,finish=finish,proposal_tool_names=set(TOOLS) | plugin_proposals,
-                max_steps=runtime.config.conversation_max_steps,max_tool_calls=runtime.config.conversation_max_tool_calls,
-                observe=incorporate,prepare_request=prepare_request,prepare_tool_results=prepare_tool_results,
+                max_steps=config.conversation_max_steps,max_tool_calls=config.conversation_max_tool_calls,
+                observe=incorporate,finalize_request=finalize_request,record_tool_result=record_tool_result,prepare_tool_results=prepare_tool_results,
                 checkpoint=checkpoint,trace=audit)
         except Exception:
-            audit['staged_proposals']=[item.model_dump(mode='json') for item in [*ledger.jobs,*ledger.tasks]]
+            audit['staged_proposals']=[item.model_dump(mode='json') for item in [*ledger.jobs,*ledger.tasks,*ledger.memories]]
             raise
         finally:
             audit['references']=context.refs.snapshot()

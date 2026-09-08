@@ -158,10 +158,6 @@ class RuntimeGate:
         curr_origin = self.origin_mode_provider() if self.origin_mode_provider else "live"
         if mailbox.origin_mode == "shadow":
             curr_origin = "shadow"
-        if curr_origin == "shadow":
-            for tp in proposal_commit.outcome.task_proposals:
-                tp.origin_mode = "shadow"
-
         # Resolve references before any transaction or visible acknowledgement.
         if not self.jobs_enabled_probe() and any(p.operation in {"create", "resume"} for p in outcome.job_proposals):
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
@@ -172,9 +168,15 @@ class RuntimeGate:
                         await self.validate_job_resume(proposal.job_id, current_scene_state.scene_id)
                     except (ValueError, LookupError) as error:
                         return GateDecision(FinalDisposition.SILENCE, str(error), accepted=False)
-        proposal_ids = [tp.proposal_id for tp in [*outcome.task_proposals, *outcome.job_proposals] if tp.proposal_id]
+        proposals=[*outcome.task_proposals,*outcome.job_proposals,*outcome.memory_proposals]
+        proposal_ids = [proposal.proposal_id for proposal in proposals if proposal.proposal_id]
         if len(proposal_ids) != len(set(proposal_ids)):
-            return GateDecision(FinalDisposition.SILENCE, "Duplicate task proposal references", accepted=False)
+            return GateDecision(FinalDisposition.SILENCE, "Duplicate transaction proposal references", accepted=False)
+        creation_refs={proposal.proposal_id for proposal in [*outcome.task_proposals,*outcome.job_proposals]
+                       if proposal.operation=='create' and proposal.proposal_id}
+        operation_refs=({proposal.proposal_id for proposal in [*outcome.task_proposals,*outcome.job_proposals]
+                         if proposal.operation!='create' and proposal.proposal_id}
+                        | {proposal.proposal_id for proposal in outcome.memory_proposals if proposal.proposal_id})
         action_ids = [str(uuid.uuid4()) for _ in outcome.message_proposals]
         response_actors = []
         for message in outcome.message_proposals:
@@ -195,13 +197,20 @@ class RuntimeGate:
             scene_commit['event'].payload['response_actor_ids'] = response_actors
         deliveries = {}
         acknowledgements = {}
+        operation_confirmations = {}
         for index, message in enumerate(outcome.message_proposals):
-            if message.task_ref and message.task_ref not in proposal_ids:
+            if message.task_ref and message.task_ref not in creation_refs:
                 return GateDecision(FinalDisposition.SILENCE, "Acknowledgement has no task proposal", accepted=False)
             if message.task_ref:
                 if message.task_ref in acknowledgements:
                     return GateDecision(FinalDisposition.SILENCE, "One acknowledgement per task proposal", accepted=False)
                 acknowledgements[message.task_ref] = action_ids[index]
+            if message.operation_ref:
+                if message.operation_ref not in operation_refs:
+                    return GateDecision(FinalDisposition.SILENCE, "Operation confirmation has no staged control or memory operation", accepted=False)
+                if message.operation_ref in operation_confirmations:
+                    return GateDecision(FinalDisposition.SILENCE, "One confirmation per operation", accepted=False)
+                operation_confirmations[message.operation_ref]=action_ids[index]
             if message.fulfils_task_id:
                 if message.job_id and message.job_id != message.fulfils_task_id:
                     return GateDecision(FinalDisposition.SILENCE, "Job reply cannot fulfil another task", accepted=False)
@@ -211,22 +220,21 @@ class RuntimeGate:
 
         # 2. Authoritative Database Commit (Tasks, Open Loops, Memories) - All-or-Nothing Atomic Transaction
         try:
-            committed_tasks, resolved_loops, committed_mems = await self.event_store.commit_proposal_transaction(
+            committed_tasks, resolved_loops, committed_mems, resolved_outcome = await self.event_store.commit_proposal_transaction(
                 episode_id=proposal_commit.episode_id,
                 scene_id=proposal_commit.scene_id,
-                task_proposals=proposal_commit.outcome.task_proposals,
-                resolve_open_loop_ids=proposal_commit.outcome.resolve_open_loop_ids,
-                memory_proposals=proposal_commit.outcome.memory_proposals,
+                outcome=proposal_commit.outcome,
                 deliveries=deliveries,
                 acknowledgements=acknowledgements,
+                operation_confirmations=operation_confirmations,
                 scene_commit=scene_commit,
-                job_proposals=outcome.job_proposals,
-                job_messages=outcome.message_proposals,
                 origin_mode=curr_origin,
                 bot_actor_id=self.bot_actor_id,
                 through_rowid=(scene_commit["event"].metadata["through_event_rowid"]
                                if scene_commit else current_scene_state.last_observed_event_rowid),
             )
+            outcome = resolved_outcome
+            proposal_commit.outcome = resolved_outcome
             if resolved_loops and self.metrics:
                 self.metrics.inc_social("openloops_resolved", len(resolved_loops))
             committed_proposal = CommittedProposal(
@@ -311,6 +319,7 @@ class RuntimeGate:
                 id=action_ids[index],
                 fulfils_task_id=msg.fulfils_task_id,
                 acknowledges_task_id=acknowledged_task_id,
+                operation_ref=msg.operation_ref,
                 action_type=action_type,
                 scene_id=current_scene_state.scene_id,
                 segments=segments,
