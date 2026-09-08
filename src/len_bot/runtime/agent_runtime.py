@@ -454,6 +454,14 @@ class AgentRuntime:
             mailbox, self.runtime_gate, operator=True,
         )
         self._last_gate_decision = decision
+        if decision.accepted:
+            try:
+                await self.runtime_gate.publish_committed(decision, mailbox)
+            finally:
+                await self.event_store.save_trace(kind='conversation', scene_id=scene_id, ref_id=episode_id,
+                    payload={'operator_control': True, 'source_event_ids': evidence,
+                             'result': decision.committed_proposal.outcome.model_dump(mode='json'),
+                             'gate': self._gate_record(decision)})
         return decision
 
     async def prepare_outbound_action(self, action: ActionItem) -> ActionItem:
@@ -725,11 +733,8 @@ class AgentRuntime:
                               "proposed_outcome": candidate.model_dump(mode="json")})
                 decision = await actor.commit_turn(candidate, observed, source_ids, revision, mailbox, self.runtime_gate)
                 self._last_gate_decision = decision
-                self.metrics.inc_social("cognition_committed" if decision.accepted else "gate_rejected")
-                if decision.actions_enqueued:
-                    self.metrics.inc_social("gate_action")
                 if decision.accepted:
-                    await self._preserve_unhandled_bursts(burst, actor.session, candidate.handled_source_event_ids, delivered_ids)
+                    outcome = decision.committed_proposal.outcome
                 return decision
 
             if self.mock_turn_handler is not None:
@@ -747,12 +752,30 @@ class AgentRuntime:
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")
+            self.metrics.inc_social("cognition_committed")
+            if decision.committed_proposal.resolved_loop_ids:
+                self.metrics.inc_social("openloops_resolved", len(decision.committed_proposal.resolved_loop_ids))
+            # The terminal tool already returned its durable acceptance. These
+            # later steps cannot turn it into a rejected terminal candidate.
+            await self.runtime_gate.publish_committed(decision, mailbox)
+            if decision.actions_enqueued:
+                self.metrics.inc_social("gate_action")
+            await self._preserve_unhandled_bursts(burst, actor.session, outcome.handled_source_event_ids, delivered_ids)
             self.metrics.inc_social("social_cognition")
             self.metrics.inc_social("social_would_speak" if outcome.disposition == FinalDisposition.ACTION else "intentional_silence")
             await self._save_conversation_trace(scene_id, episode_id, burst, trace, outcome, decision)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            if decision and decision.accepted:
+                await self.event_store.save_trace(kind="conversation_error", scene_id=scene_id, ref_id=episode_id,
+                    payload={"error": "Conversation interrupted after its transaction committed",
+                             "error_type": type(error).__name__, "error_phase": "post_commit",
+                             "conversation": trace, "source_event_ids": source_ids,
+                             "result": decision.committed_proposal.outcome.model_dump(mode='json'),
+                             "gate": self._gate_record(decision)})
             raise
         except Exception as error:
+            if decision is not None and not decision.accepted:
+                self.metrics.inc_social("gate_rejected")
             scheduled = self._pending_bursts.pop(scene_id, None)
             if scheduled:
                 unseen = [event for event in scheduled.events if event.id not in delivered_ids]
@@ -765,6 +788,9 @@ class AgentRuntime:
             await self.event_store.save_trace(
                 kind="conversation_error", scene_id=scene_id, ref_id=episode_id,
                 payload={"error": _error_text(error), "error_type": type(error).__name__, "conversation": trace,
+                         "error_phase": "post_commit" if decision and decision.accepted else "pre_commit",
+                         "result": decision.committed_proposal.outcome.model_dump(mode='json')
+                             if decision and decision.accepted else None,
                          "source_event_ids": source_ids, "observed_rowid": observed,
                          "gate": self._gate_record(decision), "elapsed_ms": round((time.monotonic() - started) * 1000)},
             )
@@ -813,10 +839,7 @@ class AgentRuntime:
 
     @staticmethod
     def _gate_record(decision: GateDecision | None):
-        return None if decision is None else {
-            "accepted": decision.accepted, "disposition": decision.disposition.value,
-            "reason": decision.reason, "action_ids": decision.action_ids,
-        }
+        return decision.record() if decision is not None else None
 
     async def _save_conversation_trace(self, scene_id, episode_id, burst, trace, outcome, decision):
         committed = decision.committed_proposal

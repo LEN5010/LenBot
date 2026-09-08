@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import copy
 
-from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, final_step_message
+from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, final_step_message, execution_budget_message
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.proposals import ProposalLedger, TOOLS
@@ -55,7 +55,12 @@ class SocialCognitionCore:
             return (audit.get('model_calls_used',0)>=config.conversation_max_steps-1
                     or audit.get('tool_calls_used',0)>=config.conversation_max_tool_calls)
         try:
-            messages=await context.build(events,source_event_ids,tool_definitions=request_definitions)
+            initial_budget,_=execution_budget_message({
+                'model_calls_limit':config.conversation_max_steps,'model_calls_used':0,
+                'tool_calls_limit':config.conversation_max_tool_calls,'tool_calls_used':0},'finish_turn')
+            messages=await context.build(events,source_event_ids,tool_definitions=request_definitions,
+                                         execution_budget=initial_budget,
+                                         terminal_hint=final_step_message('finish_turn') if next_is_final() else None)
         except BaseException:
             audit['context_plan']=copy.deepcopy(context.context_plan)
             raise
@@ -87,7 +92,7 @@ class SocialCognitionCore:
                 by_id={event.id:event for event in [*new_events,*related]}
                 provided_ids=list(dict.fromkeys([*current_ids,*(event.id for event in related)]))
                 context.externalize_old_tool_bodies(trajectory)
-                context.release_optional_context(trajectory)
+                context.release_optional_context(trajectory, include_facts=True)
                 await context.pack_events(trajectory,[by_id[ident] for ident in provided_ids],provided_ids,
                     raw_tokens=config.conversation_recent_tokens)
                 await context.install_facts(trajectory)
@@ -128,7 +133,9 @@ class SocialCognitionCore:
                 context.refs.jobs.update(current_jobs)
                 return result
 
-            context.externalize_old_tool_bodies(messages)
+            if pages:
+                context.release_optional_context(messages,reason='capacity_reserved_for_tool_results')
+            context.fit_request(messages,request_definitions(),reserved=reserved,phase='tool_exchange')
             await context.pack_tool_pages(messages,indexes,[page.limit for page in pages],render,
                 definitions=request_definitions,reserved=reserved)
             pending_exchange=messages[tool_end:]
@@ -142,15 +149,13 @@ class SocialCognitionCore:
                 pending_exchange=None
             else:
                 await append_update(trajectory)
-            context.check_request(trajectory,request_definitions())
+            context.fit_request(trajectory,request_definitions(),phase='new_input')
             return None
 
         async def finalize_request(trajectory,definitions):
             nonlocal pending_presentations
             context.trajectory=trajectory
-            if context.request_tokens(trajectory,definitions)>context.input_budget:
-                context.externalize_old_tool_bodies(trajectory)
-            tokens=context.check_request(trajectory,definitions)
+            tokens=context.fit_request(trajectory,definitions,phase='before_model')
             pending_presentations=toolkit.read_presentations(trajectory)
             sections={}
             empty_schema_tokens=context.request_tokens([],[])

@@ -12,6 +12,7 @@ from len_bot.cognition.input_window import prefix_end, original_prefix
 from len_bot.cognition.call_store import estimate_request
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.work_context import exchange_spans
+from len_bot.tools.results import ToolResult
 
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
 CUE_TYPES = {EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
@@ -338,15 +339,22 @@ class ConversationContext:
                 self.omit('tool_body', 'saved_body_externalized', result_id=result['result_id'],
                     previous_displayed_range=span, coordinate_unit=unit)
 
-    def release_optional_context(self, messages):
+    def release_optional_context(self, messages, *, include_facts=False, reason='capacity_reserved_for_new_input'):
         labels = {'reference': '运营目录与表达参考', 'history_summary': '历史摘要', 'recent_history': '历史原话',
-                  'pending_directory': '待处理来源目录', 'runtime_facts': '运行事实'}
+                  'pending_directory': '待处理来源目录', 'previous_failure': '既往失败说明'}
+        if include_facts:labels['runtime_facts']='运行事实'
+        # A native call proves the preceding request actually received the
+        # initially packed original history. Before that response, keep those
+        # bodies alongside the read references already assigned by packing.
+        history_was_provided = any(message.get('tool_calls') for message in messages)
         for message in messages:
             section = message.get('_context_section')
+            if section == 'recent_history' and not history_was_provided:
+                continue
             if section in labels and not message.get('_context_omitted'):
                 message['content'] = '先前的' + labels[section] + '本次省略；当前来源与更新后的运行事实优先。'
                 message['_context_omitted'] = True
-                self.omit(section, 'capacity_reserved_for_new_input')
+                self.omit(section, reason)
 
     def pending_wakes(self):
         return [wake for wake in self.session.pending_wakes
@@ -388,11 +396,31 @@ class ConversationContext:
         definitions = self.tool_definitions() if definitions is None else definitions
         return estimate_request(self.model_messages(messages), definitions)['input_tokens']
 
-    def check_request(self, messages, definitions):
+    def fit_request(self, messages, definitions, *, reserved=(), phase='request'):
+        """Keep current input, facts and complete receipts ahead of optional context."""
+        self.limit_image_window(messages)
+        if self.request_tokens([*messages,*reserved],definitions)>self.input_budget:
+            self.externalize_old_tool_bodies(messages)
+        if self.request_tokens([*messages,*reserved],definitions)>self.input_budget:
+            self.release_optional_context(messages,reason='capacity_reserved_for_current_exchange')
+        return self.check_request([*messages,*reserved],definitions,phase=phase)
+
+    def check_request(self, messages, definitions, *, phase='request'):
         self.limit_image_window(messages)
         tokens = self.request_tokens(messages, definitions)
         if tokens > self.input_budget:
-            raise ValueError('Conversation input, images and tool definitions exceed the input budget after output reserve; sources remain pending')
+            sections={}
+            empty_schema_tokens=self.request_tokens([],[])
+            for message in messages:
+                section=message.get('_context_section',message.get('role','unknown'))
+                sections[section]=sections.get(section,0)+self.request_tokens([message],[])-empty_schema_tokens
+            self.context_plan['capacity_failure']={
+                'phase':phase,'input_tokens':tokens,'input_budget_tokens':self.input_budget,
+                'excess_tokens':tokens-self.input_budget,'section_tokens':sections,
+                'tool_definition_tokens':self.request_tokens([],definitions),
+                'current_pixel_assets':sorted(self.loaded_media)}
+            raise ValueError(f'Conversation input exceeds its input budget at {phase}: '
+                             f'{tokens} > {self.input_budget}; required sources remain pending')
         self.text_tokens = tokens
         return tokens
 
@@ -453,6 +481,12 @@ class ConversationContext:
                 messages[index]['content'] = str(page)
             else:
                 self.omit('tool_body', 'no_capacity_for_original_body', tool_call_id=messages[index]['tool_call_id'])
+                locator = json.loads(original)
+                messages[index]['content'] = str(ToolResult.failure(
+                    f"资料 {locator['result_id']} 已经保存，但本次页量和请求余量不足以呈现正文。"
+                    f"读取位置 {locator['coordinate_unit']}:{locator['next_offset']} 没有推进；"
+                    '不要原样重复同一续读位置，终结时说明尚未读到的内容。',
+                    'presentation_capacity_error', stage='presentation'))
         messages.extend(images)
         self.check_request(messages, definitions())
 
@@ -806,7 +840,8 @@ class ConversationContext:
                 messages.append(message)
         self.context_plan['preference_subjects'] = sorted({self.session.scene_id, *self.relevant_actor_ids})
 
-    async def build(self, events, current_ids, *, tool_definitions=None):
+    async def build(self, events, current_ids, *, execution_budget: dict, terminal_hint: dict | None = None,
+                    tool_definitions=None):
         config = self.config
         if tool_definitions is not None:self.tool_definitions = tool_definitions
         self.required_originals = set()
@@ -834,7 +869,9 @@ class ConversationContext:
 finish_turn必须提供handled_sources，填本轮确实已回答、已委托或明确决定沉默的待处理消息M；读到了但未处理的来源不要填。只看过片段的原话先续读。工具无结果或可处理错误交给剩余步骤改变查询或说明具体未决项，不机械重复同参数；next_call按原参数续读，source_next_call表示还在源端的下一批。
 未提交候选的字段、引用或像素错误会返回committed=false；根据具体回执修正或续读，再用新的调用ID提交，不重复原候选。剩余预算由运行时给出，普通闲聊可以第一步沉默，不能在最后一步后继续借用调用。
 '''
-        messages = [{'role':'system','_context_section':'persona','content':system}]
+        messages = [{'role':'system','_context_section':'persona','content':system}, copy.deepcopy(execution_budget)]
+        if terminal_hint is not None:
+            messages.append(copy.deepcopy(terminal_hint))
         originals = await self.associated_originals(events, current_ids)
         by_id = {event.id: event for event in events}
         for event in originals:
@@ -973,7 +1010,7 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                 messages.append(failure)
             else:
                 self.omit('previous_failure', 'no_capacity', attempts=len(rejected))
-        self.check_request(messages, self.tool_definitions())
+        self.fit_request(messages, self.tool_definitions(), phase='initial_context')
         return messages
 
     @staticmethod

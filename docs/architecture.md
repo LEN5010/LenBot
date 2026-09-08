@@ -22,6 +22,8 @@
 
 事件追加且不可变。Session、认识、任务、工作与等待状态由事件或获准提案更新；原始证据、撤销记录与历史身份保留。认识、工作状态、回执关联和行动提案同事务提交，冲突回滚后确认消息不能入队。运营干预记录 OPERATOR_ACTION，不确认未读的人类输入。
 
+Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Session，再由调用者发布 Scheduler 和 Action。发布按同一场景顺序执行，完整准备行动后才入队；Trace 单独保存 committed、commit_event_id、发布阶段、已调度任务及逐条 not_enqueued／enqueued／enqueue_unknown。发布异常不改变 accepted 或把终结调用标成 rejected，不重做事务、不补发；取消发生在等待提交期间时，等待同一次事务的实际结局，已提交则记录发布中断。重复读取已提交轮次只返回原结果和行动身份。未提交候选目录排除存在真实 CONVERSATION_COMMITTED 的轮次。
+
 ## 配置与持续数据
 
 ConfigStore 从当前项目根目录的固定 `lenbot.config.json` 读取 RootConfig。runtime、models、delivery、access、scenes、time、members、plugins 各节在配置入口解析，插件保留已解析类型供构造使用。未配置插件为 `enabled=false, config=null`，业务时区未配置为 null；不能启用缺少必需时间或成员资料的能力。样例、环境变量、CLI 与数据库不参与覆盖。模型连接取得实际凭据与端点，网络客户端显式禁用环境继承，连接参数变化时更新客户端。
@@ -68,9 +70,11 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 ### 整组工具页与容量
 
-ConversationContext 按实际消息、动态工具 Schema、原生图片估算和输出预留装配每次请求。稳定人格前置，当前原话、会改变动作的事实和完整回执优先，人工参考与目录按余量采用；偏好只装入本轮参与者、引用对象、关联请求者与本群规则，无关工作和完整技能目录按需读。有效输入容量为配置总上下文扣除输出预留；省略的目录或替换为定位的详情记入 context_plan。
+ConversationContext 按实际消息、动态工具 Schema、原生图片估算和输出预留装配每次请求，执行预算说明从首次装配起计入容量。稳定人格前置，当前原话、会改变动作的事实和完整回执优先，人工参考与目录按余量采用；偏好只装入本轮参与者、引用对象、关联请求者与本群规则，无关工作和完整技能目录按需读。工具读取开始后释放旧目录、参考和已经提供过的历史正文，为完整回执留空间；首次模型调用前不移除已授予读取定位的原话正文。有效输入容量为配置总上下文扣除输出预留；省略的目录或替换为定位的详情记入 context_plan。必要内容仍超出容量时，capacity_failure 记录失败阶段、实际输入、上限、超额和各部分用量。
 
 原始工具观察先完整保存，ObservationPage 描述本轮展示位置、偏移及已知结构。装配先为当前原话、事实及全部匹配回执留空间，将旧工具正文换为定位；工作仍不足时先使用原有 WorkCompressor 处理允许压缩的旧完整交换，再由共享 pack_tool_pages 分配新资料页。当前交换、剩余额度、终结提示和输出预留一起计入容量，必要内容仍装不下时明确结束并保留未处理部分。
+
+query_jobs 的目录页只给工作 ID、版本、状态、请求者、请求来源与目标片段，不算完整工作详情已读；详情沿同一份不可变 JSON 的真实字符位置续读，展示过的资料 ID 才取得相应定位。字符页不自动授予人类原话证据。其他结构记录仍按完整记录展示，不能用任意字符片段取得认识编辑或原话处理资格。共享页装配无法采用任何正文时，保存 presentation_capacity_error 观察及原资料位置，不再返回指向原地的自动续读指令。
 
 ToolResult 的 coordinate_unit 区分 characters 与 records，displayed_range 使用 `[start,end)` 和该单位的 total；next_call 包含工具名与可直接使用的参数，只定位本地已保存正文或记录的后续范围。source_next_call 单独指向尚未取得的源端下一批，保留原筛选与排序；模型须先读完本次已取得资料，才能继续源端范围。source_truncated 与本地分页、只给定位、空记录、原图未装入和 GIF 首帧覆盖分别保留，不能从一个截断标志推定其他覆盖。
 
@@ -87,6 +91,8 @@ InformationJobRunner 使用现有 tasks 与 agent_jobs，同一工作共用实�
 新工作与提醒返回当轮暂存引用，只有对应的确认消息填写 ack_ref；同轮普通回复使用自己的 source，显示引用 reply_to 可独立选择。ack_ref 只能取已返回的本轮真实回执，一个新事项只确认一次。work_ref 指表达所依据的工作，delivery_ref 指本条送达后履约的工作或提醒，operation_ref 指本轮控制或记忆操作的 proposal_ref；每条消息只能选择一种关系，不能相互代替。事务先核对各操作观察到的版本与业务状态，再应用变化；仅明确引用该操作的确认绑定其实际新版本。解析后的 EpisodeOutcome、CONVERSATION_COMMITTED 和 Action 采用同一关系，操作事实保存在提交事件 operation_receipts。发送队列按 batch_id、operation_ref 与 action 核对已经提交的操作，取消确认不因目标进入 cancelled 而误拒；普通旧结果继续按原版本检查，同轮控制与旧结果交付冲突则回滚。
 
 Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 delivery_action_id；新确认 ActionItem 另携带 acknowledges_task_id，送达履约仍使用 fulfils_task_id。工作引用与版本从真实对象核验，不能按跨轮重复的 S1 搜索历史事项，也不能将创建确认当成结果已经交付。
+
+创建工作确认的 job_id 与 revision 也在事务内写入解析后的消息；提交后的行动准备使用该版本，不在异步发布时重新绑定可能已经变化的工作版本。
 
 面板登录后的无发言管理提案由 Actor 传入可信 operator_control，允许修改／恢复既有工作、修改／触发提醒和其他原有状态管理，不用空 QQ UID 检查聊天资格，也不生成聊天消息。工作和提醒的原请求者保留，后续执行与交付仍检查当前群、插件、版本和请求者资格。管理提交不消费群友未读输入，不记成模型选择沉默。
 
@@ -115,6 +121,8 @@ HistoryMaintainer 只处理新增原始范围，同批生成摘要与稀疏认�
 ## 工具、媒体与传输
 
 插件生产者、Host、Toolkit、工作与维护读取使用 ToolResult；外部协议在生产者解析，持久观察从已知 JSON 结构读回，不使用任意字符串成功包装、包含判断或文本猜状态。工具执行失败由工具边界形成错误结果，供应商失败由 Gateway、事务失败由提交处负责。工具错误的 content、error_code、error_stage、tool_name、tool_call_id、字段 loc/type/message 及 HTTP 状态使用同一份 ToolResult；错误详情不保存原始 input、凭据或二进制。提前返回的参数错误、插件提案失败和核心提案异常也沿现有观察保存入口取得唯一 result_id；已有观察不重复保存，观察事件不触发新的社会认知。原始观察、ObservationPage 与读取授权保持不同职责。每页 evidence_span 直接由真实 result_id、coordinate_unit 和 displayed_range 派生，可复制进 ResultSpan；原始正文不因显示页或错误纠正而变化。
+
+媒体读取失败保留异常类型、执行阶段、HTTP 状态和去除凭据与查询参数的来源地址；httpx 请求日志也只保留方法、主机路径和状态。实际请求仍使用原地址与配置，不据 HTTP 状态猜测过期或风控，也不改变来源、重试或请求权限。
 
 工具定义保存用途、别名、关键词与参数模型。Schema 从同一模型生成，Host 或核心入口严格解析一次后向 handler 传递类型化参数，null、默认值、时间和列表边界不再各自解释。注册时检查插件与工具重名，并从实际核心定义取得保留名，冲突报告双方来源，不静默覆盖处理器。
 

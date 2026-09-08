@@ -51,10 +51,28 @@ class TruncatedModelOutput(AgentProtocolError):
 
 
 def final_step_message(terminal_name: str) -> dict:
-    return {"role": "user", "content": (
+    return {"role": "user", "_context_section": "terminal_hint", "content": (
         f"当前只开放 {terminal_name}，具体剩余额度见运行时记录。"
         "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
     )}
+
+
+def execution_budget_message(state: dict[str, Any], terminal_name: str) -> tuple[dict, dict]:
+    """The same runtime budget fact is used for initial packing and each call."""
+    remaining = max(0, state['model_calls_limit'] - state['model_calls_used'] - 1)
+    view = {**state, 'model_call_index': state['model_calls_used'] + 1,
+            'model_calls_remaining_after': remaining,
+            'tool_calls_remaining': max(0, state['tool_calls_limit'] - state['tool_calls_used']),
+            'terminal_required': terminal_name}
+    if 'elapsed_seconds_limit' in state:
+        view['elapsed_seconds_remaining'] = max(0, round(state['elapsed_seconds_limit'] - state['elapsed_seconds_used'], 3))
+    note = {'role': 'user', '_context_section': 'execution_budget', 'content':
+            '本次执行额度由运行时提供；优先推进当前请求的直接路径，无需额外读取时即可终结。'
+            + ('本次已是最后一次模型调用，必须提交已有结果与缺口。' if remaining == 0
+               else '后续至少留一次模型调用组织并提交终结。')
+            + '终结不计普通工具次数。\n'
+            + json.dumps(view, ensure_ascii=False)}
+    return note, view
 
 
 def _trace_value(value: Any, key: str = "") -> Any:
@@ -186,19 +204,7 @@ class AgentLoop:
             state = await budget_state() if budget_state is not None else {
                 'model_calls_limit': max_steps, 'model_calls_used': audit['model_calls_used'],
                 'tool_calls_limit': max_tool_calls, 'tool_calls_used': tool_calls_used}
-            remaining = max(0, state['model_calls_limit'] - state['model_calls_used'] - 1)
-            view = {**state, 'model_call_index': state['model_calls_used'] + 1,
-                    'model_calls_remaining_after': remaining,
-                    'tool_calls_remaining': max(0, state['tool_calls_limit'] - state['tool_calls_used']),
-                    'terminal_required': terminal_name}
-            if 'elapsed_seconds_limit' in state:
-                view['elapsed_seconds_remaining'] = max(0, round(state['elapsed_seconds_limit'] - state['elapsed_seconds_used'], 3))
-            note = {'role': 'user', '_context_section': 'execution_budget', 'content':
-                    '本次执行额度由运行时提供；优先推进当前请求的直接路径，无需额外读取时即可终结。'
-                    + ('本次已是最后一次模型调用，必须提交已有结果与缺口。' if remaining == 0
-                       else '后续至少留一次模型调用组织并提交终结。')
-                    + '终结不计普通工具次数。\n'
-                    + json.dumps(view, ensure_ascii=False)}
+            note, view = execution_budget_message(state, terminal_name)
             target[:] = [message for message in target if message.get('_context_section') != 'execution_budget']
             target.append(note)
             return view
@@ -216,7 +222,7 @@ class AgentLoop:
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
                 known_names = {definition["function"]["name"] for definition in definitions}
                 choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
-                if forced_final:
+                if forced_final and not any(message.get('_context_section') == 'terminal_hint' for message in trajectory):
                     trajectory.append(final_step_message(terminal_name))
                 await install_budget(trajectory)
                 request_messages = await prepare_request(trajectory, definitions) if prepare_request else None

@@ -427,11 +427,14 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         recorded after an accepted commit must never become a rejected intent.
         """
         rows = await (await self._db.execute(
-            """SELECT ref_id,payload FROM traces
+            """SELECT ref_id,payload FROM traces t
                WHERE scene_id=? AND kind='conversation_error'
                  AND json_extract(payload,'$.error_type') IN
                      ('SceneCommitConflict','FreshInputConflict','CommitConflict','AgentProtocolError','AgentBudgetExhausted','TruncatedModelOutput')
                  AND COALESCE(json_extract(payload,'$.gate.accepted'),0)=0
+                 AND COALESCE(json_extract(payload,'$.gate.committed'),0)=0
+                 AND NOT EXISTS (SELECT 1 FROM events e WHERE e.scene_id=t.scene_id
+                     AND e.id='turn:'||t.ref_id AND e.event_type='CONVERSATION_COMMITTED')
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))>?
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))<=?
                ORDER BY created_at DESC LIMIT 3""", (scene_id, after_rowid, through_rowid),
@@ -1359,6 +1362,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         receipt = operation_receipts[message.operation_ref]
                         if receipt.kind == "work":
                             message.job_revision = receipt.revision
+                    elif message.task_ref:
+                        task_id = proposal_tasks[message.task_ref]
+                        job = await self.get_job(task_id, scene_id)
+                        if job:
+                            message.job_id, message.job_revision = job['id'], job['revision']
                 for task_id, action_id in (deliveries or {}).items():
                     cursor = await self._db.execute(
                         """UPDATE tasks SET status='awaiting_delivery',
