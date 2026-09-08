@@ -1160,24 +1160,38 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         continue
                     if not tp.description.strip():
                         raise ValueError("Task description is empty")
+                    request = await (await self._db.execute(
+                        'SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?',
+                        (tp.request_source_event_id,scene_id))).fetchone()
+                    if (request is None or request[0] not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                            or request[1] == bot_actor_id or not request[1].startswith('user:')
+                            or request[1] != tp.requester_id
+                            or request[1].removeprefix('user:') != tp.payload.get('requester_qq_uid')
+                            or tp.request_source_event_id not in tp.source_event_ids):
+                        raise ValueError('Reminder requester must match its explicit human request source')
                     if tp.due_at is not None and tp.due_at < now:
                         raise ValueError("Task time is already past; review the promise instead")
                     tp.payload = {**tp.payload, "requester_id": tp.requester_id,
+                                  "request_source_event_id": tp.request_source_event_id,
                                   "target_actor_id": tp.target_actor_id,
                                   "source_event_ids": tp.source_event_ids,
                                   "proposal_id": tp.proposal_id}
                     # A stable source + proposal id makes retries of the same proposal idempotent.
                     if tp.proposal_id:
                         prior = await self._db.execute(
-                            """SELECT id,status FROM tasks WHERE scene_id=?
+                            """SELECT id,status,payload FROM tasks WHERE scene_id=?
                                AND json_extract(payload,'$.proposal_id')=?
-                               AND json_extract(payload,'$.source_event_ids')=?""",
-                            (scene_id, tp.proposal_id, json.dumps(tp.source_event_ids, separators=(",", ":"))),
+                               AND json_extract(payload,'$.request_source_event_id')=?""",
+                            (scene_id, tp.proposal_id, tp.request_source_event_id),
                         )
                         previous = await prior.fetchone()
                         if previous:
                             if previous[1] != "pending":
                                 raise ValueError("This request already has a non-pending task; inspect it instead of confirming creation")
+                            prior_payload=json.loads(previous[2])
+                            if (prior_payload.get('requester_id') != tp.requester_id
+                                    or prior_payload.get('target_actor_id') != tp.target_actor_id):
+                                raise ValueError('Existing reminder reference belongs to a different request relationship')
                             proposal_tasks[tp.proposal_id] = previous[0]
                             continue
                     task_id = f"task_{uuid.uuid4().hex[:10]}"
@@ -1222,9 +1236,12 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                     committed_tasks.append(task_item)
 
                 for reference, action_id in (acknowledgements or {}).items():
-                    await self._db.execute(
-                        "UPDATE tasks SET payload=json_set(payload,'$.ack_action_id',?) WHERE id=? AND scene_id=?",
+                    cursor = await self._db.execute(
+                        "UPDATE tasks SET payload=json_set(payload,'$.ack_action_id',?) WHERE id=? AND scene_id=? "
+                        "AND json_extract(payload,'$.ack_action_id') IS NULL",
                         (action_id, proposal_tasks[reference], scene_id))
+                    if cursor.rowcount != 1:
+                        raise ValueError('This request already has an acknowledgement action; no second confirmation was committed')
 
                 # 3. Resolve Open Loops (ADR-0025: strictly scoped to this scene)
                 for loop_id in resolve_open_loop_ids:
@@ -1256,6 +1273,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         """UPDATE tasks SET status='awaiting_delivery',
                            payload=json_set(payload,'$.delivery_action_id',?)
                            WHERE id=? AND scene_id=? AND status IN ('processing','result_ready')
+                           AND json_extract(payload,'$.delivery_action_id') IS NULL
                            AND (COALESCE(json_extract(payload,'$.kind'),'reminder') != 'query'
                                 OR json_extract(payload,'$.result') IS NOT NULL)""",
                         (action_id, task_id, scene_id),

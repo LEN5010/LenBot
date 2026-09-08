@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+import httpx
 
 from len_bot.web.auth import get_current_user
 
@@ -67,4 +68,8 @@ async def media_file(asset_id: str, scene_id: str, request: Request, user: str =
         asset, data = await request.app.state.runtime.query_service.media_file(asset_id, scene_id)
     except ValueError as error:
         raise HTTPException(404, str(error)) from error
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(502, f'图片来源返回 HTTP {error.response.status_code}，当前原图不可读取') from error
+    except httpx.RequestError as error:
+        raise HTTPException(502, '图片来源请求失败，当前原图不可读取') from error
     return Response(content=data, media_type=asset["mime_type"], headers={"Cache-Control": "private, no-store"})

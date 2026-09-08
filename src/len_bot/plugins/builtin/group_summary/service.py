@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.cognition.jobs import GroupSummaryRange
 from len_bot.plugins.models import PluginCallContext
-from len_bot.tools.results import ToolResult, ToolSource
+from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
 from .config import GroupSummaryConfig
 
@@ -53,7 +53,7 @@ class GroupSummaryService:
                   "job_revision":job["revision"], "range":request.model_dump(mode="json"),
                   "statistics":statistics, "next_cursor":next_cursor,
                   "scope":"本群已保存的人类消息；排除Bot回声、内部事件与模拟数据，包含日程命令和引用评论。",
-                  "coverage_note":"本页取回不等于原文已读；资料正文可用read_tool_result继续，不能仅凭第一页宣称全时段完成。"}
+                  "coverage_note":"本页取回不等于原文已读；先用read_tool_result完整采用本页正文，再用source_next_call取得下一批。不得按页首游标跳过未采用正文，不能仅凭第一页宣称全时段完成。"}
         lines = [json.dumps(header, ensure_ascii=False)]
         sources = []
         for event in selected:
@@ -67,4 +67,5 @@ class GroupSummaryService:
             sources.append(ToolSource(event_id=event.id, title=f"本群消息 {event.id}"))
         return ToolResult(status="ok" if selected or not statistics["matched_messages"] else "no_results",
                           content="\n".join(lines), sources=sources, coverage="group_summary_window",
-                          evidence_kind="retrieval")
+                          evidence_kind="retrieval", source_next_call=ToolNextCall(name='read_group_chat_window',
+                              arguments={'cursor':next_cursor}) if next_cursor is not None else None)

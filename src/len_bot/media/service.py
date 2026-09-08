@@ -9,15 +9,16 @@ import shutil
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import urldefrag
 
 import httpx
 from PIL import Image, ImageOps
 
 from len_bot.media.models import PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
-from len_bot.tools.http import fetch_public
+from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
-from len_bot.tools.results import ToolResult, ToolSource
+from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 
@@ -162,8 +163,20 @@ class MediaService:
 
     @staticmethod
     def _media_error(asset_id, error):
-        return {"asset_id": asset_id, "status": "error",
-            "reason": str(error) if isinstance(error, ValueError) else f"图片读取失败：{type(error).__name__}"}
+        if isinstance(error, (httpx.TimeoutException, TimeoutError)):
+            code, reason = 'timeout', f'本次媒体读取超时：{error}'
+        elif isinstance(error, httpx.HTTPStatusError):
+            code = 'not_found' if error.response.status_code in {404, 410} else 'media_http_error'
+            reason = f'媒体源返回HTTP {error.response.status_code}：{error}'
+        elif isinstance(error, PublicReadError):
+            code, reason = 'public_read_failed', str(error)
+        elif isinstance(error, ValueError):
+            code, reason = 'media_unavailable', str(error)
+        elif isinstance(error, OSError):
+            code, reason = 'media_io_error', f'媒体文件读写失败：{error}'
+        else:
+            code, reason = 'media_unavailable', f'媒体读取失败：{type(error).__name__}: {error}'
+        return {"asset_id": asset_id, "status": "error", "error_code": code, "reason": reason}
 
     async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
@@ -194,7 +207,10 @@ class MediaService:
         try:
             _, manifest = await self._prepare_asset(asset_id, scene_id)
         except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
-            return ToolResult.failure(self._media_error(asset_id, error)["reason"], "media_unavailable")
+            failure = self._media_error(asset_id, error)
+            return ToolResult.failure(failure["reason"], failure["error_code"])
+        manifest['status'] = 'prepared'
+        manifest['note'] = '图片已取得并准备；是否进入当前模型以本次请求的图片清单为准。'
         return ToolResult(content=json.dumps(manifest, ensure_ascii=False), attachments=[asset_id],
             sources=[ToolSource(event_id=manifest["source_event_id"], title="原始图片")],
             coverage=manifest["coverage"], evidence_kind="retrieval")
@@ -203,20 +219,34 @@ class MediaService:
         """Prepare public pixels; the toolkit commits files and observation together."""
         if not self.runtime.config.media_enabled:
             return ToolResult(status='unsupported', content='媒体能力已停用', error_code='media_disabled'), []
-        final_url, headers, data = await fetch_public(self._client, url, max_bytes=MAX_PDF_BYTES)
-        media_type = headers.get('content-type', '').split(';')[0].lower()
-        if media_type == 'application/pdf' or data.startswith(b'%PDF-'):
-            rendered = await read_pdf(data, page=1 if page is None else page)
-            data = base64.b64decode(rendered['png_base64'], validate=True)
-            description = f"PDF第{rendered['page']}页，共{rendered['page_count']}页"
-            source_url, coverage = f"{final_url}#page={rendered['page']}", 'pdf_page'
-        else:
-            if page is not None:
-                raise ValueError('仅PDF支持page页码参数')
-            description, source_url, coverage = '网页原始图片', final_url, 'web_image'
-        mime, path = await self._store_bytes(data)
-        result = ToolResult(content=description+'；像素将进入当前模型，未识别或未覆盖的细节不能当作已核实。',
-            sources=[ToolSource(url=source_url, title=description)], evidence_kind='external', coverage=coverage)
+        source_next_call = None
+        try:
+            async with self._io_slots:
+                final_url, headers, data = await fetch_public(self._client, url, max_bytes=MAX_PDF_BYTES)
+                media_type = headers.get('content-type', '').split(';')[0].lower()
+                if media_type == 'application/pdf' or data.startswith(b'%PDF-'):
+                    rendered = await read_pdf(data, page=1 if page is None else page)
+                    data = base64.b64decode(rendered['png_base64'], validate=True)
+                    description = f"PDF第{rendered['page']}页，共{rendered['page_count']}页"
+                    document_url = urldefrag(final_url)[0]
+                    source_url, coverage = f"{document_url}#page={rendered['page']}", 'pdf_page'
+                    if rendered['page'] < rendered['page_count']:
+                        source_next_call = ToolNextCall(name='read_web_media',
+                            arguments={'url': document_url, 'page': rendered['page'] + 1})
+                else:
+                    if page is not None:
+                        return ToolResult(status='error', error_code='invalid_arguments', evidence_kind='external',
+                            content='仅PDF支持page页码；图片请省略page或填null。', sources=[ToolSource(url=final_url)]), []
+                    description, source_url, coverage = '网页原始图片', final_url, 'web_image'
+                mime, path = await self._store_bytes(data)
+        except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError, TimeoutError) as error:
+            failure = self._media_error(None, error)
+            return ToolResult(status='error', content=failure['reason'], error_code=failure['error_code'],
+                sources=[ToolSource(url=url)], evidence_kind='external'), []
+        result = ToolResult(content=description+'已取得并验证，资产随本次观察登记，attachments提供场景资产引用，可用read_media回读。'
+            '像素是否装入以当前请求的图片清单为准；动图只采用首帧，未识别或未覆盖的细节不能当作已核实。',
+            sources=[ToolSource(url=source_url, title=description)], evidence_kind='external', coverage=coverage,
+            source_next_call=source_next_call)
         files = [{'mime_type': mime, 'path': path, 'locator': source_url, 'description': description}]
         return result, files
 

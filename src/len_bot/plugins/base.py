@@ -1,4 +1,5 @@
 from typing import Any, Callable, Awaitable, Literal
+from pydantic import BaseModel
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
 from len_bot.events.models import Event
 from len_bot.tools.results import ToolResult
@@ -28,12 +29,16 @@ class PluginContext:
         self,
         name: str,
         description: str,
-        parameters: dict[str, Any],
-        handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]],
+        parameter_model: type[BaseModel],
+        handler: Callable[[BaseModel, PluginCallContext], Awaitable[ToolResult | dict[str, Any]]],
         *,
+        purpose: str,
+        aliases: tuple[str, ...] = (),
+        keywords: tuple[str, ...] = (),
         kind: Literal["read", "proposal"],
         roles: tuple[Literal["conversation", "work"], ...],
         deferred: bool = False,
+        available: Callable[[PluginCallContext], bool] | None = None,
     ) -> None:
         """Tool Registration: registers an agentic tool for Cognition."""
         if not self.has_permission(PluginPermission.REGISTER_TOOL):
@@ -42,12 +47,14 @@ class PluginContext:
             plugin_id=self.manifest.id,
             name=name,
             description=description,
-            parameters=parameters,
+            parameter_model=parameter_model,
+            purpose=purpose, aliases=aliases, keywords=keywords,
             handler=handler,
             timeout_seconds=self.manifest.timeout_seconds,
             kind=kind,
             roles=roles,
             deferred=deferred,
+            available=available,
         )
 
 class BasePlugin:

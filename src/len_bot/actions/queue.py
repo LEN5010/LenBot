@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class ActionQueue:
-    """Per-scene ordering with bounded global delivery and batch failure semantics."""
+    """Per-scene ordering; failures stop only the same request's dependent messages."""
     def __init__(self, event_store: EventStore,
                  send_adapter: Optional[Callable[[ActionItem], Awaitable[DeliveryResult]]] = None,
                  on_action_event=None, bot_actor_id="system:action_queue", prepare_action=None,
@@ -25,7 +25,7 @@ class ActionQueue:
         self._scene_queues = {}
         self._scene_workers = {}
         self._delivery_slots = asyncio.Semaphore(max_concurrent)
-        self._failed_batches = set()
+        self._failed_requests: dict[tuple[str, str], set[tuple[str | None, str | None]]] = {}
         self._attempted = set()
         self._enqueued_at = {}
         self.checkpoint = None
@@ -44,6 +44,7 @@ class ActionQueue:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self._failed_requests.clear()
         for queue in [self._queue, *self._scene_queues.values()]:
             while not queue.empty():
                 action = queue.get_nowait()
@@ -55,7 +56,6 @@ class ActionQueue:
                         self._queue.task_done()
         self._scene_workers.clear()
         self._scene_queues.clear()
-        self._failed_batches.clear()
         self._enqueued_at.clear()
 
     def enqueue(self, action):
@@ -74,6 +74,7 @@ class ActionQueue:
                 "segments": [segment.model_dump() for segment in action.segments],
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
                 "job_id": action.job_id, "job_revision": action.job_revision,
+                "acknowledges_task_id": action.acknowledges_task_id,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
                 "response_actor_ids": action.response_actor_ids,
                 "output_kind": action.output_kind, "requester_qq_uid": action.requester_qq_uid,
@@ -107,12 +108,24 @@ class ActionQueue:
         if self.validate_before_send:
             await self.validate_before_send(action)
 
+    @staticmethod
+    def _request_key(action):
+        return (action.origin_event_id,
+                action.job_id or action.fulfils_task_id or action.acknowledges_task_id)
+
+    def _request_failed(self, action):
+        return self._request_key(action) in self._failed_requests.get((action.scene_id, action.batch_id), ())
+
+    def _remember_failure(self, action):
+        if action.batch_id:
+            self._failed_requests.setdefault((action.scene_id, action.batch_id), set()).add(self._request_key(action))
+
     async def _process(self, action):
         if self.checkpoint:
             await self.checkpoint("before_send", {"scene_id": action.scene_id, "action": action.model_dump(mode="json")})
         original = action
-        if action.batch_id in self._failed_batches:
-            return await self._reject(action, "同组前一片段未确认送达，停止剩余片段")
+        if self._request_failed(action):
+            return await self._reject(action, "同一请求与事项的前条消息未确认送达，停止其后续消息")
         try:
             if self.prepare_action:
                 action = await self.prepare_action(action)
@@ -172,21 +185,20 @@ class ActionQueue:
         while self._running:
             action = await queue.get()
             try:
-                if self.pacing and action.batch_index > 0 and action.batch_id not in self._failed_batches:
+                if self.pacing and action.batch_index > 0 and not self._request_failed(action):
                     await self.sleep(min(2.0, max(0.6, len(action.content)/40.0)))
-                if not await self._process(action) and action.batch_id:
-                    self._failed_batches.add(action.batch_id)
+                if not await self._process(action):
+                    self._remember_failure(action)
             except asyncio.CancelledError:
                 await self._reject(action, "发送队列中断", unknown=action.id in self._attempted)
                 raise
             except Exception:
-                if action.batch_id:
-                    self._failed_batches.add(action.batch_id)
+                self._remember_failure(action)
                 logger.exception("Action processing failed for %s; unconfirmed delivery requires review", action.id)
             finally:
                 self._attempted.discard(action.id)
                 self._enqueued_at.pop(action.id, None)
                 if action.batch_id and action.batch_index == action.batch_size-1:
-                    self._failed_batches.discard(action.batch_id)
+                    self._failed_requests.pop((action.scene_id, action.batch_id), None)
                 queue.task_done()
                 self._queue.task_done()

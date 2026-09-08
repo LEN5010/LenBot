@@ -67,6 +67,8 @@ class SearchRequest(BaseModel):
     cursor: str | None = Field(min_length=1)
     dynamic_type: str | None = Field(min_length=1)
     sort: Literal["newest", "oldest", "likes", "comments"] | None
+    limit: int | None = Field(default=None, ge=1, le=50,
+        description="null或省略使用配置页量；续页原样保留上次返回的实际页量")
 
 
 class DetailRequest(BaseModel):
@@ -100,6 +102,10 @@ class FanartFilter(BaseModel):
 class FanartSearchRequest(FanartFilter):
     query: str | None = Field(min_length=1)
     cursor: str | None = Field(min_length=1)
+    sort: Literal["newest", "oldest"] | None = Field(default=None,
+        description="null或省略使用配置排序；续页保留上次返回的实际排序")
+    limit: int | None = Field(default=None, ge=1, le=48,
+        description="null或省略使用配置页量；续页保留上次返回的实际页量")
 
 
 class RandomFanartRequest(FanartFilter):

@@ -9,7 +9,12 @@ class SceneReducer:
         result = state.model_copy(deep=True) if state else SceneSession(scene_id=event.scene_id)
         result.version += 1
         result.last_event_at = event.timestamp
-        if event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}:
+        if (event.event_type == EventType.CONVERSATION_COMMITTED
+                and not event.metadata.get('operator_control')
+                and event.payload.get('output_kind', 'chat') == 'chat'):
+            handled = set(event.payload.get('handled_source_event_ids', []))
+            result.pending_wakes = [wake for wake in result.pending_wakes if wake.event_id not in handled]
+        elif event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}:
             if event.actor_id != bot_actor_id:
                 result.consecutive_bot_messages = 0
                 result.human_messages_since_bot += 1

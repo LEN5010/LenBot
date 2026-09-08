@@ -152,12 +152,29 @@ class AgentRuntime:
 
     async def _validate_job_resume(self, job_id: str, scene_id: str):
         job = await self.event_store.get_job(job_id, scene_id)
+        issue=self.job_resume_issue(job)
+        if issue:raise ValueError(issue)
+
+    def job_resume_issue(self, job):
+        """One current model/budget decision for controls and their read views."""
         if not job or not job['can_resume']:
-            raise ValueError('This work has no resumable interrupted execution')
-        if job['model_binding']:
-            self.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']), role='work')
-        elif job['model_steps']:
-            raise ValueError('This pre-upgrade work has no recorded model binding; cannot guess a provider for resume')
+            return 'This work has no resumable interrupted execution'
+        if not self.config.jobs_enabled:
+            return 'Information work is currently disabled'
+        if job['model_steps']>=self.config.job_max_steps:
+            return 'This work has no remaining model steps; its spent budget is not reset by resume'
+        if job['elapsed_seconds']>=self.config.job_max_seconds:
+            return 'This work has no remaining execution time; its spent budget is not reset by resume'
+        try:
+            if job['model_binding']:
+                self.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']),role='work')
+            elif job['model_steps']:
+                return 'This pre-upgrade work has no recorded model binding; cannot guess a provider for resume'
+            else:
+                self.provider_registry.resolve('work')
+        except (ValueError,LookupError) as error:
+            return str(error)
+        return None
 
     def update_bot_identity(self, bot_qq: int) -> None:
         self.bot_actor_id = f"user:{bot_qq}"
@@ -575,6 +592,11 @@ class AgentRuntime:
             return
         if self.mock_turn_handler is None and not self.has_model_profile("conversation"):
             return
+        actor = await self.scene_manager.get_or_create_actor(burst.scene_id)
+        allowed = await self._eligible_conversation_events(burst.events, actor.session.last_observed_event_rowid)
+        if not allowed:
+            return
+        burst = self._burst_from_events(allowed, burst)
         if self.shadow_mode:
             burst.origin_mode = "shadow"
         self.metrics.inc_social("bursts_total")
@@ -609,6 +631,26 @@ class AgentRuntime:
         events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
         return events,cutoff,source_ids
 
+    async def _eligible_conversation_events(self, events, cutoff):
+        """Current eligibility controls scheduling; it never consumes a wake."""
+        result = []
+        for original in events:
+            if (original.metadata.get('interaction') != 'chat' or not self.scene_policy.chat_allowed(
+                    original.scene_id, original.metadata.get('requester_qq_uid'))):
+                continue
+            event = original.model_copy(deep=True)
+            event.metadata['conversation_excluded'] = False
+            result.append(event)
+        return result
+
+    async def _conversation_snapshot(self, actor):
+        session = actor.session.model_copy(deep=True)
+        pending = await self.event_store.events_by_ids(session.scene_id,
+            [wake.event_id for wake in session.pending_wakes], session.last_observed_event_rowid)
+        eligible = {event.id for event in await self._eligible_conversation_events(pending, session.last_observed_event_rowid)}
+        session.pending_wakes = [wake for wake in session.pending_wakes if wake.event_id in eligible]
+        return session
+
     async def _run_conversation_loop(self, scene_id: str) -> None:
         while self._running and scene_id in self._pending_bursts:
             burst = self._pending_bursts.pop(scene_id)
@@ -625,14 +667,12 @@ class AgentRuntime:
         mailbox = EpisodeMailbox(episode_id, scene_id, actor.session.version,
                                  origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
         mailbox.origin_mode = burst.origin_mode
-        mailbox.requester_qq_uid = next((event.metadata.get('requester_qq_uid') for event in reversed(burst.events)
-                                        if event.metadata.get('requester_qq_uid') is not None), None)
         mailbox.source_started_at = min((event.timestamp for event in burst.events), default=self.clock())
         if not actor.acquire_episode_lease(episode_id, mailbox):
             raise SceneCommitConflict(f"Concurrent conversation in {scene_id}")
         started = time.monotonic()
         trace: dict[str, Any] = {}
-        session = actor.session.model_copy(deep=True)
+        session = await self._conversation_snapshot(actor)
         trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
         observed, revision = session.last_observed_event_rowid, session.knowledge_revision
         source_ids: list[str] = []
@@ -653,9 +693,9 @@ class AgentRuntime:
 
             async def observe():
                 nonlocal observed, source_ids
-                if mailbox.is_cancelled() or not self._running or not self.scene_policy.chat_allowed(scene_id, mailbox.requester_qq_uid):
+                if mailbox.is_cancelled() or not self._running or not self.scene_policy.enabled(scene_id):
                     raise asyncio.CancelledError()
-                current = actor.session.model_copy(deep=True)
+                current = await self._conversation_snapshot(actor)
                 if current.knowledge_revision != revision:
                     raise SceneCommitConflict("Knowledge changed during conversation; rebuild from the next real input")
                 if current.last_observed_event_rowid == observed:
@@ -663,7 +703,7 @@ class AgentRuntime:
                 additions = await self.event_store.get_events_since(scene_id, observed, limit=self.config.conversation_read_batch_limit)
                 additions = [event for event in additions if event.metadata["_rowid"] <= current.last_observed_event_rowid]
                 cutoff = additions[-1].metadata["_rowid"] if additions else observed
-                additions = [event for event in additions if conversation_visible(event)]
+                additions = await self._eligible_conversation_events(additions, cutoff)
                 additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=cutoff)
                 observed = cutoff
                 source_ids = list(dict.fromkeys([*source_ids, *(event.id for event in additions)]))
@@ -686,7 +726,7 @@ class AgentRuntime:
                 if decision.actions_enqueued:
                     self.metrics.inc_social("gate_action")
                 if decision.accepted:
-                    self._preserve_unread_bursts(burst, actor.session, delivered_ids)
+                    await self._preserve_unhandled_bursts(burst, actor.session, candidate.handled_source_event_ids, delivered_ids)
                 return decision
 
             if self.mock_turn_handler is not None:
@@ -732,11 +772,20 @@ class AgentRuntime:
             self.metrics.record_latency("cognition_total", time.monotonic() - started)
             actor.release_episode_lease(episode_id)
 
-    def _preserve_unread_bursts(self, current: Stimulus, session: SceneSession, attempted_ids=()) -> None:
+    async def _preserve_unhandled_bursts(self, current: Stimulus, session: SceneSession, handled_ids, delivered_ids) -> None:
         pending = self._pending_bursts.pop(current.scene_id, None)
         merged = self._merge_bursts(current, pending) if pending else current
-        pending_ids = {wake.event_id for wake in session.pending_wakes}
-        remaining = [event for event in merged.events if event.id in pending_ids and event.id not in attempted_ids]
+        if handled_ids:
+            # Progress consumes at least one finite source. Any other request,
+            # including one read but not handled, gets the existing next turn.
+            remaining = await self.event_store.events_by_ids(session.scene_id,
+                [wake.event_id for wake in session.pending_wakes], session.last_observed_event_rowid)
+        else:
+            # An empty completion cannot repeatedly buy a fresh budget. Only
+            # genuinely new input not supplied to this attempt may wake again.
+            pending_ids = {wake.event_id for wake in session.pending_wakes}
+            remaining = [event for event in merged.events if event.id in pending_ids and event.id not in delivered_ids]
+        remaining = await self._eligible_conversation_events(remaining, session.last_observed_event_rowid)
         if remaining:
             self._pending_bursts[current.scene_id] = self._burst_from_events(remaining, merged)
 

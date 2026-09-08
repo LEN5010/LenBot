@@ -19,6 +19,8 @@ class MessageProposal(BaseModel):
     fulfils_task_id: str | None = None
     job_id: str | None = None
     job_revision: int | None = None
+    source_event_id: str | None = None
+    requester_qq_uid: str | None = None
 
     @model_validator(mode="after")
     def validate_body(self):
@@ -36,6 +38,7 @@ class TaskProposal(BaseModel):
     proposal_id: str | None = None
     due_at: float | None = None
     requester_id: str | None = None
+    request_source_event_id: str | None = None
     target_actor_id: str | None = None
     source_event_ids: list[str] = Field(default_factory=list)
     result: str | None = None
@@ -71,6 +74,7 @@ class EpisodeOutcome(BaseModel):
     job_proposals: list[JobProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
+    handled_source_event_ids: list[str] = Field(default_factory=list)
 
     def requires_fresh_input(self) -> bool:
         return bool(self.task_proposals or self.job_proposals or self.resolve_open_loop_ids
