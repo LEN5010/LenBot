@@ -29,9 +29,9 @@ class ObservationStoreMixin:
             try:
                 for ident, item in assets:
                     await self._db.execute('''INSERT INTO media_assets
-                        (id,scope,source_event_id,locator,sha256,mime_type,path,description,tags_json,curated,created_at)
-                        VALUES(?,?,?,?,?,?,?,?,'[]',0,?)''', (ident, scene_id, event.id, item['locator'],
-                        item['sha256'], item['mime_type'], item['path'], item['description'], self.clock()))
+                        (id,scope,source_event_id,locator,mime_type,path,description,tags_json,curated,created_at)
+                        VALUES(?,?,?,?,?,?,?,'[]',0,?)''', (ident, scene_id, event.id, item['locator'],
+                        item['mime_type'], item['path'], item['description'], self.clock()))
                 for ident in result.attachments:
                     if await self.get_media(ident, [scene_id, 'global-safe']) is None:
                         raise ValueError('Tool image is not available in this scene')
@@ -58,10 +58,3 @@ class ObservationStoreMixin:
         row = await (await self._db.execute(
             "SELECT tool_name,arguments_json FROM tool_observations WHERE id=? AND scene_id=?", (result_id, scene_id))).fetchone()
         return (row[0], json.loads(row[1])) if row else None
-
-    async def list_tool_observations(self, scene_id, limit=100):
-        cursor = await self._db.execute("SELECT id,event_id,tool_name,result_json,created_at FROM tool_observations WHERE scene_id=? ORDER BY created_at DESC LIMIT ?",
-                                        (scene_id, min(max(1, limit), 500)))
-        return [{"id": r[0], "event_id": r[1], "tool_name": r[2],
-                 "result": ToolResult.model_validate_json(r[3]).page().model_dump(), "created_at": r[4]}
-                for r in await cursor.fetchall()]

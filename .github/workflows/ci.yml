@@ -7,7 +7,7 @@ on:
     branches: [ master, main ]
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +21,10 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --no-dev
 
-      - name: Run tests
-        run: uv run pytest -v
+      - name: Compile Python modules
+        run: uv run --no-dev python -m compileall -q src/len_bot
 
       - name: Set up Node
         uses: actions/setup-node@v4

@@ -19,7 +19,8 @@ class SceneReducer:
                     if field in sender:
                         setattr(person, field, str(sender[field]) if sender[field] is not None else None)
                 result.participants[event.actor_id] = person
-        elif event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id:
+        elif (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
+              and not event.metadata.get('conversation_excluded')):
             result.last_bot_message_at = event.timestamp
             result.last_bot_message_event_id = event.id
             result.consecutive_bot_messages += 1

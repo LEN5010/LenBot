@@ -44,8 +44,8 @@ class OneBotAdapter:
             self._handle_connection,
             self.config.ws_host,
             self.config.ws_port,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=self.config.onebot_ping_interval_seconds,
+            ping_timeout=self.config.onebot_ping_timeout_seconds,
         )
         logger.info("OneBot reverse WebSocket server started on ws://%s:%s", self.config.ws_host, self.config.ws_port)
 
@@ -118,19 +118,19 @@ class OneBotAdapter:
         return actual == f"Bearer {expected}"
 
     async def _forward_connection_loop(self) -> None:
-        retry_delay = 1.0
+        retry_delay = self.config.onebot_reconnect_seconds
         while not self._stopping:
             try:
                 async with websockets.connect(
                     self.config.onebot_ws_url,
                     additional_headers=self._auth_headers(),
                     proxy=None,
-                    open_timeout=10,
-                    ping_interval=20,
-                    ping_timeout=20,
+                    open_timeout=self.config.onebot_request_timeout_seconds,
+                    ping_interval=self.config.onebot_ping_interval_seconds,
+                    ping_timeout=self.config.onebot_ping_timeout_seconds,
                 ) as websocket:
                     self._last_error = None
-                    retry_delay = 1.0
+                    retry_delay = self.config.onebot_reconnect_seconds
                     await self._consume_connection(websocket)
             except asyncio.CancelledError:
                 raise
@@ -139,7 +139,7 @@ class OneBotAdapter:
                 logger.warning("OneBot forward WebSocket connection failed: %s", self._last_error)
             if not self._stopping:
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 30.0)
+                retry_delay = min(retry_delay * 2, self.config.onebot_reconnect_max_seconds)
 
     async def send_action(self, action: ActionItem) -> DeliveryResult:
         """Sends action to connected OneBot client via JSON-RPC."""
@@ -164,7 +164,7 @@ class OneBotAdapter:
 
         try:
             await self._active_ws.send(json.dumps(payload))
-            res = await asyncio.wait_for(fut, timeout=10.0)
+            res = await asyncio.wait_for(fut, timeout=self.config.onebot_request_timeout_seconds)
             return self._delivery_response(res, "websocket")
         except Exception as e:
             return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="websocket",
@@ -176,7 +176,7 @@ class OneBotAdapter:
         endpoint, params = self._action_payload(action)
         url = f"{self.config.onebot_http_url.rstrip('/')}/{endpoint}"
         try:
-            async with httpx.AsyncClient(timeout=10.0, headers=self._auth_headers()) as client:
+            async with httpx.AsyncClient(timeout=self.config.onebot_request_timeout_seconds, headers=self._auth_headers(), trust_env=False) as client:
                 response = await client.post(url, json=params)
                 if not response.is_success:
                     return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="http",
@@ -216,7 +216,7 @@ class OneBotAdapter:
         url = f"{self.config.onebot_http_url.rstrip('/')}/get_status"
         started = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=5.0, headers=self._auth_headers()) as client:
+            async with httpx.AsyncClient(timeout=self.config.onebot_probe_timeout_seconds, headers=self._auth_headers(), trust_env=False) as client:
                 response = await client.get(url)
                 data = response.json()
             return {
@@ -235,19 +235,18 @@ class OneBotAdapter:
     def _action_payload(self, action: ActionItem) -> tuple[str, dict]:
         endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
         parts = [{"type": "reply", "data": {"id": str(action.reply_to)}}] if action.reply_to else []
-        if action.segments:
-            for segment in action.segments:
-                if segment.type == "text":
-                    parts.append({"type": "text", "data": {"text": segment.text}})
-                else:
-                    if segment.asset_id not in action.resolved_images:
-                        raise ValueError("Image asset has not been resolved by the runtime")
-                    data = {"file": action.resolved_images[segment.asset_id]}
-                    if segment.asset_id in action.resolved_sticker_ids:
-                        data.update(sub_type=1, summary="[表情]")
-                    parts.append({"type": "image", "data": data})
-        else:
-            parts.append({"type": "text", "data": {"text": action.content}})
+        for segment in action.segments:
+            if segment.type == "text":
+                parts.append({"type": "text", "data": {"text": segment.text}})
+            elif segment.type == "at_all":
+                parts.append({"type": "at", "data": {"qq": "all"}})
+            else:
+                if segment.asset_id not in action.resolved_images:
+                    raise ValueError("Image asset has not been resolved by the runtime")
+                data = {"file": action.resolved_images[segment.asset_id]}
+                if segment.asset_id in action.resolved_sticker_ids:
+                    data.update(sub_type=1, summary="[表情]")
+                parts.append({"type": "image", "data": data})
         params = {"message": parts}
         target_id = action.scene_id.split(":")[-1]
         if action.action_type == ActionType.SEND_GROUP_MESSAGE:

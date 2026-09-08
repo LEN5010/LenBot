@@ -14,6 +14,7 @@ from len_bot.memory.history import HistoryBatch
 from len_bot.memory.models import MemoryChange, MemoryModel, MemoryProposal
 from len_bot.memory.reflection import ReflectionResult, ReviewItem
 from len_bot.memory.store import MemoryStore
+from len_bot.tools.results import ToolResult
 
 
 class ReflectionOutput(MemoryModel):
@@ -35,11 +36,11 @@ class LLMReflector:
         resolver: Callable,
         *,
         memory_store: MemoryStore | None = None,
-        max_steps: int = 3,
-        max_tool_calls: int = 2,
+        max_steps: int,
+        max_tool_calls: int,
         call_store=None,
-        context_tokens: int = 24000,
-        output_tokens: int = 4096,
+        context_tokens: int,
+        output_tokens: int,
     ):
         self.resolver = resolver
         self.call_store = call_store
@@ -75,7 +76,7 @@ class LLMReflector:
                 },
             }]
 
-        async def execute(name: str, arguments: dict) -> list[dict]:
+        async def execute(name: str, arguments: dict) -> ToolResult:
             if name != "query_memory" or self.memory_store is None:
                 raise ToolArgumentError("Reflection has only a scoped memory-read tool")
             try:
@@ -86,7 +87,9 @@ class LLMReflector:
                 [scene_id], subject=lookup.subject, query=lookup.query,
                 include_superseded=lookup.include_history, limit=15,
             )
-            return [item.model_dump(mode="json") for item in rows]
+            return ToolResult(status="ok" if rows else "no_results",
+                              content=json.dumps([item.model_dump(mode="json") for item in rows], ensure_ascii=False),
+                              coverage="memory_ledger", evidence_kind="retrieval")
 
         async def finish(arguments: dict) -> ReflectionResult:
             try:

@@ -1,10 +1,11 @@
 from typing import Optional, Literal
 from fastapi import APIRouter, Request, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
 from len_bot.memory.models import MemoryProposal
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.jobs import JobProposal
+from len_bot.config_store import SceneSettings
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -48,6 +49,28 @@ async def get_scene_detail(scene_id: str, request: Request, user: str = Depends(
     if detail is None:
         raise HTTPException(404, "场景不存在")
     return detail
+
+
+@router.get("/scenes/{scene_id}/settings")
+async def get_scene_settings(scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    try:
+        return _service(request).scene_settings(scene_id)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.put("/scenes/{scene_id}/settings")
+async def update_scene_settings(scene_id: str, values: SceneSettings, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    try:
+        await runtime.update_scene_settings(scene_id, values.model_dump())
+    except ValidationError as error:
+        raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except OSError as error:
+        raise HTTPException(500, "配置文件保存失败，原群设置未发布：" + str(error.strerror)) from error
+    return {**_service(request).scene_settings(scene_id), "message": "本群设置已保存，后续输入与发送使用当前规则"}
 
 
 @router.get("/scenes/{scene_id}/messages")
@@ -283,20 +306,6 @@ async def shadow_toggle(req: ShadowToggleRequest, request: Request, user: str = 
     runtime = request.app.state.runtime
     await runtime.set_shadow_mode(req.enabled)
     return {"success": True, "shadow_mode": runtime.shadow_mode}
-
-
-class DeliveryScenesRequest(BaseModel):
-    scene_ids: list[str]
-
-
-@router.post("/shadow/scenes")
-async def delivery_scenes(req: DeliveryScenesRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    try:
-        await runtime.set_delivery_scenes(req.scene_ids)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"allowed_scenes": _service(request).delivery_settings()["allowed_scenes"]}
 
 
 @router.get("/skills")

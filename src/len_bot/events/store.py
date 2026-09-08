@@ -13,6 +13,7 @@ from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.media.store import MediaStoreMixin
 from len_bot.cognition.call_store import ModelCallStoreMixin
 from len_bot.memory.history import HistoryStoreMixin
+from len_bot.scheduler.models import TaskItem, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -25,22 +26,16 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
-        upgrade_table = await (await self._db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_upgrades'")).fetchone()
-        if upgrade_table and await (await self._db.execute(
-                "SELECT 1 FROM schema_upgrades WHERE status!='completed'")).fetchone():
-            await self.close()
-            raise RuntimeError('离线结构升级尚未完成；保持停机并检查升级错误或恢复同批备份')
         retired = await (await self._db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('group_agent_sessions','scene_states','episodes')"
         )).fetchall()
         if retired:
             await self.close()
-            raise RuntimeError("旧会话结构需要先停机备份并执行获准的 VNext Reset")
+            raise RuntimeError("非现行会话结构；保持停机，使用对应旧版本完成离线处理后再启动")
         columns = await (await self._db.execute('PRAGMA table_info(scene_sessions)')).fetchall()
         if any(column[1] == 'last_cognized_event_rowid' for column in columns):
             await self.close()
-            raise RuntimeError('旧注意力结构需要停机备份后运行 uv run python -m len_bot.migrations.attention_work；禁止 Reset')
+            raise RuntimeError("非现行注意力结构；保持停机，使用对应旧版本完成离线处理后再启动")
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
@@ -123,14 +118,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             );
         """)
 
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS runtime_dynamic_configs (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL,
-                updated_at REAL NOT NULL
-            );
-        """)
-
         # ADR-0022: behavior trace store — attention evaluations & full episode chains
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS traces (
@@ -157,23 +144,12 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 use_count INTEGER NOT NULL DEFAULT 0,
                 last_used_at REAL NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
-                segments_json TEXT NOT NULL DEFAULT '[]'
+                segments_json TEXT NOT NULL DEFAULT '[]',
+                source TEXT NOT NULL DEFAULT 'operator'
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_voice_exemplars_scene ON voice_exemplars(scene_id, enabled);")
-        voice_columns = await (await self._db.execute("PRAGMA table_info(voice_exemplars)")).fetchall()
-        if "source" not in {row[1] for row in voice_columns}:
-            await self._db.execute("ALTER TABLE voice_exemplars ADD COLUMN source TEXT NOT NULL DEFAULT 'operator'")
-        if "segments_json" not in {row[1] for row in voice_columns}:
-            await self._db.execute("ALTER TABLE voice_exemplars ADD COLUMN segments_json TEXT NOT NULL DEFAULT '[]'")
-            await self._db.execute("""UPDATE voice_exemplars
-                SET segments_json=json_array(json_object('type','text','text',content)) WHERE content!=''""")
 
-        await self._db.commit()
-
-        await self._db.execute(
-            "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO NOTHING",
-            ("delivery_scenes", '{"scene_ids":["group:126300994"]}', self.clock()))
         await self._db.commit()
 
     async def reset_conversation_data(self, event: Event) -> dict[str, int]:
@@ -251,31 +227,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 "UPDATE dashboard_users SET last_login_at = ? WHERE username = ?;",
                 (time.time(), username)
             )
-            await self._db.commit()
-
-    async def get_dynamic_config(self, key: str) -> Optional[dict[str, Any]]:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        cursor = await self._db.execute(
-            "SELECT value_json FROM runtime_dynamic_configs WHERE key = ?;",
-            (key,)
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return json.loads(row[0])
-
-    async def save_dynamic_config(self, key: str, value: dict[str, Any]) -> None:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
-        now = self.clock()
-        val_str = json.dumps(value, ensure_ascii=False)
-        async with self._write_lock:
-            await self._db.execute("""
-                INSERT INTO runtime_dynamic_configs (key, value_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
-            """, (key, val_str, now))
             await self._db.commit()
 
     async def save_trace(self, kind: str, scene_id: str, ref_id: str, payload: dict[str, Any]) -> str:
@@ -390,6 +341,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 "event_id": event_id, "actor_id": actor_id, "rowid": rowid,
                 "text": payload.get("raw_text") or payload.get("content", ""),
                 "media": json.loads(metadata_json).get("media", []),
+                "interaction": json.loads(metadata_json).get("interaction"),
             }
         projected = []
         for event in events:
@@ -417,6 +369,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             """WITH approved AS (
                 SELECT rowid AS approval_rowid,id,timestamp,payload,metadata,substr(id,6) AS batch_id
                 FROM events WHERE scene_id=? AND event_type='CONVERSATION_COMMITTED'
+                  AND COALESCE(json_extract(payload,'$.output_kind'),'chat')='chat'
                   AND id LIKE 'turn:%' AND json_array_length(payload,'$.outcome.message_proposals')>0
                 ORDER BY rowid DESC LIMIT ?
             )
@@ -496,24 +449,27 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         )
         return [str(row[0]) for row in reversed(await cursor.fetchall())]
 
-    async def get_recent_events(self, scene_id, limit=50, through_rowid=None):
+    async def get_recent_events(self, scene_id, limit=50, through_rowid=None, *, conversation_only=False):
         cursor=await self._db.execute("""
             SELECT rowid,id,event_type,scene_id,actor_id,timestamp,payload,metadata FROM (
                 SELECT rowid,* FROM events WHERE scene_id=? AND (? IS NULL OR rowid<=?)
+                AND (?=0 OR COALESCE(json_extract(metadata,'$.conversation_excluded'),0)=0)
                 ORDER BY rowid DESC LIMIT ?) ORDER BY rowid""",
-            (scene_id,through_rowid,through_rowid,limit))
+            (scene_id,through_rowid,through_rowid,int(conversation_only),limit))
         return [Event(id=r[1],event_type=r[2],scene_id=r[3],actor_id=r[4],timestamp=r[5],
             payload=json.loads(r[6]),metadata={**json.loads(r[7]),'_rowid':r[0]}) for r in await cursor.fetchall()]
 
-    async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200, event_types: list[EventType] | None = None) -> list[Event]:
+    async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200, event_types: list[EventType] | None = None, *, conversation_only=False) -> list[Event]:
         """ADR-0019 §10.4: events after a reflection cursor, in immutable write order.
         Each event's metadata carries its `_rowid` so callers can advance the cursor."""
         if not self._db:
             raise RuntimeError("Database not initialized")
         type_filter = ""
+        if conversation_only:
+            type_filter = " AND COALESCE(json_extract(metadata,'$.conversation_excluded'),0)=0"
         params = [scene_id, after_rowid]
         if event_types:
-            type_filter = " AND event_type IN (" + ",".join("?" for _ in event_types) + ")"
+            type_filter += " AND event_type IN (" + ",".join("?" for _ in event_types) + ")"
             params.extend(t.value for t in event_types)
         cursor = await self._db.execute(
             f"""
@@ -644,6 +600,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             AND NOT (event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED') AND actor_id=?)
             AND COALESCE(json_extract(metadata,'$.obsolete_task_wake'),0)=0
             AND COALESCE(json_extract(metadata,'$.obsolete_job_result'),0)=0
+            AND COALESCE(json_extract(metadata,'$.conversation_excluded'),0)=0
             AND (event_type!='REFLECTION_RECORDED' OR json_extract(metadata,'$.needs_review')=1)
             AND NOT (event_type='TASK_DUE' AND COALESCE(json_extract(payload,'$.payload.kind'),'')='agent_job')""",
             (scene_id, after_rowid, through_rowid, json.dumps(types), bot_actor_id))).fetchall()
@@ -654,6 +611,31 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             'SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata FROM events '
             'WHERE scene_id=? AND rowid<=? AND id IN (SELECT value FROM json_each(?)) ORDER BY rowid',
             (scene_id, through_rowid, json.dumps(list(event_ids))))).fetchall()
+        return [Event.model_validate(self._retrieval_event(row)) for row in rows]
+
+    @staticmethod
+    def _group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id):
+        if not scene_id.startswith('group:') or start_at >= end_at or cutoff_rowid < 0:
+            raise ValueError('A group summary needs a valid group, half-open interval and snapshot')
+        where = """scene_id=? AND event_type='GROUP_MESSAGE_RECEIVED'
+            AND actor_id LIKE 'user:%' AND actor_id!=? AND timestamp>=? AND timestamp<?
+            AND rowid<=? AND COALESCE(json_extract(metadata,'$.simulated'),0)=0"""
+        return where, [scene_id, bot_actor_id, start_at, end_at, cutoff_rowid]
+
+    async def group_summary_statistics(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id):
+        where, parameters = self._group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
+        row = await (await self._db.execute(f"""SELECT COUNT(*),COUNT(DISTINCT actor_id),
+            COALESCE(SUM(LENGTH(COALESCE(NULLIF(json_extract(payload,'$.raw_text'),''),
+              json_extract(payload,'$.content'),''))),0) FROM events WHERE {where}""", parameters)).fetchone()
+        return dict(zip(('message_count', 'participant_count', 'character_count'), row))
+
+    async def group_summary_messages(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id, after_rowid, limit):
+        where, parameters = self._group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
+        if after_rowid < 0 or limit < 1:
+            raise ValueError('A summary page needs a nonnegative cursor and positive limit')
+        rows = await (await self._db.execute(f"""SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata
+            FROM events WHERE {where} AND rowid>? ORDER BY rowid ASC LIMIT ?""",
+            [*parameters, after_rowid, limit])).fetchall()
         return [Event.model_validate(self._retrieval_event(row)) for row in rows]
 
     async def commit_scene_event(
@@ -827,77 +809,22 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
     # ADR-0038 §5: curated bot voice exemplars
     # ------------------------------------------------------------------
 
-    async def preview_diana_persona(self, media_refs: dict[str, str] | None = None) -> dict:
-        import hashlib
-        from len_bot.cognition.diana import PERSONA, PRESET_ID, PREVIOUS_PERSONAS, PREVIOUS_EXAMPLES, MEDIA_REF_TAGS, build_examples
-        current = await self.get_dynamic_config("persona_config") or {}
-        applied = await self.get_dynamic_config(PRESET_ID) is not None
-        examples = await self.list_voice_examples()
-        if media_refs is None:
-            palette = await self.list_palette("global-safe")
-            media_refs = {name: next((asset["id"] for asset in palette if tag in asset["tags"]), "")
-                          for name, tag in MEDIA_REF_TAGS.items()}
-        available_refs = {}
-        for name, asset_id in media_refs.items():
-            asset = await self.get_media(asset_id, ["global-safe"])
-            if asset and asset["curated"]:
-                available_refs[name] = asset_id
-        desired_examples = build_examples(available_refs, strict=False)
-        fields = []
-        for key, desired in PERSONA.items():
-            previous = current.get(key)
-            update = not applied and (previous is None or any(previous == baseline[key] for baseline in PREVIOUS_PERSONAS))
-            fields.append({"key": key, "current": previous, "next": desired if update else previous,
-                           "action": "update" if update and previous != desired else
-                                     "preserve" if previous != desired else "unchanged"})
-        disable = [item["id"] for item in examples if item["id"] in PREVIOUS_EXAMPLES
-                   and (item["context"], item["content"]) == PREVIOUS_EXAMPLES[item["id"]]
-                   and not item["scene_id"] and item["tag"] in {"", "嘉然"}
-                   and item["segments"] == [{"type": "text", "text": item["content"]}]]
-        token = hashlib.sha256(json.dumps([current, examples, applied, desired_examples], sort_keys=True,
-                                         ensure_ascii=False).encode()).hexdigest()
-        return {"preset_id": PRESET_ID, "applied": applied, "fields": fields,
-                "disable_example_ids": disable,
-                "example_count": sum(item["id"] not in {existing["id"] for existing in examples} for item in desired_examples),
-                "examples": desired_examples, "preview_token": token,
-                "missing_media": sorted({MEDIA_REF_TAGS[name] for item in desired_examples for name in item["missing_media_refs"]})}
-
-    async def apply_diana_persona(self, bot_qq: int, expected_token: str | None = None, *, media_refs: dict[str, str] | None = None) -> bool:
-        """Explicit, atomic preset migration. Preserve edits; never run on startup."""
-        from len_bot.cognition.diana import PRESET_ID
-        async with self._write_lock:
-            await self._db.execute("BEGIN IMMEDIATE")
-            try:
-                preview = await self.preview_diana_persona(media_refs)
-                if expected_token is not None and expected_token != preview["preview_token"]:
-                    raise ValueError("配置已变化，请重新预览后应用")
-                if preview["applied"]:
-                    await self._db.rollback()
-                    return False
-                if preview["missing_media"]:
-                    raise ValueError("请先将这些情绪的运营素材选入固定目录：" + "、".join(preview["missing_media"]))
-                now = self.clock()
-                config = await self.get_dynamic_config("persona_config") or {}
-                config.update({field["key"]: field["next"] for field in preview["fields"]})
-                config["bot_qq"] = bot_qq
-                await self._db.execute(
-                    "INSERT INTO runtime_dynamic_configs VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
-                    ("persona_config", json.dumps(config, ensure_ascii=False), now),
-                )
-                await self._db.executemany("UPDATE voice_exemplars SET enabled=0 WHERE id=?",
-                                          [(mid,) for mid in preview["disable_example_ids"]])
-                await self._db.executemany(
-                    "INSERT INTO voice_exemplars(id,scene_id,context,content,segments_json,tag,created_at,source) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
-                    [(item["id"], "", item["context"], item["content"], json.dumps(item["segments"], ensure_ascii=False), "嘉然", now, "operator")
-                     for item in preview["examples"]],
-                )
-                await self._db.execute("INSERT INTO runtime_dynamic_configs VALUES(?,?,?)",
-                                       (PRESET_ID, '{"applied":true}', now))
-                await self._db.commit()
-                return True
-            except BaseException:
-                await self._db.rollback()
-                raise
+    async def preview_diana_persona(self, *, palette_limit: int) -> dict:
+        """Fill an operator draft; reading a template never changes saved values."""
+        from len_bot.cognition.diana import PERSONA, MEDIA_REF_TAGS, build_examples
+        palette = await self.list_palette("global-safe", limit=palette_limit)
+        media_refs = {
+            name: asset["id"]
+            for name, tag in MEDIA_REF_TAGS.items()
+            if (asset := next((item for item in palette if tag in item["tags"]), None)) is not None
+        }
+        examples = build_examples(media_refs)
+        return {
+            "fields": dict(PERSONA),
+            "examples": examples,
+            "missing_media": sorted({MEDIA_REF_TAGS[name] for item in examples
+                                     for name in item["missing_media_refs"]}),
+        }
 
     async def add_voice_example(
         self,
@@ -1029,13 +956,10 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         return sorted((item for item in examples if item["enabled"] and item["available"]),
                       key=lambda item: (item["scene_id"], item["id"]))
 
-    async def create_task(self, task_data: dict[str, Any]) -> None:
-        """P0.1: Dedicated write authority for tasks under write_lock."""
-        if not self._db:
-            raise RuntimeError("Database not initialized")
+    async def save_task(self, task: TaskItem) -> None:
+        """Persist one task using the current task contract."""
         async with self._write_lock:
-            wake_match = task_data.get("wake_match")
-            wake_match_json = json.dumps(wake_match, ensure_ascii=False) if wake_match else None
+            wake_match_json = json.dumps(task.wake_match, ensure_ascii=False) if task.wake_match is not None else None
             await self._db.execute(
                 """
                 INSERT INTO tasks (
@@ -1046,43 +970,23 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
-                    task_data["id"],
-                    task_data["scene_id"],
-                    task_data["description"],
-                    task_data["due_at"],
-                    task_data["status"],
-                    task_data["source_event_id"],
-                    json.dumps(task_data.get("payload", {}), ensure_ascii=False) if not isinstance(task_data.get("payload"), str) else task_data.get("payload"),
-                    task_data["created_at"],
-                    task_data.get("wake_event_type"),
+                    task.id,
+                    task.scene_id,
+                    task.description,
+                    task.due_at,
+                    task.status.value,
+                    task.source_event_id,
+                    json.dumps(task.payload, ensure_ascii=False),
+                    task.created_at,
+                    task.wake_event_type,
                     wake_match_json,
-                    task_data.get("origin_episode_id"),
-                    task_data.get("origin_stimulus_id"),
-                    task_data.get("trigger_event_id"),
-                    task_data.get("origin_mode", "live"),
+                    task.origin_episode_id,
+                    task.origin_stimulus_id,
+                    task.trigger_event_id,
+                    task.origin_mode,
                 )
             )
             await self._db.commit()
-
-    async def save_task(self, task: Any) -> None:
-        """Saves a TaskItem directly into tasks table."""
-        status_val = task.status.value if hasattr(task.status, "value") else str(task.status)
-        await self.create_task({
-            "id": task.id,
-            "scene_id": task.scene_id,
-            "description": task.description,
-            "due_at": task.due_at,
-            "status": status_val,
-            "source_event_id": getattr(task, "source_event_id", "manual"),
-            "payload": getattr(task, "payload", {}),
-            "created_at": getattr(task, "created_at", time.time()),
-            "wake_event_type": getattr(task, "wake_event_type", None),
-            "wake_match": getattr(task, "wake_match", None),
-            "origin_episode_id": getattr(task, "origin_episode_id", None),
-            "origin_stimulus_id": getattr(task, "origin_stimulus_id", None),
-            "trigger_event_id": getattr(task, "trigger_event_id", None),
-            "origin_mode": getattr(task, "origin_mode", "live"),
-        })
 
     async def claim_task(self, task_id: str, trigger_event_id: str = "") -> bool:
         """ADR-0029, §15: Durable Task Claim.
@@ -1103,9 +1007,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             await self._db.commit()
             return cursor.rowcount > 0
 
-    async def get_pending_tasks(self, max_due_at: Optional[float] = None) -> list[dict[str, Any]]:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
+    async def get_pending_tasks(self, max_due_at: Optional[float] = None) -> list[TaskItem]:
         sql = """
             SELECT id, scene_id, description, due_at, status, source_event_id,
                    payload, created_at, wake_event_type, wake_match_json,
@@ -1121,60 +1023,31 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
 
-        def _parse_payload(raw: Any) -> Any:
-            if isinstance(raw, dict):
-                return raw
-            if isinstance(raw, str) and raw.strip():
-                try:
-                    return json.loads(raw)
-                except Exception:
-                    return raw
-            return {}
-
-        def _parse_json(raw: Any) -> Any:
-            if not raw:
-                return None
-            try:
-                return json.loads(raw)
-            except Exception:
-                return None
-
         return [
-            {
-                "id": r[0],
-                "scene_id": r[1],
-                "description": r[2],
-                "due_at": r[3],
-                "status": r[4],
-                "source_event_id": r[5],
-                "payload": _parse_payload(r[6]),
-                "created_at": r[7],
-                "wake_event_type": r[8],
-                "wake_match": _parse_json(r[9]),
-                "origin_episode_id": r[10] if len(r) > 10 else None,
-                "origin_stimulus_id": r[11] if len(r) > 11 else None,
-                "trigger_event_id": r[12] if len(r) > 12 else None,
-                "origin_mode": r[13] if len(r) > 13 and r[13] else "live",
-            }
+            TaskItem(
+                id=r[0], scene_id=r[1], description=r[2], due_at=r[3],
+                status=TaskStatus(r[4]), source_event_id=r[5], payload=json.loads(r[6]),
+                created_at=r[7], wake_event_type=r[8],
+                wake_match=json.loads(r[9]) if r[9] is not None else None,
+                origin_episode_id=r[10], origin_stimulus_id=r[11],
+                trigger_event_id=r[12], origin_mode=r[13],
+            )
             for r in rows
         ]
 
 
-    async def mark_task_status(self, task_id: str, status: str, trigger_event_id: Optional[str] = None) -> None:
-        if not self._db:
-            raise RuntimeError("Database not initialized")
+    async def mark_task_status(self, task_id: str, status: TaskStatus, trigger_event_id: Optional[str] = None) -> None:
         async with self._write_lock:
             if trigger_event_id is not None:
                 await self._db.execute(
                     "UPDATE tasks SET status = ?, trigger_event_id = ? WHERE id = ?;",
-                    (status, trigger_event_id, task_id)
+                    (status.value, trigger_event_id, task_id)
                 )
             else:
                 await self._db.execute(
                     "UPDATE tasks SET status = ? WHERE id = ?;",
-                    (status, task_id)
+                    (status.value, task_id)
                 )
-            await self._db.commit()
             await self._db.commit()
 
     async def expire_open_loops(self, now: float) -> list[str]:
@@ -1223,7 +1096,6 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             raise RuntimeError("Database not initialized")
 
         import uuid
-        from len_bot.scheduler.models import TaskItem, TaskStatus
         from len_bot.memory.models import MemoryItem
         from len_bot.cognition.models import CONDITION_TASK_DEFAULT_DEADLINE_SECONDS
 

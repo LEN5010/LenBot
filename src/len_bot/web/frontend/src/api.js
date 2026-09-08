@@ -1,4 +1,7 @@
 // Shared API client: cookie session (same-origin), no retries or optimistic writes.
+import { ref } from 'vue'
+const displayTimezone = ref(null)
+export function setDisplayTimezone(value) { displayTimezone.value = value }
 let onUnauthorized = () => {}
 export function setUnauthorizedHandler(handler) { onUnauthorized = handler }
 
@@ -31,7 +34,9 @@ export function sceneName(id) {
 
 export function fmtTime(ts) {
   if (ts === null || ts === undefined) return '—'
-  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
+  const date = new Date(ts * 1000)
+  if (displayTimezone.value === null) return date.toISOString()
+  return date.toLocaleString('zh-CN', { hour12: false, timeZone: displayTimezone.value, timeZoneName: 'short' })
 }
 
 export function fmtAgo(ts) {

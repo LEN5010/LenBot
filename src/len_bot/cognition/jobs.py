@@ -1,6 +1,22 @@
 """Information-work proposal contract. Execution never owns social authority."""
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+
+
+class GroupSummaryRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    start_at: AwareDatetime
+    end_at: AwareDatetime
+    snapshot_rowid: int = Field(ge=0)
+    snapshot_at: float
+    bot_actor_id: str
+    focus: str
+
+    @model_validator(mode="after")
+    def ordered_range(self):
+        if self.start_at >= self.end_at:
+            raise ValueError("Summary range must satisfy start_at < end_at")
+        return self
 
 
 class JobProposal(BaseModel):
@@ -14,6 +30,9 @@ class JobProposal(BaseModel):
     constraints_remove: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(min_length=1)
     result_ids: list[str] = Field(default_factory=list)
+    requester_qq_uid: str | None = None
+    work_operation: Literal["information", "group_summary"] = "information"
+    summary_range: GroupSummaryRange | None = None
 
     @model_validator(mode="after")
     def validate_operation(self):
@@ -22,6 +41,10 @@ class JobProposal(BaseModel):
         if self.operation == "create":
             if not self.proposal_id or not self.goal or not self.goal.strip() or self.job_id:
                 raise ValueError("Job creation needs proposal_id and goal, not job_id")
+            if (self.work_operation == "group_summary") != (self.summary_range is not None):
+                raise ValueError("Group summary work requires its fixed range")
+            if self.work_operation == "group_summary" and not self.requester_qq_uid:
+                raise ValueError("Group summary work requires the real requester")
         elif not self.job_id or self.expected_revision is None:
             raise ValueError("Job control needs real job_id and expected_revision")
         return self

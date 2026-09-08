@@ -7,13 +7,14 @@ import secrets
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
 
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RouteResolution, RoutingConfig
 from len_bot.web.auth import get_current_user
+from len_bot.config_store import RootConfig
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -23,9 +24,9 @@ class ProviderUpsertRequest(BaseModel):
     base_url: str
     api_style: str = "openai"
     api_key: str | None = None
-    enabled: bool = True
-    timeout_seconds: float = Field(default=60.0, gt=0)
-    models: list[str] | None = None
+    enabled: bool
+    timeout_seconds: float = Field(gt=0)
+    models: list[str]
 
     @field_validator("id", "base_url")
     @classmethod
@@ -37,9 +38,9 @@ class ProviderUpsertRequest(BaseModel):
 
 async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: RoutingConfig | None) -> None:
     async with runtime.config_update_lock:
-        candidate = ProviderRegistry()
-        await candidate.apply_update(providers, routing)
-        await runtime.event_store.save_dynamic_config("provider_config", candidate.export())
+        data = runtime.config_store.current.model_dump()
+        data["models"] = {"providers": [provider.model_dump() for provider in providers], "routing": routing.model_dump() if routing else None}
+        runtime.config_store.save(RootConfig.model_validate(data))
         await runtime.provider_registry.apply_update(providers, routing)
 
 
@@ -131,8 +132,6 @@ async def get_routing(request: Request, user: str = Depends(get_current_user)):
 async def update_routing(req: RoutingConfig, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     providers, _ = _configuration(runtime)
-    if not providers:
-        raise HTTPException(400, "请先添加模型供应商")
     try:
         await _persist_and_apply(runtime, providers, req)
     except ValueError as error:
@@ -163,8 +162,10 @@ async def test_model_connection(req: ModelProfile, request: Request, user: str =
         raise HTTPException(404, "供应商不存在")
     if not provider.enabled:
         raise HTTPException(400, "请先启用这个供应商")
-    client = AsyncOpenAI(api_key=provider.api_key or "missing", base_url=provider.base_url,
-        timeout=provider.timeout_seconds, max_retries=0)
+    if not provider.api_key.strip():
+        raise HTTPException(400, "供应商尚未配置密钥")
+    client = AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url,
+        timeout=provider.timeout_seconds, max_retries=0, http_client=DefaultAsyncHttpxClient(trust_env=False))
     gateway = ModelGateway(RouteResolution(provider_id=provider.id, model=req.model, client=client,
         reasoning_effort=req.reasoning_effort), max_output_tokens=4096,
         call_store=request.app.state.runtime.event_store, scene_id="", purpose="capability_probe")

@@ -2,8 +2,11 @@
 import { computed } from 'vue'
 import { fmtTime } from '../api.js'
 import ResourceViewer from './ResourceViewer.vue'
+import EntityLink from './EntityLink.vue'
 const props=defineProps({trace:{type:Object,required:true}})
 const isConversation=computed(()=>['conversation','conversation_error'].includes(props.trace.kind))
+const isNative=computed(()=>['calendar_command','live_announcement'].includes(props.trace.kind))
+const nativeState=computed(()=>({generating:'正在生成',committed:'已提交，实际送达见回执',failed:'本次失败',interrupted:'本次已中断'})[props.trace.payload.state]||props.trace.payload.state)
 const runs=computed(()=>props.trace.kind.startsWith('agent_job')?props.trace.payload.runs || []:props.trace.kind.startsWith('history_maintenance')?[props.trace.payload.cognition || {}]:[props.trace.payload.conversation || props.trace.payload])
 const steps=computed(()=>runs.value.flatMap(run=>run.steps || []))
 const candidate=computed(()=>[...steps.value].reverse().find(step=>step.terminal_candidate)?.terminal_candidate || runs.value[0]?.terminal_candidate)
@@ -15,9 +18,24 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
 <template>
   <div class="trace-details">
     <v-alert v-if="failure" type="error" variant="tonal">{{ failure }}</v-alert>
-    <div class="trace-facts"><span v-if="isConversation">{{ decision }}</span><span v-else-if="trace.kind==='history_maintenance'">摘要与认识已提交</span><span v-else-if="trace.kind==='history_maintenance_error'">历史维护未完成</span><span v-else>执行记录 · 交付状态见行动回执</span><span class="muted">{{ fmtTime(trace.created_at) }} · 北京时间</span></div>
+    <div class="trace-facts"><span v-if="isConversation">{{ decision }}</span><span v-else-if="isNative">{{ nativeState }}</span><span v-else-if="trace.kind==='history_maintenance'">摘要与认识已提交</span><span v-else-if="trace.kind==='history_maintenance_error'">历史维护未完成</span><span v-else>执行记录 · 交付状态见行动回执</span><span class="muted">{{ fmtTime(trace.created_at) }}</span></div>
     <p v-if="trace.payload.gate?.reason" class="readable-copy">{{ trace.payload.gate.reason }}</p>
     <section v-if="isConversation"><h3>终结候选</h3><p class="muted">候选表达与真实送达分别记录，下方内容不代表已经发到群聊。</p><article v-for="(message,index) in messages" :key="index" class="candidate-message"><span class="muted">第 {{ index+1 }} 条候选</span><p>{{ messageText(message) }}</p></article><p v-if="!messages.length">{{ candidate && Array.isArray(candidate.messages)?'本候选没有消息，表示模型选择沉默。':'没有可确认的消息候选。' }}</p></section>
+    <section v-else-if="isNative">
+      <h3>{{ trace.kind==='calendar_command'?'确定性日程交互':'订阅开播邀请' }}</h3>
+      <p class="muted">由真实命令或开播事项绑定本群，通过原提交与发送链；不建立普通聊天关注，失败或未知回执不自动重发。</p>
+      <EntityLink v-if="trace.payload.source_event_id" type="event" :id="trace.payload.source_event_id" :scene-id="trace.scene_id" label="查看原始命令或开播事实" />
+      <p v-if="trace.payload.member">实际订阅成员：{{ trace.payload.member }}</p>
+      <p v-if="trace.payload.command_id">命令类型：{{ trace.payload.command_id }}</p>
+      <template v-if="trace.payload.schedule">
+        <p>请求范围：{{ trace.payload.schedule.start_at }}（含）至 {{ trace.payload.schedule.end_at }}（不含）。</p>
+        <p>源取得时间 {{ fmtTime(trace.payload.schedule.fetched_at) }}；源更新时间 {{ trace.payload.schedule.source_updated_at||'源未提供' }}。</p>
+        <p class="readable-copy">来源：{{ trace.payload.schedule.source_url }}</p>
+        <ResourceViewer title="实际源日程与覆盖说明" :content="trace.payload.schedule" />
+      </template>
+      <img v-if="trace.payload.asset_id" style="display:block;max-width:100%;height:auto;margin-top:16px" :src="`/api/media/${encodeURIComponent(trace.payload.asset_id)}/file?scene_id=${encodeURIComponent(trace.scene_id)}`" alt="此命令已生成的日程图片" />
+      <ResourceViewer v-if="trace.kind==='live_announcement'&&candidate" title="公告候选，送达另看回执" :content="candidate" />
+    </section>
     <section v-else><h3>{{ trace.kind.startsWith('agent_job')?'工作执行结果':'维护结果' }}</h3><p class="muted">工作与维护产生资料，不等于群聊沉默或已发送表达。</p><ResourceViewer v-if="trace.payload.result" title="已记录结果" :content="trace.payload.result" /><ResourceViewer v-else-if="candidate" title="终结候选" :content="candidate" /><p v-else class="muted">没有保存可读取的结果，具体执行过程见下方记录。</p></section>
     <section><h3>模型与工具步骤</h3><v-expansion-panels variant="accordion"><v-expansion-panel v-for="(step,index) in steps" :key="index"><v-expansion-panel-title><div class="step-title"><strong>第 {{ index+1 }} 步</strong><span>{{ step.model || '型号未记录' }}</span><span class="muted">{{ step.latency_ms ?? '—' }} ms</span></div></v-expansion-panel-title><v-expansion-panel-text><p v-if="step.failure_reason" class="readable-copy text-error">{{ step.failure_reason }}</p><div v-for="call in step.tool_calls || []" :key="call.id" class="tool-step"><strong>{{ call.name }}</strong><span>{{ call.status==='completed'?'工具调用结束':call.status }}</span><span v-if="call.observation" class="muted">资料：{{ call.observation.status }} {{ call.observation.error_code }}</span></div><ResourceViewer title="步骤原始记录" :content="step" /></v-expansion-panel-text></v-expansion-panel><p v-if="!steps.length" class="muted">这份记录没有模型步骤。</p></v-expansion-panels></section>
     <v-expansion-panels variant="accordion"><v-expansion-panel title="完整脱敏记录"><v-expansion-panel-text><ResourceViewer title="Trace" :content="trace.payload" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>

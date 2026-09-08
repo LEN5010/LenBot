@@ -1,0 +1,132 @@
+{
+  "runtime": {
+    "bot_qq": 0,
+    "ws_host": "127.0.0.1",
+    "ws_port": 8080,
+    "onebot_connection_mode": "forward_ws",
+    "onebot_action_transport": "websocket",
+    "onebot_ws_url": "ws://127.0.0.1:13001/",
+    "onebot_http_url": "http://127.0.0.1:13000/",
+    "onebot_access_token": "",
+    "db_path": "len_bot.db",
+    "debounce_idle_ms": 800,
+    "debounce_max_ms": 2500,
+    "conversation_max_steps": 3,
+    "conversation_max_tool_calls": 6,
+    "conversation_context_tokens": 24000,
+    "conversation_output_tokens": 4096,
+    "conversation_recent_tokens": 4000,
+    "attention_keywords": [],
+    "attention_sample_window_seconds": 300.0,
+    "attention_sample_probability": 0.2,
+    "attention_keyword_cooldown_seconds": 60.0,
+    "attention_focus_seconds": 120.0,
+    "max_context_images": 6,
+    "work_output_tokens": 16384,
+    "jobs_enabled": true,
+    "job_max_steps": 16,
+    "job_max_tool_calls": 24,
+    "job_max_seconds": 300.0,
+    "job_context_tokens": 64000,
+    "job_compress_trigger": 0.7,
+    "job_compress_target": 0.5,
+    "maintenance_context_tokens": 24000,
+    "maintenance_output_tokens": 4096,
+    "history_target_tokens": 8000,
+    "history_min_tokens": 2000,
+    "history_quiet_window_seconds": 150.0,
+    "job_max_concurrent": 2,
+    "media_enabled": true,
+    "message_pacing": true,
+    "maintenance_interval_seconds": 60.0,
+    "identity_name": "Len",
+    "address_names": [
+      "Len"
+    ],
+    "character_context": "",
+    "identity_core": "自然、简短地参与对话。",
+    "identity_persona": "群聊助手。",
+    "conversation_style": "使用简洁中文。",
+    "dashboard_enabled": true,
+    "dashboard_host": "127.0.0.1",
+    "dashboard_port": 11307,
+    "dashboard_secret_key": "请替换为自己的会话密钥",
+    "dashboard_default_admin_user": "admin",
+    "dashboard_default_admin_password": "请替换为自己的登录密码",
+    "dashboard_cookie_secure": false,
+    "conversation_max_concurrent": 2,
+    "scheduler_interval_seconds": 5.0,
+    "media_max_image_bytes": 10000000,
+    "media_max_image_pixels": 20000000,
+    "media_max_dimension": 2048,
+    "media_request_timeout_seconds": 15.0,
+    "media_io_concurrency": 3,
+    "media_palette_limit": 20,
+    "tool_result_page_chars": 6000,
+    "tool_result_max_chars": 12000,
+    "conversation_read_batch_limit": 200,
+    "conversation_history_limit": 200,
+    "onebot_request_timeout_seconds": 10.0,
+    "onebot_probe_timeout_seconds": 5.0,
+    "onebot_reconnect_seconds": 1.0,
+    "action_max_concurrent": 4,
+    "tool_read_concurrency": 3,
+    "onebot_reconnect_max_seconds": 30.0,
+    "onebot_ping_interval_seconds": 20.0,
+    "onebot_ping_timeout_seconds": 20.0,
+    "maintenance_max_steps": 3,
+    "maintenance_max_tool_calls": 2
+  },
+  "models": {
+    "providers": [],
+    "routing": {
+      "conversation": null,
+      "work": null,
+      "maintenance": null
+    }
+  },
+  "delivery": {
+    "shadow": true
+  },
+  "access": {
+    "qq_reply_whitelist": []
+  },
+  "scenes": {},
+  "time": null,
+  "members": [],
+  "plugins": {
+    "bilibili_live_sensor": {
+      "enabled": false,
+      "config": null
+    },
+    "web_search_tool": {
+      "enabled": true,
+      "config": {
+        "max_results": 5,
+        "request_timeout_seconds": 15.0,
+        "tool_timeout_seconds": 20.0
+      }
+    },
+    "bilibili_content": {
+      "enabled": false,
+      "config": {
+        "sessdata": "",
+        "bili_jct": "",
+        "request_timeout_seconds": 10.0,
+        "tool_timeout_seconds": 15.0
+      }
+    },
+    "asoul_calendar": {
+      "enabled": false,
+      "config": null
+    },
+    "asoul_dynamics": {
+      "enabled": false,
+      "config": null
+    },
+    "group_summary": {
+      "enabled": false,
+      "config": null
+    }
+  }
+}

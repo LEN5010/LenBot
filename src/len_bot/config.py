@@ -1,90 +1,96 @@
+"""Runtime parameters parsed from the project root configuration."""
 from typing import Annotated, Literal
-
-from pydantic import BaseModel, Field, StringConstraints
-import os
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 AddressName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
 class RuntimeConfig(BaseModel):
-    bot_qq: int = Field(default=12345678, description="The Bot's QQ account ID")
-    ws_host: str = Field(default="127.0.0.1", description="Reverse WebSocket host")
-    ws_port: int = Field(default=8080, description="Reverse WebSocket port")
-    onebot_connection_mode: Literal["reverse_ws", "forward_ws"] = "reverse_ws"
-    onebot_action_transport: Literal["websocket", "http"] = "websocket"
-    onebot_ws_url: str = "ws://127.0.0.1:13001/"
-    onebot_http_url: str = "http://127.0.0.1:13000/"
-    onebot_access_token: str = Field(default_factory=lambda: os.getenv("ONEBOT_ACCESS_TOKEN", ""))
-    db_path: str = Field(default="len_bot.db", description="Path to SQLite database")
-    
-    # Ingestion & Debounce
-    debounce_idle_ms: int = Field(default=800, description="Sliding idle window (ms)")
-    debounce_max_ms: int = Field(default=2500, description="Max debounce wait cap (ms)")
-    conversation_max_steps: int = Field(default=3, ge=1)
-    conversation_max_tool_calls: int = Field(default=6, ge=1)
-    conversation_context_tokens: int = Field(default=24_000, ge=4_000)
-    conversation_output_tokens: int = Field(default=4096, ge=256)
-    conversation_recent_tokens: int = Field(default=4000, ge=500)
-    attention_keywords: list[str] = Field(default_factory=list)
-    attention_sample_window_seconds: float = Field(default=300.0, gt=0)
-    attention_sample_probability: float = Field(default=0.2, ge=0, le=1)
-    attention_keyword_cooldown_seconds: float = Field(default=60.0, ge=0)
-    attention_focus_seconds: float = Field(default=120.0, gt=0)
-    max_context_images: int = Field(default=6, ge=1, le=6)
-    work_output_tokens: int = Field(default=16384, ge=256)
-    jobs_enabled: bool = Field(default_factory=lambda: os.getenv("JOBS_ENABLED", "true").lower() in {"true", "1", "yes"})
-    job_max_steps: int = Field(default=16, ge=1)
-    job_max_tool_calls: int = Field(default=24, ge=1)
-    job_max_seconds: float = Field(default=300.0, gt=0)
-    job_context_tokens: int = Field(default=64000, ge=4000)
-    job_compress_trigger: float = Field(default=0.7, gt=0, lt=1)
-    job_compress_target: float = Field(default=0.5, gt=0, lt=1)
-    maintenance_context_tokens: int = Field(default=24000, ge=4000)
-    maintenance_output_tokens: int = Field(default=4096, ge=256)
-    history_target_tokens: int = Field(default=8000, ge=100)
-    history_min_tokens: int = Field(default=2000, ge=1)
-    history_quiet_window_seconds: float = Field(default=150.0, gt=0)
-    job_max_concurrent: int = Field(default=2, ge=1)
-    media_enabled: bool = Field(default_factory=lambda: os.getenv("MEDIA_ENABLED", "true").lower() in {"true", "1", "yes"})
-    message_pacing: bool = True
+    model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
+    bot_qq: int = Field(gt=0, description="The Bot's QQ account ID")
+    ws_host: str = Field(description='Reverse WebSocket host')
+    ws_port: int = Field(description='Reverse WebSocket port')
+    onebot_connection_mode: Literal['reverse_ws', 'forward_ws']
+    onebot_action_transport: Literal['websocket', 'http']
+    onebot_ws_url: str
+    onebot_http_url: str
+    onebot_access_token: str
+    db_path: str = Field(description='Path to SQLite database')
+    debounce_idle_ms: int = Field(description='Sliding idle window (ms)')
+    debounce_max_ms: int = Field(description='Max debounce wait cap (ms)')
+    conversation_max_steps: int = Field(ge=1)
+    conversation_max_tool_calls: int = Field(ge=1)
+    conversation_context_tokens: int = Field(ge=4000)
+    conversation_output_tokens: int = Field(ge=256)
+    conversation_recent_tokens: int = Field(ge=500)
+    attention_keywords: list[str]
+    attention_sample_window_seconds: float = Field(gt=0)
+    attention_sample_probability: float = Field(ge=0, le=1)
+    attention_keyword_cooldown_seconds: float = Field(ge=0)
+    attention_focus_seconds: float = Field(gt=0)
+    max_context_images: int = Field(ge=1, le=6)
+    work_output_tokens: int = Field(ge=256)
+    jobs_enabled: bool
+    job_max_steps: int = Field(ge=1)
+    job_max_tool_calls: int = Field(ge=1)
+    job_max_seconds: float = Field(gt=0)
+    job_context_tokens: int = Field(ge=4000)
+    job_compress_trigger: float = Field(gt=0, lt=1)
+    job_compress_target: float = Field(gt=0, lt=1)
+    maintenance_context_tokens: int = Field(ge=4000)
+    maintenance_output_tokens: int = Field(ge=256)
+    history_target_tokens: int = Field(ge=100)
+    history_min_tokens: int = Field(ge=1)
+    history_quiet_window_seconds: float = Field(gt=0)
+    job_max_concurrent: int = Field(ge=1)
+    media_enabled: bool
+    message_pacing: bool
+    maintenance_max_steps: int = Field(ge=1)
+    maintenance_max_tool_calls: int = Field(ge=0)
+    maintenance_interval_seconds: float = Field(description='Background maintenance of explicit open-loop expiry')
+    identity_name: str
+    address_names: list[AddressName] = Field(max_length=32, description='额外呼唤昵称；只提供参与线索，不强制回复')
+    character_context: str
+    identity_core: str
+    identity_persona: str
+    conversation_style: str
+    dashboard_enabled: bool = Field(description='Whether to run the management web dashboard')
+    dashboard_host: str = Field(description='Dashboard HTTP bind host')
+    dashboard_port: int = Field(description='Dashboard HTTP port (default 11307)')
+    dashboard_secret_key: str
+    dashboard_default_admin_user: str
+    dashboard_default_admin_password: str
+    dashboard_cookie_secure: bool = Field(description='Whether session cookie requires HTTPS')
+    conversation_max_concurrent: int = Field(ge=1)
+    scheduler_interval_seconds: float = Field(gt=0)
+    media_max_image_bytes: int = Field(gt=0)
+    media_max_image_pixels: int = Field(gt=0)
+    media_max_dimension: int = Field(gt=0)
+    media_request_timeout_seconds: float = Field(gt=0)
+    media_io_concurrency: int = Field(ge=1)
+    media_palette_limit: int = Field(ge=1)
+    tool_result_page_chars: int = Field(ge=1)
+    tool_result_max_chars: int = Field(ge=1)
+    tool_read_concurrency: int = Field(ge=1)
+    conversation_read_batch_limit: int = Field(ge=1)
+    conversation_history_limit: int = Field(ge=1)
+    onebot_request_timeout_seconds: float = Field(gt=0)
+    onebot_probe_timeout_seconds: float = Field(gt=0)
+    onebot_reconnect_seconds: float = Field(gt=0)
+    action_max_concurrent: int = Field(ge=1)
+    onebot_reconnect_max_seconds: float = Field(gt=0)
+    onebot_ping_interval_seconds: float = Field(gt=0)
+    onebot_ping_timeout_seconds: float = Field(gt=0)
 
-    maintenance_interval_seconds: float = Field(
-        default=60.0,
-        description="Background maintenance of explicit open-loop expiry"
-    )
-
-    # Operator-owned character card; explicit preset application preserves edits.
-    identity_name: str = "Len"
-    address_names: list[AddressName] = Field(default_factory=lambda: ["然比", "小然"], max_length=32,
-                                            description="额外呼唤昵称；只提供参与线索，不强制回复")
-    character_context: str = ""
-    identity_core: str = (
-        "行为倾向(可观察):\n"
-        "- 熟人面前随意直接,常用短句和吐槽;对陌生人客气但保持距离,不主动套近乎。\n"
-        "- 被@或被问具体问题时认真;纯闲聊里多数时候碎片化,经常只回一两个字或一个梗。\n"
-        "- 幽默方式:接梗、反讽、装傻;不解释笑点。\n"
-        "- 冲突方式:嘴硬但不上纲上线,偶尔自嘲收场。\n"
-        "- 不主动给建议;别人吐槽时先站队或吐槽回去,而不是安慰。\n"
-        "- 沉默是常态:没有想说的就不说。"
-    )
-    identity_persona: str = (
-        "你是 Len，一个在群聊中真实生活、有自己时间感和记忆的社会化成员。"
-        "你言简意赅、风趣自然，只在确实相关或被呼唤时参与讨论，不需要每次都抢话。"
-        "如果不值得多说，保持沉默（SILENCE）是最优秀的选择。"
-    )
-    conversation_style: str = (
-        "使用自然、简短、口语化的中文群聊表达。不要使用客服腔、报告腔或不必要的完整解释。"
-    )
-
-    # Web Dashboard Settings
-    dashboard_enabled: bool = Field(
-        default_factory=lambda: os.getenv("DASHBOARD_ENABLED", "true").lower() in ("true", "1", "yes"),
-        description="Whether to run the management web dashboard"
-    )
-    dashboard_host: str = Field(default="127.0.0.1", description="Dashboard HTTP bind host")
-    dashboard_port: int = Field(default=11307, description="Dashboard HTTP port (default 11307)")
-    dashboard_secret_key: str = Field(
-        default_factory=lambda: os.getenv("DASHBOARD_SECRET_KEY", "len-bot-secret-salt-change-in-production")
-    )
-    dashboard_default_admin_user: str = "admin"
-    dashboard_default_admin_password: str = "lenbot123"
-    dashboard_cookie_secure: bool = Field(default=False, description="Whether session cookie requires HTTPS")
+    @model_validator(mode="after")
+    def budgets_fit(self):
+        if self.tool_result_page_chars > self.tool_result_max_chars:
+            raise ValueError("tool_result_page_chars must not exceed tool_result_max_chars")
+        if self.conversation_output_tokens >= self.conversation_context_tokens:
+            raise ValueError("conversation_output_tokens must leave input capacity")
+        if self.work_output_tokens >= self.job_context_tokens:
+            raise ValueError("work_output_tokens must leave input capacity")
+        if self.maintenance_output_tokens >= self.maintenance_context_tokens:
+            raise ValueError("maintenance_output_tokens must leave input capacity")
+        if self.job_compress_target >= self.job_compress_trigger:
+            raise ValueError("job_compress_target must be less than job_compress_trigger")
+        return self

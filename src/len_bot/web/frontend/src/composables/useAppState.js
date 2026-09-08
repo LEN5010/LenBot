@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { api } from '../api.js'
+import { api, setDisplayTimezone } from '../api.js'
 
 const state = reactive({ status: null, scenes: [], error: '', sceneError: '', loading: false, loadedScenes: false })
 let request = 0
@@ -8,7 +8,7 @@ export function useAppState() { return state }
 export async function refreshStatus() {
   const own = ++request
   state.loading = true
-  try { const data = await api('/api/overview/status'); if (own === request) { state.status = data; state.error = '' } }
+  try { const data = await api('/api/overview/status'); if (own === request) { state.status = data; setDisplayTimezone(data.business_timezone); state.error = '' } }
   catch (error) { if (own === request) state.error = error.message }
   finally { if (own === request) state.loading = false }
 }

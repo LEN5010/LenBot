@@ -11,15 +11,17 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import MessageItem from '../components/MessageItem.vue'
 import SceneInspector from '../components/SceneInspector.vue'
+import SceneSettingsForm from '../components/SceneSettingsForm.vue'
 
 const route = useRoute(), router = useRouter(), appState = useAppState(), display = useDisplay()
 const scalar = value => typeof value === 'string' ? value : ''
 const sceneId = computed(() => scalar(route.params.sceneId)), eventId = computed(() => scalar(route.query.event))
-const tabNames = ['messages', 'attention', 'history', 'participants', 'preferences', 'jobs', 'deliveries']
+const tabNames = ['messages', 'attention', 'history', 'participants', 'preferences', 'jobs', 'deliveries', 'settings']
 const tab = computed(() => tabNames.includes(route.query.tab) ? route.query.tab : 'messages')
 const page = computed(() => Math.max(1, Number(route.query.page) || 1))
 const mobile = computed(() => display.width.value < 1024), wide = computed(() => display.width.value >= 1600)
 const sceneSearch = ref(''), participantSearch = ref('')
+const groupNumber = ref(''), groupError = ref('')
 const scenes = computed(() => appState.scenes.filter(item => `${item.display_name} ${item.scene_id}`.toLowerCase().includes((sceneSearch.value || '').toLowerCase())))
 const directoryLoading = ref(false), detail = ref(null), detailLoading = ref(false), detailError = ref(''), detailMissing = ref(false), detailReadAt = ref(null)
 const messages = ref([]), messageLoading = ref(false), olderLoading = ref(false), messageError = ref(''), messageLoaded = ref(false), messageReadAt = ref(null), snapshot = ref(null), nextBefore = ref(null), hasMore = ref(false), newPage = ref(null), historical = ref(false), messageScroll = ref(null), messageContent = ref(null)
@@ -40,6 +42,12 @@ function inspect(event) { router.push({ name: 'scene', params: { sceneId: sceneI
 function closeInspector() { router.push({ query: { ...route.query, event: undefined } }) }
 function backToScenes() { router.push({ name: 'scenes', query: route.query.query ? { query: route.query.query } : {} }) }
 function filterDirectory() { router.replace({ query: { ...route.query, query: sceneSearch.value || undefined } }) }
+function configureGroup() {
+  const group = groupNumber.value.trim()
+  if (!/^[1-9]\d*$/.test(group)) { groupError.value='请填写实际 QQ 群号'; return }
+  groupError.value=''
+  router.push({name:'scene',params:{sceneId:`group:${group}`},query:{tab:'settings'}})
+}
 function setDelivery(value) { router.push({ query: { ...route.query, delivery: value, before: undefined, snapshot: undefined } }) }
 function olderDeliveries() { router.push({ query: { ...route.query, before: String(aux.value.next_before), snapshot: String(aux.value.snapshot_rowid) } }) }
 function latestDeliveries() { router.push({ query: { ...route.query, before: undefined, snapshot: undefined } }) }
@@ -213,10 +221,10 @@ watch(eventId, async (value, previous) => {
     <v-alert v-if="appState.sceneError" type="error" variant="tonal" class="mb-4">场景目录读取失败：{{ appState.sceneError }}</v-alert>
     <div class="scene-workspace" :class="{ 'has-scene': sceneId, 'has-inspector': eventId, 'wide-workspace': wide }">
       <v-card v-show="!mobile || !sceneId" class="scene-directory">
-        <v-card-text class="directory-search"><v-form @submit.prevent="filterDirectory"><v-text-field v-model="sceneSearch" :prepend-inner-icon="mdiMagnify" label="查找场景" hide-details clearable @click:clear="filterDirectory" /></v-form></v-card-text>
+        <v-card-text class="directory-search"><v-form @submit.prevent="filterDirectory"><v-text-field v-model="sceneSearch" :prepend-inner-icon="mdiMagnify" label="查找场景" hide-details clearable @click:clear="filterDirectory" /></v-form><v-expansion-panels class="mt-3"><v-expansion-panel title="配置另一个群"><v-expansion-panel-text><v-form @submit.prevent="configureGroup"><v-text-field v-model="groupNumber" label="QQ 群号" inputmode="numeric" :error-messages="groupError" /><v-btn type="submit" color="primary" variant="tonal">打开本群设置</v-btn></v-form></v-expansion-panel-text></v-expansion-panel></v-expansion-panels></v-card-text>
         <v-list class="scene-list" lines="three" aria-label="场景目录">
-          <v-list-item v-for="scene in scenes" :key="scene.scene_id" :to="{ name: 'scene', params: { sceneId: scene.scene_id }, query: route.query.query ? { query: route.query.query } : {} }" :active="scene.scene_id === sceneId" color="primary" class="scene-list-row">
-            <div class="scene-list-content"><strong>{{ scene.display_name }}</strong><span class="scene-id">{{ scene.scene_id }}</span><time>最近活动 {{ fmtTime(scene.last_event_at) }}</time><div class="scene-counts"><span>待处理 {{ scene.pending_wake_count }}</span><span>工作 {{ scene.active_job_count }}</span></div></div>
+          <v-list-item v-for="scene in scenes" :key="scene.scene_id" :to="{ name: 'scene', params: { sceneId: scene.scene_id }, query: { ...(route.query.query ? {query:route.query.query} : {}), ...(!scene.has_history ? {tab:'settings'} : {}) } }" :active="scene.scene_id === sceneId" color="primary" class="scene-list-row">
+            <div class="scene-list-content"><strong>{{ scene.display_name }}</strong><span class="scene-id">{{ scene.scene_id }}</span><time>{{ scene.has_history?'最近活动 '+fmtTime(scene.last_event_at):'已配置，尚无原话记录' }}</time><span v-if="scene.scene_type==='group'" class="scene-id">{{ !scene.settings?'未配置':!scene.settings.enabled?'已停用':scene.settings.chat?'普通聊天已开放':'仅白名单聊天／命令与公告' }}</span><div class="scene-counts"><span>待处理 {{ scene.pending_wake_count }}</span><span>工作 {{ scene.active_job_count }}</span></div></div>
           </v-list-item>
         </v-list>
         <p v-if="appState.loadedScenes && !scenes.length" class="empty-copy">{{ sceneSearch ? '没有符合搜索的场景。' : '还没有场景记录。' }}</p>
@@ -225,12 +233,14 @@ watch(eventId, async (value, previous) => {
       <v-card v-if="!sceneId && !mobile" class="scene-placeholder"><v-icon :icon="mdiMessageOutline" size="40" /><h2>选择一个场景</h2><p>原话、参与者和关联记录会显示在这里。</p></v-card>
       <div v-if="sceneId" v-show="!mobile || !eventId" class="scene-main">
         <v-btn v-if="mobile" variant="text" :prepend-icon="mdiArrowLeft" class="mb-3" @click="backToScenes">返回场景列表</v-btn>
-        <v-alert v-if="detailError" :type="detailMissing ? 'warning' : 'error'" variant="tonal" class="mb-4">{{ detailError }}<p v-if="detailReadAt">保留上次读取：{{ fmtTime(detailReadAt) }}</p></v-alert>
+        <v-alert v-if="detailError&&tab!=='settings'" :type="detailMissing ? 'warning' : 'error'" variant="tonal" class="mb-4">{{ detailError }}<p v-if="detailReadAt">保留上次读取：{{ fmtTime(detailReadAt) }}</p></v-alert>
         <v-skeleton-loader v-if="detailLoading && !detail" type="list-item-two-line" />
-        <template v-if="detail">
-          <v-card class="scene-heading"><v-card-text><h2>{{ detail.session.display_name }}</h2><div class="scene-heading-meta"><EntityLink type="scene" :id="sceneId" :scene-id="sceneId" :label="sceneId" /><span>{{ Object.keys(detail.session.participants).length }} 位已记录成员</span><span>读取于 {{ fmtTime(detailReadAt) }}</span></div></v-card-text><v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="setTab"><v-tab value="messages">原话</v-tab><v-tab value="attention">注意力</v-tab><v-tab value="history">摘要覆盖</v-tab><v-tab value="participants">参与者</v-tab><v-tab value="preferences">互动偏好</v-tab><v-tab value="jobs">工作</v-tab><v-tab value="deliveries">发送记录</v-tab></v-tabs></v-card>
+        <template v-if="detail||tab==='settings'||detailMissing">
+          <v-card class="scene-heading"><v-card-text><h2>{{ detail?.session.display_name||sceneId }}</h2><div class="scene-heading-meta"><EntityLink type="scene" :id="sceneId" :scene-id="sceneId" :label="sceneId" /><span v-if="detail">{{ Object.keys(detail.session.participants).length }} 位已记录成员</span><span v-if="detailReadAt">读取于 {{ fmtTime(detailReadAt) }}</span></div></v-card-text><v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="setTab"><v-tab value="messages">原话</v-tab><v-tab value="attention">注意力</v-tab><v-tab value="history">摘要覆盖</v-tab><v-tab value="participants">参与者</v-tab><v-tab value="preferences">互动偏好</v-tab><v-tab value="jobs">工作</v-tab><v-tab value="deliveries">发送记录</v-tab><v-tab v-if="sceneId.startsWith('group:')" value="settings">本群设置</v-tab></v-tabs></v-card>
           <v-alert v-if="feedback" type="success" variant="tonal" class="mt-4" role="status">{{ feedback }}</v-alert>
-          <v-card v-if="tab === 'messages'" class="scene-tab-card">
+          <v-card v-if="tab==='settings'" class="scene-tab-card"><v-card-text><SceneSettingsForm :scene-id="sceneId" @saved="loadDirectory" /></v-card-text></v-card>
+          <v-card v-else-if="!detail" class="scene-tab-card"><v-card-text><p class="muted-copy">此场景尚无可读取的原话状态，配置群规则不需要先制造聊天记录。</p><v-btn v-if="sceneId.startsWith('group:')" color="primary" variant="tonal" class="mt-4" @click="setTab('settings')">打开本群设置</v-btn></v-card-text></v-card>
+          <v-card v-else-if="tab === 'messages'" class="scene-tab-card">
             <div class="timeline-toolbar"><span>原话与实际发送记录</span><v-btn v-if="historical || newPage" size="small" color="primary" variant="tonal" :disabled="messageLoading || olderLoading" @click="viewLatest">{{ newPage ? '有新消息 · 查看最新' : '返回最新消息' }}</v-btn></div>
             <v-alert v-if="messageError" type="error" variant="tonal" class="mx-4 mb-3">{{ messageError }}<div v-if="messageReadAt">上次读取于 {{ fmtTime(messageReadAt) }}</div></v-alert>
             <v-progress-linear v-if="messageLoading" indeterminate aria-label="正在读取场景原话" />

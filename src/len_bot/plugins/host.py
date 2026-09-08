@@ -2,8 +2,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional, Callable, Awaitable
-from len_bot.plugins.models import PluginManifest, PluginToolDefinition
+from typing import Any, Optional, Callable, Awaitable, Literal
+from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginToolDefinition
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.actions.models import ActionItem
 from len_bot.tools.results import ToolResult
@@ -48,9 +48,11 @@ class PluginHost:
         name: str,
         description: str,
         parameters: dict[str, Any],
-        handler: Callable[[dict[str, Any]], Awaitable[str]],
+        handler: Callable[[dict[str, Any], PluginCallContext], Awaitable[ToolResult]],
         timeout_seconds: float = 5.0,
-        read_only: bool = False,
+        *,
+        kind: Literal["read", "proposal"],
+        roles: tuple[Literal["conversation", "work"], ...],
         deferred: bool = False,
     ) -> None:
         if name in RESERVED_CORE_TOOLS:
@@ -63,7 +65,7 @@ class PluginHost:
             description=description,
             parameters=parameters,
             handler=handler,
-            timeout_seconds=timeout_seconds, read_only=read_only, deferred=deferred,
+            timeout_seconds=timeout_seconds, kind=kind, roles=roles, deferred=deferred,
         )
         logger.info("Plugin '%s' registered tool '%s'", plugin_id, name)
 
@@ -157,21 +159,20 @@ class PluginHost:
         """ADR-0022: public membership check so routes never touch `_plugins` directly."""
         return plugin_id in self._plugins
 
+    def get_plugin(self, plugin_id: str) -> BasePlugin | None:
+        return self._plugins.get(plugin_id)
+
     def get_plugin_config(self, plugin_id: str) -> dict[str, Any]:
-        """Merged config view: manifest defaults overlaid with the current config."""
+        """Current plugin parameters from the root configuration."""
         plugin = self._plugins.get(plugin_id)
         if plugin is None:
             raise KeyError(plugin_id)
-        merged = dict(plugin.manifest.default_config)
-        merged.update(plugin.manifest.config)
-        return merged
+        return dict(plugin.manifest.config)
 
     def set_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        """Merge a partial config onto defaults + current; unspecified keys keep their values."""
-        merged = self.get_plugin_config(plugin_id)
-        merged.update(config)
-        self._plugins[plugin_id].manifest.config = merged
-        return dict(merged)
+        """Publish parameters already parsed by the root configuration boundary."""
+        self._plugins[plugin_id].manifest.config = dict(config)
+        return dict(config)
 
     def status_snapshot(self) -> list[dict[str, Any]]:
         """Control Plane view: real registry only — no mock entries (ADR-0021)."""
@@ -194,34 +195,43 @@ class PluginHost:
                 "last_run_at": status.last_run_at,
                 "config": m.config,
                 "config_schema": m.config_schema,
-                "default_config": m.default_config,
                 "emitted_events": m.emitted_events,
                 "registered_tools": m.registered_tools,
+                "source_status": plugin.source_status(),
             })
         return out
 
-    def has_tool(self, name: str) -> bool:
+    def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
         ptool = self._tools.get(name)
         if not ptool:
             return False
         plugin = self._plugins.get(ptool.plugin_id)
-        return bool(plugin and plugin.manifest.enabled)
+        configured = self.runtime.config_store.current.plugins.get(ptool.plugin_id)
+        return bool(
+            plugin and plugin.manifest.enabled and configured and configured.enabled
+            and configured.config is not None and call_context.role in ptool.roles
+            and self.runtime.scene_policy.plugin_allowed(call_context.scene_id, ptool.plugin_id, call_context.role)
+            and self.runtime.scene_policy.chat_allowed(call_context.scene_id, call_context.requester_qq_uid)
+            and (ptool.kind == "read" or call_context.ledger is not None)
+        )
 
-    def get_tool_names(self) -> list[str]:
+    def get_tool_names(self, call_context: PluginCallContext) -> list[str]:
         return [
             name for name, ptool in self._tools.items()
-            if self._plugins.get(ptool.plugin_id) and self._plugins[ptool.plugin_id].manifest.enabled
+            if self.has_tool(name, call_context)
         ]
 
     def tool_capabilities(self, name: str) -> dict:
-        tool = self._tools.get(name)
-        return {"read_only": bool(tool and tool.read_only), "deferred": bool(tool and tool.deferred)}
+        tool = self._tools[name]
+        return {"kind": tool.kind, "roles": tool.roles, "deferred": tool.deferred}
 
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
+    def proposal_tool_names(self) -> set[str]:
+        return {name for name, tool in self._tools.items() if tool.kind == "proposal"}
+
+    def get_tool_definitions(self, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] | None = None) -> list[dict[str, Any]]:
         defs = []
         for name, ptool in self._tools.items():
-            plugin = self._plugins.get(ptool.plugin_id)
-            if plugin and plugin.manifest.enabled:
+            if self.has_tool(name, call_context) and (kind is None or ptool.kind == kind):
                 defs.append({
                     "type": "function",
                     "function": {
@@ -232,31 +242,32 @@ class PluginHost:
                 })
         return defs
 
-    async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        """Fault-isolated tool execution with timeout guard (Goal 7)."""
+    async def execute_tool(self, tool_name: str, arguments: dict[str, Any], call_context: PluginCallContext) -> ToolResult:
+        """The plugin boundary records execution failures as failed observations."""
         ptool = self._tools.get(tool_name)
         if not ptool:
-            return str(ToolResult.failure(f"Tool '{tool_name}' not found.", "not_found"))
+            return ToolResult.failure(f"Tool '{tool_name}' not found.", "not_found")
 
-        plugin = self._plugins.get(ptool.plugin_id)
-        if not plugin or not plugin.manifest.enabled:
-            return str(ToolResult.failure(f"Plugin '{ptool.plugin_id}' is disabled.", "disabled"))
+        if not self.has_tool(tool_name, call_context):
+            return ToolResult.failure(f"Plugin tool '{tool_name}' is not available for this scene and role.", "capability_denied")
 
         try:
             self.record_plugin_run(ptool.plugin_id)
             result = await asyncio.wait_for(
-                ptool.handler(arguments),
+                ptool.handler(arguments, call_context),
                 timeout=ptool.timeout_seconds
             )
-            return str(ToolResult.normalize(result))
+            if not isinstance(result, ToolResult):
+                raise TypeError(f"Plugin tool '{tool_name}' must return ToolResult")
+            return result
         except asyncio.TimeoutError:
             self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' timed out after {ptool.timeout_seconds}s")
             logger.error("Tool '%s' from plugin '%s' timed out after %.1fs", tool_name, ptool.plugin_id, ptool.timeout_seconds)
-            return str(ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout"))
+            return ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout")
         except Exception as e:
             self.record_plugin_error(ptool.plugin_id, f"Tool '{tool_name}' crashed: {type(e).__name__} ({e})")
             logger.exception("Tool '%s' from plugin '%s' crashed: %s", tool_name, ptool.plugin_id, e)
-            return str(ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__))
+            return ToolResult.failure(f"Plugin tool '{tool_name}' execution failed: {type(e).__name__} ({e}).", type(e).__name__)
 
     async def intercept_action(self, action: ActionItem) -> Optional[ActionItem]:
         """Runs action through active interceptors in sequence with fault protection."""

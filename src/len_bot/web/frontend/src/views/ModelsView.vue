@@ -11,7 +11,7 @@ const tab = computed(() => route.query.tab === 'providers' ? 'providers' : 'role
 const data = ref({ providers: [], routing: null }), loading = ref(false), loaded = ref(false), readAt = ref(null)
 const error = ref(''), message = ref(''), busy = ref(''), catalogs = ref({}), selectedModels = ref({}), modelOriginal = ref({})
 const providerOpen = ref(false), editingProvider = ref(''), providerForm = ref(null), providerOriginal = ref('')
-const routesOpen = ref(false), routingForm = ref(null), routingOriginal = ref(''), maintenanceEnabled = ref(false)
+const routesOpen = ref(false), routingForm = ref(null), routingOriginal = ref(''), roleEnabled = ref({})
 const testConfirm = ref(null), testResult = ref(null)
 const roles = [
   { key: 'conversation', name: '对话', description: '理解原话与图片，选择参与、文字、表情或沉默。' },
@@ -20,7 +20,7 @@ const roles = [
 ]
 const emptyProfile = () => ({ provider_id: '', model: '', reasoning_effort: '' })
 const providerDirty = computed(() => providerOpen.value && JSON.stringify(providerForm.value) !== providerOriginal.value)
-const routingSnapshot = () => JSON.stringify({ profiles: routingForm.value, maintenance: maintenanceEnabled.value })
+const routingSnapshot = () => JSON.stringify({ profiles: routingForm.value, enabled: roleEnabled.value })
 const routingDirty = computed(() => routesOpen.value && routingSnapshot() !== routingOriginal.value)
 const catalogDirty = computed(() => Object.keys(catalogs.value).some(id => JSON.stringify(selectedModels.value[id]) !== modelOriginal.value[id]))
 useUnsavedChanges(computed(() => providerDirty.value || routingDirty.value || catalogDirty.value))
@@ -28,9 +28,14 @@ let requestId = 0
 const providerById = id => data.value.providers.find(provider => provider.id === id)
 const inUse = id => roles.some(({ key }) => data.value.routing?.[key]?.provider_id === id)
 const choicesFor = id => providerById(id)?.models || []
+const canSaveProvider = computed(() => providerForm.value && providerForm.value.id.trim()
+  && providerForm.value.base_url.trim() && providerForm.value.api_style
+  && Number.isFinite(providerForm.value.timeout_seconds) && providerForm.value.timeout_seconds > 0)
 function initialiseRouting() {
-  routingForm.value = Object.fromEntries(roles.map(({ key }) => [key, { ...emptyProfile(), ...data.value.routing?.[key] }]))
-  maintenanceEnabled.value = !!data.value.routing?.maintenance; routingOriginal.value = routingSnapshot()
+  routingForm.value = Object.fromEntries(roles.map(({ key }) => [key,
+    data.value.routing?.[key] ? { ...data.value.routing[key] } : emptyProfile()]))
+  roleEnabled.value = Object.fromEntries(roles.map(({ key }) => [key, data.value.routing?.[key] != null]))
+  routingOriginal.value = routingSnapshot()
 }
 async function load() {
   const request = ++requestId
@@ -45,8 +50,12 @@ async function load() {
 }
 function editProvider(provider = null) {
   editingProvider.value = provider?.id || ''
-  providerForm.value = provider ? { id: provider.id, base_url: provider.base_url, api_key: '', enabled: provider.enabled, timeout_seconds: provider.timeout_seconds } : { id: '', base_url: '', api_key: '', enabled: true, timeout_seconds: 60 }
-  providerOriginal.value = JSON.stringify(providerForm.value); providerOpen.value = true
+  providerForm.value = provider ? {
+    id: provider.id, base_url: provider.base_url, api_style: provider.api_style, api_key: '',
+    enabled: provider.enabled, timeout_seconds: provider.timeout_seconds, models: provider.models.join('\n'),
+  } : { id: '', base_url: '', api_style: 'openai', api_key: '', enabled: false, timeout_seconds: null, models: '' }
+  providerOriginal.value = JSON.stringify(providerForm.value)
+  providerOpen.value = true
 }
 function closeProvider() {
   if (busy.value) return
@@ -60,13 +69,21 @@ function closeRouting() {
   routesOpen.value = false; initialiseRouting()
 }
 async function saveProvider() {
-  if (busy.value) return
+  if (busy.value || !canSaveProvider.value) return
   if (!window.confirm('保存此供应商配置？接口和启用状态将用于后续运行，空白密钥保留原值。')) return
-  busy.value = 'provider'; error.value = ''; message.value = ''
+  busy.value = 'provider'
+  error.value = ''
+  message.value = ''
   try {
-    const body = { ...providerForm.value }; if (!body.api_key.trim()) delete body.api_key
+    const body = { ...providerForm.value,
+      models: [...new Set(providerForm.value.models.split('\n').map(model=>model.trim()).filter(Boolean))],
+      api_key: providerForm.value.api_key.trim() || null,
+    }
     const result = await api('/api/models/providers', { method: 'POST', body: JSON.stringify(body) })
-    providerOpen.value = false; providerForm.value = null; message.value = result.message; await load()
+    providerOpen.value = false
+    providerForm.value = null
+    message.value = result.message
+    await load()
   } catch (e) { error.value = e.message }
   finally { busy.value = '' }
 }
@@ -104,14 +121,20 @@ function profile(key) {
   const value = routingForm.value[key]
   return { provider_id: value.provider_id, model: value.model.trim(), reasoning_effort: value.reasoning_effort?.trim() || null }
 }
-const canSaveRouting = computed(() => routingForm.value && roles.every(({key}) => key==='maintenance' && !maintenanceEnabled.value || routingForm.value[key].provider_id && routingForm.value[key].model?.trim()))
+const canSaveRouting = computed(() => routingForm.value && roles.every(({key}) =>
+  !roleEnabled.value[key] || routingForm.value[key].provider_id && routingForm.value[key].model?.trim()))
 async function saveRouting() {
   if (busy.value || !canSaveRouting.value) return
   if (!window.confirm('保存对话、工作与维护配置？后续运行将使用所选模型；正在进行的运行保留原绑定。')) return
-  busy.value = 'routing'; error.value = ''; message.value = ''
+  busy.value = 'routing'
+  error.value = ''
+  message.value = ''
   try {
-    const result = await api('/api/models/routing', { method: 'POST', body: JSON.stringify({ conversation: profile('conversation'), work: profile('work'), maintenance: maintenanceEnabled.value ? profile('maintenance') : null }) })
-    routesOpen.value = false; message.value = result.message; await load()
+    const routing = Object.fromEntries(roles.map(({key})=>[key,roleEnabled.value[key]?profile(key):null]))
+    const result = await api('/api/models/routing', { method: 'POST', body: JSON.stringify(routing) })
+    routesOpen.value = false
+    message.value = result.message
+    await load()
   } catch (e) { error.value = e.message }
   finally { busy.value = '' }
 }
@@ -138,8 +161,49 @@ watch(() => route.name, load, { immediate: true })
       <RouterLink :to="{name:'activity',query:{tab:'calls'}}">前往运行记录查看持久调用账与用量</RouterLink>
     </template>
     <template v-else><p class="muted">密钥只在后台保存，编辑时留空保留。获取接口目录不会生成模型回答。</p><v-card v-for="provider in data.providers" :key="provider.id" class="pa-5 provider-card"><div class="provider-heading"><div class="provider-name"><h2>{{ provider.id }}</h2><p class="provider-url muted">{{ provider.base_url }}</p></div><StatusBadge domain="provider" :status="provider.enabled?'enabled':'disabled'" /></div><div class="provider-meta"><span>密钥 {{ provider.api_key_masked || '未设置' }}</span><span>超时 {{ provider.timeout_seconds }} 秒</span><span v-if="inUse(provider.id)">当前职责正在使用</span></div><div class="actions"><v-btn variant="outlined" :disabled="!!busy" @click="editProvider(provider)">编辑接口</v-btn><v-btn color="error" variant="text" :disabled="!!busy || inUse(provider.id)" @click="deleteProvider(provider)">删除</v-btn></div><v-divider class="my-4" /><h3 class="mb-3">常用模型目录</h3><template v-if="catalogs[provider.id]"><v-autocomplete v-model="selectedModels[provider.id]" :items="[...new Set([...catalogs[provider.id],...provider.models])]" label="搜索并选择常用模型" multiple chips closable-chips clearable /><div class="actions"><v-btn color="primary" :loading="busy===`models:${provider.id}`" :disabled="!!busy" @click="saveModels(provider)">保存常用模型</v-btn><v-btn variant="text" :disabled="!!busy" @click="delete catalogs[provider.id]">取消选择</v-btn></div></template><template v-else><div class="model-tags"><v-chip v-for="model in provider.models" :key="model" size="small">{{ model }}</v-chip><span v-if="!provider.models.length" class="muted">尚未保存常用模型</span></div><v-btn class="mt-4" variant="tonal" :loading="busy===`catalog:${provider.id}`" :disabled="!!busy" @click="fetchModels(provider)">获取接口模型目录</v-btn></template></v-card><v-card v-if="loaded&&!error&&!data.providers.length" class="pa-8 text-center muted">还没有供应商，点击“添加供应商”开始配置。</v-card></template>
-    <v-dialog :model-value="providerOpen" max-width="650" :persistent="!!busy" @update:model-value="value=>!value&&closeProvider()"><v-card><v-card-title class="dialog-title">{{ editingProvider?'编辑供应商':'添加供应商' }}<v-btn variant="text" :disabled="!!busy" @click="closeProvider">关闭</v-btn></v-card-title><v-card-text><v-form v-if="providerForm" :disabled="!!busy" class="config-form" @submit.prevent="saveProvider"><v-alert v-if="error" type="error" variant="tonal">{{ error }}</v-alert><v-text-field v-model="providerForm.id" label="供应商名称" :disabled="!!editingProvider" required /><v-text-field v-model="providerForm.base_url" label="OpenAI 兼容接口地址" placeholder="https://example.com/v1" required /><p v-if="editingProvider" class="muted">已保存密钥：{{ providerById(editingProvider)?.api_key_masked || '未设置' }}</p><v-text-field v-model="providerForm.api_key" label="接口密钥" type="password" autocomplete="new-password" placeholder="留空保留原密钥" /><v-text-field v-model.number="providerForm.timeout_seconds" type="number" min="1" label="超时时间（秒）" required /><v-switch v-model="providerForm.enabled" label="启用供应商" color="primary" /><v-btn type="submit" color="primary" :loading="busy==='provider'" :disabled="!!busy||!providerForm.id.trim()||!providerForm.base_url.trim()">保存供应商</v-btn></v-form></v-card-text></v-card></v-dialog>
-    <v-dialog :model-value="routesOpen" max-width="900" scrollable :persistent="!!busy" @update:model-value="value=>!value&&closeRouting()"><v-card><v-card-title class="dialog-title">编辑职责配置<v-btn variant="text" :disabled="!!busy" @click="closeRouting">关闭</v-btn></v-card-title><v-card-text><v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert><v-form v-if="routingForm" :disabled="!!busy" @submit.prevent="saveRouting"><section v-for="role in roles" :key="role.key" class="routing-section"><div class="role-title"><h3>{{ role.name }}</h3><v-switch v-if="role.key==='maintenance'" v-model="maintenanceEnabled" label="配置维护模型" color="primary" hide-details /></div><div v-if="role.key!=='maintenance'||maintenanceEnabled" class="route-fields"><v-select v-model="routingForm[role.key].provider_id" :items="data.providers.map(p=>({title:`${p.id}${p.enabled?'':'（停用）'}`,value:p.id}))" label="供应商" @update:model-value="routingForm[role.key].model=''" /><v-combobox v-model="routingForm[role.key].model" :items="choicesFor(routingForm[role.key].provider_id)" label="模型名称" /><v-text-field v-model="routingForm[role.key].reasoning_effort" label="推理强度（留空使用模型默认）" /></div><p v-else class="muted">未配置维护模型时，维护职责明确未就绪，不继承其他角色。</p><v-btn v-if="role.key!=='maintenance'||maintenanceEnabled" variant="text" color="primary" :disabled="!!busy||!providerById(routingForm[role.key].provider_id)?.enabled||!routingForm[role.key].model?.trim()" @click="testConfirm={name:role.name,profile:profile(role.key)}">检查当前选择（不保存）</v-btn></section><v-alert v-if="testResult" :type="testResult.success?'success':'error'" variant="tonal" class="mb-4">{{ testResult.name }} · {{ testResult.model }}：{{ testResult.success?'能力检查通过':testResult.error||'能力检查未通过' }}</v-alert><v-btn type="submit" color="primary" :loading="busy==='routing'" :disabled="!!busy||!canSaveRouting||!routingDirty">保存职责配置</v-btn></v-form></v-card-text></v-card></v-dialog>
+    <v-dialog :model-value="providerOpen" max-width="650" :persistent="!!busy" @update:model-value="value=>!value&&closeProvider()">
+      <v-card>
+        <v-card-title class="dialog-title">{{ editingProvider?'编辑供应商':'添加供应商' }}<v-btn variant="text" :disabled="!!busy" @click="closeProvider">关闭</v-btn></v-card-title>
+        <v-card-text>
+          <v-form v-if="providerForm" :disabled="!!busy" class="config-form" @submit.prevent="saveProvider">
+            <v-alert v-if="error" type="error" variant="tonal">{{ error }}</v-alert>
+            <v-text-field v-model="providerForm.id" label="供应商名称" :disabled="!!editingProvider" required />
+            <v-select v-model="providerForm.api_style" label="接口协议" :items="[{title:'OpenAI 兼容接口',value:'openai'}]" required />
+            <v-text-field v-model="providerForm.base_url" label="接口地址" placeholder="https://example.com/v1" required />
+            <p v-if="editingProvider" class="muted">已保存密钥：{{ providerById(editingProvider)?.api_key_masked || '未设置' }}</p>
+            <v-text-field v-model="providerForm.api_key" label="接口密钥" type="password" autocomplete="new-password" :placeholder="editingProvider?'留空保留原密钥':'填写供应商密钥'" />
+            <v-text-field v-model.number="providerForm.timeout_seconds" type="number" min="0.1" step="0.1" label="超时时间（秒）" required />
+            <v-textarea v-model="providerForm.models" label="常用模型名称（每行一项，可留空）" rows="4" />
+            <v-switch v-model="providerForm.enabled" label="启用供应商" color="primary" />
+            <v-btn type="submit" color="primary" :loading="busy==='provider'" :disabled="!!busy||!canSaveProvider">保存供应商</v-btn>
+          </v-form>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+    <v-dialog :model-value="routesOpen" max-width="900" scrollable :persistent="!!busy" @update:model-value="value=>!value&&closeRouting()">
+      <v-card>
+        <v-card-title class="dialog-title">编辑职责配置<v-btn variant="text" :disabled="!!busy" @click="closeRouting">关闭</v-btn></v-card-title>
+        <v-card-text>
+          <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
+          <v-form v-if="routingForm" :disabled="!!busy" @submit.prevent="saveRouting">
+            <section v-for="role in roles" :key="role.key" class="routing-section">
+              <div class="role-title"><h3>{{ role.name }}</h3><v-switch v-model="roleEnabled[role.key]" :label="`配置${role.name}模型`" color="primary" hide-details /></div>
+              <template v-if="roleEnabled[role.key]">
+                <div class="route-fields">
+                  <v-select v-model="routingForm[role.key].provider_id" :items="data.providers.map(p=>({title:`${p.id}${p.enabled?'':'（停用）'}`,value:p.id}))" label="供应商" @update:model-value="routingForm[role.key].model=''" />
+                  <v-combobox v-model="routingForm[role.key].model" :items="choicesFor(routingForm[role.key].provider_id)" label="模型名称" />
+                  <v-text-field v-model="routingForm[role.key].reasoning_effort" label="推理强度（留空使用模型默认）" />
+                </div>
+                <v-btn variant="text" color="primary" :disabled="!!busy||!providerById(routingForm[role.key].provider_id)?.enabled||!routingForm[role.key].model?.trim()" @click="testConfirm={name:role.name,profile:profile(role.key)}">检查当前选择（不保存）</v-btn>
+              </template>
+              <p v-else class="muted mt-3">{{ role.name }}职责保持未配置。</p>
+            </section>
+            <v-alert v-if="testResult" :type="testResult.success?'success':'error'" variant="tonal" class="mb-4">{{ testResult.name }} · {{ testResult.model }}：{{ testResult.success?'能力检查通过':testResult.error||'能力检查未通过' }}</v-alert>
+            <v-btn type="submit" color="primary" :loading="busy==='routing'" :disabled="!!busy||!canSaveRouting||!routingDirty">保存职责配置</v-btn>
+          </v-form>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
     <v-dialog :model-value="!!testConfirm" max-width="560" :persistent="busy==='test'" @update:model-value="value=>!value&&(testConfirm=null)"><v-card v-if="testConfirm" title="主动能力检查"><v-card-text><p>检查 {{ testConfirm.name }}：{{ testConfirm.profile.provider_id }} / {{ testConfirm.profile.model }}。</p><p class="mt-3">将进行最多 2 次真实模型请求，检查原图、指定工具与原生续接，可能产生供应商费用。检查使用合成资料，不向群聊发送消息。</p><v-alert v-if="error" type="error" variant="tonal" class="mt-3">{{ error }}</v-alert></v-card-text><v-card-actions><v-spacer /><v-btn :disabled="busy==='test'" @click="testConfirm=null">取消</v-btn><v-btn color="primary" :loading="busy==='test'" @click="testRoute">确认发起检查</v-btn></v-card-actions></v-card></v-dialog>
   </div>
 </template>

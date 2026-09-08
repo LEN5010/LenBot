@@ -37,34 +37,18 @@ async def update_onebot_config(
     user: str = Depends(get_current_user),
 ):
     runtime = request.app.state.runtime
-    config = runtime.config
-    config.onebot_connection_mode = req.connection_mode
-    config.onebot_action_transport = req.action_transport
-    config.onebot_ws_url = req.ws_url.strip()
-    config.onebot_http_url = req.http_url.strip()
-    config.ws_host = req.host.strip()
-    config.ws_port = req.port
-    if req.access_token:
-        config.onebot_access_token = req.access_token.strip()
-
     saved = {
-        "onebot_connection_mode": config.onebot_connection_mode,
-        "onebot_action_transport": config.onebot_action_transport,
-        "onebot_ws_url": config.onebot_ws_url,
-        "onebot_http_url": config.onebot_http_url,
-        "onebot_access_token": config.onebot_access_token,
-        "ws_host": config.ws_host,
-        "ws_port": config.ws_port,
+        "onebot_connection_mode": req.connection_mode,
+        "onebot_action_transport": req.action_transport,
+        "onebot_ws_url": req.ws_url.strip(),
+        "onebot_http_url": req.http_url.strip(),
+        "ws_host": req.host.strip(),
+        "ws_port": req.port,
     }
-    await runtime.event_store.save_dynamic_config("onebot_config", saved)
-
-    adapter = getattr(runtime, "_onebot_adapter", None)
-    if adapter:
-        try:
-            await adapter.restart()
-        except Exception as error:
-            raise HTTPException(status_code=502, detail=f"连接配置已保存，但重新连接失败：{error}")
-    return {"success": True, "message": "QQ 连接设置已保存，正在重新连接"}
+    if req.access_token is not None:
+        saved["onebot_access_token"] = req.access_token.strip()
+    await runtime.update_runtime_settings(saved, live=False)
+    return {"success": True, "requires_restart": True, "message": "OneBot 配置已写入根文件，重启后生效"}
 
 
 @router.post("/test-http")

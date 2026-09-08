@@ -1,0 +1,87 @@
+"""Calendar reads and command rendering; Runtime owns every publication."""
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
+
+from len_bot.plugins.base import BasePlugin, PluginContext
+from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from len_bot.tools.results import ToolResult, ToolSource
+
+from .calendar import CalendarService, ScheduleRequest, ScheduleResult
+from .config import CalendarCommand, CalendarConfig
+from .render import ScheduleRenderer
+
+if TYPE_CHECKING:
+    from len_bot.config_store import MemberSettings, TimeSettings
+
+
+@dataclass(frozen=True)
+class RenderedSchedule:
+    png: bytes
+    schedule: ScheduleResult
+
+
+class AsoulCalendarPlugin(BasePlugin):
+    def __init__(self, *, config: CalendarConfig, enabled: bool, time_settings: TimeSettings,
+                 members: list[MemberSettings]):
+        super().__init__(PluginManifest(id="asoul_calendar", name="A-SOUL 日程", version="1.0.0",
+            description="读取唯一 ICS 源的日程；精确命令由运行时提交确定性日程图片。",
+            plugin_type=PluginType.TOOL, permissions=[PluginPermission.REGISTER_TOOL],
+            enabled=enabled, timeout_seconds=config.tool_timeout_seconds, config=config.model_dump(),
+            config_schema=CalendarConfig.model_json_schema(), registered_tools=["get_live_schedule"]))
+        self.config = config
+        self.time_settings = time_settings
+        self.service = CalendarService(config, time_settings.timezone, members)
+        self.renderer = ScheduleRenderer(config)
+
+    async def on_load(self, context: PluginContext):
+        parameters = ScheduleRequest.model_json_schema()
+        parameters["properties"]["member"]["description"] = "已配置成员名称或别名；null读取全部，包括团体署名，团体不展开为个人名单。"
+        context.register_tool(name="get_live_schedule",
+            description="读取源直播日程。start_at/end_at须带时区，范围为[start_at,end_at)。返回源UID、时间、取消状态与取得时刻；日程不证明实际开播。",
+            parameters=parameters, handler=self.get_live_schedule, kind="read",
+            roles=("conversation", "work"), deferred=False)
+
+    async def on_unload(self):
+        await self.service.close()
+
+    async def get_live_schedule(self, arguments: dict, call_context: PluginCallContext) -> ToolResult:
+        request = ScheduleRequest.model_validate(arguments)
+        schedule = await self.service.query(request)
+        return ToolResult(content=schedule.model_dump_json(), evidence_kind="external",
+            coverage=schedule.coverage, status="ok" if schedule.events else "no_results",
+            fetched_at=schedule.fetched_at, cached=schedule.cached,
+            sources=[ToolSource(url=schedule.source_url, title="A-SOUL 源日历",
+                                published_at=schedule.source_updated_at)])
+
+    def match_command(self, text: str) -> CalendarCommand | None:
+        command_text = text.strip()
+        for command, words in self.config.commands.items():
+            if command_text in words:
+                return command
+        return None
+
+    async def render_command(self, command: CalendarCommand, now: float) -> RenderedSchedule:
+        zone = ZoneInfo(self.time_settings.timezone)
+        today = datetime.fromtimestamp(now, zone).date()
+        if command == "calendar_today":
+            start_day, days, title = today, 1, "今日直播"
+        elif command == "calendar_tomorrow":
+            start_day, days, title = today + timedelta(days=1), 1, "明日直播"
+        elif command == "calendar_week":
+            start_day = today - timedelta(days=(today.weekday() - self.time_settings.week_start) % 7)
+            days, title = 7, "本周直播"
+        else:
+            raise ValueError("Unknown calendar command")
+        start_at = datetime.combine(start_day, time.min, zone)
+        schedule = await self.service.query(ScheduleRequest(start_at=start_at,
+            end_at=start_at + timedelta(days=days), member=None))
+        png = await asyncio.to_thread(self.renderer.render, schedule, title)
+        return RenderedSchedule(png=png, schedule=schedule)
+
+    def source_status(self) -> dict:
+        return self.service.source_status()

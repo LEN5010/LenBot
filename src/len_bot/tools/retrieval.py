@@ -6,11 +6,13 @@ import copy
 import json
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event
+from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
 from len_bot.tools.finite_check import FINITE_CHECK_TOOL, finite_check
@@ -69,14 +71,15 @@ class ObservationPage:
     """Stored observation awaiting a budgeted, scene-scoped presentation."""
     name: str
     result: ToolResult
+    limit: int
     offset: int = 0
-    limit: int = 6000
 
 
 class RetrievalToolkit:
     def __init__(self,event_store,allowed_scopes,default_scene_id,memory_store=None,plugin_host=None,
-                 bot_qq='',on_observation=None,read_only_only=False,checkpoint=None,media_service=None,
-                 context=None):
+                 bot_qq='',on_observation=None,checkpoint=None,media_service=None,
+                 context=None, *, page_chars: int, max_chars: int, read_concurrency: int,
+                 call_context: Callable[[], PluginCallContext]):
         self.event_store=event_store
         # Historical and tool observations are always local. global-safe applies only to media.
         if default_scene_id not in allowed_scopes: raise ValueError('Default scene is outside execution scope')
@@ -86,10 +89,12 @@ class RetrievalToolkit:
         self.plugin_host=plugin_host
         self.bot_qq=bot_qq
         self.on_observation=on_observation
-        self.read_only_only=read_only_only
         self.checkpoint=checkpoint
         self.media_service=media_service
         self.context=context
+        self.call_context = call_context
+        self.page_chars = page_chars
+        self.max_chars = max_chars
         if context and context.refs.scene_id != default_scene_id:
             raise ValueError('Conversation context belongs to another scene')
         self.discovered_tools=set()
@@ -97,51 +102,43 @@ class RetrievalToolkit:
         self.observations={}
         self.external_attempted=False
         self.unavailable_tools=set()
-        self._cache={}
-        self._call_locks={}
-        self._parallel=asyncio.Semaphore(3)
+        self._parallel = asyncio.Semaphore(read_concurrency)
 
     @property
     def references(self): return self.context.refs if self.context else None
     @property
-    def cutoff(self): return self.references.cutoff if self.references else None
+    def cutoff(self): return self.references.cutoff if self.references else self.call_context().cutoff_rowid
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
+        read_result = next(item for item in definitions if item['function']['name'] == 'read_tool_result')
+        read_result['function']['parameters']['properties']['limit']['maximum'] = self.max_chars
         if self.context and self.context.pending_wakes():
             definitions.append(copy.deepcopy(READ_PENDING_WAKES))
         if self.context and (self.references.partial_events
                              or set(self.references.events.values()) - self.references.read_events):
             definitions.append(copy.deepcopy(READ_MESSAGE_RANGE))
         if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
-        if self.read_only_only:
+        if self.call_context().role == 'work':
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
             definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
             if self.media_service:
                 definitions.append(tool('read_web_media','查看公开网页中的原图或PDF的一页，直接向模型提供像素。使用已知图片/PDF链接；不读取HTML页面。PDF页码从1开始，省略默认第1页。',
                     {'url':S,'page':{'type':'integer','minimum':1,'maximum':100}},['url']))
-            definitions.append(tool('tool_search','按名称或描述发现可用的外部只读工具。',{'query':S},['query']))
-            for definition in self.plugin_host.get_tool_definitions() if self.plugin_host else []:
-                name=definition['function']['name'];caps=self.plugin_host.tool_capabilities(name)
-                if name not in self.unavailable_tools and caps['read_only'] and (not caps['deferred'] or name in self.discovered_tools):
-                    definition=copy.deepcopy(definition)
-                    definition['function']['parameters'].setdefault('properties',{})['refresh']={
-                        'type':'boolean','description':'重新获取，不复用已有资料'}
-                    definitions.append(definition)
+        plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind='read') if self.plugin_host else []
+        if plugin_tools:
+            definitions.append(tool('tool_search','按名称或描述发现当前群和当前职责可用的读取工具。',{'query':S},['query']))
+        for definition in plugin_tools:
+            name = definition['function']['name']
+            capabilities = self.plugin_host.tool_capabilities(name)
+            if name not in self.unavailable_tools and (not capabilities['deferred'] or name in self.discovered_tools):
+                definitions.append(copy.deepcopy(definition))
         return definitions
 
     def is_read_only(self,name):
         if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes'}: return True
-        return bool(self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name)
-                    and self.plugin_host.tool_capabilities(name)['read_only'])
-
-    async def execute(self,name,arguments): return str(await self.execute_result(name,arguments))
-
-    async def execute_many(self,calls):
-        async def run(name,args):
-            try: return await self.execute(name,args)
-            except Exception as error:return error
-        return await asyncio.gather(*(run(*call) for call in calls))
+        return bool(self.plugin_host and self.plugin_host.has_tool(name, self.call_context())
+                    and self.plugin_host.tool_capabilities(name)['kind'] == 'read')
 
     async def import_results(self,result_ids):
         for result_id in result_ids:
@@ -149,11 +146,8 @@ class RetrievalToolkit:
             if result is None:raise ValueError('Transferred result does not belong to this scene')
             if result_id not in self.result_ids:self.result_ids.append(result_id)
             self.observations[result_id]=result
-            call=await self.event_store.tool_observation_call(result_id,self.default_scene_id)
-            if call and (call[0]=='read_web_media' or self.plugin_host and self.plugin_host.has_tool(call[0])):
+            if result.evidence_kind == 'external':
                 self.external_attempted=True
-            if call and self.plugin_host and self.plugin_host.has_tool(call[0]) and self.is_read_only(call[0]) and result.status in {'ok','no_results','partial'}:
-                self._cache[json.dumps(list(call),ensure_ascii=False,sort_keys=True)]=result
 
     def _resolve_arguments(self,name,args):
         if not self.references:return args
@@ -164,72 +158,83 @@ class RetrievalToolkit:
         if args.get('job_id'):args['job_id']=refs.job(args['job_id'])['id']
         return args
 
-    async def execute_result(self,name,arguments):
+    async def execute_result(self, name, arguments) -> ToolResult:
         page = await self.execute_observation(name, arguments)
         return await self._present(page.name, page.result, page.offset, page.limit)
 
-    async def execute_observation(self,name,arguments):
+    async def execute_observation(self, name, arguments) -> ObservationPage:
         """Fetch and persist in parallel; references are granted only when presented."""
         if name == 'read_pending_wakes':
             try:
                 arguments = PendingWakeArguments.model_validate(arguments).model_dump()
             except ValidationError as error:
-                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'))
+                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
-        if name not in definitions:return ObservationPage(name, ToolResult.failure('本入口未开放此工具','capability_denied'))
+        if name not in definitions:return ObservationPage(name, ToolResult.failure('本入口未开放此工具','capability_denied'), limit=self.page_chars)
         if name == 'read_message_range':
             try:
                 arguments = MessageRangeArguments.model_validate(arguments).model_dump()
             except ValidationError as error:
-                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'))
+                return ObservationPage(name, ToolResult.failure(str(error), 'invalid_arguments'), limit=self.page_chars)
         try:args=self._resolve_arguments(name,dict(arguments))
-        except ValueError as error:return ObservationPage(name, ToolResult.failure(str(error),'invalid_reference'))
+        except ValueError as error:return ObservationPage(name, ToolResult.failure(str(error),'invalid_reference'), limit=self.page_chars)
         if name=='read_tool_result':
-            offset,limit=int(args.get('offset',0)),int(args.get('limit',6000))
-            if offset<0 or not 1<=limit<=12000:
-                return ObservationPage(name,ToolResult.failure('offset must be nonnegative; limit must be 1..12000','invalid_arguments'))
+            offset, limit = int(args.get('offset', 0)), int(args.get('limit', self.page_chars))
+            if offset < 0 or not 1 <= limit <= self.max_chars:
+                return ObservationPage(name, ToolResult.failure(
+                    f'offset must be nonnegative; limit must be 1..{self.max_chars}', 'invalid_arguments'), limit=self.page_chars)
             result=await self.event_store.read_tool_observation(args.get('result_id',''),self.allowed_scopes)
-            if result is None:return ObservationPage(name, ToolResult.failure('资料不存在或不属于本群','not_found'))
+            if result is None:return ObservationPage(name, ToolResult.failure('资料不存在或不属于本群','not_found'), limit=self.page_chars)
             call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
             return ObservationPage(call[0] if call else '',result,offset=offset,limit=limit)
         if name=='tool_search':
             query=str(args.get('query','')).casefold().strip()
-            if not query:return ObservationPage(name, ToolResult.failure('query不能为空','invalid_arguments'))
-            matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions() if
+            if not query:return ObservationPage(name, ToolResult.failure('query不能为空','invalid_arguments'), limit=self.page_chars)
+            matches=[t['function']['name'] for t in self.plugin_host.get_tool_definitions(self.call_context(), kind='read') if
                 self.is_read_only(t['function']['name']) and t['function']['name'] not in self.unavailable_tools
                 and query in (t['function']['name']+' '+t['function']['description']).casefold()] if self.plugin_host else []
             self.discovered_tools.update(matches[:8])
-            return ObservationPage(name, ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog'))
-        refresh=bool(args.pop('refresh',False));key=json.dumps([name,args],ensure_ascii=False,sort_keys=True)
-        async with self._call_locks.setdefault(key,asyncio.Lock()):
-            if not refresh and key in self._cache:return ObservationPage(name,self._cache[key].model_copy(update={'cached':True}))
-            if self.checkpoint:await self.checkpoint('before_tool',{'scene_id':self.default_scene_id,'name':name,'arguments':args})
-            start=time.monotonic()
-            media_files=[]
-            async with self._parallel:
+            return ObservationPage(name, ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches[:8],ensure_ascii=False),coverage='tool_catalog'), limit=self.page_chars)
+        if self.checkpoint:
+            await self.checkpoint('before_tool', {'scene_id':self.default_scene_id,'name':name,'arguments':args})
+        start = time.monotonic()
+        media_files = []
+        invocation = self.call_context()
+        plugin_tool = bool(self.plugin_host and self.plugin_host.has_tool(name, invocation))
+        async with self._parallel:
+            if plugin_tool:
+                result = await self.plugin_host.execute_tool(name, args, invocation)
+            else:
                 try:
-                    if name=='read_web_media':
-                        self.external_attempted=True
-                        raw,media_files=await self.media_service.read_web_media(args.get('url',''),args.get('page'))
+                    if name == 'read_web_media':
+                        self.external_attempted = True
+                        result, media_files = await self.media_service.read_web_media(args.get('url', ''), args.get('page'))
                     else:
-                        if self.plugin_host and self.plugin_host.has_tool(name):self.external_attempted=True
-                        raw=await self._execute_raw(name,args)
-                    result=ToolResult.normalize(raw)
-                    if isinstance(raw,list) and not raw:result.status='no_results'
-                except Exception as error:result=ToolResult.failure(str(error),type(error).__name__)
-            result.duration_ms=round((time.monotonic()-start)*1000,2)
-            if not(self.plugin_host and self.plugin_host.has_tool(name)) and result.evidence_kind=='unknown':result.evidence_kind='retrieval'
-            if name=='web_search' and result.status in {'error','unsupported'} and result.error_code!='invalid_arguments':
-                self.unavailable_tools.add(name)
-                result.content+='\n本次工作的搜索服务不可用，已停止继续调用；可读取已有官方链接，未核实部分写入unresolved，不用群史或旧知识代替发布事实。'
-            result,event=await self.event_store.save_tool_observation(self.default_scene_id,name,args,result,
-                background_work=self.read_only_only,media_files=media_files)
-            self.result_ids.append(result.result_id)
-            self.observations[result.result_id]=result
-            if self.on_observation:await self.on_observation(event)
-            if self.checkpoint:await self.checkpoint('after_tool',{'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
-            if self.plugin_host and self.plugin_host.has_tool(name) and result.status in {'ok','no_results','partial'}:self._cache[key]=result
-        return ObservationPage(name,result)
+                        result = await self._execute_raw(name, args)
+                except Exception as error:
+                    result = ToolResult.failure(str(error), type(error).__name__)
+        result.duration_ms = round((time.monotonic()-start)*1000, 2)
+        if result.evidence_kind == 'external':
+            self.external_attempted = True
+        if not plugin_tool and result.evidence_kind == 'unknown':
+            result.evidence_kind = 'retrieval'
+        if name == 'web_search' and result.status in {'error', 'unsupported'} and result.error_code != 'invalid_arguments':
+            self.external_attempted = True
+            self.unavailable_tools.add(name)
+            result.content += '\n本次工作的搜索服务不可用，已停止继续调用；可读取已有官方链接，未核实部分写入unresolved。'
+        result, event = await self.event_store.save_tool_observation(self.default_scene_id, name, args, result,
+            background_work=invocation.role == 'work', media_files=media_files)
+        self.result_ids.append(result.result_id)
+        self.observations[result.result_id] = result
+        if self.on_observation:
+            await self.on_observation(event)
+        if self.checkpoint:
+            await self.checkpoint('after_tool', {'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
+        page_chars = self.page_chars
+        if name == 'read_group_chat_window':
+            plugin = self.plugin_host.get_plugin('group_summary')
+            page_chars = plugin.config.page_chars
+        return ObservationPage(name, result, limit=page_chars)
 
     def validate_conclusion_sources(self, result_ids, unresolved):
         """Validate evidence availability, not the semantic truth of a conclusion."""
@@ -250,16 +255,17 @@ class RetrievalToolkit:
         if not page.result.result_id:
             return page.result.page(page.offset, page.limit)
         return ToolResult(status='partial' if page.result.status in {'ok','partial'} else page.result.status,
-            result_id=self.references.register_result(page.result.result_id),
+            result_id=self.references.register_result(page.result.result_id) if self.references else page.result.result_id,
             content='本轮输入额度有限，正文尚未装入；用read_tool_result按result_id和next_offset继续读取。',
             truncated=True, next_offset=page.offset,
             coverage='result_locator; content not read', evidence_kind=page.result.evidence_kind,
             error_code=page.result.error_code, fetched_at=page.result.fetched_at,
             observation_event_id=page.result.observation_event_id, cached=page.result.cached)
 
-    async def _present(self,name,result,offset=0,limit=6000):
+    async def _present(self, name, result, offset, limit):
+        if offset < 0 or not 1 <= limit <= self.max_chars:
+            raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
         if not self.context:return result.page(offset,limit)
-        if offset<0 or not 1<=limit<=12000:raise ValueError('offset must be nonnegative; limit must be 1..12000')
         refs=self.references;shown=result.model_copy(deep=True)
         if shown.result_id:shown.result_id=refs.register_result(shown.result_id)
         if name == 'read_pending_wakes':
@@ -293,10 +299,16 @@ class RetrievalToolkit:
             shown.next_offset = end if end < total else None
             return shown
         local={'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs'}
-        if name not in local:return shown.page(offset,limit)
-        try:data=json.loads(shown.content)
-        except (TypeError,ValueError):return shown.page(offset,limit)
-        if not isinstance(data,list):return shown.page(offset,limit)
+        if name not in local or shown.status not in {'ok', 'partial', 'no_results'}:
+            return shown.page(offset,limit)
+        # Work history observations contain projected text; conversation
+        # observations contain event records so presentation can grant refs.
+        try:
+            data = json.loads(shown.content)
+        except ValueError:
+            return shown.page(offset, limit)
+        if not isinstance(data, list):
+            return shown.page(offset, limit)
         history=name in {'search_messages','read_context','query_timeline','query_person_history'}
 
         def project(raw):
@@ -354,7 +366,7 @@ class RetrievalToolkit:
         shown.coverage='record_page; offset is the next record index' if shown.truncated or offset else shown.coverage
         return shown
 
-    async def _execute_raw(self,name,args):
+    async def _execute_raw(self, name, args) -> ToolResult:
         store=self.event_store;scopes=self.allowed_scopes
         if name == 'read_pending_wakes':
             if not self.context:
@@ -381,15 +393,23 @@ class RetrievalToolkit:
         if name=='read_media':return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
         if name=='search_media':
             rows=await store.list_media([self.default_scene_id,'global-safe'],query=str(args.get('query','')),curated_only=bool(args.get('curated_only',True)))
-            return [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')}} for x in rows]
+            records = [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')}} for x in rows]
+            return ToolResult(status='ok' if records else 'no_results', content=json.dumps(records, ensure_ascii=False),
+                              coverage='media_catalog', evidence_kind='retrieval')
         if name=='query_jobs':
             if args.get('job_id'):
-                job=await store.get_job(args['job_id'],self.default_scene_id);return [job] if job else []
-            return await store.list_jobs(self.default_scene_id)
+                job = await store.get_job(args['job_id'], self.default_scene_id)
+                jobs = [job] if job else []
+            else:
+                jobs = await store.list_jobs(self.default_scene_id)
+            for job in jobs:
+                if job['summary_coverage'] is not None:
+                    job['summary_coverage'] = {key:value for key,value in job['summary_coverage'].items()
+                                               if key not in {'read_result_ranges', 'read_event_ids'}}
+            return ToolResult(status='ok' if jobs else 'no_results', content=json.dumps(jobs, ensure_ascii=False),
+                              coverage='current_jobs', evidence_kind='retrieval')
         if name=='calculate':return calculate(args.get('expression',''))
         if name=='finite_check':return await asyncio.to_thread(finite_check,**args)
-        if self.read_only_only and self.plugin_host and self.plugin_host.has_tool(name) and self.is_read_only(name):
-            return await self.plugin_host.execute_tool(name,args)
         rows=None;limit=max(1,min(int(args.get('limit',15)),50))
         if name=='search_messages':rows=await store.search_messages(str(args.get('query','')),scopes,limit,through_rowid=self.cutoff)
         elif name=='read_context':rows=await store.read_context(str(args.get('event_id','')),int(args.get('before',3)),int(args.get('after',3)),scopes,through_rowid=self.cutoff)
@@ -398,9 +418,15 @@ class RetrievalToolkit:
         elif name=='query_memory':
             if not self.memory_store:return ToolResult(status='unsupported',content='未配置认识账本')
             memories=await self.memory_store.query_memories(scopes,subject=args.get('subject'),kind=args.get('kind'),query=args.get('query'),include_superseded=bool(args.get('include_history',False)))
-            return [m.model_dump(mode='json') for m in memories]
+            return ToolResult(status='ok' if memories else 'no_results',
+                              content=json.dumps([m.model_dump(mode='json') for m in memories], ensure_ascii=False),
+                              coverage='memory_ledger', evidence_kind='retrieval')
         if rows is not None:
             enriched=await store.project_reply_context(self.default_scene_id,[Event.model_validate(r) for r in rows],through_rowid=self.cutoff)
-            if self.context:return [event.model_dump(mode='json') for event in enriched]
-            return '\n'.join(project_event(event,self.bot_qq) for event in enriched)
+            if self.context:
+                content = json.dumps([event.model_dump(mode='json') for event in enriched], ensure_ascii=False)
+            else:
+                content = '\n'.join(project_event(event, self.bot_qq) for event in enriched)
+            return ToolResult(status='ok' if enriched else 'no_results', content=content,
+                              coverage='original_messages', evidence_kind='retrieval')
         return ToolResult.failure('未知工具','not_found')

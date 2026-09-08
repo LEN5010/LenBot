@@ -1,7 +1,6 @@
 import asyncio
 import heapq
 import logging
-import time
 from typing import Optional, Callable, Awaitable, Any
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
@@ -54,27 +53,10 @@ class TaskScheduler:
             self._wake_event.set()
 
     async def _sync_from_db(self) -> None:
-        now = self.event_store.clock()
         pending = await self.event_store.get_pending_tasks()
         self._heap.clear()
         self._known_task_ids.clear()
-        for p in pending:
-            task = TaskItem(
-                id=p["id"],
-                scene_id=p["scene_id"],
-                description=p["description"],
-                due_at=p["due_at"],
-                status=TaskStatus(p["status"]),
-                payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {},
-                source_event_id=p.get("source_event_id", "episode"),
-                created_at=p.get("created_at", now),
-                wake_event_type=p.get("wake_event_type"),
-                wake_match=p.get("wake_match"),
-                origin_episode_id=p.get("origin_episode_id"),
-                origin_stimulus_id=p.get("origin_stimulus_id"),
-                trigger_event_id=p.get("trigger_event_id"),
-                origin_mode=p.get("origin_mode", "live")
-            )
+        for task in pending:
             if task.id not in self._known_task_ids:
                 self._known_task_ids.add(task.id)
                 heapq.heappush(self._heap, task)
@@ -150,13 +132,13 @@ class TaskScheduler:
                 "raw_text": task.description,
                 "description": task.description,
                 "payload": task.payload,
-                "origin_mode": getattr(task, "origin_mode", "live"),
+                "origin_mode": task.origin_mode,
             }
         )
         if not await self.event_store.claim_task_event(task.id, task.scene_id, event):
             return False
         logger.info("Task due! Triggering task %s (%s) for scene %s (origin=%s)",
-                    task.id, task.description, task.scene_id, getattr(task, "origin_mode", "live"))
+                    task.id, task.description, task.scene_id, task.origin_mode)
         await self.emit_event(event)
         return True
 
@@ -165,14 +147,14 @@ class TaskScheduler:
         A condition task fires when its wake_event_type and exact wake_match dictionary match
         in its scene, or at its due_at deadline — whichever comes first.
         """
-        wake_type = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+        wake_type = event.event_type.value
         matched = []
         for t in self._heap:
             if t.wake_event_type != wake_type or t.scene_id != event.scene_id or t.id not in self._known_task_ids:
                 continue
             # Structured wake_match evaluation (ADR-0029, §16)
             if t.wake_match:
-                ev_payload = event.payload if isinstance(event.payload, dict) else {}
+                ev_payload = event.payload
                 match = True
                 for k, expected_v in t.wake_match.items():
                     if ev_payload.get(k) != expected_v:
@@ -199,7 +181,7 @@ class TaskScheduler:
         self._known_task_ids.discard(task_id)
         self._heap = [t for t in self._heap if t.id != task_id]
         heapq.heapify(self._heap)
-        await self.event_store.mark_task_status(task_id, TaskStatus.CANCELLED.value)
+        await self.event_store.mark_task_status(task_id, TaskStatus.CANCELLED)
         logger.info("Task %s cancelled manually", task_id)
         return True
 
@@ -213,20 +195,9 @@ class TaskScheduler:
 
         if not target_task:
             tasks = await self.event_store.get_pending_tasks()
-            for p in tasks:
-                if p["id"] == task_id:
-                    target_task = TaskItem(
-                        id=p["id"],
-                        scene_id=p["scene_id"],
-                        description=p["description"],
-                        due_at=self.event_store.clock(),
-                        status=TaskStatus.PENDING,
-                        payload=p.get("payload", {}) if isinstance(p.get("payload"), dict) else {},
-                        wake_match=p.get("wake_match"),
-                        origin_episode_id=p.get("origin_episode_id"),
-                        origin_stimulus_id=p.get("origin_stimulus_id"),
-                        origin_mode=p.get("origin_mode", "live")
-                    )
+            for task in tasks:
+                if task.id == task_id:
+                    target_task = task
                     break
 
         if not target_task:

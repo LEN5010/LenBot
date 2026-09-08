@@ -11,7 +11,7 @@ const states = {
   call: { completed:['请求完成','success'], failed:['请求失败','error'], cancelled:['已取消','warning'], unconfirmed:['未确认','warning'] },
   skill_candidate: { pending:['候选待整理','default'], processing:['整理中','info'], saved:['已保存','success'], obsolete:['来源版本已过期','warning'], completed:['已保存','success'], failed:['整理失败','error'], interrupted:['已中断','warning'], rejected:['未采纳','default'] },
   provider: { ready:['配置就绪','success'], enabled:['已启用','info'], disabled:['已停用','default'], missing:['未配置','warning'], unavailable:['配置未就绪','warning'] },
-  plugin: { loaded:['已加载','default'], enabled:['运行中','success'], disabled:['已停用','default'], error:['运行异常','error'] },
+  plugin: { loaded:['已加载','default'], enabled:['运行中','success'], disabled:['已停用','default'], error:['运行异常','error'], unconfigured:['未配置','warning'], not_loaded:['尚未装载','default'] },
 }
 export function statusInfo(domain, status) {
   if (status === null || status === undefined || status === '') return { label:'未记录', color:'default', known:true }
