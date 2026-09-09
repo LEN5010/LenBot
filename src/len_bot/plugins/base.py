@@ -83,6 +83,13 @@ class PluginContext:
             raise ValueError('Work creation requires the active scene proposal ledger')
         return await call.ledger.stage_plugin_work(call,**options)
 
+    async def read_request_source(self,call: PluginCallContext,reference: str):
+        await self._host.validate_call(call)
+        if (call.ledger is None or call.scene_id!=call.ledger.context.refs.scene_id
+                or call.episode_id!=call.ledger.episode_id):
+            raise ValueError('Request-source reading requires the active scene proposal ledger')
+        return await call.ledger.request_source(reference)
+
     @property
     def data_directory(self) -> Path:
         return Path(self._runtime.config.db_path).resolve().parent / 'plugins' / self.spec.id

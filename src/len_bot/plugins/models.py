@@ -60,6 +60,9 @@ class PluginCallContext:
         return await self.plugin.stage_work(self,goal=goal,request_source=request_source,evidence=evidence,
             parameters=parameters,constraints=constraints,result_refs=result_refs)
 
+    async def read_request_source(self,reference: str):
+        return await self.plugin.read_request_source(self,reference)
+
 
 @dataclass(frozen=True)
 class ExactText:

@@ -223,13 +223,22 @@ class ProposalLedger:
         work=call.plugin.spec.work if parameters is not None else None
         if parameters is not None and (work is None or not isinstance(parameters,work.parameters_model)):
             raise ToolArgumentError('Plugin work parameters require the owning descriptor model')
+        encoded=parameters.model_dump(mode='json') if parameters is not None else None
+        for proposal in self.jobs:
+            if (proposal.operation=='create' and proposal.plugin_origin
+                    and proposal.plugin_origin.plugin_id==call.origin.plugin_id
+                    and proposal.plugin_origin.plugin_version==call.origin.plugin_version
+                    and proposal.request_source_event_id==source.id and proposal.goal==goal
+                    and proposal.work_parameters==encoded):
+                return {'status':'staged','proposal_ref':proposal.proposal_id,'ack_ref':proposal.proposal_id,
+                    'work_parameters':encoded,'note':'同一请求的这项工作已暂存；使用原引用，不重复创建或确认。'}
         proposal_ref = f'S{self._next_handle}'
         proposal = JobProposal(proposal_id=proposal_ref,
             goal=goal,constraints_add=list(constraints),result_ids=[refs.result_id(reference) for reference in result_refs],
             source_event_ids=sources, requester_qq_uid=source.actor_id.removeprefix('user:'),
             request_source_event_id=source.id,
             work_operation=work.operation if work else 'information',plugin_origin=call.origin,
-            work_parameters=parameters.model_dump(mode='json') if parameters is not None else None)
+            work_parameters=encoded)
         self._next_handle += 1
         self.jobs.append(proposal)
         self.proposal_refs.add(proposal_ref)
@@ -449,8 +458,10 @@ class ProposalLedger:
                     raise ValueError('该工作在本轮有未提交控制；状态确认用对应operation_ref，不能同时按旧work_ref或delivery_ref发送旧版本内容')
                 if delivery and delivery in controlled_tasks:
                     raise ValueError('本轮修改或取消的提醒不能同时按旧状态履约')
+                if delivery and job and (job['result'] or {}).get('delivery'):
+                    raise ValueError('此工作已有插件成品，由原工作交付入口提交；当前对话只处理新输入或控制要求，不重写成品或再次履约')
                 if (job and not operation and job['status']=='result_ready' and job['execution_status'] in {'completed','partial'}
-                        and job['delivery_action_id'] is None and not delivery):
+                        and job['delivery_action_id'] is None and not delivery and not (job['result'] or {}).get('delivery')):
                     raise ValueError('该工作已有首次待交付结果；使用delivery_ref绑定本条结果与真实送达关系，不要仅填work_ref')
                 acknowledgement = self.staged[item.ack_ref][1] if item.ack_ref else None
                 source_id = refs.event_id(item.source) if item.source else None
