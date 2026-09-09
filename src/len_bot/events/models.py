@@ -44,6 +44,8 @@ class PluginOrigin(BaseModel):
     source_event_id: str
     parent_run_id: str | None = None
     parent_tool_call_id: str | None = None
+    scene_entry: Literal['chat', 'handler', 'work'] = 'chat'
+    handler_origin: 'PluginOrigin | None' = None
 
 
 class PluginEventPayload(BaseModel):

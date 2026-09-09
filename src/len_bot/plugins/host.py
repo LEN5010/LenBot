@@ -98,8 +98,8 @@ class PluginHost:
         call = PluginCallContext(scene_id=event.scene_id, requester_qq_uid=event.payload.get('requester_qq_uid'),
             now=self.runtime.clock(), cutoff_rowid=cutoff, episode_id=event.payload.get('episode_id'),
             job_id=event.payload.get('job_id'), role='conversation', event=event,
-            source_event_id=event.payload.get('origin_event_id'), origin=origin, entry_origin=origin,
-            entry='handler' if origin and origin.entry_kind == 'handler' else 'chat')
+            source_event_id=event.payload.get('origin_event_id'), origin=origin, entry_origin=origin.handler_origin or origin if origin else None,
+            entry=origin.scene_entry if origin else 'chat')
         owners = dict.fromkeys(hook.plugin_id for hook in self.applicable_hooks('after_delivery', call))
 
         async def observe(owner):
@@ -160,7 +160,8 @@ class PluginHost:
         return PluginCallContext(scene_id=event.scene_id,
             requester_qq_uid=event.metadata.get('requester_qq_uid'), now=self.runtime.clock(),
             cutoff_rowid=cutoff, episode_id=origin.run_id, job_id=None, role='conversation',
-            source_event_id=event.id, origin=origin, entry_origin=origin, entry='handler',
+            source_event_id=origin.source_event_id, origin=origin, entry_origin=origin.handler_origin or origin,
+            entry=origin.scene_entry,
             event=event.model_copy(deep=True), plugin=self._plugin_contexts[origin.plugin_id], execution=execution)
 
     def match_event(self, event, cutoff):
@@ -196,7 +197,7 @@ class PluginHost:
                 continue
             origin = PluginOrigin(plugin_id=definition.plugin_id, plugin_version=plugin.manifest.version,
                 entry_id=definition.id, entry_kind='handler', run_id=f'plugin:{uuid.uuid4().hex}',
-                source_event_id=event.id, parent_run_id=parent.get('run_id'))
+                source_event_id=event.id, parent_run_id=parent.get('run_id'),scene_entry='handler')
             route = {'origin': origin.model_dump(), 'consume': definition.consume, 'state': 'matched',
                      'source_kind': source_kind, 'priority': definition.priority, 'registration_order': definition.order}
             call = self.handler_call(event, route, cutoff)
@@ -226,12 +227,19 @@ class PluginHost:
         if (not plugin or not plugin.manifest.enabled or plugin.manifest.version != origin.plugin_version
                 or not self.runtime.scene_policy.plugin_allowed(call.scene_id, origin.plugin_id, call.entry)):
             raise ValueError('Plugin is disabled, unavailable in this scene, or its version changed')
+        if call.origin and call.origin != origin:
+            owner=self._plugins.get(call.origin.plugin_id)
+            if (owner is None or not owner.manifest.enabled or owner.manifest.version != call.origin.plugin_version
+                    or self._plugin_availability(call.origin.plugin_id,call) != 'callable'):
+                raise ValueError('The tool owner is disabled, unavailable or changed version')
         events = await self.runtime.event_store.events_by_ids(call.scene_id, [call.source_event_id], call.cutoff_rowid)
         if len(events) != 1:
             raise ValueError('Plugin source is outside this scene or read cutoff')
         source = events[0]
         if origin.entry_kind != 'handler':
-            if not self.has_tool(origin.entry_id, call):
+            tool=self._tools.get(origin.entry_id)
+            if (tool is None or tool.plugin_id != origin.plugin_id
+                    or self._plugin_availability(origin.plugin_id,call) != 'callable'):
                 raise ValueError('Plugin tool source is no longer available')
             if mention_all:
                 raise ValueError('Tool runs do not grant all-member mentions')
@@ -249,7 +257,12 @@ class PluginHost:
             raise ValueError('This plugin entry has no current all-member mention setting')
 
     def dispatch_event(self, event, cutoff):
-        from len_bot.runtime.plugin_interactions import dispatch_handler
+        from len_bot.runtime.plugin_interactions import dispatch_handler, resume_agent
+        resume=event.metadata.get('conversation_resume',{}).get('state',{})
+        if resume.get('plugin_origin'):
+            origin=PluginOrigin.model_validate(resume['plugin_origin'])
+            self.start_task(origin.plugin_id,resume_agent(self.runtime,event,cutoff),name=f'resume:{origin.run_id}')
+            return
         for route in event.metadata.get('plugin_routes', ()):
             origin = PluginOrigin.model_validate(route['origin'])
             plugin = self._plugins.get(origin.plugin_id)
@@ -607,7 +620,8 @@ class PluginHost:
                 entry_id=tool_name, entry_kind='tool', run_id=f'plugin:{uuid.uuid4().hex}',
                 source_event_id=source_id,
                 parent_run_id=parent.run_id if parent else call_context.episode_id or call_context.job_id,
-                parent_tool_call_id=call_context.tool_call_id)
+                parent_tool_call_id=call_context.tool_call_id,scene_entry=call_context.entry,
+                handler_origin=call_context.entry_origin if call_context.entry_origin and call_context.entry_origin.entry_kind=='handler' else None)
             bound_call = replace(call_context, origin=origin, plugin=self._plugin_contexts[ptool.plugin_id])
             task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call), name=f'tool:{tool_name}')
             result = await asyncio.wait_for(

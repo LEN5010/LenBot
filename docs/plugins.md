@@ -34,7 +34,13 @@ sources 默认 human；plugin_event 和 self_sent 要显式声明。self_sent �
 
 call.invoke_tool(name, typed_arguments) 复用注册服务和原观察存储，没有伪模型调用 ID；返回完整 ToolResult，调用者应按 status、coverage 与来源处理失败。call.save_image 保存当前场景素材，call.submit_message 接受 MessageSegment，经 Actor、Gate、队列提交并保存真实回执。提交与发送重新检查真实 source_event_id、已保存路由、版本、当前启用与 validate；全体提及还要求该 handler 明确提供当下有效的 allow_mention_all。
 
-call.run_agent 的 result_only 模式接收插件指令、ToolResult 资料、明确工具名、既有 model_role、输出 Pydantic 模型和从插件根配置取得的步数、工具、上下文及输出额度；include_identity 明确选择是否带入现有身份。资料放在带类型的 user 投影中。插件选择 return_result 输出契约，结果返回后不自动发送；[直播实现](../src/len_bot/plugins/builtin/bilibili_live/plugin.py)随后明确提交一次邀请。模型仍使用 ProviderRegistry、ModelGateway、AgentLoop 与 model_calls。
+call.run_agent 接收 instructions、input_observations、tool_names、model_role、max_steps、max_tool_calls、context_tokens、output_tokens；参数由 PluginAgentRequest 在入口解析。模型路由和额度从插件的根配置取得。include_identity 决定是否带入当前身份；input_mode 可选 materials（仅资料）、source（真实触发和引用）、conversation（普通对话投影，含当前群史及参考）。外部资料保持带类型的 user 投影，不提升为指令。
+
+output_mode=result_only 必须提供 output_model。Agent 调用 return_result 返回该 Pydantic 类型，不能使用提案工具或自动发送；[直播实现](../src/len_bot/plugins/builtin/bilibili_live/plugin.py)使用公告配置的既有模型路由，只带场次资料，随后明确提交一次邀请。
+
+output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、respond、Actor 和 ActionQueue。source 或 conversation 投影给出真实来源 M，插件可按 tool_names 明确开放已有工作、提醒或记忆提案；这些操作仍须满足原人类请求和证据契约。全部 checkpoint 共用消息额度，continue 继续当前运行，wait 在真实送达后由 open loop 等待目标的回复。恢复保留原插件、入口、模型绑定、请求参数、已存资料及累计预算；旧进程或已变化的入口不能被当作一次新运行重做。
+
+工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作仍由原 JobStore 收取调用与时间额度。专用 Agent 串行使用父账户并为父调用留一次收尾调用，不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 也保留真实父来源，调用不制造模型 tool_call。
 
 自定义事件在 PluginSpec.event_models 声明名称和 payload 模型。context.emit_event(name, typed_payload, scene_id=..., event_id=..., timestamp=...) 发布 PLUGIN_EVENT；事件身份由插件的真实业务关系确定，不生成内容摘要去重。
 

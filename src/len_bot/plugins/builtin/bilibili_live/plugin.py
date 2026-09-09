@@ -115,7 +115,7 @@ class BilibiliLiveSensor(BasePlugin):
         result = await call.run_agent(instructions=(
             '当前是已订阅开播公告，只根据所给真实场次写一段邀请，正确指认主播。'
             '调用 return_result 返回正文；不要决定目标群，不写全体提及，不读取群史或创建其他工作。'), input_observations=[material],
-            tool_names=(), model_role='conversation', include_identity=True,
+            tool_names=(), model_role=self.config.announcement_model_role, include_identity=True, input_mode='materials',
             output_mode='result_only', output_model=Invitation,
             max_steps=self.config.announcement_max_steps, max_tool_calls=self.config.announcement_max_tool_calls,
             context_tokens=self.config.announcement_context_tokens, output_tokens=self.config.announcement_output_tokens)

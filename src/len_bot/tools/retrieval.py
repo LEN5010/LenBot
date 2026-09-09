@@ -7,6 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, replace
+from contextlib import nullcontext
 from collections.abc import Callable
 
 from typing import Literal
@@ -296,7 +297,7 @@ class RetrievalToolkit:
             return (await self.error_observation(name, arguments, result, tool_call_id=tool_call_id)).result
         return result
 
-    async def execute_observation(self, name, arguments, *, tool_call_id=None) -> ObservationPage:
+    async def execute_observation(self, name, arguments, *, tool_call_id=None, read_slot_owned=False) -> ObservationPage:
         """Fetch and persist in parallel; references are granted only when presented."""
         definitions={t['function']['name']:t for t in self.get_tool_definitions()}
         registered_read=bool(self.plugin_host and self.plugin_host.has_registered_tool(name)
@@ -368,9 +369,9 @@ class RetrievalToolkit:
             await self.checkpoint('before_tool', {'scene_id':self.default_scene_id,'name':name,'arguments':args})
         start = time.monotonic()
         media_files = []
-        invocation = replace(self.call_context(), tool_call_id=tool_call_id)
+        invocation = replace(self.call_context(), tool_call_id=tool_call_id, read_slot_owned=True)
         plugin_tool = bool(self.plugin_host and self.plugin_host.has_registered_tool(name))
-        async with self._parallel:
+        async with (nullcontext() if read_slot_owned else self._parallel):
             if plugin_tool:
                 result = await self.plugin_host.execute_tool(name, args, invocation)
             else:
@@ -716,14 +717,23 @@ class RetrievalToolkit:
         if covered>=len(original.content):shown.source_next_call=original.source_next_call.model_copy(deep=True)
         return shown
 
+    def material_message(self, result_id):
+        original=self.observations[result_id]
+        shown=original.model_copy(update={'coordinate_unit':'characters',
+            'displayed_range':DisplayedRange(start=0,end=len(original.content),total=len(original.content))})
+        return {'role':'user','_context_section':'plugin_material','content':json.dumps({
+            'kind':'plugin_material','observation':shown.model_dump(mode='json',exclude_none=True)},ensure_ascii=False)}
+
     def read_presentations(self,messages):
         """Describe adopted original bodies, never a trial page or locator."""
         presentations=[]
         seen=set()
         for message in messages:
-            if message.get('role')!='tool' or not isinstance(message.get('content'),str):continue
+            if message.get('role')!='tool' and message.get('_context_section')!='plugin_material':continue
+            if not isinstance(message.get('content'),str):continue
             try:shown=json.loads(message['content'])
             except ValueError:continue
+            if message.get('_context_section')=='plugin_material':shown=shown.get('observation')
             if not isinstance(shown,dict) or 'locator' in shown.get('coverage',''):continue
             ident=shown.get('result_id')
             if self.references and ident in self.references.results:ident=self.references.results[ident]

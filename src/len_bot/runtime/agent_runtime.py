@@ -778,7 +778,7 @@ class AgentRuntime:
                 outcome = await self.social_core.run(
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
                     input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid,
-                    publish=publish,resume=resume,
+                    publish=publish,resume=resume,mailbox=mailbox,
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")
