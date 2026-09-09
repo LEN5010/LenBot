@@ -42,7 +42,7 @@ class PluginManifest(BaseModel):
     plugin_type: PluginType = PluginType.HYBRID
     permissions: list[PluginPermission] = Field(default_factory=list)
     enabled: bool
-    timeout_seconds: float
+    timeout_seconds: float | None
     config: dict[str, Any]
     # The configured plugin schema is also the control panel's editing surface.
     config_schema: dict[str, Any] = Field(default_factory=dict, description="JSON schema driving the config UI")

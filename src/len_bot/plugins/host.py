@@ -6,7 +6,7 @@ import httpx
 from dataclasses import dataclass
 from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
-from len_bot.plugins.models import PluginCallContext, PluginToolDefinition
+from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginToolDefinition
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
@@ -88,69 +88,100 @@ class PluginHost:
             handler=handler,
             timeout_seconds=timeout_seconds, kind=kind, roles=roles, deferred=deferred, available=available,
         )
+        self._plugins[plugin_id].manifest.registered_tools.append(name)
         logger.info("Plugin '%s' registered tool '%s'", plugin_id, name)
 
-    async def load_plugin(self, plugin: BasePlugin) -> None:
-        pid = plugin.manifest.id
-        if pid in self._plugins:
-            existing = self._plugins[pid]
-            raise ValueError(f"Plugin '{pid}' registration conflict: {type(plugin).__module__}.{type(plugin).__name__} "
-                             f"conflicts with {type(existing).__module__}.{type(existing).__name__}.")
-        self._plugins[pid] = plugin
-        ctx = PluginContext(plugin.manifest, self.runtime, self)
-        self._plugin_contexts[pid] = ctx
-        self._status[pid] = PluginRuntimeStatus(
-            state="enabled" if plugin.manifest.enabled else "disabled"
-        )
+    async def load_plugin(self, plugin_id: str) -> None:
+        if plugin_id in self._plugins:
+            raise ValueError(f'Plugin {plugin_id!r} is already loaded')
+        entry = self.runtime.config_store.catalog.entries[plugin_id]
+        state = self.runtime.config_store.current.plugins[plugin_id]
+        if state.parsed_config is None:
+            raise ValueError(f'Plugin {plugin_id!r} has no configured parameters')
+        spec = entry.spec
+        manifest = PluginManifest(id=spec.id, name=spec.name, version=spec.version,
+            description=spec.description, plugin_type=spec.plugin_type,
+            permissions=list(spec.permissions), enabled=False,
+            timeout_seconds=spec.call_timeout(state.parsed_config) if spec.call_timeout else None,
+            config=state.parsed_config.model_dump(), config_schema=spec.config_model.model_json_schema())
+        self._status.setdefault(plugin_id, PluginRuntimeStatus()).state = 'loading'
+        context = PluginContext(manifest, self.runtime, self, entry=entry, config=state.parsed_config)
+        self._plugin_contexts[plugin_id] = context
         try:
-            await plugin.on_load(ctx)
-            logger.info("Loaded plugin '%s' (%s)", pid, plugin.manifest.name)
-        except Exception as e:
-            logger.exception("Failed to load plugin '%s': %s", pid, e)
-            self.record_plugin_error(pid, f"load failed: {e}")
-            await self.unload_plugin(pid)
+            plugin = spec.create(context)
+            if not isinstance(plugin, BasePlugin) or plugin.manifest is not manifest:
+                raise TypeError(f'{entry.directory}: create must return a BasePlugin using context.manifest')
+            self._plugins[plugin_id] = plugin
+            await plugin.on_load(context)
+            self._status[plugin_id].state = 'loaded'
+            logger.info('Loaded plugin %s from %s', plugin_id, entry.directory)
+        except Exception as error:
+            self.record_plugin_error(plugin_id, f'load failed: {error}')
+            await self._release_plugin(plugin_id)
             raise
 
-    async def unload_plugin(self, plugin_id: str) -> None:
+    async def _release_plugin(self, plugin_id: str) -> None:
         plugin = self._plugins.pop(plugin_id, None)
-        if plugin:
+        if plugin is not None:
             try:
                 await plugin.on_unload()
-            except Exception as e:
-                logger.warning("Error during on_unload for plugin '%s': %s", plugin_id, e)
+            except Exception as error:
+                self.record_plugin_error(plugin_id, f'unload failed: {error}')
         self._plugin_contexts.pop(plugin_id, None)
-        self._status.pop(plugin_id, None)
+        for name in [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id]:
+            del self._tools[name]
 
-        # Clean up registered tools
-        tools_to_remove = [k for k, v in self._tools.items() if v.plugin_id == plugin_id]
-        for t in tools_to_remove:
-            self._tools.pop(t, None)
-
-        logger.info("Unloaded plugin '%s' and cleaned up its tools", plugin_id)
+    async def unload_plugin(self, plugin_id: str) -> None:
+        try:
+            await self.disable_plugin(plugin_id)
+        finally:
+            await self._release_plugin(plugin_id)
+        status = self._status.get(plugin_id)
+        if status is not None and status.state != 'error':
+            status.state = 'unloaded'
 
     async def unload_all(self) -> None:
-        for pid in list(self._plugins.keys()):
-            await self.unload_plugin(pid)
+        for plugin_id in list(self._plugins):
+            try:
+                await self.unload_plugin(plugin_id)
+            except Exception as error:
+                logger.error('Plugin %s shutdown failed: %s', plugin_id, error)
 
     async def enable_plugin(self, plugin_id: str) -> None:
-        plugin = self._plugins.get(plugin_id)
-        if plugin:
-            plugin.manifest.enabled = True
-            self._status[plugin_id].state = "enabled"
-            try:
-                await plugin.on_enable()
-            except Exception as e:
-                self.record_plugin_error(plugin_id, f"on_enable failed: {e}")
+        configured = self.runtime.config_store.current.plugins.get(plugin_id)
+        if configured is None or not configured.enabled or configured.parsed_config is None:
+            raise ValueError(f'Plugin {plugin_id!r} is not enabled in the root configuration')
+        context = self._plugin_contexts.get(plugin_id)
+        if context is not None and context.config != configured.parsed_config:
+            await self.unload_plugin(plugin_id)
+        if plugin_id not in self._plugins:
+            await self.load_plugin(plugin_id)
+        plugin = self._plugins[plugin_id]
+        if self._status[plugin_id].state == 'enabled':
+            return
+        self._status[plugin_id].state = 'enabling'
+        plugin.manifest.enabled = True
+        try:
+            await plugin.on_enable()
+        except Exception as error:
+            plugin.manifest.enabled = False
+            self.record_plugin_error(plugin_id, f'enable failed: {error}')
+            await self._release_plugin(plugin_id)
+            raise
+        self._status[plugin_id].state = 'enabled'
 
     async def disable_plugin(self, plugin_id: str) -> None:
         plugin = self._plugins.get(plugin_id)
-        if plugin:
-            plugin.manifest.enabled = False
-            self._status[plugin_id].state = "disabled"
-            try:
-                await plugin.on_disable()
-            except Exception as e:
-                self.record_plugin_error(plugin_id, f"on_disable failed: {e}")
+        if plugin is None or self._status[plugin_id].state == 'disabled':
+            return
+        plugin.manifest.enabled = False
+        self._status[plugin_id].state = 'disabling'
+        try:
+            await plugin.on_disable()
+        except Exception as error:
+            self.record_plugin_error(plugin_id, f'disable failed: {error}')
+            raise
+        self._status[plugin_id].state = 'disabled'
 
     def record_plugin_event(self, plugin_id: str) -> None:
         status = self._status.get(plugin_id)
@@ -190,29 +221,28 @@ class PluginHost:
         return dict(config)
 
     def status_snapshot(self) -> list[dict[str, Any]]:
-        """Control panel projection of the plugins actually loaded."""
+        """Discovered metadata and observed lifecycle survive failed loads."""
         out = []
-        for pid, plugin in self._plugins.items():
-            status = self._status.get(pid, PluginRuntimeStatus())
-            m = plugin.manifest
+        for plugin_id, entry in self.runtime.config_store.catalog.entries.items():
+            spec = entry.spec
+            plugin = self._plugins.get(plugin_id)
+            saved = self.runtime.config_store.current.plugins.get(plugin_id)
+            configured = bool(saved and saved.config is not None)
+            status = self._status.get(plugin_id, PluginRuntimeStatus(
+                state='disabled' if configured else 'unconfigured'))
             out.append({
-                "id": pid,
-                "name": m.name,
-                "description": m.description,
-                "version": m.version,
-                "plugin_type": m.plugin_type.value,
-                "permissions": [p.value for p in m.permissions],
-                "enabled": m.enabled,
-                "state": status.state,
-                "last_error": status.last_error,
-                "error_count": status.error_count,
-                "last_event_at": status.last_event_at,
-                "last_run_at": status.last_run_at,
-                "config": m.config,
-                "config_schema": m.config_schema,
-                "emitted_events": m.emitted_events,
-                "registered_tools": m.registered_tools,
-                "source_status": plugin.source_status(),
+                'id': plugin_id, 'name': spec.name, 'description': spec.description,
+                'version': spec.version, 'directory': str(entry.directory),
+                'plugin_type': spec.plugin_type.value,
+                'permissions': [permission.value for permission in spec.permissions],
+                'enabled': bool(plugin and plugin.manifest.enabled), 'state': status.state,
+                'last_error': status.last_error, 'error_count': status.error_count,
+                'last_event_at': status.last_event_at, 'last_run_at': status.last_run_at,
+                'config': saved.config if saved else None,
+                'config_schema': spec.config_model.model_json_schema(),
+                'emitted_events': plugin.manifest.emitted_events if plugin else [],
+                'registered_tools': [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id],
+                'source_status': plugin.source_status() if plugin else {},
             })
         return out
 
@@ -241,17 +271,15 @@ class PluginHost:
 
     def capability_facts(self, call_context: PluginCallContext) -> list[dict[str, Any]]:
         """Explain current capability state without publishing hidden schemas or entry points."""
-        from len_bot.plugins.builtin import BUILTIN_PLUGIN_INFO
-
         facts = []
-        for plugin_id in sorted(set(self._plugins) | set(self.runtime.config_store.current.plugins)):
+        for plugin_id in sorted(self.runtime.config_store.catalog.entries):
             plugin = self._plugins.get(plugin_id)
             candidates = [tool for tool in self._tools.values() if tool.plugin_id == plugin_id
                           and self._tool_applies(tool, call_context)]
             if plugin is not None and not candidates:
                 continue
             status = self._plugin_availability(plugin_id, call_context)
-            name = plugin.manifest.name if plugin else BUILTIN_PLUGIN_INFO[plugin_id]['name']
+            name = self.runtime.config_store.catalog.entries[plugin_id].spec.name
             facts.append({'plugin_id': plugin_id, 'name': name, 'status': status,
                           'purposes': sorted({tool.purpose for tool in candidates})})
         return facts
