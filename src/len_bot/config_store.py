@@ -17,8 +17,6 @@ GroupSceneId = Annotated[str, StringConstraints(pattern=r"^group:[1-9][0-9]*$")]
 PositiveUid = Annotated[int, Field(gt=0)]
 MemberName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 ClockTime = Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
-CalendarCommand = Literal["calendar_today", "calendar_tomorrow", "calendar_week"]
-AnnouncementKind = Literal["live_started"]
 
 
 class ModelSettings(BaseModel):
@@ -79,15 +77,22 @@ class MemberSettings(BaseModel):
     room_id: PositiveUid
 
 
+class ScenePluginSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    enabled: bool
+    config: dict
+    _parsed_config: BaseModel | None = PrivateAttr(default=None)
+
+    @property
+    def parsed_config(self) -> BaseModel:
+        return self._parsed_config
+
+
 class SceneSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
     chat: bool
-    plugins: list[str]
-    commands: list[CalendarCommand]
-    announcements: list[AnnouncementKind]
-    live_subscriptions: list[MemberName]
-    mention_all: bool
+    plugins: dict[str, ScenePluginSettings]
 
 
 class PluginSettings(BaseModel):
@@ -144,10 +149,23 @@ class RootConfig(BaseModel):
                     spec.validate_config(parsed, self)
                 except ValueError as error:
                     raise ValueError(f'plugins.{name}: {error}') from None
+        for scene_id, scene in self.scenes.items():
+            for name, setting in scene.plugins.items():
+                if name not in self.plugins:
+                    raise ValueError(f'scenes.{scene_id}.plugins references unknown configured plugin: {name}')
+                spec = self._catalog.entries[name].spec
+                try:
+                    parsed = spec.scene_config_model.model_validate(setting.config, strict=True)
+                    if spec.validate_scene_config:
+                        spec.validate_scene_config(parsed, self)
+                except (ValidationError, ValueError) as error:
+                    raise ValueError(f'scenes.{scene_id}.plugins.{name}.config: {error}') from None
+                setting.config = parsed.model_dump()
+                setting._parsed_config = parsed
         return self
 
     @model_validator(mode="after")
-    def scene_and_member_references(self):
+    def member_references(self):
         names = set()
         aliases = set()
         bilibili_uids = set()
@@ -163,17 +181,6 @@ class RootConfig(BaseModel):
                 if key in aliases:
                     raise ValueError(f"members contains an ambiguous name or alias: {alias}")
                 aliases.add(key)
-        for scene_id, scene in self.scenes.items():
-            unknown_plugins = set(scene.plugins) - set(self.plugins)
-            unknown_members = set(scene.live_subscriptions) - names
-            if unknown_plugins:
-                raise ValueError(f"scenes.{scene_id}.plugins references unknown plugins: {', '.join(sorted(unknown_plugins))}")
-            if unknown_members:
-                raise ValueError(f"scenes.{scene_id}.live_subscriptions references unknown members: {', '.join(sorted(unknown_members))}")
-            if scene.commands and "asoul_calendar" not in scene.plugins:
-                raise ValueError(f"scenes.{scene_id}.commands requires asoul_calendar in plugins")
-            if scene.announcements and "bilibili_live_sensor" not in scene.plugins:
-                raise ValueError(f"scenes.{scene_id}.announcements requires bilibili_live_sensor in plugins")
         return self
 
 

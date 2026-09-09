@@ -8,6 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 CalendarCommand = Literal["calendar_today", "calendar_tomorrow", "calendar_week"]
 
 
+class CalendarSceneConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    commands: list[CalendarCommand] = Field(description='本群开放的日程命令 ID；空列表表示关闭精确命令')
+
+
 class CalendarConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

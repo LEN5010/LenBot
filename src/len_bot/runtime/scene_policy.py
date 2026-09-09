@@ -39,24 +39,9 @@ class ScenePolicy:
             entry = self.config_store.catalog.entries.get(plugin_id)
             return bool(entry and entry.spec.private_tools
                         and state and state.enabled and state.config is not None)
-        return bool(scene and scene.enabled and plugin_id in scene.plugins
+        entry = scene.plugins.get(plugin_id) if scene else None
+        return bool(scene and scene.enabled and entry and entry.enabled
                     and state and state.enabled and state.config is not None)
-
-    def command_allowed(self, scene_id, command_id):
-        scene = self.scene(scene_id)
-        return bool(scene and command_id in scene.commands
-                    and self.plugin_allowed(scene_id, 'asoul_calendar', 'command'))
-
-    def announcement_allowed(self, scene_id, member):
-        scene = self.scene(scene_id)
-        return bool(scene and 'live_started' in scene.announcements
-                    and member in scene.live_subscriptions
-                    and self.plugin_allowed(scene_id, 'bilibili_live_sensor', 'announcement'))
-
-    def monitored_members(self):
-        names = {name for scene_id, scene in self.config_store.current.scenes.items()
-                 if scene.enabled for name in scene.live_subscriptions}
-        return [member for member in self.config_store.current.members if member.name in names]
 
 
 def conversation_visible(event):
