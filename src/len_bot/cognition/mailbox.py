@@ -13,6 +13,7 @@ class EpisodeMailbox:
         self.origin_mode = "live"
         self.output_kind = 'chat'
         self.plugin_origin = None
+        self.plugin_source_ids: set[str] = set()
         self.mention_all = False
         self.requester_qq_uid: str | None = None
         self.command_id: str | None = None

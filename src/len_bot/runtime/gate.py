@@ -140,7 +140,9 @@ class RuntimeGate:
         if operator_control and (outcome.disposition != FinalDisposition.SILENCE or outcome.message_proposals):
             return GateDecision(FinalDisposition.SILENCE, 'Operator controls cannot submit messages', accepted=False)
         read_ids = scene_commit['event'].payload['source_event_ids'] if scene_commit else []
-        source_events = {}
+        source_events = {event.id:event for event in await self.event_store.events_by_ids(
+            current_scene_state.scene_id,[message.source_event_id for message in outcome.message_proposals
+                if message.source_event_id],current_scene_state.last_observed_event_rowid)}
         if mailbox.output_kind == 'chat' and not operator_control:
             ids = {message.source_event_id for message in outcome.message_proposals if message.source_event_id}
             ids.update(outcome.handled_source_event_ids)
@@ -223,9 +225,6 @@ class RuntimeGate:
         response_actors = []
         for message in outcome.message_proposals:
             targets = set()
-            if mailbox.output_kind != 'chat':
-                response_actors.append([])
-                continue
             targets.update(message.addressed_to)
             response_actors.append(sorted(targets))
         if scene_commit:
@@ -305,8 +304,8 @@ class RuntimeGate:
             scheduler_status="not_started" if self.scheduler and (
                 resolved_outcome.task_proposals or resolved_outcome.job_proposals) else "not_required",
             actions=[ActionPublication(action_id=action_ids[index], batch_index=index,
-                origin_event_id=message.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
-                requester_qq_uid=message.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
+                origin_event_id=message.source_event_id or mailbox.origin_stimulus_id,
+                requester_qq_uid=message.requester_qq_uid if message.source_event_id else mailbox.requester_qq_uid,
                 job_id=message.job_id, job_revision=message.job_revision,
                 operation_ref=message.operation_ref, fulfils_task_id=message.fulfils_task_id)
                 for index, message in enumerate(resolved_outcome.message_proposals)],
@@ -383,7 +382,7 @@ class RuntimeGate:
             message.fulfils_task_id or message.task_ref for message in outcome.message_proposals) else {}
         for index, msg in enumerate(outcome.message_proposals):
             associated_loop = None
-            if mailbox.output_kind == 'chat' and msg.expect_reply and msg.reply_target:
+            if msg.expect_reply and msg.reply_target:
                 associated_loop = {
                     "id": f"loop_{uuid.uuid4().hex[:10]}",
                     "scene_id": scene_id,
@@ -425,10 +424,10 @@ class RuntimeGate:
                 action_type=action_type,
                 scene_id=scene_id,
                 segments=segments,
-                output_kind=mailbox.output_kind,
-                plugin_origin=mailbox.plugin_origin,
-                requester_qq_uid=msg.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
-                origin_event_id=msg.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
+                output_kind='plugin' if msg.plugin_origin or mailbox.plugin_origin else mailbox.output_kind,
+                plugin_origin=msg.plugin_origin or mailbox.plugin_origin,
+                requester_qq_uid=msg.requester_qq_uid if msg.source_event_id else mailbox.requester_qq_uid,
+                origin_event_id=msg.source_event_id or mailbox.origin_stimulus_id,
                 command_id=mailbox.command_id,
                 announcement_member=mailbox.announcement_member,
                 episode_id=committed.episode_id,checkpoint_index=outcome.checkpoint_index,

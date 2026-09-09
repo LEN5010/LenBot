@@ -17,7 +17,7 @@ from len_bot.tools.results import ToolResult
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
 CUE_TYPES = {EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
              EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.REFLECTION_RECORDED,
-             EventType.LIVE_STARTED, EventType.LIVE_ENDED, EventType.USER_JOINED, EventType.TOOL_COMPLETED}
+             EventType.LIVE_STARTED, EventType.LIVE_ENDED, EventType.PLUGIN_EVENT, EventType.USER_JOINED, EventType.TOOL_COMPLETED}
 
 
 def media_ids(event):
@@ -186,6 +186,7 @@ class ConversationContext:
         self.tool_definitions = lambda: []
         self.trajectory = None
         self.current_source_ids = set()
+        self.plugin_source_ids = set()
         self.relevant_actor_ids = set()
         self.requester_qq_uids = set()
         self.current_job_ids = set()
@@ -388,6 +389,11 @@ class ConversationContext:
                                 'original_read':item['original_read']} for item in page['items']]}
 
     def pending_notice(self):
+        if self.plugin_source_ids:
+            return [{'role':'developer','_context_section':'pending_status','content':json.dumps({
+                'kind':'plugin_input_status','owned_sources':[self.refs.register_event_locator(ident)
+                    for ident in sorted(self.plugin_source_ids)],
+                'unread_sources':sum(ident not in self.refs.read_events for ident in self.plugin_source_ids)},ensure_ascii=False)}]
         unread = self.pending_wakes()
         if not unread:
             return []
@@ -565,7 +571,7 @@ class ConversationContext:
         for event in events:
             if event.id not in self.refs.events.values():continue
             ref=self.refs._register(self.refs.events,event.id,'M')
-            (pending if any(wake.event_id==event.id for wake in self.session.pending_wakes) else related).append(
+            (pending if event.id in self.plugin_source_ids or any(wake.event_id==event.id for wake in self.session.pending_wakes) else related).append(
                 {'ref':ref,'original_complete':event.id in self.refs.read_events})
             if event.event_type not in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}:continue
             text=re.sub(r'\[CQ:[^\]]*\]','',event.raw_text).casefold()
@@ -851,7 +857,7 @@ class ConversationContext:
         self.context_plan['preference_subjects'] = sorted({self.session.scene_id, *self.relevant_actor_ids})
 
     async def build(self, events, current_ids, *, execution_budget: dict, terminal_hint: dict | None = None,
-                    tool_definitions=None):
+                    tool_definitions=None, plugin_request=None):
         config = self.config
         if tool_definitions is not None:self.tool_definitions = tool_definitions
         self.required_originals = set()
@@ -878,9 +884,18 @@ class ConversationContext:
 
 长期称呼、偏好和规则须有相应真实原话及对应认识操作。要求忘掉称呼时先查有效认识，已保存则撤销或替代并关联操作确认；仅临时纠正就停止采用，不声称清空历史。普通情绪、玩笑对象和临时话题判断留在本轮。角色表达随语境轻重变化，意思表达完即可停。
 '''
+        if plugin_request:
+            if not plugin_request.include_identity:
+                system = system[system.index('先理解'):]
+            system += '\n本次由插件入口认领，按以下插件指令处理；系统来源保持系统身份。\n' + plugin_request.instructions
         messages = [{'role':'system','_context_section':'persona','content':system}, copy.deepcopy(execution_budget)]
         if terminal_hint is not None:
             messages.append(copy.deepcopy(terminal_hint))
+        if plugin_request and plugin_request.input_mode != 'conversation':
+            await self.pack_events(messages, events, current_ids, raw_tokens=self.input_budget)
+            self.fit_request(messages, self.tool_definitions(), phase='plugin_source')
+            self.trajectory = messages
+            return messages
         originals = await self.associated_originals(events, current_ids)
         by_id = {event.id: event for event in events}
         for event in originals:

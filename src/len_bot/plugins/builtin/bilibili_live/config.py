@@ -19,6 +19,7 @@ class LivePluginConfig(BaseModel):
     max_age_seconds: float = Field(gt=0)
     source_timezone: str
     announcement_instructions: str = Field(min_length=1)
+    announcement_model_role: Literal['conversation','work'] = Field(description='使用根配置中已存在的模型路由')
     announcement_max_steps: int = Field(ge=1)
     announcement_max_tool_calls: int = Field(ge=0)
     announcement_context_tokens: int = Field(gt=0)

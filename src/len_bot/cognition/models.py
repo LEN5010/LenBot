@@ -4,6 +4,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
 from len_bot.media.models import MessageSegment, segment_text
 from len_bot.cognition.providers import ModelProfile
+from len_bot.events.models import PluginOrigin
+from len_bot.plugins.agent import PluginAgentRequest
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
@@ -40,6 +42,8 @@ class ConversationResume(BaseModel):
     next_proposal_handle: int = Field(ge=1)
     source_event_ids: list[str]
     result_ids: list[str]
+    plugin_origin: PluginOrigin | None = None
+    plugin_request: PluginAgentRequest | None = None
 
 
 class OperationReceipt(BaseModel):
@@ -85,6 +89,7 @@ class MessageProposal(BaseModel):
     source_event_id: str | None = None
     requester_qq_uid: str | None = None
     addressed_to: list[str] = Field(default_factory=list, description="Actual addressed member actor IDs, separate from source and quote")
+    plugin_origin: PluginOrigin | None = None
 
     @model_validator(mode="after")
     def validate_body(self):
