@@ -13,8 +13,9 @@ export async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers, credentials: 'same-origin' })
   const data = await res.json()
   if (!res.ok) {
-    const error = new Error(Array.isArray(data.detail) ? data.detail.map(item => `${item.loc?.join('.') || '参数'}: ${item.msg}`).join('；') : data.detail || `HTTP ${res.status}`)
+    const error = new Error(Array.isArray(data.detail) ? data.detail.map(item => `${item.loc?.join('.') || '参数'}: ${item.msg}`).join('；') : data.detail?.message || data.detail || `HTTP ${res.status}`)
     error.status = res.status
+    error.details = data.detail
     if (res.status === 401 && path !== '/api/auth/login') onUnauthorized()
     throw error
   }

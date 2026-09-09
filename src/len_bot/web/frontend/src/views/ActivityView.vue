@@ -4,7 +4,7 @@ import { useRoute,useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { mdiRefresh,mdiClose,mdiArrowLeft,mdiFilterOutline } from '@mdi/js'
 import { api,fmtTime,queryString } from '../api.js'
-import { purposeOptions,purposeLabel,eventLabel,traceLabel,publicationActionLabel } from '../domain/activity.js'
+import { purposeOptions,purposeLabel,eventLabel,traceLabel,traceOptions,publicationActionLabel } from '../domain/activity.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
@@ -15,6 +15,7 @@ import TraceDetails from '../components/TraceDetails.vue'
 import ObservationDetails from '../components/ObservationDetails.vue'
 import OperationReceipts from '../components/OperationReceipts.vue'
 import SourceOutcomes from '../components/SourceOutcomes.vue'
+import PluginOrigin from '../components/PluginOrigin.vue'
 const route=useRoute(),router=useRouter(),{smAndDown}=useDisplay()
 const tabs=[{value:'calls',title:'调用账'},{value:'turns',title:'对话轮次'},{value:'events',title:'原始事件'},{value:'logs',title:'运行日志'}]
 const tab=computed(()=>route.query.tab || 'calls'),validTab=computed(()=>tabs.some(item=>item.value===tab.value))
@@ -25,7 +26,7 @@ const resource=ref(null),resourceError=ref(''),resourceLoading=ref(false)
 let sequence=0,detailSequence=0,resourceSequence=0
 const detailScene=computed(()=>route.query.object_scene || scene.value)
 const selectedId=computed(()=>route.query.id || ''),resourceId=computed(()=>route.query.result || '')
-const traceKinds=[['conversation','对话'],['conversation_error','对话失败'],['calendar_command','日程命令'],['live_announcement','订阅开播邀请'],['agent_job','信息工作'],['agent_job_error','工作失败'],['history_maintenance','历史维护'],['history_maintenance_error','历史维护失败'],['work_compression','工作压缩'],['skill_maintenance','技能整理']].map(([value,title])=>({value,title}))
+const traceKinds=traceOptions
 const callStatuses=[['completed','请求完成'],['failed','请求失败'],['cancelled','已取消'],['unconfirmed','未确认']].map(([value,title])=>({value,title}))
 const knownUsage=computed(()=>data.value?.totals.reduce((sum,row)=>({prompt:sum.prompt+row.prompt_tokens,output:sum.output+row.completion_tokens,unknown:sum.unknown+row.unknown_usage,cached:sum.cached+row.cached_tokens,reasoning:sum.reasoning+row.reasoning_tokens}),{prompt:0,output:0,unknown:0,cached:0,reasoning:0}))
 const items=computed(()=>tab.value==='logs'?data.value:data.value?.items)
@@ -60,11 +61,8 @@ async function loadDetail(){
     const relationArgs={scene_id:value.scene_id}
     if(tab.value==='events')relationArgs.event_id=value.id
     else if(tab.value==='turns'){
-      if(value.kind.startsWith('agent_job'))relationArgs.job_id=value.ref_id
-      else if(value.kind.startsWith('history_maintenance'))relationArgs.batch_id=value.ref_id
-      else if(['conversation','conversation_error'].includes(value.kind))relationArgs.episode_id=value.ref_id
-      else if(['calendar_command','live_announcement'].includes(value.kind))relationArgs.event_id=value.ref_id
-      else return
+      if(!value.relation)return
+      Object.assign(relationArgs,value.relation)
     }
     else if(value.episode_id)relationArgs.episode_id=value.episode_id
     else if(value.job_id)relationArgs.job_id=value.job_id
@@ -136,7 +134,7 @@ onBeforeUnmount(()=>{sequence++;detailSequence++;resourceSequence++})
               <section><h4>原始事件</h4><div v-for="item in relations.events" :key="item.id" class="relation-row"><EntityLink type="event" :id="item.id" :scene-id="item.scene_id" :label="eventLabel(item.event_type)" :copyable="false" /><span class="clamp-2">{{ eventSummary(item) }}</span></div><p v-if="!relations.events.length" class="muted">未关联事件</p></section>
               <section><h4>工作与调用</h4><div v-for="item in relations.jobs" :key="item.id" class="relation-row"><EntityLink type="job" :id="item.id" :scene-id="item.scene_id" :label="item.goal" :copyable="false" /><span>请求者 QQ {{ item.requester_qq_uid || '未记录' }} · 目标 v{{ item.revision }}</span><EntityLink v-if="item.request_source_event_id" type="event" :id="item.request_source_event_id" :scene-id="item.scene_id" label="这项工作的请求原话" /><span v-else class="muted">未单独保存请求来源</span><StatusBadge domain="job_execution" :status="item.execution_status" /><StatusBadge domain="job_delivery" :status="item.status" /></div><div v-for="item in relations.calls" :key="item.id" class="relation-row"><EntityLink type="call" :id="item.id" :scene-id="item.scene_id" :label="`${purposeLabel(item.purpose)} · ${item.model}`" :copyable="false" /><StatusBadge domain="call" :status="item.status" /></div><p v-if="!relations.jobs.length && !relations.calls.length" class="muted">未关联工作或调用</p></section>
               <section><h4>资料</h4><div v-for="item in relations.tool_results" :key="item.id" class="relation-row"><EntityLink type="result" :id="item.id" :scene-id="item.scene_id" :label="`${item.tool_name} · ${item.content_length} 字符`" :copyable="false" /><StatusBadge domain="observation" :status="item.status" /><code v-if="item.error_code">{{ item.error_code }}</code><span class="clamp-2">{{ item.coverage }}</span></div><p v-if="!relations.tool_results.length" class="muted">未关联工具资料</p></section>
-              <OperationReceipts :items="relations.operation_receipts || []" :scene-id="selected.scene_id" /><section><h4>行动与回执</h4><div v-for="item in relations.actions" :key="item.id" class="relation-row"><span class="entity-id">{{ item.id }}</span><v-chip v-if="item.simulated" size="small" label>模拟记录</v-chip><v-chip v-if="item.acknowledges_task_id" size="small" variant="tonal">创建确认</v-chip><v-chip v-if="item.fulfils_task_id" size="small" variant="tonal">履约表达</v-chip><v-chip v-if="item.operation_ref" size="small" variant="tonal">操作确认 {{ item.operation_ref }}</v-chip><EntityLink v-if="item.operation_receipt?.commit_event_id" type="event" :id="item.operation_receipt.commit_event_id" :scene-id="item.scene_id" label="已提交的对应操作" /><span>{{ publicationActionLabel(item.publication_status) }}</span><StatusBadge domain="delivery" :status="item.delivery_status" /><span v-if="item.job_revision">工作 v{{ item.job_revision }}</span><span v-if="item.requester_qq_uid">请求者 QQ {{ item.requester_qq_uid }}</span><EntityLink v-if="item.origin_event_id" type="event" :id="item.origin_event_id" :scene-id="item.scene_id" label="本条表达对应的来源" /><EntityLink v-else-if="item.request_source_event_id" type="event" :id="item.request_source_event_id" :scene-id="item.scene_id" label="待交付工作的请求原话" /><span v-else class="muted">独立表达来源未记录</span><EntityLink v-for="id in item.receipt_event_ids" :key="id" type="event" :id="id" :scene-id="item.scene_id" label="读取回执" :copyable="false" /><span v-if="!item.receipt_event_ids.length" class="muted">尚无已保存回执</span></div><p v-if="!relations.actions.length" class="muted">未关联行动或回执</p></section>
+              <OperationReceipts :items="relations.operation_receipts || []" :scene-id="selected.scene_id" /><section><h4>行动与回执</h4><div v-for="item in relations.actions" :key="item.id" class="relation-row"><span class="entity-id">{{ item.id }}</span><PluginOrigin :origin="item.plugin_origin" :scene-id="item.scene_id" /><v-chip v-if="item.simulated" size="small" label>模拟记录</v-chip><v-chip v-if="item.acknowledges_task_id" size="small" variant="tonal">创建确认</v-chip><v-chip v-if="item.fulfils_task_id" size="small" variant="tonal">履约表达</v-chip><v-chip v-if="item.operation_ref" size="small" variant="tonal">操作确认 {{ item.operation_ref }}</v-chip><EntityLink v-if="item.operation_receipt?.commit_event_id" type="event" :id="item.operation_receipt.commit_event_id" :scene-id="item.scene_id" label="已提交的对应操作" /><span>{{ publicationActionLabel(item.publication_status) }}</span><StatusBadge domain="delivery" :status="item.delivery_status" /><span v-if="item.job_revision">工作 v{{ item.job_revision }}</span><span v-if="item.requester_qq_uid">请求者 QQ {{ item.requester_qq_uid }}</span><EntityLink v-if="item.origin_event_id" type="event" :id="item.origin_event_id" :scene-id="item.scene_id" label="本条表达对应的来源" /><EntityLink v-else-if="item.request_source_event_id" type="event" :id="item.request_source_event_id" :scene-id="item.scene_id" label="待交付工作的请求原话" /><span v-else class="muted">独立表达来源未记录</span><EntityLink v-for="id in item.receipt_event_ids" :key="id" type="event" :id="id" :scene-id="item.scene_id" label="读取回执" :copyable="false" /><span v-if="!item.receipt_event_ids.length" class="muted">尚无已保存回执</span></div><p v-if="!relations.actions.length" class="muted">未关联行动或回执</p></section>
             </div>
           </template>
         </section>

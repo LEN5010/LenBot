@@ -49,7 +49,7 @@ class BilibiliLiveSensor(BasePlugin):
             LiveStatusArguments, self.get_status,
             purpose='查询实际直播状态', aliases=('开播状态', '谁在直播'), keywords=('直播', '开播', '下播', '房间', '状态'),
             kind='read', roles=('conversation', 'work'))
-        context.register_tool('get_live_subscriptions', '读取本群真实开播订阅、通知开关、监测状态与办理入口；不修改设置，member=null读取全部已配置成员。',
+        context.register_tool('get_live_subscriptions', '读取本群真实开播订阅、通知开关、监测状态与办理入口；不修改设置，member=null读取全部已配置成员。开播通知是事件订阅，按返回的实际设置和办理权限处理，不用时间提醒替代。',
             LiveStatusArguments,self.get_subscriptions,
             purpose='核对本群开播通知订阅',aliases=('直播订阅','直播时通知','停止开播通知'),
             keywords=('订阅','通知','开播提醒','取消订阅'),kind='read',roles=('conversation','work'),deferred=True)

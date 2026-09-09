@@ -13,7 +13,6 @@ from len_bot.cognition.agent_loop import AgentLoop, execution_budget_message
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
-from len_bot.cognition.call_store import estimate_request
 from len_bot.cognition.budget import AgentBudget
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.models import ConversationResume
@@ -43,11 +42,15 @@ async def classify_event(runtime, event, cutoff):
             work_issue=runtime.plugin_host.work_issue(job)
         elif event.payload.get('payload'):
             requester = event.payload['payload'].get('requester_qq_uid')
+            if event.payload['payload'].get('plugin_origin'):
+                work_issue=runtime.plugin_host.origin_issue(event.payload['payload']['plugin_origin'],event.scene_id)
         elif job_id:
             tasks = await runtime.event_store.scene_tasks(event.scene_id)
             task = next((item for item in tasks if item['id'] == job_id), None)
             if task:
                 requester = task['payload'].get('requester_qq_uid')
+                if task['payload'].get('plugin_origin'):
+                    work_issue=runtime.plugin_host.origin_issue(task['payload']['plugin_origin'],event.scene_id)
     event.metadata['requester_qq_uid'] = requester
     if work_issue:event.metadata['plugin_work_issue']=work_issue
     if event.payload.get('reply_to_message_id') is not None:
@@ -61,7 +64,7 @@ async def classify_event(runtime, event, cutoff):
     eligible = not consumed and not work_issue and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
     event.metadata.update(interaction=interaction, plugin_consumed=consumed,
         conversation_excluded=not eligible,
-        interaction_reason='plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')
+        interaction_reason='plugin_work_unavailable' if work_issue else 'plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')
 
 
 def _execution(runtime, event, origin, cutoff):
@@ -123,7 +126,7 @@ async def invoke_tool(runtime, call, name, arguments):
     if call.execution is None:
         raise ValueError('Direct tool invocation requires an active plugin execution')
     toolkit=copy.copy(call.execution.toolkit)
-    toolkit.call_context=lambda:call
+    toolkit.call_context=lambda:replace(call,now=runtime.clock())
     if not toolkit.is_read_only(name):
         raise ValueError('invoke_tool accepts read tools; proposal tools use the active ledger')
     values=arguments.model_dump(mode='json') if isinstance(arguments, BaseModel) else arguments
@@ -283,6 +286,20 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
             parent.audit.setdefault('agents',[]).append(audit)
             execution=replace(parent,audit=audit,model_slot_owned=True,agent_depth=1)
             current=replace(call,execution=execution)
+            projection=None
+            if request.output_mode=='respond' and parent.finish is not None:
+                # Share the Ledger and reference identities, but give the child
+                # its own visible window; the parent's next request keeps its
+                # original tool set, required sources and actual image window.
+                projection={name:getattr(parent.context,name) for name in (
+                    'input_budget','tool_definitions','trajectory','required_originals','provided_event_ids',
+                    'attached','loaded_media','media_manifest','_facts','context_plan','text_tokens')}
+                parent.context.attached=set()
+                parent.context.loaded_media=set()
+                parent.context.media_manifest=[]
+                parent.context.provided_event_ids=set()
+                parent.context._facts={}
+                parent.context.context_plan={'omitted':[]}
             result=None
             try:
                 if request.output_mode=='respond' and parent.finish is None:
@@ -291,6 +308,8 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
                     result=await _dedicated_agent(runtime,current,request,output_model,parent)
                 return result
             finally:
+                if projection is not None:
+                    for name,value in projection.items():setattr(parent.context,name,value)
                 await runtime.event_store.set_model_call_disposition(call.origin.run_id,
                     'plugin_result' if result is not None else 'rejected')
 
@@ -301,8 +320,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     nested_respond=request.output_mode=='respond'
     actor=await runtime.scene_manager.get_or_create_actor(call.scene_id)
     context=parent.context if nested_respond else ConversationContext(runtime,actor.session.model_copy(deep=True),call.cutoff_rowid)
-    previous_input_budget=context.input_budget
-    if not nested_respond:context.input_budget=request.context_tokens-request.output_tokens
+    context.input_budget=request.context_tokens-request.output_tokens
     instructions=request.instructions
     if request.include_identity:
         instructions=f'你是{runtime.config.identity_name}。{runtime.config.identity_persona}\n{runtime.config.identity_core}\n'+instructions
@@ -310,7 +328,6 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     if request.input_mode!='materials':
         events,ids=await _source_events(runtime,call,request)
         context.add_current_sources(events,ids)
-        await context.pack_events(messages,events,ids,raw_tokens=context.input_budget)
 
     async def observation(event):
         await runtime.commit_tool_observation(event)
@@ -367,8 +384,8 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
 
     async def prepare(trajectory,definitions):
         await runtime.plugin_host.validate_call(call)
-        if estimate_request(trajectory,definitions)['input_tokens']>request.context_tokens-request.output_tokens:
-            raise ValueError('Plugin Agent request exceeds its configured input capacity')
+        context.trajectory=trajectory
+        context.fit_request(trajectory,definitions,phase='plugin_agent')
         pending_presentations[:]=toolkit.read_presentations(trajectory)
         return context.model_messages(trajectory)
 
@@ -376,12 +393,15 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     reserve=1 if parent.model_slot_owned else 0
     steps=min(request.max_steps,state['model_calls_limit']-state['model_calls_used']-reserve)
     if steps<1:raise ValueError('Parent budget has no model call available for this plugin Agent')
-    if request.input_mode=='conversation':
-        materials=[message for message in messages if message.get('_context_section')=='plugin_material']
+    context.tool_definitions=lambda:[*definitions(),terminal() if callable(terminal) else terminal]
+    if request.input_mode=='conversation' or nested_respond:
+        prepared=messages[1:]
         budget_note,_=execution_budget_message(state,'respond' if nested_respond else 'return_result')
         messages=await context.build(events,ids,execution_budget=budget_note,plugin_request=request,
-            tool_definitions=lambda:[*definitions(),terminal() if callable(terminal) else terminal])
-        messages.extend(materials)
+            tool_definitions=context.tool_definitions)
+        messages.extend(prepared)
+    elif request.input_mode=='source':
+        await context.pack_events(messages,events,ids,raw_tokens=context.input_budget)
     if not nested_respond:
         messages.append({'role':'developer','content':'本次只通过return_result返回插件结果；不提供respond、工作或提醒提案，不自动发消息。'})
     pending_presentations=[]
@@ -392,18 +412,16 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
             if execution.record_presentations:
                 await execution.record_presentations(pending_presentations)
             execution.audit['steps'][-1]['presentations']=list(pending_presentations)
+            execution.audit['steps'][-1]['context_plan']=copy.deepcopy(context.context_plan)
             execution.audit['references']=context.refs.snapshot()
         if runtime.evaluation_hook:await runtime.evaluation_hook(stage,payload)
 
-    try:
-        return await AgentLoop(ModelGateway(binding,max_output_tokens=request.output_tokens,
-            call_store=runtime.event_store,scene_id=call.scene_id,episode_id=call.origin.run_id,job_id=call.job_id,purpose='plugin_agent')).run(
-                messages=messages,tool_definitions=definitions,execute_tool=execute,terminal=terminal,finish=finish,
-                after_finish=after_finish,proposal_tool_names=set(TOOLS)|runtime.plugin_host.proposal_tool_names() if nested_respond else set(),
-                max_steps=steps,max_tool_calls=request.max_tool_calls,budget=execution.budget,
-                finalize_request=prepare,checkpoint=checkpoint,trace=execution.audit,hooks=runtime.plugin_host.run_hooks(lambda:call,execution.audit))
-    finally:
-        if nested_respond:context.input_budget=previous_input_budget
+    return await AgentLoop(ModelGateway(binding,max_output_tokens=request.output_tokens,
+        call_store=runtime.event_store,scene_id=call.scene_id,episode_id=call.origin.run_id,job_id=call.job_id,purpose='plugin_agent')).run(
+            messages=messages,tool_definitions=definitions,execute_tool=execute,terminal=terminal,finish=finish,
+            after_finish=after_finish,proposal_tool_names=set(TOOLS)|runtime.plugin_host.proposal_tool_names() if nested_respond else set(),
+            max_steps=steps,max_tool_calls=request.max_tool_calls,budget=execution.budget,
+            finalize_request=prepare,checkpoint=checkpoint,trace=execution.audit,hooks=runtime.plugin_host.run_hooks(lambda:call,execution.audit))
 
 
 async def resume_agent(runtime,event,cutoff):
