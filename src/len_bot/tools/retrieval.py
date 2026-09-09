@@ -422,9 +422,9 @@ class RetrievalToolkit:
         if self.checkpoint:
             await self.checkpoint('after_tool', {'scene_id':self.default_scene_id,'name':name,'result':result.model_dump()})
         page_chars = self.page_chars
-        if name == 'read_group_chat_window':
-            plugin = self.plugin_host.get_plugin('group_summary')
-            page_chars = min(plugin.config.page_chars,self.max_chars)
+        if self.plugin_host and self.plugin_host.has_registered_tool(name):
+            requested=self.plugin_host.tool_capabilities(name)['page_chars']
+            if requested is not None:page_chars=min(requested,self.max_chars)
         local_records = {'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes'}
         records = self.context and name in local_records and result.status != 'error'
         if name == 'query_jobs' and args.get('job_id'):
@@ -834,9 +834,8 @@ class RetrievalToolkit:
                 if job['can_resume']:
                     job['resume_issue']=runtime.job_resume_issue(job)
                     job['can_resume']=job['resume_issue'] is None
-                if job['summary_coverage'] is not None:
-                    job['summary_coverage'] = {key:value for key,value in job['summary_coverage'].items()
-                                               if key not in {'read_result_ranges', 'read_event_ids'}}
+                job.update(runtime.plugin_host.work_details(job))
+                job.pop('legacy_payload',None)
             return ToolResult(status='ok' if jobs else 'no_results', content=json.dumps(jobs, ensure_ascii=False),
                               coverage='current_jobs', evidence_kind='retrieval')
         if name=='calculate':return calculate(args.get('expression',''))

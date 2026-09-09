@@ -56,6 +56,10 @@ class PluginCallContext:
     async def run_agent(self, **options):
         return await self.plugin.run_agent(self, **options)
 
+    async def stage_work(self, *, goal, request_source, evidence, parameters=None, constraints=(), result_refs=()):
+        return await self.plugin.stage_work(self,goal=goal,request_source=request_source,evidence=evidence,
+            parameters=parameters,constraints=constraints,result_refs=result_refs)
+
 
 @dataclass(frozen=True)
 class ExactText:
@@ -156,3 +160,4 @@ class PluginToolDefinition(BaseModel):
     roles: tuple[Literal["conversation", "work"], ...]
     deferred: bool = False
     available: Callable[[PluginCallContext], bool] | None = None
+    page_chars: int | None = Field(default=None,ge=1)
