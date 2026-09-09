@@ -240,7 +240,9 @@ class OneBotAdapter:
                 parts.append({"type": "text", "data": {"text": segment.text}})
             elif segment.type == "at_all":
                 parts.append({"type": "at", "data": {"qq": "all"}})
-            else:
+            elif segment.type == "at":
+                parts.append({"type": "at", "data": {"qq": segment.qq_uid}})
+            elif segment.type == "image":
                 if segment.asset_id not in action.resolved_images:
                     raise ValueError("Image asset has not been resolved by the runtime")
                 data = {"file": action.resolved_images[segment.asset_id]}

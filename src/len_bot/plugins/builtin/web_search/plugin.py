@@ -119,7 +119,7 @@ class WebSearchToolPlugin(BasePlugin):
             purpose="搜索公开网页与来源", aliases=("联网搜索", "网页搜索", "上网查"),
             keywords=("搜索", "联网", "网页", "资料", "官方", "查询"),
             handler=self._web_search,
-            kind="read", roles=("work",),
+            kind="read", roles=("conversation", "work"),
         )
         context.register_tool(
             name="read_page",
@@ -128,7 +128,7 @@ class WebSearchToolPlugin(BasePlugin):
             purpose="读取网页与 PDF 正文", aliases=("读网页", "读PDF", "读取链接"),
             keywords=("网页", "原文", "正文", "链接", "PDF", "文档"),
             handler=self._read_page,
-            kind="read", roles=("work",),
+            kind="read", roles=("conversation", "work"),
         )
 
     async def on_unload(self) -> None:

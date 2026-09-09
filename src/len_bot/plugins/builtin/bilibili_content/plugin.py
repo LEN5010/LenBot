@@ -85,21 +85,21 @@ class BilibiliContentPlugin(BasePlugin):
             parameter_model=VideoInfoArguments, handler=self._get_video_info,
             purpose="读取 B 站视频详情", aliases=("B站视频详情", "视频信息"),
             keywords=("视频", "BV", "AV", "标题", "简介", "UP主", "播放数据"),
-            kind="read", roles=("work",), deferred=True,
+            kind="read", roles=("conversation", "work"), deferred=True,
         )
         context.register_tool(
             name="search_bilibili", description="输入搜索关键词，获取相关 B 站视频列表及播放数据。",
             parameter_model=BilibiliSearchArguments, handler=self._search_bilibili,
             purpose="搜索 B 站视频", aliases=("B站搜索", "搜索视频"),
             keywords=("视频", "哔哩哔哩", "B站", "搜索", "检索"),
-            kind="read", roles=("work",), deferred=True,
+            kind="read", roles=("conversation", "work"), deferred=True,
         )
         context.register_tool(
             name="get_dynamic_feed", description="按 UP 主 UID 查询平台动态接口；需要已配置有效 SESSDATA。",
             parameter_model=DynamicFeedArguments, handler=self._get_dynamic_feed,
             purpose="读取 B 站 UP 主最新动态", aliases=("UP主动态", "B站动态"),
             keywords=("动态", "UP主", "最新", "B站", "UID"),
-            kind="read", roles=("work",), deferred=True,
+            kind="read", roles=("conversation", "work"), deferred=True,
         )
 
     async def on_unload(self) -> None:

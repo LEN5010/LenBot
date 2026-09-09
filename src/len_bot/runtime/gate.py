@@ -225,14 +225,7 @@ class RuntimeGate:
             if mailbox.output_kind != 'chat':
                 response_actors.append([])
                 continue
-            if message.reply_to:
-                target = await self.event_store.read_reply_actor(current_scene_state.scene_id, message.reply_to, read_ids)
-                if target and target != self.bot_actor_id:
-                    targets.add(target)
-            if message.reply_target:
-                targets.add(message.reply_target)
-            if message.requester_qq_uid:
-                targets.add('user:' + message.requester_qq_uid)
+            targets.update(message.addressed_to)
             response_actors.append(sorted(targets))
         if scene_commit:
             scene_commit['event'].payload['response_actor_ids'] = response_actors
@@ -435,6 +428,7 @@ class RuntimeGate:
                 batch_index=index, batch_size=len(outcome.message_proposals),
                 reply_to=msg.reply_to,
                 response_actor_ids=committed.response_actor_ids[index],
+                release_focus_actor_ids=outcome.release_focus_actor_ids,
                 associated_open_loop=associated_loop,
                 origin_mode=action_origin,
                 job_id=job_id, job_revision=job_revision,

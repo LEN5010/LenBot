@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 from dataclasses import dataclass, replace
 from collections.abc import Callable
@@ -51,6 +52,10 @@ class TimelineArguments(ReadArguments):
 class PersonHistoryArguments(ReadArguments):
     actor_id: str = Field(min_length=1)
     limit: int = Field(ge=1)
+
+
+class FindPersonArguments(ReadArguments):
+    query: str = Field(min_length=1,pattern=r"\S",description='当前群已保存的QQ账号、昵称、群名片或明确称呼；U引用直接用于人物字段，不作为检索词')
 
 
 class MemoryArguments(ReadArguments):
@@ -109,7 +114,7 @@ READ_ARGUMENT_MODELS = {
     'read_tool_result': ToolResultArguments, 'search_media': SearchMediaArguments,
     'read_media': ReadMediaArguments, 'read_message_range': MessageRangeArguments,
     'read_pending_wakes': PendingWakeArguments, 'read_web_media': WebMediaArguments,
-    'tool_search': ToolSearchArguments,
+    'tool_search': ToolSearchArguments, 'find_person': FindPersonArguments,
 }
 
 
@@ -123,6 +128,7 @@ LOCAL_TOOLS = [
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
+    read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
     read_tool('query_memory', '按需读取本群认识及其来源；已撤销的认识不是当前事实。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
     read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
@@ -222,7 +228,7 @@ class RetrievalToolkit:
         if not self.media_service: definitions=[t for t in definitions if t['function']['name'] not in {'search_media','read_media'}]
         if self.media_service:
             definitions.append(copy.deepcopy(READ_WEB_MEDIA))
-        if self.call_context().role == 'work':
+        if self.call_context().role in {'conversation','work'}:
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
             definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
         plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind='read') if self.plugin_host else []
@@ -418,7 +424,7 @@ class RetrievalToolkit:
         if name == 'read_group_chat_window':
             plugin = self.plugin_host.get_plugin('group_summary')
             page_chars = min(plugin.config.page_chars,self.max_chars)
-        local_records = {'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs','read_pending_wakes'}
+        local_records = {'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes'}
         records = self.context and name in local_records and result.status != 'error'
         if name == 'query_jobs' and args.get('job_id'):
             records = False
@@ -610,7 +616,7 @@ class RetrievalToolkit:
             shown.next_call = ToolNextCall(name='read_message_range',arguments={
                 'message_ref':refs.register_event_locator(event.id),'offset':end,'limit':limit}) if end < total else None
             return shown
-        local={'search_messages','read_context','query_timeline','query_person_history','search_media','query_memory','query_jobs'}
+        local={'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs'}
         if name not in local or shown.status not in {'ok', 'partial', 'no_results'}:
             return shown.page(offset,limit)
         # Work history observations contain projected text; conversation
@@ -633,6 +639,12 @@ class RetrievalToolkit:
                 return self.context.event_message(event)['content']
             if name=='search_media':
                 return {'asset_id':refs.register_media(item.pop('asset_id')),**item}
+            if name=='find_person':
+                item['person']=refs.register_actor(item.pop('actor_id'))
+                item['source_message']=refs.register_event_locator(item.pop('source_event_id'))
+                for address in item['addresses']:
+                    address['evidence']=[refs.register_event_locator(ident) for ident in address['evidence']]
+                return item
             if name=='query_memory':
                 editable=item['status']=='active' and (item['expires_at'] is None or item['expires_at']>self.context.runtime.clock())
                 ref=refs.register_memory(item.pop('id'),editable=editable)
@@ -749,6 +761,26 @@ class RetrievalToolkit:
 
     async def _execute_raw(self, name, args) -> ToolResult:
         store=self.event_store;scopes=self.allowed_scopes
+        if name=='find_person':
+            query=args['query'].strip().casefold()
+            if re.fullmatch(r'[murijpltbs]\d+',query):
+                return ToolResult.failure('短引用是已知身份定位；直接用于对应字段，不作为人物姓名检索。','invalid_arguments',stage='arguments')
+            people=await store.scene_member_locators(self.default_scene_id,self.cutoff)
+            addresses=await self.memory_store.interaction_preferences(self.default_scene_id,
+                [person['actor_id'] for person in people],now=self.call_context().now) if self.memory_store else []
+            matches=[]
+            for person in people:
+                if person['actor_id']=='user:'+str(self.bot_qq):continue
+                person['addresses']=[{'statement':item.statement,'evidence':item.evidence} for item in addresses
+                    if item.subject==person['actor_id'] and item.kind=='address' and item.basis=='reported']
+                names=[person['actor_id'].removeprefix('user:'),person['nickname'],person['card'],
+                       *(item['statement'] for item in person['addresses'])]
+                if any(query in value.casefold() for value in names if value):matches.append(person)
+            total=len(matches)
+            matches=matches[:self.config.retrieval_max_limit]
+            return ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches,ensure_ascii=False),
+                coverage=f'saved_scene_member_locators; matched={total}; returned={len(matches)}; original evidence unread',
+                truncated=total>len(matches),evidence_kind='retrieval')
         if name == 'read_pending_wakes':
             if not self.context:
                 return ToolResult.failure('Pending sources require a conversation snapshot','invalid_context')
