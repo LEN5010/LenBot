@@ -577,6 +577,31 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             "SELECT state_json FROM scene_sessions WHERE scene_id=?", (scene_id,))).fetchone()
         return json.loads(row[0]) if row else None
 
+    async def memory_subjects(self, scene_id, memory_ids):
+        rows=await (await self._db.execute(
+            'SELECT DISTINCT subject FROM memories WHERE scope=? AND id IN (SELECT value FROM json_each(?))',
+            (scene_id,json.dumps(memory_ids)))).fetchall()
+        return {row[0] for row in rows}
+
+    async def scene_member_locators(self, scene_id, through_rowid):
+        rows=await (await self._db.execute("""SELECT actor_id,id,payload FROM events WHERE rowid IN (
+            SELECT MAX(rowid) FROM events WHERE scene_id=? AND rowid<=?
+              AND event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED')
+              AND actor_id LIKE 'user:%' GROUP BY actor_id) ORDER BY actor_id""",
+            (scene_id,through_rowid))).fetchall()
+        result=[]
+        for actor_id,event_id,payload in rows:
+            sender={}
+            for field in ('nickname','card'):
+                value=await (await self._db.execute("""SELECT json_extract(payload,?) FROM events
+                    WHERE scene_id=? AND actor_id=? AND rowid<=? AND json_type(payload,?) IS NOT NULL
+                    ORDER BY rowid DESC LIMIT 1""",
+                    (f'$.sender.{field}',scene_id,actor_id,through_rowid,f'$.sender.{field}'))).fetchone()
+                sender[field]=value[0] if value else None
+            result.append({'actor_id':actor_id,'source_event_id':event_id,
+                           'nickname':sender.get('nickname'),'card':sender.get('card')})
+        return result
+
     async def event_actors(self, scene_id, event_ids):
         if not event_ids:
             return set()
@@ -871,6 +896,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             raise ValueError("样例需要文字或图片")
         scopes = [scene_id, "global-safe"] if scene_id else ["global-safe"]
         for part in parts:
+            if part.type == 'at':
+                raise ValueError('表达样例只保存文字与运营图片；真实成员提及由本轮实际对象决定')
             if part.type == "image":
                 asset = await self.get_media(part.asset_id, scopes)
                 if not asset or not asset["curated"]:

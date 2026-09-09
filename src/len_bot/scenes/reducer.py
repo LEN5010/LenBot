@@ -14,6 +14,8 @@ class SceneReducer:
                 and event.payload.get('output_kind', 'chat') == 'chat'):
             handled = set(event.payload.get('handled_source_event_ids', []))
             result.pending_wakes = [wake for wake in result.pending_wakes if wake.event_id not in handled]
+            for actor_id in event.payload.get('outcome',{}).get('release_focus_actor_ids',[]):
+                result.focused_participants.pop(actor_id,None)
         elif event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}:
             if event.actor_id != bot_actor_id:
                 result.consecutive_bot_messages = 0

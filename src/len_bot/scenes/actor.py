@@ -201,6 +201,8 @@ class SceneActor:
         if event.metadata.get('conversation_excluded') or not is_real_send(event, self.bot_actor_id):
             return set()
         responders = set(event.payload.get('response_actor_ids', []))
+        if event.payload.get('requester_qq_uid'):
+            responders.add('user:'+event.payload['requester_qq_uid'])
         related = set()
         source_id = event.payload.get('origin_event_id')
         if source_id:
@@ -212,6 +214,7 @@ class SceneActor:
                 if (source.event_type == EventType.PRIVATE_MESSAGE_RECEIVED or source.is_mention_bot or source.is_reply_bot
                         or reasons.intersection({'mention', 'reply_to_bot', 'private_message', 'awaiting_response'})):
                     related.add(source.actor_id)
+                    related.update(event.payload.get('response_actor_ids', []))
         task_ids = {event.payload[key] for key in ('job_id', 'fulfils_task_id', 'acknowledges_task_id')
                     if event.payload.get(key)}
         if task_ids:
@@ -223,12 +226,12 @@ class SceneActor:
                     related.add('user:' + payload['requester_qq_uid'])
                 if payload.get('target_actor_id'):
                     related.add(payload['target_actor_id'])
-        return responders.intersection(related)
+        return responders.intersection(related)-set(event.payload.get('release_focus_actor_ids', []))
 
     async def _commit_turn(self, item):
         native_output = item.mailbox.output_kind in {'command', 'announcement'}
         if native_output:
-            if item.operator or item.outcome.task_proposals or item.outcome.job_proposals or item.outcome.memory_proposals or item.outcome.resolve_open_loop_ids:
+            if item.operator or item.outcome.task_proposals or item.outcome.job_proposals or item.outcome.memory_proposals or item.outcome.resolve_open_loop_ids or item.outcome.release_focus_actor_ids:
                 raise SceneCommitConflict('A command or announcement may only submit its own expression')
             await item.gate.validate_native_origin(item.mailbox, self.scene_id)
         if not item.operator and not native_output and self._active_mailbox is not item.mailbox:
@@ -260,6 +263,8 @@ class SceneActor:
         pending_ids = {wake.event_id for wake in state.pending_wakes}
         if not handled.issubset(pending_ids):
             raise SceneCommitConflict('Handled sources are not currently pending in this scene')
+        if set(item.outcome.release_focus_actor_ids)-await self.event_store.event_actors(self.scene_id,handled):
+            raise SceneCommitConflict('Ending an interaction requires this participant\'s handled original')
         refs = set()
         for proposal in item.outcome.task_proposals + item.outcome.job_proposals:
             refs.update(proposal.source_event_ids)
@@ -332,11 +337,19 @@ class SceneActor:
                 requesters.add(proposal.requester_id)
             if proposal.task_id:
                 task_ids.add(proposal.task_id)
+        for proposal in outcome.memory_proposals:
+            source_ids.update(proposal.evidence)
+            request_ids.update(proposal.evidence)
+            if proposal.subject.startswith('user:'):
+                requesters.add(proposal.subject)
+            requesters.update(subject for subject in await self.event_store.memory_subjects(
+                self.scene_id,proposal.target_memory_ids) if subject.startswith('user:'))
+        requesters.update(outcome.release_focus_actor_ids)
         for message in outcome.message_proposals:
-            if not (message.task_ref or message.operation_ref or message.fulfils_task_id or message.job_id or message.expect_reply):
-                continue
             request_source(message.source_event_id)
             requester(message.requester_qq_uid)
+            requesters.update(message.addressed_to)
+            requesters.update('user:'+part.qq_uid for part in message.segments if part.type=='at')
             if message.reply_to:
                 message_ids.add(str(message.reply_to))
             if message.expect_reply and message.reply_target:

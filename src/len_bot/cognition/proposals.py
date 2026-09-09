@@ -18,11 +18,12 @@ class StrictModel(BaseModel):
 class TurnPart(StrictModel):
     text: str|None=Field(default=None,min_length=1)
     image: str|None=Field(default=None,min_length=1)
+    at: str|None=Field(default=None,min_length=1)
 
     @model_validator(mode='after')
     def one_content(self):
-        if self.model_fields_set not in ({'text'}, {'image'}) or not (self.text or self.image):
-            raise ValueError('每个片段必须且只能填写一个非空text或image字段')
+        if self.model_fields_set not in ({'text'}, {'image'}, {'at'}) or not (self.text or self.image or self.at):
+            raise ValueError('每个片段必须且只能填写一个非空text、image或at字段')
         return self
 
 class ReplyExpectation(StrictModel):
@@ -38,6 +39,7 @@ class TurnMessage(StrictModel):
     delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
+    addressed_to:list[str]=Field(default_factory=list,description='实际对谁说话的成员U引用；与source、reply_to和期待回答者分别填写')
 
     @model_validator(mode='after')
     def one_message_relation(self):
@@ -49,6 +51,7 @@ class FinishTurn(StrictModel):
     messages:list[TurnMessage]=Field(max_length=3,description='零至三条；空列表表示沉默')
     handled_sources:list[str]=Field(description='本轮已回答、已委托或明确选择沉默的待处理消息M；只填确实处理的来源，读到但未处理的来源不要填')
     note:str=Field(default='',max_length=500,description='内部参与判断；尚有待处理来源但本次不处理任何来源时，说明等待条件或结束原因。不发送、不保存为长期认识')
+    release_focus:list[str]=Field(default_factory=list,description='根据本人原话停止本次误接或互动的成员U；只撤销现有关注窗口，不写长期规则')
 
 class Evidence(StrictModel):
     evidence:list[str]=Field(min_length=1,description='本轮实际读过的消息M引用')
@@ -127,7 +130,7 @@ class DiscardProposal(StrictModel):
 
 
 TOOLS={
-    'start_work':(StartWork,'建立后台只读工作：查询陌生概念、外部或当前事实，也用于计算、解题和整理。先调用本工具，再把回执中的ack_ref复制到finish_turn的确认消息；引用由工具生成，无需自拟。'),
+    'start_work':(StartWork,'建立需要长时间、多页资料或持续进度的后台只读工作；短读取和计算可直接使用本轮工具。先调用本工具，再把回执中的ack_ref复制到finish_turn的确认消息；引用由工具生成，无需自拟。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。取得回执后用operation_ref确认本次操作，不用work_ref确认新版本。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。确认消息用本回执的operation_ref，不同时交付旧结果。'),
     'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料。取得回执后用operation_ref确认，部分结果不因此重开。'),
@@ -155,21 +158,26 @@ FINISH_TURN={
     'type':'function',
     'function':{
         'name':'finish_turn',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text或image，不填type。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text、image或at，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
                 'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
                     **_object({'text':{'type':'string','minLength':1},
-                               'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'}}),
-                    'description':'恰好一个字段：{"text":"一句回应"}或{"image":"本轮图片引用"}；可单图或按顺序混排。'}},
+                               'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
+                               'at':{'type':'string','minLength':1,'description':'真实成员提及，填写本轮人物U引用'}}),
+                    'description':'恰好一个字段：text、image或at；按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
                 'source':{'type':'string','description':'本条回应对应的已读人类请求M；操作确认须来自该操作的原话证据，多人来源不能互换'},
+                'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
+                                'description':'本条实际回应的成员U；请求者和引用作者不自动成为回应对象'},
                 'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
                                         'intent':{'type':'string','minLength':1}},('target','intent')),
             },('segments',))},
             'note':{'type':'string','maxLength':500,'description':'内部参与判断；不处理任何待处理来源时必须说明等待条件或结束原因，不发送'},
             'handled_sources':{'type':'array','items':{'type':'string'},'uniqueItems':True,
                 'description':'本轮实际处理的待处理消息M：已回答、已委托或明确选择沉默。原话读到不等于处理；未处理来源留待后续'},
+            'release_focus':{'type':'array','items':{'type':'string'},'uniqueItems':True,
+                'description':'根据本人已读原话停止本次互动的成员U；撤销现有短时关注'},
         },('messages','handled_sources')),
     },
 }
@@ -395,13 +403,12 @@ class ProposalLedger:
                 for part in item.segments:
                     if part.text is not None:
                         parts.append({'type':'text','text':part.text})
-                    else:
+                    elif part.at is not None:
+                        parts.append({'type':'at','qq_uid':refs.member_id(part.at).removeprefix('user:')})
+                    elif part.image is not None:
                         asset_id=refs.media_id(part.image)
-                        if asset_id not in self.context.loaded_media:
-                            raise TerminalArgumentError('发送图片前必须先用read_media读取本轮选定的图片像素',
-                                correction={'next_calls':[{'name':'read_media','arguments':{'asset_id':part.image}}],
-                                            'loaded_images':[reference for reference,ident in refs.media.items()
-                                                             if ident in self.context.loaded_media]})
+                        if await self.context.runtime.event_store.get_media(asset_id,[refs.scene_id,'global-safe']) is None:
+                            raise ValueError('图片未登记、已停用或不属于当前场景')
                         parts.append({'type':'image','asset_id':asset_id})
                 reply=None
                 if item.reply_to:
@@ -468,19 +475,27 @@ class ProposalLedger:
                 # Message ownership follows that human source; the referenced
                 # work keeps its own original requester and revision.
                 expectation=item.expect_reply
+                addressed=list(dict.fromkeys(refs.member_id(ref) for ref in item.addressed_to))
+                if expectation and refs.member_id(expectation.target)==refs.bot_actor_id:
+                    raise ValueError('不能把自己作为外部等待回应对象')
                 messages.append(MessageProposal(segments=parts,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
+                    addressed_to=addressed,
                     job_id=job['id'] if job else None,job_revision=job['revision'] if job else None,
-                    expect_reply=bool(expectation),reply_target=refs.actor_id(expectation.target) if expectation else None,
+                    expect_reply=bool(expectation),reply_target=refs.member_id(expectation.target) if expectation else None,
                     reply_intent=expectation.intent if expectation else None))
             affected={message.source_event_id for message in messages}
             affected.update(proposal.request_source_event_id for proposal in [*self.jobs,*self.tasks]
                             if proposal.operation=='create')
             if (affected & pending) - set(handled):
                 raise ValueError('本轮已回应或已委托的请求来源必须列入handled_sources，其它仅仅读到的来源继续保留')
+            released=list(dict.fromkeys(refs.member_id(ref) for ref in result.release_focus))
+            if set(released)-{event.actor_id for event in source_candidates}:
+                raise ValueError('撤销关注必须有本次处理的本人原话，不能替其他人结束互动')
             return EpisodeOutcome(disposition=FinalDisposition.ACTION if messages else FinalDisposition.SILENCE,
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
                 handled_source_event_ids=handled,
+                release_focus_actor_ids=released,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
         except TerminalArgumentError:
             raise
