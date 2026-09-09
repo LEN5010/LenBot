@@ -60,7 +60,7 @@ ScenePolicy 直接读取当前根文件中的群字段与全局 QQ 回复白名�
 
 ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固定提供商、型号、推理强度与客户端；对话同时固定配置快照，循环上限、终结定义、上下文装配和新输入使用同一份预算。工作执行段或显式恢复采用当时生效上限并继续累计原账目；三角色分别配置，没有继承、同轮切换、跨型号 fallback 或独立视觉路由。新配置用于新轮次，已启动工作保留原绑定。原生 assistant 续接、供应商扩展与工具调用顺序保留在私有运行数据中。
 
-调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。
+调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。插件调用不写普通对话的 disposition：供应商是否完成由 status 表示，结果与运行失败见插件 Trace，表达和送达分别以提交、行动回执为准；work 路由也通过相同调用身份关联。
 
 模型通过窄原生工具读取与暂存。`respond` 接受本阶段消息、逐来源 sources 和 next=end/continue/wait，空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。
 
@@ -196,3 +196,5 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 插件自定义来源使用 PLUGIN_EVENT 封套，plugin_id、版本、事件名与 payload 类型属于描述符；旧 LIVE_STARTED/LIVE_ENDED 记录保留。提交与行动保存 PluginOrigin，出站重新检查来源、入口、启用状态、版本及插件业务校验。开播的当前场次、订阅与全体提及许可由直播插件校验。宿主记录并取消插件的轮询、工具与 handler 任务；加载失败清理注册和资源，保留元数据与错误。开发接口见[插件开发](plugins.md)。
 
 插件的 before_model、after_model、before_tool、after_tool、before_commit 与 after_delivery 钩子按声明范围及稳定顺序执行。模型原 usage、原调用身份、观察与回执不改写；参数和提交前片段经过原类型边界，附加资料进入 user 投影，实际变化或停止写入 Trace。消息片段钩子在 Actor 提交前调用，送达钩子在回执保存后由宿主任务执行。AgentLoop 的调用计数通过同一个 AgentBudget 账户收口；工作账户继续委托原 JobStore 计费与时间检查，不另建存储。
+
+调用者的 plugin_material 是本次任务输入；plugin_hook_instructions/plugin_hook_material 仅属于当前请求的钩子补充，下一步只清理后两类。输入资料仍参与统一容量与实际阅读范围核对。普通对话和插件专用循环共用完整工具组的呈现入口，按实际余量装配正文与附件像素，再写采用范围；不得把附件 ID 当成已经提交的视觉输入。

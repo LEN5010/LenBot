@@ -21,7 +21,7 @@ from len_bot.plugins.agent import PluginAgentRequest, PluginExecution
 from len_bot.events.models import EventType, PluginOrigin
 from len_bot.media.models import MessageSegment
 from len_bot.runtime.attention import HUMAN_INPUTS
-from len_bot.tools.retrieval import RetrievalToolkit
+from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolResult
 
 
@@ -310,8 +310,6 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
             finally:
                 if projection is not None:
                     for name,value in projection.items():setattr(parent.context,name,value)
-                await runtime.event_store.set_model_call_disposition(call.origin.run_id,
-                    'plugin_result' if result is not None else 'rejected')
 
 
 async def _dedicated_agent(runtime, call, request, output_model, parent):
@@ -380,12 +378,34 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         if nested_respond and name in TOOLS:return await parent.ledger.stage(name,arguments)
         if nested_respond and name in runtime.plugin_host.proposal_tool_names():
             return await runtime.plugin_host.execute_tool(name,arguments,replace(call,tool_call_id=tool_call_id))
-        return await toolkit.execute_result(name,arguments,tool_call_id=tool_call_id)
+        return await toolkit.execute_observation(name,arguments,tool_call_id=tool_call_id)
+
+    async def record_tool_result(tool_call,arguments,result):
+        raw=result.result if isinstance(result,ObservationPage) else result
+        if isinstance(raw,ToolResult) and raw.status in {'error','unsupported'}:
+            page=await toolkit.error_observation(tool_call.name,arguments,result,tool_call_id=tool_call.id)
+            context.refs.register_result(page.result.result_id)
+            return page
+        return result
+
+    pending_additions=[]
+    async def prepare_tool_results(trajectory,entries):
+        receipts,additions=await context.prepare_tool_results(toolkit,trajectory,entries,
+            definitions=context.tool_definitions)
+        pending_additions.extend(additions)
+        return receipts
+
+    async def observe():
+        additions=list(pending_additions)
+        pending_additions.clear()
+        return additions
 
     async def prepare(trajectory,definitions):
         await runtime.plugin_host.validate_call(call)
         context.trajectory=trajectory
-        context.fit_request(trajectory,definitions,phase='plugin_agent')
+        tokens=context.fit_request(trajectory,definitions,phase='plugin_agent')
+        context.context_plan['request']={'input_tokens':tokens,'input_budget_tokens':context.input_budget,
+            'current_pixel_assets':sorted(context.loaded_media),'messages':context.request_manifest(trajectory)}
         pending_presentations[:]=toolkit.read_presentations(trajectory)
         return context.model_messages(trajectory)
 
@@ -421,7 +441,9 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
             messages=messages,tool_definitions=definitions,execute_tool=execute,terminal=terminal,finish=finish,
             after_finish=after_finish,proposal_tool_names=set(TOOLS)|runtime.plugin_host.proposal_tool_names() if nested_respond else set(),
             max_steps=steps,max_tool_calls=request.max_tool_calls,budget=execution.budget,
-            finalize_request=prepare,checkpoint=checkpoint,trace=execution.audit,hooks=runtime.plugin_host.run_hooks(lambda:call,execution.audit))
+            finalize_request=prepare,checkpoint=checkpoint,trace=execution.audit,
+            prepare_tool_results=prepare_tool_results,record_tool_result=record_tool_result,observe=observe,
+            hooks=runtime.plugin_host.run_hooks(lambda:call,execution.audit))
 
 
 async def resume_agent(runtime,event,cutoff):
@@ -447,6 +469,4 @@ async def resume_agent(runtime,event,cutoff):
         audit.update(state='failed',error=str(error),error_type=type(error).__name__)
         runtime.plugin_host.record_plugin_error(origin.plugin_id,str(error))
     finally:
-        await runtime.event_store.set_model_call_disposition(origin.run_id,
-            'plugin_result' if audit['state']=='completed' else 'rejected')
         await runtime.event_store.save_trace(kind='plugin_run',scene_id=event.scene_id,ref_id=origin.run_id,payload=audit)

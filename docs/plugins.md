@@ -59,6 +59,8 @@ call.run_agent 接收 instructions、input_observations、tool_names、model_rol
 
 output_mode=result_only 必须提供 output_model。Agent 调用 return_result 返回该 Pydantic 类型，不能使用提案工具或自动发送；[直播实现](../src/len_bot/plugins/builtin/bilibili_live/plugin.py)使用公告配置的既有模型路由，只带场次资料，随后明确提交一次邀请。
 
+返回结果不改变普通对话 disposition；模型 status 与 plugin_agent 用途保留实际调用，提交和送达另查回执。input_observations 不会被下一步钩子的临时资料清理移除。专用循环的图片读取与普通对话共用正文、附件和阅读范围装配，实际像素及资料位置可在对应步骤中核对。
+
 output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、respond、Actor 和 ActionQueue。source 或 conversation 投影给出真实来源 M，插件可按 tool_names 明确开放已有工作、提醒或记忆提案；这些操作仍须满足原人类请求和证据契约。全部 checkpoint 共用消息额度，continue 继续当前运行，wait 在真实送达后由 open loop 等待目标的回复。恢复保留原插件、入口、模型绑定、请求参数、已存资料及累计预算；旧进程或已变化的入口不能被当作一次新运行重做。
 
 工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作仍由原 JobStore 收取调用与时间额度。专用 Agent 串行使用父账户并为父调用留一次收尾调用，不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 也保留真实父来源，调用不制造模型 tool_call。

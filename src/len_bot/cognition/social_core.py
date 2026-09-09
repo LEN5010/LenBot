@@ -181,39 +181,10 @@ class SocialCognitionCore:
 
         async def prepare_tool_results(trajectory, entries):
             nonlocal pending_exchange
-            messages=list(trajectory)
-            pages=[]
-            indexes=[]
-            for call,result in entries:
-                if isinstance(result,ObservationPage):
-                    indexes.append(len(messages))
-                    pages.append(result)
-                    result=toolkit.observation_locator(result)
-                    content=str(result)
-                elif isinstance(result, ToolResult):
-                    content = result.model_dump_json(exclude_none=True)
-                else:content=result if isinstance(result,str) else json.dumps(result,ensure_ascii=False)
-                messages.append({'role':'tool','tool_call_id':call.id,'content':content})
-            tool_end=len(messages)
             reserved=[final_step_message('respond')] if next_is_final() else []
-            messages.extend(reserved)
-            await append_update(messages)
-            if reserved:del messages[tool_end:tool_end+len(reserved)]
-            current_jobs=dict(context.refs.jobs)
-
-            async def render(position,limit):
-                page=pages[position]
-                result=await toolkit._present(page.name,page.result,page.offset,limit,page.coordinate_unit)
-                # Runtime facts follow the tool replies. An archived query must
-                # not overwrite the current work version shown by those facts.
-                context.refs.jobs.update(current_jobs)
-                return result
-
-            context.fit_request(messages,request_definitions(),reserved=reserved,phase='tool_exchange')
-            await context.pack_tool_pages(messages,indexes,[page.limit for page in pages],render,
-                definitions=request_definitions,reserved=reserved)
-            pending_exchange=messages[tool_end:]
-            return [message['content'] for message in messages[len(trajectory):tool_end]]
+            receipts,pending_exchange=await context.prepare_tool_results(toolkit,trajectory,entries,
+                definitions=request_definitions,reserved=reserved,append_update=append_update)
+            return receipts
 
         async def incorporate():
             nonlocal pending_exchange,refresh_after_commit
