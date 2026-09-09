@@ -158,13 +158,15 @@ class AgentRuntime:
     def job_resume_issue(self, job):
         """One current model/budget decision for controls and their read views."""
         if not job or not job['can_resume']:
-            return 'This work has no resumable interrupted execution'
+            return 'This work has no resumable interrupted execution or settled partial result with unfinished scope'
         if not self.config.jobs_enabled:
             return 'Information work is currently disabled'
         if job['model_steps']>=self.config.job_max_steps:
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
         if job['elapsed_seconds']>=self.config.job_max_seconds:
             return 'This work has no remaining execution time; its spent budget is not reset by resume'
+        if job['execution_status']=='partial' and job['tool_calls']>=self.config.job_max_tool_calls:
+            return 'This partial work has no remaining read-tool budget; continuing does not reset its counters'
         try:
             if job['model_binding']:
                 self.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']),role='work')

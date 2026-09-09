@@ -222,8 +222,13 @@ class InformationJobRunner:
         for result_id in job["result_ids"]:
             result = await store.read_tool_observation(result_id, [job["scene_id"]])
             if result:
+                continuation=result.source_next_call
+                if job['work_operation']=='group_summary' and result.coverage=='group_summary_window':
+                    plugin=self.runtime.plugin_host.get_plugin('group_summary')
+                    continuation=plugin.service.current_continuation(job,result)
                 observations.append({"result_id": result_id, "status": result.status, "coverage": result.coverage,
                                      "sources": [source.model_dump() for source in result.sources], "content_length": len(result.content),
+                                     'source_next_call':continuation.model_dump(mode='json') if continuation else None,
                                      'attachments':result.attachments,'pixels':'read_on_demand'})
         prepared = await self.runtime.media_service.prepare_context_images(job["scene_id"], assets,
             limit=self.runtime.config.max_context_images)
@@ -236,6 +241,7 @@ class InformationJobRunner:
                  "source_event_ids": job["source_event_ids"], "source_messages": raw, "result_ids": job["result_ids"],
                  "observation_catalog": observations, "image_manifest": prepared["manifest"],
                  "work_state": job["work_state"], "state_needs_revision": bool(job["work_state"] and job["work_state"]["goal_revision"] != job["revision"]),
+                 'resume_from':job['resume_from'],
                  "checkpoint_goal_revision": checkpoint["goal_revision"] if checkpoint else None,
                  "skill_versions": job['skill_versions'],
                  "skill_catalog": '按需调用find_skills搜索适用方法，不预装完整目录',
@@ -271,13 +277,17 @@ class InformationJobRunner:
             messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service,
                 job["scene_id"], image_limit=self.runtime.config.max_context_images)
             if checkpoint["goal_revision"] != job["revision"]:
-                messages.append({"role": "user", "content": f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上原生交换保留旧版本的观察与结论，须按当前目标/约束重新核对；旧完成步骤不自动继承。'})
+                note=(f'这是原工作的显式继续，当前版本 {job["revision"]}；目标与范围未改，已有结果、阅读范围和已用预算保留。'
+                      '从resume_from中的未完成项及当前observation_catalog给出的续页位置继续；旧版终结不代表本版再次完成。'
+                      if job['resume_from'] else
+                      f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上交换保留旧版观察与结论，须按当前目标重新核对完成步骤。')
+                messages.append({'role':'developer','content':note})
         if job["work_operation"] == "group_summary":
             plugin = self.runtime.plugin_host.get_plugin("group_summary")
             if plugin is None:
                 raise PermissionError("总结插件尚未配置或加载")
             messages.append({"role":"user", "content":(
-                "本工作只总结summary_range固定的当前群已保存人类消息。先用read_group_chat_window(cursor=null)取得原话，"
+                "本工作只总结summary_range固定的当前群已保存人类消息。尚无资料时用read_group_chat_window(cursor=null)取得原话；已有资料先复用已读范围，续做使用observation_catalog中的当前版本source_next_call。"
                 "复制next_cursor读取下一页；同页未装入全文用read_tool_result续读。返回工具资料的来源定位不表示原文已读。"
                 "统计由程序计算，不据第一页估计全量；范围为[start_at,end_at)，即使结束在未来也保留请求边界并说明snapshot_at。"
                 "按真实事件和话题组织，不编造引语；引用列出的原event_id。日程命令和引用评论也是本范围可读的人类消息。"
@@ -490,6 +500,17 @@ class InformationJobRunner:
                     result.unresolved.append(
                         f'本群此范围匹配 {coverage["matched_messages"]} 条已保存人类消息，'
                         f'仅完整读取 {coverage["read_messages"]} 条；剩余原文尚未读取，不是全时段完整总结。')
+            if result.status=='partial':
+                budget=await budget_state()
+                if budget['model_calls_used']>=budget['model_calls_limit']:
+                    result.reason='model_budget_exhausted_at_finish'
+                elif budget['tool_calls_used']>=budget['tool_calls_limit']:
+                    result.reason='tool_budget_exhausted_at_finish'
+                elif budget['elapsed_seconds_used']>=budget['elapsed_seconds_limit']:
+                    result.reason='time_budget_exhausted_at_finish'
+                else:
+                    result.reason=('agent_finished_with_unread_messages' if job['work_operation']=='group_summary'
+                                   and not coverage['complete'] else 'agent_finished_partial')
             try:
                 return await commit_result(result, revision, work_state=conclusion.work_state, skill_candidate=conclusion.skill_candidate)
             except JobResultRejected as error:

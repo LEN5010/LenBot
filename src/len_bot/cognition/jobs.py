@@ -52,6 +52,8 @@ class JobProposal(BaseModel):
                 raise ValueError("Group summary work requires the real requester")
         elif not self.job_id or self.expected_revision is None:
             raise ValueError("Job control needs real job_id and expected_revision")
+        if self.operation=='resume' and (self.goal is not None or self.constraints_add or self.constraints_remove or self.summary_range is not None):
+            raise ValueError('Resume preserves the existing goal and scope; changing them requires revise')
         return self
 
 
