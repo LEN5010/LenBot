@@ -78,6 +78,7 @@ class ActionQueue:
                 "operation_ref": action.operation_ref,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
                 "response_actor_ids": action.response_actor_ids,
+                "release_focus_actor_ids": action.release_focus_actor_ids,
                 "output_kind": action.output_kind, "requester_qq_uid": action.requester_qq_uid,
                 "origin_event_id": action.origin_event_id, "command_id": action.command_id,
                 "announcement_member": action.announcement_member,

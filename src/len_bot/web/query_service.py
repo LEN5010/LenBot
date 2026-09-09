@@ -435,6 +435,10 @@ class RuntimeQueryService:
                     quote={key:quote[key] for key in ("event_id","rowid","actor_id","display_name","text") if key in quote}
                     quote["media"]=quote_media
                 human=event.event_type in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}
+                member_mentions=list(dict.fromkeys(re.findall(r'\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]',event.raw_text)))
+                if not human:
+                    member_mentions=list(dict.fromkeys(part['qq_uid'] for part in payload.get('segments',[])
+                        if part.get('type')=='at'))
                 views[event.id]={"id":event.id,"rowid":metadata["_rowid"],"event_type":event.event_type.value,"scene_id":scene,
                     "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
                     "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain") if key in metadata},
@@ -442,6 +446,7 @@ class RuntimeQueryService:
                                        "command_id", "calendar_parent_event_id", "conversation_excluded") if key in metadata}
                                    if "interaction" in metadata else None,
                     "display_name":sender.get("card") or sender.get("nickname") or event.actor_id,
+                    "member_mentions":member_mentions,"addressed_to":payload.get('response_actor_ids',[]),
                     "scene_type":self.scene_label(scene)["scene_type"],
                     "display_kind":"human" if human else "bot" if event.event_type==EventType.MESSAGE_SENT else "system",
                     "delivery_status":delivery,"simulated":bool(metadata.get("simulated") or payload.get("origin_mode")=="simulated"),

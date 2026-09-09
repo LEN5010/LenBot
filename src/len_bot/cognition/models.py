@@ -51,6 +51,7 @@ class MessageProposal(BaseModel):
     job_revision: int | None = None
     source_event_id: str | None = None
     requester_qq_uid: str | None = None
+    addressed_to: list[str] = Field(default_factory=list, description="Actual addressed member actor IDs, separate from source and quote")
 
     @model_validator(mode="after")
     def validate_body(self):
@@ -109,8 +110,8 @@ class EpisodeOutcome(BaseModel):
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
     handled_source_event_ids: list[str] = Field(default_factory=list)
+    release_focus_actor_ids: list[str] = Field(default_factory=list)
 
     def requires_fresh_input(self) -> bool:
-        return bool(self.task_proposals or self.job_proposals or self.resolve_open_loop_ids
-                    or any(m.task_ref or m.operation_ref or m.fulfils_task_id or m.expect_reply or m.job_id
-                           for m in self.message_proposals))
+        return bool(self.task_proposals or self.job_proposals or self.memory_proposals
+                    or self.resolve_open_loop_ids or self.message_proposals or self.release_focus_actor_ids)
