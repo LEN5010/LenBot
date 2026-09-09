@@ -1436,7 +1436,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         [proposal_tasks[ref] for ref in source.proposal_refs if ref in proposal_tasks]
                         +[operation_receipts[ref].target_id for ref in source.proposal_refs
                           if ref in operation_receipts and operation_receipts[ref].kind in {'work','reminder'}]
-                        +[ident for message in job_messages if message.source_event_id==source.source_event_id
+                        +[ident for index,message in enumerate(job_messages) if index in source.message_indices
                           for ident in (message.job_id,message.fulfils_task_id) if ident]))
 
                 if scene_commit is not None:

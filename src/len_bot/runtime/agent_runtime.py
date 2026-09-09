@@ -640,7 +640,8 @@ class AgentRuntime:
         source_ids = [wake.event_id for wake in sources]
         required = await self.event_store.events_by_ids(session.scene_id,source_ids,cutoff)
         recent = await self.event_store.get_recent_events(session.scene_id,limit=self.config.conversation_history_limit,through_rowid=cutoff,conversation_only=True)
-        events = sorted({event.id:event for event in [*required,*recent] if conversation_visible(event)}.values(),
+        events = sorted({event.id:event for event in [*required,*recent] if conversation_visible(event)
+                         and (not event.metadata.get('conversation_resume') or event.id in preferred)}.values(),
                         key=lambda event:event.metadata['_rowid'])
         events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
         return events,cutoff,source_ids
@@ -657,13 +658,15 @@ class AgentRuntime:
             result.append(event)
         return result
 
-    async def _conversation_snapshot(self, actor):
+    async def _conversation_snapshot(self, actor, *, resume_event_id=None):
         session = actor.session.model_copy(deep=True)
         pending = await self.event_store.events_by_ids(session.scene_id,
             [wake.event_id for wake in session.pending_wakes], session.last_observed_event_rowid)
-        eligible = {event.id for event in await self._eligible_conversation_events(pending, session.last_observed_event_rowid)}
+        inputs=await self._eligible_conversation_events(pending, session.last_observed_event_rowid)
+        other_resumes={event.id for event in inputs if event.metadata.get('conversation_resume') and event.id!=resume_event_id}
+        eligible = {event.id for event in inputs}-other_resumes
         session.pending_wakes = [wake for wake in session.pending_wakes if wake.event_id in eligible]
-        return session
+        return session,other_resumes
 
     async def _run_conversation_loop(self, scene_id: str) -> None:
         while self._running and scene_id in self._pending_bursts:
@@ -686,6 +689,7 @@ class AgentRuntime:
         resume_packet=next((event.metadata['conversation_resume'] for event in burst.events
                             if event.metadata.get('conversation_resume')),None)
         resume=ConversationResume.model_validate(resume_packet['state']) if resume_packet else None
+        resume_event_id=next((event.id for event in burst.events if event.metadata.get('conversation_resume')),None)
         episode_id = resume.episode_id if resume else f"conversation:{uuid.uuid4().hex}"
         mailbox = EpisodeMailbox(episode_id, scene_id, actor.session.version,
                                  origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
@@ -701,7 +705,7 @@ class AgentRuntime:
         trace: dict[str, Any] = {'checkpoints':[]}
         if resume:trace['resumed_from']={'loop_id':resume_packet['loop_id'],'send_event_id':resume_packet['send_event_id'],
                                         'model_calls_used':resume.model_calls_used,'tool_calls_used':resume.tool_calls_used}
-        session = await self._conversation_snapshot(actor)
+        session,other_resume_ids = await self._conversation_snapshot(actor,resume_event_id=resume_event_id)
         trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
         observed, revision = session.last_observed_event_rowid, session.knowledge_revision
         source_ids: list[str] = []
@@ -733,7 +737,8 @@ class AgentRuntime:
                 nonlocal observed, source_ids
                 if mailbox.is_cancelled() or not self._running or not self.scene_policy.enabled(scene_id):
                     raise asyncio.CancelledError()
-                current = await self._conversation_snapshot(actor)
+                current,reserved = await self._conversation_snapshot(actor,resume_event_id=resume_event_id)
+                other_resume_ids.update(reserved)
                 if current.knowledge_revision != revision:
                     raise SceneCommitConflict("Knowledge changed during conversation; rebuild from the next real input")
                 if current.last_observed_event_rowid == observed:
@@ -742,6 +747,8 @@ class AgentRuntime:
                 additions = [event for event in additions if event.metadata["_rowid"] <= current.last_observed_event_rowid]
                 cutoff = additions[-1].metadata["_rowid"] if additions else observed
                 additions = await self._eligible_conversation_events(additions, cutoff)
+                additions = [event for event in additions if not event.metadata.get('conversation_resume')
+                             or event.id==resume_event_id]
                 additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=cutoff)
                 observed = cutoff
                 source_ids = list(dict.fromkeys([*source_ids, *(event.id for event in additions)]))
@@ -763,6 +770,8 @@ class AgentRuntime:
                 if decision.accepted:
                     outcome = decision.committed_proposal.outcome
                     revision=decision.scene_session.knowledge_revision
+                    decision.scene_session.pending_wakes=[wake for wake in decision.scene_session.pending_wakes
+                                                          if wake.event_id not in other_resume_ids]
                     trace['checkpoints'].append({'index':outcome.checkpoint_index,'gate':decision.record(),
                         'result':outcome.model_dump(mode='json'),'references':trace.get('references')})
                 return decision
