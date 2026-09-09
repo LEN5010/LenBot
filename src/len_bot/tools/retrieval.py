@@ -125,7 +125,7 @@ def read_tool(name, description):
 
 
 LOCAL_TOOLS = [
-    read_tool('search_messages', '按文字查找本群已读截点之前的原话。'),
+    read_tool('search_messages', '按文字查找本群已读截点之前的原话；只查询群消息，不检索外部网站或账号发布记录。'),
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),

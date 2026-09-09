@@ -30,9 +30,9 @@ class AsoulDynamicsPlugin(BasePlugin):
     async def on_load(self, context: PluginContext):
         definitions = [
             ("get_asoul_dynamics", LatestRequest, self.get_latest, False,
-             "读取该源已抓取的最新动态，按源publishedAt排序。member须为已配置成员/别名，null明确查全部；limit=null用已配置页量。图片仅给来源链接，未加载像素。"),
-            ("search_asoul_dynamics", SearchRequest, self.search, True,
-             "检索该源动态；query/member/cursor/dynamic_type为null时不加对应筛选，sort/limit为null时使用配置。先读完本次结果正文，再复制source_next_call取得下一批，保持成员、筛选、排序与页量。未知成员失败，不改查全员。"),
+             "读取该源已抓取的最新动态，按源publishedAt排序。关键词或历史内容用search_asoul_dynamics。member须为已配置成员/别名，null明确查全部；limit=null用已配置页量。图片仅给来源链接，未加载像素。"),
+            ("search_asoul_dynamics", SearchRequest, self.search, False,
+             "按关键词检索成员历史动态，用户要求搜历史动态或回找曾发过的内容时使用。群消息和网页索引不能代替这个源。query/member/cursor/dynamic_type为null时不加对应筛选，sort/limit为null时使用配置。先读完本次正文，再复制source_next_call取得下一批。未知成员失败，不改查全员。"),
             ("read_asoul_dynamic", DetailRequest, self.read_dynamic, True,
              "读取已取得且尚新鲜的源动态记录。没有详情接口；范围保持为源查询提供的内容，不能视作平台原动态全文或看过图片。"),
             ("get_asoul_on_this_day", OnThisDayRequest, self.on_this_day, True,
@@ -44,7 +44,7 @@ class AsoulDynamicsPlugin(BasePlugin):
         ]
         discovery = {
             "get_asoul_dynamics": ("读取成员最近动态", ("最新动态", "最近动态"), ("动态", "最近", "最新", "近况")),
-            "search_asoul_dynamics": ("检索成员历史动态", ("搜索动态", "查找动态"), ("动态", "历史", "检索", "搜索")),
+            "search_asoul_dynamics": ("按关键词检索成员历史动态", ("历史动态", "搜索动态", "查找动态", "动态关键词"), ("动态", "历史", "检索", "搜索", "关键词", "以前发过")),
             "read_asoul_dynamic": ("回读已取得的动态记录", ("动态详情", "读动态"), ("动态", "详情", "记录", "原文")),
             "get_asoul_on_this_day": ("查询历史同日动态", ("历史上的今天", "历史同日", "那年今日"), ("往年", "同日", "今天", "历史", "回顾")),
             "search_asoul_fanart": ("按标签查找二创作品", ("二创", "同人图", "查找二创"), ("二创", "同人", "图片", "作品", "标签", "找一张", "发来")),
