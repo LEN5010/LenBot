@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.events.models import Event, EventType
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.plugins.models import PluginManifest, PluginPermission, PluginType
 from len_bot.tools.results import ToolResult, ToolSource
 from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
@@ -21,15 +20,10 @@ class LiveStatusArguments(BaseModel):
 
 
 class BilibiliLiveSensor(BasePlugin):
-    def __init__(self, *, config: LivePluginConfig, enabled: bool):
-        super().__init__(PluginManifest(id='bilibili_live_sensor', name='哔哩哔哩直播监测',
-            description='采集真实房间状态，并为订阅群的新场次生成一次邀请。',
-            plugin_type=PluginType.HYBRID, enabled=enabled, config=config.model_dump(),
-            config_schema=LivePluginConfig.model_json_schema(), timeout_seconds=config.tool_timeout_seconds,
-            permissions=[PluginPermission.EMIT_EVENT, PluginPermission.REGISTER_TOOL],
-            emitted_events=['LIVE_STARTED', 'LIVE_ENDED'], registered_tools=['get_live_status','get_live_subscriptions']))
-        self.config = config
-        self.client = LiveClient(config)
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: LivePluginConfig = context.config
+        self.client = LiveClient(self.config)
         self._poll_task = None
         self.samples: dict[str, LiveSample] = {}
         self._last_success_at = None
@@ -47,8 +41,6 @@ class BilibiliLiveSensor(BasePlugin):
             LiveStatusArguments,self.get_subscriptions,
             purpose='核对本群开播通知订阅',aliases=('直播订阅','直播时通知','停止开播通知'),
             keywords=('订阅','通知','开播提醒','取消订阅'),kind='read',roles=('conversation','work'),deferred=True)
-        if self.manifest.enabled:
-            await self.on_enable()
 
     async def on_enable(self):
         if self._poll_task is None or self._poll_task.done():

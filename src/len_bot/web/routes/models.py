@@ -40,7 +40,7 @@ async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: 
     async with runtime.config_update_lock:
         data = runtime.config_store.current.model_dump()
         data["models"] = {"providers": [provider.model_dump() for provider in providers], "routing": routing.model_dump() if routing else None}
-        runtime.config_store.save(RootConfig.model_validate(data))
+        runtime.config_store.save(runtime.config_store.parse(data))
         await runtime.provider_registry.apply_update(providers, routing)
 
 

@@ -896,28 +896,17 @@ class RuntimeQueryService:
         return self.runtime.metrics.snapshot()
 
     def plugins(self) -> list[dict]:
-        from len_bot.config_store import PLUGIN_CONFIG_TYPES
-        from len_bot.plugins.builtin import BUILTIN_PLUGIN_INFO
-
-        active = {item["id"]: item for item in self.runtime.plugin_host.status_snapshot()}
         result = []
         root = self.runtime.config_store.current
-        for plugin_id, metadata in BUILTIN_PLUGIN_INFO.items():
-            saved = root.plugins[plugin_id]
-            loaded = active.get(plugin_id)
-            item = copy.deepcopy(loaded) if loaded is not None else {
-                "id": plugin_id, **metadata, "version": None, "permissions": [],
-                "state": "unconfigured" if saved.config is None else "not_loaded",
-                "last_error": "", "error_count": 0, "last_event_at": None, "last_run_at": None,
-                "source_status": {},
-            }
-            item["active_enabled"] = bool(loaded and loaded["enabled"])
-            item["enabled"] = saved.enabled
-            item["configured"] = saved.config is not None
-            item["config"] = copy.deepcopy(saved.config)
-            item["config_schema"] = PLUGIN_CONFIG_TYPES[plugin_id].model_json_schema()
-            item["open_scenes"] = [{"scene_id": scene_id, "enabled": scene.enabled}
-                                   for scene_id, scene in root.scenes.items() if plugin_id in scene.plugins]
+        for active in self.runtime.plugin_host.status_snapshot():
+            item = copy.deepcopy(active)
+            plugin_id = item['id']
+            saved = root.plugins.get(plugin_id)
+            item['active_enabled'] = bool(item['enabled'] and item['state'] == 'enabled')
+            item['enabled'] = bool(saved and saved.enabled)
+            item['configured'] = bool(saved and saved.config is not None)
+            item['open_scenes'] = [{'scene_id': scene_id, 'enabled': scene.enabled}
+                for scene_id, scene in root.scenes.items() if plugin_id in scene.plugins]
             result.append(item)
         credential_names={"sessdata","bili_jct","api_key","access_token","refresh_token","token","password","secret","cookie","authorization"}
         for item in result:

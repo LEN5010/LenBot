@@ -14,8 +14,8 @@ import json
 import trafilatura
 
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.config_store import SearchPluginConfig
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from .config import SearchPluginConfig
+from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.net_policy import validate_url
 from len_bot.tools.http import fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
@@ -92,24 +92,12 @@ class ReadPageArguments(BaseModel):
 
 
 class WebSearchToolPlugin(BasePlugin):
-    def __init__(self, *, config: dict, enabled: bool):
-        super().__init__(manifest=PluginManifest(
-            id="web_search_tool",
-            name="实时联网认知检索",
-            description="通过 Bing 公开检索查找网页，读取正文、PDF文本并保留图表入口，无需单独配置密钥。",
-            version="1.1.0",
-            timeout_seconds=config["tool_timeout_seconds"],
-            plugin_type=PluginType.TOOL,
-            permissions=[PluginPermission.REGISTER_TOOL],
-            config_schema=SearchPluginConfig.model_json_schema(),
-            config=config, enabled=enabled,
-            registered_tools=["web_search", "read_page"],
-        ))
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: SearchPluginConfig = context.config
         self._client = httpx.AsyncClient(
-            timeout=config["request_timeout_seconds"], trust_env=False,
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=False,
-        )
+            timeout=self.config.request_timeout_seconds, trust_env=False,
+            headers={"User-Agent": USER_AGENT}, follow_redirects=False)
 
     async def on_load(self, context: PluginContext) -> None:
         context.register_tool(
@@ -136,7 +124,7 @@ class WebSearchToolPlugin(BasePlugin):
 
     async def _web_search(self, args: WebSearchArguments, call_context: PluginCallContext) -> ToolResult:
         query = args.query
-        max_results = self.manifest.config["max_results"]
+        max_results = self.config.max_results
 
         resp = await self._client.get(SEARCH_URL, params={"q": query, "format": "rss"})
         resp.raise_for_status()

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolResult, ToolSource
 
 from .calendar import CalendarService, ScheduleRequest, ScheduleResult
@@ -26,18 +26,14 @@ class RenderedSchedule:
 
 
 class AsoulCalendarPlugin(BasePlugin):
-    def __init__(self, *, config: CalendarConfig, enabled: bool, time_settings: TimeSettings,
-                 members: list[MemberSettings]):
-        super().__init__(PluginManifest(id="asoul_calendar", name="A-SOUL 日程", version="1.0.0",
-            description="读取唯一 ICS 源的日程；精确命令由运行时提交确定性日程图片。",
-            plugin_type=PluginType.TOOL, permissions=[PluginPermission.REGISTER_TOOL],
-            enabled=enabled, timeout_seconds=config.tool_timeout_seconds, config=config.model_dump(),
-            config_schema=CalendarConfig.model_json_schema(), registered_tools=["get_live_schedule"]))
-        self.config = config
-        self.time_settings = time_settings
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: CalendarConfig = context.config
+        self.time_settings = context.time_settings
+        members = context.members
         self.member_keywords = tuple(value for member in members for value in (member.name, *member.aliases))
-        self.service = CalendarService(config, time_settings.timezone, members)
-        self.renderer = ScheduleRenderer(config)
+        self.service = CalendarService(self.config, self.time_settings.timezone, members)
+        self.renderer = ScheduleRenderer(self.config, resource_directory=context.directory)
 
     async def on_load(self, context: PluginContext):
         context.register_tool(name="get_live_schedule",

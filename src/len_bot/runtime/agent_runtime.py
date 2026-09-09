@@ -27,7 +27,7 @@ from len_bot.media.service import MediaService
 from len_bot.memory.reflection import ReflectionEngine
 from len_bot.memory.reflector import LLMReflector
 from len_bot.memory.store import MemoryStore
-from len_bot.plugins import PluginHost
+from len_bot.plugins.host import PluginHost
 from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
@@ -215,7 +215,7 @@ class AgentRuntime:
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data["runtime"].update(values)
-            candidate = RootConfig.model_validate(data)
+            candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
             live_keys = set(values) if live else set(values) & EXECUTION_BUDGET_FIELDS
             if live_keys:
@@ -231,7 +231,7 @@ class AgentRuntime:
         self._running = True
         restored = await self.event_store.recover_social_work() if recover else []
         await self.action_queue.start()
-        await self._load_builtin_plugins()
+        await self._load_plugins()
         self._ingestion_ready.set()
         await self.scheduler.start()
         await self.job_runner.resume_skill_candidates()
@@ -245,40 +245,29 @@ class AgentRuntime:
                 await self._on_burst(BurstAssembler._create_burst(pending))
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
-    async def _load_builtin_plugins(self) -> None:
-        from len_bot.plugins.builtin import get_builtin_plugins
-
-        settings = self.config_store.current.plugins
-        factories = get_builtin_plugins()
-        if set(settings) != set(factories):
-            raise ValueError("plugins must explicitly configure every installed builtin plugin")
-        for plugin_id, factory in factories.items():
-            state = settings[plugin_id]
-            if state.config is None:
-                continue
-            if plugin_id in {'asoul_calendar', 'asoul_dynamics'} and self.config_store.current.time is None:
-                continue  # Explicitly unconfigured and disabled; RootConfig refuses enablement.
-            kwargs = {'config': state.config, 'enabled': state.enabled}
-            if plugin_id in {'asoul_calendar', 'asoul_dynamics', 'bilibili_live_sensor', 'group_summary'}:
-                kwargs['config'] = state.parsed_config
-            if plugin_id in {'asoul_calendar', 'asoul_dynamics'}:
-                kwargs.update(time_settings=self.config_store.current.time, members=self.config_store.current.members)
-            plugin = factory(**kwargs)
-            await self.plugin_host.load_plugin(plugin)
+    async def _load_plugins(self) -> None:
+        for plugin_id, state in self.config_store.current.plugins.items():
+            if state.enabled:
+                try:
+                    await self.plugin_host.enable_plugin(plugin_id)
+                except Exception as error:
+                    logger.error('Plugin %s could not be enabled: %s', plugin_id, _error_text(error))
 
     async def update_plugin_settings(self, plugin_id, *, enabled=None, values=None):
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            state = data["plugins"][plugin_id]
+            if plugin_id not in self.config_store.catalog.entries:
+                raise KeyError(plugin_id)
+            state = data["plugins"].setdefault(plugin_id, {'enabled': False, 'config': None})
             if enabled is not None:
                 state["enabled"] = enabled
             if values is not None:
                 state["config"] = {**(state['config'] or {}), **values}
-            candidate = RootConfig.model_validate(data)
+            candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
             if self.plugin_host.has_plugin(plugin_id):
                 self.plugin_host.set_plugin_config(plugin_id, candidate.plugins[plugin_id].config)
-            if enabled is True and self.plugin_host.has_plugin(plugin_id):
+            if enabled is True:
                 await self.plugin_host.enable_plugin(plugin_id)
             elif enabled is False:
                 await self.plugin_host.disable_plugin(plugin_id)
@@ -291,7 +280,7 @@ class AgentRuntime:
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data["delivery"]["shadow"] = enabled
-            candidate = RootConfig.model_validate(data)
+            candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
             self.shadow_mode = enabled
 
@@ -301,7 +290,7 @@ class AgentRuntime:
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data[section] = values
-            self.config_store.save(RootConfig.model_validate(data))
+            self.config_store.save(self.config_store.parse(data))
             if section in {'time', 'members'}:
                 self.restart_required = True
 
@@ -309,7 +298,7 @@ class AgentRuntime:
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data['scenes'][scene_id] = values
-            self.config_store.save(RootConfig.model_validate(data))
+            self.config_store.save(self.config_store.parse(data))
         actor = self.scene_manager._actors.get(scene_id)
         if actor:
             if not self.scene_policy.enabled(scene_id):
