@@ -32,13 +32,13 @@ ConfigStore 从当前项目根目录的固定 `lenbot.config.json` 读取 RootCo
 
 SQLite 保存事件、账号、认识、人工样例、素材与来源、工作模型绑定、技能、资料、检查点和运行结果，不作为运行配置来源。人格模板只返回候选字段和参考；操作者选择字段填入草稿，再正常保存配置，样例另经现有数据库接口逐条保存，结果分别呈现。
 
-请求来源、处理集合、交付关联与资料采用范围写入既有事件、task payload、工作结果及检查点 JSON，不为这些字段新增表或列。旧记录缺少独立 request_source_event_id 时保留未知，旧 observation_reads 缺省为空；读取投影不从累积证据猜请求人、推定全文已读或写回历史。
+请求来源、逐来源处理结果、checkpoint、挂起预算、交付关联与资料采用范围写入既有事件、task payload、工作结果及检查点 JSON，不为这些字段新增表或列。旧记录缺少独立 request_source_event_id 时保留未知，旧 observation_reads 缺省为空；读取投影不从累积证据猜请求人、推定全文已读或写回历史。
 
 ## 输入、注意力与实际阅读
 
 事件保存、注意力扫描、摘要覆盖、本轮原文读取与来源处理分别记录。AttentionPolicy 在事件事务前提供观察机会，扫描位置与待处理唤醒和原话同事务保存；BurstAssembler 只按到达时间聚合获得机会的输入，不决定其中各请求的归属或完成情况。
 
-Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.handled_source_event_ids 经同一事务写入提交事件，并由 reducer 只移除这些 pending_wakes。处理来源必须同时属于已读集合和当前待处理集合，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。
+Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。
 
 普通聊天按实际读过的快照提交。普通回应、认识修改、工作控制、提醒、履约与 OpenLoop 由 Actor 检查有关的未读确定唤醒：使用原请求者、回应及提及对象、认识主体与证据、真实事项 ID 和 reply 引用关系，不按全量群消息或关键词猜关联。有关追加须先读完，其他独立请求不因此阻塞本项提交。认识版本或租约失效结束提交，不进入通用重试循环。Gate 沿用 Actor 的检查结果；Runtime 从事件存储取得实际新输入，Mailbox 只保存轮次身份、互动参与者与显式取消。
 
@@ -62,9 +62,11 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 调用角色与记账用途分开：开播邀请使用 conversation 的既有模型绑定，并以 announcement 用途写入原 model_calls。Gateway 接受这个正式用途，查询和用量汇总保留其独立分类；调用详情按真实 episode_id 关联公告 trace，不把源事件 ID 当成轮次 ID。
 
-模型通过窄原生工具读取与暂存。`finish_turn` 接受零至三条消息及本次 handled_sources，空消息列表表示沉默；片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。
+模型通过窄原生工具读取与暂存。`respond` 接受本阶段消息、逐来源 sources 和 next=end/continue/wait，空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。
 
-无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。终结工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。核心与插件提案直接返回 status、proposal_ref 及对应 ack_ref／operation_ref，仍只表示未提交意向。最后一个模型步骤预留终结工具，定义由当前提案状态生成，预算耗尽不追加模型请求。每次请求和 Trace 记录运行时生成的调用序号、后续模型余量、工具余量；工作还记录累计执行时间余量。压缩计入原账后，重新生成剩余额度、终结定义和最终容量核对，避免把压缩前的工具额度发送给模型。
+无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。提交工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。每个 checkpoint 使用独立 CONVERSATION_COMMITTED 事件与 action_id，发送批次绑定该提交，episode_id 另保留原执行身份；重复提交只返回原记录，不再次发布。Actor 原子提交后更新会话/认识版本和累计消息数，Ledger 才清空该阶段；next=continue 在原 AgentLoop 中得到真实提交/发布回执再继续，步骤和工具额度不重置。发布失败不把 accepted 改成 rejected，后续失败仍保留所有已提交 checkpoint。
+
+核心与插件提案直接返回 status、proposal_ref 及对应 ack_ref／operation_ref，仍只表示未提交意向。最后一个模型步骤预留终结工具，定义由当前提案状态生成，预算耗尽不追加模型请求。每次请求和 Trace 记录运行时生成的调用序号、后续模型余量、工具余量；工作还记录累计执行时间余量。压缩计入原账后，重新生成剩余额度、终结定义和最终容量核对，避免把压缩前的工具额度发送给模型。
 
 模型返回的所有调用先核对完整 ID、唯一性、工具名与 JSON 对象形状，再执行。非法 JSON、未知工具、缺失或重复 ID、协议截断保持运行失败；已开放工具的参数类型错误形成 invalid_arguments 观察，无结果、单次超时和可处理业务失败保留各自错误码，在原预算内交回模型决策。正常返回与可处理错误保留对应原生回执，成功资料不因同组另一条普通错误而丢失；运行时不自行修改参数、重做相同调用或开启修复模型。
 
@@ -112,6 +114,8 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 当前 AGENT_JOB_FINISHED，或重启后指向当前 result_ready 工作的 TASK_REVIEW，使对应完成／部分结果成为首次交付候选。Context 装入真实请求原话、请求者、现行目标、来源、未决项与已有交付关系，无需等待群友再次索要结果；普通目录中的旧结果不产生同样机会。提交绑定当前 job_id、revision 与唯一 delivery_action_id，发送回执保存 delivery_event_id；sent 才完成交付，not_sent 与 unknown 保留原发送结局，不能触发重新研究或自动补发。具有真实履约关联的独立结果可依次通过连续 Bot 消息限制，单轮表达数量和同群发送顺序仍保留。
 
+next=wait 只允许一个真实期待回应的消息，并保留后续模型和消息额度。发送成功后的 open loop 来源事件保留 ConversationResume：原请求、资料位置、模型绑定、累计额度、下个 checkpoint 和提案编号，不保存整套供应商 trajectory。目标账号明确引用原发送消息，或只有一个对应等待且实际 @Bot 时，在入站事务中领取这条回应并结束等待；同一原请求恢复原 episode 与剩余额度，等待期间不持有模型并发位。未匹配的独立新话不领取这份预算。新进程启动将旧挂起等待标为 review_required；不自动重发，也不从头执行。
+
 群总结在原 task.payload 保存工作种类、请求来源、summary_range 和 summary_coverage。总结 Schema 使用含时区的 ISO 8601 字符串，插件入口只转换一次为 AwareDatetime；Ledger 与 GroupSummaryRange 使用带时区对象，不再次猜格式。绝对范围与快照由提案固定，修订沿已有 revision；统计与分页复用同一 scene、时间半开区间和 rowid 上界条件。默认只读本群非 Bot 的真实人类消息，保留日程命令和评论。分页位置是存储顺序，引用来自原事件；资料取回不等于模型已读，展示范围决定实际覆盖。模型主动终结但尚未读完匹配记录时为 partial，硬预算阻止终结时为 interrupted；不新增调度器、模型流水线、群史库或自动技能维护。
 
 ## 认识、维护与方法技能
@@ -146,7 +150,7 @@ find_person 按当前场景与截点内的账号/群名片/昵称和有效 repor
 
 历史、工具观察和媒体的场景隔离在 SQL／存储层执行，global-safe 素材由运营显式发布。现存网络策略限制可访问目标，工具发现与分页不改变这些权限。
 
-网页搜索返回标题、来源和摘要；read_page 提取正文并保留图表与 PDF 入口。conversation 与 work 可按现有网络边界用 read_web_media 读取已给出的公开图片或 PDF 页，同事务登记原图与工具观察，再由 read_media 和正常 finish_turn 引用场景资产发送；URL 本身不授予像素或发送资格。受限计算与有限枚举只执行所提供模型，范围、条件与未核实假设必须保留；算法与校验规则未因工具发现调整而改变。
+网页搜索返回标题、来源和摘要；read_page 提取正文并保留图表与 PDF 入口。conversation 与 work 可按现有网络边界用 read_web_media 读取已给出的公开图片或 PDF 页，同事务登记原图与工具观察，再由 read_media 和正常 respond 引用场景资产发送；URL 本身不授予像素或发送资格。受限计算与有限枚举只执行所提供模型，范围、条件与未核实假设必须保留；算法与校验规则未因工具发现调整而改变。
 
 MediaService 读取获准文件并解码、缩放，不计算内容校验和。新文件使用随机文件名；已登记资产继续使用原 path，不重新编号、下载或拆开历史共享文件，同一资产复用已有文件。发送已登记获准资产不要求当前像素；资产的启用与场景范围仍在提案事务和实际发送前核验。视觉分析仍以实际装入像素为依据。当前像素集合从实际消息块同步，压缩或恢复不会把历史读图永久占作当前窗口；换出图片仍保留来源与覆盖记录。缺失、未装入、截断和只覆盖首帧各自明确。运营目录和搜索候选还从本群有限 MESSAGE_SENT 窗口投影 last_sent_at、recent_send_count 和 used_in_last_reply；只按真实 sent 的登记资产计数，不存额外计数账本。目录只提供定位、说明与标签，发送使用获准原图；无人调用的目录联系表渲染已退出。
 
@@ -172,7 +176,7 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 | SceneSession | Actor 保存的身份、游标、版本与收发事实投影 |
 | Read Cutoff / Original Read Set | 快照上界／实际提供原文的集合；上界不表示以前全部已读 |
 | Attention Scan / Pending Wake | 调度扫描位置／尚未被明确处理的唤醒来源；读过不等于已处理 |
-| Request Source / Handled Sources | 每项请求的人类原话身份／本轮已提交处理的来源集合 |
+| Request Source / Source Outcome | 每项请求的人类原话身份／本阶段处理去向、未完成要求与实际操作关联 |
 | Episode Lease / Mailbox | 本轮执行权／轮次身份、互动参与者与显式取消 |
 | Knowledge Revision | 认识账本版本，变化后旧轮次不能按原认识提交 |
 | TurnReferences / ProposalLedger | 本轮定位映射／未提交意向，不是永久身份或执行结果 |

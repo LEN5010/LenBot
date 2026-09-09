@@ -7,6 +7,7 @@ import StatusBadge from './StatusBadge.vue'
 import ObservationDetails from './ObservationDetails.vue'
 import BudgetDetails from './BudgetDetails.vue'
 import OperationReceipts from './OperationReceipts.vue'
+import SourceOutcomes from './SourceOutcomes.vue'
 import { publicationActionLabel } from '../domain/activity.js'
 const props=defineProps({trace:{type:Object,required:true}})
 const isConversation=computed(()=>['conversation','conversation_error'].includes(props.trace.kind))
@@ -16,6 +17,7 @@ const runs=computed(()=>props.trace.kind.startsWith('agent_job')?props.trace.pay
 const steps=computed(()=>runs.value.flatMap((run,index)=>(run.steps || []).map(step=>({...step,run_revision:run.job_revision,run_index:index+1}))))
 const candidate=computed(()=>[...steps.value].reverse().find(step=>step.terminal_candidate)?.terminal_candidate || runs.value[0]?.terminal_candidate)
 const messages=computed(()=>props.trace.payload.result?.message_proposals || candidate.value?.messages || [])
+const checkpoints=computed(()=>runs.value.flatMap(run=>run.checkpoints || []))
 const decision=computed(()=>props.trace.payload.gate?.committed===true?'对话事务已提交':props.trace.payload.gate?.accepted===true?'Actor / Gate 已接受':props.trace.payload.gate?.accepted===false?'Actor / Gate 已拒绝':'没有提交回执')
 const publication=computed(()=>props.trace.payload.gate?.publication)
 const publicationState=computed(()=>({pending:'等待发布',completed:'发布步骤已完成',failed:'已提交，发布失败',interrupted:'已提交，发布中断',not_repeated:'此前已提交，本次未重复发布'})[publication.value?.status] || publication.value?.status)
@@ -49,6 +51,8 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
     </section>
     <BudgetDetails v-for="item in budgets" :key="item.index" :budget="item.budget" :title="`执行段 ${item.index} 的预算快照`" />
     <OperationReceipts :items="trace.operation_receipts || []" :scene-id="trace.scene_id" />
+    <section v-if="checkpoints.length"><h3>逐阶段提交</h3><article v-for="checkpoint in checkpoints" :key="checkpoint.index" class="candidate-message"><strong>Checkpoint {{ checkpoint.index }} · {{ {end:'本轮结束',continue:'继续执行',wait:'等待外部回应'}[checkpoint.result.next_action] }}</strong><div class="trace-links"><EntityLink type="event" :id="checkpoint.gate.commit_event_id" :scene-id="trace.scene_id" label="查看本阶段提交与回执" /><span>{{ checkpoint.gate.actions_enqueued }} 条已入队</span></div><p v-if="checkpoint.gate.publication?.error" class="text-error">{{ checkpoint.gate.publication.error }}</p><p v-for="(message,index) in checkpoint.result.message_proposals" :key="index">{{ messageText(message) }}</p><SourceOutcomes :items="checkpoint.result.source_outcomes" :scene-id="trace.scene_id" /></article></section>
+    <SourceOutcomes v-else :items="trace.payload.result?.source_outcomes" :scene-id="trace.scene_id" />
     <section v-if="isConversation"><h3>终结候选</h3><p class="muted">候选表达与真实送达分别记录，下方内容不代表已经发到群聊。</p><article v-for="(message,index) in messages" :key="index" class="candidate-message"><span class="muted">第 {{ index+1 }} 条候选</span><p>{{ messageText(message) }}</p><div class="trace-links"><EntityLink v-if="messageSource(message)" type="event" :id="messageSource(message)" :scene-id="trace.scene_id" label="本条请求来源" /><span v-else-if="message.source" class="muted">本轮来源引用 {{ message.source }}，没有保存可回查的原话映射</span><span v-else class="muted">本条请求来源未记录</span><span v-if="message.requester_qq_uid">请求者 QQ {{ message.requester_qq_uid }}</span><span v-if="message.addressed_to?.length">回应对象 {{ message.addressed_to.join('、') }}</span><span v-if="message.expect_reply">等待 {{ message.reply_target || message.expect_reply.target }} 回应</span><v-chip v-if="message.operation_ref" size="small" variant="tonal">操作确认引用 {{ message.operation_ref }}</v-chip><span v-if="message.job_revision">消息绑定版本 {{ message.job_revision }}</span></div></article><p v-if="!messages.length">{{ candidate && Array.isArray(candidate.messages)?'本候选没有消息，表示模型选择沉默。':'没有可确认的消息候选。' }}</p><ResourceViewer v-if="trace.payload.result?.handled_source_event_ids" title="本轮提交处理的原话 ID" :content="trace.payload.result.handled_source_event_ids" /></section>
     <section v-else-if="isNative">
       <h3>{{ trace.kind==='calendar_command'?'确定性日程交互':'订阅开播邀请' }}</h3>

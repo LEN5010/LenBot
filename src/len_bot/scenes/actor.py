@@ -172,7 +172,18 @@ class SceneActor:
                 loop_sources = await self.event_store.events_by_ids(self.scene_id,
                     {loop['source_event_id'] for loop in active_loops}, self.session.last_observed_event_rowid)
                 delivered = {source.id for source in loop_sources if is_real_send(source, self.bot_actor_id)}
-                waiting = {loop['target_actor_id'] for loop in active_loops if loop['source_event_id'] in delivered}
+                waiting = {loop['target_actor_id'] for loop in active_loops
+                           if loop['source_event_id'] in delivered and not loop['resume_state']}
+                targeted=[loop for loop in active_loops if loop['source_event_id'] in delivered
+                          and loop['resume_state'] and loop['target_actor_id']==event.actor_id]
+                exact=[loop for loop in targeted if event.payload.get('reply_to_message_id') is not None
+                       and str(event.payload['reply_to_message_id'])==loop['message_id']]
+                matches=exact if exact else targeted if event.is_mention_bot else []
+                if len(matches)==1 and not event.metadata.get('conversation_excluded'):
+                    loop=matches[0]
+                    event.metadata['conversation_resume']={'loop_id':loop['id'],
+                        'send_event_id':loop['source_event_id'],'state':loop['resume_state']}
+                    waiting.add(event.actor_id)
                 if not event.is_reply_bot:
                     projected = await self.event_store.project_reply_context(
                         self.scene_id, [event], through_rowid=self.session.last_observed_event_rowid)
@@ -238,7 +249,7 @@ class SceneActor:
             raise SceneCommitConflict('Episode lease changed')
         if item.mailbox.is_cancelled():
             raise SceneCommitConflict(item.mailbox.cancellation_reason())
-        event_id = 'turn:' + item.mailbox.episode_id
+        event_id = f'turn:{item.mailbox.episode_id}:checkpoint:{item.outcome.checkpoint_index}'
         if await self.event_store.event_exists(event_id, self.scene_id):
             saved = (await self.event_store.read_context(event_id, 0, 0, [self.scene_id]))[0]
             outcome = EpisodeOutcome.model_validate(saved['payload']['outcome'])
@@ -248,7 +259,10 @@ class SceneActor:
             decision.commit_event_id = event_id
             decision.action_ids = saved['payload'].get('action_ids', [])
             decision.publication = PublicationRecord(status='not_repeated', phase='previous_commit')
+            decision.scene_session=self.session.model_copy(deep=True)
             return decision
+        if item.outcome.checkpoint_index!=item.mailbox.next_checkpoint:
+            raise SceneCommitConflict('Checkpoint sequence changed')
         state = self.session
         if not native_output and state.knowledge_revision != item.knowledge_revision:
             raise SceneCommitConflict('Knowledge revision changed')
@@ -261,7 +275,7 @@ class SceneActor:
         if not handled.issubset(read):
             raise SceneCommitConflict('Handled wake sources were not actually read in this turn')
         pending_ids = {wake.event_id for wake in state.pending_wakes}
-        if not handled.issubset(pending_ids):
+        if not handled.issubset(pending_ids|item.mailbox.handled_source_ids):
             raise SceneCommitConflict('Handled sources are not currently pending in this scene')
         if set(item.outcome.release_focus_actor_ids)-await self.event_store.event_actors(self.scene_id,handled):
             raise SceneCommitConflict('Ending an interaction requires this participant\'s handled original')
@@ -286,7 +300,8 @@ class SceneActor:
         event = Event(id=event_id, event_type=EventType.CONVERSATION_COMMITTED, scene_id=self.scene_id,
                       actor_id='system:conversation', timestamp=self.event_store.clock(),
                       payload={'source_event_ids': item.source_event_ids,
-                               'handled_source_event_ids': item.outcome.handled_source_event_ids,
+                               'source_outcomes': [source.model_dump(mode='json') for source in item.outcome.source_outcomes],
+                               'episode_id':item.mailbox.episode_id,'checkpoint_index':item.outcome.checkpoint_index,
                                'output_kind': item.mailbox.output_kind,
                                'origin_event_id': item.mailbox.origin_stimulus_id,
                                'outcome': item.outcome.model_dump(mode='json')},
@@ -302,6 +317,11 @@ class SceneActor:
             # No Scheduler or Action publication runs inside this commit. The
             # caller receives this durable decision after the Actor adopts it.
             self.session = candidate
+            decision.scene_session=candidate.model_copy(deep=True)
+            item.mailbox.base_scene_version=candidate.version
+            item.mailbox.next_checkpoint+=1
+            item.mailbox.messages_committed+=len(item.outcome.message_proposals)
+            item.mailbox.handled_source_ids.update(handled)
         return decision
 
     async def _related_unread_wakes(self, outcome, read, state, scene_policy):

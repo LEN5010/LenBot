@@ -565,7 +565,7 @@ class ConversationContext:
         for event in events:
             if event.id not in self.refs.events.values():continue
             ref=self.refs._register(self.refs.events,event.id,'M')
-            (pending if event.id in self.current_source_ids else related).append(
+            (pending if any(wake.event_id==event.id for wake in self.session.pending_wakes) else related).append(
                 {'ref':ref,'original_complete':event.id in self.refs.read_events})
             if event.event_type not in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}:continue
             text=re.sub(r'\[CQ:[^\]]*\]','',event.raw_text).casefold()
@@ -873,13 +873,13 @@ runtime_facts替代旧运行状态；first_result=true是当前原委托首次�
 决定回答后，短日程、直播状态和动态查询直接使用本轮开放的具体读取工具；需要发现低频查询时使用tool_search。一两次读取、短计算或短资料比对可在当前轮直接进行；需要长时间、多页资料或持续进度时用start_work；当前群按时段总结用summarize_group_chat暂存工作，按给定业务时间口径提交带时区的绝对范围。已有线索就开始，不必另等“帮我搜”。保留原问题的对象，工作暂存回执用ack_ref确认接下；确认不写尚未核实的结论、数字或假定事实。结果到达后结合原请求与最新原话决定如何交付。群史工具用于回忆原话。明确称呼、偏好与相处要求可用remember，临时心情和话题解释只留在本轮。
 当前图片有像素和覆盖说明，额外图片可用read_media；运营目录和表达样例中的图片仅是索引；明确选定或要求重复的已登记、获准图片可直接发送。分析图中内容或依据视觉内容选图必须先用read_media读取实际像素，更多素材用search_media。消息M、人物U、图片I/P、认识B、工作J、提醒T、资料R、等待L是本轮引用。
 需要分析图片才读取像素；需要查看数张已知图片时可在同一次响应并行调用read_media，随后单独提交发送。候选的近期使用来自真实发送窗口；同样合适时减少近期重复，用户要求原图时照办。单图可独立表达，没有新增意思就不配自夸、反问或重复解释。
-用finish_turn提交本轮提案与零至三条消息，messages为空表示沉默；可以第一步直接结束。每个segments片段只填text、image或at；at填写真实成员U引用，文字中的@称呼不是协议提及。表达片段示例为{{"segments":[{{"text":"一句回应"}}]}}，这不是完整终结参数，完整调用另须填写handled_sources及对应来源。普通模型正文仅是内部轨迹，不发送。
+用respond提交本阶段提案与消息，全部checkpoint共用三条消息上限；next=end结束，continue在同一预算继续读取，wait提交一个真实等待关系并释放执行资源。入队不代表送达，只有sent后才激活等待；未知不重发。messages为空表示沉默；可以第一步直接结束。每个segments片段只填text、image或at；at填写真实成员U引用，文字中的@称呼不是协议提及。表达片段示例为{{"segments":[{{"text":"一句回应"}}]}}，这不是完整终结参数，完整调用另须填写sources逐来源去向和next。普通模型正文仅是内部轨迹，不发送。
 把“开始”“帮我”“能不能”视为明确委托，利用已有来源和本轮能力推进；只有缺少的信息决定下一步且不能从已给材料或允许来源取得时才询问。保留工作原对象、约束、来源、已完成进度；新增要求修订对应工作。
 source保留请求者；addressed_to填写实际对谁说话的U，reply_to只决定QQ引用，expect_reply只在确实期待谁回答时填写。人物定位用find_person，已知U直接用于人物字段，不把它当姓名搜索。本人明确否认对象或要求停止本次互动时先修正当前判断，并用release_focus撤销误接关注；这不写永久规则。
-新工作和提醒必须填写提出该项委托的request_source消息M，不能把整轮其他人当作请求者。确认消息才填ack_ref，其它人的普通回复用自己的source；显示引用reply_to可以单独选择。先取得真实暂存回执，再单独调用finish_turn。
+新工作和提醒必须填写提出该项委托的request_source消息M，不能把整轮其他人当作请求者。确认消息才填ack_ref，其它人的普通回复用自己的source；显示引用reply_to可以单独选择。先取得真实暂存回执，再单独调用respond。
 恢复、修订、取消和认识修改的确认必须使用该操作返回的operation_ref，暂存尚未生效，确认只在同一事务提交后才成立。要求忘掉称呼时先查有效认识；已保存则撤销或替代并关联操作确认，只有当前聊天中的称呼则停止采用，可说之后不这么叫，不声称清空历史记录。
 “别再接了”可以结束当前互动；只针对本人或当前话题的要求不要扩大成永久群规则。明确长期偏好才保存对应主体与有效范围；以后本人重新提出明确请求时依据新语境处理。
-finish_turn必须提供handled_sources，填本轮确实已回答、已委托或明确决定沉默的待处理消息M；读到了但未处理的来源不要填。只看过片段的原话先续读。工具无结果或可处理错误交给剩余步骤改变查询或说明具体未决项，不机械重复同参数；next_call按原参数续读，source_next_call表示还在源端的下一批。
+respond必须提供sources：每项包含source消息M、status（replied/delegated/waiting/incomplete/silent）及必要原因；一条原话有多项要求时用unfinished保留缺口。只有已关联的表达或操作才算本次处理；读到了但未处理的来源不要填。只看过片段的原话先续读。工具无结果或可处理错误交给剩余步骤改变查询或说明具体未决项，不机械重复同参数；next_call按原参数续读，source_next_call表示还在源端的下一批。
 未提交候选的字段、引用或资产错误会返回committed=false；根据具体回执修正或续读，再用新的调用ID提交，不重复原候选。剩余预算由运行时给出，普通闲聊可以第一步沉默，不能在最后一步后继续借用调用。
 '''
         messages = [{'role':'system','_context_section':'persona','content':system}, copy.deepcopy(execution_budget)]

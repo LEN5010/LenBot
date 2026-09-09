@@ -3,10 +3,43 @@ from typing import Optional, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.cognition.jobs import JobProposal
 from len_bot.media.models import MessageSegment, segment_text
+from len_bot.cognition.providers import ModelProfile
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
     ACTION = "ACTION"
+
+
+class SourceOutcome(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_event_id: str
+    status: Literal['replied','delegated','waiting','incomplete','silent']
+    reason: str = ''
+    unfinished: list[str] = Field(default_factory=list)
+    proposal_refs: list[str] = Field(default_factory=list)
+    message_indices: list[int] = Field(default_factory=list)
+    action_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+
+class ConversationResume(BaseModel):
+    """A sent wait retains its request and budget, not a provider trajectory."""
+    model_config = ConfigDict(extra='forbid')
+    episode_id: str
+    runtime_started_at: float
+    model_profile: ModelProfile
+    model_calls_limit: int = Field(ge=1)
+    tool_calls_limit: int = Field(ge=0)
+    model_calls_used: int = Field(ge=0)
+    tool_calls_used: int = Field(ge=0)
+    context_tokens: int = Field(ge=1)
+    output_tokens: int = Field(ge=1)
+    elapsed_seconds: float = Field(ge=0)
+    messages_committed: int = Field(ge=0,le=3)
+    next_checkpoint: int = Field(ge=0)
+    next_proposal_handle: int = Field(ge=1)
+    source_event_ids: list[str]
+    result_ids: list[str]
 
 
 class OperationReceipt(BaseModel):
@@ -109,8 +142,15 @@ class EpisodeOutcome(BaseModel):
     job_proposals: list[JobProposal] = Field(default_factory=list)
     memory_proposals: list[MemoryProposal] = Field(default_factory=list)
     resolve_open_loop_ids: list[str] = Field(default_factory=list)
-    handled_source_event_ids: list[str] = Field(default_factory=list)
+    source_outcomes: list[SourceOutcome] = Field(default_factory=list)
     release_focus_actor_ids: list[str] = Field(default_factory=list)
+    checkpoint_index: int = Field(default=0,ge=0)
+    next_action: Literal['end','continue','wait'] = 'end'
+    resume_state: ConversationResume | None = None
+
+    @property
+    def handled_source_event_ids(self):
+        return [item.source_event_id for item in self.source_outcomes]
 
     def requires_fresh_input(self) -> bool:
         return bool(self.task_proposals or self.job_proposals or self.memory_proposals

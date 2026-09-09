@@ -47,7 +47,7 @@ class AsoulDynamicsPlugin(BasePlugin):
             ("search_asoul_fanart", FanartSearchRequest, self.search_fanart, True,
              "按源站二创标签检索。query/character/content_type/category/kind/cursor的null均为不筛选；character是源标签（可含团体），不自动展开成员。sort/limit为null时来自配置，读完当前正文再复制source_next_call。公开图片链接可用read_web_media取得像素和可发送的场景资产引用。"),
             ("get_random_asoul_fanart", RandomFanartRequest, self.random_fanart, True,
-             "按明确源标签随机取一条二创；null为不筛选。每次执行是独立随机查询，仅返回观察，不主动发送。公开图片链接可用read_web_media取得像素和场景资产引用，再由finish_turn提出图片发送；链接本身不代表已看像素。"),
+             "按明确源标签随机取一条二创；null为不筛选。每次执行是独立随机查询，仅返回观察，不主动发送。公开图片链接可用read_web_media取得像素和场景资产引用，再由respond提出图片发送；链接本身不代表已看像素。"),
         ]
         discovery = {
             "get_asoul_dynamics": ("读取成员最近动态", ("最新动态", "最近动态"), ("动态", "最近", "最新", "近况")),
@@ -75,7 +75,7 @@ class AsoulDynamicsPlugin(BasePlugin):
             "source_url": snapshot.url,
             "pixels_loaded": False,
             "content_scope": "保留源查询返回的全部字段；未取得平台原动态详情，片段不扩写为全文。",
-            "media_read": "公开图片或PDF链接可交read_web_media；仅当观察返回已登记的attachments后，才有可回读、可供finish_turn引用的场景资产。",
+            "media_read": "公开图片或PDF链接可交read_web_media；仅当观察返回已登记的attachments后，才有可回读、可供respond引用的场景资产。",
             "data": data if data is not None else snapshot.data,
         }
         items = payload["data"].get("items")

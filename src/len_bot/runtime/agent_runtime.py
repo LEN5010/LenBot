@@ -14,7 +14,7 @@ from len_bot.actions.models import ActionItem, DeliveryResult
 from len_bot.actions.queue import ActionQueue
 from len_bot.cognition.agent_loop import CommitConflict, FreshInputConflict, _error_text
 from len_bot.cognition.mailbox import EpisodeMailbox
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
+from len_bot.cognition.models import ConversationResume, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RoutingConfig
 from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.config import RuntimeConfig
@@ -188,6 +188,7 @@ class AgentRuntime:
         if self._running:
             return
         await self.event_store.initialize()
+        await self.event_store.mark_suspended_conversations_for_review()
         self.memory_store = MemoryStore(self.event_store._db, self.event_store._write_lock, clock=self.clock)
         await self.memory_store.initialize()
         await self._load_configuration()
@@ -669,20 +670,35 @@ class AgentRuntime:
             pending_ids = {wake.event_id for wake in actor.session.pending_wakes}
             if not pending_ids.intersection(burst.source_event_ids):
                 continue
+            resumed=[event for event in burst.events if event.metadata.get('conversation_resume')]
+            if resumed:
+                event=resumed[0]
+                remaining=[item for item in burst.events if item.id!=event.id]
+                if remaining:self._pending_bursts[scene_id]=self._burst_from_events(remaining,burst)
+                burst=self._burst_from_events([event],burst)
             async with self._cognition_semaphore:
                 await self._run_conversation(actor, burst)
 
     async def _run_conversation(self, actor, burst: Stimulus) -> None:
         scene_id = actor.scene_id
-        episode_id = f"conversation:{uuid.uuid4().hex}"
+        resume_packet=next((event.metadata['conversation_resume'] for event in burst.events
+                            if event.metadata.get('conversation_resume')),None)
+        resume=ConversationResume.model_validate(resume_packet['state']) if resume_packet else None
+        episode_id = resume.episode_id if resume else f"conversation:{uuid.uuid4().hex}"
         mailbox = EpisodeMailbox(episode_id, scene_id, actor.session.version,
                                  origin_stimulus_id=burst.source_event_ids[0] if burst.source_event_ids else None)
         mailbox.origin_mode = burst.origin_mode
         mailbox.source_started_at = min((event.timestamp for event in burst.events), default=self.clock())
+        if resume:
+            mailbox.messages_committed=resume.messages_committed
+            mailbox.next_checkpoint=resume.next_checkpoint
+            mailbox.handled_source_ids.update(resume.source_event_ids)
         if not actor.acquire_episode_lease(episode_id, mailbox):
             raise SceneCommitConflict(f"Concurrent conversation in {scene_id}")
         started = time.monotonic()
-        trace: dict[str, Any] = {}
+        trace: dict[str, Any] = {'checkpoints':[]}
+        if resume:trace['resumed_from']={'loop_id':resume_packet['loop_id'],'send_event_id':resume_packet['send_event_id'],
+                                        'model_calls_used':resume.model_calls_used,'tool_calls_used':resume.tool_calls_used}
         session = await self._conversation_snapshot(actor)
         trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
         observed, revision = session.last_observed_event_rowid, session.knowledge_revision
@@ -692,7 +708,16 @@ class AgentRuntime:
         outcome: EpisodeOutcome | None = None
         self.metrics.inc_social("cognition_attempts")
         try:
+            if resume and resume.runtime_started_at!=self._started_at:
+                raise SceneCommitConflict('Suspended conversation belongs to a previous process; review is required, no request is resent')
             events, observed, source_ids = await self._read_initial_window(session, burst.source_event_ids)
+            if resume:
+                anchors=await self.event_store.events_by_ids(scene_id,
+                    [*resume.source_event_ids,resume_packet['send_event_id']],observed)
+                anchors=await self.event_store.project_reply_context(scene_id,anchors,through_rowid=observed)
+                events=list({event.id:event for event in [*anchors,*events]}.values())
+                events.sort(key=lambda event:event.metadata['_rowid'])
+                source_ids=list(dict.fromkeys([*source_ids,*(event.id for event in anchors)]))
             if any(_is_shadow_input(event) for event in events if event.id in source_ids):
                 mailbox.origin_mode = "shadow"
             def input_prepared(provided_ids, read_ids):
@@ -724,7 +749,7 @@ class AgentRuntime:
                         "source_event_ids": list(source_ids)}
 
             async def commit(candidate: EpisodeOutcome, *, read_event_ids=None) -> GateDecision:
-                nonlocal decision, outcome, source_ids
+                nonlocal decision, outcome, source_ids,revision
                 outcome = candidate
                 if read_event_ids is not None:
                     source_ids = sorted(read_event_ids)
@@ -735,7 +760,22 @@ class AgentRuntime:
                 self._last_gate_decision = decision
                 if decision.accepted:
                     outcome = decision.committed_proposal.outcome
+                    revision=decision.scene_session.knowledge_revision
+                    trace['checkpoints'].append({'index':outcome.checkpoint_index,'gate':decision.record(),
+                        'result':outcome.model_dump(mode='json'),'references':trace.get('references')})
                 return decision
+
+            async def publish(checkpoint_decision):
+                try:
+                    await self.runtime_gate.publish_committed(checkpoint_decision,mailbox)
+                finally:
+                    for checkpoint in trace['checkpoints']:
+                        if checkpoint['gate']['commit_event_id']==checkpoint_decision.commit_event_id:
+                            checkpoint['gate']=checkpoint_decision.record()
+                self.metrics.inc_social('cognition_committed')
+                if checkpoint_decision.committed_proposal.resolved_loop_ids:
+                    self.metrics.inc_social('openloops_resolved',len(checkpoint_decision.committed_proposal.resolved_loop_ids))
+                if checkpoint_decision.actions_enqueued:self.metrics.inc_social('gate_action')
 
             if self.mock_turn_handler is not None:
                 input_prepared({event.id for event in events},{event.id for event in events})
@@ -745,24 +785,18 @@ class AgentRuntime:
                 decision = await commit(outcome, read_event_ids={event.id for event in events})
                 if not decision.accepted:
                     raise CommitConflict(decision.reason)
+                await publish(decision)
             else:
                 outcome = await self.social_core.run(
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
                     input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid,
+                    publish=publish,resume=resume,
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")
-            self.metrics.inc_social("cognition_committed")
-            if decision.committed_proposal.resolved_loop_ids:
-                self.metrics.inc_social("openloops_resolved", len(decision.committed_proposal.resolved_loop_ids))
-            # The terminal tool already returned its durable acceptance. These
-            # later steps cannot turn it into a rejected terminal candidate.
-            await self.runtime_gate.publish_committed(decision, mailbox)
-            if decision.actions_enqueued:
-                self.metrics.inc_social("gate_action")
-            await self._preserve_unhandled_bursts(burst, actor.session, outcome.handled_source_event_ids, delivered_ids)
+            await self._preserve_unhandled_bursts(burst, actor.session, mailbox.handled_source_ids, delivered_ids)
             self.metrics.inc_social("social_cognition")
-            self.metrics.inc_social("social_would_speak" if outcome.disposition == FinalDisposition.ACTION else "intentional_silence")
+            self.metrics.inc_social("social_would_speak" if mailbox.messages_committed else "intentional_silence")
             await self._save_conversation_trace(scene_id, episode_id, burst, trace, outcome, decision)
         except asyncio.CancelledError as error:
             if decision and decision.accepted:
@@ -788,7 +822,7 @@ class AgentRuntime:
             await self.event_store.save_trace(
                 kind="conversation_error", scene_id=scene_id, ref_id=episode_id,
                 payload={"error": _error_text(error), "error_type": type(error).__name__, "conversation": trace,
-                         "error_phase": "post_commit" if decision and decision.accepted else "pre_commit",
+                         "error_phase": "after_checkpoint" if trace['checkpoints'] or resume else "pre_commit",
                          "result": decision.committed_proposal.outcome.model_dump(mode='json')
                              if decision and decision.accepted else None,
                          "source_event_ids": source_ids, "observed_rowid": observed,
@@ -796,8 +830,7 @@ class AgentRuntime:
             )
         finally:
             await self.event_store.set_model_call_disposition(episode_id,
-                'silence' if decision and decision.accepted and outcome.disposition == FinalDisposition.SILENCE
-                else 'expression' if decision and decision.accepted else 'rejected')
+                'expression' if mailbox.messages_committed else 'silence' if trace['checkpoints'] else 'rejected')
             self.metrics.record_latency("cognition_total", time.monotonic() - started)
             actor.release_episode_lease(episode_id)
 

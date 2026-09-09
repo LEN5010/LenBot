@@ -1,4 +1,4 @@
-"""Small native proposal tools stage changes; finish_turn commits one ledger."""
+"""Small native proposal tools stage changes; respond commits one ledger."""
 from __future__ import annotations
 
 import copy
@@ -8,7 +8,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
 from len_bot.cognition.jobs import GroupSummaryRange, JobProposal
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, TaskProposal
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal
 from len_bot.memory.models import MemoryProposal
 
 
@@ -47,9 +47,17 @@ class TurnMessage(StrictModel):
             raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
         return self
 
-class FinishTurn(StrictModel):
+class SourceResolution(StrictModel):
+    source:str=Field(description='本次处理的原话M；继续同一请求时可沿用此前checkpoint的来源')
+    status:Literal['replied','delegated','waiting','incomplete','silent']
+    reason:str=Field(default='',max_length=500)
+    unfinished:list[str]=Field(default_factory=list,description='同一原话中仍未完成的要求；未做的部分不能被已发送内容覆盖')
+
+
+class Respond(StrictModel):
     messages:list[TurnMessage]=Field(max_length=3,description='零至三条；空列表表示沉默')
-    handled_sources:list[str]=Field(description='本轮已回答、已委托或明确选择沉默的待处理消息M；只填确实处理的来源，读到但未处理的来源不要填')
+    sources:list[SourceResolution]
+    next:Literal['end','continue','wait']
     note:str=Field(default='',max_length=500,description='内部参与判断；尚有待处理来源但本次不处理任何来源时，说明等待条件或结束原因。不发送、不保存为长期认识')
     release_focus:list[str]=Field(default_factory=list,description='根据本人原话停止本次误接或互动的成员U；只撤销现有关注窗口，不写长期规则')
 
@@ -130,11 +138,11 @@ class DiscardProposal(StrictModel):
 
 
 TOOLS={
-    'start_work':(StartWork,'建立需要长时间、多页资料或持续进度的后台只读工作；短读取和计算可直接使用本轮工具。先调用本工具，再把回执中的ack_ref复制到finish_turn的确认消息；引用由工具生成，无需自拟。'),
+    'start_work':(StartWork,'建立需要长时间、多页资料或持续进度的后台只读工作；短读取和计算可直接使用本轮工具。先调用本工具，再把回执中的ack_ref复制到respond的确认消息；引用由工具生成，无需自拟。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。取得回执后用operation_ref确认本次操作，不用work_ref确认新版本。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。确认消息用本回执的operation_ref，不同时交付旧结果。'),
     'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料。取得回执后用operation_ref确认，部分结果不因此重开。'),
-    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，把ack_ref复制到finish_turn的确认消息。'),
+    'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，把ack_ref复制到respond的确认消息。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),
     'remember':(Remember,'保存有原话证据的明确称呼、偏好或相处要求。'),
@@ -154,10 +162,10 @@ def _object(properties, required=()):
 
 # The model sees one small object shape, not Pydantic's discriminator/ref graph.
 # Local validation remains authoritative, including exactly one content field.
-FINISH_TURN={
+RESPOND={
     'type':'function',
     'function':{
-        'name':'finish_turn',
+        'name':'respond',
         'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text、image或at，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
@@ -174,11 +182,17 @@ FINISH_TURN={
                                         'intent':{'type':'string','minLength':1}},('target','intent')),
             },('segments',))},
             'note':{'type':'string','maxLength':500,'description':'内部参与判断；不处理任何待处理来源时必须说明等待条件或结束原因，不发送'},
-            'handled_sources':{'type':'array','items':{'type':'string'},'uniqueItems':True,
-                'description':'本轮实际处理的待处理消息M：已回答、已委托或明确选择沉默。原话读到不等于处理；未处理来源留待后续'},
+            'sources':{'type':'array','items':_object({
+                'source':{'type':'string','description':'本次处理的原话M'},
+                'status':{'type':'string','enum':['replied','delegated','waiting','incomplete','silent']},
+                'reason':{'type':'string','maxLength':500},
+                'unfinished':{'type':'array','items':{'type':'string'}}},('source','status')),
+                'description':'逐来源保留本次处理去向及未完成要求；未处理的独立原话不要列入'},
+            'next':{'type':'string','enum':['end','continue','wait'],
+                'description':'end结束本轮；continue提交后在原预算继续；wait提交一个真实等待关系，释放模型资源后等对应回应'},
             'release_focus':{'type':'array','items':{'type':'string'},'uniqueItems':True,
                 'description':'根据本人已读原话停止本次互动的成员U；撤销现有短时关注'},
-        },('messages','handled_sources')),
+        },('messages','sources','next')),
     },
 }
 
@@ -191,6 +205,10 @@ class ProposalLedger:
         self.proposal_refs=set()
         self.staged={}
         self._next_handle=1
+        self.checkpoint_index=0
+        self.messages_committed=0
+        self.continuing_sources=set()
+        self.can_continue=lambda:True
 
     async def request_source(self, reference):
         event_id = self.context.refs.event_id(reference)
@@ -227,18 +245,22 @@ class ProposalLedger:
         self.staged[proposal_ref] = ('jobs', proposal)
         return {'status':'staged', 'proposal_ref':proposal_ref, 'ack_ref':proposal_ref,
                 'summary_range':request.model_dump(mode='json'),
-                'note':'本群总结尚未创建工作；finish_turn提交后才进入原工作运行器，确认消息必须使用本轮ack_ref。'}
+                'note':'本群总结尚未创建工作；respond提交后才进入原工作运行器，确认消息必须使用本轮ack_ref。'}
 
     def terminal_definition(self):
-        result=copy.deepcopy(FINISH_TURN)
+        result=copy.deepcopy(RESPOND)
         refs=self.context.refs
         message=result['function']['parameters']['properties']['messages']['items']
         props=message['properties']
         available = [ref for ref, event_id in refs.events.items()
-                     if event_id in refs.read_events and any(w.event_id == event_id for w in self.context.session.pending_wakes)]
-        handled = result['function']['parameters']['properties']['handled_sources']
+                     if event_id in refs.read_events and (event_id in self.continuing_sources
+                         or any(w.event_id == event_id for w in self.context.session.pending_wakes))]
+        parameters=result['function']['parameters']['properties']
+        parameters['messages']['maxItems']=3-self.messages_committed
+        if not self.can_continue():parameters['next']['enum']=['end']
+        handled = parameters['sources']
         if available:
-            handled['items']['enum'] = available
+            handled['items']['properties']['source']['enum'] = available
         else:
             handled['maxItems'] = 0
         if self.proposal_refs:
@@ -293,7 +315,7 @@ class ProposalLedger:
                 else:values[:]=[item for item in values if item is not value]
                 self.proposal_refs.discard(model.proposal_ref)
                 return {'status':'discarded','proposal_ref':model.proposal_ref,
-                        'note':'仅撤回本轮尚未提交的提案，未修改任何实际工作或提醒；其余暂存提案仍待finish_turn统一提交'}
+                        'note':'仅撤回本轮尚未提交的提案，未修改任何实际工作或提醒；其余暂存提案仍待respond统一提交'}
             evidence=[refs.event_id(ref) for ref in getattr(model,'evidence',[])]
             if name in {'revise_work','cancel_work','resume_work','update_reminder','cancel_reminder'}:
                 originals=await self.context.runtime.event_store.events_by_ids(refs.scene_id,evidence,refs.cutoff)
@@ -359,21 +381,26 @@ class ProposalLedger:
             return {'status':'staged','proposal_ref':proposal_ref,
                     **({'ack_ref':proposal_ref} if creation else {}),
                     **({'operation_ref':proposal_ref} if collection in {'jobs','tasks','memories'} and not creation else {}),
-                    'note':'尚未提交；可用discard_proposal撤回本条，finish_turn统一提交剩余提案。此引用不是实际工作J或提醒T'}
+                    'note':'尚未提交；可用discard_proposal撤回本条，respond统一提交剩余提案。此引用不是实际工作J或提醒T'}
         except (ValueError,KeyError) as error:
             raise ToolArgumentError(str(error)) from error
 
     async def finish(self,arguments):
         try:
-            result=FinishTurn.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
+            result=Respond.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
             refs=self.context.refs;messages=[]
-            handled=[refs.event_id(ref) for ref in result.handled_sources]
+            if len(result.messages)+self.messages_committed>3:
+                raise ValueError('所有checkpoint共用本轮三条消息上限')
+            if result.next!='end' and not self.can_continue():
+                raise ValueError('原执行预算不足以继续或恢复等待，请结束并保留未完成项')
+            handled=[refs.event_id(item.source) for item in result.sources]
             pending={wake.event_id for wake in self.context.session.pending_wakes}
-            if len(handled) != len(set(handled)) or not set(handled).issubset(pending):
-                raise ValueError('handled_sources只能填写本轮已读、当前待处理的来源，每个来源只能出现一次')
+            if len(handled) != len(set(handled)) or not set(handled).issubset(pending|self.continuing_sources):
+                raise ValueError('sources只能填写本轮已读、当前待处理或本轮此前checkpoint已处理的来源，每个来源只能出现一次')
             if pending and not handled and not result.note.strip():
-                raise ValueError('仍有待处理来源；空handled_sources须在note说明等待依赖或本次结束原因，不能靠空提交反复取得预算')
+                raise ValueError('仍有待处理来源；空sources须在note说明等待依赖或本次结束原因，不能靠空提交反复取得预算')
             source_candidates = await self.context.runtime.event_store.events_by_ids(refs.scene_id, handled, refs.cutoff)
+            source_records={event.id:event for event in source_candidates}
             source_candidates = [event for event in source_candidates
                 if event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
                 and event.actor_id.startswith('user:') and event.actor_id != refs.bot_actor_id]
@@ -387,7 +414,7 @@ class ProposalLedger:
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
-                        '需要查询时先调用start_work取得staged回执，再调用finish_turn确认。')
+                        '需要查询时先调用start_work取得staged回执，再调用respond确认。')
                 operation=None
                 operation_sources=[]
                 if item.operation_ref:
@@ -458,11 +485,6 @@ class ProposalLedger:
                     if task is None:
                         raise ValueError('提醒不属于当前场景')
                     source_id = task['payload'].get('request_source_event_id')
-                if not source_id and item.reply_to:
-                    quoted_id=refs.event_id(item.reply_to)
-                    quoted=await self.context.runtime.event_store.events_by_ids(refs.scene_id,[quoted_id],refs.cutoff)
-                    if quoted and quoted[0].actor_id.startswith('user:') and quoted[0].actor_id!=refs.bot_actor_id:
-                        source_id=quoted_id
                 if not source_id and len(source_candidates) == 1:
                     source_id = source_candidates[0].id
                 if not source_id:
@@ -488,16 +510,54 @@ class ProposalLedger:
             affected.update(proposal.request_source_event_id for proposal in [*self.jobs,*self.tasks]
                             if proposal.operation=='create')
             if (affected & pending) - set(handled):
-                raise ValueError('本轮已回应或已委托的请求来源必须列入handled_sources，其它仅仅读到的来源继续保留')
+                raise ValueError('本次已回应或已委托的请求来源必须列入sources，其它仅仅读到的来源继续保留')
+            outcomes=[]
+            for item,ident in zip(result.sources,handled):
+                original=source_records[ident]
+                runtime_source=original.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                related_indices=[index for index,message in enumerate(messages) if message.source_event_id==ident
+                    or runtime_source and (message.job_id and message.job_id==original.payload.get('job_id')
+                        or message.fulfils_task_id and message.fulfils_task_id==original.payload.get('task_id')
+                        or message.source_event_id and message.source_event_id==original.payload.get('origin_event_id'))]
+                related_messages=[messages[index] for index in related_indices]
+                related_proposals=[ref for ref,(kind,proposal) in self.staged.items()
+                    if (kind=='memories' and ident in proposal.evidence
+                        or kind in {'jobs','tasks'} and (proposal.request_source_event_id==ident or ident in proposal.source_event_ids))]
+                if item.status=='replied' and not related_messages:
+                    raise ValueError('replied必须关联本checkpoint对应来源的消息')
+                if item.status=='delegated' and not any(ref in related_proposals for ref,(kind,_) in self.staged.items() if kind in {'jobs','tasks'}):
+                    raise ValueError('delegated必须关联本checkpoint实际暂存的工作或提醒')
+                if item.status=='waiting' and (result.next!='wait' or not any(message.expect_reply for message in related_messages)):
+                    raise ValueError('waiting必须关联本checkpoint期待真实回应的消息')
+                if item.status in {'incomplete','silent'} and not (item.reason.strip() or item.unfinished):
+                    raise ValueError('未完成或旁听须说明原因或未完成范围')
+                if item.status=='silent' and (related_messages or related_proposals):
+                    raise ValueError('已有消息或实际操作的来源不能标为silent')
+                outcomes.append(SourceOutcome(source_event_id=ident,status=item.status,reason=item.reason,
+                    unfinished=item.unfinished,proposal_refs=related_proposals,message_indices=related_indices))
+            if result.next=='wait' and (sum(message.expect_reply for message in messages)!=1
+                    or not any(item.status=='waiting' for item in outcomes) or self.messages_committed+len(messages)>=3):
+                raise ValueError('wait需要且只能有一个真实等待对象及waiting来源，并保留后续表达的消息额度')
+            unlinked={ref for ref,(kind,_) in self.staged.items() if kind!='loops'}-{ref for source in outcomes for ref in source.proposal_refs}
+            if unlinked:
+                raise ValueError('实际提交的提案须有对应来源的处理结果：'+', '.join(sorted(unlinked)))
             released=list(dict.fromkeys(refs.member_id(ref) for ref in result.release_focus))
             if set(released)-{event.actor_id for event in source_candidates}:
                 raise ValueError('撤销关注必须有本次处理的本人原话，不能替其他人结束互动')
             return EpisodeOutcome(disposition=FinalDisposition.ACTION if messages else FinalDisposition.SILENCE,
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
-                handled_source_event_ids=handled,
+                source_outcomes=outcomes,checkpoint_index=self.checkpoint_index,next_action=result.next,
                 release_focus_actor_ids=released,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
         except TerminalArgumentError:
             raise
         except (ValueError,KeyError) as error:
             raise TerminalArgumentError(str(error)) from error
+
+    def adopt_commit(self,outcome):
+        if outcome.checkpoint_index<self.checkpoint_index:return
+        self.continuing_sources.update(outcome.handled_source_event_ids)
+        self.messages_committed+=len(outcome.message_proposals)
+        self.checkpoint_index+=1
+        self.jobs=[];self.tasks=[];self.memories=[];self.loops=[]
+        self.proposal_refs=set();self.staged={}

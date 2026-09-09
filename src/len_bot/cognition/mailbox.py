@@ -17,6 +17,9 @@ class EpisodeMailbox:
         self.announcement_member: str | None = None
         self.source_started_at: float | None = None
         self.interaction_actors: set[str] = set()
+        self.handled_source_ids: set[str] = set()
+        self.messages_committed = 0
+        self.next_checkpoint = 0
         self._cancelled: bool = False
         self._cancellation_reason: Optional[str] = None
 
