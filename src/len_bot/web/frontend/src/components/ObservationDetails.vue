@@ -4,6 +4,7 @@ import { fmtTime } from '../api.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import ResourceViewer from './ResourceViewer.vue'
+import PluginOrigin from './PluginOrigin.vue'
 
 const props = defineProps({ observation: { type: Object, required: true }, sceneId: String, rangeLabel: { type: String, default: '本次页面阅读范围' } })
 const unit = computed(() => ({ characters: '字符', records: '记录' }[props.observation.coordinate_unit] || props.observation.coordinate_unit || '单位未记录'))
@@ -22,6 +23,7 @@ async function copySpan() {
 
 <template>
   <section class="observation-details" aria-label="工具资料状态与来源">
+    <PluginOrigin v-if="observation.plugin_origin && sceneId" :origin="observation.plugin_origin" :scene-id="sceneId" />
     <div class="observation-facts"><StatusBadge domain="observation" :status="observation.status" /><code v-if="observation.error_code">{{ observation.error_code }}</code><span v-if="observation.fetched_at">取得于 {{ fmtTime(observation.fetched_at) }}</span><span v-if="observation.content_length!==undefined">已保存 {{ observation.content_length }} 字符</span></div>
     <div v-if="observation.tool_name || observation.tool_call_id || observation.error_stage || observation.http_status!==null && observation.http_status!==undefined" class="observation-facts"><strong v-if="observation.tool_name">{{ observation.tool_name }}</strong><span v-if="observation.error_stage">出错阶段：{{ stages[observation.error_stage] || observation.error_stage }}</span><code v-if="observation.http_status!==null && observation.http_status!==undefined">HTTP {{ observation.http_status }}</code><span v-if="observation.tool_call_id" class="call-id">调用 ID：{{ observation.tool_call_id }}</span></div>
     <v-alert v-if="failed && observation.content" type="error" variant="tonal" class="error-body">{{ observation.content }}</v-alert>
@@ -33,7 +35,7 @@ async function copySpan() {
     <p v-else-if="observation.truncated && observation.source_truncated===undefined" class="muted">原记录带截断标记，未分别记录源端和本地正文覆盖。</p>
     <p v-if="observation.attachments?.length" class="muted">媒体引用 {{ observation.attachments.length }} 项；仅登记引用不表示模型已看到原图。</p>
     <details v-if="observation.evidence_span"><summary>本次展示范围的来源引用</summary><p class="muted">页面阅读不增加工作模型的已读范围；结论仍须符合该工作已保存的实际采用范围。</p><ResourceViewer title="来源范围 JSON" :content="observation.evidence_span"><template #actions><v-btn variant="text" size="small" @click="copySpan">{{ copied?'已复制':'复制范围' }}</v-btn></template></ResourceViewer><p v-if="copyError" role="alert">{{ copyError }}</p></details>
-    <div v-if="observation.sources?.length" class="source-list"><div v-for="(source,index) in observation.sources" :key="index" class="source-item"><a v-if="sourceLink(source.url)" :href="sourceLink(source.url)" target="_blank" rel="noopener noreferrer">{{ source.title || source.url }}</a><span v-else-if="source.title || source.url">{{ source.title || source.url }}</span><EntityLink v-if="source.event_id" type="event" :id="source.event_id" :scene-id="sceneId" label="来源原话" /><span v-if="source.published_at" class="muted">源发布时间 {{ source.published_at }}</span></div></div>
+    <div v-if="observation.sources?.length" class="source-list"><div v-for="(source,index) in observation.sources" :key="index" class="source-item"><a v-if="sourceLink(source.url)" :href="sourceLink(source.url)" target="_blank" rel="noopener noreferrer">{{ source.title || source.url }}</a><span v-else-if="source.title || source.url">{{ source.title || source.url }}</span><EntityLink v-if="source.event_id" type="event" :id="source.event_id" :scene-id="sceneId" label="来源记录" /><span v-if="source.published_at" class="muted">源发布时间 {{ source.published_at }}</span></div></div>
     <details v-if="observation.next_call"><summary>{{ localLabel }}</summary><ResourceViewer :title="localLabel" :content="observation.next_call" /></details>
     <details v-if="observation.source_next_call"><summary>源端下一批参数</summary><p class="muted">{{ observation.source_next_call_note || '源端下一批，仅位置未取得。' }}</p><ResourceViewer title="源端下一批工具调用" :content="observation.source_next_call" /></details>
   </section>

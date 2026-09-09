@@ -32,6 +32,10 @@ class PluginRuntimeStatus:
     last_run_at: float = 0.0
 
 
+class PluginConfigurationApplyError(RuntimeError):
+    """The root file was saved, but the plugin did not apply it."""
+
+
 def _core_tool_sources() -> dict[str, str]:
     # Read the actual definitions at registration time, after runtime modules
     # have loaded. No independently maintained reserved-name catalog.
@@ -394,7 +398,7 @@ class PluginHost:
         if plugin_id not in self._plugins:
             await self.load_plugin(plugin_id)
         plugin = self._plugins[plugin_id]
-        if self._status[plugin_id].state == 'enabled':
+        if plugin.manifest.enabled:
             return
         self._status[plugin_id].state = 'enabling'
         plugin.manifest.enabled = True
@@ -497,6 +501,9 @@ class PluginHost:
                 'id': plugin_id, 'name': spec.name, 'description': spec.description,
                 'version': spec.version, 'directory': str(entry.directory),
                 'config_apply': spec.config_apply,
+                'work': {'operation':spec.work.operation,'allowed_tools':list(spec.work.allowed_tools),
+                    'parameters_schema':spec.work.parameters_model.model_json_schema(),
+                    'revision_schema':spec.work.revision_model.model_json_schema()} if spec.work else None,
                 'plugin_type': spec.plugin_type.value,
                 'permissions': [permission.value for permission in spec.permissions],
                 'enabled': bool(plugin and plugin.manifest.enabled), 'state': status.state,
@@ -622,11 +629,10 @@ class PluginHost:
             view['work_progress_schema']=work.progress_model.model_json_schema()
         return view
 
-    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] = "read",
-                     excluded: set[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] = "read") -> tuple[list[dict[str, Any]], list[str]]:
         """Rank the same scoped candidates used for model definitions/execution."""
         candidates = [tool for name, tool in self._tools.items()
-                      if self.has_tool(name, call_context) and tool.kind == kind and name not in (excluded or ())]
+                      if self.has_tool(name, call_context) and tool.kind == kind]
         matches = []
         for tool in candidates:
             plugin_name = self._plugins[tool.plugin_id].manifest.name
@@ -706,13 +712,16 @@ class PluginHost:
         except httpx.TimeoutException as error:
             result = ToolResult.failure(f"{type(error).__name__}: {error}；本次来源请求超时，未取得结果；不表示整个能力永久不可用。", 'timeout',
                 sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
+            result.evidence_kind='external'
         except httpx.HTTPStatusError as error:
             code = error.response.status_code
             result = ToolResult.failure(f'来源返回 HTTP {code}：{error}', 'not_found' if code in {404,410} else 'http_error',
                 http_status=code, sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
+            result.evidence_kind='external'
         except httpx.RequestError as error:
             result = ToolResult.failure(f'{type(error).__name__}: {error}；本次网络请求失败，未取得来源。','network_error',
                 sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
+            result.evidence_kind='external'
         except asyncio.TimeoutError:
             result = ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout", stage='execution')
         except ValidationError as error:

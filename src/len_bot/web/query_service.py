@@ -443,8 +443,10 @@ class RuntimeQueryService:
                     "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
                     "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain") if key in metadata},
                     "interaction": {key:metadata[key] for key in ("interaction", "interaction_reason", "requester_qq_uid",
-                                       "command_id", "calendar_parent_event_id", "conversation_excluded") if key in metadata}
+                                       "command_id", "calendar_parent_event_id", "conversation_excluded",
+                                       'plugin_routes','plugin_consumed','plugin_work_issue') if key in metadata}
                                    if "interaction" in metadata else None,
+                    'plugin_origin':payload.get('plugin_origin'),
                     "display_name":sender.get("card") or sender.get("nickname") or event.actor_id,
                     "member_mentions":member_mentions,"addressed_to":payload.get('response_actor_ids',[]),
                     "scene_type":self.scene_label(scene)["scene_type"],
@@ -544,14 +546,11 @@ class RuntimeQueryService:
 
     @staticmethod
     def _trace_runs(kind, payload):
-        if kind.startswith("agent_job"):
-            return payload.get("runs") or []
-        if kind.startswith("history_maintenance"):
-            return [payload.get("cognition") or {}]
-        return [payload.get("conversation") or payload]
+        def collect(record):
+            return [record, *(child for key in ('runs','agents') for run in record.get(key,[]) for child in collect(run))]
+        return collect(payload.get('conversation') or payload.get('cognition') or payload)
 
-    @staticmethod
-    def _trace(item, detail=False):
+    def _trace(self, item, detail=False):
         item=dict(item);payload=RuntimeQueryService._public(json.loads(item.pop("payload")))
         conversation=payload.get("conversation") or {}
         result = payload.get("result") or {}
@@ -562,24 +561,36 @@ class RuntimeQueryService:
         item["summary"]=(payload.get("error") or result.get("decision_reason") or result.get("reason")
                          or conversation.get("failure_reason") or result.get("summary") or payload.get("kind") or item["kind"])[:300]
         item["result_status"] = result.get("status")
-        if item["kind"] in {"calendar_command", "live_announcement"}:
-            label = "日程命令" if item["kind"] == "calendar_command" else "开播邀请"
-            state = {"generating":"生成中", "committed":"已提交待回执", "failed":"失败", "interrupted":"已中断"}.get(payload.get("state"), payload.get("state", ""))
-            item["summary"] = f"{label} · {state} · {payload.get('member') or payload.get('command_id', '')}"
-            if payload.get("error"):
-                item["summary"] += " · " + payload["error"][:200]
+        origin=payload.get('plugin_origin')
+        plugin_id=origin['plugin_id'] if origin else payload.get('plugin_id')
+        entry=self.runtime.config_store.catalog.entries.get(plugin_id)
+        item['plugin_origin']=origin
+        item['plugin_name']=entry.spec.name if entry else plugin_id
+        if item['kind'].startswith('plugin_'):
+            item['summary']=' · '.join(str(value) for value in (item['plugin_name'],origin.get('entry_id') if origin else None,
+                payload.get('state') or payload.get('operation'),payload.get('error')) if value)[:300]
+            item['result_status']=payload.get('state')
+        item['relation']=({'episode_id':origin['run_id']} if origin else
+            {'job_id':payload.get('job_id') or item['ref_id']} if item['kind'].startswith('agent_job') else
+            {'batch_id':item['ref_id']} if item['kind'].startswith('history_maintenance') else
+            {'episode_id':item['ref_id']} if item['kind'] in {'conversation','conversation_error'} else
+            {'event_id':payload['receipt_event_id']} if payload.get('receipt_event_id') else
+            {'event_id':payload.get('source_event_id') or item['ref_id']} if item['kind'] in {'calendar_command','live_announcement'} else None)
         if gate.get('committed') and publication.get('status') in {'failed', 'interrupted'}:
             state = '发布失败' if publication['status'] == 'failed' else '发布中断'
             item['summary'] = f"已提交，{state} · {publication.get('phase')} · {publication.get('error')}"[:300]
         elif gate.get('committed') and item['kind'] == 'conversation_error':
             item['summary'] = '已提交，后续处理异常 · ' + item['summary']
-        calls = [call for run in RuntimeQueryService._trace_runs(item["kind"], payload)
+        runs=self._trace_runs(item['kind'],payload)
+        calls = [call for run in runs
                  for step in run.get("steps", []) for call in step.get("tool_calls", [])]
+        direct=[call for run in runs for call in run.get('tool_results',[])]
         observations = [call.get("observation_status") or (call.get("observation") or {}).get("status") for call in calls]
-        item["tool_outcomes"] = {"returned": sum(call.get("status") == "completed" for call in calls),
+        item["tool_outcomes"] = {"returned": sum(call.get("status") == "completed" for call in calls)+len(direct),
                                  "errors": sum(status in {"error", "unsupported"} or call.get("status") in {"error", "invalid_arguments"}
-                                               for call, status in zip(calls, observations)),
-                                 "no_results": observations.count("no_results")}
+                                               for call, status in zip(calls, observations))+sum(call['status'] in {'error','unsupported'} for call in direct),
+                                 "no_results": observations.count("no_results")+sum(call['status']=='no_results' for call in direct),
+                                 'direct':len(direct)}
         if detail:item["payload"]=payload
         return item
 
@@ -588,8 +599,8 @@ class RuntimeQueryService:
         for field,value in (("scene_id",scene_id),("kind",kind),("ref_id",ref_id)):
             if value is not None:source+=f" AND {field}=?";params.append(value)
         if episode_id is not None:
-            source += " AND ((kind IN ('conversation','conversation_error') AND ref_id=?) OR json_extract(payload,'$.episode_id')=?)"
-            params.extend([episode_id, episode_id])
+            source += " AND (ref_id=? OR json_extract(payload,'$.episode_id')=? OR json_extract(payload,'$.plugin_origin.run_id')=? OR json_extract(payload,'$.plugin_origin.parent_run_id')=?)"
+            params.extend([episode_id]*4)
         for op,value in ((">=",since),("<=",until)):
             if value is not None:source+=f" AND created_at{op}?";params.append(value)
         result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
@@ -610,6 +621,9 @@ class RuntimeQueryService:
                     for commit in commits for reference,receipt in self._public(json.loads(commit['payload']).get('operation_receipts',{})).items()]
         observed = {}
         for run in self._trace_runs(result["kind"], result["payload"]):
+            for direct in run.get('tool_results',[]):
+                observation=await self.runtime.event_store.read_tool_observation(direct['result_id'],[result['scene_id']])
+                direct['stored_observation']=self._observation_view(observation) if observation else None
             for step in run.get("steps", []):
                 for call in step.get("tool_calls", []):
                     result_id = (call.get("observation") or {}).get("result_id")
@@ -654,6 +668,17 @@ class RuntimeQueryService:
         result_ids=set()
         truncated={}
 
+        def plugin_origin(encoded):
+            if not encoded:return
+            event_ids.add(encoded['source_event_id'])
+            episode_ids.add(encoded['run_id'])
+            if encoded.get('parent_run_id'):
+                # The store resolves this identifier as an episode or a job;
+                # no timestamp or naming convention is used to invent a link.
+                episode_ids.add(encoded['parent_run_id'])
+                job_ids.add(encoded['parent_run_id'])
+            plugin_origin(encoded.get('handler_origin'))
+
         def membership(column, values):
             values=sorted(values)
             return (column+" IN ("+','.join('?' for _ in values)+")",values) if values else ("0",[])
@@ -680,8 +705,15 @@ class RuntimeQueryService:
                     "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches")},
                     "truncated":{**truncated,"jobs":False,"actions":False,"tool_results":False,"batches":False}}
 
-        if event_id and await self.event(event_id,scene_id) is None:return None
-        if job_id and await self.job(job_id,scene_id) is None:return None
+        if event_id:
+            original=await self.event(event_id,scene_id)
+            if original is None:return None
+            plugin_origin(original.get('plugin_origin'))
+            for route in (original.get('interaction') or {}).get('plugin_routes',[]):plugin_origin(route['origin'])
+        if job_id:
+            original=await self.job(job_id,scene_id)
+            if original is None:return None
+            plugin_origin(original.get('plugin_origin'))
         if episode_id:
             exists=await self._rows("""SELECT id FROM traces WHERE scene_id=? AND ref_id=? UNION ALL
                 SELECT id FROM model_calls WHERE scene_id=? AND episode_id=? UNION ALL
@@ -714,17 +746,29 @@ class RuntimeQueryService:
                 else:
                     episode_ids.add(item["ref_id"])
 
+        seed_traces=await linked('SELECT *','FROM traces WHERE scene_id=?',[
+            membership('ref_id',episode_ids|job_ids),membership("json_extract(payload,'$.plugin_origin.source_event_id')",event_ids)],
+            'created_at DESC,id DESC','traces')
+        for row in seed_traces:
+            for run in self._trace_runs(row['kind'],json.loads(row['payload'])):plugin_origin(run.get('plugin_origin'))
+
         # A committed turn explicitly records all originals read in that turn.
         source_clause,source_values=membership("value",event_ids)
+        route_clause,route_values=membership("json_extract(value,'$.origin.run_id')",episode_ids)
         commits=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
             membership("id",event_ids|{'turn:'+ident for ident in episode_ids}),
             ("event_type='CONVERSATION_COMMITTED' AND EXISTS(SELECT 1 FROM json_each(payload,'$.source_event_ids') WHERE "+source_clause+")",source_values),
             membership("json_extract(payload,'$.origin_event_id')", event_ids),
             membership("json_extract(payload,'$.batch_id')",episode_ids),
             membership("json_extract(payload,'$.episode_id')",episode_ids),
+            membership("json_extract(payload,'$.plugin_origin.run_id')",episode_ids),
+            ('EXISTS(SELECT 1 FROM json_each(metadata,\'$.plugin_routes\') WHERE '+route_clause+')',route_values),
             membership("json_extract(payload,'$.action_id')",action_ids)],"rowid DESC","events")
         for event in commits:
             event_ids.add(event["id"]);payload=json.loads(event["payload"])
+            plugin_origin(payload.get('plugin_origin'))
+            for route in json.loads(event['metadata']).get('plugin_routes',[]):plugin_origin(route['origin'])
+            for message in payload.get('outcome',{}).get('message_proposals',[]):plugin_origin(message.get('plugin_origin'))
             if event['event_type'] == 'CONVERSATION_COMMITTED':
                 action_ids.update(payload.get('action_ids', []))
             if event["event_type"]=="CONVERSATION_COMMITTED" and event["id"].startswith('turn:'):
@@ -762,6 +806,7 @@ class RuntimeQueryService:
             detail = await self.job(job["id"], scene_id)
             if detail:
                 jobs.append(detail)
+                plugin_origin(detail.get('plugin_origin'))
                 for field in ("request_source_event_id", "delivery_event_id"):
                     if detail.get(field):
                         event_ids.add(detail[field])
@@ -772,6 +817,8 @@ class RuntimeQueryService:
         native_episode_clause, native_episode_values = membership("json_extract(payload,'$.episode_id')", episode_ids)
         trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[
             membership("ref_id",episode_ids|job_ids),
+            membership("json_extract(payload,'$.plugin_origin.source_event_id')",event_ids),
+            membership("json_extract(payload,'$.plugin_origin.parent_run_id')",episode_ids|job_ids),
             ("kind IN ('calendar_command','live_announcement') AND " + native_clause, native_values),
             ("kind IN ('calendar_command','live_announcement') AND " + native_episode_clause, native_episode_values)],
             "created_at DESC,id DESC","traces")
@@ -783,6 +830,9 @@ class RuntimeQueryService:
             for checkpoint in conversation.get('checkpoints',[]):
                 action_ids.update(checkpoint['gate'].get('action_ids',[]))
             for run in self._trace_runs(row["kind"], payload):
+                plugin_origin(run.get('plugin_origin'))
+                result_ids.update(item['result_id'] for item in run.get('tool_results',[]))
+                for commit in run.get('commits',[]):action_ids.update(commit.get('action_ids',[]))
                 for step in run.get("steps", []):
                     for call in step.get("tool_calls", []):
                         observed_id = (call.get("observation") or {}).get("result_id")
@@ -796,6 +846,7 @@ class RuntimeQueryService:
                     episode_ids.add(payload["episode_id"])
         observations=await linked("SELECT *","FROM tool_observations WHERE scene_id=?",[
             membership("id",result_ids),membership("event_id",event_ids)],"created_at DESC,id DESC","tool_results")
+        for row in observations:plugin_origin(json.loads(row['result_json']).get('plugin_origin'))
         event_ids.update(row["event_id"] for row in observations)
         event_ids.update('turn:'+ident for ident in episode_ids)
         events=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
@@ -817,6 +868,7 @@ class RuntimeQueryService:
             for ident, message in zip(payload.get('action_ids', []), payload.get('outcome', {}).get('message_proposals', [])):
                 if ident in actions:
                     actions[ident].update(episode_id=payload.get('episode_id',event['id'][5:]), commit_event_id=event['id'],
+                        plugin_origin=message.get('plugin_origin') or payload.get('plugin_origin'),
                         checkpoint_index=payload.get('checkpoint_index'),
                         origin_event_id=message.get('source_event_id') or payload.get('origin_event_id'),
                         requester_qq_uid=message.get('requester_qq_uid'),
@@ -824,8 +876,8 @@ class RuntimeQueryService:
                         operation_ref=message.get('operation_ref'), fulfils_task_id=message.get('fulfils_task_id'))
         for row in reversed(trace_rows):
             payload = json.loads(row['payload'])
-            gates=[payload.get('gate') or {}, *(checkpoint['gate'] for checkpoint in
-                (payload.get('conversation') or {}).get('checkpoints',[]))]
+            gates=[payload.get('gate') or {}, *(gate for run in self._trace_runs(row['kind'],payload)
+                for gate in [*run.get('commits',[]),*(checkpoint['gate'] for checkpoint in run.get('checkpoints',[]))])]
             for gate in gates:
                 publication = gate.get('publication') or {}
                 for published in publication.get('actions', []):
@@ -845,6 +897,7 @@ class RuntimeQueryService:
             if not ident:continue
             action=actions.setdefault(ident,{"id":ident,"scene_id":scene_id,"receipt_event_ids":[]})
             action.update(delivery_status=event["delivery_status"],simulated=event["simulated"],origin_mode=event["origin_mode"],
+                          plugin_origin=event['payload'].get('plugin_origin'),
                           episode_id=event["payload"].get('episode_id',event["payload"].get("batch_id")),job_id=event["payload"].get("job_id"),
                           checkpoint_index=event['payload'].get('checkpoint_index'),
                           job_revision=event["payload"].get("job_revision"),origin_event_id=event["payload"].get("origin_event_id"),
