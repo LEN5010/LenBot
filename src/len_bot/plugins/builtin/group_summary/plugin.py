@@ -12,6 +12,7 @@ from len_bot.tools.results import ToolResult
 
 from .config import GroupSummaryConfig
 from .service import GroupSummaryService
+from .work import GroupSummaryRange, summary_goal
 
 
 class SummarizeArguments(BaseModel):
@@ -51,10 +52,12 @@ class GroupSummaryPlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
         self.config: GroupSummaryConfig = context.config
+        self.context=context
         self.service = None
 
     async def on_load(self, context: PluginContext) -> None:
         self.service = GroupSummaryService(context.event_store, self.config)
+        context.register_hook('before_model',id='summary_work',handler=self.work_instructions)
         context.register_tool(
             "summarize_group_chat", "暂存当前群的时间范围总结工作；respond提交后才启动。",
             SummarizeArguments, self.summarize,
@@ -66,15 +69,27 @@ class GroupSummaryPlugin(BasePlugin):
             ReadWindowArguments, self.read_window,
             purpose="读取当前群总结工作固定范围的下一批原话", aliases=("群聊窗口",), keywords=("群总结", "原话", "分页"),
             available=lambda call: call.job_id is not None and call.work_operation == 'group_summary',
-            kind="read", roles=("work",))
+            kind="read", roles=("work",),page_chars=self.config.page_chars)
+
+    async def work_instructions(self, view, call):
+        if not call.job_id or call.work_operation!='group_summary':return None
+        view.instructions.append(
+            '本工作只总结work_parameters固定范围和快照内的当前群已保存人类消息。'
+            '尚无资料时用read_group_chat_window(cursor=null)读取，已有资料先复用已读范围，续做沿observation_catalog的当前版本source_next_call。'
+            '复制next_cursor读取下一页，同页未装入全文用read_tool_result续读；来源定位不表示原文已读。'
+            '统计由程序计算，不据第一页估计全量；范围为[start_at,end_at)，结束在未来也保留原边界并说明snapshot_at。'
+            '按真实事件和话题组织，不编造引语，引用实际event_id；命令和引用评论也是可读的人类原话。'
+            '只写明确覆盖的部分和未读项，不声称取得QQ全天全部记录，不创建长期认识、技能候选或另一份工作。'
+            +self.config.output_instructions)
+        return view
 
     async def summarize(self, values: SummarizeArguments, call: PluginCallContext) -> ToolResult | dict:
-        if call.ledger is None or call.role != "conversation":
-            raise ValueError("总结提案只在当前对话Ledger中暂存")
-        if call.scene_id != call.ledger.context.refs.scene_id or call.episode_id != call.ledger.episode_id:
-            raise ValueError("总结提案不属于当前对话")
         try:
-            return await call.ledger.stage_group_summary(**values.model_dump())
+            if not call.scene_id.startswith('group:'):raise ValueError('群总结只能使用当前群')
+            request=GroupSummaryRange(start_at=values.start_at,end_at=values.end_at,focus=values.focus,
+                snapshot_rowid=call.cutoff_rowid,snapshot_at=call.now,bot_actor_id=self.context.bot_actor_id)
+            return await call.stage_work(goal=summary_goal(request),
+                request_source=values.request_source,evidence=values.evidence,parameters=request)
         except ValidationError as error:
             return ToolResult.validation_failure(error, tool_name='summarize_group_chat', tool_call_id=call.tool_call_id)
         except ValueError as error:

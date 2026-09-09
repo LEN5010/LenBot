@@ -86,6 +86,7 @@ class AgentRuntime:
         self.provider_registry = ProviderRegistry()
         self.provider_configuration_error: str | None = None
         self.plugin_host = PluginHost(runtime=self)
+        self.event_store.resolve_plugin_work=self.plugin_host.work_spec
         self.scene_policy = ScenePolicy(config_store)
         self.metrics = RuntimeMetrics()
         self.shadow_mode = config_store.current.delivery.shadow
@@ -161,6 +162,8 @@ class AgentRuntime:
             return 'This work has no resumable interrupted execution or settled partial result with unfinished scope'
         if not self.config.jobs_enabled:
             return 'Information work is currently disabled'
+        issue=self.plugin_host.work_issue(job)
+        if issue:return issue
         if job['model_steps']>=self.config.job_max_steps:
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
         if job['elapsed_seconds']>=self.config.job_max_seconds:
@@ -232,6 +235,7 @@ class AgentRuntime:
         restored = await self.event_store.recover_social_work() if recover else []
         await self.action_queue.start()
         await self._load_plugins()
+        await self.job_runner.reconcile_plugins()
         self._ingestion_ready.set()
         await self.scheduler.start()
         await self.job_runner.resume_skill_candidates()
@@ -296,6 +300,9 @@ class AgentRuntime:
             data['scenes'][scene_id] = values
             self.config_store.save(self.config_store.parse(data))
         actor = self.scene_manager._actors.get(scene_id)
+        for plugin_id in self.config_store.catalog.entries:
+            if not self.scene_policy.plugin_allowed(scene_id,plugin_id,'handler'):
+                await self.plugin_host.stop_scene_work(plugin_id,scene_id)
         if actor:
             if not self.scene_policy.enabled(scene_id):
                 if actor._active_mailbox:
@@ -456,6 +463,11 @@ class AgentRuntime:
         return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
+        if action.job_id and not action.operation_ref:
+            job=await self.event_store.get_job(action.job_id,action.scene_id)
+            if job:
+                issue=self.plugin_host.work_issue(job)
+                if issue:raise ValueError(issue)
         if action.plugin_origin is not None or action.output_kind != 'chat':
             await validate_plugin_origin(self, action, action.scene_id)
         else:

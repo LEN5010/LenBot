@@ -227,7 +227,7 @@ class RuntimeQueryService:
             if job['can_resume']:
                 job['resume_issue']=self.runtime.job_resume_issue(job)
                 job['can_resume']=job['resume_issue'] is None
-            items.append({**self._public(job),"budget":self.job_budget()})
+            items.append({**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget()})
         result["items"]=items
         return result
 
@@ -237,7 +237,7 @@ class RuntimeQueryService:
         if job and job['can_resume']:
             job['resume_issue']=self.runtime.job_resume_issue(job)
             job['can_resume']=job['resume_issue'] is None
-        return {**self._public(job),"budget":self.job_budget()} if job else None
+        return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget()} if job else None
 
     @staticmethod
     def public_asset(asset):

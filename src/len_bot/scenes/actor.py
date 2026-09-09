@@ -8,7 +8,7 @@ from typing import Any
 
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.agent_loop import FreshInputConflict
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.history import HistoryConflictError
 from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
 from len_bot.scenes.models import SceneSession
@@ -252,6 +252,12 @@ class SceneActor:
         for message in item.outcome.message_proposals:
             if message.plugin_origin:
                 await item.gate.validate_plugin_origin(message, self.scene_id)
+        for proposal in item.outcome.job_proposals:
+            if proposal.plugin_origin and proposal.operation!='cancel':
+                await item.gate.validate_plugin_origin(proposal,self.scene_id)
+        for proposal in item.outcome.task_proposals:
+            if proposal.operation=='create' and proposal.payload.get('plugin_origin'):
+                await item.gate.validate_plugin_origin(PluginOrigin.model_validate(proposal.payload['plugin_origin']),self.scene_id)
         if not item.operator and not native_output and self._active_mailbox is not item.mailbox:
             raise SceneCommitConflict('Episode lease changed')
         if item.mailbox.is_cancelled():

@@ -762,10 +762,7 @@ class ConversationContext:
             else:
                 view.update(goal=job['goal'], constraints=job['constraints'],
                     source_messages=[self.refs.register_event_locator(ident) for ident in job['source_event_ids']])
-                if job['summary_range']:
-                    view['summary_range'] = job['summary_range']
-                    view['summary_coverage'] = {key: value for key, value in (job['summary_coverage'] or {}).items()
-                        if key not in {'read_result_ranges', 'read_event_ids'}}
+                view.update(self.runtime.plugin_host.work_details(job))
                 if job.get('result'):
                     view['result'] = {key: job['result'].get(key) for key in ('summary', 'unresolved', 'reason')}
                 if job['result_ids']:

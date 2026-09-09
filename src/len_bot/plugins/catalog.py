@@ -11,6 +11,7 @@ from typing import Callable, Literal, TYPE_CHECKING
 from pydantic import BaseModel
 
 from len_bot.plugins.models import EmptySceneConfig, PluginPermission, PluginType
+from len_bot.plugins.work import PluginWorkSpec
 
 if TYPE_CHECKING:
     from len_bot.config_store import RootConfig
@@ -34,6 +35,7 @@ class PluginSpec:
     validate_scene_config: Callable[[BaseModel, RootConfig], None] | None = None
     event_models: tuple[tuple[str, type[BaseModel]], ...] = ()
     config_apply: Literal['restart_plugin', 'in_place'] = 'restart_plugin'
+    work: PluginWorkSpec | None = None
 
 
 @dataclass(frozen=True)

@@ -29,13 +29,18 @@ from len_bot.tools.results import ToolResult
 async def classify_event(runtime, event, cutoff):
     """Save routing facts before attention; matchers do no HTTP or model work."""
     requester = event.actor_id[5:] if event.event_type in HUMAN_INPUTS and event.actor_id.startswith('user:') and event.actor_id != runtime.bot_actor_id else None
+    work_issue=None
     if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
         requester = event.payload.get('requester_qq_uid')
+        if event.metadata.get('associated_open_loop') and event.payload.get('plugin_origin'):
+            issue=runtime.plugin_host.origin_issue(event.payload['plugin_origin'],event.scene_id)
+            if issue:event.metadata['associated_open_loop']['status']='review_required'
     elif event.event_type in {EventType.AGENT_JOB_FINISHED, EventType.AGENT_JOB_PROGRESS, EventType.TASK_DUE, EventType.TASK_REVIEW}:
         job_id = event.payload.get('job_id') or event.payload.get('task_id')
         job = await runtime.event_store.get_job(job_id, event.scene_id) if job_id else None
         if job:
             requester = job['requester_qq_uid']
+            work_issue=runtime.plugin_host.work_issue(job)
         elif event.payload.get('payload'):
             requester = event.payload['payload'].get('requester_qq_uid')
         elif job_id:
@@ -44,6 +49,7 @@ async def classify_event(runtime, event, cutoff):
             if task:
                 requester = task['payload'].get('requester_qq_uid')
     event.metadata['requester_qq_uid'] = requester
+    if work_issue:event.metadata['plugin_work_issue']=work_issue
     if event.payload.get('reply_to_message_id') is not None:
         projected = await runtime.event_store.project_reply_context(event.scene_id, [event], through_rowid=cutoff)
         event.metadata['quote_context'] = projected[0].metadata['quote_context']
@@ -52,7 +58,7 @@ async def classify_event(runtime, event, cutoff):
     consumed = any(route['consume'] for route in routes)
     output = event.payload.get('output_kind', 'chat')
     interaction = 'plugin_handler' if consumed else output if output != 'chat' else 'chat'
-    eligible = not consumed and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
+    eligible = not consumed and not work_issue and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
     event.metadata.update(interaction=interaction, plugin_consumed=consumed,
         conversation_excluded=not eligible,
         interaction_reason='plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')
@@ -96,7 +102,7 @@ async def dispatch_handler(runtime, event, route, cutoff):
 
 
 async def validate_plugin_origin(runtime, output, scene_id):
-    origin = output.plugin_origin
+    origin = output if isinstance(output,PluginOrigin) else output.plugin_origin
     if origin is None:
         raise ValueError('This output has no current plugin owner; old uncommitted outputs cannot be resumed')
     plugin = runtime.plugin_host.get_plugin(origin.plugin_id)
@@ -404,12 +410,14 @@ async def resume_agent(runtime,event,cutoff):
     packet=event.metadata['conversation_resume']
     resume=ConversationResume.model_validate(packet['state'])
     origin=resume.plugin_origin
-    source=(await runtime.event_store.events_by_ids(event.scene_id,[origin.source_event_id],cutoff))[0]
-    call=_execution(runtime,source,origin,cutoff)
-    call.execution.agent_depth=1
-    audit=call.execution.audit
-    audit['resumed_from']={'loop_id':packet['loop_id'],'event_id':event.id}
+    audit={'plugin_origin':origin.model_dump(),'state':'started',
+        'resumed_from':{'loop_id':packet['loop_id'],'event_id':event.id}}
     try:
+        sources=await runtime.event_store.events_by_ids(event.scene_id,[origin.source_event_id],cutoff)
+        if len(sources)!=1:raise ValueError('Plugin wait has no stored source event')
+        call=_execution(runtime,sources[0],origin,cutoff)
+        call.execution.agent_depth=1
+        call.execution.audit=audit
         await runtime.plugin_host.validate_call(call)
         async with _model_slot(runtime,call.execution):
             await _respond_agent(runtime,call,resume.plugin_request,resume=resume,resume_event=event)

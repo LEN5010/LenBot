@@ -15,7 +15,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
@@ -147,6 +147,7 @@ class InformationJobRunner:
     def __init__(self, runtime):
         self.runtime = runtime
         self._tasks: dict[str, asyncio.Task] = {}
+        self._active_jobs: dict[str,str] = {}
         self._learning_tasks: dict[str, asyncio.Task] = {}
         self._learning_dirty: set[str] = set()
         self._slots = asyncio.Semaphore(runtime.config.job_max_concurrent)
@@ -175,6 +176,30 @@ class InformationJobRunner:
         self._tasks.clear()
         self._learning_tasks.clear()
         self._learning_dirty.clear()
+
+    async def stop_plugin(self,plugin_id,scene_id=None):
+        jobs=[job for job in await self.runtime.event_store.list_jobs(scene_id)
+            if job['status'] in {'pending','claimed','processing'}
+            and job['plugin_origin'] and PluginOrigin.model_validate(job['plugin_origin']).depends_on(plugin_id)]
+        ids={job['id'] for job in jobs}
+        active=[self._tasks[scene] for scene,ident in self._active_jobs.items()
+            if ident in ids and scene in self._tasks and self._tasks[scene] is not asyncio.current_task()]
+        for task in active:task.cancel()
+        if active:await asyncio.gather(*active,return_exceptions=True)
+        for job in jobs:
+            event=await self.runtime.event_store.interrupt_job(job['id'],job['scene_id'],
+                f'Plugin {plugin_id} was disabled for this work')
+            if event:await self.runtime.commit_tool_observation(event)
+        if self.running:
+            for scene in {job['scene_id'] for job in jobs}:self.kick(scene)
+        return [job['id'] for job in jobs]
+
+    async def reconcile_plugins(self):
+        for job in await self.runtime.event_store.list_jobs():
+            issue=self.runtime.plugin_host.work_issue(job)
+            if issue:
+                event=await self.runtime.event_store.interrupt_job(job['id'],job['scene_id'],issue)
+                if event:await self.runtime.commit_tool_observation(event)
 
     async def resume_skill_candidates(self):
         for scene_id in sorted({item["scene_id"] for item in await self.runtime.event_store.list_skill_candidates() if item["status"] == "pending"}):
@@ -205,10 +230,13 @@ class InformationJobRunner:
             if not pending:
                 return
             async with self._slots:
-                await self._run_job(pending[0]["id"], scene_id)
+                self._active_jobs[scene_id]=pending[0]['id']
+                try:await self._run_job(pending[0]["id"], scene_id)
+                finally:self._active_jobs.pop(scene_id,None)
 
     async def _context(self, job):
         store = self.runtime.event_store
+        work=self.runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
         checkpoint = await store.read_job_checkpoint(job["id"], job["scene_id"])
         events = []
         for event_id in job["source_event_ids"]:
@@ -225,9 +253,7 @@ class InformationJobRunner:
             result = await store.read_tool_observation(result_id, [job["scene_id"]])
             if result:
                 continuation=result.source_next_call
-                if job['work_operation']=='group_summary' and result.coverage=='group_summary_window':
-                    plugin=self.runtime.plugin_host.get_plugin('group_summary')
-                    continuation=plugin.service.current_continuation(job,result)
+                if work:continuation=work.continuation(job,result)
                 observations.append({"result_id": result_id, "status": result.status, "coverage": result.coverage,
                                      "sources": [source.model_dump() for source in result.sources], "content_length": len(result.content),
                                      'source_next_call':continuation.model_dump(mode='json') if continuation else None,
@@ -237,9 +263,8 @@ class InformationJobRunner:
         facts = {"current_time": datetime.fromtimestamp(store.clock(), timezone.utc).isoformat(),
                  "job_id": job["id"], "revision": job["revision"], "goal": job["goal"], "constraints": job["constraints"],
                  "work_operation":job["work_operation"], "requester_qq_uid":job["requester_qq_uid"],
-                 "summary_range":job["summary_range"],
-                 "summary_coverage":{key:value for key,value in job["summary_coverage"].items()
-                                     if key not in {"read_result_ranges", "read_event_ids"}} if job["summary_coverage"] else None,
+                 'plugin_origin':job['plugin_origin'],'work_parameters':job['work_parameters'],
+                 'work_progress':work.project_progress(work.progress_model.model_validate(job['work_progress'])) if work else None,
                  "source_event_ids": job["source_event_ids"], "source_messages": raw, "result_ids": job["result_ids"],
                  "observation_catalog": observations, "image_manifest": prepared["manifest"],
                  "work_state": job["work_state"], "state_needs_revision": bool(job["work_state"] and job["work_state"]["goal_revision"] != job["revision"]),
@@ -284,17 +309,6 @@ class InformationJobRunner:
                       if job['resume_from'] else
                       f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上交换保留旧版观察与结论，须按当前目标重新核对完成步骤。')
                 messages.append({'role':'developer','content':note})
-        if job["work_operation"] == "group_summary":
-            plugin = self.runtime.plugin_host.get_plugin("group_summary")
-            if plugin is None:
-                raise PermissionError("总结插件尚未配置或加载")
-            messages.append({"role":"user", "content":(
-                "本工作只总结summary_range固定的当前群已保存人类消息。尚无资料时用read_group_chat_window(cursor=null)取得原话；已有资料先复用已读范围，续做使用observation_catalog中的当前版本source_next_call。"
-                "复制next_cursor读取下一页；同页未装入全文用read_tool_result续读。返回工具资料的来源定位不表示原文已读。"
-                "统计由程序计算，不据第一页估计全量；范围为[start_at,end_at)，即使结束在未来也保留请求边界并说明snapshot_at。"
-                "按真实事件和话题组织，不编造引语；引用列出的原event_id。日程命令和引用评论也是本范围可读的人类消息。"
-                "只写明确覆盖的部分与未读项，不声称得到QQ全天全部记录，不创建长期认识、技能候选或另一份工作。"
-                + plugin.config.output_instructions)})
         return messages, synchronize_image_window(messages, self.runtime.config.max_context_images)
 
     async def _run_job(self, job_id, scene_id):
@@ -304,10 +318,13 @@ class InformationJobRunner:
         execution=PluginExecution(None,model_slot_owned=True)
 
         def plugin_context(tool_call_id=None):
+            origin=PluginOrigin.model_validate(job['plugin_origin']) if job['plugin_origin'] else None
             return PluginCallContext(scene_id=scene_id, requester_qq_uid=job["requester_qq_uid"],
                 now=runtime.clock(), cutoff_rowid=work_cutoff, episode_id=None, job_id=job_id, role="work",
                 work_operation=job['work_operation'], tool_call_id=tool_call_id,
-                source_event_id=job['request_source_event_id'], entry='work',execution=execution)
+                source_event_id=origin.source_event_id if origin else job['request_source_event_id'],
+                origin=origin,entry_origin=origin.handler_origin or origin if origin else None,
+                entry=origin.scene_entry if origin else 'work',execution=execution)
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
@@ -328,10 +345,11 @@ class InformationJobRunner:
             limit=(int,Field(default=config.retrieval_default_limit,ge=1,le=config.retrieval_max_limit)))
 
         def require_current_access():
-            if not runtime.scene_policy.chat_allowed(scene_id, job["requester_qq_uid"]):
+            issue=runtime.plugin_host.work_issue(job)
+            if issue:raise PermissionError(issue)
+            handler_owned=job['plugin_origin'] and job['plugin_origin']['scene_entry']=='handler'
+            if not handler_owned and not runtime.scene_policy.chat_allowed(scene_id, job["requester_qq_uid"]):
                 raise PermissionError("当前群或原请求者已不具备此工作的对话资格")
-            if job["work_operation"] == "group_summary" and not runtime.plugin_host.has_tool("read_group_chat_window", plugin_context()):
-                raise PermissionError("本群总结插件已关闭或不可用")
 
         async def charge(expected, model_steps=0, tool_calls=0, enforce=True):
             nonlocal last_charge
@@ -356,11 +374,13 @@ class InformationJobRunner:
             event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state, skill_candidate=skill_candidate)
             if event is None:
                 raise JobChanged("Job changed before result commit")
+            result=JobResult.model_validate(event.payload['result'])
             try:
                 await runtime.commit_tool_observation(event)
                 runtime.metrics.inc_social("jobs_finished")
-                if job["work_operation"] != "group_summary":
-                    self._start_learning(scene_id)
+                if result.status in {'completed','partial'}:
+                    work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+                    if work is None or work.allow_learning:self._start_learning(scene_id)
             except Exception as error:
                 await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
                     payload={**trace,'job_revision':expected,'result':result.model_dump(),
@@ -497,18 +517,6 @@ class InformationJobRunner:
             except ValueError as error:
                 raise TerminalArgumentError(str(error), correction=await evidence_correction(conclusion.result_ids)) from error
             result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump(exclude={"skill_candidate"}))
-            if job["work_operation"] == "group_summary":
-                current = await store.get_job(job_id, scene_id)
-                if not current or current['revision'] != revision or current['status'] != 'processing':
-                    raise JobChanged('Summary work changed before conclusion')
-                coverage = current["summary_coverage"]
-                if conclusion.skill_candidate is not None:
-                    raise TerminalArgumentError("群聊总结不创建技能候选")
-                if not coverage["complete"]:
-                    result.status = "partial"
-                    result.unresolved.append(
-                        f'本群此范围匹配 {coverage["matched_messages"]} 条已保存人类消息，'
-                        f'仅完整读取 {coverage["read_messages"]} 条；剩余原文尚未读取，不是全时段完整总结。')
             if result.status=='partial':
                 budget=await budget_state()
                 if budget['model_calls_used']>=budget['model_calls_limit']:
@@ -518,8 +526,7 @@ class InformationJobRunner:
                 elif budget['elapsed_seconds_used']>=budget['elapsed_seconds_limit']:
                     result.reason='time_budget_exhausted_at_finish'
                 else:
-                    result.reason=('agent_finished_with_unread_messages' if job['work_operation']=='group_summary'
-                                   and not coverage['complete'] else 'agent_finished_partial')
+                    result.reason='agent_finished_partial'
             try:
                 return await commit_result(result, revision, work_state=conclusion.work_state, skill_candidate=conclusion.skill_candidate)
             except JobResultRejected as error:
@@ -528,11 +535,6 @@ class InformationJobRunner:
         async def record_presentations(presentations):
             await store.record_job_presentations(job_id,scene_id,revision,presentations)
             toolkit.adopt_presentations(presentations)
-            if job['work_operation']=='group_summary':
-                await store.record_summary_reads(job_id,scene_id,revision,
-                    [(item['result_id'],item['start'],item['end']) for item in presentations
-                     if item['coordinate_unit']=='characters' and item['result_id'] in toolkit.observations
-                     and toolkit.observations[item['result_id']].tool_name=='read_group_chat_window'])
 
         execution.record_presentations=record_presentations
 
@@ -563,9 +565,10 @@ class InformationJobRunner:
                     'elapsed_seconds_used':job['elapsed_seconds']}}
                 trace["runs"].append(run_trace)
                 try:
-                    work_cutoff = (job["summary_range"]["snapshot_rowid"] if job["summary_range"] is not None
-                                   else (await store.load_scene_session(scene_id))["last_observed_event_rowid"])
                     require_current_access()
+                    work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+                    current_cutoff=(await store.load_scene_session(scene_id))['last_observed_event_rowid']
+                    work_cutoff=work.input_cutoff(work.parameters_model.model_validate(job['work_parameters']),current_cutoff) if work else current_cutoff
                     if job['model_steps']>=config.job_max_steps:
                         raise JobBudgetExhausted('Work model-step budget exhausted')
                     if job['elapsed_seconds']>=config.job_max_seconds:
@@ -616,13 +619,10 @@ class InformationJobRunner:
 
                         def work_definitions():
                             reads = toolkit.get_tool_definitions()
-                            if job["work_operation"] == "group_summary":
-                                allowed = {"read_group_chat_window", "read_tool_result", "read_media"}
-                                reads = [item for item in reads if item["function"]["name"] in allowed]
-                                return [*reads, REPORT_PROGRESS, UPDATE_WORK_STATE]
                             skills=copy.deepcopy(SKILL_TOOLS)
                             skills[0]['function']['parameters']=find_arguments.model_json_schema()
-                            return [*reads, *skills, REPORT_PROGRESS, UPDATE_WORK_STATE]
+                            available=[*reads,*skills,REPORT_PROGRESS,UPDATE_WORK_STATE]
+                            return [item for item in available if item['function']['name'] in work.allowed_tools] if work else available
 
                         def request_definitions():
                             if job['model_steps']>=config.job_max_steps-1 or job['tool_calls']>=config.job_max_tool_calls:
@@ -764,6 +764,8 @@ class InformationJobRunner:
                 except JobChanged:
                     pass
                 await store.record_job_elapsed(job_id,scene_id,0,result_ids=toolkit.result_ids)
+                event=await store.interrupt_job(job_id,scene_id,'The active execution was cancelled; no candidate is submitted')
+                if event:await runtime.commit_tool_observation(event)
                 await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
                     payload={**trace,'job_revision':revision,'error_type':'CancelledError',
                              'interrupted':'execution_cancelled','retained_result_ids':list(toolkit.result_ids)})

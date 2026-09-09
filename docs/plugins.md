@@ -46,6 +46,16 @@ output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、re
 
 context.scene_config(scene_id)、scene_configs()、members、time_settings、now() 提供只读公共输入；长期实例不读取私有 Runtime。on_enable 用 context.start_task(coroutine, name=...) 启动所属任务，停用由宿主取消并等待，on_unload 释放客户端。config_apply 默认 restart_plugin；仅实现 apply_config 的插件可显式声明 in_place。面板由实际工具、handler 与两种配置 Schema 生成，没有单独手写的业务清单。
 
+## 长期工作
+
+提案工具可调用 `call.stage_work(goal=..., request_source=..., evidence=..., parameters=...)`，取得原 Ledger 的暂存引用，再由 respond 提交。request_source 始终是已读人类原话；普通信息工作不填 parameters。专用工作在 PluginSpec.work 提供 PluginWorkSpec，parameters 必须使用其参数模型，不在插件中建立任务队列或写裸连接。
+
+只有需要固定业务范围和独立覆盖的工作才声明该对象。它提供参数、修订和进度模型，明确的 allowed_tools 与 allow_learning，以及截点、修订、新进度、阅读覆盖、结果判定、续页和进度展示函数；[群总结实现](../src/len_bot/plugins/builtin/group_summary/work.py)保留实际范围和分页职责。这些函数只使用已保存资料和本地计算，存储回调在原事务中执行，不请求 HTTP/模型、不建立嵌套写事务。专用提示词仍由本插件的 before_model 钩子提供。
+
+新工作在既有 task.payload 保存 PluginOrigin、work_parameters 和 work_progress；原工作 ID、revision、预算、观察和发送服务继续使用。版本不兼容时更新 PluginSpec.version。原版本或入口不存在的工作只保留中断说明与原数据，不能用新参数类型猜测恢复；取消仍可由原管理入口完成。业务参数修订通过 revise_work.parameters 或工作页的插件字段完成，Schema 由所属插件提供。
+
+全局停用取消所属调用、轮询及未完成工作；关闭某个群中的插件只取消该群的调用和工作，共享轮询继续服务其他开放群。已送达事实保留，未发送行动在原出站检查核对归属；未知发送不重发。插件的真实等待和尚未发送的提醒进入待核对，已执行或已进入发送的工作保留各自结果与回执状态。
+
 ## 调用钩子
 
 `context.register_hook(phase, id=..., handler=..., scope='own', priority=100)` 在 on_load 注册。数值较小者先执行，同级沿注册顺序；scope 默认 own，只作用于本插件发起的运行。conversation、work 和 scene 须显式声明，且仍要求该插件在当前场景启用。钩子接收下表中的类型和 PluginCallContext，返回同类型或 None；stop_reason 明确停止本次阶段。改变、中止和错误进入当前 Trace。

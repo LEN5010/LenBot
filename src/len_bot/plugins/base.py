@@ -26,6 +26,10 @@ class PluginContext:
     def now(self) -> float:
         return self._runtime.clock()
 
+    @property
+    def bot_actor_id(self) -> str:
+        return self._runtime.bot_actor_id
+
     def scene_config(self, scene_id: str) -> BaseModel | None:
         scene = self._runtime.config_store.current.scenes.get(scene_id)
         setting = scene.plugins.get(self.spec.id) if scene else None
@@ -72,6 +76,13 @@ class PluginContext:
         from len_bot.runtime.plugin_interactions import run_agent
         return await run_agent(self._runtime, call, **options)
 
+    async def stage_work(self, call: PluginCallContext, **options):
+        await self._host.validate_call(call)
+        if (call.ledger is None or call.scene_id!=call.ledger.context.refs.scene_id
+                or call.episode_id!=call.ledger.episode_id):
+            raise ValueError('Work creation requires the active scene proposal ledger')
+        return await call.ledger.stage_plugin_work(call,**options)
+
     @property
     def data_directory(self) -> Path:
         return Path(self._runtime.config.db_path).resolve().parent / 'plugins' / self.spec.id
@@ -116,6 +127,7 @@ class PluginContext:
         deferred: bool = False,
         available: Callable[[PluginCallContext], bool] | None = None,
         timeout_seconds: float | None = None,
+        page_chars: int | None = None,
     ) -> None:
         """Tool Registration: registers an agentic tool for Cognition."""
         if not self.has_permission(PluginPermission.REGISTER_TOOL):
@@ -135,6 +147,7 @@ class PluginContext:
             roles=roles,
             deferred=deferred,
             available=available,
+            page_chars=page_chars,
         )
 
 class BasePlugin:

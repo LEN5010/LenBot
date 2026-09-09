@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from typing import Any, Optional
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
@@ -24,6 +24,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         self.db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
         self._write_lock = asyncio.Lock()
+        self.resolve_plugin_work = None
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
@@ -647,25 +648,25 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         return [Event.model_validate(self._retrieval_event(row)) for row in rows]
 
     @staticmethod
-    def _group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id):
+    def _group_message_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id):
         if not scene_id.startswith('group:') or start_at >= end_at or cutoff_rowid < 0:
-            raise ValueError('A group summary needs a valid group, half-open interval and snapshot')
+            raise ValueError('A group window needs a valid group, half-open interval and snapshot')
         where = """scene_id=? AND event_type='GROUP_MESSAGE_RECEIVED'
             AND actor_id LIKE 'user:%' AND actor_id!=? AND timestamp>=? AND timestamp<?
             AND rowid<=? AND COALESCE(json_extract(metadata,'$.simulated'),0)=0"""
         return where, [scene_id, bot_actor_id, start_at, end_at, cutoff_rowid]
 
-    async def group_summary_statistics(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id):
-        where, parameters = self._group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
+    async def group_message_statistics(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id):
+        where, parameters = self._group_message_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
         row = await (await self._db.execute(f"""SELECT COUNT(*),COUNT(DISTINCT actor_id),
             COALESCE(SUM(LENGTH(COALESCE(NULLIF(json_extract(payload,'$.raw_text'),''),
               json_extract(payload,'$.content'),''))),0) FROM events WHERE {where}""", parameters)).fetchone()
         return dict(zip(('message_count', 'participant_count', 'character_count'), row))
 
-    async def group_summary_messages(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id, after_rowid, limit):
-        where, parameters = self._group_summary_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
+    async def group_message_window(self, scene_id, *, start_at, end_at, cutoff_rowid, bot_actor_id, after_rowid, limit):
+        where, parameters = self._group_message_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id)
         if after_rowid < 0 or limit < 1:
-            raise ValueError('A summary page needs a nonnegative cursor and positive limit')
+            raise ValueError('A message page needs a nonnegative cursor and positive limit')
         rows = await (await self._db.execute(f"""SELECT id,event_type,scene_id,actor_id,timestamp,payload,rowid,metadata
             FROM events WHERE {where} AND rowid>? ORDER BY rowid ASC LIMIT ?""",
             [*parameters, after_rowid, limit])).fetchall()
@@ -832,6 +833,34 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                   AND e.scene_id=open_loops.scene_id
                   AND json_type(e.metadata,'$.associated_open_loop.resume_state')='object')""")
             await self._db.commit()
+
+    async def interrupt_plugin_waits_and_reminders(self,plugin_id,scene_id=None):
+        """Pause owned waits and unsent reminders, retaining their source events."""
+        changed={'wait_ids':[],'reminder_ids':[]}
+        async with self._write_lock:
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                rows=await (await self._db.execute("""SELECT l.id,l.scene_id,json_extract(e.payload,'$.plugin_origin')
+                    FROM open_loops l JOIN events e ON e.id=l.source_event_id AND e.scene_id=l.scene_id
+                    WHERE l.status='active' AND (? IS NULL OR l.scene_id=?)""",(scene_id,scene_id))).fetchall()
+                for ident,scene,encoded in rows:
+                    if encoded and PluginOrigin.model_validate_json(encoded).depends_on(plugin_id):
+                        await self._db.execute("UPDATE open_loops SET status='review_required' WHERE id=? AND scene_id=?",(ident,scene))
+                        changed['wait_ids'].append(ident)
+                rows=await (await self._db.execute("""SELECT id,scene_id,payload FROM tasks
+                    WHERE status IN ('pending','claimed','processing')
+                    AND COALESCE(json_extract(payload,'$.kind'),'reminder')!='agent_job'
+                    AND (? IS NULL OR scene_id=?)""",(scene_id,scene_id))).fetchall()
+                for ident,scene,encoded in rows:
+                    owner=json.loads(encoded).get('plugin_origin')
+                    if owner and PluginOrigin.model_validate(owner).depends_on(plugin_id):
+                        await self._db.execute("UPDATE tasks SET status='review_required' WHERE id=? AND scene_id=?",(ident,scene))
+                        changed['reminder_ids'].append(ident)
+                await self._db.commit()
+                return changed
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     async def save_open_loop(self, loop_data: dict[str, Any]) -> None:
         if not self._db:

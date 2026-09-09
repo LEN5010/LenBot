@@ -1,4 +1,5 @@
 from typing import Optional, Literal
+import json
 from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
@@ -125,23 +126,39 @@ class JobControlRequest(BaseModel):
     goal: str | None = None
     constraints_add: list[str] = Field(default_factory=list)
     constraints_remove: list[str] = Field(default_factory=list)
+    parameters: dict | None = None
 
 
 @router.post("/jobs/{job_id}/{operation}")
 async def control_job(job_id: str, operation: str, req: JobControlRequest, request: Request, user: str = Depends(get_current_user)):
     if operation not in {"cancel", "revise", "resume"}:
         raise HTTPException(400, "未知工作操作")
-    if operation=='resume' and (req.goal is not None or req.constraints_add or req.constraints_remove):
+    if operation=='resume' and (req.goal is not None or req.constraints_add or req.constraints_remove or req.parameters is not None):
         raise HTTPException(400,'继续工作保留原目标和约束；更改要求请使用修改入口')
     runtime = request.app.state.runtime
     job = await _service(request).job(job_id)
     if not job:
         raise HTTPException(404, "工作不存在")
+    parameters=None
+    revised_goal=None
+    if req.parameters is not None:
+        if operation!='revise':raise HTTPException(400,'业务参数变化只用于修订工作')
+        try:
+            work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+            if work is None:raise ValueError('该工作没有插件业务参数')
+            changes=work.revision_model.model_validate_json(json.dumps(req.parameters,ensure_ascii=False),strict=True)
+            actor=await runtime.scene_manager.get_or_create_actor(job['scene_id'])
+            revised=work.revise(work.parameters_model.model_validate(job['work_parameters']),changes,
+                actor.session.last_observed_event_rowid,runtime.clock())
+            parameters=work.parameters_model.model_validate(revised.parameters).model_dump(mode='json')
+            revised_goal=revised.goal
+        except ValueError as error:raise HTTPException(400,str(error)) from error
     event = await runtime.record_operator_event(job["scene_id"], f"job_{operation}", user,
         {"job_id": job_id, **req.model_dump()})
     proposal = JobProposal(operation=operation, job_id=job_id, expected_revision=req.expected_revision,
-        goal=req.goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove,
-        source_event_ids=[event.id], requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'])
+        goal=req.goal or revised_goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove,
+        source_event_ids=[event.id], requester_qq_uid=job['requester_qq_uid'],work_operation=job['work_operation'],
+        plugin_origin=job['plugin_origin'],work_parameters=parameters)
     decision = await runtime.operator_outcome(job["scene_id"], EpisodeOutcome(disposition=FinalDisposition.SILENCE,
         decision_reason="运营修改信息工作", job_proposals=[proposal]), source_event_ids=[event.id])
     if not decision.accepted:

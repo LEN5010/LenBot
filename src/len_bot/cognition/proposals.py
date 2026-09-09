@@ -4,12 +4,13 @@ from __future__ import annotations
 import copy
 import json
 from typing import Literal
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
-from len_bot.cognition.jobs import GroupSummaryRange, JobProposal
+from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal
 from len_bot.memory.models import MemoryProposal
+from len_bot.events.models import PluginOrigin
 
 
 class StrictModel(BaseModel):
@@ -75,17 +76,7 @@ class ReviseWork(Evidence):
     goal:str|None=None
     constraints_add:list[str]=Field(default_factory=list)
     constraints_remove:list[str]=Field(default_factory=list)
-    start_at: AwareDatetime | None = None
-    end_at: AwareDatetime | None = None
-    focus: str | None = None
-
-    @model_validator(mode='after')
-    def range_pair(self):
-        if (self.start_at is None) != (self.end_at is None):
-            raise ValueError('修订总结时间时必须同时提供start_at和end_at')
-        if self.start_at is not None and self.start_at >= self.end_at:
-            raise ValueError('总结范围必须满足start_at < end_at')
-        return self
+    parameters: dict | None = Field(default=None,description='仅专用插件工作使用；按该工作提供的work_revision_schema填写业务参数变化')
 
 class ControlWork(Evidence):
     work_ref:str
@@ -225,28 +216,27 @@ class ProposalLedger:
             raise ValueError('请求来源必须是当前场景与截点内已读的人类原话')
         return events[0]
 
-    async def stage_group_summary(self, *, start_at, end_at, focus, evidence, request_source):
+    async def stage_plugin_work(self, call, *, goal, evidence, request_source, parameters=None, constraints=(), result_refs=()):
         refs = self.context.refs
-        if not refs.scene_id.startswith('group:'):
-            raise ToolArgumentError('群聊总结需要当前群中的真实请求者')
         source = await self.request_source(request_source)
         sources = list(dict.fromkeys([source.id, *(refs.event_id(reference) for reference in evidence)]))
-        request = GroupSummaryRange(start_at=start_at, end_at=end_at, focus=focus,
-            snapshot_rowid=refs.cutoff, snapshot_at=self.context.runtime.clock(),
-            bot_actor_id=self.context.runtime.bot_actor_id)
+        work=call.plugin.spec.work if parameters is not None else None
+        if parameters is not None and (work is None or not isinstance(parameters,work.parameters_model)):
+            raise ToolArgumentError('Plugin work parameters require the owning descriptor model')
         proposal_ref = f'S{self._next_handle}'
         proposal = JobProposal(proposal_id=proposal_ref,
-            goal=f'总结本群 [{request.start_at.isoformat()}, {request.end_at.isoformat()}) 的已保存群聊。关注：{focus}',
+            goal=goal,constraints_add=list(constraints),result_ids=[refs.result_id(reference) for reference in result_refs],
             source_event_ids=sources, requester_qq_uid=source.actor_id.removeprefix('user:'),
             request_source_event_id=source.id,
-            work_operation='group_summary', summary_range=request)
+            work_operation=work.operation if work else 'information',plugin_origin=call.origin,
+            work_parameters=parameters.model_dump(mode='json') if parameters is not None else None)
         self._next_handle += 1
         self.jobs.append(proposal)
         self.proposal_refs.add(proposal_ref)
         self.staged[proposal_ref] = ('jobs', proposal)
         return {'status':'staged', 'proposal_ref':proposal_ref, 'ack_ref':proposal_ref,
-                'summary_range':request.model_dump(mode='json'),
-                'note':'本群总结尚未创建工作；respond提交后才进入原工作运行器，确认消息必须使用本轮ack_ref。'}
+                'work_parameters':proposal.work_parameters,
+                'note':'工作尚未提交；respond提交后才进入原工作运行器，确认消息使用本轮ack_ref。'}
 
     def terminal_definition(self):
         result=copy.deepcopy(RESPOND)
@@ -333,21 +323,21 @@ class ProposalLedger:
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
                 collection='jobs'
-                summary_range = None
-                if name == 'revise_work' and (model.start_at is not None or model.focus is not None):
-                    if job['work_operation'] != 'group_summary':
-                        raise ValueError('只有总结工作可以修订总结范围或focus')
-                    values = dict(job['summary_range'])
-                    if model.start_at is not None:
-                        values.update(start_at=model.start_at, end_at=model.end_at,
-                                      snapshot_rowid=refs.cutoff, snapshot_at=self.context.runtime.clock())
-                    if model.focus is not None:
-                        values['focus'] = model.focus
-                    summary_range = GroupSummaryRange.model_validate(values)
+                parameters=None
+                revised_goal=None
+                if name=='revise_work' and model.parameters is not None:
+                    work=self.context.runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+                    if work is None:raise ValueError('This work has no plugin-specific revision parameters')
+                    changes=work.revision_model.model_validate_json(json.dumps(model.parameters,ensure_ascii=False),strict=True)
+                    current=work.parameters_model.model_validate(job['work_parameters'])
+                    revised=work.revise(current,changes,refs.cutoff,self.context.runtime.clock())
+                    parameters=work.parameters_model.model_validate(revised.parameters).model_dump(mode='json')
+                    revised_goal=revised.goal
                 value=JobProposal(proposal_id=proposal_ref,operation={'revise_work':'revise','cancel_work':'cancel','resume_work':'resume'}[name],
                     job_id=job['id'],expected_revision=job['revision'],source_event_ids=evidence,
-                    goal=getattr(model,'goal',None),constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]),
-                    requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'], summary_range=summary_range)
+                    goal=getattr(model,'goal',None) or revised_goal,constraints_add=getattr(model,'constraints_add',[]),constraints_remove=getattr(model,'constraints_remove',[]),
+                    requester_qq_uid=job['requester_qq_uid'], work_operation=job['work_operation'],
+                    plugin_origin=job['plugin_origin'],work_parameters=parameters)
             elif name=='schedule_reminder':
                 source=await self.request_source(model.request_source)
                 collection='tasks'
@@ -508,8 +498,20 @@ class ProposalLedger:
                 addressed=list(dict.fromkeys(refs.member_id(ref) for ref in item.addressed_to))
                 if expectation and refs.member_id(expectation.target)==refs.bot_actor_id:
                     raise ValueError('不能把自己作为外部等待回应对象')
+                message_owner=None
+                if not operation:
+                    if job and job['plugin_origin']:message_owner=PluginOrigin.model_validate(job['plugin_origin'])
+                    elif isinstance(acknowledgement,JobProposal):message_owner=acknowledgement.plugin_origin
+                    elif isinstance(acknowledgement,TaskProposal) and acknowledgement.payload.get('plugin_origin'):
+                        message_owner=PluginOrigin.model_validate(acknowledgement.payload['plugin_origin'])
+                    elif delivery and not job:
+                        delivered_task=next((row for row in await self.context.runtime.event_store.scene_tasks(refs.scene_id)
+                            if row['id']==delivery),None)
+                        if delivered_task and delivered_task['payload'].get('plugin_origin'):
+                            message_owner=PluginOrigin.model_validate(delivered_task['payload']['plugin_origin'])
                 messages.append(MessageProposal(segments=parts,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
+                    plugin_origin=message_owner,
                     addressed_to=addressed,
                     job_id=job['id'] if job else None,job_revision=job['revision'] if job else None,
                     expect_reply=bool(expectation),reply_target=refs.member_id(expectation.target) if expectation else None,

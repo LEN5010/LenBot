@@ -75,7 +75,7 @@ class SocialCognitionCore:
         def plugin_context(tool_call_id=None):
             if plugin_call:
                 return replace(plugin_call, now=runtime.clock(), cutoff_rowid=context.refs.cutoff,
-                    ledger=ledger, tool_call_id=tool_call_id, execution=execution)
+                    episode_id=episode_id,ledger=ledger,tool_call_id=tool_call_id,execution=execution)
             return PluginCallContext(scene_id=session.scene_id, requester_qq_uid=requester_qq_uid,
                 now=runtime.clock(), cutoff_rowid=context.refs.cutoff, episode_id=episode_id,
                 job_id=None, role='conversation', ledger=ledger,
@@ -278,6 +278,10 @@ class SocialCognitionCore:
                 await runtime.plugin_host.validate_call(owner_call)
                 for message in outcome.message_proposals:
                     message.plugin_origin=owner_call.origin
+                for proposal in outcome.job_proposals:
+                    if proposal.operation=='create' and proposal.plugin_origin is None:proposal.plugin_origin=owner_call.origin
+                for proposal in outcome.task_proposals:
+                    if proposal.operation=='create':proposal.payload.setdefault('plugin_origin',owner_call.origin.model_dump())
             active_hooks=runtime.plugin_host.run_hooks(lambda:owner_call,audit) if owner_call else hooks
             outcome=await active_hooks.before_commit(outcome)
             await ledger.validate_message_segments(outcome)
