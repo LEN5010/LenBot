@@ -131,6 +131,8 @@ class JobControlRequest(BaseModel):
 async def control_job(job_id: str, operation: str, req: JobControlRequest, request: Request, user: str = Depends(get_current_user)):
     if operation not in {"cancel", "revise", "resume"}:
         raise HTTPException(400, "未知工作操作")
+    if operation=='resume' and (req.goal is not None or req.constraints_add or req.constraints_remove):
+        raise HTTPException(400,'继续工作保留原目标和约束；更改要求请使用修改入口')
     runtime = request.app.state.runtime
     job = await _service(request).job(job_id)
     if not job:

@@ -16,7 +16,7 @@ onBeforeRouteUpdate((to,from)=>to.query.id===from.query.id||confirmLeave())
 let requestId=0
 const permissionLabels={emit_event:'提交观察事件',register_tool:'提供原生工具'}
 const eventLabels={LIVE_STARTED:'发现直播开始',LIVE_ENDED:'发现直播结束'}
-const toolLabels={web_search:'搜索网页',read_page:'读取网页',get_video_info:'查询视频信息',search_bilibili:'搜索哔哩哔哩',get_dynamic_feed:'查询用户动态',get_live_schedule:'查询直播日程',get_live_status:'查询实际直播状态',get_asoul_dynamics:'该源已抓取的最新动态',search_asoul_dynamics:'搜索动态',read_asoul_dynamic:'读取动态详情',get_asoul_on_this_day:'历史同日',search_asoul_fanart:'搜索二创',get_random_asoul_fanart:'随机查询二创',summarize_group_chat:'创建本群总结工作',read_group_chat_window:'读取总结范围原话'}
+const toolLabels={web_search:'搜索网页',read_page:'读取网页',get_video_info:'查询视频信息',search_bilibili:'搜索哔哩哔哩',get_dynamic_feed:'查询用户动态',get_live_schedule:'查询直播日程',get_live_status:'查询实际直播状态',get_live_subscriptions:'核对本群开播订阅',get_asoul_dynamics:'该源已抓取的最新动态',search_asoul_dynamics:'搜索动态',read_asoul_dynamic:'读取动态详情',get_asoul_on_this_day:'历史同日',search_asoul_fanart:'搜索二创',get_random_asoul_fanart:'随机查询二创',summarize_group_chat:'创建本群总结工作',read_group_chat_window:'读取总结范围原话'}
 const commandFields=[{key:'calendar_today',title:'今日范围命令词'},{key:'calendar_tomorrow',title:'明日范围命令词'},{key:'calendar_week',title:'自然周范围命令词'}]
 const labels=(values,dictionary)=>values.map(value=>dictionary[value]||value).join('、')
 const fields=computed(()=>selected.value?Object.entries(selected.value.config_schema.properties).filter(([key])=>selected.value.id!=='asoul_calendar'||!['commands','avatar_paths'].includes(key)).map(([key,schema])=>({key,schema})):[])

@@ -24,6 +24,25 @@ class GroupSummaryService:
         self.event_store = event_store
         self.config = config
 
+    @staticmethod
+    def current_continuation(job, observation):
+        """Project a saved page locator into the unchanged, current work scope."""
+        if observation.coverage!='group_summary_window' or observation.source_next_call is None:
+            return None
+        if observation.source_next_call.name!='read_group_chat_window':
+            raise ValueError('Saved summary page has a foreign continuation tool')
+        header=json.loads(observation.content.split('\n',1)[0])
+        original=GroupSummaryRange.model_validate(header['range'])
+        current=GroupSummaryRange.model_validate(job['summary_range'])
+        fields=('start_at','end_at','snapshot_rowid','bot_actor_id')
+        if header['job_id']!=job['id'] or any(getattr(original,key)!=getattr(current,key) for key in fields):
+            return None
+        position=WindowCursor.model_validate_json(observation.source_next_call.arguments['cursor'])
+        if position.job_id!=job['id'] or position.revision!=header['job_revision']:
+            raise ValueError('Saved summary continuation does not match its source page')
+        return ToolNextCall(name='read_group_chat_window',arguments={'cursor':WindowCursor(
+            job_id=job['id'],revision=job['revision'],after_rowid=position.after_rowid).model_dump_json()})
+
     async def read_window(self, cursor: str | None, call: PluginCallContext) -> ToolResult:
         if call.role != "work" or not call.job_id:
             raise ValueError("群原话窗口只在已提交的总结工作中读取")
@@ -37,7 +56,7 @@ class GroupSummaryService:
         if cursor is not None:
             position = WindowCursor.model_validate_json(cursor)
             if position.job_id != job["id"] or position.revision != job["revision"]:
-                raise ValueError("游标属于另一个工作或已被修订的范围，请从cursor=null开始")
+                raise ValueError("游标不属于当前工作版本；使用当前工作observation_catalog给出的续页位置，范围改变且无可用续页时才从cursor=null开始")
             after_rowid = position.after_rowid
         rows = await self.event_store.group_summary_messages(
             call.scene_id, start_at=request.start_at.timestamp(), end_at=request.end_at.timestamp(),
