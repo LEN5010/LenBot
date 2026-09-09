@@ -17,7 +17,8 @@ class StrictModel(BaseModel):
     model_config=ConfigDict(extra='forbid')
 
 class TurnPart(StrictModel):
-    text: str|None=Field(default=None,min_length=1)
+    text: str|None=Field(default=None,min_length=1,
+        description='要实际发送的文字；指定照发时只填要求的文字、标点和换行，不添加角色评语。换行使用真实换行，仅在用户要求展示转义写法时发送反斜线加n。')
     image: str|None=Field(default=None,min_length=1)
     at: str|None=Field(default=None,min_length=1)
 
