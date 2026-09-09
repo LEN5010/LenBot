@@ -136,6 +136,7 @@ class AgentLoop:
         execute_tool: Callable[..., Awaitable[ToolResult | ObservationPage | dict[str, Any]]],
         terminal: dict[str, Any] | Callable[[], dict[str, Any]],
         finish: Callable[[dict[str, Any]], Awaitable[Any]],
+        after_finish: Callable[[Any], Awaitable[dict[str, Any] | None]] | None = None,
         proposal_tool_names: set[str] | frozenset[str] = frozenset(),
         max_steps: int = 5,
         max_tool_calls: int = 6,
@@ -151,15 +152,17 @@ class AgentLoop:
         finalize_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
         record_tool_result: Callable[[ToolCall, dict, Any], Awaitable[Any]] | None = None,
         trace: dict[str, Any] | None = None,
+        initial_model_calls: int = 0,
+        initial_tool_calls: int = 0,
     ) -> Any:
-        if max_steps < 1 or max_tool_calls < 0:
+        if max_steps < 1 or max_tool_calls < 0 or not 0 <= initial_model_calls < max_steps or not 0 <= initial_tool_calls <= max_tool_calls:
             raise ValueError("Invalid agent run budget")
         terminal_name = (terminal() if callable(terminal) else terminal)["function"]["name"]
         trajectory = copy.deepcopy(messages)
         audit = trace if trace is not None else {}
-        audit.update({"steps": [], "model_calls_used": 0, "tool_calls_used": 0, "latency_ms": 0})
+        audit.update({"steps": [], "model_calls_used": initial_model_calls, "tool_calls_used": initial_tool_calls, "latency_ms": 0})
         audit.pop('termination_reason', None)
-        tool_calls_used = 0
+        tool_calls_used = initial_tool_calls
         seen_call_ids = {call['id'] for message in trajectory for call in (message.get('tool_calls') or [])}
 
         async def execute(call: ToolCall, arguments: dict[str, Any], item: dict) -> Any:
@@ -211,7 +214,7 @@ class AgentLoop:
 
         step = None
         try:
-            for step_index in range(max_steps):
+            for step_index in range(initial_model_calls,max_steps):
                 step = None
                 remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
                 if remaining < 1:
@@ -432,6 +435,22 @@ class AgentLoop:
                         raise
                     terminal_trace["status"] = "accepted"
                     audit.pop("failure_reason", None)
+                    if after_finish is not None:
+                        terminal_trace['committed'] = True
+                        # Publication follows durable acceptance. A later error
+                        # must not rewrite this checkpoint as a rejected draft.
+                        receipt=await after_finish(outcome)
+                        if receipt is not None:
+                            terminal_trace['receipt']=_trace_value(receipt)
+                            trajectory.append({'role':'tool','tool_call_id':terminal_calls[0][0].id,
+                                               'content':json.dumps(receipt,ensure_ascii=False)})
+                            if receipt.get('continue_run'):
+                                if exchange_checkpoint is not None:
+                                    await exchange_checkpoint(copy.deepcopy(trajectory))
+                                if observe is not None:
+                                    additions=await observe()
+                                    if additions:trajectory.extend(copy.deepcopy(additions))
+                                continue
                     return outcome
                 if exchange_checkpoint is not None:
                     await exchange_checkpoint(copy.deepcopy(trajectory))

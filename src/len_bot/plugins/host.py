@@ -32,14 +32,14 @@ class PluginRuntimeStatus:
 def _core_tool_sources() -> dict[str, str]:
     # Read the actual definitions at registration time, after runtime modules
     # have loaded. No independently maintained reserved-name catalog.
-    from len_bot.cognition.proposals import FINISH_TURN, TOOLS, definition
+    from len_bot.cognition.proposals import RESPOND, TOOLS, definition
     from len_bot.runtime.job_runner import FINISH_WORK, REPORT_PROGRESS, SKILL_TOOLS, UPDATE_WORK_STATE
     from len_bot.skills.learning import MAINTENANCE_TOOLS
     from len_bot.tools.retrieval import CORE_READ_TOOLS
 
     groups = {
         "core:retrieval": CORE_READ_TOOLS,
-        "core:proposals": [FINISH_TURN, *(definition(name, *spec) for name, spec in TOOLS.items())],
+        "core:proposals": [RESPOND, *(definition(name, *spec) for name, spec in TOOLS.items())],
         "core:work": [FINISH_WORK, REPORT_PROGRESS, UPDATE_WORK_STATE, *SKILL_TOOLS],
         "core:skill_maintenance": MAINTENANCE_TOOLS,
     }

@@ -43,6 +43,8 @@ class ActionItem(BaseModel):
     resolved_images: dict[str, str] = Field(default_factory=dict, exclude=True)
     resolved_sticker_ids: set[str] = Field(default_factory=set, exclude=True)
     batch_id: str | None = None
+    episode_id: str | None = None
+    checkpoint_index: int = Field(default=0,ge=0)
     batch_index: int = 0
     batch_size: int = 1
     reply_to: Optional[str] = None

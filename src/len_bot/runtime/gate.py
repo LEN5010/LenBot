@@ -81,6 +81,7 @@ class GateDecision:
         self.action_ids: list[str] = []
         self.commit_event_id: str | None = None
         self.publication: PublicationRecord | None = None
+        self.scene_session: SceneSession | None = None
 
     def record(self) -> dict:
         return {"accepted": self.accepted, "committed": self.committed_proposal is not None,
@@ -181,10 +182,10 @@ class RuntimeGate:
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
 
         if outcome.disposition == FinalDisposition.ACTION:
-            if len(outcome.message_proposals) > MAX_MESSAGES_PER_OUTCOME:
+            if len(outcome.message_proposals)+mailbox.messages_committed > MAX_MESSAGES_PER_OUTCOME:
                 return GateDecision(
                     FinalDisposition.SILENCE,
-                    "Gate rejected hard anti-spam ceiling: too many messages in one outcome",
+                    "All checkpoints share the episode message limit",
                     accepted=False,
                 )
             if (mailbox.output_kind == 'chat' and current_scene_state.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES
@@ -230,6 +231,10 @@ class RuntimeGate:
         if scene_commit:
             scene_commit['event'].payload['response_actor_ids'] = response_actors
             scene_commit['event'].payload['action_ids'] = action_ids
+        for source in outcome.source_outcomes:
+            if any(index<0 or index>=len(action_ids) for index in source.message_indices):
+                return GateDecision(FinalDisposition.SILENCE,'Source outcome references a missing message',accepted=False)
+            source.action_ids=[action_ids[index] for index in source.message_indices]
         deliveries = {}
         acknowledgements = {}
         operation_confirmations = {}
@@ -389,6 +394,7 @@ class RuntimeGate:
                     "status": "active",
                     "created_at": now,
                     "expires_at": now + self.open_loop_ttl_seconds,
+                    "resume_state": outcome.resume_state.model_dump(mode='json') if outcome.next_action=='wait' and outcome.resume_state else None,
                 }
 
             action_type = (
@@ -424,7 +430,8 @@ class RuntimeGate:
                 origin_event_id=msg.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
                 command_id=mailbox.command_id,
                 announcement_member=mailbox.announcement_member,
-                batch_id=committed.episode_id,
+                episode_id=committed.episode_id,checkpoint_index=outcome.checkpoint_index,
+                batch_id=decision.commit_event_id.removeprefix('turn:'),
                 batch_index=index, batch_size=len(outcome.message_proposals),
                 reply_to=msg.reply_to,
                 response_actor_ids=committed.response_actor_ids[index],

@@ -6,6 +6,7 @@ import { interactionReason } from '../domain/activity.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import ResourceViewer from './ResourceViewer.vue'
+import SourceOutcomes from './SourceOutcomes.vue'
 
 const props = defineProps({ event: Object, relations: Object, loading: Boolean, error: String, readAt: Number, active: Boolean, modal: Boolean })
 defineEmits(['close', 'retry'])
@@ -32,7 +33,7 @@ const readTurns = computed(() => (props.relations?.events || []).filter(item => 
 const jobs = computed(() => [...(props.relations?.jobs || [])].sort((left,right)=>Number(right.request_source_event_id===props.event?.id)-Number(left.request_source_event_id===props.event?.id)))
 const truncated = computed(() => Object.entries(props.relations?.truncated || {}).filter(([, value]) => value).map(([key]) => ({ events: '事件', traces: '轨迹', calls: '模型请求', jobs: '工作', actions: '行动', tool_results: '工具资料' }[key])))
 const disposition = value => ({ SILENCE: 'silence', ACTION: 'expression' }[value] || value)
-function handledStatus(turn) { return Array.isArray(turn.payload.handled_source_event_ids) ? (turn.payload.handled_source_event_ids.includes(props.event?.id) ? 'handled' : 'unhandled') : null }
+function handledStatus(turn) { const ids=turn.payload.source_outcomes?.map(item=>item.source_event_id) ?? turn.payload.handled_source_event_ids;return Array.isArray(ids) ? (ids.includes(props.event?.id) ? 'handled' : 'unhandled') : null }
 </script>
 
 <template>
@@ -55,7 +56,7 @@ function handledStatus(turn) { return Array.isArray(turn.payload.handled_source_
         <template v-if="hasAttention"><p v-if="event.attention.attention_reasons.length">{{ event.attention.attention_reasons.map(attentionReason).join(' · ') }}</p><p v-else><StatusBadge domain="attention" status="stored_only" /> 未产生独立唤醒</p><v-chip v-if="event.attention.attention_reasons.length" size="small" variant="tonal">{{ Object.hasOwn(event.attention, 'attention_certain') ? (event.attention.attention_certain ? '确定唤醒来源' : '观察机会') : '未记录唤醒确定性' }}</v-chip></template>
         <p v-else class="muted-copy">没有保存注意力判定。</p>
         <p v-if="relations?.source_handling?.pending" class="inspector-badges"><StatusBadge domain="attention" status="pending" /> 这条来源仍在当前待处理唤醒中。</p>
-        <article v-for="turn in readTurns" :key="turn.id" class="relation-record"><div class="inspector-badges"><StatusBadge domain="attention" status="read" /><StatusBadge v-if="handledStatus(turn)" domain="attention" :status="handledStatus(turn)" /></div><p v-if="!handledStatus(turn)" class="muted-copy">这份旧提交未单独记录处理来源，不能从已读推定本条请求已完成。</p><p class="preserve-lines">本轮整体决定：{{ turn.payload.outcome?.decision_reason || '未记录' }} <StatusBadge v-if="turn.payload.outcome?.disposition" domain="attention" :status="disposition(turn.payload.outcome.disposition)" /></p><EntityLink type="event" :id="turn.id" :scene-id="event.scene_id" label="查看已提交的本轮结果" /></article>
+        <article v-for="turn in readTurns" :key="turn.id" class="relation-record"><div class="inspector-badges"><StatusBadge domain="attention" status="read" /><StatusBadge v-if="handledStatus(turn)" domain="attention" :status="handledStatus(turn)" /></div><p v-if="!handledStatus(turn)" class="muted-copy">这份旧提交未单独记录处理来源，不能从已读推定本条请求已完成。</p><p class="preserve-lines">本轮整体决定：{{ turn.payload.outcome?.decision_reason || '未记录' }} <StatusBadge v-if="turn.payload.outcome?.disposition" domain="attention" :status="disposition(turn.payload.outcome.disposition)" /></p><SourceOutcomes :items="turn.payload.source_outcomes" :scene-id="event.scene_id" /><EntityLink type="event" :id="turn.id" :scene-id="event.scene_id" label="查看已提交的本轮结果" /></article>
         <p v-if="relations && !readTurns.length" class="muted-copy">本次关联结果中没有已提交的原话读取记录。</p>
         <template v-if="relations">
           <v-alert v-if="truncated.length" type="info" variant="tonal" class="mt-4">{{ truncated.join('、') }}超过本次最多 50 项的读取范围。</v-alert>

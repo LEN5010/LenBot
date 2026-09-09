@@ -434,7 +434,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                  AND COALESCE(json_extract(payload,'$.gate.accepted'),0)=0
                  AND COALESCE(json_extract(payload,'$.gate.committed'),0)=0
                  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.scene_id=t.scene_id
-                     AND e.id='turn:'||t.ref_id AND e.event_type='CONVERSATION_COMMITTED')
+                     AND (e.id='turn:'||t.ref_id OR json_extract(e.payload,'$.episode_id')=t.ref_id)
+                     AND e.event_type='CONVERSATION_COMMITTED')
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))>?
                  AND COALESCE(json_extract(payload,'$.conversation.read_cutoff'),json_extract(payload,'$.observed_rowid'))<=?
                ORDER BY created_at DESC LIMIT 3""", (scene_id, after_rowid, through_rowid),
@@ -612,17 +613,22 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
 
     async def pending_response_actors(self, scene_id, bot_actor_id, after_timestamp):
         """Short-lived in-flight response facts, never a confirmed interaction."""
-        rows = await (await self._db.execute("""SELECT DISTINCT person.value FROM events c,
-              json_each(c.payload,'$.response_actor_ids') response, json_each(response.value) person
+        rows = await (await self._db.execute("""SELECT message.value FROM events c,
+              json_each(c.payload,'$.outcome.message_proposals') message
             WHERE c.scene_id=? AND c.event_type='CONVERSATION_COMMITTED' AND c.timestamp>=?
               AND json_extract(c.metadata,'$.mode')='live'
-              AND json_array_length(c.payload,'$.outcome.message_proposals')>0
+              AND COALESCE(json_extract(c.payload,'$.output_kind'),'chat')='chat'
               AND NOT EXISTS (SELECT 1 FROM events r WHERE r.scene_id=c.scene_id AND r.actor_id=?
                 AND r.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
                 AND c.id='turn:'||json_extract(r.payload,'$.batch_id')
-                AND json_extract(r.payload,'$.batch_index')=CAST(response.key AS INTEGER))""",
+                AND json_extract(r.payload,'$.batch_index')=CAST(message.key AS INTEGER))""",
             (scene_id, after_timestamp, bot_actor_id))).fetchall()
-        return {row[0] for row in rows}
+        actors=set()
+        for row in rows:
+            message=json.loads(row[0])
+            actors.update(message.get('addressed_to',[]))
+            if message.get('requester_qq_uid'):actors.add('user:'+message['requester_qq_uid'])
+        return actors
 
     async def read_reply_actor(self, scene_id, message_id, read_event_ids):
         row = await (await self._db.execute("""SELECT actor_id FROM events WHERE scene_id=?
@@ -727,6 +733,13 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
 
         await self._db.execute("DELETE FROM pending_runtime_events WHERE id=? AND scene_id=?",
                                (event.id, event.scene_id))
+        resumed=event.metadata.get('conversation_resume')
+        if resumed:
+            changed=await self._db.execute("""UPDATE open_loops SET status='resolved'
+                WHERE id=? AND scene_id=? AND source_event_id=? AND status='active' AND expires_at>?""",
+                (resumed['loop_id'],event.scene_id,resumed['send_event_id'],self.clock()))
+            if changed.rowcount!=1:
+                raise ValueError('The sent wait was already consumed, expired or changed')
         task_id = event.payload.get("fulfils_task_id")
         if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED):
             status = ("shadow_observed" if event.event_type == EventType.ACTION_SHADOWED else "completed" if event.event_type == EventType.MESSAGE_SENT
@@ -783,10 +796,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             raise RuntimeError("Database not initialized")
         cursor = await self._db.execute(
             """
-            SELECT id, scene_id, target_actor_id, intent, source_event_id, source_stimulus_id, status, created_at, expires_at
-            FROM open_loops
-            WHERE scene_id = ? AND status = 'active'
-            ORDER BY created_at ASC;
+            SELECT l.id,l.scene_id,l.target_actor_id,l.intent,l.source_event_id,l.source_stimulus_id,l.status,l.created_at,l.expires_at,
+                   json_extract(e.metadata,'$.associated_open_loop.resume_state'),json_extract(e.payload,'$.message_id')
+            FROM open_loops l JOIN events e ON e.id=l.source_event_id AND e.scene_id=l.scene_id
+            WHERE l.scene_id = ? AND l.status = 'active'
+            ORDER BY l.created_at ASC;
             """,
             (scene_id,)
         )
@@ -802,9 +816,20 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 "status": r[6],
                 "created_at": r[7],
                 "expires_at": r[8],
+                "resume_state":json.loads(r[9]) if r[9] is not None else None,
+                "message_id":str(r[10]) if r[10] is not None else None,
             }
             for r in rows
         ]
+
+    async def mark_suspended_conversations_for_review(self):
+        """A new process cannot silently resume an old conversation run."""
+        async with self._write_lock:
+            await self._db.execute("""UPDATE open_loops SET status='review_required' WHERE status='active'
+                AND EXISTS (SELECT 1 FROM events e WHERE e.id=open_loops.source_event_id
+                  AND e.scene_id=open_loops.scene_id
+                  AND json_type(e.metadata,'$.associated_open_loop.resume_state')='object')""")
+            await self._db.commit()
 
     async def save_open_loop(self, loop_data: dict[str, Any]) -> None:
         if not self._db:
@@ -1349,7 +1374,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 # 3. Resolve Open Loops (ADR-0025: strictly scoped to this scene)
                 for loop_id in resolve_open_loop_ids:
                     cursor = await self._db.execute(
-                        "UPDATE open_loops SET status = 'resolved' WHERE id = ? AND scene_id = ? AND status = 'active';",
+                        "UPDATE open_loops SET status = 'resolved' WHERE id = ? AND scene_id = ? AND status IN ('active','review_required');",
                         (loop_id, scene_id)
                     )
                     if cursor.rowcount == 0:
@@ -1406,9 +1431,17 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                     )
                     if cursor.rowcount != 1:
                         raise ValueError("Task is not ready for fulfilment")
+                for source in resolved_outcome.source_outcomes:
+                    source.task_ids=list(dict.fromkeys(
+                        [proposal_tasks[ref] for ref in source.proposal_refs if ref in proposal_tasks]
+                        +[operation_receipts[ref].target_id for ref in source.proposal_refs
+                          if ref in operation_receipts and operation_receipts[ref].kind in {'work','reminder'}]
+                        +[ident for message in job_messages if message.source_event_id==source.source_event_id
+                          for ident in (message.job_id,message.fulfils_task_id) if ident]))
 
                 if scene_commit is not None:
                     scene_commit["event"].payload["outcome"] = resolved_outcome.model_dump(mode="json")
+                    scene_commit["event"].payload["source_outcomes"] = [source.model_dump(mode='json') for source in resolved_outcome.source_outcomes]
                     scene_commit["event"].payload["operation_receipts"] = {
                         reference:receipt.model_dump(mode="json") for reference,receipt in operation_receipts.items()}
                     scene_commit["event"].payload["memory_receipts"] = [
