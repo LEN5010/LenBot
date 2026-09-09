@@ -104,7 +104,8 @@ load()
             <div class="entry-list">
               <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p></div>
               <div v-for="handler in selected.handlers" :key="handler.id" class="entry-row"><strong>{{ handler.description }}</strong><p class="entity-id">{{ handler.id }} · 优先级 {{ handler.priority }} · {{ handler.consume?'消费消息':'继续传播' }} · {{ handler.require_to_me?'需要提及':'无需提及' }}</p><p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}</p><ResourceViewer title="匹配规则" :content="handler.match" /></div>
-              <p v-if="!selected.tools.length&&!selected.handlers.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>
+              <div v-for="hook in selected.hooks" :key="'hook:'+hook.id" class="entry-row"><strong>{{ hook.phase }}</strong><p>{{ hook.id }} · 作用范围 {{ hook.scope }} · 优先级 {{ hook.priority }}</p></div>
+              <p v-if="!selected.tools.length&&!selected.handlers.length&&!selected.hooks.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>
             </div>
             <ResourceViewer v-if="selected.active_tasks.length" title="当前所属任务" :content="selected.active_tasks" class="my-4" />
             <v-divider class="my-5" />

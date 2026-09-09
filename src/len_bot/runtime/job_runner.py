@@ -682,7 +682,8 @@ class InformationJobRunner:
                             before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace,
                             exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=prepare_request,
                             prepare_tool_results=prepare_tool_results, finalize_request=finalize_request,
-                            budget_state=budget_state, record_tool_result=record_tool_result)
+                            budget_state=budget_state, record_tool_result=record_tool_result,
+                            hooks=runtime.plugin_host.run_hooks(plugin_context, run_trace))
                     await save_result(result, revision)
                     return
                 except JobChanged:

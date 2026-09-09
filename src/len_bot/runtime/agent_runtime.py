@@ -482,6 +482,7 @@ class AgentRuntime:
         if human:
             self.metrics.inc_social("human_messages")
         self.plugin_host.dispatch_event(event, session.last_observed_event_rowid)
+        self.plugin_host.notify_delivery(event, session.last_observed_event_rowid)
         if not self.scene_policy.enabled(event.scene_id):
             return
         await self.job_runner.on_event(event)

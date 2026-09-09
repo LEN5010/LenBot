@@ -7,13 +7,17 @@ import copy
 import json
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from len_bot.cognition.gateway import ModelGateway, ToolCall
 from len_bot.tools.results import ToolResult, error_message
 from len_bot.tools.retrieval import ObservationPage
+from len_bot.cognition.budget import AgentBudget
+
+if TYPE_CHECKING:
+    from len_bot.plugins.hooks import PluginRunHooks
 
 
 class TerminalArgumentError(ValueError):
@@ -154,30 +158,45 @@ class AgentLoop:
         trace: dict[str, Any] | None = None,
         initial_model_calls: int = 0,
         initial_tool_calls: int = 0,
+        budget: AgentBudget | None = None,
+        hooks: PluginRunHooks | None = None,
     ) -> Any:
         if max_steps < 1 or max_tool_calls < 0 or not 0 <= initial_model_calls < max_steps or not 0 <= initial_tool_calls <= max_tool_calls:
             raise ValueError("Invalid agent run budget")
         terminal_name = (terminal() if callable(terminal) else terminal)["function"]["name"]
+        account = budget or AgentBudget(max_steps, max_tool_calls, initial_model_calls, initial_tool_calls,
+            on_model=before_model, on_tool=before_tool, read_state=budget_state)
         trajectory = copy.deepcopy(messages)
         audit = trace if trace is not None else {}
         audit.update({"steps": [], "model_calls_used": initial_model_calls, "tool_calls_used": initial_tool_calls, "latency_ms": 0})
         audit.pop('termination_reason', None)
         tool_calls_used = initial_tool_calls
+        local_tools_used = 0
         seen_call_ids = {call['id'] for message in trajectory for call in (message.get('tool_calls') or [])}
 
         async def execute(call: ToolCall, arguments: dict[str, Any], item: dict) -> Any:
-            nonlocal tool_calls_used
+            nonlocal tool_calls_used, local_tools_used
+            stopped = None
             try:
-                if before_tool is not None:
-                    await before_tool(call.name, arguments)
+                if hooks is not None:
+                    from len_bot.plugins.hooks import PluginHookStopped
+                    try:
+                        updated = await hooks.before_tool(call.name, arguments, call.id)
+                        if updated != arguments:
+                            item['effective_arguments'] = _trace_value(updated)
+                            arguments = updated
+                    except PluginHookStopped as error:
+                        stopped = ToolResult.failure(str(error), 'plugin_stopped', stage='execution')
+                await account.take_tool(call.name, arguments)
             except BaseException as exc:
                 item['status'] = 'not_executed'
                 item['failure_reason'] = _error_text(exc)
                 raise
-            tool_calls_used += 1
+            local_tools_used += 1
+            tool_calls_used = account.tool_used
             audit["tool_calls_used"] = tool_calls_used
             try:
-                result = await execute_tool(call.name, arguments, tool_call_id=call.id)
+                result = stopped if stopped is not None else await execute_tool(call.name, arguments, tool_call_id=call.id)
             except ToolArgumentError as exc:
                 item["failure_reason"] = _error_text(exc)
                 result = argument_failure(exc)
@@ -187,7 +206,10 @@ class AgentLoop:
                 raise
             if record_tool_result is not None:
                 result = await record_tool_result(call, arguments, result)
-            item["status"] = "completed"
+            state = await account.state()
+            tool_calls_used = state['tool_calls_used']
+            audit.update(model_calls_used=state['model_calls_used'], tool_calls_used=tool_calls_used)
+            item["status"] = "stopped" if stopped is not None else "completed"
             record_result(item, result)
             return result
 
@@ -204,9 +226,8 @@ class AgentLoop:
                 item['receipt'] = {key: result[key] for key in ('status', 'proposal_ref', 'ack_ref', 'operation_ref') if key in result}
 
         async def install_budget(target):
-            state = await budget_state() if budget_state is not None else {
-                'model_calls_limit': max_steps, 'model_calls_used': audit['model_calls_used'],
-                'tool_calls_limit': max_tool_calls, 'tool_calls_used': tool_calls_used}
+            state = await account.state()
+            audit.update(model_calls_used=state['model_calls_used'], tool_calls_used=state['tool_calls_used'])
             note, view = execution_budget_message(state, terminal_name)
             target[:] = [message for message in target if message.get('_context_section') != 'execution_budget']
             target.append(note)
@@ -216,10 +237,13 @@ class AgentLoop:
         try:
             for step_index in range(initial_model_calls,max_steps):
                 step = None
+                state = await account.state()
                 remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
+                remaining = min(remaining, state['model_calls_limit'] - state['model_calls_used'])
                 if remaining < 1:
                     raise AgentBudgetExhausted("No persistent model budget remains")
-                forced_final = step_index == max_steps - 1 or tool_calls_used >= max_tool_calls or remaining == 1
+                forced_final = (step_index == max_steps - 1 or local_tools_used >= max_tool_calls-initial_tool_calls
+                    or state['tool_calls_used'] >= state['tool_calls_limit'] or remaining == 1)
                 definitions = [] if forced_final else copy.deepcopy(tool_definitions())
                 definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
@@ -252,14 +276,19 @@ class AgentLoop:
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
                 known_names = {item['function']['name'] for item in definitions}
                 choice = {'type': 'function', 'function': {'name': terminal_name}} if forced_final else 'required'
+                if hooks is not None:
+                    prepared, definitions = await hooks.before_model(
+                        request_messages if request_messages is not None else trajectory, definitions, terminal_name)
+                    trajectory[:] = prepared
+                    request_messages = None
+                    known_names = {item['function']['name'] for item in definitions}
                 if finalize_request is not None:
                     request_messages = await finalize_request(trajectory, definitions)
                 elif request_messages is not None and request_messages is not trajectory:
                     request_messages[:] = [item for item in request_messages if item.get('_context_section') != 'execution_budget']
                     request_messages.append(copy.deepcopy(trajectory[-1]))
-                if before_model is not None:
-                    await before_model()
-                audit["model_calls_used"] += 1
+                await account.take_model()
+                audit["model_calls_used"] = account.model_used
                 step = {"step": step_index, "provider_id": self.gateway.binding.provider_id,
                         "model": self.gateway.binding.model, "role": self.gateway.binding.role,
                         "forced_final": forced_final, "available_tools": [item["function"]["name"] for item in definitions],
@@ -329,7 +358,9 @@ class AgentLoop:
                     if terminal_calls and len(calls) != 1:
                         raise AgentProtocolError('A terminal call must be in its own response, after every prior tool receipt')
                     external_count = len(calls) - len(terminal_calls)
-                    if external_count > max_tool_calls - tool_calls_used:
+                    state = await account.state()
+                    if external_count > min(max_tool_calls-initial_tool_calls-local_tools_used,
+                                            state['tool_calls_limit']-state['tool_calls_used']):
                         raise AgentBudgetExhausted("Tool execution budget exceeded; no calls in this response were executed",budget_kind='tool_calls')
                     if forced_final and not terminal_calls:
                         raise AgentProtocolError(f"No model budget remains; call {terminal_name}")
@@ -337,6 +368,12 @@ class AgentLoop:
                     step["failure_reason"] = _error_text(exc)
                     audit["failure_reason"] = step["failure_reason"]
                     raise
+                if hooks is not None:
+                    parsed = await hooks.after_model(parsed)
+                    for call, arguments, item in parsed:
+                        if _trace_value(arguments) != item['arguments']:
+                            item['effective_arguments'] = _trace_value(arguments)
+                    terminal_calls = [entry for entry in parsed if entry[0].name == terminal_name]
                 trajectory.append(response.continuation)
                 seen_call_ids.update(call.id for call in calls)
                 # Read tools may run concurrently. Proposals and work-state updates
@@ -383,6 +420,8 @@ class AgentLoop:
                         content = json.dumps(result, ensure_ascii=False)
                     else:
                         raise AgentProtocolError("A stored observation requires presentation before the next model request")
+                    if hooks is not None:
+                        content = await hooks.after_tool(call.name, content, call.id)
                     replies.append({"role": "tool", "tool_call_id": call.id, "content": content})
                 trajectory.extend(replies)
                 if terminal_calls:

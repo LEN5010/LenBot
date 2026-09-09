@@ -64,6 +64,19 @@ class BilibiliLiveSensor(BasePlugin):
             match=lambda call: call.event.payload['plugin_id'] == self.manifest.id and call.event.payload['name'] == 'live_ended',
             handler=self.on_live_ended, event_types=(EventType.PLUGIN_EVENT,), sources=('plugin_event',),
             priority=10, consume=True)
+        context.register_hook('before_model', id='invitation_instructions', handler=self.invitation_instructions)
+        context.register_hook('before_commit', id='invitation_text', handler=self.invitation_text)
+
+    async def invitation_instructions(self, view, call):
+        if call.entry_origin and call.entry_origin.entry_id == 'live_started':
+            view.instructions.append(self.config.announcement_instructions)
+        return view
+
+    async def invitation_text(self, view, call):
+        if call.entry_origin and call.entry_origin.entry_id == 'live_started':
+            if len(view.messages) != 1 or any(segment.type != 'text' for segment in view.messages[0]):
+                view.stop_reason = '开播邀请必须提交一条文本正文'
+        return view
 
     async def on_enable(self):
         if self._poll_task is None or self._poll_task.done():
@@ -101,8 +114,7 @@ class BilibiliLiveSensor(BasePlugin):
             sources=[ToolSource(event_id=call.source_event_id, url=sample.url, title=sample.member)])
         result = await call.run_agent(instructions=(
             '当前是已订阅开播公告，只根据所给真实场次写一段邀请，正确指认主播。'
-            '调用 return_result 返回正文；不要决定目标群，不写全体提及，不读取群史或创建其他工作。\n'
-            + self.config.announcement_instructions), input_observations=[material],
+            '调用 return_result 返回正文；不要决定目标群，不写全体提及，不读取群史或创建其他工作。'), input_observations=[material],
             tool_names=(), model_role='conversation', include_identity=True,
             output_mode='result_only', output_model=Invitation,
             max_steps=self.config.announcement_max_steps, max_tool_calls=self.config.announcement_max_tool_calls,
