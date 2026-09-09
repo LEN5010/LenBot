@@ -124,13 +124,13 @@ class PluginRunHooks:
                 or terminal_name not in view.tool_names):
             raise ValueError('before_model may only select currently allowed tools, retaining the terminal')
         messages = [copy.deepcopy(message) for message in messages
-            if message.get('_context_section') not in {'plugin_instructions', 'plugin_material'}]
+            if message.get('_context_section') not in {'plugin_hook_instructions', 'plugin_hook_material'}]
         for instruction in view.instructions:
-            messages.append({'role': 'developer', 'content': instruction, '_context_section': 'plugin_instructions'})
+            messages.append({'role': 'developer', 'content': instruction, '_context_section': 'plugin_hook_instructions'})
         for material in view.materials:
             messages.append({'role': 'user', 'content': json.dumps({'kind': 'plugin_material',
                 'observation': material.model_dump(mode='json', exclude_none=True)}, ensure_ascii=False),
-                '_context_section': 'plugin_material'})
+                '_context_section': 'plugin_hook_material'})
         return messages, [item for item in definitions if item['function']['name'] in view.tool_names]
 
     async def after_model(self, entries):

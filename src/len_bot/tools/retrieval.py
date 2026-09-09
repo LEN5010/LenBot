@@ -723,11 +723,12 @@ class RetrievalToolkit:
         presentations=[]
         seen=set()
         for message in messages:
-            if message.get('role')!='tool' and message.get('_context_section')!='plugin_material':continue
+            material=message.get('_context_section') in {'plugin_material','plugin_hook_material'}
+            if message.get('role')!='tool' and not material:continue
             if not isinstance(message.get('content'),str):continue
             try:shown=json.loads(message['content'])
             except ValueError:continue
-            if message.get('_context_section')=='plugin_material':shown=shown.get('observation')
+            if material:shown=shown.get('observation')
             if not isinstance(shown,dict) or 'locator' in shown.get('coverage',''):continue
             ident=shown.get('result_id')
             if self.references and ident in self.references.results:ident=self.references.results[ident]
