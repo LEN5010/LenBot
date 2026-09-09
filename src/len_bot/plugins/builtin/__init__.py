@@ -4,15 +4,15 @@
 BUILTIN_PLUGIN_INFO = {
     "bilibili_live_sensor": {
         "name":"哔哩哔哩直播监测", "description":"监测明确订阅成员的实际开播与下播事实。",
-        "plugin_type":"sensory", "registered_tools":["get_live_status"],
+        "plugin_type":"sensory", "registered_tools":["get_live_status","get_live_subscriptions"],
         "emitted_events":["LIVE_STARTED", "LIVE_ENDED"],
     },
     "web_search_tool": {
-        "name":"实时联网认知检索", "description":"工作中的公开网页搜索、正文与PDF读取。",
+        "name":"实时联网认知检索", "description":"对话与工作中的公开网页搜索、正文与PDF读取。",
         "plugin_type":"tool", "registered_tools":["web_search", "read_page"], "emitted_events":[],
     },
     "bilibili_content": {
-        "name":"哔哩哔哩内容查询工具", "description":"工作中的公开视频、搜索和用户动态查询。",
+        "name":"哔哩哔哩内容查询工具", "description":"对话与工作中的公开视频、搜索和用户动态查询。",
         "plugin_type":"tool", "registered_tools":["get_video_info", "search_bilibili", "get_dynamic_feed"], "emitted_events":[],
     },
     "asoul_calendar": {

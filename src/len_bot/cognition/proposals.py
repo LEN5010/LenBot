@@ -141,7 +141,7 @@ TOOLS={
     'start_work':(StartWork,'建立需要长时间、多页资料或持续进度的后台只读工作；短读取和计算可直接使用本轮工具。先调用本工具，再把回执中的ack_ref复制到respond的确认消息；引用由工具生成，无需自拟。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。取得回执后用operation_ref确认本次操作，不用work_ref确认新版本。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。确认消息用本回执的operation_ref，不同时交付旧结果。'),
-    'resume_work':(ControlWork,'恢复当前can_resume=true的失败或中断工作；保持已有预算与资料。取得回执后用operation_ref确认，部分结果不因此重开。'),
+    'resume_work':(ControlWork,'显式继续can_resume=true的失败/中断工作，或有未完成范围且交付状态已确定的partial工作；保留原工作ID、已用预算和资料，新版本不重复旧交付。取得回执后用operation_ref确认。'),
     'schedule_reminder':(ScheduleReminder,'按明确请求建立定时提醒；收到暂存回执后，把ack_ref复制到respond的确认消息。'),
     'update_reminder':(UpdateReminder,'根据新约定更新提醒时间。'),
     'cancel_reminder':(CancelReminder,'取消已有提醒。'),

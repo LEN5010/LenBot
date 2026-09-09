@@ -27,7 +27,7 @@ class BilibiliLiveSensor(BasePlugin):
             plugin_type=PluginType.HYBRID, enabled=enabled, config=config.model_dump(),
             config_schema=LivePluginConfig.model_json_schema(), timeout_seconds=config.tool_timeout_seconds,
             permissions=[PluginPermission.EMIT_EVENT, PluginPermission.REGISTER_TOOL],
-            emitted_events=['LIVE_STARTED', 'LIVE_ENDED'], registered_tools=['get_live_status']))
+            emitted_events=['LIVE_STARTED', 'LIVE_ENDED'], registered_tools=['get_live_status','get_live_subscriptions']))
         self.config = config
         self.client = LiveClient(config)
         self._poll_task = None
@@ -43,6 +43,10 @@ class BilibiliLiveSensor(BasePlugin):
             LiveStatusArguments, self.get_status,
             purpose='查询实际直播状态', aliases=('开播状态', '谁在直播'), keywords=('直播', '开播', '下播', '房间', '状态'),
             kind='read', roles=('conversation', 'work'))
+        context.register_tool('get_live_subscriptions', '读取本群真实开播订阅、通知开关、监测状态与办理入口；不修改设置，member=null读取全部已配置成员。',
+            LiveStatusArguments,self.get_subscriptions,
+            purpose='核对本群开播通知订阅',aliases=('直播订阅','直播时通知','停止开播通知'),
+            keywords=('订阅','通知','开播提醒','取消订阅'),kind='read',roles=('conversation','work'),deferred=True)
         if self.manifest.enabled:
             await self.on_enable()
 
@@ -134,3 +138,32 @@ class BilibiliLiveSensor(BasePlugin):
             fetched_at=max((item.sampled_at for item in samples), default=call_context.now),
             cached=True, evidence_kind='external', coverage='配置监测对象的实际房间状态；不等同于日程安排',
             sources=[ToolSource(url=item.url, title=item.member) for item in samples])
+
+    async def get_subscriptions(self, arguments: LiveStatusArguments, call_context):
+        scene=self.runtime.scene_policy.scene(call_context.scene_id)
+        if scene is None:
+            raise ValueError('开播订阅属于已配置群，当前场景没有群订阅设置')
+        members=self.runtime.config_store.current.members
+        if arguments.member is not None:
+            members=[member for member in members if arguments.member==member.name or arguments.member in member.aliases]
+            if not members:raise ValueError('没有对应的已配置成员，请使用成员名称或已登记别名')
+        items=[]
+        for member in members:
+            subscribed=member.name in scene.live_subscriptions
+            if subscribed:
+                try:
+                    sample=self.current_sample(member.name)
+                    monitoring={'status':'fresh','sampled_at':sample.sampled_at,'is_live':sample.is_live}
+                except ValueError as error:
+                    monitoring={'status':'unavailable','reason':str(error)}
+            else:
+                monitoring={'status':'not_subscribed_in_scene'}
+            items.append({'member':member.name,'subscribed':subscribed,
+                'notifications_enabled':self.runtime.scene_policy.announcement_allowed(call_context.scene_id,member.name),
+                'monitoring':monitoring})
+        return ToolResult(content=json.dumps({'scene_id':call_context.scene_id,'subscriptions':items,
+            'change_entry':{'type':'authenticated_dashboard','path':'场景消息 → 本群设置 → 订阅主播',
+                            'chat_can_modify':False,'operations':['subscribe','unsubscribe']},
+            'scope':'本群公告订阅；没有个人私聊通知订阅',
+            'meaning':'订阅已保存、监测样本新鲜、实际开播事件与通知送达分别核对'},ensure_ascii=False),
+            fetched_at=call_context.now,evidence_kind='retrieval',coverage='current_scene_subscription_configuration')

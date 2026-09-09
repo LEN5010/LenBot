@@ -30,13 +30,16 @@ def _decode_job(row):
     data['delivery_action_id'] = task_payload.get('delivery_action_id')
     data['delivery_event_id'] = task_payload.get('delivery_event_id')
     data['observation_reads'] = task_payload.get('observation_reads', {})
+    data['resume_from'] = task_payload.get('resume_from')
     # Task status describes response/delivery, not whether execution succeeded.
     data["execution_status"] = (data["result"] or {}).get("status") or {
         "pending": "pending", "claimed": "pending", "processing": "running",
         "review_required": "interrupted", "failed": "failed", "cancelled": "cancelled",
     }.get(data["status"], "unknown")
-    data["can_resume"] = (data["status"] in {"review_required", "failed", "result_ready"}
+    data["can_resume"] = ((data["status"] in {"review_required", "failed", "result_ready"}
                           and data["execution_status"] in {"failed", "interrupted"})
+                         or data['status'] in {'completed','failed','result_ready','review_required'}
+                         and data['execution_status']=='partial' and bool((data['result'] or {}).get('unresolved')))
     return data
 
 
@@ -106,10 +109,11 @@ class JobStoreMixin(SkillStoreMixin):
                 raise JobChanged("Job version conflict or outside scene")
             if proposal.requester_qq_uid != current['requester_qq_uid']:
                 raise ValueError('Work controls cannot replace the original requester')
-            if current["status"] in {"completed", "cancelled", "shadow_observed", "delivery_unknown"}:
+            if current["status"] in {"completed", "cancelled", "shadow_observed", "delivery_unknown"} and not (
+                    proposal.operation=='resume' and current['can_resume']):
                 raise ValueError("Job is no longer editable")
             if proposal.operation == "resume" and not current["can_resume"]:
-                raise ValueError("Only interrupted or failed work can resume")
+                raise ValueError("Only interrupted, failed or settled partial work with an explicit unfinished scope can resume")
             if proposal.summary_range is not None and current["work_operation"] != "group_summary":
                 raise ValueError("Only group summary work has a summary range")
             observed[proposal.job_id] = current
@@ -166,6 +170,9 @@ class JobStoreMixin(SkillStoreMixin):
             constraints = list(dict.fromkeys(constraints + proposal.constraints_add))
             source_ids = list(dict.fromkeys(current["source_event_ids"] + sources))
             result_ids = list(dict.fromkeys(current["result_ids"] + proposal.result_ids))
+            resume_from=({'revision':current['revision'],'result':current['result'],
+                'response_status':current['status'],'delivery_action_id':current['delivery_action_id'],
+                'delivery_event_id':current['delivery_event_id']} if proposal.operation=='resume' else None)
             if proposal.summary_range is not None:
                 updated_range = proposal.summary_range.model_dump(mode="json")
                 if updated_range != current["summary_range"]:
@@ -185,6 +192,8 @@ class JobStoreMixin(SkillStoreMixin):
                 origin_mode=CASE WHEN ?='shadow' THEN 'shadow' ELSE origin_mode END,
                 payload=json_remove(payload,'$.result','$.delivery_action_id','$.delivery_event_id') WHERE id=? AND scene_id=?""",
                 (status, self.clock(), goal, origin_mode, job_id, scene_id))
+            await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.resume_from',json(?)) WHERE id=? AND scene_id=?",
+                (json.dumps(resume_from,ensure_ascii=False),job_id,scene_id))
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
 
