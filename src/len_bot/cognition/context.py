@@ -339,22 +339,23 @@ class ConversationContext:
                 self.omit('tool_body', 'saved_body_externalized', result_id=result['result_id'],
                     previous_displayed_range=span, coordinate_unit=unit)
 
-    def release_optional_context(self, messages, *, include_facts=False, reason='capacity_reserved_for_new_input'):
+    def release_optional_context(self, messages, *, definitions=None, reserved=(), reason='capacity_reserved_for_new_input'):
         labels = {'reference': '运营目录与表达参考', 'history_summary': '历史摘要', 'recent_history': '历史原话',
                   'pending_directory': '待处理来源目录', 'previous_failure': '既往失败说明'}
-        if include_facts:labels['runtime_facts']='运行事实'
         # A native call proves the preceding request actually received the
         # initially packed original history. Before that response, keep those
         # bodies alongside the read references already assigned by packing.
         history_was_provided = any(message.get('tool_calls') for message in messages)
-        for message in messages:
-            section = message.get('_context_section')
+        for section in labels:
             if section == 'recent_history' and not history_was_provided:
                 continue
-            if section in labels and not message.get('_context_omitted'):
-                message['content'] = '先前的' + labels[section] + '本次省略；当前来源与更新后的运行事实优先。'
-                message['_context_omitted'] = True
-                self.omit(section, reason)
+            for message in messages:
+                if self.request_tokens([*messages, *reserved], definitions) <= self.input_budget:
+                    return
+                if message.get('_context_section') == section and not message.get('_context_omitted'):
+                    message['content'] = json.dumps({'kind': section, 'omitted': True}, ensure_ascii=False)
+                    message['_context_omitted'] = True
+                    self.omit(section, reason, event_id=message.get('_source_event_id'))
 
     def pending_wakes(self):
         return [wake for wake in self.session.pending_wakes
@@ -385,11 +386,9 @@ class ConversationContext:
         unread = self.pending_wakes()
         if not unread:
             return []
-        return [{'role':'user','content':'待处理来源与原文已读是两件事。'
-            '用read_pending_wakes按after_rowid分页定位，再用read_context或read_message_range读原话。'
-            'finish_turn.handled_sources只填写已回答、已委托或明确决定沉默的来源；读到但尚未处理的独立请求继续保留。'
-            '同一工作的取消、修订和请求者追加须读完再提交。'+
-            json.dumps({'pending_sources':len(unread),'unread_sources':sum(w.event_id not in self.refs.read_events for w in unread),
+        return [{'role':'developer','_context_section':'pending_status','content':
+            json.dumps({'kind':'pending_status','pending_sources':len(unread),
+                        'unread_sources':sum(w.event_id not in self.refs.read_events for w in unread),
                         'first_after_rowid':0},ensure_ascii=False)}]
 
     def request_tokens(self, messages, definitions=None):
@@ -402,7 +401,8 @@ class ConversationContext:
         if self.request_tokens([*messages,*reserved],definitions)>self.input_budget:
             self.externalize_old_tool_bodies(messages)
         if self.request_tokens([*messages,*reserved],definitions)>self.input_budget:
-            self.release_optional_context(messages,reason='capacity_reserved_for_current_exchange')
+            self.release_optional_context(messages, definitions=definitions, reserved=reserved,
+                                          reason='capacity_reserved_for_current_exchange')
         return self.check_request([*messages,*reserved],definitions,phase=phase)
 
     def check_request(self, messages, definitions, *, phase='request'):
@@ -511,12 +511,19 @@ class ConversationContext:
                 message = self.event_message(view, quote_tokens=cap)
                 if not current:
                     message['_context_section'] = 'recent_history'
+                elif event.id not in self.current_source_ids:
+                    message['_context_section'] = 'related_original'
                 images = await self.attachments(media_ids(view)) if current else []
+                for image in images:
+                    image['_media_source_event_id']=event.id
+                    image['_source_rowid']=event.metadata['_rowid']
                 chosen = [*packed,(view,message,images)]
                 bodies = [part for _,raw,pixels in chosen for part in [raw,*pixels]]
                 original_cost = self.request_tokens([message,*images], [])
                 footer = self.input_message([item for item,_,_ in chosen if item.id in current_ids])
                 candidate = [*messages,*bodies,footer,*self.pending_notice()]
+                if current and self.request_tokens(candidate) > self.input_budget:
+                    self.release_optional_context(messages, reserved=[*bodies,footer,*self.pending_notice()])
                 if self.request_tokens(candidate) <= self.input_budget and (
                         used_raw + original_cost <= raw_tokens or not packed and current):
                     packed = chosen
@@ -548,15 +555,13 @@ class ConversationContext:
 
     def input_message(self, events):
         """Expose addressing facts, never turn a nickname match into a reply."""
-        current=[];signals=[];pending=[];related=[]
+        signals=[];pending=[];related=[]
         names=list(dict.fromkeys([self.config.identity_name,*self.config.address_names]))
         for event in events:
             if event.id not in self.refs.events.values():continue
             ref=self.refs._register(self.refs.events,event.id,'M')
-            current.append(ref)
-            if event.id in self.refs.partial_events:
-                current[-1] += '（原文仅部分装入，须按范围继续读取）'
-            (pending if event.id in self.current_source_ids else related).append(current[-1])
+            (pending if event.id in self.current_source_ids else related).append(
+                {'ref':ref,'original_complete':event.id in self.refs.read_events})
             if event.event_type not in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}:continue
             text=re.sub(r'\[CQ:[^\]]*\]','',event.raw_text).casefold()
             matched=[name for name in names if name and name.casefold() in text]
@@ -574,12 +579,9 @@ class ConversationContext:
             if cue:
                 self.call_signals[event.id]=cue
                 signals.append({'message':ref,**cue})
-        content='\n'.join(part for part in (
-            '本次提供的待处理来源：'+', '.join(pending) if pending else '',
-            '为本次处理读取的关联原话：'+', '.join(related) if related else '') if part)
-        if signals:
-            content+='\n呼唤线索（昵称命中也可能只是在谈论角色）：'+json.dumps(signals,ensure_ascii=False)
-        return {'role':'user','content':content}
+        return {'role':'developer','_context_section':'input_status','content':json.dumps({
+            'kind':'input_status','pending_sources':pending,'related_originals':related,
+            'attention_signals':signals},ensure_ascii=False)}
 
     def model_segments(self, segments):
         return [{'text':part['text']} if part['type']=='text'
@@ -594,44 +596,35 @@ class ConversationContext:
         business_time = self.runtime.config_store.current.time
         clock_zone = ZoneInfo(business_time.timezone) if business_time else timezone.utc
         stamp = datetime.fromtimestamp(event.timestamp, clock_zone).isoformat()
-        text = self.project_text(event.raw_text)
-        if event.id in self.refs.partial_events:
-            span = event.metadata['_text_range']
-            text += (f"\n原文字符范围 [{span['start']},{span['end']}) / {span['total']}；其余尚未读取。"
-                     f"调用read_message_range(message_ref={ref}, offset={span['end']})继续；片段不能充当整条证据。")
-        labels = []
-        for asset_id in media_ids(event):
-            labels.append(self.refs.register_media(asset_id))
-        if labels: text += '\n图片：' + ', '.join(dict.fromkeys(labels))
+        span = event.metadata.get('_text_range') or {'start':0,'end':len(event.raw_text),'total':len(event.raw_text)}
+        view = {'kind':'chat_message', 'ref':ref, 'time':stamp,
+                'sender':{'ref':actor_ref,'name':name,'nickname':sender.get('nickname'),'card':sender.get('card')},
+                'text':self.project_text(event.raw_text),
+                'mentions':list(dict.fromkeys(self.refs.register_actor('user:'+target)
+                    for target in re.findall(r'\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]',event.raw_text))),
+                'text_range':span, 'media':list(dict.fromkeys(self.refs.register_media(asset) for asset in media_ids(event)))}
+        if span['end'] < span['total']:
+            view['next_call']={'name':'read_message_range','arguments':{'message_ref':ref,'offset':span['end']}}
         quote = event.metadata.get('quote_context')
         if quote and not quote.get('missing'):
             author = self.refs.register_actor(quote['actor_id'])
             quote_ref = self.refs._register(self.refs.events, quote['event_id'], 'M') if quote.get('rowid', self.refs.cutoff+1) <= self.refs.cutoff else ''
             end = prefix_end(quote['text'], self.config.conversation_recent_tokens if quote_tokens is None else quote_tokens)
             if quote_ref:self.refs._record_event_range(quote['event_id'], 0, end, len(quote['text']))
-            text += f"\n引用 {quote_ref} {author} 的原话：{self.project_text(quote['text'][:end])}"
+            view['reply_to']={'ref':quote_ref or None,'sender':author,'text':self.project_text(quote['text'][:end]),
+                              'text_range':{'start':0,'end':end,'total':len(quote['text'])}}
             if end < len(quote['text']):
-                text += (f"\n引用原文字符范围 [0,{end}) / {len(quote['text'])}；其余未读。"
-                         f"需要完整证据时用read_message_range(message_ref={quote_ref}, offset={end})继续。")
+                view['reply_to']['next_call']={'name':'read_message_range','arguments':{'message_ref':quote_ref,'offset':end}}
         elif quote:
-            text += '\n引用的原消息尚未从本群历史中找到。'
-        if event.event_type == EventType.AGENT_JOB_FINISHED:
-            work=next(((ref,job) for ref,job in self.refs.jobs.items() if job['id']==event.payload.get('job_id') and job['revision']==event.payload.get('job_revision')),None)
-            if work:
-                work_ref,job=work
-                outcome=(job.get('result') or {}).get('status')
-                state={'completed':'执行已完成', 'partial':'仅部分完成，仍有未核实事项',
-                       'failed':'执行失败，未完成查询或结果提交', 'interrupted':'执行中断，尚未完成',
-                       'cancelled':'执行已取消'}.get(outcome,'执行状态待核对')
-                text=f'后台工作 {work_ref}：{state}。结合当前工作事实；若结果正文未提供，用query_jobs读取。通知不代表已向群友交付。'
-            else:text=('后台工作完成事件；工作与版本须对照当前事实核对，通知本身不代表已交付。'
-                       f" job_id={event.payload.get('job_id')}，revision={event.payload.get('job_revision')}")
-        elif event.event_type in CUE_TYPES:
-            details = {k:v for k,v in event.payload.items() if k not in {'raw_text','content','segments'}}
-            text = f'运行时资料 {event.event_type.value}：' + text + '\n' + json.dumps(details, ensure_ascii=False)
+            view['reply_to']={'missing':True}
+        if event.event_type in CUE_TYPES:
+            view = {'kind':'runtime_event','ref':ref,'time':stamp,'event_type':event.event_type.value,
+                    'data':{k:v for k,v in event.payload.items() if k not in {'raw_text','content','segments'}}}
         return {'role': 'assistant' if event.event_type == EventType.MESSAGE_SENT else 'user',
-                '_context_section': 'original_input',
-                'content': f'[{ref} {stamp}] {name}({actor_ref})：{text}'}
+                '_context_section': 'runtime_event' if event.event_type in CUE_TYPES else 'original_input',
+                '_source_event_id':event.id,'_source_rowid':event.metadata['_rowid'],
+                '_source_range':span,'_source_ref':ref,
+                'content':json.dumps(view,ensure_ascii=False)}
 
     async def attachments(self, asset_ids):
         pending = list(dict.fromkeys(asset for asset in asset_ids if asset not in self.attached))
@@ -672,10 +665,22 @@ class ConversationContext:
     def model_messages(messages):
         prepared=copy.deepcopy(messages)
         for message in prepared:
-            message.pop('_context_omitted', None)
+            for key in list(message):
+                if key.startswith('_') and key != '_context_section':
+                    message.pop(key)
             if message.get('role')=='user' and isinstance(message.get('content'),list):
                 for part in message['content']:part.pop('_asset_id',None)
         return prepared
+
+    def request_manifest(self, messages):
+        """Only locations and categories; original text stays in the event store."""
+        return [{'index':index,'role':message['role'],
+                 'section':message.get('_context_section',message['role']),
+                 'event_id':message.get('_source_event_id'),'ref':message.get('_source_ref'),
+                 'text_range':message.get('_source_range'),
+                 'omitted':bool(message.get('_context_omitted')),
+                 'tool_call_id':message.get('tool_call_id')}
+                for index,message in enumerate(messages)]
 
     async def facts_message(self, messages=()):
         store, scene = self.runtime.event_store, self.session.scene_id
@@ -699,16 +704,11 @@ class ConversationContext:
                  'capabilities':self.capabilities(),
                  'not_provided': {'counts': counts, 'work_next_call': {'name': 'query_jobs', 'arguments': {}},
                                   'meaning': '未提供的事项不表示不存在；按关联来源和工作目录继续读取。'}}
-        notes = ('当前运行事实，替代此前运行事实；这些是运行状态，不是群友新消息或原话证据。'
-                 'execution_status与交付状态分开；first_result=true是原委托的首次交付机会，无需再问一次。'
-                 'first_result=false的旧结果仅为目录，不因出现在这里就发送。'
-                 'failed/interrupted不能履约，partial保留未决项；已有delivery_action_id或unknown不自动重复发送。'
-                 'result_refs仅定位原始资料。详情省略时按query_jobs读取；群总结只有summary_coverage.complete才表示全范围已读。')
         base = [message for message in messages if message.get('_context_section') != 'runtime_facts']
 
         def rendered():
             return {'role': 'user', '_context_section': 'runtime_facts',
-                    'content': notes + '\n' + json.dumps(facts, ensure_ascii=False)}
+                    'content': json.dumps({'kind':'runtime_facts','data':facts}, ensure_ascii=False)}
 
         def append_view(category, builder, compact=None):
             snapshot = self._projection_snapshot()
@@ -795,7 +795,8 @@ class ConversationContext:
         if self.request_tokens([*base, message]) > self.input_budget:
             self.omit('runtime_facts', 'no_capacity_for_fact_directory', counts=dict(counts))
             return {'role': 'user', '_context_section': 'runtime_facts',
-                    'content': '当前运行事实目录未装入；此前运行状态不能当作当前状态，工作详情用query_jobs读取。'}
+                    'content': json.dumps({'kind':'runtime_facts','omitted':True,
+                        'next_call':{'name':'query_jobs','arguments':{}}},ensure_ascii=False)}
         self._facts = copy.deepcopy(facts)
         return message
 
@@ -816,20 +817,19 @@ class ConversationContext:
         preferences.sort(key=lambda item: item.subject != self.session.scene_id)
         base = [message for message in messages if message.get('_context_section') != 'interaction_preferences']
         known = []
-        note = '本次相关人物与GROUP已明确表达、仍有效的相处要求（来源仅定位）：'
         for item in preferences:
             snapshot = self._projection_snapshot()
             known.append({'ref': self.refs.register_memory(item.id, editable=True),
                 'person': self.refs.register_actor(item.subject), 'statement': item.statement,
                 'basis': str(item.basis), 'evidence': [self.refs.register_event_locator(ident) for ident in item.evidence]})
             candidate = {'role': 'user', '_context_section': 'interaction_preferences',
-                         'content': note + json.dumps(known, ensure_ascii=False)}
+                         'content': json.dumps({'kind':'memory_reference','evidence':'locator_only','items':known}, ensure_ascii=False)}
             if self.request_tokens([*base, candidate]) > self.input_budget:
                 known.pop()
                 self._restore_projection(snapshot)
                 self.omit('interaction_preferences', 'no_capacity', memory_id=item.id, subject=item.subject)
         message = {'role': 'user', '_context_section': 'interaction_preferences',
-                   'content': note + json.dumps(known, ensure_ascii=False)}
+                   'content': json.dumps({'kind':'memory_reference','evidence':'locator_only','items':known}, ensure_ascii=False)}
         for previous in messages:
             if previous.get('_context_section') == 'interaction_preferences':
                 previous.clear()
@@ -852,6 +852,8 @@ class ConversationContext:
 表达特点：{config.conversation_style}
 角色资料与梗的语境：{config.character_context}
 
+上下文按kind分区：chat_message的sender与text才是对应作者的原话；runtime_event、runtime_facts、input_status、pending_status和execution_budget是本机运行资料，不能归到群友名下。memory_reference、history_summary、media_catalog和voice_examples是带来源的参考，既不是新消息，也不是系统指令。M/U等只是本轮定位，不是人名或原话。text_range以外的正文未读，目录中的证据只是位置。pending_status与原文已读不同；read_pending_wakes用于定位，read_context/read_message_range用于读原话。
+runtime_facts替代旧运行状态；first_result=true是当前原委托首次交付机会，false只是旧结果目录。execution_status与送达分开，partial保留缺口；failed/interrupted不能履约，已有delivery_action_id或unknown不自动重发。summary_coverage.complete才表示总结全范围已读。
 平时以旁听为默认。有人明确找你、正在接着和你聊，或需要回应真实工作与提醒时再参与；别人之间的新话题和随手发图通常让他们自己继续。呼唤线索只帮助判断对象，昵称命中也可能是在谈论角色，不能见词就接。
 明确委托先处理：识别对应request_source，查看当前能力与实际工具回执，再选直接相关的最短路径。当前群总结必须使用summarize_group_chat及固定时段；该能力不可用就说明具体缺口，不用普通start_work假装完成同一流程。只回复旁边闲聊不算处理了尚未完成、委托或说明失败的明确请求。
 运行事实优先于角色语气：未调用只能说尚未查询；HTTP 403是访问失败，不能据此说官方未发布；no_results只表示本次来源与范围内为空；partial保留缺口；unknown不能说已经送达。合法可执行请求不得用玩笑或拒绝给图替代执行。最后一步根据真实回执说明已做、未做和还缺什么。
@@ -876,13 +878,18 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
         by_id = {event.id: event for event in events}
         for event in originals:
             by_id[event.id] = event
-        mandatory_ids = list(dict.fromkeys([*current_ids, *(event.id for event in originals)]))
+        chat = sorted((event for event in events if event.event_type in CHAT_TYPES),key=lambda event:event.metadata['_rowid'])
+        neighbors=[]
+        for index,event in enumerate(chat):
+            if event.id in current_ids:
+                width=config.read_context_default_neighbors
+                neighbors.extend(item.id for item in chat[max(0,index-width):index+width+1])
+        mandatory_ids = list(dict.fromkeys([*current_ids, *(event.id for event in originals), *neighbors]))
         business_time = self.runtime.config_store.current.time
         clock_zone = ZoneInfo(business_time.timezone) if business_time else timezone.utc
-        time_note = ('业务时间口径：' + business_time.model_dump_json() if business_time
-                     else '业务时间口径未配置；下面只提供UTC时钟，不据此猜测自然日、自然周或下午范围。')
-        messages.append({'role':'user','_context_section':'current_time','content':time_note+'\n当前时间：'+
-            datetime.fromtimestamp(self.runtime.clock(),clock_zone).isoformat()})
+        messages.append({'role':'developer','_context_section':'current_time','content':json.dumps({
+            'kind':'current_time','business_time':business_time.model_dump(mode='json') if business_time else None,
+            'now':datetime.fromtimestamp(self.runtime.clock(),clock_zone).isoformat()},ensure_ascii=False)})
         current = await self.pack_events(messages, [by_id[ident] for ident in mandatory_ids if ident in by_id],
             mandatory_ids, raw_tokens=config.conversation_recent_tokens)
         if current_ids and not any(event.id in current_ids for event in current):
@@ -893,14 +900,15 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
         await self.install_preferences(messages)
 
         original_tokens = self.request_tokens([message for message in messages
-            if message.get('_context_section') in {'original_input', 'original_media'}], [])
+            if message.get('_context_section') in {'original_input', 'related_original', 'original_media', 'runtime_event'}], [])
         remaining_raw = max(0, config.conversation_recent_tokens - original_tokens)
         await self.pack_events(messages, [event for event in events if event.id not in mandatory_ids], [],
             raw_tokens=remaining_raw)
         if self.pending_wakes():
             snapshot = self._projection_snapshot()
-            page = {'role':'user','_context_section':'pending_directory','content':'待处理来源定位页；位置不授予原文证据：'+
-                    json.dumps(self.project_pending_page(self.pending_wake_page(limit=config.pending_wakes_default_limit)),ensure_ascii=False)}
+            page = {'role':'developer','_context_section':'pending_directory','content':json.dumps({
+                'kind':'pending_directory','evidence':'locator_only',
+                'data':self.project_pending_page(self.pending_wake_page(limit=config.pending_wakes_default_limit))},ensure_ascii=False)}
             if self.request_tokens([*messages,page]) <= self.input_budget:
                 messages.append(page)
             else:
@@ -909,7 +917,9 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
 
         palette = await self.runtime.media_service.prepare_palette(self.session.scene_id,through_rowid=self.refs.cutoff)
         legend, palette_manifest = [], []
-        palette_note = '运营表情目录，只是索引；发送前先用read_media读取像素，更多素材用search_media。近期使用仅统计本群最近真实发送窗口，0次不代表从未使用：'
+        def palette_content():
+            return json.dumps({'kind':'media_catalog','coverage':'locator_only',
+                'usage_scope':'recent_sent_in_scene','items':legend},ensure_ascii=False)
         for row in palette['manifest']:
             snapshot = self._projection_snapshot()
             legend.append({'ref': self.refs.register_media(row['asset_id'], row['ref']),
@@ -917,7 +927,7 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                            'last_sent_at':row['last_sent_at'],'recent_send_count':row['recent_send_count'],
                            'used_in_last_reply':row['used_in_last_reply']})
             candidate = {'role': 'user', '_context_section': 'reference',
-                         'content': palette_note + json.dumps(legend, ensure_ascii=False)}
+                         'content': palette_content()}
             if self.request_tokens([*messages, candidate]) <= self.input_budget:
                 palette_manifest.append(row)
             else:
@@ -926,12 +936,13 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                 self.omit('media_catalog', 'no_capacity', asset_id=row['asset_id'], read_with='search_media')
         if legend:
             messages.append({'role': 'user', '_context_section': 'reference',
-                             'content': palette_note + json.dumps(legend, ensure_ascii=False)})
+                             'content': palette_content()})
             self.media_manifest.extend(palette_manifest)
 
         examples = await self.runtime.event_store.select_voice_examples(self.session.scene_id)
         lines = []
-        example_note = '运营编写的表达参考；这里只展示segments表达片段，不是完整finish_turn参数，也不是事实依据。结合当前原话选择说法：\n'
+        def example_content():
+            return json.dumps({'kind':'voice_examples','source':'operator','items':lines},ensure_ascii=False)
         for example in examples:
             snapshot = self._projection_snapshot()
             native = []
@@ -949,14 +960,14 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                 self._restore_projection(snapshot)
                 self.omit('voice_examples', 'referenced_media_unavailable')
                 continue
-            lines.append(f"语境：{example['context']}\nsegments表达片段：" + json.dumps({'segments': native}, ensure_ascii=False))
-            candidate = {'role': 'user', '_context_section': 'reference', 'content': example_note + '\n'.join(lines)}
+            lines.append({'context':example['context'],'segments':native})
+            candidate = {'role': 'user', '_context_section': 'reference', 'content': example_content()}
             if self.request_tokens([*messages, candidate]) > self.input_budget:
                 lines.pop()
                 self._restore_projection(snapshot)
                 self.omit('voice_examples', 'no_capacity')
         if lines:
-            messages.append({'role': 'user', '_context_section': 'reference', 'content': example_note + '\n'.join(lines)})
+            messages.append({'role': 'user', '_context_section': 'reference', 'content': example_content()})
 
         history_status = await self.runtime.event_store.list_history_status(self.session.scene_id)
         last = history_status.get('last_completed')
@@ -965,10 +976,10 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                     'unsummarized_before_initial_boundary':bool(history_status['initial_history_boundary']),
                     'unfinished_ranges':len(history_status.get('unsuccessful', []))}
         summary_views = []
-        history_note = '历史压缩视图（非权威缓存；来源仅定位，提案证据须读取原话；图片索引不是像素）：'
         def history_message():
-            return {'role':'user','_context_section':'history_summary','content':history_note+
-                    json.dumps({'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
+            return {'role':'user','_context_section':'history_summary','content':
+                    json.dumps({'kind':'history_summary','evidence':'locator_only',
+                        'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
         summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
             limit=config.conversation_summary_limit, status='completed')
         summary_tokens = 0
@@ -1010,6 +1021,12 @@ finish_turn必须提供handled_sources，填本轮确实已回答、已委托或
                 messages.append(failure)
             else:
                 self.omit('previous_failure', 'no_capacity', attempts=len(rejected))
+        # Selection priority does not determine reading order. Only the initial
+        # chat window is reordered; native tool exchanges are never sorted.
+        originals=[message for message in messages if '_source_rowid' in message]
+        references=[message for message in messages if '_source_rowid' not in message]
+        originals.sort(key=lambda message:message['_source_rowid'])
+        messages[:]=[*references,*originals]
         self.fit_request(messages, self.tool_definitions(), phase='initial_context')
         return messages
 

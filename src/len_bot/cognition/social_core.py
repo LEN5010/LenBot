@@ -91,14 +91,12 @@ class SocialCognitionCore:
                 related=await context.associated_originals(new_events,current_ids)
                 by_id={event.id:event for event in [*new_events,*related]}
                 provided_ids=list(dict.fromkeys([*current_ids,*(event.id for event in related)]))
-                context.externalize_old_tool_bodies(trajectory)
-                context.release_optional_context(trajectory, include_facts=True)
                 await context.pack_events(trajectory,[by_id[ident] for ident in provided_ids],provided_ids,
                     raw_tokens=config.conversation_recent_tokens)
                 await context.install_facts(trajectory)
                 await context.install_preferences(trajectory)
                 if ledger.jobs or ledger.tasks:
-                    trajectory.append({'role':'user','content':
+                    trajectory.append({'role':'developer','_context_section':'proposal_status','content':
                         '以上是新增原话与当前事实。已暂存提案尚未生效；若新增要求使目标或确认失效，'
                         '先撤回旧提案再提出当前版本。没有提交的回执不能用来确认已完成。'})
                 audit['interim_batches']=audit.get('interim_batches',0)+1
@@ -133,8 +131,6 @@ class SocialCognitionCore:
                 context.refs.jobs.update(current_jobs)
                 return result
 
-            if pages:
-                context.release_optional_context(messages,reason='capacity_reserved_for_tool_results')
             context.fit_request(messages,request_definitions(),reserved=reserved,phase='tool_exchange')
             await context.pack_tool_pages(messages,indexes,[page.limit for page in pages],render,
                 definitions=request_definitions,reserved=reserved)
@@ -164,7 +160,7 @@ class SocialCognitionCore:
                 sections[section]=sections.get(section,0)+context.request_tokens([message],[])-empty_schema_tokens
             context.context_plan['request']={'input_tokens':tokens,'input_budget_tokens':context.input_budget,
                 'section_tokens':sections,'tool_definition_tokens':context.request_tokens([],definitions),
-                'current_pixel_assets':sorted(context.loaded_media)}
+                'current_pixel_assets':sorted(context.loaded_media),'messages':context.request_manifest(trajectory)}
             audit['context_plan']=copy.deepcopy(context.context_plan)
             audit['estimated_context_tokens']=tokens
             audit['input_budget_tokens']=context.input_budget
