@@ -2,7 +2,7 @@ from typing import Any, Callable, Awaitable, Literal
 from pathlib import Path
 from pydantic import BaseModel
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
-from len_bot.events.models import Event
+from len_bot.events.models import Event, EventType, PluginEventPayload
 from len_bot.tools.results import ToolResult
 
 class PluginContext:
@@ -12,15 +12,62 @@ class PluginContext:
         self._host = host
         self.spec = entry.spec
         self.directory = entry.directory
-        self.config = config
+        self.config = config.model_copy(deep=True)
 
     @property
     def time_settings(self):
-        return self._runtime.config_store.current.time
+        value = self._runtime.config_store.current.time
+        return value.model_copy(deep=True) if value else None
 
     @property
     def members(self):
-        return tuple(self._runtime.config_store.current.members)
+        return tuple(member.model_copy(deep=True) for member in self._runtime.config_store.current.members)
+
+    def now(self) -> float:
+        return self._runtime.clock()
+
+    def scene_config(self, scene_id: str) -> BaseModel | None:
+        scene = self._runtime.config_store.current.scenes.get(scene_id)
+        setting = scene.plugins.get(self.spec.id) if scene else None
+        return setting.parsed_config.model_copy(deep=True) if setting else None
+
+    def scene_enabled(self, scene_id: str) -> bool:
+        return self._runtime.scene_policy.plugin_allowed(scene_id, self.spec.id, 'handler')
+
+    def scene_configs(self) -> tuple[tuple[str, BaseModel], ...]:
+        return tuple((scene_id, self.scene_config(scene_id))
+            for scene_id in self._runtime.config_store.current.scenes if self.scene_enabled(scene_id))
+
+    def start_task(self, coroutine, *, name: str):
+        """Enable-time work is owned and cancelled by this plugin's host."""
+        return self._host.start_task(self.spec.id, coroutine, name=name)
+
+    def register_handler(self, *, id: str, description: str, match, handler,
+                         event_types=(EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED),
+                         sources=('human',), priority=100, consume=False, require_to_me=False,
+                         available=None, validate=None, allow_mention_all=None):
+        self._host.register_handler(self.spec.id, id=id, description=description, match=match,
+            handler=handler, event_types=event_types, sources=sources, priority=priority,
+            consume=consume, require_to_me=require_to_me, available=available,
+            validate=validate, allow_mention_all=allow_mention_all)
+
+    async def invoke_tool(self, call: PluginCallContext, name: str, arguments: BaseModel | dict) -> ToolResult:
+        from len_bot.runtime.plugin_interactions import invoke_tool
+        return await invoke_tool(self._runtime, call, name, arguments)
+
+    async def submit_message(self, call: PluginCallContext, segments, *, mention_all=False):
+        from len_bot.runtime.plugin_interactions import submit_message
+        return await submit_message(self._runtime, call, segments, mention_all=mention_all)
+
+    async def save_image(self, call: PluginCallContext, png: bytes, description: str) -> str:
+        await self._host.validate_call(call)
+        asset = await self._runtime.media_service.save_generated(png, call.scene_id,
+            call.source_event_id, description)
+        return asset['id']
+
+    async def run_agent(self, call: PluginCallContext, **options):
+        from len_bot.runtime.plugin_interactions import run_agent
+        return await run_agent(self._runtime, call, **options)
 
     @property
     def data_directory(self) -> Path:
@@ -34,10 +81,20 @@ class PluginContext:
     def has_permission(self, perm: PluginPermission) -> bool:
         return perm in self.manifest.permissions
 
-    async def emit_event(self, event: Event) -> None:
-        """Sensory Input: emits an external sensory event into AgentRuntime."""
+    async def emit_event(self, name: str, payload: BaseModel, *, scene_id: str, event_id: str,
+                         timestamp: float) -> None:
+        """Publish this plugin's declared, typed fact through the normal Actor."""
         if not self.has_permission(PluginPermission.EMIT_EVENT):
             raise PermissionError(f"Plugin '{self.manifest.id}' lacks 'emit_event' permission.")
+        if not self.manifest.enabled or not self.scene_enabled(scene_id):
+            raise ValueError('Plugin event entry is disabled in this scene')
+        model = dict(self.spec.event_models).get(name)
+        if model is None or not isinstance(payload, model):
+            raise ValueError(f'Plugin event {name!r} needs its registered payload model')
+        envelope = PluginEventPayload(plugin_id=self.spec.id, plugin_version=self.spec.version,
+            name=name, data=payload.model_dump(mode='json'))
+        event = Event(id=event_id, event_type=EventType.PLUGIN_EVENT, scene_id=scene_id,
+            actor_id=f'plugin:{self.spec.id}', timestamp=timestamp, payload=envelope.model_dump())
         self._host.record_plugin_event(self.manifest.id)
         await self._runtime.receive_event(event)
 
@@ -94,6 +151,10 @@ class BasePlugin:
 
     async def on_disable(self) -> None:
         pass
+
+    async def apply_config(self, config: BaseModel) -> None:
+        """Only descriptors explicitly choosing in_place use this hook."""
+        raise NotImplementedError('Plugin must implement its declared in-place configuration update')
 
     def source_status(self) -> dict[str, Any]:
         return {}

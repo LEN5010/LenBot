@@ -113,7 +113,7 @@ class RuntimeGate:
         self.open_loop_ttl_seconds = open_loop_ttl_seconds
         self.jobs_enabled_probe = lambda: True
         self.validate_job_resume = None
-        self.validate_native_origin = None
+        self.validate_plugin_origin = None
         self.scene_policy = None
         self._publication_locks: dict[str, asyncio.Lock] = {}
 
@@ -414,7 +414,7 @@ class RuntimeGate:
                     raise ValueError('Committed acknowledgement task is missing')
                 acknowledged_task_id = task['id']
             segments = list(msg.segments)
-            if mailbox.output_kind == 'announcement' and self.scene_policy.scene(scene_id).mention_all:
+            if mailbox.plugin_origin and mailbox.mention_all:
                 segments.insert(0, AllMentionSegment())
             action = ActionItem(
                 source_started_at=committed.source_started_at[index],
@@ -426,6 +426,7 @@ class RuntimeGate:
                 scene_id=scene_id,
                 segments=segments,
                 output_kind=mailbox.output_kind,
+                plugin_origin=mailbox.plugin_origin,
                 requester_qq_uid=msg.requester_qq_uid if mailbox.output_kind == 'chat' else mailbox.requester_qq_uid,
                 origin_event_id=msg.source_event_id if mailbox.output_kind == 'chat' else mailbox.origin_stimulus_id,
                 command_id=mailbox.command_id,

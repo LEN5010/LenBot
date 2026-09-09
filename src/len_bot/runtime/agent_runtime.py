@@ -33,7 +33,7 @@ from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
 from len_bot.runtime.scene_policy import ScenePolicy, conversation_visible
-from len_bot.runtime.plugin_interactions import classify_event, handle_calendar_command, handle_live_announcement, validate_native_origin
+from len_bot.runtime.plugin_interactions import classify_event, validate_plugin_origin
 from len_bot.scenes.actor import SceneCommitConflict
 from len_bot.scenes.manager import SceneManager
 from len_bot.scenes.models import SceneSession
@@ -110,7 +110,7 @@ class AgentRuntime:
         self.runtime_gate.jobs_enabled_probe = self._work_enabled
         self.runtime_gate.validate_job_resume = self._validate_job_resume
         self.runtime_gate.scene_policy = self.scene_policy
-        self.runtime_gate.validate_native_origin = lambda mailbox, scene: validate_native_origin(self, mailbox, scene)
+        self.runtime_gate.validate_plugin_origin = lambda mailbox, scene: validate_plugin_origin(self, mailbox, scene)
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
             self.attention_policy.random_source = attention_random
@@ -265,16 +265,12 @@ class AgentRuntime:
                 state["config"] = {**(state['config'] or {}), **values}
             candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
-            if self.plugin_host.has_plugin(plugin_id):
-                self.plugin_host.set_plugin_config(plugin_id, candidate.plugins[plugin_id].config)
-            if enabled is True:
+            if values is not None:
+                await self.plugin_host.apply_plugin_config(plugin_id)
+            elif enabled is True:
                 await self.plugin_host.enable_plugin(plugin_id)
             elif enabled is False:
                 await self.plugin_host.disable_plugin(plugin_id)
-            if values is not None:
-                self.restart_required = True
-            if not self.plugin_host.has_plugin(plugin_id):
-                self.restart_required = True
 
     async def set_shadow_mode(self, enabled: bool) -> None:
         async with self.config_update_lock:
@@ -460,14 +456,13 @@ class AgentRuntime:
         return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
-        if action.output_kind == 'chat':
+        if action.plugin_origin is not None or action.output_kind != 'chat':
+            await validate_plugin_origin(self, action, action.scene_id)
+        else:
             if not self.scene_policy.chat_allowed(action.scene_id, action.requester_qq_uid):
                 raise ValueError('本群已停用或请求者没有普通对话资格')
-        else:
-            await validate_native_origin(self, action, action.scene_id)
-        if any(segment.type == 'at_all' for segment in action.segments) and (
-                action.output_kind != 'announcement' or not self.scene_policy.scene(action.scene_id).mention_all):
-            raise ValueError('本群当前公告未开启全体提及')
+        if any(segment.type == 'at_all' for segment in action.segments) and action.plugin_origin is None:
+            raise ValueError('普通对话未开放全体提及')
         for segment in action.segments:
             if segment.type == "image" and (
                 not self.config.media_enabled
@@ -486,20 +481,12 @@ class AgentRuntime:
         human = event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED} and event.actor_id != self.bot_actor_id
         if human:
             self.metrics.inc_social("human_messages")
-        if event.metadata.get('interaction') == 'calendar_command':
-            if event.metadata.get('command_allowed'):
-                self._spawn_background_task(handle_calendar_command(self, event))
-            return
-        if event.event_type == EventType.LIVE_STARTED and event.payload.get('notification'):
-            if self.scene_policy.announcement_allowed(event.scene_id, event.payload['member']):
-                self._spawn_background_task(handle_live_announcement(self, event))
-            await self.scheduler.on_event(event)
-            return
+        self.plugin_host.dispatch_event(event, session.last_observed_event_rowid)
         if not self.scene_policy.enabled(event.scene_id):
             return
         await self.job_runner.on_event(event)
         job_due = event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
-        if not job_due and event.metadata.get("attention_reasons"):
+        if not event.metadata.get('plugin_consumed') and not job_due and event.metadata.get("attention_reasons"):
             await self.burst_assembler.ingest(event)
         await self.scheduler.on_event(event)
         if (human or event.event_type == EventType.MESSAGE_SENT) and conversation_visible(event):

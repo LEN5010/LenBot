@@ -55,7 +55,8 @@ class SocialCognitionCore:
             return PluginCallContext(scene_id=session.scene_id, requester_qq_uid=requester_qq_uid,
                 now=runtime.clock(), cutoff_rowid=context.refs.cutoff, episode_id=episode_id,
                 job_id=None, role='conversation', ledger=ledger,
-                requester_qq_uids=tuple(sorted(context.requester_qq_uids)), tool_call_id=tool_call_id)
+                requester_qq_uids=tuple(sorted(context.requester_qq_uids)), tool_call_id=tool_call_id,
+                source_event_id=source_event_ids[0] if source_event_ids else None)
 
         context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context())
 

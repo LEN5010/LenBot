@@ -119,7 +119,7 @@ class RuntimeQueryService:
         return {"scene_id": scene_id, "configured": settings is not None,
                 "settings": settings.model_dump() if settings is not None else None,
                 "effect": effect, "members": self.member_settings(),
-                "plugins": [{key: item[key] for key in ("id", "name", "configured", "enabled")}
+                "plugins": [{key: item[key] for key in ("id", "name", "configured", "enabled", "scene_config_schema")}
                             for item in self.plugins()]}
 
     def maintenance_readiness(self):
@@ -905,7 +905,8 @@ class RuntimeQueryService:
             item['active_enabled'] = bool(item['enabled'] and item['state'] == 'enabled')
             item['enabled'] = bool(saved and saved.enabled)
             item['configured'] = bool(saved and saved.config is not None)
-            item['open_scenes'] = [{'scene_id': scene_id, 'enabled': scene.enabled}
+            item['open_scenes'] = [{'scene_id': scene_id, 'enabled': scene.enabled and scene.plugins[plugin_id].enabled,
+                                  'config': scene.plugins[plugin_id].config}
                 for scene_id, scene in root.scenes.items() if plugin_id in scene.plugins]
             result.append(item)
         credential_names={"sessdata","bili_jct","api_key","access_token","refresh_token","token","password","secret","cookie","authorization"}

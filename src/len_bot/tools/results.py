@@ -6,6 +6,7 @@ import re
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_field, model_validator
+from len_bot.events.models import PluginOrigin
 
 
 ToolErrorStage = Literal['availability', 'arguments', 'references', 'execution', 'presentation', 'commit']
@@ -70,6 +71,7 @@ class DisplayedRange(BaseModel):
 
 
 class ToolResult(BaseModel):
+    plugin_origin: PluginOrigin | None = None
     status: Literal["ok", "no_results", "partial", "error", "unsupported"] = "ok"
     content: str = ""
     sources: list[ToolSource] = Field(default_factory=list)
