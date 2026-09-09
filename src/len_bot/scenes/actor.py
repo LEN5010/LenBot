@@ -240,11 +240,11 @@ class SceneActor:
         return responders.intersection(related)-set(event.payload.get('release_focus_actor_ids', []))
 
     async def _commit_turn(self, item):
-        native_output = item.mailbox.output_kind in {'command', 'announcement'}
+        native_output = item.mailbox.plugin_origin is not None
         if native_output:
             if item.operator or item.outcome.task_proposals or item.outcome.job_proposals or item.outcome.memory_proposals or item.outcome.resolve_open_loop_ids or item.outcome.release_focus_actor_ids:
                 raise SceneCommitConflict('A command or announcement may only submit its own expression')
-            await item.gate.validate_native_origin(item.mailbox, self.scene_id)
+            await item.gate.validate_plugin_origin(item.mailbox, self.scene_id)
         if not item.operator and not native_output and self._active_mailbox is not item.mailbox:
             raise SceneCommitConflict('Episode lease changed')
         if item.mailbox.is_cancelled():
@@ -303,6 +303,7 @@ class SceneActor:
                                'source_outcomes': [source.model_dump(mode='json') for source in item.outcome.source_outcomes],
                                'episode_id':item.mailbox.episode_id,'checkpoint_index':item.outcome.checkpoint_index,
                                'output_kind': item.mailbox.output_kind,
+                               'plugin_origin': item.mailbox.plugin_origin.model_dump() if item.mailbox.plugin_origin else None,
                                'origin_event_id': item.mailbox.origin_stimulus_id,
                                'outcome': item.outcome.model_dump(mode='json')},
                       metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode,

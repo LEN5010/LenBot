@@ -303,7 +303,8 @@ class InformationJobRunner:
         def plugin_context(tool_call_id=None):
             return PluginCallContext(scene_id=scene_id, requester_qq_uid=job["requester_qq_uid"],
                 now=runtime.clock(), cutoff_rowid=work_cutoff, episode_id=None, job_id=job_id, role="work",
-                work_operation=job['work_operation'], tool_call_id=tool_call_id)
+                work_operation=job['work_operation'], tool_call_id=tool_call_id,
+                source_event_id=job['request_source_event_id'], entry='work')
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,

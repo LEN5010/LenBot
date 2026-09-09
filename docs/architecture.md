@@ -4,7 +4,7 @@
 
 ## 正常链路与所有权
 
-运行参数进入 Runtime。OneBot、感知插件和 Scheduler 产生事件，SceneActor 在同一场景写序中先确定交互归属，再保存事实与注意力进度。普通消息进入注意力和 SocialCognitionCore；精确日程命令进入确定性图片处理；真实新开播进入同一个 AgentLoop 的窄公告模式。三种表达都由 Actor 和 RuntimeGate 提交，再进入 ActionQueue 与真实回执。`start_work` 和 `summarize_group_chat` 暂存的工作由 InformationJobRunner 执行，资料与结果回到原请求群。
+运行参数进入 Runtime。OneBot、感知插件和 Scheduler 产生事件，SceneActor 在同一场景写序中先确定交互归属，再保存事实与注意力进度。未被插件消费的普通消息进入注意力和 SocialCognitionCore；插件通过已注册的本地 matcher 认领事件，耗时 handler 在保存后、Actor 写入区之外执行。日历确定性图片与直播专用 Agent 流程由各插件定义，表达仍由 Actor 和 RuntimeGate 提交，再进入 ActionQueue 与真实回执。`start_work` 和 `summarize_group_chat` 暂存的工作由 InformationJobRunner 执行，资料与结果回到原请求群。
 
 | 模块 | 唯一职责与边界 |
 |---|---|
@@ -15,7 +15,7 @@
 | `scheduler/actions` | 持久认领、到期事件、队列、显式传输与回执 |
 | `memory` | 单一认识账本与增量历史维护；不持久化模型生成的气氛、兴趣或工作世界 |
 | `skills` | 有来源、场景与版本的方法文档；没有额外执行权 |
-| `plugins/tools` | 真实资料读取或工作提案、工具观察和范围查询；不直接调用模型或发送 |
+| `plugins/tools` | 注册工具与事件处理器、读取资料、调用公共 Agent 和提交入口；模型与发送仍由现有运行时执行 |
 | `media` | 原图读取、解码与窗口装配，运营素材及其来源；不调用独立视觉模型 |
 | `adapters` | 协议归一化、唯一消息连接与获准传输 |
 | `web` | 路由经 RuntimeQueryService 读取限定范围的持久记录，干预使用事件与提案接口，不在路由另写数据库查询 |
@@ -54,13 +54,13 @@ release_focus 在原提案事务内撤销已处理本人原话对应的 focused_
 
 ScenePolicy 直接读取当前根文件中的群字段与全局 QQ 回复白名单。群停用时继续保存接入的原话，但不进入认知或发送；chat 关闭群只有白名单请求者获得普通对话资格。新工作、群总结和提醒从明确的已读人类 request_source 取得 request_source_event_id 与 requester_qq_uid；控制既有事项保留原请求者，修订原话加入来源集合。每条普通 MessageProposal 单独保存 source_event_id 与 requester_qq_uid，Gate 核验人类原话、场景、实际阅读及当前资格，不再以整轮一个请求人代替多人身份。插件可用性在定义和执行处均检查当前场景、角色与插件状态。
 
-精确日程命令、实际响应及经真实 reply message_id 找到的评论在事件中记录 interaction 与 conversation_excluded。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。日程交互不进入普通对话的确定唤醒，也不构成未读控制阻塞。没有引用证据时不作语义评论分类。
+插件路由记录 plugin_routes、plugin_consumed 与 conversation_excluded；日历插件自己认领精确命令及通过真实 reply message_id 找到的日程评论。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。日程交互不进入普通对话的确定唤醒，也不构成未读控制阻塞。没有引用证据时不作语义评论分类。
 
 ## 对话循环与提案
 
 ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固定提供商、型号、推理强度与客户端；对话同时固定配置快照，循环上限、终结定义、上下文装配和新输入使用同一份预算。工作执行段或显式恢复采用当时生效上限并继续累计原账目；三角色分别配置，没有继承、同轮切换、跨型号 fallback 或独立视觉路由。新配置用于新轮次，已启动工作保留原绑定。原生 assistant 续接、供应商扩展与工具调用顺序保留在私有运行数据中。
 
-调用角色与记账用途分开：开播邀请使用 conversation 的既有模型绑定，并以 announcement 用途写入原 model_calls。Gateway 接受这个正式用途，查询和用量汇总保留其独立分类；调用详情按真实 episode_id 关联公告 trace，不把源事件 ID 当成轮次 ID。
+调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。
 
 模型通过窄原生工具读取与暂存。`respond` 接受本阶段消息、逐来源 sources 和 next=end/continue/wait，空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。
 
@@ -88,7 +88,7 @@ ToolResult 的 coordinate_unit 区分 characters 与 records，displayed_range �
 
 容量试算未采用的页、片段或图片不更新实际读取集合。实际请求中的 presentations 才更新工具范围；工作将区间并集保存在 task.payload.observation_reads，按 result_id 再分别保存 characters／records 的 total 与 ranges。同一结果可有两种实际坐标记录，不能把记录序号作为正文字符偏移。换出图片不计为当前像素，历史阅读也不自动恢复当前像素占用。
 
-插件 handler 每次接收不可变 PluginCallContext，包含 scene、请求者、时钟、快照、episode/job 与当前 Ledger；共享插件实例没有可变 current_scene。读取定义声明角色与是否延迟发现，返回 ToolResult；提案定义只暂存到现有 Ledger。Toolkit 不按相同参数盲目复用旧结果：源的有效缓存由具体服务维护，原观察按 result_id 显式续读。conversation 与 work 的整组展示共同复用 pack_tool_pages，实际展示后才更新原文覆盖。
+插件 handler 和工具接收不可变 PluginCallContext，携带场景、真实来源、可为空的人类请求者、截点、插件版本、入口与父调用身份。共享插件实例没有可变 current_scene。根场景插件条目按 plugin_id 保存 enabled 和插件自己的 config，专有模型由描述符提供。处理器数值优先级小者先匹配，同级按注册顺序；消费归属与原话一同保存，失败不退回普通聊天。精确命令入口可在普通聊天关闭时执行本插件获准工具，其他插件工具仍履行各自的当前资格。读取定义声明角色与是否延迟发现，返回 ToolResult；提案定义只暂存到现有 Ledger。Toolkit 不按相同参数盲目复用旧结果：源的有效缓存由具体服务维护，原观察按 result_id 显式续读。conversation 与 work 的整组展示共同复用 pack_tool_pages，实际展示后才更新原文覆盖。
 
 新输入装配时更新当前运行事实槽位，消失或省略的事项明确标注；保存观察本身不反复追加完整工作列表。历史查询中的旧工作版本不能覆盖当前目标版本。展示页与续读参数不自动执行，模型实际选择的读取仍沿原工具与模型预算记账，不另建分页循环、后台工作或压缩供应商。
 
@@ -186,3 +186,5 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 | Work Revision / Complete Checkpoint | 目标与约束版本／已完成的原生工具交换 |
 | OpenLoop | 真实发出后激活的等待回应 |
 | Operator Outcome | 有操作事件来源的干预结果，不消费人类未读输入 |
+
+插件自定义来源使用 PLUGIN_EVENT 封套，plugin_id、版本、事件名与 payload 类型属于描述符；旧 LIVE_STARTED/LIVE_ENDED 记录保留。提交与行动保存 PluginOrigin，出站重新检查来源、入口、启用状态、版本及插件业务校验。开播的当前场次、订阅与全体提及许可由直播插件校验。宿主记录并取消插件的轮询、工具与 handler 任务；加载失败清理注册和资源，保留元数据与错误。开发接口见[插件开发](plugins.md)。

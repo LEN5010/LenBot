@@ -2,11 +2,13 @@ import asyncio
 import logging
 import json
 import time
+import uuid
 import httpx
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginToolDefinition
+from len_bot.plugins.models import ExactText, PluginCallContext, PluginHandlerDefinition, PluginManifest, PluginToolDefinition
+from len_bot.events.models import EventType, PluginEventPayload, PluginOrigin
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
@@ -55,6 +57,158 @@ class PluginHost:
         self._plugin_contexts: dict[str, PluginContext] = {}
         self._tools: dict[str, PluginToolDefinition] = {}
         self._status: dict[str, PluginRuntimeStatus] = {}
+        self._handlers: dict[tuple[str, str], PluginHandlerDefinition] = {}
+        self._registration_order = 0
+        self._tasks: dict[str, set[asyncio.Task]] = {}
+
+    def start_task(self, plugin_id, coroutine, *, name):
+        plugin = self._plugins.get(plugin_id)
+        if not plugin or not plugin.manifest.enabled:
+            coroutine.close()
+            raise ValueError(f'Plugin {plugin_id!r} is disabled')
+        task = asyncio.create_task(coroutine, name=f'plugin:{plugin_id}:{name}')
+        owned = self._tasks.setdefault(plugin_id, set())
+        owned.add(task)
+        def finished(done):
+            owned.discard(done)
+            if not done.cancelled() and done.exception() is not None:
+                self.record_plugin_error(plugin_id, f'{name}: {done.exception()}')
+        task.add_done_callback(finished)
+        return task
+
+    async def _cancel_tasks(self, plugin_id):
+        tasks = tuple(task for task in self._tasks.get(plugin_id, ()) if task is not asyncio.current_task())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def register_handler(self, plugin_id, **options):
+        definition = PluginHandlerDefinition(plugin_id=plugin_id, order=self._registration_order, **options)
+        key = (plugin_id, definition.id)
+        if key in self._handlers:
+            raise ValueError(f'Handler {key} is already registered')
+        source = _registration_source(plugin_id, definition.handler)
+        for other in self._handlers.values():
+            if (definition.consume and other.consume and isinstance(definition.match, ExactText)
+                    and isinstance(other.match, ExactText)
+                    and set(definition.event_types).intersection(other.event_types)
+                    and set(definition.sources).intersection(other.sources)
+                    and set(definition.match.words).intersection(other.match.words)):
+                raise ValueError(f'Exclusive exact command conflict: {source} / {definition.id} and '
+                    f'{_registration_source(other.plugin_id, other.handler)} / {other.id}')
+        if not definition.sources or set(definition.sources) - {'human', 'plugin_event', 'self_sent'}:
+            raise ValueError(f'Handler {key} has invalid source kinds')
+        self._handlers[key] = definition
+        self._registration_order += 1
+
+    def handler_call(self, event, route, cutoff, *, execution=None):
+        origin = PluginOrigin.model_validate(route['origin'])
+        return PluginCallContext(scene_id=event.scene_id,
+            requester_qq_uid=event.metadata.get('requester_qq_uid'), now=self.runtime.clock(),
+            cutoff_rowid=cutoff, episode_id=origin.run_id, job_id=None, role='conversation',
+            source_event_id=event.id, origin=origin, entry_origin=origin, entry='handler',
+            event=event.model_copy(deep=True), plugin=self._plugin_contexts[origin.plugin_id], execution=execution)
+
+    def match_event(self, event, cutoff):
+        """Only synchronous local matching runs under the Actor's writer."""
+        if event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}:
+            source_kind = 'human' if event.actor_id != self.runtime.bot_actor_id else None
+        elif event.event_type == EventType.PLUGIN_EVENT:
+            envelope = PluginEventPayload.model_validate(event.payload)
+            entry = self.runtime.config_store.catalog.entries.get(envelope.plugin_id)
+            if entry is None or event.actor_id != f'plugin:{envelope.plugin_id}':
+                raise ValueError('Plugin event producer is not registered')
+            model = dict(entry.spec.event_models).get(envelope.name)
+            if model is None:
+                raise ValueError('Plugin event payload type is not registered')
+            model.model_validate(envelope.data, strict=True)
+            source_kind = 'plugin_event'
+        elif (event.event_type == EventType.MESSAGE_SENT and event.actor_id == self.runtime.bot_actor_id
+                and not event.metadata.get('simulated') and event.payload.get('delivery_status') == 'sent'):
+            source_kind = 'self_sent'
+        else:
+            source_kind = None
+        routes = []
+        for definition in sorted(self._handlers.values(), key=lambda item: (item.priority, item.order)):
+            plugin = self._plugins[definition.plugin_id]
+            if (source_kind not in definition.sources or event.event_type not in definition.event_types
+                    or not plugin.manifest.enabled
+                    or not self.runtime.scene_policy.plugin_allowed(event.scene_id, definition.plugin_id, 'handler')
+                    or definition.require_to_me and not (event.is_mention_bot or event.is_reply_bot)):
+                continue
+            parent = event.payload.get('plugin_origin') or {}
+            if source_kind == 'self_sent' and parent.get('plugin_id') == definition.plugin_id:
+                continue
+            origin = PluginOrigin(plugin_id=definition.plugin_id, plugin_version=plugin.manifest.version,
+                entry_id=definition.id, entry_kind='handler', run_id=f'plugin:{uuid.uuid4().hex}',
+                source_event_id=event.id, parent_run_id=parent.get('run_id'))
+            route = {'origin': origin.model_dump(), 'consume': definition.consume, 'state': 'matched',
+                     'source_kind': source_kind, 'priority': definition.priority, 'registration_order': definition.order}
+            call = self.handler_call(event, route, cutoff)
+            try:
+                matched = definition.match(call)
+                if not isinstance(matched, bool):
+                    raise TypeError('Matcher must return bool without I/O')
+                if not matched:
+                    continue
+                if definition.available is not None and not definition.available(call):
+                    continue
+            except Exception as error:
+                self.record_plugin_error(definition.plugin_id, f'Matcher {definition.id}: {error}')
+                event.metadata.setdefault('plugin_match_errors', []).append({
+                    'plugin_id': definition.plugin_id, 'handler_id': definition.id, 'error': str(error)})
+                continue
+            routes.append(route)
+            if definition.consume:
+                break
+        return routes
+
+    async def validate_call(self, call, *, mention_all=False):
+        origin = call.entry_origin or call.origin
+        if origin is None or not call.source_event_id or origin.source_event_id != call.source_event_id:
+            raise ValueError('Plugin call needs its real source and owner')
+        plugin = self._plugins.get(origin.plugin_id)
+        if (not plugin or not plugin.manifest.enabled or plugin.manifest.version != origin.plugin_version
+                or not self.runtime.scene_policy.plugin_allowed(call.scene_id, origin.plugin_id, call.entry)):
+            raise ValueError('Plugin is disabled, unavailable in this scene, or its version changed')
+        events = await self.runtime.event_store.events_by_ids(call.scene_id, [call.source_event_id], call.cutoff_rowid)
+        if len(events) != 1:
+            raise ValueError('Plugin source is outside this scene or read cutoff')
+        source = events[0]
+        if origin.entry_kind != 'handler':
+            if not self.has_tool(origin.entry_id, call):
+                raise ValueError('Plugin tool source is no longer available')
+            if mention_all:
+                raise ValueError('Tool runs do not grant all-member mentions')
+            return
+        definition = self._handlers.get((origin.plugin_id, origin.entry_id))
+        if definition is None or not any(route['origin'] == origin.model_dump()
+                for route in source.metadata.get('plugin_routes', ())):
+            raise ValueError('Plugin handler does not own this stored route')
+        current = replace(call, event=source, plugin=self._plugin_contexts[origin.plugin_id])
+        if definition.available and not definition.available(current):
+            raise ValueError('Plugin handler entry is no longer enabled')
+        if definition.validate:
+            await definition.validate(current)
+        if mention_all and not (definition.allow_mention_all and definition.allow_mention_all(current)):
+            raise ValueError('This plugin entry has no current all-member mention setting')
+
+    def dispatch_event(self, event, cutoff):
+        from len_bot.runtime.plugin_interactions import dispatch_handler
+        for route in event.metadata.get('plugin_routes', ()):
+            origin = PluginOrigin.model_validate(route['origin'])
+            plugin = self._plugins.get(origin.plugin_id)
+            if plugin is None or not plugin.manifest.enabled:
+                continue
+            self.start_task(origin.plugin_id, dispatch_handler(self.runtime, event, route, cutoff),
+                name=f'handler:{origin.entry_id}:{origin.run_id}')
+
+    async def execute_handler(self, call):
+        await self.validate_call(call)
+        definition = self._handlers[(call.origin.plugin_id, call.origin.entry_id)]
+        self.record_plugin_run(call.origin.plugin_id)
+        await definition.handler(call)
 
     def register_plugin_tool(
         self,
@@ -121,6 +275,7 @@ class PluginHost:
             raise
 
     async def _release_plugin(self, plugin_id: str) -> None:
+        await self._cancel_tasks(plugin_id)
         plugin = self._plugins.pop(plugin_id, None)
         if plugin is not None:
             try:
@@ -130,6 +285,8 @@ class PluginHost:
         self._plugin_contexts.pop(plugin_id, None)
         for name in [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id]:
             del self._tools[name]
+        for key in [key for key in self._handlers if key[0] == plugin_id]:
+            del self._handlers[key]
 
     async def unload_plugin(self, plugin_id: str) -> None:
         try:
@@ -177,6 +334,7 @@ class PluginHost:
         plugin.manifest.enabled = False
         self._status[plugin_id].state = 'disabling'
         try:
+            await self._cancel_tasks(plugin_id)
             await plugin.on_disable()
         except Exception as error:
             self.record_plugin_error(plugin_id, f'disable failed: {error}')
@@ -215,10 +373,27 @@ class PluginHost:
             raise KeyError(plugin_id)
         return dict(plugin.manifest.config)
 
-    def set_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        """Publish parameters already parsed by the root configuration boundary."""
-        self._plugins[plugin_id].manifest.config = dict(config)
-        return dict(config)
+    async def apply_plugin_config(self, plugin_id: str) -> None:
+        setting = self.runtime.config_store.current.plugins[plugin_id]
+        spec = self.runtime.config_store.catalog.entries[plugin_id].spec
+        if plugin_id not in self._plugins:
+            if setting.enabled:
+                await self.enable_plugin(plugin_id)
+            return
+        if spec.config_apply == 'restart_plugin':
+            await self.unload_plugin(plugin_id)
+            if setting.enabled:
+                await self.enable_plugin(plugin_id)
+            return
+        try:
+            parsed = setting.parsed_config.model_copy(deep=True)
+            await self._plugins[plugin_id].apply_config(parsed)
+            self._plugin_contexts[plugin_id].config = parsed
+            self._plugins[plugin_id].manifest.config = parsed.model_dump()
+        except Exception as error:
+            self.record_plugin_error(plugin_id, f'Configuration apply failed: {error}')
+            await self._release_plugin(plugin_id)
+            raise
 
     def status_snapshot(self) -> list[dict[str, Any]]:
         """Discovered metadata and observed lifecycle survive failed loads."""
@@ -233,6 +408,7 @@ class PluginHost:
             out.append({
                 'id': plugin_id, 'name': spec.name, 'description': spec.description,
                 'version': spec.version, 'directory': str(entry.directory),
+                'config_apply': spec.config_apply,
                 'plugin_type': spec.plugin_type.value,
                 'permissions': [permission.value for permission in spec.permissions],
                 'enabled': bool(plugin and plugin.manifest.enabled), 'state': status.state,
@@ -240,8 +416,14 @@ class PluginHost:
                 'last_event_at': status.last_event_at, 'last_run_at': status.last_run_at,
                 'config': saved.config if saved else None,
                 'config_schema': spec.config_model.model_json_schema(),
-                'emitted_events': plugin.manifest.emitted_events if plugin else [],
+                'scene_config_schema': spec.scene_config_model.model_json_schema(),
+                'emitted_events': [name for name, _ in spec.event_models],
                 'registered_tools': [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id],
+                'tools': [{'name': tool.name, 'description': tool.description, 'purpose': tool.purpose,
+                           'kind': tool.kind, 'roles': list(tool.roles)} for tool in self._tools.values()
+                          if tool.plugin_id == plugin_id],
+                'handlers': [handler.record() for handler in self._handlers.values() if handler.plugin_id == plugin_id],
+                'active_tasks': [task.get_name() for task in self._tasks.get(plugin_id, ()) if not task.done()],
                 'source_status': plugin.source_status() if plugin else {},
             })
         return out
@@ -253,9 +435,11 @@ class PluginHost:
             return 'unconfigured'
         if not configured.enabled or plugin is None or not plugin.manifest.enabled:
             return 'plugin_disabled'
-        requesters = call_context.requester_qq_uids if call_context.role == 'conversation' else (call_context.requester_qq_uid,)
+        origin = call_context.entry_origin or call_context.origin
+        own_handler = call_context.entry == 'handler' and origin and origin.plugin_id == plugin_id
+        requesters = call_context.requester_qq_uids or (call_context.requester_qq_uid,)
         if (not self.runtime.scene_policy.plugin_allowed(call_context.scene_id, plugin_id, call_context.role)
-                or not any(self.runtime.scene_policy.chat_allowed(call_context.scene_id, requester) for requester in requesters)):
+                or not own_handler and not any(self.runtime.scene_policy.chat_allowed(call_context.scene_id, requester) for requester in requesters)):
             return 'scene_not_enabled'
         return 'callable'
 
@@ -357,14 +541,27 @@ class PluginHost:
             return ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id)
         try:
             self.record_plugin_run(ptool.plugin_id)
+            parent = call_context.origin
+            source_id = call_context.source_event_id
+            if source_id is None:
+                raise ValueError('Plugin tool invocation has no real source event')
+            origin = PluginOrigin(plugin_id=ptool.plugin_id,
+                plugin_version=self._plugins[ptool.plugin_id].manifest.version,
+                entry_id=tool_name, entry_kind='tool', run_id=f'plugin:{uuid.uuid4().hex}',
+                source_event_id=source_id,
+                parent_run_id=parent.run_id if parent else call_context.episode_id or call_context.job_id,
+                parent_tool_call_id=call_context.tool_call_id)
+            bound_call = replace(call_context, origin=origin, plugin=self._plugin_contexts[ptool.plugin_id])
+            task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call), name=f'tool:{tool_name}')
             result = await asyncio.wait_for(
-                ptool.handler(parsed, call_context),
+                task,
                 timeout=ptool.timeout_seconds
             )
             if ptool.kind == 'proposal' and isinstance(result, dict):
                 return result
             if not isinstance(result, ToolResult):
                 raise TypeError(f"Plugin tool '{tool_name}' must return ToolResult")
+            result.plugin_origin = origin
             return result.error_context(tool_name, call_context.tool_call_id)
         except httpx.TimeoutException as error:
             result = ToolResult.failure(f"{type(error).__name__}: {error}；本次来源请求超时，未取得结果；不表示整个能力永久不可用。", 'timeout',

@@ -22,6 +22,7 @@ class ObservationStoreMixin:
                       scene_id=scene_id, actor_id="system:tools", timestamp=self.clock(), metadata={"background_work": background_work}, payload={
                           "result_id": result.result_id, "tool_name": tool_name,
                           "tool_call_id": result.tool_call_id,
+                          "plugin_origin": result.plugin_origin.model_dump() if result.plugin_origin else None,
                           "status": result.status, "sources": [s.model_dump() for s in result.sources],
                           **({'error_code': result.error_code, 'error_stage': result.error_stage,
                               'http_status': result.http_status} if result.status in {'error','unsupported'} else {}),

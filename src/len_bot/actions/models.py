@@ -3,6 +3,7 @@ from typing import Optional, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 import uuid
 from len_bot.media.models import MessageSegment, segment_text
+from len_bot.events.models import PluginOrigin
 
 class DeliveryStatus(StrEnum):
     SENT = "sent"
@@ -35,7 +36,8 @@ class ActionItem(BaseModel):
     action_type: ActionType
     scene_id: str
     segments: list[MessageSegment | AllMentionSegment] = Field(min_length=1)
-    output_kind: Literal['chat', 'command', 'announcement'] = 'chat'
+    output_kind: Literal['chat', 'plugin', 'command', 'announcement'] = 'chat'
+    plugin_origin: PluginOrigin | None = None
     requester_qq_uid: str | None = None
     origin_event_id: str | None = None
     command_id: str | None = None

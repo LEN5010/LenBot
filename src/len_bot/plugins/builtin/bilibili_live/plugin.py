@@ -3,13 +3,15 @@ import asyncio
 import json
 import logging
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import EventType
+from len_bot.media.models import MessageSegment
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource
 from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
+from .events import LiveEndedSample
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,17 @@ logger = logging.getLogger(__name__)
 class LiveStatusArguments(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     member: str | None = Field(min_length=1, description='已配置的监测成员名称或别名；null读取全部监测对象')
+
+
+class Invitation(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    text: str = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def nonempty(self):
+        if not self.text.strip():
+            raise ValueError('邀请正文不能为空白')
+        return self
 
 
 class BilibiliLiveSensor(BasePlugin):
@@ -32,7 +45,6 @@ class BilibiliLiveSensor(BasePlugin):
 
     async def on_load(self, context: PluginContext):
         self.context = context
-        self.runtime = context._runtime
         context.register_tool('get_live_status', '读取配置监测对象的实际直播状态及采样时间；member=null表示全部监测对象。',
             LiveStatusArguments, self.get_status,
             purpose='查询实际直播状态', aliases=('开播状态', '谁在直播'), keywords=('直播', '开播', '下播', '房间', '状态'),
@@ -41,21 +53,62 @@ class BilibiliLiveSensor(BasePlugin):
             LiveStatusArguments,self.get_subscriptions,
             purpose='核对本群开播通知订阅',aliases=('直播订阅','直播时通知','停止开播通知'),
             keywords=('订阅','通知','开播提醒','取消订阅'),kind='read',roles=('conversation','work'),deferred=True)
+        context.register_handler(id='live_started', description='已订阅群的真实新直播场次邀请',
+            match=lambda call: call.event.payload['plugin_id'] == self.manifest.id and call.event.payload['name'] == 'live_started',
+            handler=self.on_live_started, event_types=(EventType.PLUGIN_EVENT,), sources=('plugin_event',),
+            priority=10, consume=True,
+            available=lambda call: self.announcement_allowed(call.scene_id, call.event.payload['data']['member']),
+            validate=self.validate_announcement,
+            allow_mention_all=lambda call: bool(call.scene_config and call.scene_config.mention_all))
+        context.register_handler(id='live_ended', description='记录订阅成员下播，不生成额外群消息',
+            match=lambda call: call.event.payload['plugin_id'] == self.manifest.id and call.event.payload['name'] == 'live_ended',
+            handler=self.on_live_ended, event_types=(EventType.PLUGIN_EVENT,), sources=('plugin_event',),
+            priority=10, consume=True)
 
     async def on_enable(self):
         if self._poll_task is None or self._poll_task.done():
             self.samples.clear()
-            self._poll_task = asyncio.create_task(self._poll_loop())
+            self._poll_task = self.context.start_task(self._poll_loop(), name='shared_live_poller')
 
     async def on_disable(self):
-        if self._poll_task:
-            self._poll_task.cancel()
-            await asyncio.gather(self._poll_task, return_exceptions=True)
-            self._poll_task = None
+        self._poll_task = None
 
     async def on_unload(self):
-        await self.on_disable()
         await self.client.close()
+
+    def monitored_members(self):
+        names = {name for _, config in self.context.scene_configs() for name in config.live_subscriptions}
+        return [member for member in self.context.members if member.name in names]
+
+    def announcement_allowed(self, scene_id, member):
+        config = self.context.scene_config(scene_id)
+        return bool(self.context.scene_enabled(scene_id) and config
+            and 'live_started' in config.announcements and member in config.live_subscriptions)
+
+    async def validate_announcement(self, call):
+        sample = LiveSample.model_validate(call.event.payload['data'])
+        if not self.announcement_allowed(call.scene_id, sample.member):
+            raise ValueError('本群没有启用该成员的开播邀请')
+        self.validate_session(sample.member, sample.room_id, sample.started_at)
+
+    async def on_live_ended(self, call):
+        return None
+
+    async def on_live_started(self, call):
+        sample = LiveSample.model_validate(call.event.payload['data'])
+        material = ToolResult(content=sample.model_dump_json(), evidence_kind='external',
+            fetched_at=sample.sampled_at, coverage='触发本群邀请的真实直播场次',
+            sources=[ToolSource(event_id=call.source_event_id, url=sample.url, title=sample.member)])
+        result = await call.run_agent(instructions=(
+            '当前是已订阅开播公告，只根据所给真实场次写一段邀请，正确指认主播。'
+            '调用 return_result 返回正文；不要决定目标群，不写全体提及，不读取群史或创建其他工作。\n'
+            + self.config.announcement_instructions), input_observations=[material],
+            tool_names=(), model_role='conversation', include_identity=True,
+            output_mode='result_only', output_model=Invitation,
+            max_steps=self.config.announcement_max_steps, max_tool_calls=self.config.announcement_max_tool_calls,
+            context_tokens=self.config.announcement_context_tokens, output_tokens=self.config.announcement_output_tokens)
+        await call.submit_message([MessageSegment(type='text', text=result.text)],
+            mention_all=call.scene_config.mention_all)
 
     def source_status(self):
         return {'last_success_at': self._last_success_at, 'last_error_at': self._last_error_at,
@@ -64,9 +117,9 @@ class BilibiliLiveSensor(BasePlugin):
 
     async def _poll_loop(self):
         while True:
-            for member in self.runtime.scene_policy.monitored_members():
+            for member in self.monitored_members():
                 try:
-                    current = await self.client.sample(member, self.runtime.clock)
+                    current = await self.client.sample(member, self.context.now)
                     previous = self.samples.get(member.name)
                     self.samples[member.name] = current
                     self._last_success_at = current.sampled_at
@@ -76,39 +129,37 @@ class BilibiliLiveSensor(BasePlugin):
                     ended = previous.is_live and not current.is_live
                     if not new_session and not ended:
                         continue
-                    for scene_id in self.runtime.config_store.current.scenes:
-                        if not self.runtime.scene_policy.announcement_allowed(scene_id, member.name):
+                    for scene_id, _ in self.context.scene_configs():
+                        if not self.announcement_allowed(scene_id, member.name):
                             continue
                         if new_session:
                             event_id = f'live-start:{current.room_id}:{current.started_at}:{scene_id}'
-                            kind = EventType.LIVE_STARTED
-                            payload = {**current.model_dump(), 'notification': True,
-                                'raw_text': f'{current.member} 开播：{current.title}'}
+                            kind = 'live_started'
+                            payload = current
                         else:
                             event_id = f'live-end:{previous.room_id}:{previous.started_at}:{scene_id}'
-                            kind = EventType.LIVE_ENDED
-                            payload = {**current.model_dump(), 'ended_session_started_at': previous.started_at,
-                                'raw_text': f'{current.member} 已下播'}
+                            kind = 'live_ended'
+                            payload = LiveEndedSample(**current.model_dump(), ended_session_started_at=previous.started_at)
                         if await self.context.event_store.event_exists(event_id, scene_id):
                             continue
-                        await self.context.emit_event(Event(id=event_id, event_type=kind, scene_id=scene_id,
-                            actor_id='plugin:bilibili_live_sensor', timestamp=current.sampled_at, payload=payload))
+                        await self.context.emit_event(kind, payload, event_id=event_id, scene_id=scene_id,
+                            timestamp=current.sampled_at)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    self._last_error_at = self.runtime.clock()
+                    self._last_error_at = self.context.now()
                     self._last_error = f'{member.name}: {type(error).__name__}: {error}'
                     logger.warning('Live source collection failed: %s', self._last_error)
             await asyncio.sleep(self.config.interval_seconds)
 
     def current_sample(self, member):
-        active = {item.name: item for item in self.runtime.scene_policy.monitored_members()}
+        active = {item.name: item for item in self.monitored_members()}
         sample = self.samples.get(member)
         if member not in active or sample is None:
             raise ValueError('该对象尚未取得监测样本')
         if sample.bilibili_uid != active[member].bilibili_uid or sample.requested_room_id != active[member].room_id:
             raise ValueError('监测对象已修改，尚未取得新对象的样本')
-        if self.runtime.clock() - sample.sampled_at >= self.config.max_age_seconds:
+        if self.context.now() - sample.sampled_at >= self.config.max_age_seconds:
             raise ValueError('直播样本已过期，本次查询失败；旧快照仅供面板查看')
         return sample
 
@@ -119,7 +170,7 @@ class BilibiliLiveSensor(BasePlugin):
 
     async def get_status(self, arguments: LiveStatusArguments, call_context):
         name = arguments.member
-        members = self.runtime.scene_policy.monitored_members()
+        members = self.monitored_members()
         if name is not None:
             members = [member for member in members if name == member.name or name in member.aliases]
             if not members:
@@ -132,10 +183,10 @@ class BilibiliLiveSensor(BasePlugin):
             sources=[ToolSource(url=item.url, title=item.member) for item in samples])
 
     async def get_subscriptions(self, arguments: LiveStatusArguments, call_context):
-        scene=self.runtime.scene_policy.scene(call_context.scene_id)
+        scene=self.context.scene_config(call_context.scene_id)
         if scene is None:
             raise ValueError('开播订阅属于已配置群，当前场景没有群订阅设置')
-        members=self.runtime.config_store.current.members
+        members=self.context.members
         if arguments.member is not None:
             members=[member for member in members if arguments.member==member.name or arguments.member in member.aliases]
             if not members:raise ValueError('没有对应的已配置成员，请使用成员名称或已登记别名')
@@ -151,10 +202,10 @@ class BilibiliLiveSensor(BasePlugin):
             else:
                 monitoring={'status':'not_subscribed_in_scene'}
             items.append({'member':member.name,'subscribed':subscribed,
-                'notifications_enabled':self.runtime.scene_policy.announcement_allowed(call_context.scene_id,member.name),
+                'notifications_enabled':self.announcement_allowed(call_context.scene_id,member.name),
                 'monitoring':monitoring})
         return ToolResult(content=json.dumps({'scene_id':call_context.scene_id,'subscriptions':items,
-            'change_entry':{'type':'authenticated_dashboard','path':'场景消息 → 本群设置 → 订阅主播',
+            'change_entry':{'type':'authenticated_dashboard','path':'场景消息 → 本群设置 → 哔哩哔哩直播监测 → live_subscriptions',
                             'chat_can_modify':False,'operations':['subscribe','unsubscribe']},
             'scope':'本群公告订阅；没有个人私聊通知订阅',
             'meaning':'订阅已保存、监测样本新鲜、实际开播事件与通知送达分别核对'},ensure_ascii=False),

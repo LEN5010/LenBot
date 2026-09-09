@@ -1,6 +1,6 @@
 from enum import StrEnum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 import time
 
@@ -30,7 +30,29 @@ class EventType(StrEnum):
     STATE_ANNOTATION = "STATE_ANNOTATION"
     LIVE_STARTED = "LIVE_STARTED"
     LIVE_ENDED = "LIVE_ENDED"
+    PLUGIN_EVENT = "PLUGIN_EVENT"
     SOCIAL_COGNITION_RECORDED = "SOCIAL_COGNITION_RECORDED"
+
+class PluginOrigin(BaseModel):
+    """Stored ownership of a real plugin invocation, including its parent."""
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    plugin_id: str
+    plugin_version: str
+    entry_id: str
+    entry_kind: str
+    run_id: str
+    source_event_id: str
+    parent_run_id: str | None = None
+    parent_tool_call_id: str | None = None
+
+
+class PluginEventPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    plugin_id: str
+    plugin_version: str
+    name: str
+    data: dict[str, Any]
+
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

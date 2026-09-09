@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from enum import StrEnum
 from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.tools.results import ToolResult
 
 if TYPE_CHECKING:
     from len_bot.cognition.proposals import ProposalLedger
+    from len_bot.plugins.base import PluginContext
+
+
+class EmptySceneConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
 
 
 @dataclass(frozen=True)
@@ -23,6 +30,90 @@ class PluginCallContext:
     work_operation: str | None = None
     requester_qq_uids: tuple[str, ...] = ()
     tool_call_id: str | None = None
+    source_event_id: str | None = None
+    origin: PluginOrigin | None = None
+    entry_origin: PluginOrigin | None = None
+    entry: Literal['chat', 'handler', 'work'] = 'chat'
+    event: Event | None = None
+    plugin: PluginContext | None = field(default=None, repr=False, compare=False)
+    execution: Any = field(default=None, repr=False, compare=False)
+
+    @property
+    def scene_config(self) -> BaseModel | None:
+        return self.plugin.scene_config(self.scene_id) if self.plugin else None
+
+    async def invoke_tool(self, name: str, arguments: BaseModel | dict) -> ToolResult:
+        return await self.plugin.invoke_tool(self, name, arguments)
+
+    async def submit_message(self, segments, *, mention_all=False):
+        return await self.plugin.submit_message(self, segments, mention_all=mention_all)
+
+    async def save_image(self, png: bytes, description: str) -> str:
+        return await self.plugin.save_image(self, png, description)
+
+    async def run_agent(self, **options):
+        return await self.plugin.run_agent(self, **options)
+
+
+@dataclass(frozen=True)
+class ExactText:
+    words: tuple[str, ...]
+
+    def __call__(self, call: PluginCallContext) -> bool:
+        return call.event.raw_text.strip() in self.words
+
+
+@dataclass(frozen=True)
+class Command:
+    word: str
+
+    def __call__(self, call: PluginCallContext) -> bool:
+        parts = call.event.raw_text.strip().split(maxsplit=1)
+        return bool(parts and parts[0] == self.word)
+
+
+@dataclass(frozen=True)
+class RegexText:
+    pattern: str
+    _compiled: re.Pattern = field(init=False, repr=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, '_compiled', re.compile(self.pattern))
+
+    def __call__(self, call: PluginCallContext) -> bool:
+        return self._compiled.search(call.event.raw_text) is not None
+
+
+@dataclass(frozen=True)
+class PluginHandlerDefinition:
+    plugin_id: str
+    id: str
+    description: str
+    match: Callable[[PluginCallContext], bool]
+    handler: Callable[[PluginCallContext], Awaitable[None]]
+    event_types: tuple[EventType, ...]
+    sources: tuple[Literal['human', 'plugin_event', 'self_sent'], ...]
+    priority: int
+    consume: bool
+    require_to_me: bool
+    order: int
+    available: Callable[[PluginCallContext], bool] | None = None
+    validate: Callable[[PluginCallContext], Awaitable[None]] | None = None
+    allow_mention_all: Callable[[PluginCallContext], bool] | None = None
+
+    def record(self) -> dict:
+        if isinstance(self.match, ExactText):
+            matcher = {'type': 'exact', 'words': list(self.match.words)}
+        elif isinstance(self.match, Command):
+            matcher = {'type': 'command', 'word': self.match.word}
+        elif isinstance(self.match, RegexText):
+            matcher = {'type': 'regex', 'pattern': self.match.pattern}
+        else:
+            matcher = {'type': 'callable', 'name': self.match.__qualname__}
+        return {'id': self.id, 'description': self.description, 'match': matcher,
+                'event_types': [value.value for value in self.event_types],
+                'sources': list(self.sources), 'priority': self.priority,
+                'consume': self.consume, 'require_to_me': self.require_to_me}
 
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"

@@ -1,5 +1,13 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Literal
+
+
+class LiveSceneConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    announcements: list[Literal['live_started']] = Field(description='本群开放的公告；空列表表示不发开播邀请')
+    live_subscriptions: list[str] = Field(description='订阅成员的登记名称，来自共享成员目录')
+    mention_all: bool = Field(description='开播邀请是否提及全体成员，仅作用于本插件公告')
 
 
 class LivePluginConfig(BaseModel):

@@ -6,6 +6,8 @@ import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
+import PluginConfigFields from '../components/PluginConfigFields.vue'
+import {blankConfigDraft,configDraft,configValue} from '../lib/pluginConfig.js'
 
 const route=useRoute(), router=useRouter()
 const plugins=ref([]), loading=ref(false), loaded=ref(false), readAt=ref(null), error=ref(''), message=ref(''), busy=ref('')
@@ -15,34 +17,13 @@ const {confirmLeave}=useUnsavedChanges(dirty)
 onBeforeRouteUpdate((to,from)=>to.query.id===from.query.id||confirmLeave())
 let requestId=0
 const permissionLabels={emit_event:'提交观察事件',register_tool:'提供原生工具'}
-const eventLabels={LIVE_STARTED:'发现直播开始',LIVE_ENDED:'发现直播结束'}
-const toolLabels={web_search:'搜索网页',read_page:'读取网页',get_video_info:'查询视频信息',search_bilibili:'搜索哔哩哔哩',get_dynamic_feed:'查询用户动态',get_live_schedule:'查询直播日程',get_live_status:'查询实际直播状态',get_live_subscriptions:'核对本群开播订阅',get_asoul_dynamics:'该源已抓取的最新动态',search_asoul_dynamics:'搜索动态',read_asoul_dynamic:'读取动态详情',get_asoul_on_this_day:'历史同日',search_asoul_fanart:'搜索二创',get_random_asoul_fanart:'随机查询二创',summarize_group_chat:'创建本群总结工作',read_group_chat_window:'读取总结范围原话'}
-const commandFields=[{key:'calendar_today',title:'今日范围命令词'},{key:'calendar_tomorrow',title:'明日范围命令词'},{key:'calendar_week',title:'自然周范围命令词'}]
 const labels=(values,dictionary)=>values.map(value=>dictionary[value]||value).join('、')
-const fields=computed(()=>selected.value?Object.entries(selected.value.config_schema.properties).filter(([key])=>selected.value.id!=='asoul_calendar'||!['commands','avatar_paths'].includes(key)).map(([key,schema])=>({key,schema})):[])
 function setDraft(plugin) {
-  if (plugin.config===null) { draft.value=null; original.value='null'; return }
-  const values=structuredClone(plugin.config)
-  for (const [key,schema] of Object.entries(plugin.config_schema.properties)) {
-    if (plugin.secret_fields.includes(key)) values[key]=''
-    else if (schema.type==='array') values[key]=values[key].join('\n')
-  }
-  if (plugin.id==='asoul_calendar') {
-    values.commands=Object.fromEntries(commandFields.map(({key})=>[key,(values.commands[key]||[]).join('\n')]))
-    values.avatarRows=Object.entries(values.avatar_paths).map(([name,path])=>({name,path}))
-    delete values.avatar_paths
-  }
-  draft.value=values; original.value=JSON.stringify(values)
+  draft.value=plugin.config===null?null:configDraft(plugin.config,plugin.config_schema,plugin.secret_fields)
+  original.value=JSON.stringify(draft.value)
 }
 function beginConfiguration() {
-  const values={}
-  for (const {key,schema} of fields.value) {
-    if (schema.const!==undefined) values[key]=schema.const
-    else if (['integer','number','boolean'].includes(schema.type)) values[key]=null
-    else values[key]=''
-  }
-  if (selected.value.id==='asoul_calendar') { values.commands=Object.fromEntries(commandFields.map(({key})=>[key,''])); values.avatarRows=[] }
-  draft.value=values
+  draft.value=blankConfigDraft(selected.value.config_schema,selected.value.secret_fields)
 }
 function selectFromRoute() {
   const plugin=plugins.value.find(item=>item.id===route.query.id)||null
@@ -67,39 +48,20 @@ async function toggle(plugin) {
   busy.value=`toggle:${plugin.id}`; error.value=''; message.value=''
   try {
     const result=await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled:!plugin.enabled})})
-    message.value=result.requires_restart?'插件启用状态已保存，需手动重启后生效':'插件启用状态已保存'
+    message.value='插件启用状态已保存并应用；当前状态见插件详情'
     await load()
   } catch(e) { error.value=e.message }
   finally { busy.value='' }
 }
-const lines=value=>value.split(/[\n,，]+/).map(item=>item.trim()).filter(Boolean)
 async function save() {
   if (busy.value||!selected.value||!draft.value) return
   busy.value='config'; error.value=''; message.value=''
   try {
-    const config=structuredClone(draft.value)
-    for (const {key,schema} of fields.value) {
-      if (selected.value.secret_fields.includes(key)) {
-        config[key]=config[key].trim()
-        if (!config[key]&&selected.value.configured) delete config[key]
-      }
-      else if (schema.type==='array') config[key]=lines(config[key]).map(value=>schema.items.type==='integer'?Number(value):value)
-    }
-    if (selected.value.id==='asoul_calendar') {
-      config.commands=Object.fromEntries(commandFields.map(({key})=>[key,lines(config.commands[key])]))
-      const avatars={}
-      for (const item of config.avatarRows) {
-        const name=item.name.trim(), path=item.path.trim()
-        if (!name||!path) throw new Error('头像资源须填写实际名称和文件路径')
-        if (Object.hasOwn(avatars,name)) throw new Error(`头像资源名称重复：${name}`)
-        avatars[name]=path
-      }
-      config.avatar_paths=avatars
-      delete config.avatarRows
-    }
+    const config=configValue(draft.value,selected.value.config_schema,
+      {secrets:selected.value.secret_fields,preserveSecrets:selected.value.configured})
     const result=await api('/api/plugins/config',{method:'POST',body:JSON.stringify({plugin_id:selected.value.id,config})})
     original.value=JSON.stringify(draft.value)
-    message.value=result.requires_restart?'插件参数已写入根文件，需手动重启后完整生效':'插件参数已保存'
+    message.value='插件参数已保存，当前运行状态：'+result.state
     await load()
   } catch(e) { error.value=e.message }
   finally { busy.value='' }
@@ -135,8 +97,16 @@ load()
             <div class="plugin-heading"><h2>{{ selected.name }}</h2><StatusBadge domain="plugin" :status="selected.state" /></div>
             <p class="entity-id my-3">{{ selected.id }}<span v-if="selected.version"> · v{{ selected.version }}</span></p>
             <p class="full-text mb-5">{{ selected.description }}</p>
-            <dl class="facts"><dt>全局开关</dt><dd>{{ selected.enabled?'已保存为启用':'已保存为停用' }} · {{ selected.active_enabled?'当前已启用':'当前未启用' }}</dd><dt>已获权限</dt><dd>{{ labels(selected.permissions,permissionLabels)||'尚未装载或无特殊权限' }}</dd><dt>声明事件</dt><dd>{{ labels(selected.emitted_events,eventLabels)||'无' }}</dd><dt>声明工具</dt><dd>{{ labels(selected.registered_tools,toolLabels)||'无' }}</dd><dt>最近使用</dt><dd>{{ fmtTime(selected.last_run_at) }}</dd><dt>运行错误</dt><dd>{{ selected.error_count }} 次</dd></dl>
+            <dl class="facts"><dt>全局开关</dt><dd>{{ selected.enabled?'已保存为启用':'已保存为停用' }} · {{ selected.active_enabled?'当前已启用':'当前未启用' }}</dd><dt>已获权限</dt><dd>{{ labels(selected.permissions,permissionLabels)||'尚未装载或无特殊权限' }}</dd><dt>声明事件</dt><dd>{{ selected.emitted_events.join('、')||'无' }}</dd><dt>来源目录</dt><dd>{{ selected.directory }}</dd><dt>配置应用</dt><dd>{{ selected.config_apply==='restart_plugin'?'保存后正常停用并重新启用本插件':'保存后由插件原位应用' }}</dd><dt>最近使用</dt><dd>{{ fmtTime(selected.last_run_at) }}</dd><dt>运行错误</dt><dd>{{ selected.error_count }} 次</dd></dl>
             <v-alert v-if="selected.last_error" type="error" variant="tonal" class="my-4">{{ selected.last_error }}</v-alert>
+            <v-divider class="my-5" />
+            <h3 class="mb-3">已注册入口</h3>
+            <div class="entry-list">
+              <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p></div>
+              <div v-for="handler in selected.handlers" :key="handler.id" class="entry-row"><strong>{{ handler.description }}</strong><p class="entity-id">{{ handler.id }} · 优先级 {{ handler.priority }} · {{ handler.consume?'消费消息':'继续传播' }} · {{ handler.require_to_me?'需要提及':'无需提及' }}</p><p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}</p><ResourceViewer title="匹配规则" :content="handler.match" /></div>
+              <p v-if="!selected.tools.length&&!selected.handlers.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>
+            </div>
+            <ResourceViewer v-if="selected.active_tasks.length" title="当前所属任务" :content="selected.active_tasks" class="my-4" />
             <v-divider class="my-5" />
             <h3 class="mb-4">源状态</h3>
             <p class="muted mb-4">此处只展示已经取得的状态。缓存到期刷新失败时，本次查询失败；旧快照不延长有效期。</p>
@@ -146,34 +116,18 @@ load()
             <v-divider class="my-5" />
             <h3 class="mb-3">配置开放的群</h3>
             <div class="open-scenes"><v-btn v-for="scene in selected.open_scenes" :key="scene.scene_id" variant="text" :to="{name:'scene',params:{sceneId:scene.scene_id},query:{tab:'settings'}}">{{ scene.scene_id }} · {{ scene.enabled?'群已启用':'群已停用' }}</v-btn><p v-if="!selected.open_scenes.length" class="muted">尚未向任何群开放此插件。</p></div>
-            <p class="muted mt-3">全局启用后，仍按本群聊天、命令或公告选项执行；主播订阅在“本群设置”选择。</p>
+            <p class="muted mt-3">全局启用后，仍按“本群设置”中该插件的启用与业务参数执行。</p>
             <v-divider class="my-5" />
             <v-alert v-if="!selected.configured" type="info" variant="tonal" class="mb-4">尚未配置，当前不装载此插件或建立源连接。参数由运营实际填写后保存，保存不会自动启用。</v-alert>
-            <v-btn v-if="!draft&&fields.length" color="primary" variant="tonal" :disabled="!!busy" @click="beginConfiguration">填写插件参数</v-btn>
+            <v-btn v-if="!draft" color="primary" variant="tonal" :disabled="!!busy" @click="beginConfiguration">填写插件参数</v-btn>
             <v-form v-if="draft" :disabled="!!busy" @submit.prevent="save">
               <h3 class="mb-4">插件参数</h3>
-              <div class="config-grid">
-                <template v-for="field in fields" :key="field.key">
-                  <v-text-field v-if="selected.secret_fields.includes(field.key)" v-model="draft[field.key]" :label="field.schema.title||field.key" type="password" autocomplete="new-password" :placeholder="selected.config_set[field.key]?'已保存，留空保留':'尚未配置'" :hint="field.schema.description" />
-                  <v-text-field v-else-if="field.schema.const!==undefined" :model-value="field.schema.const" :label="field.schema.title||field.key" readonly :hint="field.schema.description" />
-                  <v-select v-else-if="field.schema.enum" v-model="draft[field.key]" :items="field.schema.enum" :label="field.schema.title||field.key" />
-                  <v-select v-else-if="field.schema.type==='boolean'" v-model="draft[field.key]" :items="[{title:'是',value:true},{title:'否',value:false}]" :label="field.schema.title||field.key" />
-                  <v-text-field v-else-if="['number','integer'].includes(field.schema.type)" v-model.number="draft[field.key]" :label="field.schema.title||field.key" type="number" :min="field.schema.minimum" :max="field.schema.maximum" :step="field.schema.type==='integer'?1:'any'" :hint="field.schema.description" />
-                  <v-textarea v-else-if="field.schema.type==='array'||field.key.endsWith('_instructions')" v-model="draft[field.key]" :label="field.schema.title||field.key" rows="3" auto-grow :hint="field.schema.type==='array'?'每行一个值，空列表保持为空':field.schema.description" />
-                  <v-text-field v-else v-model="draft[field.key]" :label="field.schema.title||field.key" :hint="field.schema.description" />
-                </template>
-              </div>
-              <template v-if="selected.id==='asoul_calendar'">
-                <h4 class="mt-5 mb-3">精确日程命令词</h4>
-                <div class="config-grid"><v-textarea v-for="field in commandFields" :key="field.key" v-model="draft.commands[field.key]" :label="field.title" rows="3" hint="每行一个精确命令词；留空表示不提供该类命令。" persistent-hint /></div>
-                <div class="plugin-heading mt-5 mb-3"><h4>本地头像资源</h4><v-btn variant="tonal" :disabled="!!busy" @click="draft.avatarRows.push({name:'',path:''})">添加资源</v-btn></div>
-                <p class="muted mb-3">填写源署名与实际本地文件路径，不自动选图或替换缺失资源。</p>
-                <div v-for="(avatar,index) in draft.avatarRows" :key="index" class="avatar-row"><v-text-field v-model="avatar.name" label="源署名" /><v-text-field v-model="avatar.path" label="本地资源路径" /><v-btn variant="text" color="error" :disabled="!!busy" @click="draft.avatarRows.splice(index,1)">移除</v-btn></div>
-              </template>
+              <p class="muted mb-4">{{ selected.config_apply==='restart_plugin'?'保存后将结束本插件未提交的运行，并按新参数重新启用；其他插件继续运行。':'保存后由本插件原位应用新参数。' }}</p>
+              <PluginConfigFields v-model="draft" :schema="selected.config_schema" :secrets="selected.secret_fields" :config-set="selected.config_set" />
               <p v-if="selected.secret_fields.length" class="muted my-4">凭据仅显示是否已保存。已保存的凭据留空时保留；首次配置必需凭据须实际填写。</p>
               <div class="actions mt-5"><v-btn type="submit" color="primary" :loading="busy==='config'" :disabled="!!busy||!dirty">保存插件参数</v-btn><span v-if="dirty" class="muted">有未保存修改</span></div>
             </v-form>
-            <v-expansion-panels class="mt-5"><v-expansion-panel title="参数结构与声明"><v-expansion-panel-text><ResourceViewer title="声明与配置结构" :content="{id:selected.id,emitted_events:selected.emitted_events,registered_tools:selected.registered_tools,config_schema:selected.config_schema}" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
+            <v-expansion-panels class="mt-5"><v-expansion-panel title="参数结构与声明"><v-expansion-panel-text><ResourceViewer title="声明与配置结构" :content="{id:selected.id,emitted_events:selected.emitted_events,registered_tools:selected.registered_tools,config_schema:selected.config_schema,scene_config_schema:selected.scene_config_schema}" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
           </template>
         </v-card-text>
       </v-card>
@@ -182,5 +136,6 @@ load()
 </template>
 
 <style scoped>
+.entry-list{display:grid;gap:12px}.entry-row{border:1px solid #e2e8f0;border-radius:8px;padding:14px;overflow-wrap:anywhere}.entry-row p{margin-top:6px;line-height:1.6}
 .plugin-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.plugin-heading,.dialog-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.plugin-title{min-width:0}.plugin-title h2,.plugin-heading h2{font-size:19px;overflow-wrap:anywhere}.plugin-description{margin:16px 0;line-height:1.7;min-height:3.4em}.plugin-meta,.actions,.open-scenes{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:center}.plugin-meta,.source-summary{font-size:13px;color:#64748b;margin-bottom:12px}.source-summary{display:grid;gap:6px}.full-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.facts{display:grid;grid-template-columns:100px minmax(0,1fr);gap:12px;line-height:1.7}.facts dt{color:#64748b}.facts dd{margin:0;overflow-wrap:anywhere}.config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.avatar-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(180px,2fr) auto;gap:12px;align-items:start}@media(max-width:850px){.plugin-list{grid-template-columns:minmax(0,1fr)}}@media(max-width:550px){.config-grid,.avatar-row{grid-template-columns:minmax(0,1fr)}.plugin-description{min-height:0}.avatar-row{padding-bottom:12px;border-bottom:1px solid #e2e8f0;margin-bottom:12px}}
 </style>

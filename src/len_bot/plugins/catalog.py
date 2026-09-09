@@ -6,11 +6,11 @@ import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from len_bot.plugins.models import PluginPermission, PluginType
+from len_bot.plugins.models import EmptySceneConfig, PluginPermission, PluginType
 
 if TYPE_CHECKING:
     from len_bot.config_store import RootConfig
@@ -30,6 +30,10 @@ class PluginSpec:
     private_tools: bool = False
     call_timeout: Callable[[BaseModel], float] | None = None
     validate_config: Callable[[BaseModel, RootConfig], None] | None = None
+    scene_config_model: type[BaseModel] = EmptySceneConfig
+    validate_scene_config: Callable[[BaseModel, RootConfig], None] | None = None
+    event_models: tuple[tuple[str, type[BaseModel]], ...] = ()
+    config_apply: Literal['restart_plugin', 'in_place'] = 'restart_plugin'
 
 
 @dataclass(frozen=True)

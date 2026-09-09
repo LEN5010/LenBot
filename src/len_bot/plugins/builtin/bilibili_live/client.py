@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, ConfigDict
+from .events import LiveSample
 
 USER_AGENT = 'LenBot/0.1'
 
@@ -24,18 +25,6 @@ class RoomResponse(BaseModel):
     code: int
     message: str
     data: RoomInfo | None
-
-
-class LiveSample(BaseModel):
-    member: str
-    bilibili_uid: int
-    room_id: int
-    requested_room_id: int
-    title: str
-    url: str
-    is_live: bool
-    started_at: str | None
-    sampled_at: float
 
 
 class LiveClient:

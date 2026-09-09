@@ -1,4 +1,4 @@
-"""Manage the declared builtin catalog through the root configuration.
+"""Manage discovered plugins through the root configuration.
 
 RuntimeQueryService distinguishes configured entries from loaded plugins;
 save responses retain the actual restart requirement and source status.
@@ -38,6 +38,8 @@ async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = 
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
     except OSError as error:
         raise HTTPException(500, "配置文件保存失败：" + str(error.strerror)) from error
+    except Exception as error:
+        raise HTTPException(409, '插件状态更新未完成，请核对保存值与运行错误：' + str(error)) from error
     return {"success": True, "plugin_id": req.plugin_id, "enabled": req.enabled,
             "requires_restart": runtime.restart_required}
 
@@ -55,6 +57,9 @@ async def save_plugin_config(req: PluginConfigRequest, request: Request, user: s
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
     except OSError as error:
         raise HTTPException(500, "配置文件保存失败：" + str(error.strerror)) from error
+    except Exception as error:
+        raise HTTPException(409, '配置更新未完成，请核对保存值与运行错误：' + str(error)) from error
     public=next(item for item in runtime.query_service.plugins() if item["id"]==req.plugin_id)
     return {"success":True,"plugin_id":req.plugin_id,"config":public["config"],
-            "secret_fields":public["secret_fields"],"config_set":public["config_set"], "requires_restart":True}
+            "secret_fields":public["secret_fields"],"config_set":public["config_set"],
+            "requires_restart":runtime.restart_required, 'state': public['state'], 'config_apply': public['config_apply']}

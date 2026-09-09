@@ -343,6 +343,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                 "text": payload.get("raw_text") or payload.get("content", ""),
                 "media": json.loads(metadata_json).get("media", []),
                 "interaction": json.loads(metadata_json).get("interaction"),
+                "plugin_origin": payload.get('plugin_origin'),
+                "plugin_routes": json.loads(metadata_json).get('plugin_routes', []),
             }
         projected = []
         for event in events:

@@ -12,6 +12,8 @@ class EpisodeMailbox:
         self.origin_stimulus_id = origin_stimulus_id
         self.origin_mode = "live"
         self.output_kind = 'chat'
+        self.plugin_origin = None
+        self.mention_all = False
         self.requester_qq_uid: str | None = None
         self.command_id: str | None = None
         self.announcement_member: str | None = None
