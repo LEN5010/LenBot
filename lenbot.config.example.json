@@ -140,5 +140,6 @@
       "enabled": false,
       "config": null
     }
-  }
+  },
+  "plugin_directories": []
 }

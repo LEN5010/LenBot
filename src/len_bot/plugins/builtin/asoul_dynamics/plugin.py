@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
 from .client import DynamicsClient, DynamicsLookupError, SourceSnapshot
@@ -20,19 +20,12 @@ if TYPE_CHECKING:
 
 
 class AsoulDynamicsPlugin(BasePlugin):
-    def __init__(self, *, config: DynamicsConfig, enabled: bool, time_settings: TimeSettings,
-                 members: list[MemberSettings]):
-        tools = ["get_asoul_dynamics", "search_asoul_dynamics", "read_asoul_dynamic",
-                 "get_asoul_on_this_day", "search_asoul_fanart", "get_random_asoul_fanart"]
-        super().__init__(PluginManifest(id="asoul_dynamics", name="A-SOUL 动态查询", version="1.0.0",
-            description="读取该动态站已抓取的内容，提供历史同日与二创查询；不自动广播。",
-            plugin_type=PluginType.TOOL, permissions=[PluginPermission.REGISTER_TOOL], enabled=enabled,
-            timeout_seconds=config.tool_timeout_seconds, config=config.model_dump(),
-            config_schema=DynamicsConfig.model_json_schema(), registered_tools=tools))
-        self.config = config
-        self.zone = ZoneInfo(time_settings.timezone)
-        self.member_keywords = tuple(value for member in members for value in (member.name, *member.aliases))
-        self.client = DynamicsClient(config, members)
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: DynamicsConfig = context.config
+        self.zone = ZoneInfo(context.time_settings.timezone)
+        self.member_keywords = tuple(value for member in context.members for value in (member.name, *member.aliases))
+        self.client = DynamicsClient(self.config, context.members)
 
     async def on_load(self, context: PluginContext):
         definitions = [

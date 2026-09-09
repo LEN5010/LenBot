@@ -33,14 +33,15 @@ def wrap_lines(draw: ImageDraw.ImageDraw, text: str, font, width: int) -> list[s
 
 
 class ScheduleRenderer:
-    def __init__(self, config: CalendarConfig):
+    def __init__(self, config: CalendarConfig, *, resource_directory: Path):
         self.config = config
+        self.resource_directory = resource_directory
 
     def render(self, schedule: ScheduleResult, title: str) -> bytes:
         width = self.config.image_width
         scale = width / 1080
         unit = lambda pixels: round(pixels * scale)
-        font_path = Path(self.config.font_path)
+        font_path = self.resource_directory / self.config.font_path
         fonts = {key: ImageFont.truetype(str(font_path), unit(size)) for key, size in
                  (("title", 48), ("day", 31), ("body", 29), ("time", 30), ("meta", 21), ("footer", 19))}
         zone = ZoneInfo(schedule.timezone)
@@ -125,7 +126,7 @@ class ScheduleRenderer:
                 for index, line in enumerate(body):
                     draw.text((left, top + unit(67) + index * unit(40)), line, font=fonts["body"], fill="#201a17")
                 if avatar:
-                    with Image.open(avatar) as source:
+                    with Image.open(self.resource_directory / avatar) as source:
                         picture = ImageOps.exif_transpose(source).convert("RGBA")
                         picture.thumbnail((avatar_width, row_height - unit(36)), Image.Resampling.LANCZOS)
                         image.paste(picture, (width - inner - avatar_width - unit(14), top + unit(18)), picture)

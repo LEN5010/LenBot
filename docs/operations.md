@@ -21,7 +21,8 @@ cp lenbot.config.example.json lenbot.config.json
 | `scenes` | 每群启用、chat、开放插件、命令、公告、成员订阅和全体提及 |
 | `time` | IANA 业务时区、自然周起点与下午范围；尚未填写为 null |
 | `members` | 成员名称与别名、bilibili_uid、房间号；与 QQ UID 分开 |
-| `plugins` | 六个内建插件的 enabled 与完整 config；未配置为 false/null |
+| `plugin_directories` | 明确的本地插件根目录列表；空列表仍发现内置目录，变更需停机后重启 |
+| `plugins` | 已配置插件的 enabled 与完整 config；未配置目录仅展示元数据 |
 
 配置解析错误会报告具体位置，缺失必需项由运营补齐。env、dotenv、CLI 和数据库不覆盖根文件。三个模型职责单独设置，不需要为启动面板强行配置所有模型；未配置能力的含义见产品文档。
 
@@ -72,7 +73,7 @@ cp -R /绝对路径/media /绝对备份目录/media
 cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 ```
 
-当前媒体目录位于数据库同目录的 `media`。已保存资产的 ID、原路径和来源持续使用；不要重新下载、批量编号或改写历史事件。
+当前媒体目录位于数据库同目录的 `media`。已保存资产的 ID、原路径和来源持续使用；不要重新下载、批量编号或改写历史事件。实际使用本地插件数据目录时，同批普通备份数据库同目录的 `plugins`；代码目录随升级变化，运行数据不移入插件代码包。
 
 ### 更新当前实例
 

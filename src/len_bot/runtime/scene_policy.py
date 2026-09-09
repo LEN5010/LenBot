@@ -36,7 +36,8 @@ class ScenePolicy:
         scene = self.scene(scene_id)
         state = self.config_store.current.plugins.get(plugin_id)
         if scene_id.startswith('private:'):
-            return bool(plugin_id in {'web_search_tool', 'bilibili_content'}
+            entry = self.config_store.catalog.entries.get(plugin_id)
+            return bool(entry and entry.spec.private_tools
                         and state and state.enabled and state.config is not None)
         return bool(scene and scene.enabled and plugin_id in scene.plugins
                     and state and state.enabled and state.config is not None)

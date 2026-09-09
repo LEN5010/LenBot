@@ -14,8 +14,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.config_store import BilibiliPluginConfig
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from .config import BilibiliPluginConfig
+from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.net_policy import validate_url
 
 logger = logging.getLogger(__name__)
@@ -52,29 +52,19 @@ class DynamicFeedArguments(BaseModel):
 class BilibiliContentPlugin(BasePlugin):
     """Tool plugin providing Bilibili public content retrieval capabilities."""
 
-    def __init__(self, *, config: dict, enabled: bool):
-        super().__init__(manifest=PluginManifest(
-            id="bilibili_content",
-            name="哔哩哔哩内容查询工具",
-            description="机器人需要时主动查询哔哩哔哩公开视频、搜索结果和用户动态。",
-            version="1.0.0",
-            timeout_seconds=config["tool_timeout_seconds"],
-            plugin_type=PluginType.TOOL,
-            permissions=[PluginPermission.REGISTER_TOOL],
-            config_schema=BilibiliPluginConfig.model_json_schema(),
-            config=config, enabled=enabled,
-            registered_tools=["get_video_info", "search_bilibili", "get_dynamic_feed"],
-        ))
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: BilibiliPluginConfig = context.config
         self._client: Optional[httpx.AsyncClient] = None
 
     async def on_load(self, context: PluginContext) -> None:
         headers = {"User-Agent": USER_AGENT, "Referer": "https://www.bilibili.com/"}
-        sessdata = self.manifest.config["sessdata"]
+        sessdata = self.config.sessdata
         if sessdata:
             headers["Cookie"] = f"SESSDATA={sessdata};"
 
         self._client = httpx.AsyncClient(
-            timeout=self.manifest.config["request_timeout_seconds"], trust_env=False,
+            timeout=self.config.request_timeout_seconds, trust_env=False,
             headers=headers,
             follow_redirects=False,
         )
@@ -135,7 +125,7 @@ class BilibiliContentPlugin(BasePlugin):
         }, content_key="result")
 
     async def _get_dynamic_feed(self, args: DynamicFeedArguments, call_context: PluginCallContext) -> ToolResult:
-        if not self.manifest.config.get("sessdata"):
+        if not self.config.sessdata:
             return ToolResult(status="unsupported", content="查询动态需要配置有效 SESSDATA；当前未查询。", error_code="credentials_missing")
         return await self._query("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
                                  {"host_mid": args.mid}, content_key="items")

@@ -2,17 +2,15 @@
 from pathlib import Path
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import json
 import os
 import tempfile
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, field_validator, model_validator
 
 from len_bot.config import RuntimeConfig
 from len_bot.cognition.providers import ProviderConfig, RoutingConfig
-from len_bot.plugins.builtin.asoul_calendar.config import CalendarConfig
-from len_bot.plugins.builtin.asoul_dynamics.config import DynamicsConfig
-from len_bot.plugins.builtin.bilibili_live.config import LivePluginConfig
-from len_bot.plugins.builtin.group_summary.config import GroupSummaryConfig
+from len_bot.plugins.catalog import PluginCatalog
 
 
 GroupSceneId = Annotated[str, StringConstraints(pattern=r"^group:[1-9][0-9]*$")]
@@ -109,31 +107,6 @@ class PluginSettings(BaseModel):
         return self
 
 
-class SearchPluginConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    max_results: int = Field(ge=1, le=10)
-    request_timeout_seconds: float = Field(gt=0)
-    tool_timeout_seconds: float = Field(gt=0)
-
-
-class BilibiliPluginConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    sessdata: str
-    bili_jct: str
-    request_timeout_seconds: float = Field(gt=0)
-    tool_timeout_seconds: float = Field(gt=0)
-
-
-PLUGIN_CONFIG_TYPES = {
-    "bilibili_live_sensor": LivePluginConfig,
-    "web_search_tool": SearchPluginConfig,
-    "bilibili_content": BilibiliPluginConfig,
-    "asoul_calendar": CalendarConfig,
-    "asoul_dynamics": DynamicsConfig,
-    "group_summary": GroupSummaryConfig,
-}
-
-
 class RootConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     runtime: RuntimeConfig
@@ -143,22 +116,34 @@ class RootConfig(BaseModel):
     scenes: dict[GroupSceneId, SceneSettings]
     time: TimeSettings | None
     members: list[MemberSettings]
+    plugin_directories: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]]
     plugins: dict[str, PluginSettings]
+    _catalog: PluginCatalog = PrivateAttr()
 
     @model_validator(mode="after")
-    def plugin_parameters(self):
-        if set(self.plugins) != set(PLUGIN_CONFIG_TYPES):
-            raise ValueError("plugins must explicitly configure every installed builtin plugin")
-        for name, schema in PLUGIN_CONFIG_TYPES.items():
-            if self.plugins[name].config is None:
+    def plugin_parameters(self, info: ValidationInfo):
+        if not info.context or not isinstance(info.context.get('plugin_catalog'), PluginCatalog):
+            raise ValueError('Plugin descriptions must be discovered before parsing root settings')
+        self._catalog = info.context['plugin_catalog']
+        unknown = set(self.plugins) - set(self._catalog.entries)
+        if unknown:
+            raise ValueError('plugins references unknown plugin IDs: ' + ', '.join(sorted(unknown)))
+        for name, setting in self.plugins.items():
+            if setting.config is None:
                 continue
+            spec = self._catalog.entries[name].spec
             try:
-                parsed = schema.model_validate(self.plugins[name].config, strict=True)
+                parsed = spec.config_model.model_validate(setting.config, strict=True)
             except ValidationError as error:
                 details = "; ".join(".".join(map(str,item["loc"])) + ": " + item["msg"] for item in error.errors())
                 raise ValueError(f"plugins.{name}.config: {details}") from None
-            self.plugins[name].config = parsed.model_dump()
-            self.plugins[name]._parsed_config = parsed
+            setting.config = parsed.model_dump()
+            setting._parsed_config = parsed
+            if spec.validate_config:
+                try:
+                    spec.validate_config(parsed, self)
+                except ValueError as error:
+                    raise ValueError(f'plugins.{name}: {error}') from None
         return self
 
     @model_validator(mode="after")
@@ -189,15 +174,6 @@ class RootConfig(BaseModel):
                 raise ValueError(f"scenes.{scene_id}.commands requires asoul_calendar in plugins")
             if scene.announcements and "bilibili_live_sensor" not in scene.plugins:
                 raise ValueError(f"scenes.{scene_id}.announcements requires bilibili_live_sensor in plugins")
-        for name in ("asoul_calendar", "asoul_dynamics", "group_summary", "bilibili_live_sensor"):
-            if self.plugins[name].enabled and self.time is None:
-                raise ValueError(f"plugins.{name} requires configured time settings")
-        for name in ("asoul_dynamics", "bilibili_live_sensor"):
-            if self.plugins[name].enabled and not self.members:
-                raise ValueError(f"plugins.{name} requires configured members")
-        summary = self.plugins["group_summary"].parsed_config
-        if summary is not None and summary.page_chars > self.runtime.tool_result_max_chars:
-            raise ValueError("plugins.group_summary.config.page_chars must not exceed runtime.tool_result_max_chars")
         return self
 
 
@@ -206,6 +182,13 @@ class ConfigStore:
     def __init__(self, path: Path, current: RootConfig):
         self.path = path
         self.current = current
+        self.catalog = current._catalog
+
+    def parse(self, data: dict) -> RootConfig:
+        candidate = RootConfig.model_validate(data, context={'plugin_catalog': self.catalog})
+        if candidate.plugin_directories != self.current.plugin_directories:
+            raise ValueError('Changing plugin_directories requires an offline configuration update and restart')
+        return candidate
 
     @classmethod
     def load(cls):
@@ -213,7 +196,13 @@ class ConfigStore:
         if not path.is_file():
             raise FileNotFoundError(f"Missing {path}; create it from lenbot.config.example.json before starting")
         try:
-            current = RootConfig.model_validate_json(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            class PluginDirectories(BaseModel):
+                model_config = ConfigDict(extra='ignore', strict=True)
+                plugin_directories: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]]
+            locations = PluginDirectories.model_validate(data)
+            catalog = PluginCatalog.discover(locations.plugin_directories)
+            current = RootConfig.model_validate(data, context={'plugin_catalog': catalog})
         except ValidationError as error:
             details = "; ".join(".".join(map(str,item["loc"])) + ": " + item["msg"] for item in error.errors())
             raise ValueError(f"Invalid {path}: {details}") from None

@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from pydantic_core import PydanticCustomError
 
 from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission, PluginType
+from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolResult
 
 from .config import GroupSummaryConfig
@@ -48,16 +48,9 @@ class ReadWindowArguments(BaseModel):
 
 
 class GroupSummaryPlugin(BasePlugin):
-    def __init__(self, *, config: GroupSummaryConfig, enabled: bool):
-        super().__init__(PluginManifest(
-            id="group_summary", name="当前群按需总结", version="1.0.0",
-            description="按明确时间范围总结本群已保存的人类消息，复用原工作与回执链。",
-            plugin_type=PluginType.TOOL, permissions=[PluginPermission.REGISTER_TOOL],
-            timeout_seconds=config.tool_timeout_seconds,
-            config=config.model_dump(), enabled=enabled,
-            config_schema=GroupSummaryConfig.model_json_schema(),
-            registered_tools=["summarize_group_chat", "read_group_chat_window"]))
-        self.config = config
+    def __init__(self, context: PluginContext):
+        super().__init__(context.manifest)
+        self.config: GroupSummaryConfig = context.config
         self.service = None
 
     async def on_load(self, context: PluginContext) -> None:
