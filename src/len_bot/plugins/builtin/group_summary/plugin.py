@@ -63,7 +63,7 @@ class GroupSummaryPlugin(BasePlugin):
     async def on_load(self, context: PluginContext) -> None:
         self.service = GroupSummaryService(context.event_store, self.config)
         context.register_tool(
-            "summarize_group_chat", "暂存当前群的时间范围总结工作；finish_turn提交后才启动。",
+            "summarize_group_chat", "暂存当前群的时间范围总结工作；respond提交后才启动。",
             SummarizeArguments, self.summarize,
             purpose="按明确请求总结本群已保存的聊天", aliases=("群总结", "总结群聊", "今天群里发生了什么"),
             keywords=("群聊", "总结", "回顾", "聊天记录"),

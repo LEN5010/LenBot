@@ -12,7 +12,7 @@ class SceneReducer:
         if (event.event_type == EventType.CONVERSATION_COMMITTED
                 and not event.metadata.get('operator_control')
                 and event.payload.get('output_kind', 'chat') == 'chat'):
-            handled = set(event.payload.get('handled_source_event_ids', []))
+            handled = {item['source_event_id'] for item in event.payload.get('source_outcomes', [])}
             result.pending_wakes = [wake for wake in result.pending_wakes if wake.event_id not in handled]
             for actor_id in event.payload.get('outcome',{}).get('release_focus_actor_ids',[]):
                 result.focused_participants.pop(actor_id,None)

@@ -2,7 +2,7 @@ const states = {
   job_execution: { completed:['执行完成','success'], partial:['部分完成','warning'], failed:['执行失败','error'], interrupted:['已中断','warning'], cancelled:['已停止','default'], pending:['未开始','default'], running:['执行中','info'], processing:['执行中','info'] },
   job_delivery: { pending:['待执行','default'], claimed:['已认领','info'], processing:['处理中','info'], review_required:['待核对','warning'], result_ready:['待回应','info'], awaiting_delivery:['待回执','warning'], completed:['已交付','success'], cancelled:['已停止','default'], failed:['未送达','error'], delivery_unknown:['送达未知','warning'], shadow_observed:['Shadow','default'] },
   task: { pending:['待触发','info'], claimed:['已认领','info'], processing:['处理中','info'], result_ready:['待处理结果','info'], awaiting_delivery:['待回执','warning'], completed:['已兑现','success'], cancelled:['已取消','default'], failed:['失败','error'], delivery_unknown:['送达未知','warning'], review_required:['待核对','warning'], shadow_observed:['Shadow','default'] },
-  waiting: { active:['等待中','info'], resolved:['已结束','success'], expired:['已过期','default'], cancelled:['已取消','default'] },
+  waiting: { review_required:['待核对','warning'], active:['等待中','info'], resolved:['已结束','success'], expired:['已过期','default'], cancelled:['已取消','default'] },
   memory: { active:['有效','success'], refuted:['已撤销','error'], superseded:['已替代','default'], expired:['已过期','default'] },
   basis: { reported:['原话报告','info'], inferred:['有据推断','warning'] },
   summary: { pending:['待维护','default'], processing:['维护中','info'], completed:['已覆盖','success'], failed:['失败','error'], interrupted:['已中断','warning'] },

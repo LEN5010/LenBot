@@ -73,6 +73,7 @@ class ActionQueue:
         return {"action_id": action.id, "raw_text": action.content, "content": action.content,
                 "segments": [segment.model_dump() for segment in action.segments],
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
+                "episode_id":action.episode_id,"checkpoint_index":action.checkpoint_index,
                 "job_id": action.job_id, "job_revision": action.job_revision,
                 "acknowledges_task_id": action.acknowledges_task_id,
                 "operation_ref": action.operation_ref,
@@ -168,8 +169,11 @@ class ActionQueue:
                 "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
                     if action.source_started_at is not None else None})
         if success and action.associated_open_loop:
-            event.metadata["associated_open_loop"] = action.associated_open_loop
-        await self._emit(event, action.associated_open_loop if success else None)
+            loop=dict(action.associated_open_loop)
+            ttl=loop['expires_at']-loop['created_at']
+            loop.update(created_at=event.timestamp,expires_at=event.timestamp+ttl)
+            event.metadata["associated_open_loop"] = loop
+        await self._emit(event, event.metadata.get('associated_open_loop') if success else None)
         self._attempted.discard(action.id)
         if self.checkpoint:
             await self.checkpoint("after_send", {"scene_id": action.scene_id, "event": event.model_dump(mode="json")})
