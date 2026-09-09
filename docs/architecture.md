@@ -188,3 +188,5 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 | Operator Outcome | 有操作事件来源的干预结果，不消费人类未读输入 |
 
 插件自定义来源使用 PLUGIN_EVENT 封套，plugin_id、版本、事件名与 payload 类型属于描述符；旧 LIVE_STARTED/LIVE_ENDED 记录保留。提交与行动保存 PluginOrigin，出站重新检查来源、入口、启用状态、版本及插件业务校验。开播的当前场次、订阅与全体提及许可由直播插件校验。宿主记录并取消插件的轮询、工具与 handler 任务；加载失败清理注册和资源，保留元数据与错误。开发接口见[插件开发](plugins.md)。
+
+插件的 before_model、after_model、before_tool、after_tool、before_commit 与 after_delivery 钩子按声明范围及稳定顺序执行。模型原 usage、原调用身份、观察与回执不改写；参数和提交前片段经过原类型边界，附加资料进入 user 投影，实际变化或停止写入 Trace。消息片段钩子在 Actor 提交前调用，送达钩子在回执保存后由宿主任务执行。AgentLoop 的调用计数通过同一个 AgentBudget 账户收口；工作账户继续委托原 JobStore 计费与时间检查，不另建存储。

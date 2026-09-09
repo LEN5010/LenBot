@@ -12,6 +12,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
 from len_bot.cognition.call_store import estimate_request
+from len_bot.cognition.budget import AgentBudget
 from len_bot.events.models import EventType, PluginOrigin
 from len_bot.media.models import MessageSegment
 from len_bot.runtime.attention import HUMAN_INPUTS
@@ -24,6 +25,7 @@ class PluginExecution:
     mailbox: EpisodeMailbox
     audit: dict = field(default_factory=dict)
     toolkit: RetrievalToolkit | None = None
+    budget: AgentBudget | None = None
 
 
 async def classify_event(runtime, event, cutoff):
@@ -134,6 +136,7 @@ async def submit_message(runtime, call, segments, *, mention_all=False):
     outcome = EpisodeOutcome(disposition=FinalDisposition.ACTION, decision_reason='插件提交表达',
         checkpoint_index=mailbox.next_checkpoint,
         message_proposals=[MessageProposal(segments=[MessageSegment.model_validate(segment) for segment in segments])])
+    outcome = await runtime.plugin_host.run_hooks(lambda: call, call.execution.audit).before_commit(outcome)
     decision = await actor.commit_turn(outcome, call.cutoff_rowid, [call.source_event_id],
         session.knowledge_revision, mailbox, runtime.runtime_gate)
     if not decision.accepted:
@@ -172,6 +175,8 @@ async def run_agent(runtime, call, *, instructions: str, input_observations: lis
         'description': '返回本次结果给调用插件；不会自动发送消息。', 'parameters': output_model.model_json_schema()}}
     audit = {'plugin_origin': call.origin.model_dump(), 'output_mode': output_mode}
     call.execution.audit.setdefault('agents', []).append(audit)
+    if call.execution.budget is None:
+        call.execution.budget = AgentBudget(max_steps, max_tool_calls)
 
     async def prepare(trajectory, definitions):
         await runtime.plugin_host.validate_call(call)
@@ -196,7 +201,8 @@ async def run_agent(runtime, call, *, instructions: str, input_observations: lis
                     tool_definitions=lambda: [item for item in toolkit.get_tool_definitions()
                         if item['function']['name'] in tool_names], execute_tool=execute,
                     terminal=terminal, finish=finish, max_steps=max_steps, max_tool_calls=max_tool_calls,
-                    prepare_request=prepare, trace=audit)
+                    finalize_request=prepare, trace=audit, budget=call.execution.budget,
+                    hooks=runtime.plugin_host.run_hooks(lambda: call, audit))
         return result
     finally:
         await runtime.event_store.set_model_call_disposition(call.origin.run_id, 'plugin_result' if result is not None else 'rejected')

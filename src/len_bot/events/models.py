@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 import uuid
 import time
@@ -39,7 +39,7 @@ class PluginOrigin(BaseModel):
     plugin_id: str
     plugin_version: str
     entry_id: str
-    entry_kind: str
+    entry_kind: Literal['handler', 'tool']
     run_id: str
     source_event_id: str
     parent_run_id: str | None = None

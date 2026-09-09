@@ -554,6 +554,16 @@ class ProposalLedger:
         except (ValueError,KeyError) as error:
             raise TerminalArgumentError(str(error)) from error
 
+    async def validate_message_segments(self, outcome):
+        """A plugin hook still uses the same known members and scene assets."""
+        for message in outcome.message_proposals:
+            for segment in message.segments:
+                if segment.type == 'at' and 'user:' + segment.qq_uid not in self.context.refs.actors.values():
+                    raise TerminalArgumentError('提交前处理增加的提及对象没有出现在本轮人物资料中')
+                if segment.type == 'image' and await self.context.runtime.event_store.get_media(
+                        segment.asset_id, [self.context.refs.scene_id, 'global-safe']) is None:
+                    raise TerminalArgumentError('提交前处理的图片不在当前场景可用素材中')
+
     def adopt_commit(self,outcome):
         if outcome.checkpoint_index<self.checkpoint_index:return
         self.continuing_sources.update(outcome.handled_source_event_ids)

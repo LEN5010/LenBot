@@ -9,6 +9,7 @@ from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
 from len_bot.plugins.models import ExactText, PluginCallContext, PluginHandlerDefinition, PluginManifest, PluginToolDefinition
 from len_bot.events.models import EventType, PluginEventPayload, PluginOrigin
+from len_bot.plugins.hooks import HOOK_VIEWS, PluginHookDefinition, PluginRunHooks
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
@@ -60,6 +61,58 @@ class PluginHost:
         self._handlers: dict[tuple[str, str], PluginHandlerDefinition] = {}
         self._registration_order = 0
         self._tasks: dict[str, set[asyncio.Task]] = {}
+        self._hooks: dict[tuple[str, str], PluginHookDefinition] = {}
+
+    def context_for(self, plugin_id):
+        return self._plugin_contexts[plugin_id]
+
+    def register_hook(self, plugin_id, **options):
+        hook = PluginHookDefinition(plugin_id=plugin_id, order=self._registration_order, **options)
+        if hook.phase not in HOOK_VIEWS or hook.scope not in {'own', 'conversation', 'work', 'scene'}:
+            raise ValueError(f'Hook {plugin_id}/{hook.id} has an unknown phase or scope')
+        key = (plugin_id, hook.id)
+        if key in self._hooks:
+            raise ValueError(f'Hook {plugin_id}/{hook.id} is already registered')
+        self._hooks[key] = hook
+        self._registration_order += 1
+
+    def applicable_hooks(self, phase, call):
+        origin = call.entry_origin or call.origin
+        for hook in sorted(self._hooks.values(), key=lambda item: (item.priority, item.order)):
+            plugin = self._plugins.get(hook.plugin_id)
+            if (hook.phase != phase or not plugin or not plugin.manifest.enabled
+                    or not self.runtime.scene_policy.plugin_allowed(call.scene_id, hook.plugin_id, call.role)):
+                continue
+            if (hook.scope == 'scene' or hook.scope == 'own' and origin and origin.plugin_id == hook.plugin_id
+                    or hook.scope == call.role and call.entry != 'handler'):
+                yield hook
+
+    def run_hooks(self, call, audit):
+        return PluginRunHooks(self, call, audit)
+
+    def notify_delivery(self, event, cutoff):
+        if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
+            return
+        encoded = event.payload.get('plugin_origin')
+        origin = PluginOrigin.model_validate(encoded) if encoded else None
+        call = PluginCallContext(scene_id=event.scene_id, requester_qq_uid=event.payload.get('requester_qq_uid'),
+            now=self.runtime.clock(), cutoff_rowid=cutoff, episode_id=event.payload.get('episode_id'),
+            job_id=event.payload.get('job_id'), role='conversation', event=event,
+            source_event_id=event.payload.get('origin_event_id'), origin=origin, entry_origin=origin,
+            entry='handler' if origin and origin.entry_kind == 'handler' else 'chat')
+        owners = dict.fromkeys(hook.plugin_id for hook in self.applicable_hooks('after_delivery', call))
+
+        async def observe(owner):
+            audit = {'receipt_event_id': event.id, 'plugin_id': owner}
+            try:
+                await PluginRunHooks(self, lambda: call, audit, only_plugin=owner).after_delivery(event)
+            except Exception as error:
+                self.record_plugin_error(owner, f'after_delivery: {error}')
+            finally:
+                await self.runtime.event_store.save_trace(kind='plugin_hook', scene_id=event.scene_id,
+                    ref_id=f'{event.id}:{owner}', payload=audit)
+        for owner in owners:
+            self.start_task(owner, observe(owner), name=f'after_delivery:{event.id}')
 
     def start_task(self, plugin_id, coroutine, *, name):
         plugin = self._plugins.get(plugin_id)
@@ -112,6 +165,7 @@ class PluginHost:
 
     def match_event(self, event, cutoff):
         """Only synchronous local matching runs under the Actor's writer."""
+        from len_bot.runtime.attention import is_real_send
         if event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}:
             source_kind = 'human' if event.actor_id != self.runtime.bot_actor_id else None
         elif event.event_type == EventType.PLUGIN_EVENT:
@@ -124,8 +178,7 @@ class PluginHost:
                 raise ValueError('Plugin event payload type is not registered')
             model.model_validate(envelope.data, strict=True)
             source_kind = 'plugin_event'
-        elif (event.event_type == EventType.MESSAGE_SENT and event.actor_id == self.runtime.bot_actor_id
-                and not event.metadata.get('simulated') and event.payload.get('delivery_status') == 'sent'):
+        elif is_real_send(event, self.runtime.bot_actor_id):
             source_kind = 'self_sent'
         else:
             source_kind = None
@@ -135,7 +188,8 @@ class PluginHost:
             if (source_kind not in definition.sources or event.event_type not in definition.event_types
                     or not plugin.manifest.enabled
                     or not self.runtime.scene_policy.plugin_allowed(event.scene_id, definition.plugin_id, 'handler')
-                    or definition.require_to_me and not (event.is_mention_bot or event.is_reply_bot)):
+                    or definition.require_to_me and not (event.is_mention_bot or event.is_reply_bot
+                        or event.metadata.get('quote_context', {}).get('actor_id') == self.runtime.bot_actor_id)):
                 continue
             parent = event.payload.get('plugin_origin') or {}
             if source_kind == 'self_sent' and parent.get('plugin_id') == definition.plugin_id:
@@ -287,6 +341,8 @@ class PluginHost:
             del self._tools[name]
         for key in [key for key in self._handlers if key[0] == plugin_id]:
             del self._handlers[key]
+        for key in [key for key in self._hooks if key[0] == plugin_id]:
+            del self._hooks[key]
 
     async def unload_plugin(self, plugin_id: str) -> None:
         try:
@@ -423,6 +479,7 @@ class PluginHost:
                            'kind': tool.kind, 'roles': list(tool.roles)} for tool in self._tools.values()
                           if tool.plugin_id == plugin_id],
                 'handlers': [handler.record() for handler in self._handlers.values() if handler.plugin_id == plugin_id],
+                'hooks': [hook.record() for hook in self._hooks.values() if hook.plugin_id == plugin_id],
                 'active_tasks': [task.get_name() for task in self._tasks.get(plugin_id, ()) if not task.done()],
                 'source_status': plugin.source_status() if plugin else {},
             })

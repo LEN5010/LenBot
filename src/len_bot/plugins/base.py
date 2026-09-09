@@ -42,6 +42,9 @@ class PluginContext:
         """Enable-time work is owned and cancelled by this plugin's host."""
         return self._host.start_task(self.spec.id, coroutine, name=name)
 
+    def register_hook(self, phase, *, id: str, handler, scope='own', priority=100):
+        self._host.register_hook(self.spec.id, phase=phase, id=id, handler=handler, scope=scope, priority=priority)
+
     def register_handler(self, *, id: str, description: str, match, handler,
                          event_types=(EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED),
                          sources=('human',), priority=100, consume=False, require_to_me=False,

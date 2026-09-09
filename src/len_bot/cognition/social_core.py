@@ -59,6 +59,7 @@ class SocialCognitionCore:
                 source_event_id=source_event_ids[0] if source_event_ids else None)
 
         context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context())
+        hooks = runtime.plugin_host.run_hooks(plugin_context, audit)
 
         plugin_proposals = runtime.plugin_host.proposal_tool_names()
         toolkit=RetrievalToolkit(runtime.event_store,[session.scene_id],session.scene_id,
@@ -226,6 +227,8 @@ class SocialCognitionCore:
         async def finish(arguments):
             nonlocal last_decision,refresh_after_commit
             outcome=await ledger.finish(arguments)
+            outcome=await hooks.before_commit(outcome)
+            await ledger.validate_message_segments(outcome)
             if outcome.next_action!='end' and (commit is None or publish is None):
                 from len_bot.cognition.agent_loop import TerminalArgumentError
                 raise TerminalArgumentError('分阶段执行必须使用真实提交与发布服务')
@@ -271,7 +274,8 @@ class SocialCognitionCore:
                 execute_tool=execute,terminal=terminal_definition,finish=finish,after_finish=after_finish,proposal_tool_names=set(TOOLS) | plugin_proposals,
                 max_steps=config.conversation_max_steps,max_tool_calls=config.conversation_max_tool_calls,
                 observe=incorporate,finalize_request=finalize_request,record_tool_result=record_tool_result,prepare_tool_results=prepare_tool_results,
-                checkpoint=checkpoint,trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools)
+                checkpoint=checkpoint,trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools,
+                hooks=hooks)
         except Exception:
             audit['staged_proposals']=[item.model_dump(mode='json') for item in [*ledger.jobs,*ledger.tasks,*ledger.memories]]
             raise

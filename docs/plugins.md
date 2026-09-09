@@ -39,3 +39,18 @@ call.run_agent 的 result_only 模式接收插件指令、ToolResult 资料、�
 自定义事件在 PluginSpec.event_models 声明名称和 payload 模型。context.emit_event(name, typed_payload, scene_id=..., event_id=..., timestamp=...) 发布 PLUGIN_EVENT；事件身份由插件的真实业务关系确定，不生成内容摘要去重。
 
 context.scene_config(scene_id)、scene_configs()、members、time_settings、now() 提供只读公共输入；长期实例不读取私有 Runtime。on_enable 用 context.start_task(coroutine, name=...) 启动所属任务，停用由宿主取消并等待，on_unload 释放客户端。config_apply 默认 restart_plugin；仅实现 apply_config 的插件可显式声明 in_place。面板由实际工具、handler 与两种配置 Schema 生成，没有单独手写的业务清单。
+
+## 调用钩子
+
+`context.register_hook(phase, id=..., handler=..., scope='own', priority=100)` 在 on_load 注册。数值较小者先执行，同级沿注册顺序；scope 默认 own，只作用于本插件发起的运行。conversation、work 和 scene 须显式声明，且仍要求该插件在当前场景启用。钩子接收下表中的类型和 PluginCallContext，返回同类型或 None；stop_reason 明确停止本次阶段。改变、中止和错误进入当前 Trace。
+
+| 阶段 | 可处理的内容 | 保留的事实 |
+|---|---|---|
+| before_model / BeforeModel | 增加插件指令、ToolResult 资料投影，选择当前允许工具的子集 | 终结工具仍可用，修改后重新核对上下文容量 |
+| after_model / AfterModel | 调整候选调用参数 | 原调用 ID、工具名、顺序、供应商续接与实际 usage 不变；执行参数重新校验 |
+| before_tool / BeforeTool | 验证或明确改写业务参数，stop_reason 可停止这次调用 | 停止返回真实失败观察，计入本轮已请求工具额度，不伪造执行成功 |
+| after_tool / AfterTool | 增加 notes 或独立 view 组织模型可见内容 | 原始观察、实际展示范围与操作回执保留；新视图不成为来源事实 |
+| before_commit / BeforeCommit | 提交前调整每条消息的片段 | 消息数、来源关系不变，类型、人物与素材资格再次校验；提交后不改正文 |
+| after_delivery / AfterDelivery | 读取已保存的真实回执 | 不改写 sent、not_sent、unknown 或 Shadow；错误另记插件钩子 Trace |
+
+直播插件的公告指令通过 before_model 加入；其 before_commit 保持一条文本邀请的业务契约。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
