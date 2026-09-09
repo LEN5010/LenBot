@@ -51,7 +51,7 @@ class TruncatedModelOutput(AgentProtocolError):
 
 
 def final_step_message(terminal_name: str) -> dict:
-    return {"role": "user", "_context_section": "terminal_hint", "content": (
+    return {"role": "developer", "_context_section": "terminal_hint", "content": (
         f"当前只开放 {terminal_name}，具体剩余额度见运行时记录。"
         "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
     )}
@@ -66,7 +66,7 @@ def execution_budget_message(state: dict[str, Any], terminal_name: str) -> tuple
             'terminal_required': terminal_name}
     if 'elapsed_seconds_limit' in state:
         view['elapsed_seconds_remaining'] = max(0, round(state['elapsed_seconds_limit'] - state['elapsed_seconds_used'], 3))
-    note = {'role': 'user', '_context_section': 'execution_budget', 'content':
+    note = {'role': 'developer', '_context_section': 'execution_budget', 'content':
             '本次执行额度由运行时提供；优先推进当前请求的直接路径，无需额外读取时即可终结。'
             + ('本次已是最后一次模型调用，必须提交已有结果与缺口。' if remaining == 0
                else '后续至少留一次模型调用组织并提交终结。')
@@ -235,7 +235,7 @@ class AgentLoop:
                         definitions = [copy.deepcopy(terminal() if callable(terminal) else terminal)]
                         known_names = {terminal_name}
                         choice = {"type": "function", "function": {"name": terminal_name}}
-                        ending = {"role": "user", "content": f"本工作剩余最后一次模型调用，请调用 {terminal_name}，保留未核实事项。"}
+                        ending = {"role": "developer", "content": f"本工作剩余最后一次模型调用，请调用 {terminal_name}，保留未核实事项。"}
                         trajectory.append(ending)
                         if request_messages is not None and request_messages is not trajectory:
                             request_messages.append(copy.deepcopy(ending))
