@@ -1,22 +1,7 @@
 """Information-work proposal contract. Execution never owns social authority."""
 from typing import Literal
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
-
-
-class GroupSummaryRange(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    start_at: AwareDatetime
-    end_at: AwareDatetime
-    snapshot_rowid: int = Field(ge=0)
-    snapshot_at: float
-    bot_actor_id: str
-    focus: str
-
-    @model_validator(mode="after")
-    def ordered_range(self):
-        if self.start_at >= self.end_at:
-            raise ValueError("Summary range must satisfy start_at < end_at")
-        return self
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from len_bot.events.models import PluginOrigin
 
 
 class JobProposal(BaseModel):
@@ -32,8 +17,9 @@ class JobProposal(BaseModel):
     result_ids: list[str] = Field(default_factory=list)
     requester_qq_uid: str | None = None
     request_source_event_id: str | None = None
-    work_operation: Literal["information", "group_summary"] = "information"
-    summary_range: GroupSummaryRange | None = None
+    work_operation: str = Field(default='information',min_length=1)
+    work_parameters: dict | None = None
+    plugin_origin: PluginOrigin | None = None
 
     @model_validator(mode="after")
     def validate_operation(self):
@@ -46,13 +32,13 @@ class JobProposal(BaseModel):
                 raise ValueError("The request source must be part of the supplied original evidence")
             if not self.proposal_id or not self.goal or not self.goal.strip() or self.job_id:
                 raise ValueError("Job creation needs proposal_id and goal, not job_id")
-            if (self.work_operation == "group_summary") != (self.summary_range is not None):
-                raise ValueError("Group summary work requires its fixed range")
-            if self.work_operation == "group_summary" and not self.requester_qq_uid:
-                raise ValueError("Group summary work requires the real requester")
+            if self.work_operation!='information' and (self.plugin_origin is None or self.work_parameters is None):
+                raise ValueError('Specialized work requires its plugin owner and parameters')
+            if self.work_operation=='information' and self.work_parameters is not None:
+                raise ValueError('Ordinary information work has no specialized parameters')
         elif not self.job_id or self.expected_revision is None:
             raise ValueError("Job control needs real job_id and expected_revision")
-        if self.operation=='resume' and (self.goal is not None or self.constraints_add or self.constraints_remove or self.summary_range is not None):
+        if self.operation=='resume' and (self.goal is not None or self.constraints_add or self.constraints_remove or self.work_parameters is not None):
             raise ValueError('Resume preserves the existing goal and scope; changing them requires revise')
         return self
 

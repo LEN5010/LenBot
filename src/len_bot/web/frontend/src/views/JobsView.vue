@@ -11,6 +11,9 @@ import ScopeSelect from '../components/ScopeSelect.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import ObservationDetails from '../components/ObservationDetails.vue'
 import OperationReceipts from '../components/OperationReceipts.vue'
+import PluginWorkDetails from '../components/PluginWorkDetails.vue'
+import PluginConfigFields from '../components/PluginConfigFields.vue'
+import {configValue} from '../lib/pluginConfig.js'
 
 const route = useRoute(), router = useRouter()
 const scalar = value => typeof value === 'string' ? value : ''
@@ -22,15 +25,14 @@ const rows = ref([]), total = ref(0), pageSize = ref(30), listLoading = ref(fals
 const job = ref(null), detailLoading = ref(false), detailError = ref(''), detailMissing = ref(false), detailReadAt = ref(null)
 const records = ref(null), recordsLoading = ref(false), recordsError = ref('')
 const resource = ref(null), resourceText = ref(''), resourceLoading = ref(false), resourceError = ref('')
-const editing = ref(false), draft = ref({ goal: '', constraints: '' }), baseline = ref(null), conflict = ref(false)
+const editing = ref(false), draft = ref({ goal: '', constraints: '', parameters:{} }), baseline = ref(null), conflict = ref(false)
 const confirmation = ref(null), saving = ref(false), actionError = ref(''), feedback = ref('')
 let listRequest = 0, detailRequest = 0, recordsRequest = 0, resourceRequest = 0
 const terminal = new Set(['completed', 'cancelled', 'delivery_unknown', 'shadow_observed'])
 const editable = computed(() => job.value && !terminal.has(job.value.status))
-const dirty = computed(() => editing.value && baseline.value && (draft.value.goal !== baseline.value.goal || draft.value.constraints !== baseline.value.constraints.join('\n')))
+const dirty = computed(() => editing.value && baseline.value && (draft.value.goal !== baseline.value.goal || draft.value.constraints !== baseline.value.constraints.join('\n') || Object.keys(draft.value.parameters).length>0))
 const { confirmLeave } = useUnsavedChanges(dirty)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const summarySnapshot = computed(()=>job.value?.summary_range ? new Date(job.value.summary_range.snapshot_at*1000).toISOString() : '')
 const deliveryExplanation = computed(() => ({
   result_ready: '当前版本的执行结果已经保存，正在等待组织首次回应。',
   awaiting_delivery: '当前版本的结果已关联表达行动，正在等待真实发送回执。',
@@ -111,7 +113,7 @@ async function loadResource(id, offset = 0) {
 function startEdit() {
   if (!editable.value || saving.value) return
   baseline.value = { id: job.value.id, revision: job.value.revision, goal: job.value.goal, constraints: [...job.value.constraints] }
-  draft.value = { goal: job.value.goal, constraints: job.value.constraints.join('\n') }
+  draft.value = { goal: job.value.goal, constraints: job.value.constraints.join('\n'), parameters:{} }
   conflict.value = false; actionError.value = ''; editing.value = true
 }
 function cancelEdit() { if (confirmLeave()) { editing.value = false; baseline.value = null; conflict.value = false } }
@@ -127,7 +129,10 @@ function askAction(operation) {
   if (operation === 'revise') {
     if (!editable.value || !draft.value.goal.trim() || !baseline.value || conflict.value) return
     const conditions = [...new Set(draft.value.constraints.split('\n').map(value => value.trim()).filter(Boolean))]
-    confirmation.value = { operation, id: current.id, scene: current.scene_id, expected_revision: baseline.value.revision, goal: draft.value.goal.trim(), constraints_add: conditions.filter(value => !baseline.value.constraints.includes(value)), constraints_remove: baseline.value.constraints.filter(value => !conditions.includes(value)) }
+    let parameters=null
+    try { if(current.work_revision_schema && Object.keys(draft.value.parameters).length) parameters=configValue(draft.value.parameters,current.work_revision_schema) }
+    catch(error) { actionError.value=error.message; return }
+    confirmation.value = { operation, id: current.id, scene: current.scene_id, expected_revision: baseline.value.revision, goal: draft.value.goal.trim()===baseline.value.goal?null:draft.value.goal.trim(), parameters, constraints_add: conditions.filter(value => !baseline.value.constraints.includes(value)), constraints_remove: baseline.value.constraints.filter(value => !conditions.includes(value)) }
   } else {
     confirmation.value = { operation, id: current.id, scene: current.scene_id, expected_revision: current.revision, goal: null, constraints_add: [], constraints_remove: [] }
   }
@@ -192,7 +197,7 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
       <div v-if="listLoaded" class="list-meta"><span>共 {{ total }} 项 · 每页 {{ pageSize }} 项</span><span>读取于 {{ fmtTime(listReadAt) }}</span></div>
       <div class="work-list">
         <v-card v-for="item in rows" :key="item.id" tag="article" class="work-row">
-          <div class="work-main"><RouterLink :to="{ name: 'job', params: { jobId: item.id }, query: { ...listQuery(), list_scene: scalar(route.query.scene), scene: item.scene_id, tab: 'result' } }" class="two-lines record-title">{{ item.goal }}</RouterLink><EntityLink type="scene" :id="item.scene_id" :scene-id="item.scene_id" /><span v-if="item.work_operation==='group_summary'" class="muted-copy">当前群范围总结</span></div>
+          <div class="work-main"><RouterLink :to="{ name: 'job', params: { jobId: item.id }, query: { ...listQuery(), list_scene: scalar(route.query.scene), scene: item.scene_id, tab: 'result' } }" class="two-lines record-title">{{ item.goal }}</RouterLink><EntityLink type="scene" :id="item.scene_id" :scene-id="item.scene_id" /><span v-if="item.plugin_origin" class="muted-copy">{{ item.plugin_name || item.plugin_origin.plugin_id }} · {{ item.plugin_origin.plugin_version }}</span></div>
           <div class="status-pair"><span><span class="field-label">执行</span><StatusBadge domain="job_execution" :status="item.execution_status" /></span><span><span class="field-label">交付</span><StatusBadge domain="job_delivery" :status="item.status" /></span></div>
           <div class="work-usage"><span>模型 {{ item.model_steps }} · 工具 {{ item.tool_calls }}</span><time>{{ fmtTime(item.updated_at) }}</time></div>
           <v-btn variant="tonal" @click="openJob(item)">查看详情</v-btn>
@@ -206,31 +211,20 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
       <v-skeleton-loader v-if="detailLoading && !job" type="article, list-item-three-line" />
       <template v-if="job">
         <v-card class="job-heading">
-          <v-card-text><h2 class="full-title">{{ job.goal }}</h2><div class="identity-line"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" /><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /><span>目标版本 {{ job.revision }}</span></div><div class="identity-line"><span>请求者 QQ {{ job.requester_qq_uid || '未记录' }}</span><EntityLink v-if="job.request_source_event_id" type="event" :id="job.request_source_event_id" :scene-id="job.scene_id" label="提出这项工作的原话" /><span v-else class="muted-copy">旧工作未单独保存请求来源</span></div><div class="detail-status"><span>执行 <StatusBadge domain="job_execution" :status="job.execution_status" /></span><span>交付 <StatusBadge domain="job_delivery" :status="job.status" /></span><span class="read-time">读取于 {{ fmtTime(detailReadAt) }}</span></div><div class="action-row"><v-btn :disabled="!editable || saving || editing" :prepend-icon="mdiPencilOutline" variant="outlined" @click="startEdit">修改要求</v-btn><v-btn :disabled="!job.can_resume || saving || editing" :prepend-icon="mdiPlayOutline" variant="outlined" @click="askAction('resume')">{{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}</v-btn><v-btn :disabled="!editable || saving || editing" :prepend-icon="mdiStopCircleOutline" color="error" variant="outlined" @click="askAction('cancel')">停止工作</v-btn></div></v-card-text>
+          <v-card-text><h2 class="full-title">{{ job.goal }}</h2><div class="identity-line"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" /><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /><span>目标版本 {{ job.revision }}</span></div><div class="identity-line"><span>请求者 QQ {{ job.requester_qq_uid || '未记录' }}</span><EntityLink v-if="job.request_source_event_id" type="event" :id="job.request_source_event_id" :scene-id="job.scene_id" label="提出这项工作的原话" /><span v-else class="muted-copy">旧工作未单独保存请求来源</span></div><div class="detail-status"><span>执行 <StatusBadge domain="job_execution" :status="job.execution_status" /></span><span>交付 <StatusBadge domain="job_delivery" :status="job.status" /></span><span class="read-time">读取于 {{ fmtTime(detailReadAt) }}</span></div><div class="action-row"><v-btn :disabled="!editable || job.plugin_issue || saving || editing" :prepend-icon="mdiPencilOutline" variant="outlined" @click="startEdit">修改要求</v-btn><v-btn :disabled="!job.can_resume || saving || editing" :prepend-icon="mdiPlayOutline" variant="outlined" @click="askAction('resume')">{{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}</v-btn><v-btn :disabled="!editable || saving || editing" :prepend-icon="mdiStopCircleOutline" color="error" variant="outlined" @click="askAction('cancel')">停止工作</v-btn></div></v-card-text>
         </v-card>
         <v-alert v-if="feedback" type="success" variant="tonal" class="section-gap" role="status">{{ feedback }}</v-alert>
         <v-alert v-if="actionError" type="error" variant="tonal" class="section-gap" role="alert">{{ actionError }}</v-alert>
         <v-card v-if="editing" class="section-gap edit-card">
           <v-card-title>修改要求 · 基于版本 {{ baseline.revision }}</v-card-title>
-          <v-card-text><v-alert v-if="conflict" type="warning" variant="tonal" class="mb-4">工作已变化，草稿仍然保留。当前服务器版本 {{ job.revision }}；请核对当前目标和要求，再决定是否沿用草稿。<ResourceViewer title="服务器当前目标" :content="job.goal" class="mt-3" /><ResourceViewer title="服务器当前要求" :content="job.constraints" class="mt-3" /><v-btn class="mt-3" variant="outlined" :disabled="!editable" @click="reviewLatestVersion">已核对，改为基于当前版本</v-btn></v-alert><v-textarea v-model="draft.goal" label="工作目标" rows="2" auto-grow :disabled="saving" /><v-textarea v-model="draft.constraints" label="要求（每行一项）" rows="4" auto-grow :disabled="saving" /><div class="action-row"><v-btn color="primary" :disabled="!editable || !dirty || !draft.goal.trim() || conflict || saving" @click="askAction('revise')">保存修改</v-btn><v-btn variant="text" :disabled="saving" @click="cancelEdit">取消编辑</v-btn></div></v-card-text>
+          <v-card-text><v-alert v-if="conflict" type="warning" variant="tonal" class="mb-4">工作已变化，草稿仍然保留。当前服务器版本 {{ job.revision }}；请核对当前目标和要求，再决定是否沿用草稿。<ResourceViewer title="服务器当前目标" :content="job.goal" class="mt-3" /><ResourceViewer title="服务器当前要求" :content="job.constraints" class="mt-3" /><v-btn class="mt-3" variant="outlined" :disabled="!editable" @click="reviewLatestVersion">已核对，改为基于当前版本</v-btn></v-alert><v-textarea v-model="draft.goal" label="工作目标" rows="2" auto-grow :disabled="saving" /><v-textarea v-model="draft.constraints" label="要求（每行一项）" rows="4" auto-grow :disabled="saving" /><template v-if="job.work_revision_schema"><h4>修改插件业务参数</h4><p class="muted-copy">只填写需要改变的字段；未填写的字段保留原值。范围和快照由所属插件处理。</p><PluginConfigFields v-model="draft.parameters" :schema="job.work_revision_schema" /></template><div class="action-row"><v-btn color="primary" :disabled="!editable || !dirty || !draft.goal.trim() || conflict || saving" @click="askAction('revise')">保存修改</v-btn><v-btn variant="text" :disabled="saving" @click="cancelEdit">取消编辑</v-btn></div></v-card-text>
         </v-card>
         <v-card class="section-gap">
           <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="setTab"><v-tab value="result">结果</v-tab><v-tab value="progress">进度与资料</v-tab><v-tab value="budget">预算与压缩</v-tab><v-tab value="records">执行记录</v-tab></v-tabs>
           <v-card-text v-if="tab === 'result'" class="detail-body">
             <section v-if="job.resume_from"><h3>本版继续自 v{{ job.resume_from.revision }}</h3><p>原版交付状态：{{ job.resume_from.response_status }}。旧版结果与已用预算保留。</p><EntityLink v-if="job.resume_from.delivery_event_id" type="event" :id="job.resume_from.delivery_event_id" :scene-id="job.scene_id" label="查看原版交付回执" /><ResourceViewer title="原版结果与未完成项" :content="job.resume_from.result" /></section>
             <h3>首次交付</h3><p>{{ deliveryExplanation }}</p><dl class="summary-facts"><dt>创建确认行动</dt><dd><code v-if="job.ack_action_id">{{ job.ack_action_id }}</code><span v-else class="muted-copy">未保存确认行动引用</span></dd><dt>结果交付行动</dt><dd><code v-if="job.delivery_action_id">{{ job.delivery_action_id }}</code><span v-else class="muted-copy">未保存交付行动引用</span></dd><dt>结果送达回执</dt><dd><EntityLink v-if="job.delivery_event_id" type="event" :id="job.delivery_event_id" :scene-id="job.scene_id" label="读取此工作版本的结果发送回执" /><span v-else class="muted-copy">未保存结果回执引用</span></dd></dl>
-            <template v-if="job.work_operation==='group_summary'&&job.summary_range">
-              <h3>本群总结范围</h3>
-              <dl class="summary-facts"><dt>请求群</dt><dd><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /></dd><dt>请求者 QQ</dt><dd>{{ job.requester_qq_uid }}</dd><dt>开始（含）</dt><dd>{{ job.summary_range.start_at }}</dd><dt>结束（不含）</dt><dd>{{ job.summary_range.end_at }}</dd><dt>数据截点（UTC）</dt><dd>{{ summarySnapshot }} · 原始位置 {{ job.summary_range.snapshot_rowid }}</dd><dt>关注内容</dt><dd>{{ job.summary_range.focus||'按请求时段组织主要内容' }}</dd></dl>
-              <p class="muted-copy">只统计本群已经保存的人类原话，排除已识别 Bot 回声和内部运行事件；日程命令及引用评论可包含在明确请求的时段中。请求范围保持原值，数据只读到已固定截点，不声称取得 QQ 全日全部记录。</p>
-              <template v-if="job.summary_coverage">
-                <div class="budget-grid summary-counts"><div><span>匹配已保存消息</span><strong>{{ job.summary_coverage.matched_messages }}</strong></div><div><span>匹配参与人数</span><strong>{{ job.summary_coverage.participants }}</strong></div><div><span>实际完整读过消息</span><strong>{{ job.summary_coverage.read_messages }}</strong></div></div>
-                <p>实际阅读 {{ job.summary_coverage.read_characters }} / {{ job.summary_coverage.matched_characters }} 字符。</p>
-                <v-alert :type="job.summary_coverage.complete?'info':'warning'" variant="tonal" class="my-4">{{ job.summary_coverage.complete?'已覆盖请求范围内匹配到的全部已保存原话；这不等于结论已经独立核实。':'原话尚未完整覆盖。结果应保留未读范围与未完成项，不能把第一页当作完整时段。' }}</v-alert>
-              </template>
-              <p v-else class="muted-copy">尚未取得此范围的统计和阅读覆盖。</p>
-              <p class="muted-copy">原始来源与分页资料可在“进度与资料”中回读。</p>
-            </template>
+            <PluginWorkDetails :job="job" />
             <template v-if="job.result"><h3>当前版本执行结果</h3><ResourceViewer title="完整结果" :content="job.result.summary" /><h3 v-if="job.result.unresolved.length">尚未解决</h3><ul v-if="job.result.unresolved.length"><li v-for="(item, index) in job.result.unresolved" :key="index">{{ item }}</li></ul></template><v-alert v-else type="info" variant="tonal">尚无已保存的执行结果。</v-alert>
             <p v-if="job.result?.reason" class="readable-copy">结果或中断原因：{{ job.result.reason }}</p>
             <template v-if="job.result?.evidence_spans?.length"><h3>结论关联的资料范围</h3><ul><li v-for="(span,index) in job.result.evidence_spans" :key="index"><v-btn variant="text" size="small" @click="openResource(span.result_id)">回读资料 {{ span.result_id.slice(0,10) }}</v-btn><span>{{ spanLabel(span) }}（起含止不含）</span></li></ul></template>
@@ -253,7 +247,7 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
         </v-card>
       </template>
     </template>
-    <v-dialog :model-value="Boolean(confirmation)" :persistent="saving" max-width="620" @update:model-value="value => { if (!value && !saving) confirmation = null }"><v-card><v-card-title class="dialog-title">{{ confirmationTitle }}</v-card-title><v-card-text v-if="confirmation"><p>对象 {{ confirmation.id }} · 基于版本 {{ confirmation.expected_revision }}</p><p v-if="confirmation.operation === 'cancel'">停止此工作。已经取得的资料与历史结果会保留；不会自动重新执行。</p><p v-else-if="confirmation.operation === 'resume'">继续原工作的未完成部分，保留工作ID、已有资料、已用预算与绑定模型。旧版结果和交付回执保留，新结果使用新版本；本次不会增加预算。</p><template v-else><p class="full-title">{{ confirmation.goal }}</p><p>增加要求：{{ confirmation.constraints_add.join('；') || '无' }}</p><p>移除要求：{{ confirmation.constraints_remove.join('；') || '无' }}</p></template></v-card-text><v-card-actions class="dialog-actions"><v-btn variant="text" :disabled="saving" @click="confirmation = null">返回核对</v-btn><v-btn :color="confirmation?.operation === 'cancel' ? 'error' : 'primary'" :loading="saving" :disabled="saving" @click="submitAction">确认{{ confirmation?.operation === 'cancel' ? '停止' : confirmation?.operation === 'resume' ? '恢复' : '保存' }}</v-btn></v-card-actions></v-card></v-dialog>
+    <v-dialog :model-value="Boolean(confirmation)" :persistent="saving" max-width="620" @update:model-value="value => { if (!value && !saving) confirmation = null }"><v-card><v-card-title class="dialog-title">{{ confirmationTitle }}</v-card-title><v-card-text v-if="confirmation"><p>对象 {{ confirmation.id }} · 基于版本 {{ confirmation.expected_revision }}</p><p v-if="confirmation.operation === 'cancel'">停止此工作。已经取得的资料与历史结果会保留；不会自动重新执行。</p><p v-else-if="confirmation.operation === 'resume'">继续原工作的未完成部分，保留工作ID、已有资料、已用预算与绑定模型。旧版结果和交付回执保留，新结果使用新版本；本次不会增加预算。</p><template v-else><p class="full-title">{{ confirmation.goal || job.goal }}</p><ResourceViewer v-if="confirmation.parameters" title="本次业务参数变化" :content="confirmation.parameters" /><p>增加要求：{{ confirmation.constraints_add.join('；') || '无' }}</p><p>移除要求：{{ confirmation.constraints_remove.join('；') || '无' }}</p></template></v-card-text><v-card-actions class="dialog-actions"><v-btn variant="text" :disabled="saving" @click="confirmation = null">返回核对</v-btn><v-btn :color="confirmation?.operation === 'cancel' ? 'error' : 'primary'" :loading="saving" :disabled="saving" @click="submitAction">确认{{ confirmation?.operation === 'cancel' ? '停止' : confirmation?.operation === 'resume' ? '恢复' : '保存' }}</v-btn></v-card-actions></v-card></v-dialog>
   </section>
 </template>
 

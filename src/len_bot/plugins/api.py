@@ -6,6 +6,7 @@ from len_bot.events.models import EventType, PluginOrigin
 from len_bot.media.models import MessageSegment
 from len_bot.plugins.hooks import BeforeModel, AfterModel, BeforeTool, AfterTool, BeforeCommit, AfterDelivery
 from len_bot.plugins.agent import PluginAgentRequest
+from len_bot.plugins.work import PluginWorkSpec, PluginWorkRevision
 from len_bot.tools.results import ToolResult, ToolSource, ToolNextCall
 
 __all__ = ['BasePlugin', 'PluginContext', 'PluginSpec', 'PluginCallContext',
@@ -13,3 +14,4 @@ __all__ = ['BasePlugin', 'PluginContext', 'PluginSpec', 'PluginCallContext',
 __all__ += ['Command', 'EmptySceneConfig', 'ExactText', 'RegexText', 'EventType', 'PluginOrigin', 'MessageSegment']
 __all__ += ['BeforeModel', 'AfterModel', 'BeforeTool', 'AfterTool', 'BeforeCommit', 'AfterDelivery']
 __all__ += ['PluginAgentRequest']
+__all__ += ['PluginWorkSpec','PluginWorkRevision']

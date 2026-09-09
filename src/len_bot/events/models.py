@@ -47,6 +47,9 @@ class PluginOrigin(BaseModel):
     scene_entry: Literal['chat', 'handler', 'work'] = 'chat'
     handler_origin: 'PluginOrigin | None' = None
 
+    def depends_on(self, plugin_id: str) -> bool:
+        return self.plugin_id==plugin_id or bool(self.handler_origin and self.handler_origin.depends_on(plugin_id))
+
 
 class PluginEventPayload(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)

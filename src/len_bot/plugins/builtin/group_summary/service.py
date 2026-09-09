@@ -5,7 +5,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from len_bot.cognition.jobs import GroupSummaryRange
+from .work import GroupSummaryRange
 from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
@@ -33,7 +33,7 @@ class GroupSummaryService:
             raise ValueError('Saved summary page has a foreign continuation tool')
         header=json.loads(observation.content.split('\n',1)[0])
         original=GroupSummaryRange.model_validate(header['range'])
-        current=GroupSummaryRange.model_validate(job['summary_range'])
+        current=GroupSummaryRange.model_validate(job['work_parameters'])
         fields=('start_at','end_at','snapshot_rowid','bot_actor_id')
         if header['job_id']!=job['id'] or any(getattr(original,key)!=getattr(current,key) for key in fields):
             return None
@@ -49,7 +49,7 @@ class GroupSummaryService:
         job = await self.event_store.get_job(call.job_id, call.scene_id)
         if job is None or job["work_operation"] != "group_summary" or job["status"] != "processing":
             raise ValueError("当前场景没有对应的运行中总结工作")
-        request = GroupSummaryRange.model_validate(job["summary_range"])
+        request = GroupSummaryRange.model_validate(job["work_parameters"])
         if call.cutoff_rowid != request.snapshot_rowid or call.requester_qq_uid != job["requester_qq_uid"]:
             raise ValueError("总结读取上下文与已保存的请求者或快照不一致")
         after_rowid = 0
@@ -58,7 +58,7 @@ class GroupSummaryService:
             if position.job_id != job["id"] or position.revision != job["revision"]:
                 raise ValueError("游标不属于当前工作版本；使用当前工作observation_catalog给出的续页位置，范围改变且无可用续页时才从cursor=null开始")
             after_rowid = position.after_rowid
-        rows = await self.event_store.group_summary_messages(
+        rows = await self.event_store.group_message_window(
             call.scene_id, start_at=request.start_at.timestamp(), end_at=request.end_at.timestamp(),
             cutoff_rowid=request.snapshot_rowid, bot_actor_id=request.bot_actor_id,
             after_rowid=after_rowid, limit=self.config.page_messages + 1)
@@ -66,7 +66,7 @@ class GroupSummaryService:
         selected = rows[:self.config.page_messages]
         next_cursor = WindowCursor(job_id=job["id"], revision=job["revision"],
             after_rowid=selected[-1].metadata["_rowid"]).model_dump_json() if has_more else None
-        statistics = {key: job["summary_coverage"][key]
+        statistics = {key: job["work_progress"][key]
                       for key in ("matched_messages", "participants", "matched_characters")}
         header = {"page_type":"group_summary_window", "job_id":job["id"],
                   "job_revision":job["revision"], "range":request.model_dump(mode="json"),
