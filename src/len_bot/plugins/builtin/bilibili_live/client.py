@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+USER_AGENT = 'LenBot/0.1'
+
 
 class RoomInfo(BaseModel):
     model_config = ConfigDict(extra='ignore', strict=True)
@@ -39,7 +41,8 @@ class LiveSample(BaseModel):
 class LiveClient:
     def __init__(self, config):
         self.config = config
-        self.http = httpx.AsyncClient(timeout=config.request_timeout_seconds, trust_env=False)
+        self.http = httpx.AsyncClient(timeout=config.request_timeout_seconds, trust_env=False,
+                                     headers={'User-Agent':USER_AGENT})
 
     async def close(self):
         await self.http.aclose()
