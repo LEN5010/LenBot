@@ -17,6 +17,14 @@ if TYPE_CHECKING:
     from len_bot.tools.retrieval import RetrievalToolkit
 
 
+RESULT_ONLY_NOTICE = '本次只通过return_result返回插件结果；不提供respond、工作或提醒提案，不自动发消息。'
+
+
+def result_definition(output_model):
+    return {'type':'function','function':{'name':'return_result','description':'返回结果给插件，不发送消息。',
+        'parameters':output_model.model_json_schema()}}
+
+
 class PluginAgentRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     instructions: str = Field(min_length=1)

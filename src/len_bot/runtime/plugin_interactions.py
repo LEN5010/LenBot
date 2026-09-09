@@ -9,15 +9,17 @@ from contextlib import asynccontextmanager
 
 from pydantic import BaseModel
 
-from len_bot.cognition.agent_loop import AgentLoop, execution_budget_message
+from len_bot.cognition.agent_loop import AgentLoop, FreshInputConflict, execution_budget_message
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal
+from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome
+from len_bot.cognition.jobs import JobResult
 from len_bot.cognition.budget import AgentBudget
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.models import ConversationResume
+from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.proposals import TOOLS
-from len_bot.plugins.agent import PluginAgentRequest, PluginExecution
+from len_bot.plugins.agent import PluginAgentRequest, PluginExecution, RESULT_ONLY_NOTICE, result_definition
 from len_bot.events.models import EventType, PluginOrigin
 from len_bot.media.models import MessageSegment
 from len_bot.runtime.attention import HUMAN_INPUTS
@@ -29,6 +31,7 @@ async def classify_event(runtime, event, cutoff):
     """Save routing facts before attention; matchers do no HTTP or model work."""
     requester = event.actor_id[5:] if event.event_type in HUMAN_INPUTS and event.actor_id.startswith('user:') and event.actor_id != runtime.bot_actor_id else None
     work_issue=None
+    prepared_work=False
     if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
         requester = event.payload.get('requester_qq_uid')
         if event.metadata.get('associated_open_loop') and event.payload.get('plugin_origin'):
@@ -40,6 +43,11 @@ async def classify_event(runtime, event, cutoff):
         if job:
             requester = job['requester_qq_uid']
             work_issue=runtime.plugin_host.work_issue(job)
+            prepared_work=(event.event_type in {EventType.AGENT_JOB_FINISHED,EventType.TASK_REVIEW}
+                and bool((job['result'] or {}).get('delivery')))
+            if prepared_work:
+                event.metadata['prepared_work_delivery']={
+                    'job_id':job['id'],'job_revision':job['revision'],'plugin_origin':job['plugin_origin']}
         elif event.payload.get('payload'):
             requester = event.payload['payload'].get('requester_qq_uid')
             if event.payload['payload'].get('plugin_origin'):
@@ -61,10 +69,10 @@ async def classify_event(runtime, event, cutoff):
     consumed = any(route['consume'] for route in routes)
     output = event.payload.get('output_kind', 'chat')
     interaction = 'plugin_handler' if consumed else output if output != 'chat' else 'chat'
-    eligible = not consumed and not work_issue and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
+    eligible = not consumed and not work_issue and not prepared_work and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
     event.metadata.update(interaction=interaction, plugin_consumed=consumed,
         conversation_excluded=not eligible,
-        interaction_reason='plugin_work_unavailable' if work_issue else 'plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')
+        interaction_reason='plugin_work_unavailable' if work_issue else 'prepared_work_delivery' if prepared_work else 'plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')
 
 
 def _execution(runtime, event, origin, cutoff):
@@ -116,6 +124,8 @@ async def validate_plugin_origin(runtime, output, scene_id):
     if len(events) != 1:
         raise ValueError('Plugin output has no real source in this scene')
     call = runtime.plugin_host.handler_call(events[0], {'origin': origin.model_dump()}, actor.session.last_observed_event_rowid)
+    if getattr(output,'requester_qq_uid',None) is not None:
+        call=replace(call,requester_qq_uid=output.requester_qq_uid)
     mention_all = getattr(output, 'mention_all', False) or any(
         segment.type == 'at_all' for segment in getattr(output, 'segments', ()))
     await runtime.plugin_host.validate_call(call, mention_all=mention_all)
@@ -180,6 +190,62 @@ async def submit_message(runtime, call, segments, *, mention_all=False):
     finally:
         call.execution.audit.setdefault('commits', []).append(decision.record())
     return decision
+
+
+async def deliver_work_result(runtime,event):
+    """Submit an already prepared work artifact through the original delivery."""
+    delivery=event.metadata['prepared_work_delivery']
+    job=await runtime.event_store.get_job(delivery['job_id'],event.scene_id)
+    if not job or job['revision']!=delivery['job_revision'] or job['status']!='result_ready' or job['delivery_action_id']:
+        return
+    result=JobResult.model_validate(job['result'])
+    if result.delivery is None:return
+    origin=PluginOrigin.model_validate(job['plugin_origin'])
+    actor=await runtime.scene_manager.get_or_create_actor(event.scene_id)
+    cutoff=actor.session.last_observed_event_rowid
+    read_ids=list(dict.fromkeys([origin.source_event_id,job['request_source_event_id'],event.id]))
+    sources=await runtime.event_store.events_by_ids(event.scene_id,read_ids,cutoff)
+    source=next((item for item in sources if item.id==origin.source_event_id),None)
+    if source is None:raise ValueError('Prepared work delivery lost its real plugin source')
+    call=replace(_execution(runtime,source,origin,cutoff),requester_qq_uid=job['requester_qq_uid'],
+        job_id=job['id'],work_operation=job['work_operation'])
+    mailbox=call.execution.mailbox
+    mailbox.episode_id=f'work-delivery:{job["id"]}:{job["revision"]}'
+    mailbox.origin_stimulus_id=event.id
+    mailbox.requester_qq_uid=job['requester_qq_uid']
+    mailbox.origin_mode='shadow' if runtime.shadow_mode or job['origin_mode']=='shadow' else 'live'
+    mailbox.plugin_source_ids.update(read_ids)
+    audit=call.execution.audit
+    audit.update(job_id=job['id'],job_revision=job['revision'],artifact_result_id=result.delivery.result_id)
+    decision=None
+    try:
+        issue=runtime.plugin_host.work_issue(job)
+        if issue:raise ValueError(issue)
+        if origin.scene_entry!='handler' and not runtime.scene_policy.chat_allowed(event.scene_id,job['requester_qq_uid']):
+            raise ValueError('The original requester no longer has chat eligibility')
+        await runtime.plugin_host.validate_call(call)
+        outcome=EpisodeOutcome(disposition=FinalDisposition.ACTION,decision_reason='交付插件已经保存的工作成果',
+            message_proposals=[MessageProposal(segments=result.delivery.segments,
+                source_event_id=job['request_source_event_id'],requester_qq_uid=job['requester_qq_uid'],
+                job_id=job['id'],job_revision=job['revision'],fulfils_task_id=job['id'],plugin_origin=origin)],
+            source_outcomes=[SourceOutcome(source_event_id=event.id,status='replied',message_indices=[0])])
+        outcome=await runtime.plugin_host.run_hooks(lambda:call,audit).before_commit(outcome)
+        decision=await actor.commit_turn(outcome,cutoff,read_ids,actor.session.knowledge_revision,mailbox,runtime.runtime_gate)
+        if not decision.accepted:raise ValueError(decision.reason)
+        await runtime.runtime_gate.publish_committed(decision,mailbox)
+        audit['state']='submitted'
+    except FreshInputConflict as error:
+        audit.update(state='waiting_for_current_input',reason=str(error))
+    except asyncio.CancelledError:
+        audit['state']='interrupted'
+        raise
+    except Exception as error:
+        audit.update(state='failed',error=str(error),error_type=type(error).__name__)
+        raise
+    finally:
+        if decision:audit.setdefault('commits',[]).append(decision.record())
+        await runtime.event_store.save_trace(kind='plugin_work_delivery',scene_id=event.scene_id,
+            ref_id=mailbox.episode_id,payload=audit)
 
 
 @asynccontextmanager
@@ -314,7 +380,13 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
 
 async def _dedicated_agent(runtime, call, request, output_model, parent):
     execution=call.execution
-    binding=runtime.provider_registry.resolve(request.model_role)
+    if call.job_id and request.model_role=='work':
+        job=await runtime.event_store.get_job(call.job_id,call.scene_id)
+        if not job or not job['model_binding']:
+            raise ValueError('Plugin work Agent requires its existing job model binding')
+        binding=runtime.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']),role='work')
+    else:
+        binding=runtime.provider_registry.resolve(request.model_role)
     nested_respond=request.output_mode=='respond'
     actor=await runtime.scene_manager.get_or_create_actor(call.scene_id)
     context=parent.context if nested_respond else ConversationContext(runtime,actor.session.model_copy(deep=True),call.cutoff_rowid)
@@ -369,8 +441,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
             if outcome.next_action=='wait':parent.suspended_outcome=outcome
             return receipt
     else:
-        terminal={'type':'function','function':{'name':'return_result','description':'返回结果给插件，不发送消息。',
-            'parameters':output_model.model_json_schema()}}
+        terminal=result_definition(output_model)
         async def finish(arguments):return output_model.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
         after_finish=None
 
@@ -410,7 +481,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         return context.model_messages(trajectory)
 
     state=await execution.budget.state()
-    reserve=1 if parent.model_slot_owned else 0
+    reserve=1 if parent.model_slot_owned and call.tool_call_id is not None else 0
     steps=min(request.max_steps,state['model_calls_limit']-state['model_calls_used']-reserve)
     if steps<1:raise ValueError('Parent budget has no model call available for this plugin Agent')
     context.tool_definitions=lambda:[*definitions(),terminal() if callable(terminal) else terminal]
@@ -423,7 +494,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     elif request.input_mode=='source':
         await context.pack_events(messages,events,ids,raw_tokens=context.input_budget)
     if not nested_respond:
-        messages.append({'role':'developer','content':'本次只通过return_result返回插件结果；不提供respond、工作或提醒提案，不自动发消息。'})
+        messages.append({'role':'developer','content':RESULT_ONLY_NOTICE})
     pending_presentations=[]
 
     async def checkpoint(stage,payload):

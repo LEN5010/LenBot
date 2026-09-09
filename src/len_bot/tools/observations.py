@@ -63,3 +63,14 @@ class ObservationStoreMixin:
         row = await (await self._db.execute(
             "SELECT tool_name,arguments_json FROM tool_observations WHERE id=? AND scene_id=?", (result_id, scene_id))).fetchone()
         return (row[0], json.loads(row[1])) if row else None
+
+    async def plugin_observations(self,scene_id,plugin_id,plugin_version,coverage,*,limit,before_rowid=None):
+        """Read this scene's saved plugin resources in stable storage order."""
+        if limit<1:raise ValueError('Observation page limit must be positive')
+        rows=await (await self._db.execute("""SELECT rowid,result_json FROM tool_observations
+            WHERE scene_id=? AND json_extract(result_json,'$.plugin_origin.plugin_id')=?
+            AND json_extract(result_json,'$.plugin_origin.plugin_version')=?
+            AND json_extract(result_json,'$.coverage')=? AND (? IS NULL OR rowid<?)
+            ORDER BY rowid DESC LIMIT ?""",
+            (scene_id,plugin_id,plugin_version,coverage,before_rowid,before_rowid,limit))).fetchall()
+        return [(rowid,ToolResult.model_validate_json(encoded)) for rowid,encoded in rows]

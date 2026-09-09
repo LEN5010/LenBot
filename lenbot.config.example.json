@@ -138,7 +138,14 @@
     },
     "group_summary": {
       "enabled": false,
-      "config": null
+      "config": {
+        "page_messages": 50,
+        "page_chars": 6000,
+        "tool_timeout_seconds": 10.0,
+        "output_instructions": "按时间和话题组织已保存原话，说明范围和覆盖，明确未确认内容；不编造引语或人物身份。",
+        "work_budget": "runtime",
+        "render_font_path": "../asoul_calendar/resources/font.ttf"
+      }
     },
     "local_clock": {
       "enabled": false,

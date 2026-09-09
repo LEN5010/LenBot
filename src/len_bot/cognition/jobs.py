@@ -2,6 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from len_bot.events.models import PluginOrigin
+from len_bot.media.models import MessageSegment
 
 
 class JobProposal(BaseModel):
@@ -87,6 +88,12 @@ class WorkState(BaseModel):
     next_step: str = Field(default="", max_length=600)
 
 
+class PreparedWorkDelivery(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    result_id: str = Field(min_length=1,description='已保存的结构化成果资料')
+    segments: list[MessageSegment] = Field(min_length=1)
+
+
 class JobResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["completed", "partial", "failed", "interrupted", "cancelled"]
@@ -96,6 +103,7 @@ class JobResult(BaseModel):
     unresolved: list[str] = Field(default_factory=list)
     work_state: WorkState | None = None
     reason: str | None = None
+    delivery: PreparedWorkDelivery | None = None
 
 
 class SkillCandidate(BaseModel):

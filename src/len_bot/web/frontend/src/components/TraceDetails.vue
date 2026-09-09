@@ -60,6 +60,7 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
     <section v-else-if="isPlugin">
       <h3>插件执行</h3>
       <PluginOrigin :origin="trace.plugin_origin" :name="trace.plugin_name" :scene-id="trace.scene_id" />
+      <div v-if="trace.payload.job_id" class="trace-links"><EntityLink type="job" :id="trace.payload.job_id" :scene-id="trace.scene_id" label="所属工作与当前交付" /><EntityLink v-if="trace.payload.artifact_result_id" type="result" :id="trace.payload.artifact_result_id" :scene-id="trace.scene_id" label="本次交付成品" /></div>
       <p>认领、完成处理与真实送达分别记录；以下提交仍需沿行动回执核对。</p>
       <article v-for="(commit,index) in pluginCommits" :key="index" class="candidate-message">
         <EntityLink v-if="commit.commit_event_id" type="event" :id="commit.commit_event_id" :scene-id="trace.scene_id" label="已提交阶段与回执" />

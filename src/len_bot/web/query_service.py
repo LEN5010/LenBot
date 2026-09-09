@@ -570,7 +570,8 @@ class RuntimeQueryService:
             item['summary']=' · '.join(str(value) for value in (item['plugin_name'],origin.get('entry_id') if origin else None,
                 payload.get('state') or payload.get('operation'),payload.get('error')) if value)[:300]
             item['result_status']=payload.get('state')
-        item['relation']=({'episode_id':origin['run_id']} if origin else
+        item['relation']=({'job_id':payload['job_id']} if payload.get('job_id') else
+            {'episode_id':origin['run_id']} if origin else
             {'job_id':payload.get('job_id') or item['ref_id']} if item['kind'].startswith('agent_job') else
             {'batch_id':item['ref_id']} if item['kind'].startswith('history_maintenance') else
             {'episode_id':item['ref_id']} if item['kind'] in {'conversation','conversation_error'} else
@@ -817,6 +818,7 @@ class RuntimeQueryService:
         native_episode_clause, native_episode_values = membership("json_extract(payload,'$.episode_id')", episode_ids)
         trace_rows=await linked("SELECT *","FROM traces WHERE scene_id=?",[
             membership("ref_id",episode_ids|job_ids),
+            membership("json_extract(payload,'$.job_id')",job_ids),
             membership("json_extract(payload,'$.plugin_origin.source_event_id')",event_ids),
             membership("json_extract(payload,'$.plugin_origin.parent_run_id')",episode_ids|job_ids),
             ("kind IN ('calendar_command','live_announcement') AND " + native_clause, native_values),

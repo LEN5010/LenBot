@@ -203,7 +203,7 @@ class RuntimeGate:
         if mailbox.origin_mode == "shadow":
             curr_origin = "shadow"
         # Resolve references before any transaction or visible acknowledgement.
-        if not self.jobs_enabled_probe() and any(p.operation in {"create", "resume"} for p in outcome.job_proposals):
+        if not self.jobs_enabled_probe() and any(p.operation == 'create' for p in outcome.job_proposals):
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
         if self.validate_job_resume:
             for proposal in outcome.job_proposals:

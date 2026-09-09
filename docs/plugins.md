@@ -77,7 +77,15 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 
 提案工具可调用 `call.stage_work(goal=..., request_source=..., evidence=..., parameters=...)`，取得原 Ledger 的暂存引用，再由 respond 提交。request_source 始终是已读人类原话；普通信息工作不填 parameters。专用工作在 PluginSpec.work 提供 PluginWorkSpec，parameters 必须使用其参数模型，不在插件中建立任务队列或写裸连接。
 
-只有需要固定业务范围和独立覆盖的工作才声明该对象。它提供参数、修订和进度模型，明确的 allowed_tools 与 allow_learning，以及截点、修订、新进度、阅读覆盖、结果判定、续页和进度展示函数；[群总结实现](../src/len_bot/plugins/builtin/group_summary/work.py)保留实际范围和分页职责。这些函数只使用已保存资料和本地计算，存储回调在原事务中执行，不请求 HTTP/模型、不建立嵌套写事务。专用提示词仍由本插件的 before_model 钩子提供。
+只有需要固定业务范围和独立覆盖的工作才声明该对象。它提供参数、修订和进度模型、allowed_tools、allow_learning，以及截点、修订、新进度、阅读覆盖、结果判定、续页和进度展示函数。这些存储回调只读已保存资料并做本地计算，在原事务中执行，不请求 HTTP/模型、不建立嵌套写事务。
+
+需要插件安排完整执行顺序时，声明 `execute(context: PluginWorkContext) -> JobResult`。它在原工作运行器、取消关系与时限中执行；上下文提供 call、revision、parameters、goal、constraints、输入／输出窗口和 resume_from。`progress()` 读取当前版本，`save_progress(typed_progress)` 保存并核对版本，`save_result(operation, ToolResult)` 将长资料存入原观察库，`adopt_results(ids)` 复用本群已有资料。不要在进度里反复复制长正文。
+
+`context.run_agent(instructions=..., input_observations=..., output_model=...)` 使用该工作的原绑定和累计预算，每次只做一次 materials/result_only 的结构化调用，不开放工具、身份资料或直接发送。`input_tokens(...)` 使用公共请求估算器为批次分配容量，最终仍经过实际请求装配检查。`budget()` 返回已用与上限，继续或修订不清零。可选 `needs_model(job)` 是只读本地判断，用于允许仅剩渲染的工作在没有模型余量时继续；它不能增加预算。
+
+成品使用 `JobResult.delivery = PreparedWorkDelivery(result_id=..., segments=...)`：result_id 必须属于本次成果，图片先通过 `call.save_image` 登记。本次 execute 返回后，由原完成事件和 Actor/Gate 交付保存的片段；插件不能从后台工作调用 submit_message。新相关输入先由原对话处理；已提交或发送未知不重复提交，渲染错误与送达错误分开。
+
+[群报告执行](../src/len_bot/plugins/builtin/group_summary/analysis.py)展示批次保存、复用、合并和渲染；[业务类型](../src/len_bot/plugins/builtin/group_summary/work.py)记录范围与完成条件，[报告类型](../src/len_bot/plugins/builtin/group_summary/report.py)保留统计、来源、引语和身份。自然日工具先用 `call.read_request_source(M)` 取得已读人类原话时间；不是从当前时间或模型猜测的日期生成窗口。插件业务字段可在 JSON Schema 的 format 标注 tool-result-id、tool-result-list 或 media-id，工作详情使用公共资料／媒体链接显示。
 
 新工作在既有 task.payload 保存 PluginOrigin、work_parameters 和 work_progress；原工作 ID、revision、预算、观察和发送服务继续使用。版本不兼容时更新 PluginSpec.version。原版本或入口不存在的工作只保留中断说明与原数据，不能用新参数类型猜测恢复；取消仍可由原管理入口完成。业务参数修订通过 revise_work.parameters 或工作页的插件字段完成，Schema 由所属插件提供。
 

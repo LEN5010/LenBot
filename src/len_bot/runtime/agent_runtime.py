@@ -164,12 +164,15 @@ class AgentRuntime:
             return 'Information work is currently disabled'
         issue=self.plugin_host.work_issue(job)
         if issue:return issue
-        if job['model_steps']>=self.config.job_max_steps:
+        work=self.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+        needs_model=not work or work.needs_model is None or work.needs_model(job)
+        if needs_model and job['model_steps']>=self.config.job_max_steps:
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
         if job['elapsed_seconds']>=self.config.job_max_seconds:
             return 'This work has no remaining execution time; its spent budget is not reset by resume'
-        if job['execution_status']=='partial' and job['tool_calls']>=self.config.job_max_tool_calls:
+        if job['execution_status']=='partial' and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None):
             return 'This partial work has no remaining read-tool budget; continuing does not reset its counters'
+        if not needs_model:return None
         try:
             if job['model_binding']:
                 self.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']),role='work')
@@ -471,6 +474,9 @@ class AgentRuntime:
             if job:
                 issue=self.plugin_host.work_issue(job)
                 if issue:raise ValueError(issue)
+                handler_owned=job['plugin_origin'] and job['plugin_origin']['scene_entry']=='handler'
+                if not handler_owned and not self.scene_policy.chat_allowed(action.scene_id,job['requester_qq_uid']):
+                    raise ValueError('The original work requester no longer has chat eligibility')
         if action.plugin_origin is not None or action.output_kind != 'chat':
             await validate_plugin_origin(self, action, action.scene_id)
         else:
@@ -779,6 +785,8 @@ class AgentRuntime:
                 if checkpoint_decision.committed_proposal.resolved_loop_ids:
                     self.metrics.inc_social('openloops_resolved',len(checkpoint_decision.committed_proposal.resolved_loop_ids))
                 if checkpoint_decision.actions_enqueued:self.metrics.inc_social('gate_action')
+                if checkpoint_decision.committed_proposal.outcome.handled_source_event_ids:
+                    await self.job_runner.on_input_handled(scene_id)
 
             if self.mock_turn_handler is not None:
                 input_prepared({event.id for event in events},{event.id for event in events})

@@ -1301,7 +1301,11 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                     if message.fulfils_task_id in task_states:
                         raise ValueError("A changed reminder cannot also fulfil its previous state in the same transaction")
                     if message.job_id:
-                        await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
+                        linked_job=await self.validate_job_message(scene_id, message.job_id, message.job_revision, bool(message.fulfils_task_id))
+                        prepared=(linked_job['result'] or {}).get('delivery')
+                        if (message.fulfils_task_id and prepared
+                                and [part.model_dump(mode='json') for part in message.segments]!=prepared['segments']):
+                            raise ValueError('Prepared work delivery must preserve its saved message segments')
                     elif message.fulfils_task_id and await self.get_job(message.fulfils_task_id, scene_id):
                         raise ValueError("Job delivery requires job_id and job_revision")
 
