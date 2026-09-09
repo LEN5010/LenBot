@@ -712,7 +712,10 @@ class RetrievalToolkit:
         return shown
 
     def material_message(self, result_id):
-        original=self.observations[result_id]
+        return self.material_view(self.observations[result_id])
+
+    @staticmethod
+    def material_view(original):
         shown=original.model_copy(update={'coordinate_unit':'characters',
             'displayed_range':DisplayedRange(start=0,end=len(original.content),total=len(original.content))})
         return {'role':'user','_context_section':'plugin_material','content':json.dumps({

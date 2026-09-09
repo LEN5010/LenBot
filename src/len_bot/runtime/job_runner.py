@@ -20,6 +20,7 @@ from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.agent import PluginExecution
+from len_bot.plugins.work import PluginWorkContext
 from len_bot.cognition.budget import AgentBudget
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
@@ -159,12 +160,27 @@ class InformationJobRunner:
         if (event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
                 and not event.metadata.get("obsolete_task_wake")):
             self.kick(event.scene_id)
+        if (event.event_type in {EventType.AGENT_JOB_FINISHED,EventType.TASK_REVIEW} and event.metadata.get('prepared_work_delivery')
+                and not event.metadata.get('obsolete_job_result') and not event.metadata.get('plugin_work_issue')):
+            from len_bot.runtime.plugin_interactions import deliver_work_result
+            delivery=event.metadata['prepared_work_delivery']
+            origin=PluginOrigin.model_validate(delivery['plugin_origin'])
+            self.runtime.plugin_host.start_task(origin.plugin_id,deliver_work_result(self.runtime,event),
+                name=f'work-delivery:{delivery["job_id"]}:{delivery["job_revision"]}',scene_id=event.scene_id)
 
     def kick(self, scene_id):
         if (scene_id not in self._tasks or self._tasks[scene_id].done()) and self.running:
             task = asyncio.create_task(self._run_scene(scene_id))
             self._tasks[scene_id] = task
             task.add_done_callback(lambda done: self._tasks.pop(scene_id, None) if self._tasks.get(scene_id) is done else None)
+
+    async def on_input_handled(self,scene_id):
+        """A settled conversation gives uncommitted work delivery a new turn."""
+        if not self.running or not self.runtime.config.jobs_enabled:return
+        actor=await self.runtime.scene_manager.get_or_create_actor(scene_id)
+        for event in await self.runtime.event_store.ready_prepared_work_events(scene_id,actor.session.last_observed_event_rowid):
+            job=await self.runtime.event_store.get_job(event.payload['job_id'],scene_id)
+            if job and not self.runtime.plugin_host.work_issue(job):await self.on_event(event)
 
     async def stop(self):
         self.running = False
@@ -324,7 +340,8 @@ class InformationJobRunner:
                 work_operation=job['work_operation'], tool_call_id=tool_call_id,
                 source_event_id=origin.source_event_id if origin else job['request_source_event_id'],
                 origin=origin,entry_origin=origin.handler_origin or origin if origin else None,
-                entry=origin.scene_entry if origin else 'work',execution=execution)
+                entry=origin.scene_entry if origin else 'work',execution=execution,
+                plugin=runtime.plugin_host.context_for(origin.plugin_id) if origin else None)
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
@@ -540,6 +557,33 @@ class InformationJobRunner:
 
         execution.record_presentations=record_presentations
 
+        async def plugin_progress():
+            current=await store.get_job(job_id,scene_id)
+            if not current or current['revision']!=revision or current['status']!='processing':
+                raise JobChanged('Plugin execution no longer owns this work revision')
+            require_current_access()
+            return work.progress_model.model_validate(current['work_progress'])
+
+        async def save_plugin_progress(progress):
+            await charge(revision,enforce=False)
+            event=await store.save_plugin_work_progress(job_id,scene_id,revision,progress)
+            await runtime.commit_tool_observation(event)
+            return await plugin_progress()
+
+        async def save_plugin_result(operation,result):
+            await plugin_progress()
+            if not isinstance(result,ToolResult):raise TypeError('Plugin work resources require ToolResult')
+            result=result.model_copy(update={'plugin_origin':plugin_context().origin})
+            page=await toolkit.store_observation('plugin_work_result',
+                {'operation':operation,'job_id':job_id,'job_revision':revision},result)
+            await charge(revision,enforce=False)
+            return page.result
+
+        async def adopt_plugin_results(result_ids):
+            await plugin_progress()
+            await toolkit.import_results(result_ids)
+            await charge(revision,enforce=False)
+
         async def checkpoint(stage, payload):
             if stage == "after_model":
                 if pending_presentations:
@@ -569,13 +613,14 @@ class InformationJobRunner:
                 try:
                     require_current_access()
                     work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
+                    needs_model=not work or work.needs_model is None or work.needs_model(job)
                     current_cutoff=(await store.load_scene_session(scene_id))['last_observed_event_rowid']
                     work_cutoff=work.input_cutoff(work.parameters_model.model_validate(job['work_parameters']),current_cutoff) if work else current_cutoff
-                    if job['model_steps']>=config.job_max_steps:
+                    if needs_model and job['model_steps']>=config.job_max_steps:
                         raise JobBudgetExhausted('Work model-step budget exhausted')
                     if job['elapsed_seconds']>=config.job_max_seconds:
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted',budget_kind='elapsed_time')
-                    if gateway is None:
+                    if gateway is None and needs_model:
                         if job["model_binding"]:
                             binding = runtime.provider_registry.resolve_profile(ModelProfile.model_validate(job["model_binding"]), role="work")
                         else:
@@ -592,10 +637,22 @@ class InformationJobRunner:
                     if job is None or job["revision"] != revision or job["status"] != "processing":
                         raise JobChanged("Job changed while assembling context")
                     remaining = config.job_max_seconds - job["elapsed_seconds"] - (time.monotonic()-last_charge)
-                    if job['model_steps']>=config.job_max_steps:
+                    if needs_model and job['model_steps']>=config.job_max_steps:
                         raise JobBudgetExhausted('Work model-step budget exhausted')
                     if remaining<=0:
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted',budget_kind='elapsed_time')
+                    if work and work.execute is not None:
+                        execution.audit=run_trace
+                        async with asyncio.timeout(remaining):
+                            result=await work.execute(PluginWorkContext(call=plugin_context(),revision=revision,
+                                parameters=work.parameters_model.model_validate(job['work_parameters']),
+                                goal=job['goal'],constraints=tuple(job['constraints']),
+                                context_tokens=config.job_context_tokens,output_tokens=config.work_output_tokens,
+                                resume_from=job['resume_from'],progress=plugin_progress,save_progress=save_plugin_progress,
+                                save_result=save_plugin_result,adopt_results=adopt_plugin_results,budget=budget_state))
+                            result=await commit_result(JobResult.model_validate(result),revision)
+                        await save_result(result,revision)
+                        return
                     async with asyncio.timeout(remaining):
                         messages, current_assets = await self._context(job)
                         exchange_count = (job["checkpoint"] or {}).get("exchange_count", 0)

@@ -788,9 +788,10 @@ class ConversationContext:
                     'requester': self.refs.register_actor('user:' + job['requester_qq_uid']) if job['requester_qq_uid'] else None,
                     'request_source': self.refs.register_event_locator(job['request_source_event_id']) if job['request_source_event_id'] else None,
                     'delivery_action_id': job['delivery_action_id'], 'delivery_event_id': job['delivery_event_id'],
+                    'prepared_delivery':bool((job['result'] or {}).get('delivery')),
                     'first_result': self.first_result_versions.get(job['id']) == job['revision']
                         and job['status'] == 'result_ready' and job['execution_status'] in {'completed', 'partial'}
-                        and job['delivery_action_id'] is None,
+                        and job['delivery_action_id'] is None and not (job['result'] or {}).get('delivery'),
                     'work_operation': job['work_operation']}
             if compact:
                 view.update(goal_preview=job['goal'][:160], details_not_provided=True,
@@ -912,6 +913,7 @@ class ConversationContext:
 用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；每个segments片段只填text、image或at，at使用成员U，文字@称呼不是真实提及。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
 
 工具回执staged只表示暂存；新工作和提醒的确认用本轮ack_ref，恢复/修订/取消及认识变更的确认用对应operation_ref，均在同一事务提交后才成立。旧工作状态引用用work_ref，首次完整或部分结果交付用delivery_ref；每条消息只选一种关系。runtime_facts替代旧状态，first_result=true是原请求的首次交付机会，无需对方再问；普通旧结果目录不是重发理由。partial保留缺口，符合can_resume且有明确新要求时才继续原工作，保留已用预算；完整完成不因发送失败重跑。
+prepared_delivery=true表示插件已经准备好交付成品，原工作入口会提交保存的片段；当前对话处理新原话及控制要求，不重写成品或填delivery_ref重复交付。
 
 未调用只说明尚未查询；HTTP失败不是来源未发布，no_results只限本次来源与范围。提交、入队和sent分别说明；unknown不能说已经收到，也不自动重发。等待只在真实sent后激活，只有相关真实回复才能说明对方回应了；没有响应不编造查询结果。committed=false的候选按具体错误在剩余预算中修正，已提交阶段不能事后撤销；最后一步根据实际已做、未做和资料覆盖结束。
 

@@ -87,6 +87,18 @@ class JobStoreMixin(SkillStoreMixin):
         rows = await (await self._db.execute("SELECT j.*,t.status,t.origin_mode,t.created_at,t.payload FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id" + clause + " ORDER BY t.created_at", params)).fetchall()
         return [_decode_job(row) for row in rows]
 
+    async def ready_prepared_work_events(self,scene_id,cutoff):
+        rows=await (await self._db.execute("""SELECT e.id FROM tasks t
+            JOIN agent_jobs j ON j.id=t.id AND j.scene_id=t.scene_id
+            JOIN events e ON e.scene_id=j.scene_id AND e.event_type='AGENT_JOB_FINISHED'
+                AND json_extract(e.payload,'$.job_id')=j.id
+                AND json_extract(e.payload,'$.job_revision')=j.revision
+            WHERE t.scene_id=? AND t.status='result_ready'
+                AND json_extract(t.payload,'$.delivery_action_id') IS NULL
+                AND json_extract(j.result_json,'$.delivery') IS NOT NULL
+            ORDER BY e.rowid""",(scene_id,))).fetchall()
+        return await self.events_by_ids(scene_id,[row[0] for row in rows],cutoff)
+
     async def interrupt_job(self,job_id,scene_id,reason):
         """End unfinished execution without rewriting an existing delivery."""
         async with self._write_lock:
@@ -280,6 +292,30 @@ class JobStoreMixin(SkillStoreMixin):
                 await self._db.rollback()
                 raise
 
+    async def save_plugin_work_progress(self,job_id,scene_id,revision,progress):
+        """Save plugin business progress under the original job revision."""
+        async with self._write_lock:
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                job=await self.get_job(job_id,scene_id)
+                if not job or job['revision']!=revision or job['status']!='processing':
+                    raise JobChanged('Plugin progress belongs to an obsolete work execution')
+                spec=self.plugin_work(job)
+                if spec is None or spec.execute is None:
+                    raise ValueError('This work has no plugin execution entry')
+                value=spec.progress_model.model_validate(progress)
+                await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.work_progress',json(?)) WHERE id=? AND scene_id=?",
+                    (value.model_dump_json(),job_id,scene_id))
+                await self._db.execute('UPDATE agent_jobs SET updated_at=? WHERE id=? AND scene_id=?',
+                    (self.clock(),job_id,scene_id))
+                event=await self._queue_job_event(EventType.AGENT_JOB_CHECKPOINT,job_id,scene_id,revision,
+                    {'phase':'plugin_progress','work_progress':spec.project_progress(value)})
+                await self._db.commit()
+                return event
+            except BaseException:
+                await self._db.rollback()
+                raise
+
     async def _observation_size(self, result_id, scene_id, coordinate_unit):
         result = await self.read_tool_observation(result_id, [scene_id])
         if result is None:
@@ -381,6 +417,14 @@ class JobStoreMixin(SkillStoreMixin):
                         result=JobResult.model_validate(result)
                     if not set(result.result_ids).issubset(job["result_ids"]):
                         raise ValueError("Job summary cites observations it did not obtain")
+                    if result.delivery:
+                        if spec is None or spec.execute is None or result.status not in {'completed','partial'}:
+                            raise ValueError('Prepared delivery requires a completed plugin execution result')
+                        if result.delivery.result_id not in result.result_ids:
+                            raise ValueError('Prepared delivery must reference this work result')
+                        for segment in result.delivery.segments:
+                            if segment.type=='image' and await self.get_media(segment.asset_id,[scene_id]) is None:
+                                raise ValueError('Prepared work image is not registered in this scene')
                     await self._validate_evidence_spans(job, result.evidence_spans, result.result_ids)
                     if result.work_state is not None:
                         await self._validate_work_state(job, result.work_state)
