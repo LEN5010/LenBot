@@ -443,6 +443,42 @@ class ConversationContext:
         for name,value in snapshot.items():
             setattr(self,name,value)
 
+    async def prepare_tool_results(self, toolkit, trajectory, entries, *, definitions, reserved=(), append_update=None):
+        """Present one complete native tool group, its bodies and actual pixels."""
+        from len_bot.tools.retrieval import ObservationPage
+        messages=list(trajectory)
+        pages={}
+        for call,result in entries:
+            if isinstance(result,ObservationPage):
+                pages[call.id]=result
+                result=toolkit.observation_locator(result)
+            content=(result.model_dump_json(exclude_none=True) if isinstance(result,ToolResult)
+                else result if isinstance(result,str) else json.dumps(result,ensure_ascii=False))
+            messages.append({'role':'tool','tool_call_id':call.id,'content':content})
+        if append_update:
+            messages.extend(reserved)
+            await append_update(messages)
+            messages[:]=[message for message in messages if not any(message is item for item in reserved)]
+        current_jobs=dict(self.refs.jobs)
+        self.fit_request(messages,definitions(),reserved=reserved,phase='tool_exchange')
+        positions={message['tool_call_id']:index for index,message in enumerate(messages) if message.get('role')=='tool'}
+        indexes=[positions[call.id] for call,_ in entries]
+        tool_start,tool_end=indexes[0],indexes[-1]+1
+        page_calls=[call for call,_ in entries if call.id in pages]
+
+        async def render(position,limit):
+            page=pages[page_calls[position].id]
+            result=await toolkit._present(page.name,page.result,page.offset,limit,page.coordinate_unit)
+            # A historical job query must not replace newer facts already
+            # projected after this tool group.
+            self.refs.jobs.update(current_jobs)
+            return result
+
+        await self.pack_tool_pages(messages,[positions[call.id] for call in page_calls],
+            [pages[call.id].limit for call in page_calls],render,definitions=definitions,reserved=reserved)
+        trajectory[:]=messages[:tool_start]
+        return [messages[index]['content'] for index in indexes],messages[tool_end:]
+
     async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=()):
         """Share remaining request capacity across a complete native tool group.
 
