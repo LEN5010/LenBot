@@ -23,7 +23,7 @@ uv run len-bot
 - [产品行为](docs/product.md)：聊天、工作、资料与各状态的含义。
 - [当前架构](docs/architecture.md)：正常链路、模块职责与必要术语。
 - [运行手册](docs/operations.md)：配置、起停、备份与人工操作。
-- [插件开发](docs/plugins.md)：目录描述、配置类型与公共工具注册。
+- [插件开发](docs/plugins.md)：目录、配置、工具与命令注册、Agent 调用、钩子及完整本地插件示例。
 - [工程约束](AGENTS.md)：修改方式与禁止事项。
 - [当前任务](docs/iteration.md)：本轮未完成项与实际核对结果。
 - [人格来源资料](docs/persona/diana/README.md)：运营提供的角色与素材数据。

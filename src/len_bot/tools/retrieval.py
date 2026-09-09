@@ -186,7 +186,6 @@ class RetrievalToolkit:
         self.result_ids=[]
         self.observations={}
         self.external_attempted=False
-        self.unavailable_tools=set()
         self._parallel = asyncio.Semaphore(config.tool_read_concurrency)
         self.presented_ranges: dict[str,dict[str,list[tuple[int,int]]]] = {}
 
@@ -240,7 +239,7 @@ class RetrievalToolkit:
         for definition in plugin_tools:
             name = definition['function']['name']
             capabilities = self.plugin_host.tool_capabilities(name)
-            if name not in self.unavailable_tools and (not capabilities['deferred'] or name in self.discovered_tools):
+            if not capabilities['deferred'] or name in self.discovered_tools:
                 definitions.append(copy.deepcopy(definition))
         return definitions
 
@@ -350,7 +349,7 @@ class RetrievalToolkit:
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
             matches, categories = self.plugin_host.search_tools(args['query'], self.call_context(),
-                kind='read', excluded=self.unavailable_tools) if self.plugin_host else ([], [])
+                kind='read') if self.plugin_host else ([], [])
             selected = matches[:self.config.tool_discovery_limit]
             for item in selected:
                 tool_name = item['name']
@@ -390,11 +389,6 @@ class RetrievalToolkit:
             self.external_attempted = True
         if not plugin_tool and result.evidence_kind == 'unknown':
             result.evidence_kind = 'retrieval'
-        if name == 'web_search' and result.status in {'error', 'unsupported'} and result.error_code != 'invalid_arguments':
-            self.external_attempted = True
-            if result.error_code == 'search_unavailable':
-                self.unavailable_tools.add(name)
-                result.content += '\n本次工作已确认搜索服务未提供可读取结果；可读取已有链接，未核实部分写入unresolved。'
         return await self.store_observation(name,args,result,media_files=media_files,tool_call_id=tool_call_id)
 
     async def error_observation(self,name,args,result,*,tool_call_id=None):

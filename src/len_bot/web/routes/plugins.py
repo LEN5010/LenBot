@@ -7,6 +7,7 @@ save responses retain the actual restart requirement and source status.
 from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, ValidationError
 from len_bot.web.auth import get_current_user
+from len_bot.plugins.host import PluginConfigurationApplyError
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
@@ -34,6 +35,8 @@ async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = 
         raise HTTPException(status_code=404, detail="Plugin not found")
     try:
         await runtime.update_plugin_settings(req.plugin_id, enabled=req.enabled)
+    except PluginConfigurationApplyError as error:
+        raise HTTPException(409,{'message':str(error),'config_saved':True}) from error
     except ValidationError as error:
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
     except OSError as error:
@@ -51,6 +54,8 @@ async def save_plugin_config(req: PluginConfigRequest, request: Request, user: s
     try:
         # Omitted fields keep their existing values, including credentials.
         await runtime.update_plugin_settings(req.plugin_id, values=req.config)
+    except PluginConfigurationApplyError as error:
+        raise HTTPException(409,{'message':str(error),'config_saved':True}) from error
     except KeyError:
         raise HTTPException(status_code=404, detail="Plugin not found")
     except ValidationError as error:

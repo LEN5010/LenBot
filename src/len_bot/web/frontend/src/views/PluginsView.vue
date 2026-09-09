@@ -39,18 +39,25 @@ async function load() {
     const result=await api('/api/plugins/list')
     if (request!==requestId) return
     plugins.value=result; loaded.value=true; readAt.value=Date.now()/1000; selectFromRoute()
+    return true
   } catch(e) { if (request===requestId) error.value=e.message }
   finally { if (request===requestId) loading.value=false }
+  return false
+}
+async function showApplyError(problem) {
+  const refreshed=await load()
+  if(refreshed && problem.details?.config_saved && selected.value) setDraft(selected.value)
+  error.value=problem.message+(refreshed?'':'；当前状态刷新失败：'+error.value)
 }
 function close() { router.push({name:'plugins'}) }
-async function toggle(plugin) {
+async function toggle(plugin,enabled=!plugin.enabled) {
   if (busy.value||!plugin.configured) return
   busy.value=`toggle:${plugin.id}`; error.value=''; message.value=''
   try {
-    const result=await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled:!plugin.enabled})})
+    await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled})})
     message.value='插件启用状态已保存并应用；当前状态见插件详情'
     await load()
-  } catch(e) { error.value=e.message }
+  } catch(e) { await showApplyError(e) }
   finally { busy.value='' }
 }
 async function save() {
@@ -63,7 +70,7 @@ async function save() {
     original.value=JSON.stringify(draft.value)
     message.value='插件参数已保存，当前运行状态：'+result.state
     await load()
-  } catch(e) { error.value=e.message }
+  } catch(e) { await showApplyError(e) }
   finally { busy.value='' }
 }
 watch(()=>route.query.id,selectFromRoute)
@@ -82,7 +89,7 @@ load()
         <p class="clamp-2 plugin-description">{{ plugin.description }}</p>
         <div class="plugin-meta"><span>{{ plugin.configured?'已配置':'未配置' }}</span><span>全局{{ plugin.enabled?'启用':'停用' }}</span><span>开放 {{ plugin.open_scenes.filter(scene=>scene.enabled).length }} 个已启用群</span></div>
         <div class="source-summary"><span>最近成功获取 {{ fmtTime(plugin.source_status.last_success_at) }}</span><span>最近失败 {{ fmtTime(plugin.source_status.last_error_at) }}</span></div>
-        <div class="actions mt-4"><v-btn color="primary" variant="tonal" :to="{name:'plugins',query:{id:plugin.id}}">详情与配置</v-btn><v-btn :color="plugin.enabled?'error':'primary'" variant="outlined" :disabled="!!busy||!plugin.configured" :loading="busy===`toggle:${plugin.id}`" @click="toggle(plugin)">{{ plugin.enabled?'停用':plugin.configured?'启用':'先填写配置' }}</v-btn></div>
+        <div class="actions mt-4"><v-btn color="primary" variant="tonal" :to="{name:'plugins',query:{id:plugin.id}}">详情与配置</v-btn><v-btn :color="plugin.enabled?'error':'primary'" variant="outlined" :disabled="!!busy||!plugin.configured" :loading="busy===`toggle:${plugin.id}`" @click="toggle(plugin)">{{ !plugin.configured?'先填写配置':plugin.enabled?'停用':'启用' }}</v-btn><v-btn v-if="plugin.enabled&&!plugin.active_enabled" color="primary" variant="outlined" :disabled="!!busy" @click="toggle(plugin,true)">重新启用</v-btn></div>
       </v-card>
     </div>
     <v-card v-if="loaded&&!error&&!plugins.length" class="pa-8 text-center muted">当前没有已声明插件</v-card>
@@ -107,7 +114,7 @@ load()
               <div v-for="hook in selected.hooks" :key="'hook:'+hook.id" class="entry-row"><strong>{{ hook.phase }}</strong><p>{{ hook.id }} · 作用范围 {{ hook.scope }} · 优先级 {{ hook.priority }}</p></div>
               <p v-if="!selected.tools.length&&!selected.handlers.length&&!selected.hooks.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>
             </div>
-            <ResourceViewer v-if="selected.active_tasks.length" title="当前所属任务" :content="selected.active_tasks" class="my-4" />
+            <ResourceViewer v-if="selected.work" title="已声明的长期工作" :content="selected.work" class="my-4" /><ResourceViewer v-if="selected.active_tasks.length" title="当前所属任务" :content="selected.active_tasks" class="my-4" />
             <v-divider class="my-5" />
             <h3 class="mb-4">源状态</h3>
             <p class="muted mb-4">此处只展示已经取得的状态。缓存到期刷新失败时，本次查询失败；旧快照不延长有效期。</p>

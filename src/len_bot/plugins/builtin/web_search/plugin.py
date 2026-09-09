@@ -136,7 +136,8 @@ class WebSearchToolPlugin(BasePlugin):
                 raise ValueError('Search response is not RSS')
         except (ET.ParseError, ValueError):
             return ToolResult(status='unsupported', error_code='search_unavailable', evidence_kind='external',
-                content='搜索服务未返回可读取结果，可能是服务限制或验证页面；本次无法核实，不能判断对象不存在。')
+                content='搜索服务未返回可读取结果，可能是服务限制或验证页面；本次无法核实，不能判断对象不存在。'
+                    '已有原始链接可交read_page读取，尚未核实的部分保留为未完成。')
         lines, sources = [], []
         sites = _query_sites(query)
         candidates = []

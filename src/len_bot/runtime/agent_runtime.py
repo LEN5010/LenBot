@@ -27,7 +27,7 @@ from len_bot.media.service import MediaService
 from len_bot.memory.reflection import ReflectionEngine
 from len_bot.memory.reflector import LLMReflector
 from len_bot.memory.store import MemoryStore
-from len_bot.plugins.host import PluginHost
+from len_bot.plugins.host import PluginHost, PluginConfigurationApplyError
 from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
@@ -269,12 +269,15 @@ class AgentRuntime:
                 state["config"] = {**(state['config'] or {}), **values}
             candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
-            if values is not None:
-                await self.plugin_host.apply_plugin_config(plugin_id)
-            elif enabled is True:
-                await self.plugin_host.enable_plugin(plugin_id)
-            elif enabled is False:
-                await self.plugin_host.disable_plugin(plugin_id)
+            try:
+                if values is not None:
+                    await self.plugin_host.apply_plugin_config(plugin_id)
+                elif enabled is True:
+                    await self.plugin_host.enable_plugin(plugin_id)
+                elif enabled is False:
+                    await self.plugin_host.disable_plugin(plugin_id)
+            except Exception as error:
+                raise PluginConfigurationApplyError('根配置已保存，但插件运行更新失败：'+_error_text(error)) from error
 
     async def set_shadow_mode(self, enabled: bool) -> None:
         async with self.config_update_lock:

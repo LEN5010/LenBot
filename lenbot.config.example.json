@@ -139,7 +139,20 @@
     "group_summary": {
       "enabled": false,
       "config": null
+    },
+    "local_clock": {
+      "enabled": false,
+      "config": {
+        "tool_timeout_seconds": 10.0,
+        "model_role": "conversation",
+        "max_steps": 2,
+        "max_tool_calls": 0,
+        "context_tokens": 8000,
+        "output_tokens": 1000
+      }
     }
   },
-  "plugin_directories": []
+  "plugin_directories": [
+    "local_plugins"
+  ]
 }

@@ -12,6 +12,8 @@
 
 实现类继承 `BasePlugin`，构造时使用 `super().__init__(context.manifest)`；取得的 `context.config` 已通过该插件模型解析。插件文件和资源相对于 `context.directory`，运行数据需要时写入 `context.data_directory`。目录不自动创建空数据文件。项目依赖继续由 uv 管理，插件不自行安装依赖。
 
+可直接阅读独立目录中的[业务时钟](../local_plugins/local_clock/__init__.py)：一个文件完成描述符、配置、读取工具和两个命令，README 只说明[本插件用法](../local_plugins/local_clock/README.md)。它没有核心注册补丁；添加根目录、全局配置和目标群条目后，由同一个宿主发现。样例包含停用的参数条目，实际开放须在目标部署保存。
+
 ## 工具与读取
 
 在 `on_load(context)` 调用 `register_tool`，提供名称、用途、明确的 Pydantic 参数模型、handler、read/proposal 类别和可用角色。低频工具可声明 deferred，并提供业务别名和关键词；实际执行名保持唯一。参数模型同时用于校验与 Schema，handler 接收已解析参数和本次 `PluginCallContext`。
@@ -19,6 +21,25 @@
 调用字段包括当前场景、请求者、真实 source_event_id、时间、读取截点、episode/job、角色、工具调用 ID、PluginOrigin 和当前提案 Ledger。系统来源没有人类请求者，不伪造 user 身份。长期插件实例不保存可变的“当前群”。只读服务返回 `ToolResult`，暂存操作复用 Ledger；原资料与视觉覆盖、提交和送达的含义继续由架构规定。
 
 工具 timeout 可由描述符的 `call_timeout(config)` 从实际配置读取，也可在注册时明确传入。工具定义和调用时均检查当前角色、场景与启用状态；工具名冲突会报告实际注册双方，不覆盖前者。
+
+### 日历：同一服务供工具和精确消息调用
+
+[现有日历实现](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py)是共用读取服务的最小业务示例。on_load 把 get_live_schedule 注册为工具，同时为配置中的命令词注册 ExactText、consume=True 的 handler。两者都调用 get_live_schedule；精确命令不需要普通聊天先决定是否查询。
+
+下面是其 on_command 的实际处理路径。request 由 command_request 使用原命令时间及业务时区计算；渲染和失败处置属于本插件。
+
+```python
+request, title = self.command_request(call.origin.entry_id, call.event.timestamp)
+observed = await call.invoke_tool('get_live_schedule', request)
+if observed.status not in {'ok', 'no_results'}:
+    raise ValueError(f'日程来源未完整取得：{observed.content}')
+schedule = ScheduleResult.model_validate_json(observed.content)
+png = await asyncio.to_thread(self.renderer.render, schedule, title)
+asset_id = await call.save_image(png, '日程命令生成图片')
+await call.submit_message([MessageSegment(type='image', asset_id=asset_id)])
+```
+
+自然语言读取取得同一 ToolResult，由当前 Agent 继续使用；精确命令取得资料后渲染一次并提交图片。业务时钟的“现在几点”沿相同路径直接提交文字，“时间简报”则显式调用 run_agent，展示插件如何选择是否使用模型。三者均通过原提交和发送服务。
 
 ## 加载与停用
 
@@ -28,7 +49,7 @@
 
 ## 消息处理与公共调用
 
-在 on_load 中 register_handler，声明 id、description、match、handler、event_types、sources、priority、consume 和 require_to_me。ExactText、Command、RegexText 或本地同步函数返回 bool；数值优先级小者先匹配，同级按稳定注册顺序。冲突的独占精确命令在注册时报告双方，匹配不请求网络或模型。available(call) 检查插件自身的群配置；耗时校验使用 validate(call)。原话与归属先保存，耗时 handler 后执行，消费后失败不转普通聊天。
+在 on_load 中 register_handler，声明 id、description、match、handler、event_types、sources、priority、consume 和 require_to_me。ExactText、Command、RegexText 或本地同步函数返回 bool；数值优先级小者先匹配，同级按稳定注册顺序。冲突的独占精确命令在注册时报告双方，匹配不请求网络或模型。available(call) 检查插件群配置；validate(call) 只核对已保存资料与当前本地状态，它也会在提交边界调用，不能请求 HTTP/模型。原话与归属先保存，耗时读取和处理放在 handler 中，消费后失败不转普通聊天。
 
 sources 默认 human；plugin_event 和 self_sent 要显式声明。self_sent 只认真实 MESSAGE_SENT，不认草稿、Shadow 或 unknown；同一插件自己的输出不会再次触发自己。引用关系在 call.event.metadata.quote_context 中读取，日历引用评论的消费规则见[日历实现](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py)，核心不统一消费所有插件评论。
 
@@ -42,9 +63,13 @@ output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、re
 
 工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作仍由原 JobStore 收取调用与时间额度。专用 Agent 串行使用父账户并为父调用留一次收尾调用，不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 也保留真实父来源，调用不制造模型 tool_call。
 
+嵌套表达共享原 Ledger 和引用身份；本次窗口、工具集合、容量和像素范围在调用结束后恢复父运行的设置。新取得的观察仍保存，实际展示进入子调用 Trace，不通过替换父窗口破坏原工具交换。
+
 自定义事件在 PluginSpec.event_models 声明名称和 payload 模型。context.emit_event(name, typed_payload, scene_id=..., event_id=..., timestamp=...) 发布 PLUGIN_EVENT；事件身份由插件的真实业务关系确定，不生成内容摘要去重。
 
 context.scene_config(scene_id)、scene_configs()、members、time_settings、now() 提供只读公共输入；长期实例不读取私有 Runtime。on_enable 用 context.start_task(coroutine, name=...) 启动所属任务，停用由宿主取消并等待，on_unload 释放客户端。config_apply 默认 restart_plugin；仅实现 apply_config 的插件可显式声明 in_place。面板由实际工具、handler 与两种配置 Schema 生成，没有单独手写的业务清单。
+
+原始 HTTP 超时、状态码与网络错误在宿主执行边界形成失败观察；服务自己的“无结果”和协议解析错误由插件明确返回。核心不按工具名称改写失败正文或在一次失败后隐藏工具。若允许下一步读取，应在插件结果中准确说明已知资料与可用入口，由调用者在剩余预算内选择。
 
 ## 长期工作
 

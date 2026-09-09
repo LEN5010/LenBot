@@ -413,12 +413,14 @@ class InformationJobRunner:
             if not self.running or not config.jobs_enabled:
                 raise asyncio.CancelledError()
             require_current_access()
+            if job['plugin_origin']:await runtime.plugin_host.validate_call(plugin_context())
             await charge(revision, model_steps=1)
 
         async def before_tool(name, arguments):
             if not self.running or not config.jobs_enabled:
                 raise asyncio.CancelledError()
             require_current_access()
+            if job['plugin_origin']:await runtime.plugin_host.validate_call(plugin_context())
             await charge(revision, tool_calls=1)
 
         async def execute_tool(name, arguments, *, tool_call_id=None) -> ToolResult | ObservationPage:
