@@ -11,6 +11,7 @@ from len_bot.tools.results import ToolResult
 if TYPE_CHECKING:
     from len_bot.cognition.proposals import ProposalLedger
     from len_bot.plugins.base import PluginContext
+    from len_bot.plugins.agent import PluginExecution
 
 
 class EmptySceneConfig(BaseModel):
@@ -36,7 +37,8 @@ class PluginCallContext:
     entry: Literal['chat', 'handler', 'work'] = 'chat'
     event: Event | None = None
     plugin: PluginContext | None = field(default=None, repr=False, compare=False)
-    execution: Any = field(default=None, repr=False, compare=False)
+    execution: PluginExecution | None = field(default=None, repr=False, compare=False)
+    read_slot_owned: bool = field(default=False, repr=False, compare=False)
 
     @property
     def scene_config(self) -> BaseModel | None:

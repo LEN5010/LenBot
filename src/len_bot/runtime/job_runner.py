@@ -19,6 +19,8 @@ from len_bot.events.models import Event, EventType
 from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
+from len_bot.plugins.agent import PluginExecution
+from len_bot.cognition.budget import AgentBudget
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
 
@@ -299,23 +301,26 @@ class InformationJobRunner:
         runtime, store, config = self.runtime, self.runtime.event_store, self.runtime.config.model_copy(deep=True)
         job = None
         work_cutoff = 0
+        execution=PluginExecution(None,model_slot_owned=True)
 
         def plugin_context(tool_call_id=None):
             return PluginCallContext(scene_id=scene_id, requester_qq_uid=job["requester_qq_uid"],
                 now=runtime.clock(), cutoff_rowid=work_cutoff, episode_id=None, job_id=job_id, role="work",
                 work_operation=job['work_operation'], tool_call_id=tool_call_id,
-                source_event_id=job['request_source_event_id'], entry='work')
+                source_event_id=job['request_source_event_id'], entry='work',execution=execution)
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
             checkpoint=runtime.evaluation_hook, media_service=runtime.media_service,
             config=config, call_context=plugin_context)
+        execution.toolkit=toolkit
         last_charge = time.monotonic()
         charge_lock = asyncio.Lock()
         revision, gateway = None, None
         trace = {"job_id": job_id, "runs": [], "budget_snapshot": {"model_calls_limit":config.job_max_steps,
             "tool_calls_limit":config.job_max_tool_calls,"elapsed_seconds_limit":config.job_max_seconds}}
         limits = (config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds)
+        execution.audit=trace
         pending_presentations: list[dict] = []
         pending_additions: list[dict] = []
         current_assets: set[str] = set()
@@ -458,6 +463,9 @@ class InformationJobRunner:
             pending_additions.clear()
             return additions or None
 
+        execution.budget=AgentBudget(config.job_max_steps,config.job_max_tool_calls,
+            on_model=before_model,on_tool=before_tool,read_state=budget_state)
+
         async def evidence_correction(result_ids):
             current = await store.get_job(job_id,scene_id)
             if not current or current['revision'] != revision or current['status'] != 'processing':
@@ -517,15 +525,21 @@ class InformationJobRunner:
             except JobResultRejected as error:
                 raise TerminalArgumentError(str(error), correction=await evidence_correction(conclusion.result_ids)) from error
 
+        async def record_presentations(presentations):
+            await store.record_job_presentations(job_id,scene_id,revision,presentations)
+            toolkit.adopt_presentations(presentations)
+            if job['work_operation']=='group_summary':
+                await store.record_summary_reads(job_id,scene_id,revision,
+                    [(item['result_id'],item['start'],item['end']) for item in presentations
+                     if item['coordinate_unit']=='characters' and item['result_id'] in toolkit.observations
+                     and toolkit.observations[item['result_id']].tool_name=='read_group_chat_window'])
+
+        execution.record_presentations=record_presentations
+
         async def checkpoint(stage, payload):
             if stage == "after_model":
                 if pending_presentations:
-                    await store.record_job_presentations(job_id,scene_id,revision,pending_presentations)
-                    toolkit.adopt_presentations(pending_presentations)
-                    if job["work_operation"] == "group_summary":
-                        await store.record_summary_reads(job_id, scene_id, revision,
-                            [(item['result_id'],item['start'],item['end']) for item in pending_presentations
-                             if item['coordinate_unit']=='characters'])
+                    await record_presentations(pending_presentations)
                 if trace['runs'] and trace['runs'][-1].get('steps'):
                     trace['runs'][-1]['steps'][-1]['presentations']=copy.deepcopy(pending_presentations)
                     trace['runs'][-1]['steps'][-1]['context_plan']=copy.deepcopy(trace['runs'][-1].get('context_plan',{}))
@@ -683,7 +697,7 @@ class InformationJobRunner:
                             exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=prepare_request,
                             prepare_tool_results=prepare_tool_results, finalize_request=finalize_request,
                             budget_state=budget_state, record_tool_result=record_tool_result,
-                            hooks=runtime.plugin_host.run_hooks(plugin_context, run_trace))
+                            hooks=runtime.plugin_host.run_hooks(plugin_context, run_trace),budget=execution.budget)
                     await save_result(result, revision)
                     return
                 except JobChanged:

@@ -33,7 +33,7 @@ class ReplyExpectation(StrictModel):
 class TurnMessage(StrictModel):
     segments:list[TurnPart]=Field(min_length=1,max_length=12)
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    source: str|None=Field(default=None,description='本条回应对应的已读人类请求M；操作确认必须来自该操作的原话证据，与显示引用reply_to分别表达')
+    source: str|None=Field(default=None,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话，插件系统来源保留原类型，与显示引用reply_to分别表达')
     ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
     operation_ref: str|None=Field(default=None,description='复制本轮控制工作、提醒或记忆操作返回的proposal_ref；只确认这项操作实际提交后的结果')
     delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
@@ -48,7 +48,7 @@ class TurnMessage(StrictModel):
         return self
 
 class SourceResolution(StrictModel):
-    source:str=Field(description='本次处理的原话M；继续同一请求时可沿用此前checkpoint的来源')
+    source:str=Field(description='本次处理的已读来源M；继续同一请求时可沿用此前checkpoint的来源，系统来源不伪装成人类原话')
     status:Literal['replied','delegated','waiting','incomplete','silent']
     reason:str=Field(default='',max_length=500)
     unfinished:list[str]=Field(default_factory=list,description='同一原话中仍未完成的要求；未做的部分不能被已发送内容覆盖')
@@ -175,7 +175,7 @@ RESPOND={
                                'at':{'type':'string','minLength':1,'description':'真实成员提及，填写本轮人物U引用'}}),
                     'description':'恰好一个字段：text、image或at；按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
-                'source':{'type':'string','description':'本条回应对应的已读人类请求M；操作确认须来自该操作的原话证据，多人来源不能互换'},
+                'source':{'type':'string','description':'本条回应对应的已读来源M；普通聊天和操作确认须来自人类原话，插件系统来源保留原类型'},
                 'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
                                 'description':'本条实际回应的成员U；请求者和引用作者不自动成为回应对象'},
                 'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
@@ -208,6 +208,7 @@ class ProposalLedger:
         self.checkpoint_index=0
         self.messages_committed=0
         self.continuing_sources=set()
+        self.plugin_source_ids=set()
         self.can_continue=lambda:True
 
     async def request_source(self, reference):
@@ -253,7 +254,7 @@ class ProposalLedger:
         message=result['function']['parameters']['properties']['messages']['items']
         props=message['properties']
         available = [ref for ref, event_id in refs.events.items()
-                     if event_id in refs.read_events and (event_id in self.continuing_sources
+                     if event_id in refs.read_events and (event_id in self.continuing_sources | self.plugin_source_ids
                          or any(w.event_id == event_id for w in self.context.session.pending_wakes))]
         parameters=result['function']['parameters']['properties']
         parameters['messages']['maxItems']=3-self.messages_committed
@@ -394,15 +395,15 @@ class ProposalLedger:
             if result.next!='end' and not self.can_continue():
                 raise ValueError('原执行预算不足以继续或恢复等待，请结束并保留未完成项')
             handled=[refs.event_id(item.source) for item in result.sources]
-            pending={wake.event_id for wake in self.context.session.pending_wakes}
+            pending=self.plugin_source_ids or {wake.event_id for wake in self.context.session.pending_wakes}
             if len(handled) != len(set(handled)) or not set(handled).issubset(pending|self.continuing_sources):
                 raise ValueError('sources只能填写本轮已读、当前待处理或本轮此前checkpoint已处理的来源，每个来源只能出现一次')
             if pending and not handled and not result.note.strip():
                 raise ValueError('仍有待处理来源；空sources须在note说明等待依赖或本次结束原因，不能靠空提交反复取得预算')
             source_candidates = await self.context.runtime.event_store.events_by_ids(refs.scene_id, handled, refs.cutoff)
             source_records={event.id:event for event in source_candidates}
-            source_candidates = [event for event in source_candidates
-                if event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+            source_candidates = [event for event in source_candidates if event.id in self.plugin_source_ids
+                or event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
                 and event.actor_id.startswith('user:') and event.actor_id != refs.bot_actor_id]
             controlled_jobs=[proposal.job_id for proposal in self.jobs if proposal.operation!='create']
             controlled_tasks=[proposal.task_id for proposal in self.tasks if proposal.operation!='create']
@@ -491,8 +492,15 @@ class ProposalLedger:
                     raise ValueError('本条消息缺少明确请求归属；用source填写对应的已读人类消息M')
                 if operation and source_id not in operation_sources:
                     raise ValueError('操作确认的source必须是该操作实际读取的原话证据，不能借用另一人的请求')
-                source = await self.request_event(source_id)
-                requester = source.actor_id.removeprefix('user:')
+                if source_id in self.plugin_source_ids and not (acknowledgement or operation or job or delivery):
+                    originals = await self.context.runtime.event_store.events_by_ids(refs.scene_id, [source_id], refs.cutoff)
+                    if len(originals) != 1:
+                        raise ValueError('插件表达缺少当前场景的真实来源')
+                    source = originals[0]
+                    requester = source.actor_id[5:] if source.actor_id.startswith('user:') and source.actor_id != refs.bot_actor_id else None
+                else:
+                    source = await self.request_event(source_id)
+                    requester = source.actor_id.removeprefix('user:')
                 # An explicit follow-up may come from another participant.
                 # Message ownership follows that human source; the referenced
                 # work keeps its own original requester and revision.

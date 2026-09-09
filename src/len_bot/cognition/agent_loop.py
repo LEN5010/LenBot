@@ -160,6 +160,7 @@ class AgentLoop:
         initial_tool_calls: int = 0,
         budget: AgentBudget | None = None,
         hooks: PluginRunHooks | None = None,
+        external_outcome: Callable[[], Any] | None = None,
     ) -> Any:
         if max_steps < 1 or max_tool_calls < 0 or not 0 <= initial_model_calls < max_steps or not 0 <= initial_tool_calls <= max_tool_calls:
             raise ValueError("Invalid agent run budget")
@@ -385,6 +386,9 @@ class AgentLoop:
                         for call, arguments, item in executions:
                             result = await execute(call, arguments, item)
                             results.append(result)
+                            if external_outcome is not None and external_outcome() is not None:
+                                audit['termination_reason'] = 'plugin_wait_committed'
+                                return external_outcome()
                     else:
                         results = await asyncio.gather(*(execute(call, arguments, item) for call, arguments, item in executions),
                                                        return_exceptions=True)

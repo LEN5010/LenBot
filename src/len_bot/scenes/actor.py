@@ -179,11 +179,15 @@ class SceneActor:
                 exact=[loop for loop in targeted if event.payload.get('reply_to_message_id') is not None
                        and str(event.payload['reply_to_message_id'])==loop['message_id']]
                 matches=exact if exact else targeted if event.is_mention_bot else []
-                if len(matches)==1 and not event.metadata.get('conversation_excluded'):
+                if len(matches)==1 and not event.metadata.get('plugin_consumed') and (
+                        matches[0]['resume_state'].get('plugin_origin') or not event.metadata.get('conversation_excluded')):
                     loop=matches[0]
                     event.metadata['conversation_resume']={'loop_id':loop['id'],
                         'send_event_id':loop['source_event_id'],'state':loop['resume_state']}
-                    waiting.add(event.actor_id)
+                    if loop['resume_state'].get('plugin_origin'):
+                        event.metadata.update(plugin_consumed=True,conversation_excluded=True,interaction='plugin_continuation')
+                    else:
+                        waiting.add(event.actor_id)
                 if not event.is_reply_bot:
                     projected = await self.event_store.project_reply_context(
                         self.scene_id, [event], through_rowid=self.session.last_observed_event_rowid)
@@ -242,9 +246,12 @@ class SceneActor:
     async def _commit_turn(self, item):
         native_output = item.mailbox.plugin_origin is not None
         if native_output:
-            if item.operator or item.outcome.task_proposals or item.outcome.job_proposals or item.outcome.memory_proposals or item.outcome.resolve_open_loop_ids or item.outcome.release_focus_actor_ids:
-                raise SceneCommitConflict('A command or announcement may only submit its own expression')
+            if item.operator:
+                raise SceneCommitConflict('Plugin execution cannot impersonate an operator')
             await item.gate.validate_plugin_origin(item.mailbox, self.scene_id)
+        for message in item.outcome.message_proposals:
+            if message.plugin_origin:
+                await item.gate.validate_plugin_origin(message, self.scene_id)
         if not item.operator and not native_output and self._active_mailbox is not item.mailbox:
             raise SceneCommitConflict('Episode lease changed')
         if item.mailbox.is_cancelled():
@@ -264,17 +271,17 @@ class SceneActor:
         if item.outcome.checkpoint_index!=item.mailbox.next_checkpoint:
             raise SceneCommitConflict('Checkpoint sequence changed')
         state = self.session
-        if not native_output and state.knowledge_revision != item.knowledge_revision:
+        if state.knowledge_revision != item.knowledge_revision:
             raise SceneCommitConflict('Knowledge revision changed')
         if not 0 <= item.through_rowid <= state.last_observed_event_rowid:
             raise SceneCommitConflict('Read cutoff is outside the observed range')
         read = set(item.source_event_ids)
         handled = set(item.outcome.handled_source_event_ids)
-        if handled and (item.operator or native_output):
-            raise SceneCommitConflict('Operator and native outputs cannot handle conversation wake sources')
+        if handled and item.operator:
+            raise SceneCommitConflict('Operator outputs cannot handle conversation wake sources')
         if not handled.issubset(read):
             raise SceneCommitConflict('Handled wake sources were not actually read in this turn')
-        pending_ids = {wake.event_id for wake in state.pending_wakes}
+        pending_ids = item.mailbox.plugin_source_ids if native_output else {wake.event_id for wake in state.pending_wakes}
         if not handled.issubset(pending_ids|item.mailbox.handled_source_ids):
             raise SceneCommitConflict('Handled sources are not currently pending in this scene')
         if set(item.outcome.release_focus_actor_ids)-await self.event_store.event_actors(self.scene_id,handled):
@@ -293,7 +300,7 @@ class SceneActor:
             raise SceneCommitConflict('Proposal evidence was located but not read in this turn')
         if not await self.event_store.references_belong_to_scene(read, self.scene_id, item.through_rowid):
             raise SceneCommitConflict('Evidence is outside the scene or read cutoff')
-        if not item.operator and not native_output and item.outcome.requires_fresh_input():
+        if not item.operator and item.outcome.requires_fresh_input():
             related = await self._related_unread_wakes(item.outcome, read, state, item.gate.scene_policy)
             if related:
                 raise FreshInputConflict('Control or fulfilment has unread related input: ' + ', '.join(related))
