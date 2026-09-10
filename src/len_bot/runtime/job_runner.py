@@ -71,12 +71,12 @@ class WorkToolPresentation:
             raise JobContextExhausted("工作原文、图片与完整工具定义超过本次输入额度")
         return tokens
 
-    async def attachments(self, asset_ids):
+    async def attachments(self, asset_ids, *, read_cache=None):
         pending = [asset for asset in dict.fromkeys(asset_ids) if asset not in self.attached]
         if not pending:
             return []
         prepared = await self.runtime.media_service.prepare_context_images(
-            self.scene_id, pending, limit=self.runtime.config.max_context_images)
+            self.scene_id, pending, limit=self.runtime.config.max_context_images, read_cache=read_cache)
         self.attached.update(item["asset_id"] for item in prepared["manifest"] if item["status"] == "included")
         return [{"role":"user", "content":[
             {"type":"text", "text":"工具读取的原始图片：" + json.dumps(prepared["manifest"], ensure_ascii=False)},

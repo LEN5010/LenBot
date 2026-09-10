@@ -159,7 +159,8 @@ class PluginRunHooks:
         if view.notes or view.view is not None:
             original['plugin_view'] = {'notes': view.notes, 'data': view.view,
                                        'evidence_kind': 'model_view', 'original_observation_retained': True}
-        return json.dumps(original, ensure_ascii=False)
+            return json.dumps(original, ensure_ascii=False, separators=(',', ':'))
+        return content
 
     async def before_commit(self, outcome):
         view = await self.apply('before_commit', BeforeCommit(messages=[message.segments for message in outcome.message_proposals]))
