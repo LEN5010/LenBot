@@ -28,22 +28,22 @@ class SourceMessage(ReportData):
 
 class TopicChoice(ReportData):
     title: str = Field(min_length=1,max_length=70)
-    summary: str = Field(min_length=1,max_length=500)
-    sources: list[str] = Field(min_length=1,max_length=12,description='本批正文中的消息ref；引用上下文不能代替本批来源')
+    summary: str | None = Field(default=None,max_length=500,description='话题摘要；模型未提供时该候选会被保留为未确认，不由程序代写')
+    sources: list[str] = Field(min_length=1,description='本批正文中的消息ref；引用上下文不能代替本批来源')
 
 
 class QuoteChoice(ReportData):
     source: str = Field(description='本批一条消息的ref；程序从该消息提取引语')
     start: int = Field(default=0,ge=0,description='展示文本中的字符起点，包含')
     end: int | None = Field(default=None,ge=1,description='字符终点，不包含；null取至原文结尾')
-    comment: str = Field(max_length=120)
+    comment: str = Field(default='',max_length=120)
 
 
 class BatchChoices(ReportData):
     topics: list[TopicChoice] = Field(max_length=6)
     quotes: list[QuoteChoice] = Field(max_length=3)
-    comment: str = Field(max_length=180)
-    unresolved: list[str] = Field(max_length=8)
+    comment: str = Field(default='',max_length=180)
+    unresolved: list[str] = Field(default_factory=list,max_length=8)
 
 
 class ReportTopic(ReportData):
@@ -175,6 +175,9 @@ def adopt_batch(choices: BatchChoices,source,records: list[SourceMessage],reques
     topics=[]
     for index,choice in enumerate(choices.topics):
         if set(choice.sources)-targets.keys():raise ValueError('Batch topic cites a message outside its supplied primary range')
+        if not choice.summary:
+            choices.unresolved.append(f'模型未为话题“{choice.title}”提供摘要；该候选未写入报告。')
+            continue
         topics.append(ReportTopic(id=f'{source.result_id}:topic:{index}',title=choice.title,summary=choice.summary,
             source_event_ids=list(dict.fromkeys(targets[ref].event_id for ref in choice.sources)),
             participant_ids=list(dict.fromkeys(targets[ref].actor_id for ref in choice.sources))))
