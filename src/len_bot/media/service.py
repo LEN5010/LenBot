@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import shutil
@@ -185,11 +186,13 @@ class MediaService:
                 "source_url": error_source_url(source_url) if source_url else None,
                 "reason": error_message(f'{error_type}: {reason}')}
 
-    async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int) -> PreparedMediaContext:
+    async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int,
+                                     read_cache: dict[str, PreparedMediaContext] | None = None) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= self.runtime.config.max_context_images:
             raise ValueError("Image limit must be within the configured image window")
         result: PreparedMediaContext = {"blocks": [], "manifest": []}
+        reads = read_cache if read_cache is not None else {}
         for asset_id in dict.fromkeys(asset_ids):
             if not self.runtime.config.media_enabled:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "media_disabled"})
@@ -197,14 +200,18 @@ class MediaService:
             if len(result["blocks"]) >= limit:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "image_limit"})
                 continue
-            try:
-                prepared, manifest = await self._prepare_asset(asset_id, scene_id)
-            except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
-                result["manifest"].append(self._media_error(asset_id, error))
-                continue
-            manifest["block_index"] = len(result["blocks"])
+            if asset_id not in reads:
+                try:
+                    prepared, manifest = await self._prepare_asset(asset_id, scene_id)
+                    reads[asset_id] = {'blocks':[image_block(prepared)], 'manifest':[manifest]}
+                except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
+                    reads[asset_id] = {'blocks':[], 'manifest':[self._media_error(asset_id, error)]}
+            one = reads[asset_id]
+            manifest = copy.deepcopy(one['manifest'][0])
+            if one['blocks']:
+                manifest['block_index'] = len(result['blocks'])
+                result['blocks'].append(copy.deepcopy(one['blocks'][0]))
             result["manifest"].append(manifest)
-            result["blocks"].append(image_block(prepared))
         return result
 
     async def read_media(self, asset_id: str, scene_id: str) -> ToolResult:
