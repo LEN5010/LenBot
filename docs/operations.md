@@ -108,7 +108,7 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 日程读取根配置 `plugins.asoul_calendar.config.source_url` 指定的单一 ICS 来源，来源说明见[日程移植说明](../src/len_bot/plugins/builtin/asoul_calendar/SOURCE.md)。命令词在日程插件中映射 calendar_today、calendar_tomorrow、calendar_week，再由 `scenes.<群>.plugins.asoul_calendar.config.commands` 开放。评论日程时引用实际日程响应；要提问 Agent 或修改、取消工作时另发明确消息。无引用的“好耶”等内容不作隐藏语义分类。源返回空日程和请求失败含义不同，失败时先看源状态；不换来源或改发文字。
 
-排查来源时对照同一配置 URL、请求身份和实际代理路径，分别记录 HTTP 状态、响应类型与是否解析成功。客户端不继承终端代理变量；系统 TUN 仍可能影响网络出口，未传显式代理不等于已经证明直连。403 或 412 本身不能确定缺 Cookie 或某种封禁；验证页 HTML 不算取得 ICS。当前来源恢复结果只记在[当前任务](iteration.md)。
+排查来源时对照同一配置 URL、请求身份和实际代理路径，分别记录 HTTP 状态、响应类型与是否解析成功。客户端不继承终端代理变量；系统 TUN 仍可能影响网络出口，未传显式代理不等于已经证明直连。403 或 412 本身不能确定缺 Cookie 或某种封禁；验证页 HTML 不算取得 ICS。2026-09-10 停机核对时，按用户提供的 Edge UA、`curl --noproxy '*'` 返回 HTTP 200、`text/calendar` 和 5531 bytes；应用自己的 httpx 客户端也解析出 13 个事件。实际根配置已经保存该 UA，生产重启后才会加载。当前来源恢复结果只记在[当前任务](iteration.md)。
 
 直播配置的 source_timezone 用来解释源给出的无偏移开播时间，业务时区独立保存。成员订阅选择已填写的真实主播；群聊可读当前订阅状态，添加或退订仍在登录后的“本群设置 → 哔哩哔哩直播监测”保存。其 config 中的 live_subscriptions、announcements 和 mention_all 分别定义订阅、公告与全体提及；@全体的账号条件由运营在实际群确认，不自动修权限或去掉提及重发。首次采样只建立基线，不补报当时已经开播的场次。是否实际生成、发送和送达分别看PLUGIN_EVENT 来源、plugin_run Trace 与 action 回执。
 
