@@ -359,7 +359,10 @@ class ConversationContext:
                 if self.request_tokens([*messages, *reserved], definitions) <= self.input_budget:
                     return
                 if message.get('_context_section') == section and not message.get('_context_omitted'):
-                    message['content'] = json.dumps({'kind': section, 'omitted': True}, ensure_ascii=False)
+                    # The omission is recorded in the context plan below; a
+                    # marker object would itself consume enough tokens to
+                    # keep a just-over-budget exchange failing.
+                    message['content'] = ''
                     message['_context_omitted'] = True
                     self.omit(section, reason, event_id=message.get('_source_event_id'))
 
@@ -465,6 +468,7 @@ class ConversationContext:
         indexes=[positions[call.id] for call,_ in entries]
         tool_start,tool_end=indexes[0],indexes[-1]+1
         page_calls=[call for call,_ in entries if call.id in pages]
+        media_reads={}
 
         async def render(position,limit):
             page=pages[page_calls[position].id]
@@ -483,7 +487,7 @@ class ConversationContext:
             for position,call in enumerate(page_calls):
                 page=await render(position,pages[call.id].limit)
                 messages[positions[call.id]]['content']=str(page)
-                requested_images.extend(await self.attachments(page.attachments))
+                requested_images.extend(await self.attachments(page.attachments,read_cache=media_reads))
             candidate=copy.deepcopy([*messages,*requested_images,*reserved])
             self.limit_image_window(candidate)
             if self.request_tokens(candidate,definitions())>self.input_budget:
@@ -494,17 +498,19 @@ class ConversationContext:
             self._restore_projection(snapshot)
             for index,content in originals.items():messages[index]['content']=content
         await self.pack_tool_pages(messages,[positions[call.id] for call in page_calls],
-            [pages[call.id].limit for call in page_calls],render,definitions=definitions,reserved=reserved)
+            [pages[call.id].limit for call in page_calls],render,definitions=definitions,reserved=reserved,
+            prepared_images=media_reads)
         trajectory[:]=messages[:tool_start]
         return [messages[index]['content'] for index in indexes],messages[tool_end:]
 
-    async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=()):
+    async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None):
         """Share remaining request capacity across a complete native tool group.
 
         The caller installs matching locator responses first. Trial pages never
         grant read evidence; only accepted pages and their pixels are retained.
         """
         images = []
+        if prepared_images is None:prepared_images={}
 
         def cost(extra=()):
             candidate = copy.deepcopy([*messages,*images,*extra,*reserved])
@@ -529,7 +535,7 @@ class ConversationContext:
             while low <= high:
                 self._restore_projection(copy.deepcopy(snapshot))
                 page = await render(position, limit)
-                pixels = await self.attachments(page.attachments)
+                pixels = await self.attachments(page.attachments,read_cache=prepared_images)
                 messages[index]['content'] = str(page)
                 fits = cost(pixels) <= target
                 if fits and page.error_code != 'page_too_small':
@@ -543,7 +549,7 @@ class ConversationContext:
             messages[index]['content'] = original
             if best:
                 page = await render(position, best)
-                images.extend(await self.attachments(page.attachments))
+                images.extend(await self.attachments(page.attachments,read_cache=prepared_images))
                 messages[index]['content'] = str(page)
             else:
                 self.omit('tool_body', 'no_capacity_for_original_body', tool_call_id=messages[index]['tool_call_id'])
@@ -559,6 +565,7 @@ class ConversationContext:
     async def pack_events(self, messages, events, current_ids, *, raw_tokens):
         """One assembler chooses raw fragments against the actual request cost."""
         current_ids = list(current_ids)
+        media_reads={}
         by_id = {event.id:event for event in events}
         required = [by_id[ident] for ident in current_ids if ident in by_id and by_id[ident].event_type in CHAT_TYPES|CUE_TYPES]
         optional = [event for event in reversed(events) if event.id not in current_ids and event.event_type in CHAT_TYPES]
@@ -579,7 +586,7 @@ class ConversationContext:
                     message['_context_section'] = 'recent_history'
                 elif event.id not in self.current_source_ids:
                     message['_context_section'] = 'related_original'
-                images = await self.attachments(media_ids(view)) if current else []
+                images = await self.attachments(media_ids(view),read_cache=media_reads) if current else []
                 for image in images:
                     image['_media_source_event_id']=event.id
                     image['_source_rowid']=event.metadata['_rowid']
@@ -697,12 +704,12 @@ class ConversationContext:
                 '_source_range':span,'_source_ref':ref,
                 'content':json.dumps(view,ensure_ascii=False)}
 
-    async def attachments(self, asset_ids):
+    async def attachments(self, asset_ids, *, read_cache=None):
         pending = list(dict.fromkeys(asset for asset in asset_ids if asset not in self.attached))
         if not pending: return []
         for asset in pending: self.refs.register_media(asset)
         prepared = await self.runtime.media_service.prepare_context_images(self.session.scene_id, pending,
-            limit=self.config.max_context_images)
+            limit=self.config.max_context_images, read_cache=read_cache)
         self.media_manifest.extend(prepared['manifest'])
         parts = []
         for record in prepared['manifest']:
