@@ -61,18 +61,13 @@ class LinkParserPlugin(BasePlugin):
         except Exception as error:
             return ToolResult.failure(f'链接解析失败：{type(error).__name__}', 'request_failed')
         resource=item.get('bvid') or str(item.get('aid'))
-        media=[]
         cid = ((item.get('pages') or [{}])[0] or {}).get('cid')
-        if cid:
-            try:
-                durl = await first_play_url(self.client, resource, cid)
-                if isinstance(durl, str) and durl.startswith('https://'):
-                    media.append({'type':'video','url':durl,'mime_type':'video/mp4','coverage':'downloadable_url'})
-            except Exception:
-                pass
         result={'platform':'bilibili','resource_id':resource,'canonical_url':f'https://www.bilibili.com/video/{resource}',
                 'title':item.get('title',''),'author':item.get('owner',{}).get('name',''),'text':item.get('desc',''),
-                'published_at':item.get('pubdate'),'media':{'available':bool(media),'items':media,'coverage':'metadata_only'}}
+                'published_at':item.get('pubdate'),'media':{'available':False,'items':[],'coverage':'metadata_only'}}
+        # Playback URLs are a separate download concern. Parsing metadata must
+        # not silently fetch a second, potentially signed media endpoint.
+        result['download'] = {'resource_id': resource, 'cid': cid, 'type': 'video'}
         return ToolResult(content=json.dumps(result,ensure_ascii=False), sources=[source], evidence_kind='external', coverage='metadata_only')
 
     async def download_media(self, args: DownloadMediaArguments, call_context: PluginCallContext) -> ToolResult:
@@ -82,10 +77,21 @@ class LinkParserPlugin(BasePlugin):
             return ToolResult.failure('只能下载本场景已保存的 parse_link 结果', 'invalid_source')
         try:
             parsed = json.loads(stored.content)
-            media = parsed.get('media', {}).get('items', [])[args.media_index]
+        except (TypeError, ValueError):
+            return ToolResult.failure('parse_link 结果不是有效的保存资料', 'invalid_source')
+        media_items = parsed.get('media', {}).get('items', [])
+        try:
+            media = media_items[args.media_index]
             url, media_type = media['url'], media['type']
-        except (TypeError, ValueError, KeyError, IndexError):
-            return ToolResult.failure('parse_link 结果中没有可下载的媒体项', 'media_unavailable')
+        except (TypeError, KeyError, IndexError):
+            download = parsed.get('download') or {}
+            if args.media_index != 0 or not download.get('resource_id') or not download.get('cid'):
+                return ToolResult.failure('parse_link 结果中没有可下载的媒体项', 'media_unavailable')
+            media_type = download.get('type', 'video')
+            try:
+                url = await first_play_url(self.client, download['resource_id'], int(download['cid']))
+            except Exception as error:
+                return ToolResult.failure(f'播放地址读取失败：{type(error).__name__}', 'playback_unavailable')
         if media_type not in {'video', 'audio'} or not isinstance(url, str):
             return ToolResult.failure('parse_link 媒体项类型或地址无效', 'invalid_source')
         allowed, reason = validate_url(url)
@@ -95,14 +101,17 @@ class LinkParserPlugin(BasePlugin):
             if cached:
                 try:
                     cached_asset, cached_data = await runtime.media_service.get_file_bytes(cached['id'], call_context.scene_id)
+                    if not (cached_asset.get('mime_type') or '').startswith(media_type + '/'):
+                        raise ValueError('缓存媒体类型与本次提案不一致')
                     return ToolResult(content=json.dumps({'asset_id':cached_asset['id'],'type':media_type,'mime_type':cached_asset.get('mime_type'),'bytes':len(cached_data),'coverage':'downloaded_media','cached':True},ensure_ascii=False), attachments=[cached_asset['id']], sources=[ToolSource(url=url)], evidence_kind='external', coverage='downloaded_media', cached=True)
                 except Exception:
                     pass
             final_url, headers, data = await fetch_public(self.client, url, max_bytes=runtime.config.media_max_file_bytes)
-            mime = headers.get('content-type', '').split(';',1)[0].lower() or ('video/mp4' if media_type == 'video' else 'audio/mpeg')
-            if not (mime.startswith('video/') or mime.startswith('audio/')): mime='video/mp4' if media_type == 'video' else 'audio/mpeg'
+            mime = headers.get('content-type', '').split(';',1)[0].lower()
             asset_id = 'media_' + uuid.uuid4().hex
-            asset = await runtime.media_service.save_downloaded(asset_id, call_context.scene_id, final_url, data, mime, 'B站链接下载媒体', source_event_id=call_context.source_event_id)
+            asset = await runtime.media_service.save_downloaded(
+                asset_id, call_context.scene_id, final_url, data, mime, 'B站链接下载媒体',
+                source_event_id=call_context.source_event_id, expected_type=media_type)
             return ToolResult(content=json.dumps({'asset_id':asset['id'],'type':'video' if mime.startswith('video/') else 'audio','mime_type':mime,'bytes':len(data),'coverage':'downloaded_media'},ensure_ascii=False), attachments=[asset['id']], sources=[ToolSource(url=final_url)], evidence_kind='external', coverage='downloaded_media')
         except Exception as error:
             return ToolResult.failure(f'媒体下载失败：{type(error).__name__}', 'download_failed')

@@ -164,11 +164,26 @@ class MemoryStore:
         )).fetchone()
         return memory_from_row(row) if row is not None else None
 
-    async def get_memories_by_ids(self, memory_ids: list[str], allowed_scopes: list[str], *, include_superseded=False) -> list[MemoryItem]:
+    async def get_memories_by_ids(self, memory_ids: list[str], allowed_scopes: list[str], *, include_superseded=False,
+                                  subject: str | None = None, kind: str | None = None,
+                                  start_time: float | None = None, end_time: float | None = None) -> list[MemoryItem]:
         if not memory_ids or not allowed_scopes: return []
+        clauses = [f"id IN ({','.join('?' for _ in memory_ids)})",
+                   f"scope IN ({','.join('?' for _ in allowed_scopes)})"]
+        params: list[Any] = [*memory_ids, *allowed_scopes]
+        if not include_superseded:
+            clauses.append("status='active' AND (expires_at IS NULL OR expires_at>?)")
+            params.append(self.clock())
+        if subject is not None:
+            clauses.append("subject=?"); params.append(subject)
+        if kind is not None:
+            clauses.append("kind=?"); params.append(kind)
+        if start_time is not None:
+            clauses.append("created_at>=?"); params.append(start_time)
+        if end_time is not None:
+            clauses.append("created_at<?"); params.append(end_time)
         rows = await (await self._db.execute(
-            f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE id IN ({','.join('?' for _ in memory_ids)}) AND scope IN ({','.join('?' for _ in allowed_scopes)})"
-            + (" AND status='active'" if not include_superseded else ""), [*memory_ids,*allowed_scopes])).fetchall()
+            f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE {' AND '.join(clauses)}", params)).fetchall()
         by_id={item.id:item for item in (memory_from_row(row) for row in rows)}
         return [by_id[item] for item in memory_ids if item in by_id]
 
