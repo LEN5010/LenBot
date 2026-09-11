@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import Field
@@ -75,17 +76,22 @@ class HistoryStoreMixin:
                                    (scene_id, after_rowid))
             await self._db.commit()
 
-    async def begin_history_batch(self, scene_id: str, *, target_tokens=8000, min_tokens=2000, quiet=True,
-                                  input_budget_tokens: int | None = None):
+    async def begin_history_batch(self, scene_id: str, *, target_tokens, min_tokens, quiet,
+                                  input_budget_tokens: int, estimate_input: Callable[[HistoryBatch], int]):
         if target_tokens < 1 or min_tokens < 1 or min_tokens > target_tokens:
             raise ValueError("Invalid incremental history token limits")
-        # Leave room for the maintenance system prompt, schemas and JSON envelope.
-        if input_budget_tokens is not None:
-            # The JSON source envelope expands CJK text substantially in the
-            # estimator; reserve enough for the fixed system/tool definitions.
-            envelope = 14000
-            target_tokens = min(target_tokens, max(100, input_budget_tokens - envelope))
-            min_tokens = min(min_tokens, target_tokens)
+        if input_budget_tokens < 1:
+            raise ValueError("History maintenance needs positive input capacity")
+        batch_id = uuid.uuid4().hex
+
+        def candidate(parts, tokens):
+            return HistoryBatch(id=batch_id, scene_id=scene_id,
+                start_rowid=parts[0]['rowid'], start_offset=parts[0]['start_offset'],
+                end_rowid=parts[-1]['rowid'], end_offset=parts[-1]['end_offset'],
+                source_event_ids=[part['event_id'] for part in parts],
+                complete_event_ids=[part['event_id'] for part in parts if part['complete']],
+                estimated_tokens=tokens, segments=parts)
+
         async with self._write_lock:
             unfinished = await (await self._db.execute(
                 "SELECT id FROM history_batches WHERE scene_id=? AND status!='completed' LIMIT 1", (scene_id,))).fetchone()
@@ -112,36 +118,42 @@ class HistoryStoreMixin:
                 start = after_offset if rowid == after_rowid and after_offset is not None else 0
                 if start >= len(text):
                     continue
+
+                def segment(end):
+                    return {"event_id": event.id, "rowid": rowid, "start_offset": start,
+                            "end_offset": end, "total_characters": len(text), "text": text[start:end],
+                            "complete": start == 0 and end == len(text)}
+
+                def fits(end):
+                    cost = estimate_tokens(text[start:end])
+                    return (used + cost <= target_tokens
+                            and estimate_input(candidate([*segments, segment(end)], used + cost)) <= input_budget_tokens)
+
                 cost = estimate_tokens(text[start:])
-                if segments and used + cost > target_tokens:
+                if segments and not fits(len(text)):
                     full_block = True
                     break
                 end = len(text)
-                if cost > target_tokens:
-                    low, high = start + 1, len(text)
+                if not fits(end):
+                    low, high = start, len(text)
                     while low < high:
                         midpoint = (low + high + 1) // 2
-                        if estimate_tokens(text[start:midpoint]) <= target_tokens:
+                        if fits(midpoint):
                             low = midpoint
                         else:
                             high = midpoint - 1
                     end = low
+                    if end == start:
+                        raise ValueError('维护提示、工具定义与最小原文片段超出输入容量，未建立批次')
                     cost = estimate_tokens(text[start:end])
-                segments.append({"event_id": event.id, "rowid": rowid, "start_offset": start,
-                                 "end_offset": end, "total_characters": len(text), "text": text[start:end],
-                                 "complete": start == 0 and end == len(text)})
+                segments.append(segment(end))
                 used += cost
                 if end < len(text) or used >= target_tokens:
                     full_block = True
                     break
             if not segments or (not full_block and (not quiet or used < min_tokens)):
                 return None
-            batch = HistoryBatch(id=uuid.uuid4().hex, scene_id=scene_id,
-                start_rowid=segments[0]["rowid"], start_offset=segments[0]["start_offset"],
-                end_rowid=segments[-1]["rowid"], end_offset=segments[-1]["end_offset"],
-                source_event_ids=[item["event_id"] for item in segments],
-                complete_event_ids=[item["event_id"] for item in segments if item["complete"]],
-                estimated_tokens=used, segments=segments)
+            batch = candidate(segments, used)
             await self._db.execute("""INSERT INTO history_batches
                 (id,scene_id,start_rowid,start_offset,end_rowid,end_offset,source_event_ids_json,
                  complete_event_ids_json,estimated_tokens,generation_version,status,created_at)
@@ -160,7 +172,7 @@ class HistoryStoreMixin:
         item = self._history_row(dict(zip([column[0] for column in cursor.description], row)))
         batch = HistoryBatch.model_validate({key: item[key] for key in HistoryBatch.model_fields if key in item})
         events = await self.get_events_since(batch.scene_id, after_rowid=batch.start_rowid - 1,
-                                             limit=1000, event_types=_HISTORY_TYPES)
+                                             limit=1000, event_types=_HISTORY_TYPES, conversation_only=True)
         for event in events:
             rowid = event.metadata["_rowid"]
             if rowid > batch.end_rowid:
@@ -182,13 +194,14 @@ class HistoryStoreMixin:
             await self._db.commit()
 
     async def retry_history_batch(self, batch_id: str):
+        batch = await self.load_history_batch(batch_id)
         async with self._write_lock:
             cursor = await self._db.execute("UPDATE history_batches SET status='pending',error_type=NULL WHERE id=? AND status IN ('failed','pending')",
                                            (batch_id,))
             if cursor.rowcount != 1:
                 raise ValueError("Only unsuccessful history batches can be retried")
             await self._db.commit()
-        return await self.load_history_batch(batch_id)
+        return batch
 
     async def commit_history_batch(self, scene_id, batch_id, proposals, summary, key_event_ids,
                                    review_event, expected_revision, scene_state_data, *, bot_actor_id):

@@ -30,7 +30,7 @@
     "job_context_tokens": 64000,
     "job_compress_trigger": 0.7,
     "job_compress_target": 0.5,
-    "maintenance_context_tokens": 32768,
+    "maintenance_context_tokens": 24000,
     "maintenance_output_tokens": 4096,
     "history_target_tokens": 8000,
     "history_min_tokens": 2000,

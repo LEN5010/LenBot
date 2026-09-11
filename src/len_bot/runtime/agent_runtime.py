@@ -538,19 +538,33 @@ class AgentRuntime:
 
     async def retry_history(self, batch_id: str) -> None:
         """An explicit operator retry; new chat never retries a failed range."""
+        if not self._running:
+            raise ValueError('runtime is not running')
         if not self._can_maintain_history():
             raise ValueError('maintenance profile is not configured')
         batch = await self.event_store.load_history_batch(batch_id)
+        if not self.scene_policy.maintenance_allowed(batch.scene_id):
+            raise ValueError('该群未开放历史维护')
         if batch.scene_id in self._maintaining_history_scenes:
             raise ValueError('History maintenance is already running for this scene')
-        actor = await self.scene_manager.get_or_create_actor(batch.scene_id)
-        if actor.has_active_episode():
-            raise ValueError('Conversation is running; retry maintenance when this turn has finished')
-        batch = await self.event_store.retry_history_batch(batch_id)
-        self._spawn_background_task(self._maintain_history(batch.scene_id, retry_batch=batch))
+        self._maintaining_history_scenes.add(batch.scene_id)
+        try:
+            actor = await self.scene_manager.get_or_create_actor(batch.scene_id)
+            if actor.has_active_episode():
+                raise ValueError('Conversation is running; retry maintenance when this turn has finished')
+            batch = await self.event_store.retry_history_batch(batch_id)
+            self._spawn_background_task(self._maintain_history(batch.scene_id, retry_batch=batch, claimed=True))
+        except Exception:
+            self._maintaining_history_scenes.discard(batch.scene_id)
+            raise
 
-    async def _maintain_history(self, scene_id: str, *, quiet=True, retry_batch=None) -> None:
-        if scene_id in self._maintaining_history_scenes or not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(scene_id):
+    async def _maintain_history(self, scene_id: str, *, quiet=True, retry_batch=None, claimed=False) -> None:
+        if scene_id in self._maintaining_history_scenes and not claimed:
+            return
+        if not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(scene_id):
+            if claimed:
+                self._maintaining_history_scenes.discard(scene_id)
+            return
             return
         self._maintaining_history_scenes.add(scene_id)
         batch = retry_batch
@@ -561,10 +575,13 @@ class AgentRuntime:
                     self._schedule_history_maintenance(actor.session)
                     return
                 if batch is None:
+                    maintenance_context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
+                    reflector = self.history_engine.llm_reflector
                     batch = await self.event_store.begin_history_batch(scene_id,
                         target_tokens=self.config.history_target_tokens, min_tokens=self.config.history_min_tokens,
                         quiet=quiet,
-                        input_budget_tokens=self.config.maintenance_context_tokens - self.config.maintenance_output_tokens)
+                        input_budget_tokens=self.config.maintenance_context_tokens - self.config.maintenance_output_tokens,
+                        estimate_input=lambda candidate: reflector.input_tokens(candidate, maintenance_context))
                 if batch is None:
                     return
                 revision = actor.session.knowledge_revision
