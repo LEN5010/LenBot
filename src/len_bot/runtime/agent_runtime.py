@@ -542,7 +542,10 @@ class AgentRuntime:
             raise ValueError('runtime is not running')
         if not self._can_maintain_history():
             raise ValueError('maintenance profile is not configured')
-        batch = await self.event_store.load_history_batch(batch_id)
+        try:
+            batch = await self.event_store.load_history_batch(batch_id)
+        except LookupError as error:
+            raise ValueError(str(error)) from error
         if not self.scene_policy.maintenance_allowed(batch.scene_id):
             raise ValueError('该群未开放历史维护')
         if batch.scene_id in self._maintaining_history_scenes:
@@ -552,6 +555,12 @@ class AgentRuntime:
             actor = await self.scene_manager.get_or_create_actor(batch.scene_id)
             if actor.has_active_episode():
                 raise ValueError('Conversation is running; retry maintenance when this turn has finished')
+            maintenance_context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
+            reflector = self.history_engine.llm_reflector
+            estimate = reflector.input_tokens(batch, maintenance_context)
+            budget = self.config.maintenance_context_tokens - self.config.maintenance_output_tokens
+            if estimate > budget:
+                raise ValueError(f'历史维护请求需要 {estimate} token，可用输入容量为 {budget}；请先调整维护上下文配置')
             batch = await self.event_store.retry_history_batch(batch_id)
             self._spawn_background_task(self._maintain_history(batch.scene_id, retry_batch=batch, claimed=True))
         except Exception:
@@ -564,7 +573,6 @@ class AgentRuntime:
         if not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(scene_id):
             if claimed:
                 self._maintaining_history_scenes.discard(scene_id)
-            return
             return
         self._maintaining_history_scenes.add(scene_id)
         batch = retry_batch
@@ -608,7 +616,7 @@ class AgentRuntime:
             raise
         except Exception as error:
             if batch is not None:
-                await self.event_store.fail_history_batch(batch.id, _error_text(error))
+                await self.event_store.fail_history_batch(batch.id, type(error).__name__)
             logger.exception('History maintenance failed in %s', scene_id)
             await self.event_store.save_trace(kind='history_maintenance_error', scene_id=scene_id,
                 ref_id=batch.id if batch else 'history:'+uuid.uuid4().hex,

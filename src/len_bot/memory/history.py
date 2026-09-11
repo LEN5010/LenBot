@@ -171,20 +171,33 @@ class HistoryStoreMixin:
             raise LookupError("History batch does not exist")
         item = self._history_row(dict(zip([column[0] for column in cursor.description], row)))
         batch = HistoryBatch.model_validate({key: item[key] for key in HistoryBatch.model_fields if key in item})
-        events = await self.get_events_since(batch.scene_id, after_rowid=batch.start_rowid - 1,
-                                             limit=1000, event_types=_HISTORY_TYPES, conversation_only=True)
-        for event in events:
+        events = await self.events_by_ids(batch.scene_id, batch.source_event_ids, batch.end_rowid)
+        by_id = {event.id: event for event in events}
+        if len(by_id) != len(batch.source_event_ids):
+            raise ValueError("Original history sources are unavailable")
+        segments = []
+        for index, event_id in enumerate(batch.source_event_ids):
+            event = by_id.get(event_id)
             rowid = event.metadata["_rowid"]
-            if rowid > batch.end_rowid:
-                break
+            if event.event_type not in _HISTORY_TYPES:
+                raise ValueError("Original history source type changed")
+            if rowid < batch.start_rowid or rowid > batch.end_rowid:
+                raise ValueError("Original history source is outside its saved range")
             text = history_source_text(event)
-            start = batch.start_offset if rowid == batch.start_rowid else 0
-            end = batch.end_offset if rowid == batch.end_rowid else len(text)
-            batch.segments.append({"event_id": event.id, "rowid": rowid, "start_offset": start,
+            start = batch.start_offset if index == 0 else 0
+            end = batch.end_offset if index == len(batch.source_event_ids) - 1 else len(text)
+            if start < 0 or end < start or end > len(text):
+                raise ValueError("Original history offsets are unavailable")
+            segments.append({"event_id": event.id, "rowid": rowid, "start_offset": start,
                 "end_offset": end, "total_characters": len(text), "text": text[start:end],
                 "complete": start == 0 and end == len(text)})
-        if [segment["event_id"] for segment in batch.segments] != batch.source_event_ids:
-            raise ValueError("Original history range is unavailable")
+        if [segment["rowid"] for segment in segments] != sorted(segment["rowid"] for segment in segments):
+            raise ValueError("Original history sources are out of order")
+        if segments[0]["rowid"] != batch.start_rowid or segments[-1]["rowid"] != batch.end_rowid:
+            raise ValueError("Original history range boundaries changed")
+        if [segment["event_id"] for segment in segments if segment["complete"]] != batch.complete_event_ids:
+            raise ValueError("Original history completion markers changed")
+        batch.segments = segments
         return batch
 
     async def fail_history_batch(self, batch_id: str, error_type: str):
