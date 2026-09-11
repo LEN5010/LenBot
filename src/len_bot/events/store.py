@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+import re
 from typing import Any, Optional
 from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
@@ -158,7 +159,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         """Explicit operator reset; configuration and authored voice stay intact."""
         tables = ("events_fts", "pending_runtime_events", "job_exchanges", "skill_candidates",
                   "skill_versions", "skills", "agent_jobs", "tool_observations",
-                  "media_assets", "traces", "history_batches", "history_origins", "model_calls", "memories",
+                  "media_assets", "traces", "history_batches", "history_origins", "model_calls", "memories", "memory_index",
                   "open_loops", "tasks", "scene_sessions", "events")
         async with self._write_lock:
             await self._db.execute("BEGIN IMMEDIATE")
@@ -1033,11 +1034,16 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             await self._db.commit()
         return cursor.rowcount == 1
 
-    async def select_voice_examples(self, scene_id: str) -> list[dict[str, Any]]:
-        """All enabled operator examples, stable order; reading never changes selection."""
+    async def select_voice_examples(self, scene_id: str, query: str = "") -> list[dict[str, Any]]:
+        """Enabled operator examples, with deterministic local context relevance."""
         examples = await self.list_voice_examples(scene_id)
-        return sorted((item for item in examples if item["enabled"] and item["available"]),
-                      key=lambda item: (item["scene_id"], item["id"]))
+        candidates = [item for item in examples if item["enabled"] and item["available"]]
+        terms = set(re.findall(r"[\w\u4e00-\u9fff]+", (query or "").casefold()))
+        def rank(item):
+            text = " ".join((item.get("context", ""), item.get("tag", ""), item.get("content", ""))).casefold()
+            hits = sum(1 for term in terms if term and term in text)
+            return (-hits, 0 if item["scene_id"] == scene_id else 1, item["scene_id"], item["id"])
+        return sorted(candidates, key=rank)
 
     async def save_task(self, task: TaskItem) -> None:
         """Persist one task using the current task contract."""
@@ -1276,8 +1282,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
                         raise ValueError("An already expired preference or belief cannot become active")
                 for message in job_messages:
                     for segment in message.segments:
-                        if segment.type == "image" and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
-                            raise ValueError("Message image is disabled or outside the scene")
+                        if segment.type in {"image", "video", "audio"} and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
+                            raise ValueError("Message media is disabled or outside the scene")
                     if message.operation_ref:
                         if message.operation_ref not in operation_confirmations:
                             raise ValueError("Operation confirmation is missing its actual action binding")

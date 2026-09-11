@@ -16,6 +16,7 @@ from len_bot.cognition.agent_loop import CommitConflict, FreshInputConflict, _er
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import ConversationResume, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RoutingConfig
+from len_bot.cognition.retrieval_models import RetrievalModels
 from len_bot.cognition.social_core import SocialCognitionCore
 from len_bot.config import RuntimeConfig
 from len_bot.config_store import ConfigStore, RootConfig
@@ -27,6 +28,7 @@ from len_bot.media.service import MediaService
 from len_bot.memory.reflection import ReflectionEngine
 from len_bot.memory.reflector import LLMReflector
 from len_bot.memory.store import MemoryStore
+from len_bot.memory.index import MemoryIndex
 from len_bot.plugins.host import PluginHost, PluginConfigurationApplyError
 from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.job_runner import InformationJobRunner
@@ -84,6 +86,9 @@ class AgentRuntime:
         self.memory_store: MemoryStore | None = None
         self.history_engine: ReflectionEngine | None = None
         self.provider_registry = ProviderRegistry()
+        self.retrieval_models: RetrievalModels | None = None
+        self.retrieval_profiles = None
+        self.memory_index: MemoryIndex | None = None
         self.provider_configuration_error: str | None = None
         self.plugin_host = PluginHost(runtime=self)
         self.event_store.resolve_plugin_work=self.plugin_host.work_spec
@@ -140,6 +145,28 @@ class AgentRuntime:
         task.add_done_callback(self._background_tasks.discard)
         return task
 
+    async def _index_memories(self, memories, scene_id: str):
+        if not self.memory_index or not self.semantic_retrieval_enabled(scene_id):
+            return
+        try:
+            result = await self.memory_index.index_memories(memories, scene_id=scene_id)
+        except Exception as error:
+            result = {'status':'error','error_type':type(error).__name__,'error':str(error)}
+        if result.get('status') == 'error':
+            await self.event_store.save_trace(kind='memory_index_error', scene_id=scene_id,
+                ref_id='memory-index:'+uuid.uuid4().hex, payload=result)
+
+    async def _index_summary(self, batch_id: str, summary: str, generation: str | int, scene_id: str):
+        if not self.memory_index or not self.semantic_retrieval_enabled(scene_id):
+            return
+        try:
+            result = await self.memory_index.index_summary(batch_id, summary, generation, scene_id=scene_id)
+        except Exception as error:
+            result = {'status':'error','error_type':type(error).__name__,'error':str(error)}
+        if result.get('status') == 'error':
+            await self.event_store.save_trace(kind='memory_index_error', scene_id=scene_id,
+                ref_id='history-index:'+uuid.uuid4().hex, payload=result)
+
     def has_model_profile(self, role: str) -> bool:
         snapshot = self.provider_registry.snapshot()
         profile = (snapshot.get("routing") or {}).get(role)
@@ -147,6 +174,10 @@ class AgentRuntime:
             provider["id"] == profile["provider_id"] and provider["enabled"] and provider["api_key_masked"]
             for provider in snapshot["providers"]
         ))
+
+    def semantic_retrieval_enabled(self, scene_id: str) -> bool:
+        scene = self.config_store.current.scenes.get(scene_id)
+        return bool(scene and scene.semantic_retrieval)
 
     def _work_enabled(self) -> bool:
         return self.config.jobs_enabled and self.has_model_profile("work")
@@ -200,6 +231,9 @@ class AgentRuntime:
         self.memory_store = MemoryStore(self.event_store._db, self.event_store._write_lock, clock=self.clock)
         await self.memory_store.initialize()
         await self._load_configuration()
+        self.memory_index = MemoryIndex(self.event_store._db, self.event_store._write_lock,
+                                        self.retrieval_models, self.retrieval_profiles.embedding, self.clock)
+        await self.memory_index.initialize()
         self.history_engine = ReflectionEngine(
             self.memory_store,
             llm_reflector=LLMReflector(
@@ -215,6 +249,11 @@ class AgentRuntime:
     async def _load_configuration(self) -> None:
         models = self.config_store.current.models
         await self.provider_registry.apply_update(models.providers, models.routing)
+        self.retrieval_profiles = models.retrieval
+        self.retrieval_models = RetrievalModels(self.provider_registry, self.event_store,
+                                                timeout=self.config.media_request_timeout_seconds)
+        self.memory_index = MemoryIndex(self.event_store._db, self.event_store._write_lock,
+                                        self.retrieval_models, self.retrieval_profiles.embedding, self.clock)
 
     async def update_runtime_settings(self, values: dict, *, live: bool) -> None:
         from len_bot.config import EXECUTION_BUDGET_FIELDS
@@ -331,6 +370,8 @@ class AgentRuntime:
         async with self._reset_lock:
             await self._stop_conversation_workers()
             self._ingestion_ready.set()
+            if self.retrieval_models:
+                await self.retrieval_models.close()
             await self.media_service.close()
             await self.event_store.close()
 
@@ -456,6 +497,9 @@ class AgentRuntime:
         )
         self._last_gate_decision = decision
         if decision.accepted:
+            if self.memory_index and decision.committed_proposal.committed_memories:
+                self._spawn_background_task(self._index_memories(
+                    list(decision.committed_proposal.committed_memories), scene_id=scene_id))
             try:
                 await self.runtime_gate.publish_committed(decision, mailbox)
             finally:
@@ -485,11 +529,11 @@ class AgentRuntime:
         if any(segment.type == 'at_all' for segment in action.segments) and action.plugin_origin is None:
             raise ValueError('普通对话未开放全体提及')
         for segment in action.segments:
-            if segment.type == "image" and (
+            if segment.type in {"image", "video", "audio"} and (
                 not self.config.media_enabled
                 or await self.event_store.get_media(segment.asset_id, [action.scene_id, "global-safe"]) is None
             ):
-                raise ValueError("图片已停用或不在本场景中")
+                raise ValueError("媒体已停用或不在本场景中")
 
     async def _on_action_event(self, event: Event) -> None:
         if event.event_type == EventType.MESSAGE_SENT:
@@ -602,9 +646,15 @@ class AgentRuntime:
                         'review_items':[item.model_dump() for item in result.review_items],
                         'raw_text':'历史核对：'+'；'.join(item.summary for item in result.review_items) if result.review_items else '',
                         'origin_mode':'shadow' if self.shadow_mode else 'live'})
-                await actor.commit_history(batch_id=batch.id, proposals=result.memory_proposals,
+                committed_memories, _ = await actor.commit_history(batch_id=batch.id, proposals=result.memory_proposals,
                     summary=result.summary, key_event_ids=result.key_event_ids,
                     review_event=review_event, expected_revision=revision)
+                if self.memory_index and committed_memories:
+                    self._spawn_background_task(self._index_memories(
+                        committed_memories, scene_id=scene_id))
+                if self.memory_index:
+                    self._spawn_background_task(self._index_summary(
+                        batch.id, result.summary, batch.generation_version, scene_id))
                 await self.event_store.save_trace(kind='history_maintenance', scene_id=scene_id, ref_id=batch.id,
                     payload={'cognition':result.trace, 'source_event_ids':batch.source_event_ids,
                              'result':result.model_dump(mode='json')})
@@ -792,6 +842,9 @@ class AgentRuntime:
                 decision = await actor.commit_turn(candidate, observed, source_ids, revision, mailbox, self.runtime_gate)
                 self._last_gate_decision = decision
                 if decision.accepted:
+                    if self.memory_index and decision.committed_proposal.committed_memories:
+                        self._spawn_background_task(self._index_memories(
+                            list(decision.committed_proposal.committed_memories), scene_id=scene_id))
                     outcome = decision.committed_proposal.outcome
                     revision=decision.scene_session.knowledge_revision
                     decision.scene_session.pending_wakes=[wake for wake in decision.scene_session.pending_wakes

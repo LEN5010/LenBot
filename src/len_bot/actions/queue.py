@@ -161,7 +161,7 @@ class ActionQueue:
         success = delivery.status == DeliveryStatus.SENT
         event = Event(event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
-            metadata={"simulated": self.simulated, "media": [{"asset_id": segment.asset_id, "type": "image"} for segment in action.segments if segment.type == "image"]},
+            metadata={"simulated": self.simulated, "media": [{"asset_id": segment.asset_id, "type": segment.type} for segment in action.segments if segment.type in {"image", "video", "audio"}]},
             payload={**self._payload(action), "origin_mode": "simulated" if self.simulated else action.origin_mode,
                 "delivery_unknown": delivery.status == DeliveryStatus.UNKNOWN, "error": delivery.error,
                 "delivery_status": delivery.status.value, "transport": delivery.transport,

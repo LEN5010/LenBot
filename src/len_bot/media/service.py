@@ -22,6 +22,7 @@ from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource, error_message, error_source_url
 
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
+MEDIA_SUFFIXES = {"video/mp4": "mp4", "video/webm": "webm", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav", "audio/mp4": "m4a"}
 
 
 def validate_image(data: bytes, *, max_bytes: int, max_pixels: int):
@@ -97,9 +98,34 @@ class MediaService:
         path = self.root / f"{file_id}.{suffix}"
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.root / f".{file_id}.tmp"
-        await asyncio.to_thread(temporary.write_bytes, data)
-        await asyncio.to_thread(temporary.replace, path)
+        try:
+            await asyncio.to_thread(temporary.write_bytes, data)
+            await asyncio.to_thread(temporary.replace, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
         return mime, str(path)
+
+    async def _store_file(self, data: bytes, mime_type: str):
+        if not data or len(data) > self.runtime.config.media_max_file_bytes:
+            raise ValueError(f"媒体为空或超过 {self.runtime.config.media_max_file_bytes} 字节上限")
+        mime_type = (mime_type or "application/octet-stream").split(';', 1)[0].lower()
+        if mime_type not in MEDIA_SUFFIXES and not (mime_type.startswith('video/') or mime_type.startswith('audio/')):
+            raise ValueError(f"不支持的视频或音频类型：{mime_type}")
+        suffix = MEDIA_SUFFIXES.get(mime_type, mime_type.split('/', 1)[1].split('+', 1)[0][:8] or 'bin')
+        file_id = uuid.uuid4().hex
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{file_id}.{suffix}"
+        temporary = self.root / f".{file_id}.tmp"
+        try:
+            await asyncio.to_thread(temporary.write_bytes, data)
+            await asyncio.to_thread(temporary.replace, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            raise
+        return mime_type, str(path)
 
     async def get_bytes(self, asset_id, scene_id, *, include_disabled=False):
         async with self._locks.setdefault(asset_id, asyncio.Lock()), self._io_slots:
@@ -127,6 +153,45 @@ class MediaService:
             await self.runtime.commit_tool_observation(event)
             asset.update(mime_type=mime, path=path)
             return asset, data
+
+    async def get_file_bytes(self, asset_id, scene_id, *, include_disabled=False):
+        """Read a previously registered image/video/audio asset without assuming pixels."""
+        async with self._locks.setdefault(asset_id, asyncio.Lock()), self._io_slots:
+            asset = await self.runtime.event_store.get_media(asset_id, [scene_id, "global-safe"], include_disabled=include_disabled)
+            if not asset:
+                raise ValueError("媒体不存在、已停用或不在本场景中")
+            if asset["path"]:
+                path = Path(asset["path"]).resolve()
+                if not path.is_relative_to(self.root) or not path.is_file() or path.stat().st_size > self.runtime.config.media_max_file_bytes:
+                    raise ValueError("媒体缓存不可用")
+                return asset, await asyncio.to_thread(path.read_bytes)
+            locator = asset["locator"]
+            if locator.startswith("base64://"):
+                if len(locator) > self.runtime.config.media_max_file_bytes * 4 // 3 + 100:
+                    raise ValueError("媒体超过上限")
+                data = base64.b64decode(locator.removeprefix("base64://"), validate=True)
+            elif locator.startswith(("https://", "http://")):
+                _, headers, data = await fetch_public(self._client, locator, max_bytes=self.runtime.config.media_max_file_bytes)
+                if not asset.get("mime_type"):
+                    asset["mime_type"] = headers.get("content-type", "").split(';', 1)[0].lower()
+            else:
+                raise ValueError("媒体只有平台文件标识，没有可读取地址；不会读取任意本地路径")
+            mime, path = await self._store_file(data, asset.get("mime_type") or "application/octet-stream")
+            event = await self.runtime.event_store.save_media_file(asset_id, asset["scope"], mime, path)
+            await self.runtime.commit_tool_observation(event)
+            asset.update(mime_type=mime, path=path)
+            return asset, data
+
+    async def save_downloaded(self, asset_id: str, scene_id: str, source_url: str, data: bytes, mime_type: str, description: str, *, source_event_id: str | None = None):
+        if not source_url.startswith(("https://", "http://")):
+            raise ValueError("媒体来源必须是公开HTTP(S)地址")
+        asset = await self.runtime.event_store.get_media(asset_id, [scene_id, "global-safe"], include_disabled=True)
+        if asset is None:
+            await self.runtime.event_store.register_external_media(asset_id, scene_id, source_url, source_event_id=source_event_id)
+        mime, path = await self._store_file(data, mime_type)
+        event = await self.runtime.event_store.save_media_file(asset_id, scene_id, mime, path, description=description)
+        await self.runtime.commit_tool_observation(event)
+        return await self.runtime.event_store.get_media(asset_id, [scene_id], include_disabled=True)
 
     async def upload(self, data, scope, description, tags):
         if scope != "global-safe" and not scope.startswith(("group:", "private:")):
@@ -299,12 +364,17 @@ class MediaService:
         images = {}
         sticker_ids = set()
         for segment in segments:
-            if segment.type == "image":
+            if segment.type in {"image", "video", "audio"}:
                 if not self.runtime.config.media_enabled:
                     raise ValueError("媒体能力已停用")
-                asset, data = await self.get_bytes(segment.asset_id, action.scene_id)
+                asset, data = (await self.get_bytes(segment.asset_id, action.scene_id)
+                               if segment.type == "image" else await self.get_file_bytes(segment.asset_id, action.scene_id))
+                if segment.type == "video" and not (asset.get("mime_type") or "").startswith("video/"):
+                    raise ValueError("视频段引用的素材不是视频")
+                if segment.type == "audio" and not (asset.get("mime_type") or "").startswith("audio/"):
+                    raise ValueError("音频段引用的素材不是音频")
                 images[segment.asset_id] = "base64://" + base64.b64encode(data).decode()
-                if asset["curated"] and "表情包" in asset["tags"]:
+                if segment.type == "image" and asset["curated"] and "表情包" in asset["tags"]:
                     sticker_ids.add(segment.asset_id)
         return action.model_copy(update={"segments": segments, "resolved_images": images,
                                          "resolved_sticker_ids": sticker_ids})

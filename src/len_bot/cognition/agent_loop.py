@@ -57,7 +57,7 @@ class TruncatedModelOutput(AgentProtocolError):
 def final_step_message(terminal_name: str) -> dict:
     return {"role": "developer", "_context_section": "terminal_hint", "content": (
         f"当前只开放 {terminal_name}，具体剩余额度见运行时记录。"
-        "请现在直接调用这个终结工具，提交最终结果；尚未核实的内容保留不确定性。"
+        "请直接调用这个提交工具，按其Schema选择本阶段结果与后续动作；尚未核实的内容保留不确定性。"
     )}
 
 
@@ -364,7 +364,7 @@ class AgentLoop:
                                             state['tool_calls_limit']-state['tool_calls_used']):
                         raise AgentBudgetExhausted("Tool execution budget exceeded; no calls in this response were executed",budget_kind='tool_calls')
                     if forced_final and not terminal_calls:
-                        raise AgentProtocolError(f"No model budget remains; call {terminal_name}")
+                        raise AgentProtocolError(f"Only {terminal_name} is available for this model call")
                 except (TerminalArgumentError, AgentProtocolError, AgentBudgetExhausted) as exc:
                     step["failure_reason"] = _error_text(exc)
                     audit["failure_reason"] = step["failure_reason"]

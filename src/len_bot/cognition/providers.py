@@ -9,7 +9,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
-ModelRole = Literal["conversation", "work", "maintenance"]
+ModelRole = Literal["conversation", "work", "maintenance", "retrieval"]
 
 
 class ProviderConfig(BaseModel):
@@ -41,6 +41,28 @@ class ModelProfile(BaseModel):
     @classmethod
     def normalize_effort(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+
+class RetrievalProfile(BaseModel):
+    """A non-chat model binding used only for optional retrieval requests."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    provider_id: str
+    model: str
+    dimension: int | None = Field(default=None, ge=1)
+    protocol: Literal["cohere_v1"] | None = None
+
+    @field_validator("provider_id", "model")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Retrieval provider and model must be nonempty")
+        return value.strip()
+
+
+class RetrievalRouting(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    embedding: RetrievalProfile | None = None
+    rerank: RetrievalProfile | None = None
 
 
 class RoutingConfig(BaseModel):
@@ -148,6 +170,16 @@ class ProviderRegistry:
             return False
         key = provider.api_key.strip()
         return bool(key)
+
+    def resolve_retrieval(self, profile: RetrievalProfile, *, purpose: str = "embedding") -> RouteResolution:
+        if purpose not in {"embedding", "rerank"}:
+            raise ValueError("Unknown retrieval purpose")
+        provider = self._providers.get(profile.provider_id)
+        if provider is None or not provider.enabled:
+            raise LookupError(f"Provider {profile.provider_id!r} is missing or disabled")
+        if provider.models and profile.model not in provider.models:
+            raise LookupError(f"Bound model {profile.model!r} is unavailable on {provider.id!r}")
+        return RouteResolution(provider_id=provider.id, model=profile.model, client=self._client_for(provider.id), role="retrieval")
 
     def export(self) -> dict:
         return {"providers": [provider.model_dump() for provider in self._providers.values()],

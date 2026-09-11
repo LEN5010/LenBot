@@ -35,6 +35,12 @@ class VoiceExampleToggleRequest(BaseModel):
     example_id: str
     enabled: bool
 
+class VoiceExampleFromMessageRequest(BaseModel):
+    scene_id: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
+    context: str = Field(default="", max_length=8000)
+    tag: str = Field(default="", max_length=200)
+
 
 @router.get("/exemplars")
 async def list_exemplars(scene_id: Optional[str] = None, request: Request = None, user: str = Depends(get_current_user)):
@@ -52,6 +58,26 @@ async def create_exemplar(req: VoiceExampleCreateRequest, request: Request, user
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return {"success": True, "exemplar": example}
+
+@router.post("/exemplars/from-message")
+async def create_exemplar_from_message(req: VoiceExampleFromMessageRequest, request: Request, user: str = Depends(get_current_user)):
+    """Turn a confirmed real Bot delivery into an operator-edited exemplar."""
+    runtime = request.app.state.runtime
+    rows = await runtime.event_store.events_by_ids(req.scene_id, [req.event_id], 2**63 - 1)
+    event = rows[0] if rows else None
+    if event is None or event.event_type.value != "MESSAGE_SENT" or event.actor_id != runtime.bot_actor_id:
+        raise HTTPException(400, "只能从本场景已真实发送的 Bot 消息创建样例")
+    if event.metadata.get("simulated") or event.payload.get("delivery_status") != "sent" or event.payload.get("delivery_unknown"):
+        raise HTTPException(400, "该消息没有确定的真实送达回执，不能作为表达样例")
+    segments = event.payload.get("segments") or []
+    if any(part.get("type") not in {"text", "image"} for part in segments):
+        raise HTTPException(400, "表达样例只支持文字与运营图片")
+    try:
+        example = await runtime.event_store.add_voice_example(req.scene_id, content=event.payload.get("content", ""),
+            context=req.context.strip(), tag=req.tag.strip(), segments=segments)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"success": True, "source_event_id": req.event_id, "exemplar": example}
 
 
 @router.post("/exemplars/toggle")

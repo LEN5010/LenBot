@@ -17,6 +17,8 @@ const page = computed(() => Math.max(1, Number(route.query.page) || 1))
 const filters = ref({ scene: '', subject: '', status: 'active', kind: '', query: '' })
 const rows = ref([]), total = ref(0), pageSize = ref(30), loading = ref(false), listError = ref(''), listLoaded = ref(false), readAt = ref(null)
 const memory = ref(null), chain = ref([]), detailLoading = ref(false), detailError = ref(''), detailMissing = ref(false), detailReadAt = ref(null)
+const indexStatus = ref(null)
+const indexBusy = ref(false)
 const refuteOpen = ref(false), reason = ref(''), saving = ref(false), actionError = ref(''), feedback = ref('')
 let listRequest = 0, detailRequest = 0
 const dirty = computed(() => refuteOpen.value && Boolean(reason.value.trim()))
@@ -39,9 +41,12 @@ async function loadList() {
   loading.value = true; listError.value = ''
   const params = new URLSearchParams(clean({ scope: scalar(route.query.scene), subject: scalar(route.query.subject), status: route.query.status === undefined ? 'active' : scalar(route.query.status), kind: scalar(route.query.kind), query: scalar(route.query.query), page: page.value, page_size: 30 }))
   try {
-    const result = await api('/api/cockpit/memories?' + params)
+    const requests = [api('/api/cockpit/memories?' + params)]
+    if (scalar(route.query.scene)) requests.push(api('/api/cockpit/memory-index?scene_id=' + encodeURIComponent(scalar(route.query.scene))))
+    const [result, coverage] = await Promise.all(requests)
     if (request !== listRequest || id.value) return
     rows.value = result.items; total.value = result.total; pageSize.value = result.page_size; listLoaded.value = true; readAt.value = Date.now() / 1000
+    indexStatus.value = coverage || null
   } catch (error) { if (request === listRequest) listError.value = error.message }
   finally { if (request === listRequest) loading.value = false }
 }
@@ -76,6 +81,14 @@ async function refute() {
   finally { saving.value = false }
 }
 function refresh() { if (saving.value) return; return id.value ? loadDetail() : loadList() }
+async function rebuildIndex() {
+  const scene = scalar(route.query.scene)
+  if (!scene || indexBusy.value || !window.confirm('为当前场景重建派生语义索引？这会按已配置模型产生检索调用。')) return
+  indexBusy.value = true; listError.value = ''
+  try { await api('/api/cockpit/memory-index/rebuild?scene_id=' + encodeURIComponent(scene), {method:'POST'}); await loadList() }
+  catch (error) { listError.value = error.message }
+  finally { indexBusy.value = false }
+}
 function onVisible() { if (document.visibilityState === 'visible') refresh() }
 onMounted(() => document.addEventListener('visibilitychange', onVisible))
 onBeforeUnmount(() => { ++listRequest; ++detailRequest; document.removeEventListener('visibilitychange', onVisible) })
@@ -86,7 +99,7 @@ watch(() => [route.query.id, route.query.scene], () => {
 }, { immediate: true })
 watch(() => [route.query.id, route.query.scene, route.query.subject, route.query.status, route.query.kind, route.query.query, route.query.page], () => {
   filters.value = { scene: scalar(route.query.scene), subject: scalar(route.query.subject), status: route.query.status === undefined ? 'active' : scalar(route.query.status), kind: scalar(route.query.kind), query: scalar(route.query.query) }
-  if (!id.value) { rows.value = []; total.value = 0; listLoaded.value = false; readAt.value = null; loadList() }
+  if (!id.value) { rows.value = []; total.value = 0; listLoaded.value = false; readAt.value = null; indexStatus.value = null; loadList() }
 }, { immediate: true })
 </script>
 
@@ -98,6 +111,7 @@ watch(() => [route.query.id, route.query.scene, route.query.subject, route.query
     </PageHeader>
     <template v-if="!id">
       <v-card><v-card-text><v-form class="memory-filters" @submit.prevent="applyFilters"><ScopeSelect v-model="filters.scene" clearable /><v-text-field v-model="filters.subject" label="对象账号或场景 ID" hide-details clearable /><v-text-field v-model="filters.query" label="查找认识内容" hide-details clearable /><v-select v-model="filters.status" label="原始状态" :items="statuses" hide-details /><v-select v-model="filters.kind" label="认识类型" :items="kinds" hide-details /><v-btn type="submit" color="primary">筛选</v-btn></v-form></v-card-text></v-card>
+      <v-alert v-if="indexStatus" :type="indexStatus.last_error ? 'warning' : 'info'" variant="tonal" class="section-gap">认识索引：{{ indexStatus.indexed ?? 0 }}/{{ indexStatus.total ?? 0 }} 条<span v-if="indexStatus.pending">，待索引 {{ indexStatus.pending }} 条</span>；历史摘要：{{ indexStatus.summary_coverage?.indexed ?? 0 }}/{{ indexStatus.summary_coverage?.total ?? 0 }} 条。索引只服务按需语义召回，不改变认识状态。<span v-if="indexStatus.last_error">最近错误：{{ indexStatus.last_error.error || indexStatus.last_error.error_type }}</span><v-btn v-if="filters.scene" size="small" variant="outlined" class="ml-3" :loading="indexBusy" :disabled="indexBusy" @click="rebuildIndex">重建当前场景索引</v-btn></v-alert>
       <v-alert v-if="listError" type="error" variant="tonal" title="认识列表读取失败" class="section-gap">{{ listError }}<div v-if="readAt">保留上次读取结果：{{ fmtTime(readAt) }}</div></v-alert><v-progress-linear v-if="loading" indeterminate class="section-gap" aria-label="正在读取认识" />
       <div v-if="listLoaded" class="list-meta"><span>共 {{ total }} 条 · 每页 {{ pageSize }} 条</span><span>读取于 {{ fmtTime(readAt) }}</span></div>
       <div class="memory-list"><v-card v-for="item in rows" :key="item.id" tag="article" class="memory-row"><div class="memory-object"><span class="subject-id">{{ item.subject }}</span><span class="auxiliary">{{ kindName(item.kind) }}</span><EntityLink type="scene" :id="item.scope" :scene-id="item.scope" /></div><div class="memory-copy"><RouterLink :to="detailRoute(item)" class="record-title two-lines">{{ item.statement }}</RouterLink><span class="auxiliary">{{ item.evidence.length }} 条原始证据</span></div><div class="memory-state"><StatusBadge domain="basis" :status="item.basis" /><div class="state-line"><span v-if="expired(item)" class="auxiliary">原状态</span><StatusBadge domain="memory" :status="item.status" /></div><v-chip v-if="expired(item)" color="warning" variant="tonal" size="small">现已过期</v-chip></div><v-btn variant="tonal" @click="open(item)">查看详情</v-btn></v-card></div>
