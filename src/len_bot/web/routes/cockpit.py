@@ -1,5 +1,6 @@
 from typing import Optional, Literal
 import json
+import uuid
 from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
@@ -251,7 +252,11 @@ async def rebuild_memory_index(scene_id: str, request: Request, user: str = Depe
         raise HTTPException(409, "索引尚未初始化")
     if not runtime.semantic_retrieval_enabled(scene_id):
         raise HTTPException(409, "该场景未开启语义检索；不会向第三方发送其文本")
-    result = await runtime.memory_index.rebuild(scene_id)
+    result = await runtime.memory_index.rebuild(scene_id, request_guard=runtime.semantic_index_guard(scene_id))
+    if result.get('status') == 'cancelled':
+        await runtime.event_store.save_trace(kind='memory_index_cancelled', scene_id=scene_id,
+            ref_id='memory-rebuild:'+uuid.uuid4().hex, payload=result)
+        raise HTTPException(409, "重建期间场景已关闭语义检索；未开始的批次已停止")
     if result.get('status') not in {'indexed', 'disabled'}:
         raise HTTPException(502, result.get('error') or '索引构建失败')
     return result
