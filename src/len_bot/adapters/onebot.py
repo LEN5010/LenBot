@@ -252,7 +252,10 @@ class OneBotAdapter:
             elif segment.type in {"video", "audio"}:
                 if segment.asset_id not in action.resolved_images:
                     raise ValueError(f"{segment.type} asset has not been resolved by the runtime")
-                parts.append({"type": segment.type, "data": {"file": action.resolved_images[segment.asset_id]}})
+                # OneBot 11 calls the audio message segment `record`; the
+                # internal proposal type remains `audio` for model clarity.
+                protocol_type = "record" if segment.type == "audio" else "video"
+                parts.append({"type": protocol_type, "data": {"file": action.resolved_images[segment.asset_id]}})
         params = {"message": parts}
         target_id = action.scene_id.split(":")[-1]
         if action.action_type == ActionType.SEND_GROUP_MESSAGE:

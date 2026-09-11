@@ -138,6 +138,7 @@ class AgentRuntime:
         self._maintaining_history_scenes: set[str] = set()
         self._pending_bursts: dict[str, Stimulus] = {}
         self._conversation_tasks: dict[str, asyncio.Task] = {}
+        self._semantic_index_epochs: dict[str, int] = {}
 
     def _spawn_background_task(self, coroutine: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -148,23 +149,25 @@ class AgentRuntime:
     async def _index_memories(self, memories, scene_id: str):
         if not self.memory_index or not self.semantic_retrieval_enabled(scene_id):
             return
+        guard = self.semantic_index_guard(scene_id)
         try:
-            result = await self.memory_index.index_memories(memories, scene_id=scene_id)
+            result = await self.memory_index.index_memories(memories, scene_id=scene_id, request_guard=guard)
         except Exception as error:
             result = {'status':'error','error_type':type(error).__name__,'error':str(error)}
-        if result.get('status') == 'error':
-            await self.event_store.save_trace(kind='memory_index_error', scene_id=scene_id,
+        if result.get('status') in {'error', 'cancelled'}:
+            await self.event_store.save_trace(kind='memory_index_error' if result.get('status') == 'error' else 'memory_index_cancelled', scene_id=scene_id,
                 ref_id='memory-index:'+uuid.uuid4().hex, payload=result)
 
     async def _index_summary(self, batch_id: str, summary: str, generation: str | int, scene_id: str):
         if not self.memory_index or not self.semantic_retrieval_enabled(scene_id):
             return
+        guard = self.semantic_index_guard(scene_id)
         try:
-            result = await self.memory_index.index_summary(batch_id, summary, generation, scene_id=scene_id)
+            result = await self.memory_index.index_summary(batch_id, summary, generation, scene_id=scene_id, request_guard=guard)
         except Exception as error:
             result = {'status':'error','error_type':type(error).__name__,'error':str(error)}
-        if result.get('status') == 'error':
-            await self.event_store.save_trace(kind='memory_index_error', scene_id=scene_id,
+        if result.get('status') in {'error', 'cancelled'}:
+            await self.event_store.save_trace(kind='memory_index_error' if result.get('status') == 'error' else 'memory_index_cancelled', scene_id=scene_id,
                 ref_id='history-index:'+uuid.uuid4().hex, payload=result)
 
     def has_model_profile(self, role: str) -> bool:
@@ -178,6 +181,10 @@ class AgentRuntime:
     def semantic_retrieval_enabled(self, scene_id: str) -> bool:
         scene = self.config_store.current.scenes.get(scene_id)
         return bool(scene and scene.semantic_retrieval)
+
+    def semantic_index_guard(self, scene_id: str):
+        epoch = self._semantic_index_epochs.get(scene_id, 0)
+        return lambda: self.semantic_retrieval_enabled(scene_id) and self._semantic_index_epochs.get(scene_id, 0) == epoch
 
     def _work_enabled(self) -> bool:
         return self.config.jobs_enabled and self.has_model_profile("work")
@@ -340,10 +347,13 @@ class AgentRuntime:
                 self.restart_required = True
 
     async def update_scene_settings(self, scene_id: str, values: dict) -> None:
+        was_enabled = self.semantic_retrieval_enabled(scene_id)
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             data['scenes'][scene_id] = values
             self.config_store.save(self.config_store.parse(data))
+        if was_enabled != self.semantic_retrieval_enabled(scene_id):
+            self._semantic_index_epochs[scene_id] = self._semantic_index_epochs.get(scene_id, 0) + 1
         actor = self.scene_manager._actors.get(scene_id)
         for plugin_id in self.config_store.catalog.entries:
             if not self.scene_policy.plugin_allowed(scene_id,plugin_id,'handler'):

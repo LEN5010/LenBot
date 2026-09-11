@@ -22,7 +22,40 @@ from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource, error_message, error_source_url
 
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
-MEDIA_SUFFIXES = {"video/mp4": "mp4", "video/webm": "webm", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav", "audio/mp4": "m4a"}
+MEDIA_SUFFIXES = {"video/mp4": "mp4", "video/webm": "webm", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav", "audio/mp4": "m4a", "audio/flac": "flac"}
+
+
+def sniff_media_mime(data: bytes, declared: str | None = None, expected_type: str | None = None) -> str:
+    """Accept only payloads whose bytes identify a supported media container."""
+    if not data:
+        raise ValueError("媒体响应为空")
+    declared = (declared or "").split(';', 1)[0].strip().lower()
+    detected = None
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        detected = "video/mp4" if declared.startswith("video/") else "audio/mp4" if declared.startswith("audio/") else "video/mp4"
+    elif data.startswith(b"\x1a\x45\xdf\xa3"):
+        detected = "video/webm"
+    elif data.startswith(b"OggS"):
+        detected = "audio/ogg"
+    elif data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+        detected = "audio/wav"
+    elif data.startswith(b"fLaC"):
+        detected = "audio/flac"
+    elif data.startswith(b"ID3") or (len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0):
+        detected = "audio/mpeg"
+    if not detected:
+        raise ValueError("媒体响应不是可识别的受支持容器")
+    if expected_type and not detected.startswith(expected_type + "/"):
+        raise ValueError(f"下载内容是{detected}，不是声明的{expected_type}媒体")
+    if declared and declared not in {"application/octet-stream", "binary/octet-stream"}:
+        declared_type = declared.split('/', 1)[0]
+        if not detected.startswith(declared_type + "/"):
+            raise ValueError(f"响应类型{declared}与媒体容器{detected}不一致")
+        if declared in MEDIA_SUFFIXES and declared != detected:
+            raise ValueError(f"响应类型{declared}与实际容器{detected}不一致")
+        if declared in MEDIA_SUFFIXES:
+            return declared
+    return detected
 
 
 def validate_image(data: bytes, *, max_bytes: int, max_pixels: int):
@@ -107,12 +140,10 @@ class MediaService:
             raise
         return mime, str(path)
 
-    async def _store_file(self, data: bytes, mime_type: str):
+    async def _store_file(self, data: bytes, mime_type: str, *, expected_type: str | None = None):
         if not data or len(data) > self.runtime.config.media_max_file_bytes:
             raise ValueError(f"媒体为空或超过 {self.runtime.config.media_max_file_bytes} 字节上限")
-        mime_type = (mime_type or "application/octet-stream").split(';', 1)[0].lower()
-        if mime_type not in MEDIA_SUFFIXES and not (mime_type.startswith('video/') or mime_type.startswith('audio/')):
-            raise ValueError(f"不支持的视频或音频类型：{mime_type}")
+        mime_type = sniff_media_mime(data, mime_type, expected_type=expected_type)
         suffix = MEDIA_SUFFIXES.get(mime_type, mime_type.split('/', 1)[1].split('+', 1)[0][:8] or 'bin')
         file_id = uuid.uuid4().hex
         self.root.mkdir(parents=True, exist_ok=True)
@@ -164,7 +195,9 @@ class MediaService:
                 path = Path(asset["path"]).resolve()
                 if not path.is_relative_to(self.root) or not path.is_file() or path.stat().st_size > self.runtime.config.media_max_file_bytes:
                     raise ValueError("媒体缓存不可用")
-                return asset, await asyncio.to_thread(path.read_bytes)
+                data = await asyncio.to_thread(path.read_bytes)
+                asset["mime_type"] = sniff_media_mime(data, asset.get("mime_type"))
+                return asset, data
             locator = asset["locator"]
             if locator.startswith("base64://"):
                 if len(locator) > self.runtime.config.media_max_file_bytes * 4 // 3 + 100:
@@ -182,13 +215,15 @@ class MediaService:
             asset.update(mime_type=mime, path=path)
             return asset, data
 
-    async def save_downloaded(self, asset_id: str, scene_id: str, source_url: str, data: bytes, mime_type: str, description: str, *, source_event_id: str | None = None):
+    async def save_downloaded(self, asset_id: str, scene_id: str, source_url: str, data: bytes, mime_type: str, description: str, *, source_event_id: str | None = None, expected_type: str | None = None):
         if not source_url.startswith(("https://", "http://")):
             raise ValueError("媒体来源必须是公开HTTP(S)地址")
+        # Validate and persist bytes before creating the catalog row. A failed
+        # HTML/JSON response must not leave behind a sendable-looking asset.
+        mime, path = await self._store_file(data, mime_type, expected_type=expected_type)
         asset = await self.runtime.event_store.get_media(asset_id, [scene_id, "global-safe"], include_disabled=True)
         if asset is None:
             await self.runtime.event_store.register_external_media(asset_id, scene_id, source_url, source_event_id=source_event_id)
-        mime, path = await self._store_file(data, mime_type)
         event = await self.runtime.event_store.save_media_file(asset_id, scene_id, mime, path, description=description)
         await self.runtime.commit_tool_observation(event)
         return await self.runtime.event_store.get_media(asset_id, [scene_id], include_disabled=True)

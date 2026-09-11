@@ -511,6 +511,7 @@ class ConversationContext:
         entries = []
         images = []
         media_reads = {}
+        required_images = set()
         for result_id in result_ids:
             original = toolkit.observations.get(result_id)
             if original is None:
@@ -522,13 +523,10 @@ class ConversationContext:
             shown = shown.model_copy(update={'attachments':[self.refs.register_media(asset) for asset in original.attachments]})
             entries.append({'result_id': result_id, 'observation': shown})
             images.extend(await self.attachments(original.attachments, read_cache=media_reads))
-            image_attachments = set()
             for asset in original.attachments:
                 media = await self.runtime.event_store.get_media(asset, [self.session.scene_id, 'global-safe'])
                 if media and (media.get('mime_type') or '').startswith('image/'):
-                    image_attachments.add(asset)
-            if image_attachments and not can_read_media and image_attachments - self.loaded_media:
-                raise ValueError('初始插件资料的图片未能装入模型输入，且当前入口没有图片续读工具')
+                    required_images.add(asset)
 
         def material_message(entry):
             return {'role':'user','_context_section':'plugin_material',
@@ -546,6 +544,10 @@ class ConversationContext:
         messages.extend(material_messages)
         messages.extend(images)
         self.limit_image_window(messages)
+        missing_images = required_images - self.loaded_media
+        if missing_images and not can_read_media:
+            refs = ', '.join(self.refs.register_media(asset) for asset in sorted(missing_images))
+            raise ValueError(f'初始插件资料的图片 {refs} 在最终模型窗口中缺失，且当前入口没有图片续读工具')
         self.check_request(messages, definitions(), phase='initial_plugin_material')
 
     async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None):

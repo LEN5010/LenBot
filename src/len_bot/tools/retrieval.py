@@ -663,7 +663,8 @@ class RetrievalToolkit:
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
                 return {'ref':ref,**item}
             if name == 'search_history_summaries':
-                item['batch_ref'] = refs.register_result(item.pop('id'))
+                item['batch_id'] = item.pop('id')
+                item['result_ref'] = shown.result_id
                 item['key_events'] = [refs.register_event_locator(event_id) for event_id in item.pop('key_event_ids', [])]
                 item['locator_only'] = True
                 return item
@@ -864,8 +865,8 @@ class RetrievalToolkit:
         elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,args['start_time'],args['end_time'],scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='query_person_history':rows=await store.query_person_history(args['actor_id'],scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='search_history_summaries':
-            summary_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND instr(lower(summary),lower(?))>0"
-            summary_params: list[Any] = [self.default_scene_id, args['query']]
+            summary_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND end_rowid<=? AND instr(lower(summary),lower(?))>0"
+            summary_params: list[Any] = [self.default_scene_id, self.cutoff, args['query']]
             if args.get('start_time') is not None:
                 summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"
                 summary_params.append(args['start_time'])
@@ -882,10 +883,12 @@ class RetrievalToolkit:
             if retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
                 summary_partial = (await self.context.runtime.memory_index.summary_coverage(self.default_scene_id)).get('pending', 0) > 0
                 vector = (await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id))[0]
-                ids = await self.context.runtime.memory_index.candidates(self.default_scene_id, vector, limit=self.config.retrieval_max_limit, source_kind='history_summary')
+                ids = await self.context.runtime.memory_index.candidates(
+                    self.default_scene_id, vector, limit=self.config.retrieval_max_limit,
+                    source_kind='history_summary', max_end_rowid=self.cutoff)
                 if ids:
-                    semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND id IN (SELECT value FROM json_each(?))"
-                    semantic_params: list[Any] = [self.default_scene_id, json.dumps(ids)]
+                    semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND end_rowid<=? AND id IN (SELECT value FROM json_each(?))"
+                    semantic_params: list[Any] = [self.default_scene_id, self.cutoff, json.dumps(ids)]
                     if args.get('start_time') is not None:
                         semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"; semantic_params.append(args['start_time'])
                     if args.get('end_time') is not None:
@@ -894,7 +897,8 @@ class RetrievalToolkit:
                     semantic_rows = [dict(zip([item[0] for item in cursor.description], row)) for row in await cursor.fetchall()]
                     by_id = {item['id']: item for item in rows}
                     by_id.update({item['id']: item for item in semantic_rows})
-                    rows = [by_id[item] for item in ids if item in by_id][:args['limit']]
+                    ordered_ids = list(dict.fromkeys([item['id'] for item in rows] + ids))
+                    rows = [by_id[item] for item in ordered_ids if item in by_id][:args['limit']]
                     semantic_summary = True
             for row in rows:
                 row['key_event_ids'] = json.loads(row.pop('key_event_ids_json'))
@@ -917,8 +921,15 @@ class RetrievalToolkit:
             if args.get('query') and retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
                 semantic_partial = (await self.context.runtime.memory_index.coverage(self.default_scene_id)).get('pending', 0) > 0
                 vectors = await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id)
-                ids = await self.context.runtime.memory_index.candidates(self.default_scene_id, vectors[0], limit=24)
-                semantic = await self.memory_store.get_memories_by_ids(ids, scopes, include_superseded=args['include_history'])
+                ids = await self.context.runtime.memory_index.candidates(
+                    self.default_scene_id, vectors[0], limit=24,
+                    subject=args.get('subject'), kind=args.get('kind'),
+                    include_superseded=args['include_history'], start_time=args.get('start_time'),
+                    end_time=args.get('end_time'))
+                semantic = await self.memory_store.get_memories_by_ids(
+                    ids, scopes, include_superseded=args['include_history'],
+                    subject=args.get('subject'), kind=args.get('kind'),
+                    start_time=args.get('start_time'), end_time=args.get('end_time'))
                 by_id = {item.id:item for item in memories}
                 lexical_ids = [item.id for item in memories]
                 for item in semantic:
@@ -936,10 +947,10 @@ class RetrievalToolkit:
                     ref_id='memory-query:'+uuid.uuid4().hex,
                     payload={'query': args['query'], 'subject': args.get('subject'), 'kind': args.get('kind'),
                              'start_time': args.get('start_time'), 'end_time': args.get('end_time'),
-                             'lexical_candidates': len(by_id), 'semantic_candidates': len(semantic),
+                             'lexical_candidates': len(lexical_ids), 'semantic_candidates': len(semantic),
                              'rerank': bool(profiles.rerank and len(by_id) > self.config.retrieval_default_limit),
                              'index_partial': semantic_partial,
-                             'presented_memory_ids': [item.id for item in memories]})
+                             'candidate_memory_ids': [item.id for item in memories]})
             return ToolResult(status='partial' if semantic_partial else ('ok' if memories else 'no_results'),
                               content=json.dumps([m.model_dump(mode='json') for m in memories], ensure_ascii=False),
                               coverage='memory_ledger+semantic' if semantic_used else 'memory_ledger', evidence_kind='retrieval')
