@@ -27,9 +27,9 @@ const directoryLoading = ref(false), detail = ref(null), detailLoading = ref(fal
 const messages = ref([]), messageLoading = ref(false), olderLoading = ref(false), messageError = ref(''), messageLoaded = ref(false), messageReadAt = ref(null), snapshot = ref(null), nextBefore = ref(null), hasMore = ref(false), newPage = ref(null), historical = ref(false), messageScroll = ref(null), messageContent = ref(null)
 const selectedEvent = ref(null), relations = ref(null), inspectorLoading = ref(false), inspectorError = ref(''), inspectorReadAt = ref(null)
 const aux = ref(null), auxLoading = ref(false), auxError = ref(''), auxReadAt = ref(null)
-const retryConfirmation = ref(null), retrySaving = ref(false), retryError = ref(''), feedback = ref('')
+const retryConfirmation = ref(null), retrySaving = ref(false), retryError = ref(''), feedback = ref(''), retryingBatch = ref(null)
 let detailRequest = 0, messageRequest = 0, inspectorRequest = 0, auxRequest = 0
-let scrollAnchor = null, pendingPosition = false, contentObserver = null
+let scrollAnchor = null, pendingPosition = false, contentObserver = null, retryPoll = null
 const participants = computed(() => Object.values(detail.value?.session.participants || {}).filter(item => `${item.actor_id} ${item.nickname || ''} ${item.card || ''}`.toLowerCase().includes((participantSearch.value || '').toLowerCase())))
 const focused = computed(() => Object.entries(detail.value?.session.focused_participants || {}))
 const auxPages = computed(() => Math.max(1, Math.ceil((aux.value?.total || 0) / (aux.value?.page_size || 30))))
@@ -172,13 +172,27 @@ async function loadAux(reset = false) {
   finally { if (own === auxRequest) auxLoading.value = false }
 }
 function askRetry(batch) { retryConfirmation.value = { id: batch.id, scene: sceneId.value, range: `${batch.start_rowid}:${batch.start_offset} → ${batch.end_rowid}:${batch.end_offset}`, error: batch.failure_detail || batch.error_type }; retryError.value = '' }
+function stopRetryPoll() { if (retryPoll) { clearInterval(retryPoll); retryPoll = null } retryingBatch.value = null }
+async function pollRetry(id, scene) {
+  try {
+    const batch = await api(`/api/cockpit/history-batches/${encodeURIComponent(id)}?${queryString({ scene_id: scene })}`)
+    if (sceneId.value !== scene || retryingBatch.value !== id) return
+    if (batch.status === 'pending') return
+    stopRetryPoll(); await loadDetail(); await loadAux()
+    if (batch.status === 'completed') feedback.value = '此区间已完成历史摘要覆盖。'
+    else retryError.value = batch.failure_detail || batch.error_type || '此区间处理失败，请查看失败详情后再重试。'
+  } catch (error) {
+    if (sceneId.value === scene && retryingBatch.value === id) retryError.value = error.message
+  }
+}
 async function retryHistory() {
   if (!retryConfirmation.value || retrySaving.value) return
   const pending = { ...retryConfirmation.value }; retrySaving.value = true; retryError.value = ''
   try {
     const result = await api(`/api/cockpit/history-batches/${encodeURIComponent(pending.id)}/retry`, { method: 'POST', body: JSON.stringify({ scene_id: pending.scene }) })
     if (sceneId.value !== pending.scene) return
-    feedback.value = result.message || '已提交此区间的维护重试。'; retryConfirmation.value = null
+    feedback.value = result.message || '已提交此区间的维护重试，正在等待处理结果。'; retryConfirmation.value = null; retryingBatch.value = pending.id
+    retryPoll = setInterval(() => pollRetry(pending.id, pending.scene), 1500); await pollRetry(pending.id, pending.scene)
     await Promise.all([loadDetail(), loadAux()])
   } catch (error) { if (sceneId.value === pending.scene) retryError.value = error.message }
   finally { retrySaving.value = false }
@@ -190,7 +204,7 @@ async function refresh() {
 }
 function onVisible() { if (document.visibilityState === 'visible') refresh() }
 onMounted(() => { loadDirectory(); document.addEventListener('visibilitychange', onVisible); window.addEventListener('scroll', captureScrollAnchor, { passive: true }) })
-onBeforeUnmount(() => { ++detailRequest; ++messageRequest; ++inspectorRequest; ++auxRequest; contentObserver?.disconnect(); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('scroll', captureScrollAnchor) })
+onBeforeUnmount(() => { ++detailRequest; ++messageRequest; ++inspectorRequest; ++auxRequest; stopRetryPoll(); contentObserver?.disconnect(); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('scroll', captureScrollAnchor) })
 watch(messageContent, async content => {
   contentObserver?.disconnect()
   if (!content) return
@@ -201,6 +215,7 @@ watch(messageContent, async content => {
 }, { flush: 'post' })
 watch(() => route.query.query, value => { sceneSearch.value = scalar(value) }, { immediate: true })
 watch(sceneId, value => {
+  stopRetryPoll()
   ++detailRequest; ++messageRequest; ++inspectorRequest
   scrollAnchor = null; pendingPosition = false
   detailLoading.value = false; messageLoading.value = false; olderLoading.value = false; inspectorLoading.value = false

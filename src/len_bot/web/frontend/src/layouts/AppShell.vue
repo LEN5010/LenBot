@@ -6,6 +6,7 @@ import { mdiViewDashboardOutline, mdiForumOutline, mdiBriefcaseSearchOutline, md
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
 import { logout } from '../composables/useAuth.js'
 import { fmtTime } from '../api.js'
+import markUrl from '../assets/lenbot-mark.svg'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const groups=[
@@ -25,7 +26,7 @@ async function exit(){busy.value=true;error.value='';try{await logout();await ro
 </script>
 <template>
   <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="224" aria-label="主导航" class="app-navigation">
-    <div class="app-brand"><img class="app-mark" src="/lenbot-mark.svg" alt="LenBot" /><div><strong>LenBot</strong><span>运行管理中心</span></div><v-btn v-if="mobile" :icon="mdiClose" variant="text" aria-label="关闭导航" @click="drawer=false" /></div>
+    <div class="app-brand"><img class="app-mark" :src="markUrl" alt="LenBot" /><div><strong>LenBot</strong><span>运行管理中心</span></div><v-btn v-if="mobile" :icon="mdiClose" variant="text" aria-label="关闭导航" @click="drawer=false" /></div>
     <nav class="nav-groups"><div v-for="group in groups" :key="group.label"><p class="nav-section">{{ group.label }}</p><v-list nav density="compact"><v-list-item v-for="[name,label,icon] in group.items" :key="name" :to="{name}" :active="active===name" color="primary" :prepend-icon="icon" :title="label" /></v-list></div></nav>
     <template #append><div class="navigation-footer"><v-btn :prepend-icon="mdiLogout" block variant="text" :loading="busy" @click="exit">退出登录</v-btn></div></template>
   </v-navigation-drawer>

@@ -122,14 +122,23 @@ class RuntimeQueryService:
                 "plugins": [{key: item[key] for key in ("id", "name", "configured", "enabled", "scene_config_schema")}
                             for item in self.plugins()]}
 
-    def maintenance_readiness(self):
+    def maintenance_readiness(self, scene_id=None):
         snapshot = self.providers()
         profile = snapshot["routing"]["maintenance"] if snapshot["routing"] else None
         if profile is None:
             return {"configured": False, "ready": False, "reason": "未配置维护模型"}
         provider = next((item for item in snapshot["providers"] if item["id"] == profile["provider_id"]), None)
         ready = bool(provider and provider["enabled"] and provider["api_key_masked"])
-        return {"configured": True, "ready": ready, "reason": "已就绪" if ready else "维护供应商未启用或未设置密钥"}
+        if ready and not self.runtime._running:
+            ready = False
+            reason = "运行时未启动"
+        elif ready and scene_id and not self.runtime.scene_policy.maintenance_allowed(scene_id):
+            ready = False
+            reason = "本群未开放历史维护"
+        else:
+            reason = "已就绪" if ready else "维护供应商未启用或未设置密钥"
+        return {"configured": True, "ready": ready, "running": self.runtime._running,
+                "reason": reason}
 
     @staticmethod
     def _call(item):
@@ -184,7 +193,17 @@ class RuntimeQueryService:
 
     async def history_batch(self, batch_id):
         rows = await self._rows("SELECT * FROM history_batches WHERE id=?", [batch_id])
-        return self.runtime.event_store._history_row(rows[0]) if rows else None
+        if not rows:
+            return None
+        item = self.runtime.event_store._history_row(rows[0])
+        if item.get("status") == "failed":
+            traces = await self._rows("SELECT payload FROM traces WHERE ref_id=? AND kind='history_maintenance_error' ORDER BY created_at DESC LIMIT 1", [item["id"]])
+            if traces:
+                try:
+                    item["failure_detail"] = json.loads(traces[0]["payload"]).get("error")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+        return item
 
     async def skills(self, scene_id=None, *, query="", page=1, page_size=30):
         source = """FROM skills s JOIN skill_versions v ON v.skill_id=s.id AND v.version=(
@@ -389,7 +408,7 @@ class RuntimeQueryService:
         status["unsuccessful_count"]=len(status.pop("unsuccessful"))
         return {"session":public_session,"preferences":[item.model_dump(mode="json") for item in preferences],
             "jobs":await self.jobs(scene_id),"history_batches":await self.history_batches(scene_id),
-            "history_status":status,"maintenance":self.maintenance_readiness(),"sampled_at":self.current_time()}
+            "history_status":status,"maintenance":self.maintenance_readiness(scene_id),"sampled_at":self.current_time()}
 
     async def pending_wakes(self, scene_id, page=1, page_size=30):
         if not await self.runtime.event_store.load_scene_session(scene_id):return None
