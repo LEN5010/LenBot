@@ -563,7 +563,8 @@ class AgentRuntime:
                 if batch is None:
                     batch = await self.event_store.begin_history_batch(scene_id,
                         target_tokens=self.config.history_target_tokens, min_tokens=self.config.history_min_tokens,
-                        quiet=quiet)
+                        quiet=quiet,
+                        input_budget_tokens=self.config.maintenance_context_tokens - self.config.maintenance_output_tokens)
                 if batch is None:
                     return
                 revision = actor.session.knowledge_revision
@@ -590,7 +591,7 @@ class AgentRuntime:
             raise
         except Exception as error:
             if batch is not None:
-                await self.event_store.fail_history_batch(batch.id, type(error).__name__)
+                await self.event_store.fail_history_batch(batch.id, _error_text(error))
             logger.exception('History maintenance failed in %s', scene_id)
             await self.event_store.save_trace(kind='history_maintenance_error', scene_id=scene_id,
                 ref_id=batch.id if batch else 'history:'+uuid.uuid4().hex,

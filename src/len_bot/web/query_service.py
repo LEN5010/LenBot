@@ -168,7 +168,18 @@ class RuntimeQueryService:
 
     async def history_batches(self, scene_id, page=1, page_size=30):
         result = await self._page("SELECT *", "FROM history_batches WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)
-        result["items"] = [self.runtime.event_store._history_row(item) for item in result["items"]]
+        items = []
+        for item in result["items"]:
+            item = self.runtime.event_store._history_row(item)
+            if item.get("status") == "failed":
+                traces = await self._rows("SELECT payload FROM traces WHERE ref_id=? AND kind='history_maintenance_error' ORDER BY created_at DESC LIMIT 1", [item["id"]])
+                if traces:
+                    try:
+                        item["failure_detail"] = json.loads(traces[0]["payload"]).get("error")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+            items.append(item)
+        result["items"] = items
         return result
 
     async def history_batch(self, batch_id):
