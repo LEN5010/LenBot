@@ -5,12 +5,13 @@ import asyncio
 import copy
 import json
 import re
+import uuid
 import time
 from dataclasses import dataclass, replace
 from contextlib import nullcontext
 from collections.abc import Callable
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
@@ -67,6 +68,18 @@ class MemoryArguments(ReadArguments):
     start_time: float | None = Field(default=None,allow_inf_nan=False,description='认识建立时间起点，包含；不是原话事件时间')
     end_time: float | None = Field(default=None,allow_inf_nan=False,description='认识建立时间终点，不包含')
 
+class SearchHistorySummariesArguments(ReadArguments):
+    query: str = Field(min_length=1, pattern=r"\S")
+    limit: int = Field(ge=1)
+    start_time: float | None = Field(default=None, allow_inf_nan=False)
+    end_time: float | None = Field(default=None, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def ordered_range(self):
+        if self.start_time is not None and self.end_time is not None and self.start_time >= self.end_time:
+            raise ValueError('end_time must be later than start_time')
+        return self
+
 
 class JobsArguments(ReadArguments):
     job_id: str | None = Field(default=None, min_length=1)
@@ -116,6 +129,7 @@ READ_ARGUMENT_MODELS = {
     'read_media': ReadMediaArguments, 'read_message_range': MessageRangeArguments,
     'read_pending_wakes': PendingWakeArguments, 'read_web_media': WebMediaArguments,
     'tool_search': ToolSearchArguments, 'find_person': FindPersonArguments,
+    'search_history_summaries': SearchHistorySummariesArguments,
 }
 
 
@@ -131,6 +145,7 @@ LOCAL_TOOLS = [
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
     read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
     read_tool('query_memory', '按需读取本群认识及其来源；已撤销的认识不是当前事实。'),
+    read_tool('search_history_summaries', '按需定位较早的已完成历史摘要；结果只是定位，精确原话仍需回读。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
     read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
     read_tool('search_media', '按名称和描述查询本群或运营发布的图片。'),
@@ -198,7 +213,7 @@ class RetrievalToolkit:
         models = dict(READ_ARGUMENT_MODELS)
         bounds = {
             **{name: (self.config.retrieval_default_limit, self.config.retrieval_max_limit)
-               for name in ('search_messages', 'query_timeline', 'query_person_history')},
+               for name in ('search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries')},
             **{name: (self.page_chars, self.max_chars)
                for name in ('read_tool_result', 'read_message_range')},
             'read_pending_wakes': (self.config.pending_wakes_default_limit, self.config.pending_wakes_max_limit),
@@ -419,7 +434,7 @@ class RetrievalToolkit:
         if self.plugin_host and self.plugin_host.has_registered_tool(name):
             requested=self.plugin_host.tool_capabilities(name)['page_chars']
             if requested is not None:page_chars=min(requested,self.max_chars)
-        local_records = {'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes'}
+        local_records = {'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes','search_history_summaries'}
         records = self.context and name in local_records and result.status != 'error'
         if name == 'query_jobs' and args.get('job_id'):
             records = False
@@ -611,7 +626,7 @@ class RetrievalToolkit:
             shown.next_call = ToolNextCall(name='read_message_range',arguments={
                 'message_ref':refs.register_event_locator(event.id),'offset':end,'limit':limit}) if end < total else None
             return shown
-        local={'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs'}
+        local={'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','search_history_summaries'}
         if name not in local or shown.status not in {'ok', 'partial', 'no_results'}:
             return shown.page(offset,limit)
         # Work history observations contain projected text; conversation
@@ -647,6 +662,11 @@ class RetrievalToolkit:
                 item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
                 return {'ref':ref,**item}
+            if name == 'search_history_summaries':
+                item['batch_ref'] = refs.register_result(item.pop('id'))
+                item['key_events'] = [refs.register_event_locator(event_id) for event_id in item.pop('key_event_ids', [])]
+                item['locator_only'] = True
+                return item
             return {**self._job_locator(item), 'detail_next_call': {'name': 'read_tool_result', 'arguments': {
                 'result_id': shown.result_id, 'offset': record_positions[index][0], 'limit': limit,
                 'coordinate_unit': 'characters'}}}
@@ -843,16 +863,86 @@ class RetrievalToolkit:
         elif name=='read_context':rows=await store.read_context(args['event_id'],args['before'],args['after'],scopes,through_rowid=self.cutoff)
         elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,args['start_time'],args['end_time'],scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='query_person_history':rows=await store.query_person_history(args['actor_id'],scopes,args['limit'],through_rowid=self.cutoff)
+        elif name=='search_history_summaries':
+            summary_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND instr(lower(summary),lower(?))>0"
+            summary_params: list[Any] = [self.default_scene_id, args['query']]
+            if args.get('start_time') is not None:
+                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"
+                summary_params.append(args['start_time'])
+            if args.get('end_time') is not None:
+                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp<?)"
+                summary_params.append(args['end_time'])
+            summary_sql += " ORDER BY end_rowid DESC LIMIT ?"; summary_params.append(args['limit'])
+            cursor = await self.event_store._db.execute(summary_sql, summary_params)
+            rows = [dict(zip([item[0] for item in cursor.description], row)) for row in await cursor.fetchall()]
+            retrieval = self.context.runtime.retrieval_models if self.context else None
+            profiles = getattr(self.context.runtime, 'retrieval_profiles', None) if self.context else None
+            semantic_summary = False
+            summary_partial = False
+            if retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
+                summary_partial = (await self.context.runtime.memory_index.summary_coverage(self.default_scene_id)).get('pending', 0) > 0
+                vector = (await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id))[0]
+                ids = await self.context.runtime.memory_index.candidates(self.default_scene_id, vector, limit=self.config.retrieval_max_limit, source_kind='history_summary')
+                if ids:
+                    semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND id IN (SELECT value FROM json_each(?))"
+                    semantic_params: list[Any] = [self.default_scene_id, json.dumps(ids)]
+                    if args.get('start_time') is not None:
+                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"; semantic_params.append(args['start_time'])
+                    if args.get('end_time') is not None:
+                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp<?)"; semantic_params.append(args['end_time'])
+                    cursor = await self.event_store._db.execute(semantic_sql, semantic_params)
+                    semantic_rows = [dict(zip([item[0] for item in cursor.description], row)) for row in await cursor.fetchall()]
+                    by_id = {item['id']: item for item in rows}
+                    by_id.update({item['id']: item for item in semantic_rows})
+                    rows = [by_id[item] for item in ids if item in by_id][:args['limit']]
+                    semantic_summary = True
+            for row in rows:
+                row['key_event_ids'] = json.loads(row.pop('key_event_ids_json'))
+            return ToolResult(status='partial' if summary_partial else ('ok' if rows else 'no_results'), content=json.dumps(rows, ensure_ascii=False),
+                              coverage='history_summary_locator+semantic' if semantic_summary else 'history_summary_locator', evidence_kind='retrieval')
         elif name=='query_memory':
             if not self.memory_store:return ToolResult(status='unsupported',content='未配置认识账本')
             aliases = {(self.default_scene_id,actor_id):tuple(value for value in (person.nickname,person.card) if value)
                        for actor_id,person in self.context.session.participants.items()} if self.context else None
+            retrieval = self.context.runtime.retrieval_models if self.context else None
+            profiles = getattr(self.context.runtime, 'retrieval_profiles', None) if self.context else None
+            candidate_limit = self.config.retrieval_default_limit
+            if args.get('query') and retrieval and profiles and profiles.embedding:
+                candidate_limit = min(self.config.retrieval_max_limit, max(self.config.retrieval_default_limit, 24))
             memories=await self.memory_store.query_memories(scopes,subject=args.get('subject'),kind=args.get('kind'),query=args.get('query'),
-                include_superseded=args['include_history'], limit=self.config.retrieval_default_limit,
+                include_superseded=args['include_history'], limit=candidate_limit,
                 start_time=args['start_time'],end_time=args['end_time'],subject_aliases=aliases)
-            return ToolResult(status='ok' if memories else 'no_results',
+            semantic_used = False
+            semantic_partial = False
+            if args.get('query') and retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
+                semantic_partial = (await self.context.runtime.memory_index.coverage(self.default_scene_id)).get('pending', 0) > 0
+                vectors = await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id)
+                ids = await self.context.runtime.memory_index.candidates(self.default_scene_id, vectors[0], limit=24)
+                semantic = await self.memory_store.get_memories_by_ids(ids, scopes, include_superseded=args['include_history'])
+                by_id = {item.id:item for item in memories}
+                lexical_ids = [item.id for item in memories]
+                for item in semantic:
+                    by_id.setdefault(item.id, item)
+                lexical_rank = {item_id: index + 1 for index, item_id in enumerate(lexical_ids)}
+                semantic_rank = {item_id: index + 1 for index, item_id in enumerate(ids) if item_id in by_id}
+                memories = sorted(by_id.values(), key=lambda item: (
+                    -(1 / (60 + lexical_rank.get(item.id, 10_000)) + 1 / (60 + semantic_rank.get(item.id, 10_000))), item.id))[:self.config.retrieval_default_limit]
+                semantic_used = True
+                if profiles.rerank and len(by_id) > self.config.retrieval_default_limit:
+                    ranked_ids = await retrieval.rerank(profiles.rerank, args['query'], [item.statement for item in by_id.values()], scene_id=self.default_scene_id)
+                    ordered = list(by_id.values())
+                    memories = [ordered[index] for index in ranked_ids[:self.config.retrieval_default_limit]]
+                await self.event_store.save_trace(kind='memory_retrieval', scene_id=self.default_scene_id,
+                    ref_id='memory-query:'+uuid.uuid4().hex,
+                    payload={'query': args['query'], 'subject': args.get('subject'), 'kind': args.get('kind'),
+                             'start_time': args.get('start_time'), 'end_time': args.get('end_time'),
+                             'lexical_candidates': len(by_id), 'semantic_candidates': len(semantic),
+                             'rerank': bool(profiles.rerank and len(by_id) > self.config.retrieval_default_limit),
+                             'index_partial': semantic_partial,
+                             'presented_memory_ids': [item.id for item in memories]})
+            return ToolResult(status='partial' if semantic_partial else ('ok' if memories else 'no_results'),
                               content=json.dumps([m.model_dump(mode='json') for m in memories], ensure_ascii=False),
-                              coverage='memory_ledger', evidence_kind='retrieval')
+                              coverage='memory_ledger+semantic' if semantic_used else 'memory_ledger', evidence_kind='retrieval')
         if rows is not None:
             enriched=await store.project_reply_context(self.default_scene_id,[Event.model_validate(r) for r in rows],through_rowid=self.cutoff)
             if self.context:

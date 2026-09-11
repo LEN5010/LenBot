@@ -15,16 +15,18 @@ cp lenbot.config.example.json lenbot.config.json
 | 配置节 | 内容 |
 |---|---|
 | `runtime` | 数据库与监听地址、身份与表达、注意力、预算、并发、媒体和维护参数 |
-| `models` | 提供商连接与各角色 routing；未配置的角色明确为 null |
+| `models` | 提供商连接、各角色 routing 与可选 retrieval embedding/rerank；未配置能力明确为 null |
 | `delivery` | 全局 shadow |
 | `access` | 全局 QQ 回复白名单，仅用于已启用群的普通对话资格 |
-| `scenes` | 每群 enabled、chat 与按 plugin_id 保存的插件 enabled/config；命令和订阅由各插件 Schema 定义 |
+| `scenes` | 每群 enabled、chat、semantic_retrieval 与按 plugin_id 保存的插件 enabled/config；命令和订阅由各插件 Schema 定义 |
 | `time` | IANA 业务时区、自然周起点与下午范围；尚未填写为 null |
 | `members` | 成员名称与别名、bilibili_uid、房间号；与 QQ UID 分开 |
 | `plugin_directories` | 明确的本地插件根目录列表；空列表仍发现内置目录，变更需停机后重启 |
 | `plugins` | 已配置插件的 enabled 与完整 config；未配置目录仅展示元数据 |
 
 配置解析错误会报告具体位置，缺失必需项由运营补齐。env、dotenv、CLI 和数据库不覆盖根文件。三个模型职责单独设置，不需要为启动面板强行配置所有模型；未配置能力的含义见产品文档。
+
+语义检索先在“模型设置”中保存已确认的 embedding 绑定，再在目标群的“本群设置”开启 `semantic_retrieval`；两个条件缺一不可。首次开启后在认识页按场景执行显式索引重建。rerank 还必须填写实际确认的协议；未确认时保持空值。模型设置页不会因为刷新或保存而自动请求检索模型。
 
 确认配置和结构就绪，并取得当次生产启动授权后，在根目录执行：
 
@@ -113,6 +115,8 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 直播配置的 source_timezone 用来解释源给出的无偏移开播时间，业务时区独立保存。成员订阅选择已填写的真实主播；群聊可读当前订阅状态，添加或退订仍在登录后的“本群设置 → 哔哩哔哩直播监测”保存。其 config 中的 live_subscriptions、announcements 和 mention_all 分别定义订阅、公告与全体提及；@全体的账号条件由运营在实际群确认，不自动修权限或去掉提及重发。首次采样只建立基线，不补报当时已经开播的场次。是否实际生成、发送和送达分别看PLUGIN_EVENT 来源、plugin_run Trace 与 action 回执。
 
 自然询问日程、动态与已配置监测状态可直接使用短工具；当前群“今天”“昨天”、指定日期或明确区间报告由 Agent 提出工作，日期以请求原话的业务时区为准。group_summary 2.0 需要 render_font_path，本仓库可填写 `../asoul_calendar/resources/font.ttf`，复用已随源码保存的字体；只使用该字体资源，不要求日历服务启用。新增字段需停机后离线保存，运行中由插件面板保存。
+
+启用 `link_parser` 后，可在目标群单独开放 B 站原生链接解析。纯 BV/av 链接或明确的“解析链接 URL”命令会被确定性处理；`parse_link` 默认只返回 metadata，下载媒体时必须使用同一场景已保存的解析结果引用。下载完成仍需由正常 Agent/插件提案决定是否发送，视频或音频的 unknown 回执不自动重发。
 
 工作详情分别显示范围与快照、本工作实际已读、成功分析、复用和未完成数量；批次、JSON 和图片均可回读，结果页显示成品图片。渲染失败时先核对字体、图片限制及具体错误，再显式恢复原工作，只消费已保存 JSON；预算与模型绑定保留，仍需剩余执行时间。发送失败或未知看交付行动与实际回执，不恢复分析来重发。工作已生成但等待原请求者的新话处理时仍保留 result_ready，原话处理后再核对首次交付。
 

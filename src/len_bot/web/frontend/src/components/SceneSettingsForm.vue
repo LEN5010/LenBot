@@ -43,7 +43,7 @@ async function load() {
   finally { if (own===requestId) loading.value=false }
 }
 function beginConfiguration() {
-  draft.value={enabled:false,chat:false,plugins:{}}
+  draft.value={enabled:false,chat:false,semantic_retrieval:false,plugins:{}}
 }
 function setChat(enabled) {
   draft.value.enabled=true
@@ -84,7 +84,9 @@ onBeforeUnmount(()=>{++requestId})
           <div class="settings-grid">
             <v-switch v-model="draft.enabled" label="启用本群" color="primary" />
             <v-switch v-model="draft.chat" label="允许普通成员聊天" color="primary" />
+            <v-switch v-model="draft.semantic_retrieval" label="允许语义检索本群认识" color="primary" />
           </div>
+          <p class="muted-copy">开启后，本群已提交的认识和历史摘要可能发送给根配置中绑定的检索供应方；关闭时只使用本地词面读取。</p>
           <div v-for="plugin in record.plugins" :key="plugin.id" class="plugin-setting">
             <div class="settings-heading"><h4>{{ plugin.name }}</h4><v-btn v-if="!draft.plugins[plugin.id]" variant="tonal" :disabled="!plugin.configured" @click="addPlugin(plugin)">添加本群设置</v-btn></div>
             <p class="muted-copy mb-3">{{ !plugin.configured?'尚未配置全局参数':!plugin.enabled?'全局已停用':'全局已启用' }}</p>

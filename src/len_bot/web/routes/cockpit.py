@@ -240,6 +240,22 @@ async def list_memories(request: Request, status: str | None = None, scope: str 
                         query: str = "", page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
     return await _service(request).list_memories(status=status,scope=scope,subject=subject,kind=kind,query=query,page=page,page_size=page_size)
 
+@router.get("/memory-index")
+async def memory_index_status(scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    return await _service(request).memory_index_status(scene_id)
+
+@router.post("/memory-index/rebuild")
+async def rebuild_memory_index(scene_id: str, request: Request, user: str = Depends(get_current_user)):
+    runtime = request.app.state.runtime
+    if runtime.memory_index is None:
+        raise HTTPException(409, "索引尚未初始化")
+    if not runtime.semantic_retrieval_enabled(scene_id):
+        raise HTTPException(409, "该场景未开启语义检索；不会向第三方发送其文本")
+    result = await runtime.memory_index.rebuild(scene_id)
+    if result.get('status') not in {'indexed', 'disabled'}:
+        raise HTTPException(502, result.get('error') or '索引构建失败')
+    return result
+
 
 @router.get("/memories/{memory_id}")
 async def memory_detail(memory_id: str, request: Request, scope: str | None = None, user: str = Depends(get_current_user)):

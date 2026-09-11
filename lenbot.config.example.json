@@ -59,6 +59,7 @@
     "conversation_max_concurrent": 2,
     "scheduler_interval_seconds": 5.0,
     "media_max_image_bytes": 10000000,
+    "media_max_file_bytes": 100000000,
     "media_max_image_pixels": 20000000,
     "media_max_dimension": 2048,
     "media_request_timeout_seconds": 15.0,
@@ -95,6 +96,10 @@
       "conversation": null,
       "work": null,
       "maintenance": null
+    },
+    "retrieval": {
+      "embedding": null,
+      "rerank": null
     }
   },
   "delivery": {
@@ -126,6 +131,13 @@
         "bili_jct": "",
         "request_timeout_seconds": 10.0,
         "tool_timeout_seconds": 15.0
+      }
+    },
+    "link_parser": {
+      "enabled": false,
+      "config": {
+        "enabled_platforms": ["bilibili"],
+        "request_timeout_seconds": 15.0
       }
     },
     "asoul_calendar": {

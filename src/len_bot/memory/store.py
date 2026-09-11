@@ -164,6 +164,14 @@ class MemoryStore:
         )).fetchone()
         return memory_from_row(row) if row is not None else None
 
+    async def get_memories_by_ids(self, memory_ids: list[str], allowed_scopes: list[str], *, include_superseded=False) -> list[MemoryItem]:
+        if not memory_ids or not allowed_scopes: return []
+        rows = await (await self._db.execute(
+            f"SELECT {','.join(MEMORY_COLUMNS)} FROM memories WHERE id IN ({','.join('?' for _ in memory_ids)}) AND scope IN ({','.join('?' for _ in allowed_scopes)})"
+            + (" AND status='active'" if not include_superseded else ""), [*memory_ids,*allowed_scopes])).fetchall()
+        by_id={item.id:item for item in (memory_from_row(row) for row in rows)}
+        return [by_id[item] for item in memory_ids if item in by_id]
+
     async def interaction_preferences(
         self, scene_id: str, participant_ids: list[str], now: float | None = None,
     ) -> list[MemoryItem]:

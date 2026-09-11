@@ -9,7 +9,7 @@ import tempfile
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, field_validator, model_validator
 
 from len_bot.config import RuntimeConfig
-from len_bot.cognition.providers import ProviderConfig, RoutingConfig
+from len_bot.cognition.providers import ProviderConfig, RoutingConfig, RetrievalRouting
 from len_bot.plugins.catalog import PluginCatalog
 
 
@@ -23,6 +23,7 @@ class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     providers: list[ProviderConfig]
     routing: RoutingConfig | None
+    retrieval: RetrievalRouting = Field(default_factory=RetrievalRouting)
 
     @model_validator(mode="after")
     def known_profiles(self):
@@ -33,6 +34,11 @@ class ModelSettings(BaseModel):
             for role, profile in self.routing:
                 if profile is not None and profile.provider_id not in ids:
                     raise ValueError(f"models.routing.{role} references an unknown provider")
+        for profile in (self.retrieval.embedding, self.retrieval.rerank):
+            if profile is not None and profile.provider_id not in ids:
+                raise ValueError(f"models.retrieval references an unknown provider: {profile.provider_id}")
+        if self.retrieval.rerank is not None and self.retrieval.rerank.protocol is None:
+            raise ValueError("models.retrieval.rerank requires an explicitly confirmed protocol")
         return self
 
 
@@ -92,6 +98,7 @@ class SceneSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
     chat: bool
+    semantic_retrieval: bool = Field(default=False, description='允许本群文本发送给已配置的语义检索提供方')
     plugins: dict[str, ScenePluginSettings]
 
 

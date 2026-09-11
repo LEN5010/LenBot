@@ -7,9 +7,9 @@ import copy
 from dataclasses import replace
 from contextlib import asynccontextmanager
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from len_bot.cognition.agent_loop import AgentLoop, FreshInputConflict, execution_budget_message
+from len_bot.cognition.agent_loop import AgentLoop, FreshInputConflict, TerminalArgumentError, execution_budget_message
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome
@@ -166,7 +166,7 @@ async def submit_message(runtime, call, segments, *, mention_all=False):
         for raw in segments:
             segment=MessageSegment.model_validate(raw)
             if segment.type=='text':parts.append({'text':segment.text})
-            elif segment.type=='image':parts.append({'image':context.refs.register_media(segment.asset_id)})
+            elif segment.type in {'image', 'video', 'audio'}:parts.append({segment.type:context.refs.register_media(segment.asset_id)})
             elif segment.type=='at':parts.append({'at':context.refs.register_actor('user:'+segment.qq_uid)})
             else:raise ValueError('Tool submission does not grant all-member mentions')
         source=context.refs.register_event_locator(call.source_event_id)
@@ -418,7 +418,6 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     await toolkit.import_results(request.result_ids)
     for ident in request.result_ids:
         context.refs.register_result(ident)
-        messages.append(toolkit.material_message(ident))
 
     def definitions():
         available=toolkit.get_tool_definitions()
@@ -442,7 +441,11 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
             return receipt
     else:
         terminal=result_definition(output_model)
-        async def finish(arguments):return output_model.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
+        async def finish(arguments):
+            try:
+                return output_model.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
+            except ValidationError as error:
+                raise TerminalArgumentError('插件结果字段不符合声明的结构') from error
         after_finish=None
 
     async def execute(name,arguments,*,tool_call_id=None):
@@ -493,6 +496,10 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         messages.extend(prepared)
     elif request.input_mode=='source':
         await context.pack_events(messages,events,ids,raw_tokens=context.input_budget)
+    await context.install_initial_materials(toolkit, messages, request.result_ids,
+        definitions=context.tool_definitions,
+        can_read_body='read_tool_result' in request.tool_names,
+        can_read_media='read_media' in request.tool_names)
     if not nested_respond:
         messages.append({'role':'developer','content':RESULT_ONLY_NOTICE})
     pending_presentations=[]

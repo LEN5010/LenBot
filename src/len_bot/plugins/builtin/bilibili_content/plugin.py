@@ -17,6 +17,7 @@ from len_bot.plugins.base import BasePlugin, PluginContext
 from .config import BilibiliPluginConfig
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.net_policy import validate_url
+from ..bilibili_client import public_json
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +99,11 @@ class BilibiliContentPlugin(BasePlugin):
             self._client = None
 
     async def _query(self, url: str, params: dict[str, Any], *, content_key: str | None = None) -> ToolResult:
-        allowed, reason = validate_url(url)
-        if not allowed:
-            return ToolResult.failure(f"安全拦截: {reason}", "blocked")
         source = ToolSource(url=url + "?" + urlencode(params))
-        response = await self._client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        if data["code"] != 0:
-            return ToolResult.failure(f"B站接口返回错误: {data['message']}", str(data["code"]))
+        try:
+            data = await public_json(self._client, url, params)
+        except ValueError as error:
+            return ToolResult.failure(str(error), "upstream_error")
         payload = data["data"]
         records = payload[content_key] if content_key else payload
         if not records:
