@@ -75,9 +75,17 @@ class HistoryStoreMixin:
                                    (scene_id, after_rowid))
             await self._db.commit()
 
-    async def begin_history_batch(self, scene_id: str, *, target_tokens=8000, min_tokens=2000, quiet=True):
+    async def begin_history_batch(self, scene_id: str, *, target_tokens=8000, min_tokens=2000, quiet=True,
+                                  input_budget_tokens: int | None = None):
         if target_tokens < 1 or min_tokens < 1 or min_tokens > target_tokens:
             raise ValueError("Invalid incremental history token limits")
+        # Leave room for the maintenance system prompt, schemas and JSON envelope.
+        if input_budget_tokens is not None:
+            # The JSON source envelope expands CJK text substantially in the
+            # estimator; reserve enough for the fixed system/tool definitions.
+            envelope = 14000
+            target_tokens = min(target_tokens, max(100, input_budget_tokens - envelope))
+            min_tokens = min(min_tokens, target_tokens)
         async with self._write_lock:
             unfinished = await (await self._db.execute(
                 "SELECT id FROM history_batches WHERE scene_id=? AND status!='completed' LIMIT 1", (scene_id,))).fetchone()
