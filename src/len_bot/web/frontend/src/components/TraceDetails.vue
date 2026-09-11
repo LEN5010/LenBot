@@ -13,6 +13,7 @@ import PluginOrigin from './PluginOrigin.vue'
 const props=defineProps({trace:{type:Object,required:true}})
 const isConversation=computed(()=>['conversation','conversation_error'].includes(props.trace.kind))
 const isPlugin=computed(()=>props.trace.kind.startsWith('plugin_'))
+const isMemoryRetrieval=computed(()=>props.trace.kind==='memory_retrieval')
 const runs=computed(()=>traceRuns(props.trace.payload))
 const directTools=computed(()=>runs.value.flatMap(run=>run.tool_results || []))
 const hooks=computed(()=>runs.value.flatMap(run=>run.hooks || []))
@@ -35,12 +36,12 @@ const estimateLabels={system_reference:'系统与稳定资料',history:'原话�
 function observationStatus(call){return call.observation_status ?? call.observation?.status}
 function messageSource(message){return message.source_event_id || (message.source ? [...steps.value].reverse().find(step=>step.terminal_candidate)?.run_references?.messages?.[message.source] : null)}
 function argumentSummary(argumentsValue){return argumentsValue ? Object.entries(argumentsValue).map(([name,value])=>`${name}=${typeof value==='string'?value:JSON.stringify(value)}`).join('；') : '未记录参数'}
-function messageText(message){return (message.segments || []).map(part=>part.text ?? (part.at || part.type==='at'?`[提及 ${part.at || part.qq_uid}]`:part.type==='at_all'?'[全体成员]':`[图片 ${part.image || part.asset_id}]`)).join('')}
+function messageText(message){return (message.segments || []).map(part=>part.text ?? (part.at || part.type==='at'?`[提及 ${part.at || part.qq_uid}]`:part.type==='at_all'?'[全体成员]':`[${part.type || '媒体'} ${part.image || part.video || part.audio || part.asset_id}]`)).join('')}
 </script>
 <template>
   <div class="trace-details">
     <v-alert v-if="failure" type="error" variant="tonal">{{ failure }}</v-alert>
-    <div class="trace-facts"><span v-if="isConversation">{{ decision }}</span><span v-else-if="isPlugin">插件状态：{{ trace.payload.state || trace.payload.operation || '见记录' }}</span><span v-else-if="trace.kind==='history_maintenance'">摘要与认识已提交</span><span v-else-if="trace.kind==='history_maintenance_error'">历史维护未完成</span><span v-else>执行记录 · 交付状态见行动回执</span><span class="muted">{{ fmtTime(trace.created_at) }}</span></div>
+    <div class="trace-facts"><span v-if="isConversation">{{ decision }}</span><span v-else-if="isPlugin">插件状态：{{ trace.payload.state || trace.payload.operation || '见记录' }}</span><span v-else-if="isMemoryRetrieval">认识召回 · {{ trace.payload.index_partial ? '索引未完全覆盖' : '索引覆盖完整' }}</span><span v-else-if="trace.kind==='history_maintenance'">摘要与认识已提交</span><span v-else-if="trace.kind==='history_maintenance_error'">历史维护未完成</span><span v-else>执行记录 · 交付状态见行动回执</span><span class="muted">{{ fmtTime(trace.created_at) }}</span></div>
     <p v-if="trace.payload.gate?.reason" class="readable-copy">{{ trace.payload.gate.reason }}</p>
     <section v-if="publication"><h3>{{ publicationState }}</h3>
       <EntityLink v-if="trace.payload.gate.commit_event_id" type="event" :id="trace.payload.gate.commit_event_id" :scene-id="trace.scene_id" label="读取已提交事务" />
@@ -57,6 +58,7 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
     <section v-if="checkpoints.length"><h3>逐阶段提交</h3><article v-for="checkpoint in checkpoints" :key="checkpoint.index" class="candidate-message"><strong>Checkpoint {{ checkpoint.index }} · {{ {end:'本轮结束',continue:'继续执行',wait:'等待外部回应'}[checkpoint.result.next_action] }}</strong><div class="trace-links"><EntityLink type="event" :id="checkpoint.gate.commit_event_id" :scene-id="trace.scene_id" label="查看本阶段提交与回执" /><span>{{ checkpoint.gate.actions_enqueued }} 条已入队</span></div><p v-if="checkpoint.gate.publication?.error" class="text-error">{{ checkpoint.gate.publication.error }}</p><p v-for="(message,index) in checkpoint.result.message_proposals" :key="index">{{ messageText(message) }}</p><SourceOutcomes :items="checkpoint.result.source_outcomes" :scene-id="trace.scene_id" /></article></section>
     <SourceOutcomes v-else :items="trace.payload.result?.source_outcomes" :scene-id="trace.scene_id" />
     <section v-if="isConversation"><h3>终结候选</h3><p class="muted">候选表达与真实送达分别记录，下方内容不代表已经发到群聊。</p><article v-for="(message,index) in messages" :key="index" class="candidate-message"><span class="muted">第 {{ index+1 }} 条候选</span><p>{{ messageText(message) }}</p><div class="trace-links"><EntityLink v-if="messageSource(message)" type="event" :id="messageSource(message)" :scene-id="trace.scene_id" label="本条请求来源" /><span v-else-if="message.source" class="muted">本轮来源引用 {{ message.source }}，没有保存可回查的原话映射</span><span v-else class="muted">本条请求来源未记录</span><span v-if="message.requester_qq_uid">请求者 QQ {{ message.requester_qq_uid }}</span><span v-if="message.addressed_to?.length">回应对象 {{ message.addressed_to.join('、') }}</span><span v-if="message.expect_reply">等待 {{ message.reply_target || message.expect_reply.target }} 回应</span><v-chip v-if="message.operation_ref" size="small" variant="tonal">操作确认引用 {{ message.operation_ref }}</v-chip><span v-if="message.job_revision">消息绑定版本 {{ message.job_revision }}</span></div></article><p v-if="!messages.length">{{ candidate && Array.isArray(candidate.messages)?'本候选没有消息，表示模型选择沉默。':'没有可确认的消息候选。' }}</p><ResourceViewer v-if="trace.payload.result?.handled_source_event_ids" title="本轮提交处理的原话 ID" :content="trace.payload.result.handled_source_event_ids" /></section>
+    <section v-else-if="isMemoryRetrieval"><h3>认识召回过程</h3><dl class="context-estimate"><dt>场景</dt><dd>{{ trace.scene_id }}</dd><dt>查询</dt><dd>{{ trace.payload.query }}</dd><dt>主体筛选</dt><dd>{{ trace.payload.subject || '未指定' }}</dd><dt>词面候选</dt><dd>{{ trace.payload.lexical_candidates }}</dd><dt>语义候选</dt><dd>{{ trace.payload.semantic_candidates }}</dd><dt>重排</dt><dd>{{ trace.payload.rerank ? '已执行' : '未执行' }}</dd><dt>覆盖</dt><dd>{{ trace.payload.index_partial ? 'partial' : '完整' }}</dd></dl><ResourceViewer title="最终呈现的认识 ID" :content="trace.payload.presented_memory_ids" /></section>
     <section v-else-if="isPlugin">
       <h3>插件执行</h3>
       <PluginOrigin :origin="trace.plugin_origin" :name="trace.plugin_name" :scene-id="trace.scene_id" />

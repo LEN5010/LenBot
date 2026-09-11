@@ -249,6 +249,10 @@ class OneBotAdapter:
                 if segment.asset_id in action.resolved_sticker_ids:
                     data.update(sub_type=1, summary="[表情]")
                 parts.append({"type": "image", "data": data})
+            elif segment.type in {"video", "audio"}:
+                if segment.asset_id not in action.resolved_images:
+                    raise ValueError(f"{segment.type} asset has not been resolved by the runtime")
+                parts.append({"type": segment.type, "data": {"file": action.resolved_images[segment.asset_id]}})
         params = {"message": parts}
         target_id = action.scene_id.split(":")[-1]
         if action.action_type == ActionType.SEND_GROUP_MESSAGE:

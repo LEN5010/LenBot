@@ -61,6 +61,22 @@ class MediaStoreMixin:
             [asset_id, *allowed_scopes])).fetchone()
         return _asset(row)
 
+    async def register_external_media(self, asset_id: str, scope: str, locator: str, *, source_event_id: str | None = None):
+        """Register a parser-owned remote media locator before downloading it."""
+        if not locator.startswith(("https://", "http://")):
+            raise ValueError("External media locator must use HTTP(S)")
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT OR IGNORE INTO media_assets(id,scope,source_event_id,locator,created_at) VALUES(?,?,?,?,?)",
+                (asset_id, scope, source_event_id or ("external:" + uuid.uuid4().hex), locator, self.clock()))
+            await self._db.commit()
+
+    async def media_by_locator(self, scope: str, locator: str):
+        row = await (await self._db.execute(
+            "SELECT * FROM media_assets WHERE scope=? AND locator=? AND enabled=1 AND path IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+            (scope, locator))).fetchone()
+        return _asset(row)
+
     async def retained_media_paths(self):
         """Operator Reset keeps the files belonging to curated media."""
         return [row[0] for row in await (await self._db.execute(
@@ -90,7 +106,7 @@ class MediaStoreMixin:
         usage = {}
         for index, (timestamp, encoded) in enumerate(rows):
             payload = json.loads(encoded)
-            assets = {segment['asset_id'] for segment in payload.get('segments', []) if segment['type'] == 'image'}
+            assets = {segment['asset_id'] for segment in payload.get('segments', []) if segment.get('type') in {'image', 'video', 'audio'}}
             for asset_id in assets:
                 record = usage.setdefault(asset_id, {'last_sent_at': timestamp, 'recent_send_count': 0,
                                                      'used_in_last_reply': index == 0})

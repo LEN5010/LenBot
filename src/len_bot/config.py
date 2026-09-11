@@ -71,6 +71,7 @@ class RuntimeConfig(BaseModel):
     conversation_max_concurrent: int = Field(ge=1)
     scheduler_interval_seconds: float = Field(gt=0)
     media_max_image_bytes: int = Field(gt=0)
+    media_max_file_bytes: int = Field(default=100_000_000, gt=0, description='视频/音频临时文件的最大字节数')
     media_max_image_pixels: int = Field(gt=0)
     media_max_dimension: int = Field(gt=0)
     media_request_timeout_seconds: float = Field(gt=0)

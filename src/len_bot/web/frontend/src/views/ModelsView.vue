@@ -13,6 +13,8 @@ const error = ref(''), message = ref(''), busy = ref(''), catalogs = ref({}), se
 const providerOpen = ref(false), editingProvider = ref(''), providerForm = ref(null), providerOriginal = ref('')
 const routesOpen = ref(false), routingForm = ref(null), routingOriginal = ref(''), roleEnabled = ref({})
 const testConfirm = ref(null), testResult = ref(null)
+const emptyRetrievalProfile = () => ({provider_id:'', model:'', dimension:null, protocol:null})
+const retrievalOpen = ref(false), retrievalForm = ref({embedding:emptyRetrievalProfile(), rerank:emptyRetrievalProfile()}), retrievalOriginal = ref('')
 const roles = [
   { key: 'conversation', name: '对话', description: '理解原话与图片，选择参与、文字、表情或沉默。' },
   { key: 'work', name: '工作', description: '后台查询、计算和核实，形成带来源的结果。' },
@@ -23,10 +25,12 @@ const providerDirty = computed(() => providerOpen.value && JSON.stringify(provid
 const routingSnapshot = () => JSON.stringify({ profiles: routingForm.value, enabled: roleEnabled.value })
 const routingDirty = computed(() => routesOpen.value && routingSnapshot() !== routingOriginal.value)
 const catalogDirty = computed(() => Object.keys(catalogs.value).some(id => JSON.stringify(selectedModels.value[id]) !== modelOriginal.value[id]))
-useUnsavedChanges(computed(() => providerDirty.value || routingDirty.value || catalogDirty.value))
+const retrievalDirty = computed(() => retrievalOpen.value && JSON.stringify(retrievalForm.value) !== retrievalOriginal.value)
+useUnsavedChanges(computed(() => providerDirty.value || routingDirty.value || catalogDirty.value || retrievalDirty.value))
 let requestId = 0
 const providerById = id => data.value.providers.find(provider => provider.id === id)
 const inUse = id => roles.some(({ key }) => data.value.routing?.[key]?.provider_id === id)
+  || [data.value.retrieval?.embedding, data.value.retrieval?.rerank].some(profile => profile?.provider_id === id)
 const choicesFor = id => providerById(id)?.models || []
 const canSaveProvider = computed(() => providerForm.value && providerForm.value.id.trim()
   && providerForm.value.base_url.trim() && providerForm.value.api_style
@@ -36,6 +40,19 @@ function initialiseRouting() {
     data.value.routing?.[key] ? { ...data.value.routing[key] } : emptyProfile()]))
   roleEnabled.value = Object.fromEntries(roles.map(({ key }) => [key, data.value.routing?.[key] != null]))
   routingOriginal.value = routingSnapshot()
+}
+function editRetrieval() {
+  retrievalForm.value = { embedding: data.value.retrieval?.embedding ? {...data.value.retrieval.embedding} : emptyRetrievalProfile(),
+    rerank: data.value.retrieval?.rerank ? {...data.value.retrieval.rerank} : emptyRetrievalProfile() }
+  retrievalOriginal.value = JSON.stringify(retrievalForm.value); retrievalOpen.value = true
+}
+function closeRetrieval() { if (busy.value) return; if (retrievalDirty.value && !window.confirm('放弃尚未保存的语义检索配置？')) return; retrievalOpen.value = false }
+async function saveRetrieval() {
+  if (busy.value || !retrievalForm.value) return
+  busy.value='retrieval'; error.value=''; message.value=''
+  const profile = (value, rerank=false) => value?.provider_id?.trim() && value?.model?.trim() ? {provider_id:value.provider_id.trim(),model:value.model.trim(),...(value.dimension ? {dimension:Number(value.dimension)} : {}),...(rerank && value.protocol ? {protocol:value.protocol} : {})} : null
+  try { const result = await api('/api/models/retrieval',{method:'POST',body:JSON.stringify({embedding:profile(retrievalForm.value.embedding),rerank:profile(retrievalForm.value.rerank,true)})}); retrievalOpen.value=false; message.value=result.message; await load() }
+  catch(e){ error.value=e.message } finally { busy.value='' }
 }
 async function load() {
   const request = ++requestId
@@ -152,6 +169,7 @@ watch(() => route.name, load, { immediate: true })
   <div class="page-stack">
     <PageHeader title="模型设置" description="三个职责显式配置，每次运行固定提供商、模型和推理强度。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn><v-btn v-if="tab==='roles'" color="primary" :disabled="!loaded" @click="editRouting">编辑职责配置</v-btn><v-btn v-else color="primary" @click="editProvider()">添加供应商</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
+    <v-card v-if="loaded" class="pa-4 retrieval-card"><div class="role-title"><h2>语义检索</h2><div class="actions"><v-chip size="small" :color="data.retrieval?.embedding ? 'primary' : 'default'">{{ data.retrieval?.embedding ? '已绑定' : '未启用' }}</v-chip><v-btn variant="outlined" size="small" :disabled="!!busy" @click="editRetrieval">编辑</v-btn></div></div><p class="muted">只在 Agent 主动查询认识时使用；索引失败不会回滚已提交认识。Embedding 与 rerank 请求单独计量。</p><p v-if="data.retrieval?.embedding" class="auxiliary">Embedding：{{ data.retrieval.embedding.provider_id }} · {{ data.retrieval.embedding.model }}<span v-if="data.retrieval.embedding.dimension"> · {{ data.retrieval.embedding.dimension }} 维</span></p><p v-if="data.retrieval?.rerank" class="auxiliary">Rerank：{{ data.retrieval.rerank.provider_id }} · {{ data.retrieval.rerank.model }}</p></v-card>
     <v-tabs :model-value="tab" color="primary" @update:model-value="value=>router.push({name:'models',query:{tab:value}})"><v-tab value="roles">职责配置</v-tab><v-tab value="providers">供应商</v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
     <template v-if="tab==='roles'">
@@ -204,6 +222,7 @@ watch(() => route.name, load, { immediate: true })
         </v-card-text>
       </v-card>
     </v-dialog>
+    <v-dialog :model-value="retrievalOpen" max-width="700" :persistent="!!busy" @update:model-value="value=>!value&&closeRetrieval()"><v-card><v-card-title class="dialog-title">编辑语义检索配置<v-btn variant="text" :disabled="!!busy" @click="closeRetrieval">关闭</v-btn></v-card-title><v-card-text><v-form :disabled="!!busy" class="config-form" @submit.prevent="saveRetrieval"><v-alert type="info" variant="tonal">留空表示关闭该能力；模型 ID、维度和 rerank 协议必须以供应商实际文档为准。</v-alert><v-divider /><h3>Embedding</h3><div class="route-fields"><v-select v-model="retrievalForm.embedding.provider_id" :items="data.providers.map(p=>({title:`${p.id}${p.enabled?'':'（停用）'}`,value:p.id}))" label="供应商" clearable /><v-combobox v-model="retrievalForm.embedding.model" :items="choicesFor(retrievalForm.embedding.provider_id)" label="模型名称" clearable /><v-text-field v-model.number="retrievalForm.embedding.dimension" type="number" min="1" label="已确认维度（可留空）" /></div><v-divider /><h3>Rerank（可选）</h3><div class="route-fields"><v-select v-model="retrievalForm.rerank.provider_id" :items="data.providers.map(p=>({title:`${p.id}${p.enabled?'':'（停用）'}`,value:p.id}))" label="供应商" clearable /><v-combobox v-model="retrievalForm.rerank.model" :items="choicesFor(retrievalForm.rerank.provider_id)" label="模型名称" clearable /><v-select v-model="retrievalForm.rerank.protocol" :items="[{title:'Cohere v1（需确认供应商兼容）',value:'cohere_v1'}]" label="已确认协议" clearable /></div><v-btn type="submit" color="primary" :loading="busy==='retrieval'" :disabled="!!busy">保存语义检索配置</v-btn></v-form></v-card-text></v-card></v-dialog>
     <v-dialog :model-value="!!testConfirm" max-width="560" :persistent="busy==='test'" @update:model-value="value=>!value&&(testConfirm=null)"><v-card v-if="testConfirm" title="主动能力检查"><v-card-text><p>检查 {{ testConfirm.name }}：{{ testConfirm.profile.provider_id }} / {{ testConfirm.profile.model }}。</p><p class="mt-3">将进行最多 2 次真实模型请求，检查原图、指定工具与原生续接，可能产生供应商费用。检查使用合成资料，不向群聊发送消息。</p><v-alert v-if="error" type="error" variant="tonal" class="mt-3">{{ error }}</v-alert></v-card-text><v-card-actions><v-spacer /><v-btn :disabled="busy==='test'" @click="testConfirm=null">取消</v-btn><v-btn color="primary" :loading="busy==='test'" @click="testRoute">确认发起检查</v-btn></v-card-actions></v-card></v-dialog>
   </div>
 </template>

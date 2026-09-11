@@ -503,6 +503,51 @@ class ConversationContext:
         trajectory[:]=messages[:tool_start]
         return [messages[index]['content'] for index in indexes],messages[tool_end:]
 
+    async def install_initial_materials(self, toolkit, messages, result_ids, *, definitions,
+                                        can_read_body=True, can_read_media=True):
+        """Present plugin input observations through the normal body/pixel path."""
+        if not result_ids:
+            return
+        entries = []
+        images = []
+        media_reads = {}
+        for result_id in result_ids:
+            original = toolkit.observations.get(result_id)
+            if original is None:
+                raise ValueError('初始插件资料未在当前场景保存')
+            if original.content and not can_read_body and len(original.content) > self.config.tool_result_max_chars:
+                raise ValueError('result_only 初始资料超过单次正文上限，且当前入口没有续读工具')
+            limit = min(len(original.content) or 1, self.config.tool_result_page_chars if can_read_body else self.config.tool_result_max_chars)
+            shown = await toolkit._present('read_tool_result', original, 0, limit, 'characters')
+            shown = shown.model_copy(update={'attachments':[self.refs.register_media(asset) for asset in original.attachments]})
+            entries.append({'result_id': result_id, 'observation': shown})
+            images.extend(await self.attachments(original.attachments, read_cache=media_reads))
+            image_attachments = set()
+            for asset in original.attachments:
+                media = await self.runtime.event_store.get_media(asset, [self.session.scene_id, 'global-safe'])
+                if media and (media.get('mime_type') or '').startswith('image/'):
+                    image_attachments.add(asset)
+            if image_attachments and not can_read_media and image_attachments - self.loaded_media:
+                raise ValueError('初始插件资料的图片未能装入模型输入，且当前入口没有图片续读工具')
+
+        def material_message(entry):
+            return {'role':'user','_context_section':'plugin_material',
+                    'content':json.dumps({'kind':'plugin_material','observation':entry['observation'].model_dump(mode='json',exclude_none=True)},ensure_ascii=False)}
+
+        material_messages = [material_message(entry) for entry in entries]
+        candidate = [*messages, *material_messages, *images]
+        self.limit_image_window(candidate)
+        if self.request_tokens(candidate, definitions()) > self.input_budget:
+            self.externalize_old_tool_bodies(messages)
+            self.release_optional_context(messages, definitions=definitions(), reserved=[*material_messages,*images],
+                reason='capacity_reserved_for_initial_plugin_material')
+        if self.request_tokens([*messages,*material_messages,*images], definitions()) > self.input_budget:
+            raise ValueError('初始插件资料与当前请求超过输入容量；原资料未完整提供给模型')
+        messages.extend(material_messages)
+        messages.extend(images)
+        self.limit_image_window(messages)
+        self.check_request(messages, definitions(), phase='initial_plugin_material')
+
     async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None):
         """Share remaining request capacity across a complete native tool group.
 
@@ -660,7 +705,8 @@ class ConversationContext:
         result=[]
         for part in segments:
             if part['type']=='text':result.append({'text':part['text']})
-            elif part['type']=='image':result.append({'image':self.refs.register_media(part['asset_id'])})
+            elif part['type'] in {'image', 'video', 'audio'}:
+                result.append({part['type']:self.refs.register_media(part['asset_id'])})
             elif part['type']=='at':result.append({'at':self.refs.register_actor('user:'+part['qq_uid'])})
             elif part['type']=='at_all':result.append({'announcement_mention':'all'})
         return result
@@ -708,10 +754,23 @@ class ConversationContext:
         pending = list(dict.fromkeys(asset for asset in asset_ids if asset not in self.attached))
         if not pending: return []
         for asset in pending: self.refs.register_media(asset)
-        prepared = await self.runtime.media_service.prepare_context_images(self.session.scene_id, pending,
+        image_pending, non_image = [], []
+        for asset_id in pending:
+            record = await self.runtime.event_store.get_media(asset_id, [self.session.scene_id, 'global-safe'])
+            if record and (record.get('mime_type') or '').startswith(('video/', 'audio/')):
+                non_image.append((asset_id, record.get('mime_type', 'media')))
+            else:
+                image_pending.append(asset_id)
+        prepared = await self.runtime.media_service.prepare_context_images(self.session.scene_id, image_pending,
             limit=self.config.max_context_images, read_cache=read_cache)
         self.media_manifest.extend(prepared['manifest'])
         parts = []
+        for asset_id, mime_type in non_image:
+            ref = self.refs.register_media(asset_id)
+            self.attached.add(asset_id)
+            self.media_manifest.append({'asset_id': asset_id, 'status': 'available', 'media_type': mime_type,
+                                        'note': '媒体资料已保存；未装入图片像素，可在提案中明确引用视频或音频。'})
+            parts.append({'type':'text','text':f"媒体 {ref}（{mime_type}）已保存；本轮未装入像素，发送时可明确引用对应媒体类型。"})
         for record in prepared['manifest']:
             asset = record['asset_id'];ref = self.refs.register_media(asset)
             if record['status'] == 'included':
@@ -938,7 +997,7 @@ class ConversationContext:
 
 原话、资料取回、目录定位、实际展示与视觉读取分别计算。只读过片段不能作为整条原话的证据；read_pending_wakes定位，read_context/read_message_range读原话。next_call续读本地已存正文，source_next_call才是尚未取得的源端下一批；先读完本批。已登记获准且明确选定的图片可直接发送，分析画面或依据视觉内容选图须实际读取像素；更多素材用search_media。先判断表达形式：庆祝、吐槽、卖萌或接梗时，媒体目录已有语义匹配的运营表情就可以直接选用一张表情或图文混排，不必等用户明确说“发图”，也不必为了发图补长解释；需要判断画面具体内容时才read_media。没有合适素材、尚未读到像素或语境偏严肃时用文字；用户明确指定原图、张数或重复发送时，在现有额度与场景权限内按要求处理。
 
-用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；每个segments片段只填text、image或at，at使用成员U，文字@称呼不是真实提及。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
+用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；每个segments片段只填text、image、video、audio或at，媒体引用本轮已保存资产，at使用成员U，文字@称呼不是真实提及。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
 
 工具回执staged只表示暂存；新工作和提醒的确认用本轮ack_ref，恢复/修订/取消及认识变更的确认用对应operation_ref，均在同一事务提交后才成立。旧工作状态引用用work_ref，首次完整或部分结果交付用delivery_ref；每条消息只选一种关系。runtime_facts替代旧状态，first_result=true是原请求的首次交付机会，无需对方再问；普通旧结果目录不是重发理由。partial保留缺口，符合can_resume且有明确新要求时才继续原工作，保留已用预算；完整完成不因发送失败重跑。
 prepared_delivery=true表示插件已经准备好交付成品，原工作入口会提交保存的片段；当前对话处理新原话及控制要求，不重写成品或填delivery_ref重复交付。
@@ -1000,60 +1059,8 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                 self._restore_projection(snapshot)
                 self.omit('pending_directory', 'no_capacity', read_with='read_pending_wakes')
 
-        palette = await self.runtime.media_service.prepare_palette(self.session.scene_id,through_rowid=self.refs.cutoff)
-        legend, palette_manifest = [], []
-        def palette_content():
-            return json.dumps({'kind':'media_catalog','coverage':'locator_only',
-                'usage_scope':'recent_sent_in_scene','items':legend},ensure_ascii=False)
-        for row in palette['manifest']:
-            snapshot = self._projection_snapshot()
-            legend.append({'ref': self.refs.register_media(row['asset_id'], row['ref']),
-                           'name': row.get('name', ''), 'description': row.get('description', '')[:80],
-                           'last_sent_at':row['last_sent_at'],'recent_send_count':row['recent_send_count'],
-                           'used_in_last_reply':row['used_in_last_reply']})
-            candidate = {'role': 'user', '_context_section': 'reference',
-                         'content': palette_content()}
-            if self.request_tokens([*messages, candidate]) <= self.input_budget:
-                palette_manifest.append(row)
-            else:
-                legend.pop()
-                self._restore_projection(snapshot)
-                self.omit('media_catalog', 'no_capacity', asset_id=row['asset_id'], read_with='search_media')
-        if legend:
-            messages.append({'role': 'user', '_context_section': 'reference',
-                             'content': palette_content()})
-            self.media_manifest.extend(palette_manifest)
-
-        examples = await self.runtime.event_store.select_voice_examples(self.session.scene_id)
-        lines = []
-        def example_content():
-            return json.dumps({'kind':'voice_examples','source':'operator','items':lines},ensure_ascii=False)
-        for example in examples:
-            snapshot = self._projection_snapshot()
-            native = []
-            segments = example.get('segments') or []
-            for part in segments:
-                if part['type'] == 'image':
-                    asset = await self.runtime.event_store.get_media(part['asset_id'], [self.session.scene_id, 'global-safe'])
-                    if asset:
-                        native.append({'image': self.refs.register_media(asset['id'])})
-                else:
-                    native.append({'text': part['text']})
-            if not segments:
-                native = [{'text': example['content']}]
-            if not native:
-                self._restore_projection(snapshot)
-                self.omit('voice_examples', 'referenced_media_unavailable')
-                continue
-            lines.append({'context':example['context'],'segments':native})
-            candidate = {'role': 'user', '_context_section': 'reference', 'content': example_content()}
-            if self.request_tokens([*messages, candidate]) > self.input_budget:
-                lines.pop()
-                self._restore_projection(snapshot)
-                self.omit('voice_examples', 'no_capacity')
-        if lines:
-            messages.append({'role': 'user', '_context_section': 'reference', 'content': example_content()})
-
+        # Historical summaries are continuity context; reserve them before
+        # optional media and voice references compete for the same window.
         history_status = await self.runtime.event_store.list_history_status(self.session.scene_id)
         last = history_status.get('last_completed')
         coverage = {'initial_history_boundary':history_status['initial_history_boundary'],
@@ -1087,6 +1094,65 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             messages.append(history)
         else:
             self.omit('history_summary', 'no_capacity_for_coverage_directory')
+
+        palette = await self.runtime.media_service.prepare_palette(self.session.scene_id,through_rowid=self.refs.cutoff)
+        legend, palette_manifest = [], []
+        def palette_content():
+            return json.dumps({'kind':'media_catalog','coverage':'locator_only',
+                'usage_scope':'recent_sent_in_scene','items':legend},ensure_ascii=False)
+        for row in palette['manifest']:
+            snapshot = self._projection_snapshot()
+            legend.append({'ref': self.refs.register_media(row['asset_id'], row['ref']),
+                           'name': row.get('name', ''), 'description': row.get('description', '')[:80],
+                           'last_sent_at':row['last_sent_at'],'recent_send_count':row['recent_send_count'],
+                           'used_in_last_reply':row['used_in_last_reply']})
+            candidate = {'role': 'user', '_context_section': 'reference',
+                         'content': palette_content()}
+            if self.request_tokens([*messages, candidate]) <= self.input_budget:
+                palette_manifest.append(row)
+            else:
+                legend.pop()
+                self._restore_projection(snapshot)
+                self.omit('media_catalog', 'no_capacity', asset_id=row['asset_id'], read_with='search_media')
+        if legend:
+            messages.append({'role': 'user', '_context_section': 'reference',
+                             'content': palette_content()})
+            self.media_manifest.extend(palette_manifest)
+
+        request_text = "\n".join(event.raw_text for event in events if event.raw_text)
+        examples = await self.runtime.event_store.select_voice_examples(self.session.scene_id, request_text)
+        lines = []
+        def example_content():
+            return json.dumps({'kind':'voice_examples','source':'operator','items':lines},ensure_ascii=False)
+        for example in examples:
+            if len(lines) >= 8:
+                self.omit('voice_examples', 'sample_limit', example_id=example['id'])
+                continue
+            snapshot = self._projection_snapshot()
+            native = []
+            segments = example.get('segments') or []
+            for part in segments:
+                if part['type'] == 'image':
+                    asset = await self.runtime.event_store.get_media(part['asset_id'], [self.session.scene_id, 'global-safe'])
+                    if asset:
+                        native.append({'image': self.refs.register_media(asset['id'])})
+                else:
+                    native.append({'text': part['text']})
+            if not segments:
+                native = [{'text': example['content']}]
+            if not native:
+                self._restore_projection(snapshot)
+                self.omit('voice_examples', 'referenced_media_unavailable')
+                continue
+            lines.append({'context':example['context'],'segments':native})
+            candidate = {'role': 'user', '_context_section': 'reference', 'content': example_content()}
+            if self.request_tokens([*messages, candidate]) > self.input_budget:
+                lines.pop()
+                self._restore_projection(snapshot)
+                self.omit('voice_examples', 'no_capacity')
+        if lines:
+            messages.append({'role': 'user', '_context_section': 'reference', 'content': example_content()})
+
         rejected = await self.runtime.event_store.uncommitted_job_attempts(
             self.session.scene_id, min((wake.rowid for wake in self.session.pending_wakes), default=self.refs.cutoff+1)-1, self.refs.cutoff)
         if rejected:

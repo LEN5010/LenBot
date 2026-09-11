@@ -423,8 +423,8 @@ class JobStoreMixin(SkillStoreMixin):
                         if result.delivery.result_id not in result.result_ids:
                             raise ValueError('Prepared delivery must reference this work result')
                         for segment in result.delivery.segments:
-                            if segment.type=='image' and await self.get_media(segment.asset_id,[scene_id]) is None:
-                                raise ValueError('Prepared work image is not registered in this scene')
+                            if segment.type in {'image', 'video', 'audio'} and await self.get_media(segment.asset_id,[scene_id]) is None:
+                                raise ValueError('Prepared work media is not registered in this scene')
                     await self._validate_evidence_spans(job, result.evidence_spans, result.result_ids)
                     if result.work_state is not None:
                         await self._validate_work_state(job, result.work_state)

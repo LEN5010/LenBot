@@ -20,12 +20,14 @@ class TurnPart(StrictModel):
     text: str|None=Field(default=None,min_length=1,
         description='要实际发送的文字；指定照发时只填要求的文字、标点和换行，不添加角色评语。换行使用真实换行，仅在用户要求展示转义写法时发送反斜线加n。')
     image: str|None=Field(default=None,min_length=1)
+    video: str|None=Field(default=None,min_length=1,description='本轮已保存的视频媒体I引用')
+    audio: str|None=Field(default=None,min_length=1,description='本轮已保存的音频媒体I引用')
     at: str|None=Field(default=None,min_length=1)
 
     @model_validator(mode='after')
     def one_content(self):
-        if self.model_fields_set not in ({'text'}, {'image'}, {'at'}) or not (self.text or self.image or self.at):
-            raise ValueError('每个片段必须且只能填写一个非空text、image或at字段')
+        if self.model_fields_set not in ({'text'}, {'image'}, {'video'}, {'audio'}, {'at'}) or not (self.text or self.image or self.video or self.audio or self.at):
+            raise ValueError('每个片段必须且只能填写一个非空text、image、video、audio或at字段')
         return self
 
 class ReplyExpectation(StrictModel):
@@ -158,14 +160,16 @@ RESPOND={
     'type':'function',
     'function':{
         'name':'respond',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text、image或at，不填type。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text、image、video、audio或at，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
                 'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
                     **_object({'text':{'type':'string','minLength':1},
                                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
+                               'video':{'type':'string','minLength':1,'description':'本轮已保存视频媒体I引用'},
+                               'audio':{'type':'string','minLength':1,'description':'本轮已保存音频媒体I引用'},
                                'at':{'type':'string','minLength':1,'description':'真实成员提及，填写本轮人物U引用'}}),
-                    'description':'恰好一个字段：text、image或at；按顺序混排。'}},
+                    'description':'恰好一个字段：text、image、video、audio或at；按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
                 'source':{'type':'string','description':'本条回应对应的已读来源M；普通聊天和操作确认须来自人类原话，插件系统来源保留原类型'},
                 'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
@@ -201,7 +205,7 @@ class ProposalLedger:
         self.messages_committed=0
         self.continuing_sources=set()
         self.plugin_source_ids=set()
-        self.can_continue=lambda:True
+        self.remaining_model_calls=lambda:0
 
     async def request_source(self, reference):
         event_id = self.context.refs.event_id(reference)
@@ -258,7 +262,7 @@ class ProposalLedger:
                          or any(w.event_id == event_id for w in self.context.session.pending_wakes))]
         parameters=result['function']['parameters']['properties']
         parameters['messages']['maxItems']=3-self.messages_committed
-        if not self.can_continue():parameters['next']['enum']=['end']
+        if self.remaining_model_calls()<=1:parameters['next']['enum']=['end']
         handled = parameters['sources']
         if available:
             handled['items']['properties']['source']['enum'] = available
@@ -392,7 +396,7 @@ class ProposalLedger:
             refs=self.context.refs;messages=[]
             if len(result.messages)+self.messages_committed>3:
                 raise ValueError('所有checkpoint共用本轮三条消息上限')
-            if result.next!='end' and not self.can_continue():
+            if result.next!='end' and self.remaining_model_calls()<=0:
                 raise ValueError('原执行预算不足以继续或恢复等待，请结束并保留未完成项')
             handled=[refs.event_id(item.source) for item in result.sources]
             pending=self.plugin_source_ids or {wake.event_id for wake in self.context.session.pending_wakes}
@@ -438,6 +442,16 @@ class ProposalLedger:
                         if await self.context.runtime.event_store.get_media(asset_id,[refs.scene_id,'global-safe']) is None:
                             raise ValueError('图片未登记、已停用或不属于当前场景')
                         parts.append({'type':'image','asset_id':asset_id})
+                    elif part.video is not None or part.audio is not None:
+                        media_ref = part.video or part.audio
+                        asset_id = refs.media_id(media_ref)
+                        asset = await self.context.runtime.event_store.get_media(asset_id, [refs.scene_id, 'global-safe'])
+                        if asset is None:
+                            raise ValueError('视频或音频未登记、已停用或不属于当前场景')
+                        expected = 'video/' if part.video is not None else 'audio/'
+                        if not (asset.get('mime_type') or '').startswith(expected):
+                            raise ValueError('消息片段类型与媒体实际类型不一致')
+                        parts.append({'type':'video' if part.video is not None else 'audio', 'asset_id':asset_id})
                 reply=None
                 if item.reply_to:
                     event_id=refs.event_id(item.reply_to)
@@ -582,9 +596,9 @@ class ProposalLedger:
             for segment in message.segments:
                 if segment.type == 'at' and 'user:' + segment.qq_uid not in self.context.refs.actors.values():
                     raise TerminalArgumentError('提交前处理增加的提及对象没有出现在本轮人物资料中')
-                if segment.type == 'image' and await self.context.runtime.event_store.get_media(
+                if segment.type in {'image', 'video', 'audio'} and await self.context.runtime.event_store.get_media(
                         segment.asset_id, [self.context.refs.scene_id, 'global-safe']) is None:
-                    raise TerminalArgumentError('提交前处理的图片不在当前场景可用素材中')
+                    raise TerminalArgumentError('提交前处理的媒体不在当前场景可用素材中')
 
     def adopt_commit(self,outcome):
         if outcome.checkpoint_index<self.checkpoint_index:return

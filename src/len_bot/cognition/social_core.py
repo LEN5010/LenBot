@@ -101,15 +101,14 @@ class SocialCognitionCore:
                 raise ValueError('Plugin Agent requested tools unavailable to this scene and entry')
         pending_exchange=None
         pending_presentations=[]
-        ledger.can_continue=lambda: execution.budget.model_used<config.conversation_max_steps and execution.budget.tool_used<config.conversation_max_tool_calls
+        # Read-tool exhaustion closes reads, not a still-budgeted follow-up or wait.
+        ledger.remaining_model_calls=lambda:config.conversation_max_steps-execution.budget.model_used
         def definitions():
             available=(toolkit.get_tool_definitions() + ledger.definitions()
                     + runtime.plugin_host.get_tool_definitions(plugin_context(), kind='proposal'))
             return [item for item in available if item['function']['name'] in plugin_request.tool_names] if plugin_request else available
         def terminal_definition():
-            definition=ledger.terminal_definition()
-            if next_is_final():definition['function']['parameters']['properties']['next']['enum']=['end']
-            return definition
+            return ledger.terminal_definition()
         def request_definitions():
             if next_is_final():return [terminal_definition()]
             return [*definitions(),terminal_definition()]
@@ -128,7 +127,10 @@ class SocialCognitionCore:
                 await toolkit.import_results(plugin_request.result_ids)
                 for ident in plugin_request.result_ids:
                     context.refs.register_result(ident)
-                    messages.append(toolkit.material_message(ident))
+                await context.install_initial_materials(toolkit, messages, plugin_request.result_ids,
+                    definitions=request_definitions,
+                    can_read_body='read_tool_result' in plugin_request.tool_names,
+                    can_read_media='read_media' in plugin_request.tool_names)
             if resume:
                 await toolkit.import_results(resume.result_ids)
                 for ident in resume.result_ids:context.refs.register_result(ident)

@@ -114,6 +114,8 @@ class RuntimeQueryService:
             effect = "普通成员可正常互动，命令与公告按本群选项执行。"
         else:
             effect = "普通成员闲聊仅保存；QQ 白名单仍可正常提问，命令与公告按本群选项执行。"
+        if settings and settings.semantic_retrieval:
+            effect += " 本群已允许向已配置的语义检索供应方发送认识与摘要文本。"
         if self.runtime.shadow_mode:
             effect += " 当前全局 Shadow 开启，不实际发送。"
         return {"scene_id": scene_id, "configured": settings is not None,
@@ -1025,10 +1027,31 @@ class RuntimeQueryService:
 
     def model_configuration(self) -> dict:
         """Private control input; credentials never pass through a public response."""
-        return self.runtime.provider_registry.export()
+        data = self.runtime.provider_registry.export()
+        data["retrieval"] = self.runtime.config_store.current.models.retrieval.model_dump()
+        return data
 
     def providers(self) -> dict:
-        return self.runtime.provider_registry.snapshot()
+        data = self.runtime.provider_registry.snapshot()
+        data["retrieval"] = self.runtime.config_store.current.models.retrieval.model_dump()
+        return data
+
+    async def memory_index_status(self, scene_id: str) -> dict:
+        index = self.runtime.memory_index
+        if index is None:
+            return {"enabled": False, "reason": "索引尚未初始化"}
+        coverage = await index.coverage(scene_id)
+        summary_coverage = await index.summary_coverage(scene_id)
+        profile = self.runtime.retrieval_profiles.embedding if self.runtime.retrieval_profiles else None
+        scene_enabled = self.runtime.semantic_retrieval_enabled(scene_id)
+        errors = await self._rows("SELECT payload,created_at FROM traces WHERE scene_id=? AND kind='memory_index_error' ORDER BY created_at DESC LIMIT 1", [scene_id])
+        last_error = None
+        if errors:
+            try: last_error = {**json.loads(errors[0]['payload']), 'created_at': errors[0]['created_at']}
+            except (TypeError, ValueError, json.JSONDecodeError): last_error = {'error': '索引错误记录无法解析'}
+        return {"enabled": profile is not None and scene_enabled, "scene_enabled": scene_enabled,
+                "profile": profile.model_dump() if profile else None, "last_error": last_error,
+                "summary_coverage": summary_coverage, **coverage}
 
     def shadow_would_send(self, limit: int = 100) -> list[dict]:
         return list(self.runtime.shadow_would_send_log)[-limit:][::-1]
