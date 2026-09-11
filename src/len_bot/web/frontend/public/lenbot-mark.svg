@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">LenBot</title>
+  <desc id="desc">Minimal blue L and bot signal mark</desc>
+  <rect width="96" height="96" rx="24" fill="#2563eb"/>
+  <path d="M28 23h12v38h27v12H28z" fill="#fff"/>
+  <circle cx="70" cy="24" r="6" fill="#93c5fd"/>
+</svg>
