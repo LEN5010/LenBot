@@ -211,7 +211,6 @@
           "timeout_seconds": 30.0,
           "max_output_chars": 12000,
           "max_artifact_bytes": 20000000,
-          "container_user": "65532:65532",
           "memory": "512m",
           "cpus": "1.0",
           "max_artifact_files": 1000

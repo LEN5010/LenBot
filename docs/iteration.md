@@ -103,3 +103,7 @@ A 的实群验收此前明确跳过；不能将旧失败或缺少观察改为通
 
 2026-09-12 测试环境准备：Docker Desktop 已拉取 `python:3.13-slim` 并构建本地 `lenbot-workspace:py313` 镜像，预装 NumPy、Pandas、Matplotlib、Pillow 和 Noto CJK 字体；宿主 uv 环境安装 Playwright 1.62.0 并取得 Chromium。实际根配置已将 workspace 全局及两群启用，使用 `/opt/homebrew/bin/docker`、镜像 `lenbot-workspace:py313` 和本机非 root UID/GID `501:20`；browser_agent 仍全局及两群停用，GSUID Core 未配置。尚未启动 LenBot 或进行真实群聊发送。
 2026-09-12 浏览器功能测试批准：运营者明确批准同进程浏览器的任意公网主机功能测试；实际根配置已启用 browser_agent 全局及两群，GSUID Core 仍未配置。该启用不代表 OS/网络隔离验收通过，未启动 LenBot、未访问网页、未发送 QQ。
+
+2026-09-12 W1—W5 修复：workspace 未显式指定容器用户时跟随启动进程 UID/GID；宿主读取统一使用目录描述符、`O_NOFOLLOW` 和 `fstat`，避免检查与打开之间的路径替换；终止流程记录 kill/inspect/rm 结局；进程退出后执行最终字节数和文件数核对，超限产物保留 `over_limit` 标记；图片登记失败返回 `partial` 及具体错误，产物媒体字段改为 `asset_id`。本轮仅完成源码编译和差异检查，未运行容器、浏览器、Core、模型或 QQ。
+
+W1—W5 复审落实：上述 workspace 边界修复已实际写入当前工作树；浏览器功能测试仍按运营者批准运行，未宣称隔离完成。运行环境状态（Docker 镜像、Playwright、根配置）与源码提交分开记录，未把未运行的容器或 QQ 发送写成通过。

@@ -41,4 +41,5 @@ class WorkspaceArtifact(BaseModel):
     path: str
     size_bytes: int = Field(ge=0)
     media_type: str = 'application/octet-stream'
-    result_id: str | None = None
+    asset_id: str | None = None
+    over_limit: bool = False
