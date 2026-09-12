@@ -18,7 +18,7 @@ class WorkspacePlugin(BasePlugin):
             context.event_store, self.manifest.id)
 
     async def on_load(self, context: PluginContext):
-        context.register_tool('run_python', '在当前信息工作的隔离离线 Python 容器中处理已获准的资料；每次调用是新进程，文件可持续。',
+        context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，产物写入当前目录 /workspace；依赖由已配置镜像提供。',
             RunPythonInput, self.run_python, purpose='执行隔离 Python 处理', aliases=('运行Python', 'Python处理'),
             keywords=('Python', '代码', '脚本', '表格', '图表'), kind='read', roles=('work',), deferred=True)
         context.register_tool('list_workspace_files', '列出当前信息工作归属的相对文件，不浏览宿主目录。',
@@ -26,7 +26,7 @@ class WorkspacePlugin(BasePlugin):
             purpose='查看工作区文件', aliases=('列出文件',), keywords=('工作区', '文件'), kind='read', roles=('work',))
         context.register_tool('read_workspace_file', '分页读取当前信息工作中的普通文件。', WorkspaceFileInput, self.read_file,
             purpose='读取工作区文件', aliases=('读取文件',), keywords=('工作区', '文件', '读取'), kind='read', roles=('work',))
-        context.register_tool('export_workspace_artifact', '登记一个当前工作的普通文件产物供授权面板读取；不自动发送。',
+        context.register_tool('export_workspace_artifact', '导出当前工作的文件产物。支持的图片登记为 attachments 中的场景媒体引用，普通文件可在授权面板下载；不自动发送。',
             WorkspaceFileInput, self.export_file, purpose='导出工作区产物', aliases=('导出文件',),
             keywords=('工作区', '文件', '导出', '产物'), kind='read', roles=('work',))
 
