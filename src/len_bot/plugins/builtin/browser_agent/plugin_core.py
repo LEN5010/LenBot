@@ -21,7 +21,7 @@ class BrowserAgentPlugin(BasePlugin):
         context.register_tool('browser_open', '在当前信息工作中打开白名单公开网页并返回可见 DOM 文本与临时元素引用。',
             BrowserOpenInput, self.open, purpose='观察公开网页', aliases=('打开网页', '看看网页'),
             keywords=('网页', '浏览器', '网站'), kind='read', roles=('work',), deferred=True)
-        context.register_tool('browser_snapshot', '读取当前工作浏览器页的最新可见 DOM 文本和元素引用。',
+        context.register_tool('browser_snapshot', '读取当前工作浏览器页的 DOM 文本和元素引用；可用 text_offset 接续读取长正文。',
             BrowserPageInput, self.snapshot, purpose='读取网页状态', aliases=('网页状态',), keywords=('网页', '浏览器', '页面'),
             kind='read', roles=('work',), deferred=True)
         context.register_tool('browser_interact', '按配置执行带观察版本校验的滚动或元素点击，默认关闭。',
@@ -83,7 +83,8 @@ class BrowserAgentPlugin(BasePlugin):
             asset_id = await call.save_image(png, '受控浏览器网页截图')
             return ToolResult(status='ok', coverage='browser_pixels', attachments=[asset_id],
                 content=json.dumps({'page_ref': values.page_ref, 'asset_id': asset_id,
-                    'area': values.area, 'pixels_loaded': True}, ensure_ascii=False), evidence_kind='external')
+                    'area': values.area, 'asset_registered': True, 'pixels_loaded': False},
+                    ensure_ascii=False), evidence_kind='external')
         except (ValueError, RuntimeError, PermissionError) as error:
             return ToolResult.failure(str(error), 'browser_unavailable')
 

@@ -822,7 +822,7 @@ class InformationJobRunner:
                         continue
                     await save_result(result, revision, error=error)
                     return
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
             if revision is not None:
                 current_job = await store.get_job(job_id, scene_id)
                 if current_job:
