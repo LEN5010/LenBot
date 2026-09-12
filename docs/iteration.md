@@ -71,3 +71,25 @@ A 的实群验收此前明确跳过；不能将旧失败或缺少观察改为通
 终结 `respond` Schema 和插件直接提交路径也已开放 `video`/`audio` 片段，并在提交前按素材 MIME 类型复核，避免仅在发送适配器层支持而模型无法提出媒体。
 相同场景、相同已确认播放地址会复用已有完整媒体文件；再次发送仍需新的提案和送达回执，不把缓存命中当作已发送。
 检索结果在索引尚未覆盖完整账本时返回 `partial` 并在 Trace 写入候选、重排和覆盖状态；显式重建会清理旧来源的派生行。Embedding/rerank 的长期 HTTP 客户端随 Runtime 停止释放。
+# 2026-09-12 下一阶段计划实施
+
+基线：`fb73fa9`。本轮实现共享亮色卡片、已有插件入口、GSUID Core 桥接、隔离 Python worker 与浏览器 worker；后三项默认保持停用，运行验收仍待环境、Core 版本和隔离后端信息明确。
+
+已改动：
+
+- 新增 `src/len_bot/cards/` 共享亮色主题、文本测量与绘制基础组件。
+
+- 日历、直播、群报告和动态模板改用 LightThemeV1；群报告成品现在以有序附件列表交付（旧单图字段继续兼容）。
+- 直播公告保留原文案并同一次提交卡片；日历引用不会因引用卡片而被宽泛吞掉；动态增加只读的单条卡片渲染入口。
+- 新增默认停用的 `gscore_adapter`、`python_workspace` 和 `browser_agent`。Core 适配、隔离容器与域名白名单浏览器均沿现有插件和 ToolResult 边界工作，见 `docs/gscore-adapter.md` 与 `docs/execution-boundaries.md`。
+- `gscore_adapter` 已按 `MessageReceive`/`MessageSend`/`recall_message_id` 帧边界实现，Core 输出的群目标经过场景校验，实际 QQ 回执由 `after_delivery` 观察后再回 Core。`workspace` 工具只在已有 work 中按 scene/requester/job 归属执行；控制面板提供产物清单和分页读取入口。浏览器使用工作级 page_ref 与观察版本，默认拒绝交互和空白主机白名单。
+
+本轮仍未启动 Core、容器、Playwright、模型、OneBot 或 QQ；配置、协议版本、隔离运行时和浏览器依赖需要部署环境确认后再做运行验收。H01—H04（Hermes 式程序化工具编排、技能复用、有状态内核/长期浏览器、多后端及其他暂缓能力）保留为后续 TODO，不在本轮启用。
+
+本次静态核对包括全部 Python AST、内置插件目录发现、实际 `ConfigStore.load()`、示例配置模型解析、卡片渲染冒烟和 `git diff --check`。前端用 `npx vite build --configLoader runner --outDir /tmp/lenbot-dist` 成功构建 442 个模块；受当前文件系统权限限制，不能覆盖仓库内已有 `web/static/dist`，因此生产静态构建产物仍需在有写权限的工作区重新生成。未运行测试、生产服务或真实外部连接。
+- 日历与群报告使用亮色 token；直播公告增加同场次事实卡片。
+- 日历引用不再因宽泛 `interaction` 字段被插件吞掉；直播提交校验允许正文与图片组成同一交付。
+
+未确认：实际 QQ 发送、直播卡片的线上视觉效果、Core 服务、隔离执行后端和浏览器网络边界均未在本轮启动或实发验证。
+
+继续推进：修正浏览器 worker 的 DNS 检查，使已在域名白名单中的主机解析到公网地址时不被错误拒绝，同时仍拦截私网、回环、链路本地、保留和未指定地址；JobRunner 在工作最终结果保存后统一调用插件资源清理，结束浏览器页面生命周期。以上仅为源码修改，未启动浏览器或工作容器验证。

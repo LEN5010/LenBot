@@ -216,10 +216,10 @@ async def run_report(context):
         progress=progress.model_copy(update={'analysis_requirements':requirements,'phase':'analyzing',
             'batch_result_ids':[],'analyzed_messages':0,'reused_messages':0,'after_rowid':0,
             'pending_input_id':None,'merged_result_id':None,'merged_batches':0,
-            'report_result_id':None,'image_asset_id':None,'artifact_result_id':None,'error':None})
+            'report_result_id':None,'image_asset_id':None,'image_asset_ids':[],'artifact_result_id':None,'error':None})
         progress=await context.save_progress(progress)
     if progress.phase=='ready' and progress.analyzed_messages<progress.matched_messages:
-        progress.report_result_id=None;progress.image_asset_id=None;progress.artifact_result_id=None
+        progress.report_result_id=None;progress.image_asset_id=None;progress.image_asset_ids=[];progress.artifact_result_id=None
         progress.phase='analyzing';progress=await context.save_progress(progress)
     try:
         if progress.report_result_id is None:
@@ -244,19 +244,24 @@ async def run_report(context):
             _,report=await _resource(context,progress.report_result_id,SingleGroupReport,'group_summary_report')
         if not same_source(report.range,request):raise ValueError('Saved report belongs to another source range')
         if progress.image_asset_id is None:
-            from .render import render_report
+            from .render import render_report_pages
             progress.phase='rendering';progress=await context.save_progress(progress)
             font=Path(call.plugin.directory)/call.plugin.config.render_font_path
-            png=await asyncio.to_thread(render_report,report,font)
-            asset_id=await call.save_image(png,'本群固定范围的结构化聊天报告')
+            pages=await asyncio.to_thread(render_report_pages,report,font)
+            asset_ids=[await call.save_image(png, f'本群固定范围的结构化聊天报告（第 {index} 页）')
+                       for index,png in enumerate(pages,1)]
+            asset_id=asset_ids[0]
             progress=await context.progress();progress.image_asset_id=asset_id
+            progress.image_asset_ids=asset_ids
             progress=await context.save_progress(progress)
         if progress.artifact_result_id is None:
             artifact=ReportArtifact(scene_id=call.scene_id,job_id=call.job_id,job_revision=context.revision,
                 report_result_id=progress.report_result_id,image_asset_id=progress.image_asset_id,
+                image_asset_ids=progress.image_asset_ids or [progress.image_asset_id],
+                theme_version='light-v1', source_result_ids=[progress.report_result_id, *progress.batch_result_ids],
                 start_at=request.start_at,end_at=request.end_at,generated_at=call.plugin.now())
             saved=await context.save_result('group_summary_artifact',ToolResult(content=artifact.model_dump_json(),
-                coverage='group_summary_artifact',evidence_kind='model',attachments=[progress.image_asset_id],
+                coverage='group_summary_artifact',evidence_kind='model',attachments=progress.image_asset_ids or [progress.image_asset_id],
                 sources=[ToolSource(title='已生成的本群结构化报告')]))
             progress=await context.progress();progress.artifact_result_id=saved.result_id
         progress.phase='ready';progress.error=None
@@ -267,7 +272,8 @@ async def run_report(context):
         return JobResult(status='completed' if report.coverage.complete else 'partial',summary=summary,
             result_ids=ids,unresolved=report.unresolved,reason='analysis_incomplete' if report.coverage.unfinished_messages else None,
             delivery=PreparedWorkDelivery(result_id=progress.artifact_result_id,
-                segments=[MessageSegment(type='image',asset_id=progress.image_asset_id)]))
+                segments=[MessageSegment(type='image',asset_id=asset_id) for asset_id in
+                          (progress.image_asset_ids or [progress.image_asset_id])]))
     except JobChanged:
         raise
     except Exception as error:

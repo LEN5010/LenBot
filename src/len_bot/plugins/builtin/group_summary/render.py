@@ -10,18 +10,20 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 from .report import SingleGroupReport
+from len_bot.cards.tokens import THEME
+from len_bot.cards.layout import split_pages
 
 
 WIDTH=1080
 MARGIN=54
-ACCENT='#E799B0'
-INK='#29333D'
-MUTED='#66717E'
-BACKGROUND='#F9F4F5'
+ACCENT=THEME.accent
+INK=THEME.ink
+MUTED=THEME.muted
+BACKGROUND=THEME.canvas
 
 
-def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
-    fonts={size:ImageFont.truetype(str(font_path),size=size) for size in (18,22,25,28,32,38,48)}
+def render_report(report: SingleGroupReport,font_path: Path, *, page_index: int = 1, page_count: int = 1) -> bytes:
+    fonts={size:ImageFont.truetype(str(font_path),size=size) for size in (18,20,22,25,28,32,38,48)}
     measuring=ImageDraw.Draw(Image.new('RGB',(1,1)))
     elements=[]
 
@@ -58,12 +60,12 @@ def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
         ('展示文本字符',report.statistics.characters),('已完成分析',report.coverage.analyzed_messages)]
     for index,(label,value) in enumerate(values):
         x=MARGIN+index*(card_width+12)
-        rect((x,y,x+card_width,y+142),'#FFFFFF')
+        rect((x,y,x+card_width,y+142),THEME.card)
         text(label,x+20,y+17,card_width-40,22,MUTED)
         text(f'{value:,}',x+20,y+61,card_width-40,38)
     y+=168
     status='已覆盖本范围保存的文本' if report.coverage.complete else '部分报告 · 仍有消息未分析'
-    rect((MARGIN,y,WIDTH-MARGIN,y+134),'#F2DEE5')
+    rect((MARGIN,y,WIDTH-MARGIN,y+134),THEME.soft)
     text(status,MARGIN+24,y+18,WIDTH-2*MARGIN-48,28)
     text(f'本次已读 {report.coverage.read_messages:,} 条  ·  复用分析 {report.coverage.reused_messages:,} 条  ·  尚未分析 {report.coverage.unfinished_messages:,} 条',
         MARGIN+24,y+66,WIDTH-2*MARGIN-48,22)
@@ -98,7 +100,7 @@ def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
         people='、'.join(names[actor] for actor in topic.participant_ids if actor in names)
         bottom=text(f'{len(topic.source_event_ids)} 条来源消息'+('  ·  '+people if people else ''),
             MARGIN+26,bottom+12,WIDTH-2*MARGIN-52,22,MUTED)
-        elements.insert(block_start,('rect',(MARGIN,top_y,WIDTH-MARGIN,bottom+24),'#FFFFFF',18))
+        elements.insert(block_start,('rect',(MARGIN,top_y,WIDTH-MARGIN,bottom+24),THEME.card,THEME.radius_inner))
         y=bottom+36
     y+=20
     y=text('原话摘录',MARGIN,y,WIDTH-2*MARGIN,32)
@@ -108,7 +110,7 @@ def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
         bottom=text(quote.text,MARGIN+30,top_y+22,WIDTH-2*MARGIN-60,28)
         bottom=text(f'{quote.display_name}  ·  {quote.sent_at.astimezone(zone):%m-%d %H:%M}',MARGIN+30,bottom+12,WIDTH-2*MARGIN-60,22,MUTED)
         if quote.comment:bottom=text(quote.comment,MARGIN+30,bottom+12,WIDTH-2*MARGIN-60,25,MUTED)
-        elements.insert(block_start,('rect',(MARGIN,top_y,WIDTH-MARGIN,bottom+24),'#FFFFFF',18))
+        elements.insert(block_start,('rect',(MARGIN,top_y,WIDTH-MARGIN,bottom+24),THEME.card,THEME.radius_inner))
         line((MARGIN+3,top_y+16,MARGIN+3,bottom+8),ACCENT,5)
         y=bottom+36
     if report.comment:
@@ -122,6 +124,8 @@ def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
     line((MARGIN,y,WIDTH-MARGIN,y),'#DACFD3')
     y=text('统计来自固定快照中的已保存消息；话题与点评为派生分析。',MARGIN,y+20,WIDTH-2*MARGIN,22,MUTED)
     y=text('引语从原话的展示文本提取，保留原作者与来源；本报告未识别图片内容。',MARGIN,y+2,WIDTH-2*MARGIN,22,MUTED)
+    if page_count > 1:
+        y=text(f'第 {page_index} / {page_count} 页',WIDTH-MARGIN-180,y+12,180,20,MUTED)
     image=Image.new('RGB',(WIDTH,y+48),BACKGROUND)
     draw=ImageDraw.Draw(image)
     for operation in elements:
@@ -130,3 +134,39 @@ def render_report(report: SingleGroupReport,font_path: Path) -> bytes:
         else:draw.text(operation[1],operation[2],font=operation[3],fill=operation[4])
     output=BytesIO();image.save(output,format='PNG')
     return output.getvalue()
+
+
+def render_report_pages(report: SingleGroupReport, font_path: Path) -> list[bytes]:
+    """Return an ordered page collection while keeping the legacy single-page renderer.
+
+    The first version of the template fits ordinary reports on one canvas.  Keeping
+    this boundary as a list lets delivery and saved artifacts support semantic pages
+    without changing the report JSON or rerunning analysis.
+    """
+    blocks = [('topic', item) for item in report.topics] + [('quote', item) for item in report.quotes]
+    if not blocks:
+        return [render_report(report, font_path)]
+
+    def block_height(block):
+        item = block[1]
+        if block[0] == 'topic':
+            return 180 + (len(item.title) + len(item.summary)) // 2
+        return 120 + len(item.text) // 2 + len(item.comment)
+
+    # Header, statistics and chart occupy the first part of every page. Keep
+    # semantic blocks whole; an unusually large single block gets its own page
+    # rather than being cropped or silently reduced.
+    chunks = split_pages(blocks, 1500, block_height)
+    page_count = len(chunks)
+    pages = []
+    for index, chunk in enumerate(chunks, 1):
+        topics = [item for kind, item in chunk if kind == 'topic']
+        quotes = [item for kind, item in chunk if kind == 'quote']
+        page = report.model_copy(update={
+            'topics': topics,
+            'quotes': quotes,
+            'comment': report.comment if index == page_count else '',
+            'unresolved': report.unresolved if index == page_count else [],
+        })
+        pages.append(render_report(page, font_path, page_index=index, page_count=page_count))
+    return pages

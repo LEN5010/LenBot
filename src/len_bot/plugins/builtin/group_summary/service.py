@@ -126,12 +126,16 @@ class GroupSummaryService:
             observed=await self.event_store.read_tool_observation(artifact.report_result_id,[call.scene_id])
             if observed is None:raise ValueError('Saved report artifact has no structured result')
             report=SingleGroupReport.model_validate_json(observed.content)
-            asset=await self.event_store.get_media(artifact.image_asset_id,[call.scene_id])
+            asset_ids=artifact.image_asset_ids or [artifact.image_asset_id]
+            available=[]
+            for asset_id in asset_ids:
+                if await self.event_store.get_media(asset_id,[call.scene_id]):
+                    available.append(asset_id)
             job=await self.event_store.get_job(artifact.job_id,call.scene_id)
-            return ToolResult(status='ok' if asset else 'partial',coverage='saved_group_report',evidence_kind='model',
-                attachments=[artifact.image_asset_id] if asset else [],sources=observed.sources,
+            return ToolResult(status='ok' if len(available)==len(asset_ids) else 'partial',coverage='saved_group_report',evidence_kind='model',
+                attachments=available,sources=observed.sources,
                 content=json.dumps({'artifact_result_id':resource.result_id,'report_result_id':observed.result_id,
-                    'artifact':artifact.model_dump(mode='json'),'report':report.model_dump(mode='json'),'image_available':asset is not None,
+                    'artifact':artifact.model_dump(mode='json'),'report':report.model_dump(mode='json'),'image_available':bool(available),
                     'delivery_status':job['status'] if job and job['revision']==artifact.job_revision else 'see_historical_receipts',
                     'note':'这是保存的派生报告；读取不会重新分析、渲染或发送。统计和引用由程序提取，话题与点评来自当时模型分析。'},ensure_ascii=False))
         return ToolResult(status='no_results',coverage='saved_group_report',evidence_kind='retrieval',

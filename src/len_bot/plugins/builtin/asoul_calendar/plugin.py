@@ -43,8 +43,8 @@ class AsoulCalendarPlugin(BasePlugin):
                 context.register_handler(id=command, description='精确日程命令：' + ' / '.join(words),
                     match=ExactText(tuple(words)), handler=self.on_command, priority=10, consume=True,
                     available=lambda call, command=command: bool(call.scene_config and command in call.scene_config.commands))
-        context.register_handler(id='calendar_comment', description='引用本插件日程结果的评论由日历接收，不另起普通聊天',
-            match=self.match_comment, handler=self.on_comment, priority=20, consume=True)
+        context.register_handler(id='calendar_comment', description='记录引用本插件日程结果的评论并继续普通聊天处理',
+            match=self.match_comment, handler=self.on_comment, priority=20, consume=False)
 
     async def on_unload(self):
         await self.service.close()
@@ -62,7 +62,7 @@ class AsoulCalendarPlugin(BasePlugin):
         origin = quote.get('plugin_origin') or {}
         return (origin.get('plugin_id') == self.manifest.id
             or any(route['origin']['plugin_id'] == self.manifest.id for route in quote.get('plugin_routes', ()))
-            or quote.get('interaction') in {'calendar_command', 'calendar_response', 'calendar_comment'})
+            )
 
     async def on_comment(self, call: PluginCallContext):
         # A comment is saved and consumed; this plugin defines no reply to it.

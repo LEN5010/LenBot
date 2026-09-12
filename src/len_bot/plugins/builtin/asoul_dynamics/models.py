@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class SourceMember(BaseModel):
@@ -74,6 +74,36 @@ class SearchRequest(BaseModel):
 class DetailRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dynamic_id: str = Field(min_length=1)
+
+
+class CardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dynamic_id: str | None = Field(default=None, min_length=1)
+    result_ref: str | None = Field(default=None, min_length=1)
+    item_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode='after')
+    def locator(self):
+        if self.result_ref is not None and self.item_id is None:
+            raise ValueError('result_ref requires item_id')
+        if self.result_ref is None and self.dynamic_id is None:
+            raise ValueError('provide result_ref + item_id or an obtained dynamic_id')
+        return self
+
+
+class FanartCardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_dynamic_id: str | None = Field(default=None, min_length=1)
+    result_ref: str | None = Field(default=None, min_length=1)
+    item_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode='after')
+    def locator(self):
+        if self.result_ref is not None and self.item_id is None:
+            raise ValueError('result_ref requires item_id')
+        if self.result_ref is None and self.source_dynamic_id is None:
+            raise ValueError('provide result_ref + item_id or an obtained source_dynamic_id')
+        return self
 
 
 class OnThisDayRequest(BaseModel):

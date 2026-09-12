@@ -412,6 +412,12 @@ class InformationJobRunner:
                 payload["error_type"] = type(error).__name__
             await store.save_trace(kind="agent_job_error" if error else "agent_job", scene_id=scene_id,
                                    ref_id=job_id, payload=payload)
+            # A completed/failed work revision no longer owns browser pages or
+            # other plugin resources. Cleanup is deliberately after the final
+            # trace so the resource lifecycle remains observable.
+            current = await store.get_job(job_id, scene_id)
+            if current and current.get('status') != 'processing':
+                await runtime.plugin_host.close_job_resources(current)
 
         async def retained_result(status,header,reason,detail):
             current=await store.get_job(job_id,scene_id)
@@ -818,6 +824,9 @@ class InformationJobRunner:
                     return
         except asyncio.CancelledError:
             if revision is not None:
+                current_job = await store.get_job(job_id, scene_id)
+                if current_job:
+                    await runtime.plugin_host.close_job_resources(current_job)
                 try:
                     await charge(revision, enforce=False)
                 except JobChanged:
