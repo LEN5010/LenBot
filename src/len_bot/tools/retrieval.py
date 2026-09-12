@@ -22,6 +22,7 @@ from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import DisplayedRange, ToolFieldError, ToolNextCall, ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
 from len_bot.tools.finite_check import FINITE_CHECK_TOOL, finite_check
+from len_bot.cognition.retrieval_models import RetrievalOptOut
 
 
 class ReadArguments(BaseModel):
@@ -881,11 +882,18 @@ class RetrievalToolkit:
             semantic_summary = False
             summary_partial = False
             if retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
+                semantic_guard = self.context.runtime.semantic_index_guard(self.default_scene_id)
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
                 summary_partial = (await self.context.runtime.memory_index.summary_coverage(self.default_scene_id)).get('pending', 0) > 0
-                vector = (await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id))[0]
+                vector = (await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id,
+                                                 request_guard=semantic_guard))[0]
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
                 ids = await self.context.runtime.memory_index.candidates(
                     self.default_scene_id, vector, limit=self.config.retrieval_max_limit,
-                    source_kind='history_summary', max_end_rowid=self.cutoff)
+                    source_kind='history_summary', max_end_rowid=self.cutoff,
+                    start_time=args.get('start_time'), end_time=args.get('end_time'))
                 if ids:
                     semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND end_rowid<=? AND id IN (SELECT value FROM json_each(?))"
                     semantic_params: list[Any] = [self.default_scene_id, self.cutoff, json.dumps(ids)]
@@ -900,6 +908,8 @@ class RetrievalToolkit:
                     ordered_ids = list(dict.fromkeys([item['id'] for item in rows] + ids))
                     rows = [by_id[item] for item in ordered_ids if item in by_id][:args['limit']]
                     semantic_summary = True
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
             for row in rows:
                 row['key_event_ids'] = json.loads(row.pop('key_event_ids_json'))
             return ToolResult(status='partial' if summary_partial else ('ok' if rows else 'no_results'), content=json.dumps(rows, ensure_ascii=False),
@@ -919,8 +929,14 @@ class RetrievalToolkit:
             semantic_used = False
             semantic_partial = False
             if args.get('query') and retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
+                semantic_guard = self.context.runtime.semantic_index_guard(self.default_scene_id)
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
                 semantic_partial = (await self.context.runtime.memory_index.coverage(self.default_scene_id)).get('pending', 0) > 0
-                vectors = await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id)
+                vectors = await retrieval.embed(profiles.embedding, [args['query']], scene_id=self.default_scene_id,
+                                                request_guard=semantic_guard)
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
                 ids = await self.context.runtime.memory_index.candidates(
                     self.default_scene_id, vectors[0], limit=24,
                     subject=args.get('subject'), kind=args.get('kind'),
@@ -940,9 +956,15 @@ class RetrievalToolkit:
                     -(1 / (60 + lexical_rank.get(item.id, 10_000)) + 1 / (60 + semantic_rank.get(item.id, 10_000))), item.id))[:self.config.retrieval_default_limit]
                 semantic_used = True
                 if profiles.rerank and len(by_id) > self.config.retrieval_default_limit:
-                    ranked_ids = await retrieval.rerank(profiles.rerank, args['query'], [item.statement for item in by_id.values()], scene_id=self.default_scene_id)
+                    if not semantic_guard():
+                        raise RetrievalOptOut('该场景已关闭语义检索')
+                    ranked_ids = await retrieval.rerank(
+                        profiles.rerank, args['query'], [item.statement for item in by_id.values()],
+                        scene_id=self.default_scene_id, request_guard=semantic_guard)
                     ordered = list(by_id.values())
                     memories = [ordered[index] for index in ranked_ids[:self.config.retrieval_default_limit]]
+                if not semantic_guard():
+                    raise RetrievalOptOut('该场景已关闭语义检索')
                 await self.event_store.save_trace(kind='memory_retrieval', scene_id=self.default_scene_id,
                     ref_id='memory-query:'+uuid.uuid4().hex,
                     payload={'query': args['query'], 'subject': args.get('subject'), 'kind': args.get('kind'),

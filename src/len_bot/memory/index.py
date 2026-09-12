@@ -7,6 +7,8 @@ import math
 import time
 from collections.abc import Callable
 
+from len_bot.cognition.retrieval_models import RetrievalOptOut
+
 
 class MemoryIndex:
     def __init__(self, db, write_lock, retrieval_models=None, profile=None, clock=time.time):
@@ -38,8 +40,11 @@ class MemoryIndex:
                 if request_guard is not None and not request_guard():
                     return {"status": "cancelled", "indexed": 0, "reason": "scene_opt_out"}
                 vectors = await self.retrieval_models.embed(
-                    profile, texts, scene_id=scene_id, purpose="embedding_document"
+                    profile, texts, scene_id=scene_id, purpose="embedding_document",
+                    request_guard=request_guard,
                 )
+        except RetrievalOptOut:
+            return {"status": "cancelled", "indexed": 0, "reason": "scene_opt_out"}
         except Exception as error:
             return {"status": "error", "error_type": type(error).__name__, "error": str(error)}
         if request_guard is not None and not request_guard():
@@ -129,6 +134,12 @@ class MemoryIndex:
                         AND i.source_revision=h.generation_version AND h.status='completed'"""
             if max_end_rowid is not None:
                 sql += " AND h.end_rowid<=?"; params.append(max_end_rowid)
+            if start_time is not None:
+                sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp>=?)"
+                params.append(start_time)
+            if end_time is not None:
+                sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp<?)"
+                params.append(end_time)
         else:
             return []
         rows = await (await self.db.execute(sql, params)).fetchall()

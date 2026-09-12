@@ -112,7 +112,9 @@ class LinkParserPlugin(BasePlugin):
             asset = await runtime.media_service.save_downloaded(
                 asset_id, call_context.scene_id, final_url, data, mime, 'B站链接下载媒体',
                 source_event_id=call_context.source_event_id, expected_type=media_type)
-            return ToolResult(content=json.dumps({'asset_id':asset['id'],'type':'video' if mime.startswith('video/') else 'audio','mime_type':mime,'bytes':len(data),'coverage':'downloaded_media'},ensure_ascii=False), attachments=[asset['id']], sources=[ToolSource(url=final_url)], evidence_kind='external', coverage='downloaded_media')
+            actual_mime = asset['mime_type']
+            actual_type = 'video' if actual_mime.startswith('video/') else 'audio'
+            return ToolResult(content=json.dumps({'asset_id':asset['id'],'type':actual_type,'mime_type':actual_mime,'bytes':len(data),'coverage':'downloaded_media'},ensure_ascii=False), attachments=[asset['id']], sources=[ToolSource(url=final_url)], evidence_kind='external', coverage='downloaded_media')
         except Exception as error:
             return ToolResult.failure(f'媒体下载失败：{type(error).__name__}', 'download_failed')
     async def on_link(self, call: PluginCallContext):
