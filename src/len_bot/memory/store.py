@@ -80,6 +80,7 @@ class MemoryStore:
         query: str | None = None,
         include_superseded: bool = False,
         *, limit: int,
+        offset: int = 0,
         start_time: float | None = None,
         end_time: float | None = None,
         subject_aliases: Mapping[tuple[str, str], Sequence[str]] | None = None,
@@ -92,6 +93,8 @@ class MemoryStore:
         """
         if type(limit) is not int or limit < 1:
             raise ValueError('Memory search requires a positive integer limit')
+        if type(offset) is not int or offset < 0:
+            raise ValueError('Memory search requires a non-negative integer offset')
         for value in (start_time, end_time):
             if value is not None and (type(value) not in {int, float} or not math.isfinite(value)):
                 raise ValueError('Memory time bounds must be finite timestamps')
@@ -119,7 +122,7 @@ class MemoryStore:
             params.append(end_time)
         sql += " ORDER BY created_at DESC,id"
         if not query or not query.strip():
-            rows = await (await self._db.execute(sql + " LIMIT ?", [*params, limit])).fetchall()
+            rows = await (await self._db.execute(sql + " LIMIT ? OFFSET ?", [*params, limit, offset])).fetchall()
             return [memory_from_row(row) for row in rows]
 
         address_sql = f"""SELECT scope,subject,statement FROM memories
@@ -134,9 +137,10 @@ class MemoryStore:
             async for scope, identity, statement in cursor:
                 address_terms.setdefault((scope, identity), []).append(statement)
 
-        # Only retain the requested number of best matches while visiting the
+        # Only retain the requested page of best matches while visiting the
         # already scoped/type/time/status-filtered ledger. No hidden recent-row
-        # cutoff can prevent an older but more relevant fact from being found.
+        # cutoff can prevent an older but more relevant fact from being found;
+        # the page offset walks that same complete ranking deterministically.
         ranked: list[tuple[tuple[int, ...], float, str, MemoryItem]] = []
         async with self._db.execute(sql, params) as cursor:
             async for row in cursor:
@@ -148,11 +152,12 @@ class MemoryStore:
                 if score is None:
                     continue
                 entry = (score, memory.created_at, memory.id, memory)
-                if len(ranked) < limit:
+                if len(ranked) < limit + offset:
                     heapq.heappush(ranked, entry)
                 else:
                     heapq.heappushpop(ranked, entry)
-        return [entry[3] for entry in sorted(ranked, reverse=True)]
+        ordered = [entry[3] for entry in sorted(ranked, reverse=True)]
+        return ordered[offset:offset + limit]
 
     async def get_memory_in_scopes(self, memory_id: str, allowed_scopes: list[str]) -> MemoryItem | None:
         scopes = list(dict.fromkeys(allowed_scopes))

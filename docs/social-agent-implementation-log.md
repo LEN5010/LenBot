@@ -12,12 +12,12 @@
 | 提交 | 计划依赖 | 代码状态 | 运行验证 |
 |---|---|---|---|
 | C01 `fix(execution): preserve cancellation and termination outcomes` | C00 | 实现完成 | 未运行 |
+| C02 `fix(memory): page maintenance reads within request budget` | C00 | 实现完成 | 未运行 |
 | C03 `fix(calendar): deliver explicit source failure cards` | C00 | 实现完成 | 未运行 |
-| C02 `fix(memory): page maintenance reads within request budget` | C00 | 未开始 | 未运行 |
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 未开始 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 未开始 | 未运行 |
 
-C01 与 C03 都只依赖 C00 且互不影响，因此先提交了 C03；提交顺序不代表计划第 8.2 节的编号顺序，编号只标识范围。
+C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
 ## C00 契约与文档收口
 
@@ -113,3 +113,44 @@ C01 与 C03 都只依赖 C00 且互不影响，因此先提交了 C03；提交�
 
 - “来源失败时不新增 LLM 调用”属于控制流事实（handler 内直接渲染），未在真实运行中测量调用账。
 - 渲染失败仍走原有失败路径（提交不成立），需要在真实业务里确认不会留下“消息被消费但无结果”的情况。
+
+## C02 维护读取容量
+
+### 设计判断
+
+计划 M01 对摘要逻辑的要求里，与本提交相关的两条是：
+
+1. **“旧认识使用少量完整记录、明确分页和回读入口。”**
+2. **“不能强行截断认识中的否定与条件，不把只返回条目目录计为已经读过其原始证据。”**
+
+当前维护循环（`memory/reflector.py`）的唯一工具 `query_memory` 接受 `subject`/`query`/`include_history`，一次返回最多 `retrieval_default_limit`（实际根配置 15）条**完整** `MemoryItem`；`MemoryLookup` 没有 `limit`、没有 `kind`、没有续读入口。单页容量是固定的，模型既不能缩小一页、也不能在装不下时继续读下一页。
+
+批次侧已经具备计划要求的另一半：`history_batches` 保留 `start_rowid/start_offset/end_rowid/end_offset` 与 `complete` 标记，`prepare_request` 在超容量时抛错且不推进覆盖游标。本提交不动这两处。
+
+### 实际改动
+
+- `src/len_bot/memory/reflector.py`
+  - `MemoryLookup` 增加 `kind`、`offset`、`limit`（1—200）；`limit` 由模型给出，不再固定为配置默认值。
+  - `query_memory` 多读一条用于判断是否还有下一页，返回结构化分页结果：`records`（含 `memory_id`、`scope`、`subject`、`kind`、`basis`、`statement`、`created_at`、`expires_at`、`status`）、`offset`、`returned`、`next_offset`。
+  - 记录字段显式列出，不再把整个 `MemoryItem` 序列化后一次性塞进工具结果；同一条认识的证据列表不会再随每页重复出现。
+  - 工具说明与维护系统提示都写明分页语义：用 `next_offset` 续读同一查询，不要用更大的 `limit` 重问或反复重试同一页；一页目录不等于读过对应原文。
+- `src/len_bot/memory/store.py`
+  - `query_memories` 增加 `offset`（非负整数校验）。无 `query` 路径改为 `LIMIT ? OFFSET ?`；有 `query` 的词面排序路径把保留堆扩到 `limit + offset` 后再切片，使分页在同一完整排序上进行，不因页边界丢记录，也不放弃“约束先于排序”。
+
+### 未做的事
+
+- 没有改 `query_memory` 之外的工具、没有改 `MemoryStore` 的表结构、没有改 `commit_memory_proposal` 写入路径。
+- 没有修改批次投影、覆盖游标、`begin_history_batch` 的容量判断或 `history_batches` 记录。
+- 没有把 `query_memories` 的 `limit` 校验放宽；`offset` 与 `limit` 的组合仍然只读取已经过滤后的账本。
+
+### 静态核对
+
+- `git diff --check`
+- `uv run --no-dev python -m compileall -q src/len_bot`
+- 未运行测试、模型或真实群；分页续读没有在真实维护批次中走过。
+
+### 未确认项
+
+- “后续请求可结束、失败不推进覆盖”依赖现有的 `prepare_request` 与批处理逻辑，只能通过一次真实的大批量维护观察确认。
+- 现有数据库中的旧批次记录不受影响；本提交不新增列、不新增表，因此不需要离线结构转换。
+- 词面排序分页会把 `limit + offset` 条候选留在堆内；这是分页正确性的必要代价，未做缓存或第二套索引。
