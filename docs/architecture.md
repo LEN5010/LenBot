@@ -4,6 +4,13 @@
 
 本阶段新增能力仍沿一条执行链：统一亮色卡片是确定性派生资产，继续使用 `ToolResult`、媒体资产库和原发送链；`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core；Python 工作空间和浏览器是默认关闭的插件，不能访问 OneBot 或启动第二个 AgentLoop。
 
+## 社会 Agent 计划与当前实现
+
+完整目标、D01—D12 推荐裁决、M0—M9 阶段和验收证据见 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。该计划是待实施合同；当前架构不因文档归档而获得新权限或新运行后端。现状中的 Python worker 仍按本文件与 [`执行边界`](execution-boundaries.md) 的当前实现运行，浏览器仍是同进程功能测试能力；独立 Gateway、公开网络出口、睡眠/心跳、公共兴趣、B 站账号动作与 OneBot 文件上传均须在对应阶段完成后再宣称可用。
+
+计划要求把 Agent 的公共兴趣存为与群成员认识分开的受限对象（`AgentInterestMemory`/`InterestItem`），沿现有事件和存储边界保存来源、有效期与发布范围；这不改变当前单一认识账本，也不允许把群资料、私聊资料或摘要推断写成公共兴趣。系统工作必须使用可为空目标群的明确 system/plugin 发起身份和独立计费主体，不能伪造人类请求。
+
+
 ## 正常链路与所有权
 
 运行参数进入 Runtime。OneBot、感知插件和 Scheduler 产生事件，SceneActor 在同一场景写序中先确定交互归属，再保存事实与注意力进度。未被插件消费的普通消息进入注意力和 SocialCognitionCore；插件通过已注册的本地 matcher 认领事件，耗时 handler 在保存后、Actor 写入区之外执行。日历确定性图片与直播专用 Agent 流程由各插件定义，表达仍由 Actor 和 RuntimeGate 提交，再进入 ActionQueue 与真实回执。`start_work` 和 `summarize_group_chat` 暂存的工作由 InformationJobRunner 执行，资料与结果回到原请求群。
@@ -15,7 +22,7 @@
 | `cognition` | 临时上下文、原生循环、短引用和暂存提案；SocialCognitionCore 是唯一社会判断入口 |
 | `runtime` | 生命周期、Gate、信息工作、预算与调用账；工作和维护不能直接发送 |
 | `scheduler/actions` | 持久认领、到期事件、队列、显式传输与回执 |
-| `memory` | 单一认识账本与增量历史维护；不持久化模型生成的气氛、兴趣或工作世界 |
+| `memory` | 当前只维护单一认识账本与增量历史；计划中的公共兴趣沿同一事实边界新增受限类型，不与成员认识混用 |
 | `skills` | 有来源、场景与版本的方法文档；没有额外执行权 |
 | `plugins/tools` | 注册工具与事件处理器、读取资料、调用公共 Agent 和提交入口；模型与发送仍由现有运行时执行 |
 | `media` | 原图读取、解码与窗口装配，运营素材及其来源；不调用独立视觉模型 |
