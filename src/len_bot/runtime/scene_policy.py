@@ -26,6 +26,18 @@ class ScenePolicy:
         return bool(requester_qq_uid is not None and int(requester_qq_uid) in
                     self.config_store.current.access.qq_reply_whitelist)
 
+    def delegable_work_allowed(self, scene_id, requester_qq_uid):
+        """Whether this turn may be told that long work can be delegated.
+
+        This only decides whether a capability hint is included in the
+        conversation's runtime facts.  It grants no budget, no tool and no
+        execution: starting work still passes the existing job, plugin and
+        gate checks.  The condition is the existing chat eligibility, so a
+        scene that may not be answered is also not told what could be done
+        there.
+        """
+        return self.chat_allowed(scene_id, requester_qq_uid)
+
     def maintenance_allowed(self, scene_id):
         if scene_id.startswith('private:'):
             return True

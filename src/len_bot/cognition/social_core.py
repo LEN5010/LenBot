@@ -85,6 +85,8 @@ class SocialCognitionCore:
                 execution=execution)
 
         context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context())
+        context._delegable_hint = any(runtime.scene_policy.delegable_work_allowed(session.scene_id, requester)
+                                      for requester in (sorted(context.requester_qq_uids) or [None]))
         hooks = runtime.plugin_host.run_hooks(plugin_context, audit)
 
         plugin_proposals = runtime.plugin_host.proposal_tool_names()

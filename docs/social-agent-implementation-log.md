@@ -15,9 +15,11 @@
 | C02 `fix(memory): page maintenance reads within request budget` | C00 | 实现完成 | 未运行 |
 | C03 `fix(calendar): deliver explicit source failure cards` | C00 | 实现完成 | 未运行 |
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 未开始 | 未运行 |
-| C05 `feat(context): expose delegable capabilities and focused references` | C04 | 未开始 | 未运行 |
+| C05 `feat(context): expose delegable capabilities and focused references` | C04 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
+
+C05 先于 C04 落地：计划把 C05 的依赖写成 C04，指的是同一批文件（`context.py`、`social_core.py`）上的后续改动，而不是 C05 的验收项需要 C04 的参与判定。C05 只增加“可委托”这一层事实与措辞，C04 要改的注意力与响应对象判定不受其影响，且 C04 会在这两处之上继续改。若 C04 的实现需要回改 C05 引入的措辞，会在 C04 一节记录。
 
 ## C00 契约与文档收口
 
@@ -154,3 +156,45 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 - “后续请求可结束、失败不推进覆盖”依赖现有的 `prepare_request` 与批处理逻辑，只能通过一次真实的大批量维护观察确认。
 - 现有数据库中的旧批次记录不受影响；本提交不新增列、不新增表，因此不需要离线结构转换。
 - 词面排序分页会把 `limit + offset` 条候选留在堆内；这是分页正确性的必要代价，未做缓存或第二套索引。
+
+## C05 可委托能力摘要
+
+### 设计判断
+
+计划 M03 的能力提示要求是：对话模型应看到简短的可委托能力说明，例如“可以建立工作运行 Python/浏览网页”，而不是只有“不属于 conversation 的工具”；同时这不是把 work 的全部 schema 复制给对话，也不是把任何打开链接的请求强制升级为长工作。
+
+当前 `capability_facts()`（`plugins/host.py`）只列出**当前角色可直接调用**的工具所属模块：workspace 的四个工具 `roles=('work',)`，浏览器工具同样是 work-only，因此它们从不出现在对话的能力事实里。结果是对话看到的清单里根本没有 Python 和浏览能力，模型只能从“这不是 conversation 工具”推断出负面结论，这与计划要求相反。
+
+第二个缺口是容量无关性与一致性的冲突：`facts_message` 只在 `facts` 非空时才返回消息，`capabilities` 本身已经进入事实；但现有措辞没有说明“缺失即不可用”，因此“模块被省略”与“模块不可用”在模型看来是同一件事。
+
+本提交只补“可委托”这一层语义：把 work-only 模块的用途摘要以 `delegable_purposes` 形式列出，并明确它是可委托说明、不是已授予额度或权限；不新增配置开关，不改动任何授权判定。
+
+### 实际改动
+
+- `src/len_bot/plugins/host.py`
+  - `capability_facts()` 对“模块已加载但当前角色没有可直接调用工具”的情况不再直接跳过：若该模块存在 `available is None` 的可发现工具，则输出 `delegable_purposes`（用途去重排序）与说明“本模块的能力属于长工作，不在当前对话直接调用；需要时用 `start_work` 交给工作执行”。不输出工具名、参数 schema 或入口。
+  - 已加载且当前角色有工具可用的模块仍按原格式输出 `purposes`；无法区分的条目保持原样跳过。
+- `src/len_bot/cognition/context.py`
+  - 系统提示在能力段补充：带 `delegable_purposes` 的模块属于长工作，需要时用 `start_work`；它是可委托说明，不是已授予的额度或权限；能力说明里没有出现的模块就是当前不可用，不能凭名字推测已启用。
+  - 能力清单本身改为由 `_delegable_hint` 决定是否进入本轮事实：装配位置不变，仍受既有容量检查与 `omit` 记录保护。
+- `src/len_bot/cognition/social_core.py`
+  - 装配上下文时按本轮场景与请求者设置 `_delegable_hint`。
+- `src/len_bot/runtime/scene_policy.py`
+  - 新增 `delegable_work_allowed(scene_id, requester_qq_uid)`，直接复用既有 `chat_allowed` 判定：不能回应的场景也就不再被额外告知这里能做什么。它只决定提示是否出现，不授予预算、工具或执行——这些仍走原有的工作、插件与 Gate 检查，没有新增第二个准入判定。
+
+### 未做的事
+
+- 没有新增 `SceneSettings` 字段、没有新增配置项，也没有改根配置样例；因此不需要配置迁移，也不需要前端改动。
+- 没有把 work 工具 schema 暴露给对话，没有新增第二套工具发现渠道：`tool_search` 行为不变。
+- 没有改变 `capabilities` 的可见性判定（仍由现有 scene/plugin/chat 检查决定），也没有让它出现在被省略的事实里。当 `facts_message` 整体无容量时，能力清单与其它事实一样被 `omit` 记录。
+
+### 静态核对
+
+- `git diff --check`
+- `uv run --no-dev python -m compileall -q src/len_bot`
+- 未运行测试、模型或真实群；未在真实对话中确认模型据此改变“能不能用 Python/浏览器”的表述。
+
+### 未确认项
+
+- 计划 M03 的“样例不挤掉原话”属于现有容量优先级机制（`voice_examples` 在容量不足时先被省略，原话在 `fit_request` 中保持），本提交未改动该顺序，需要一次真实长上下文观察确认。
+- `delegable_purposes` 只描述用途文本，具体 capability 词汇表属于计划 C06/C07；在 C06 之前这里不出现 `network_python` 等能力 ID，避免提前声明尚不存在的授权。

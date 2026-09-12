@@ -595,14 +595,28 @@ class PluginHost:
         facts = []
         for plugin_id in sorted(self.runtime.config_store.catalog.entries):
             plugin = self._plugins.get(plugin_id)
-            candidates = [tool for tool in self._tools.values() if tool.plugin_id == plugin_id
-                          and self._tool_applies(tool, call_context)]
-            if plugin is not None and not candidates:
+            direct = [tool for tool in self._tools.values() if tool.plugin_id == plugin_id
+                      and self._tool_applies(tool, call_context)]
+            if plugin is not None and not direct:
+                # The module is loaded but exposes nothing this role may call
+                # directly.  Say so instead of omitting it: otherwise a
+                # conversation cannot tell that Python or browsing is
+                # delegable at all.  Purposes stay descriptive; no schema,
+                # entry point or permission is published here.
+                delegable = sorted({tool.purpose for tool in self._tools.values()
+                                    if tool.plugin_id == plugin_id and tool.available is None})
+                if not delegable:
+                    continue
+                facts.append({'plugin_id': plugin_id,
+                              'name': self.runtime.config_store.catalog.entries[plugin_id].spec.name,
+                              'status': self._plugin_availability(plugin_id, call_context),
+                              'delegable_purposes': delegable,
+                              'note': '本模块的能力属于长工作，不在当前对话直接调用；需要时用start_work交给工作执行。'})
                 continue
             status = self._plugin_availability(plugin_id, call_context)
             name = self.runtime.config_store.catalog.entries[plugin_id].spec.name
             facts.append({'plugin_id': plugin_id, 'name': name, 'status': status,
-                          'purposes': sorted({tool.purpose for tool in candidates})})
+                          'purposes': sorted({tool.purpose for tool in direct})})
         return facts
 
     def has_registered_tool(self, name: str) -> bool:
