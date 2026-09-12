@@ -217,6 +217,7 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 插件的 before_model、after_model、before_tool、after_tool、before_commit 与 after_delivery 钩子按声明范围及稳定顺序执行。模型原 usage、原调用身份、观察与回执不改写；参数和提交前片段经过原类型边界，附加资料进入 user 投影，实际变化或停止写入 Trace。消息片段钩子在 Actor 提交前调用，送达钩子在回执保存后由宿主任务执行。AgentLoop 的调用计数通过同一个 AgentBudget 账户收口；工作账户继续委托原 JobStore 计费与时间检查，不另建存储。
 
 调用者的 plugin_material 是本次任务输入；plugin_hook_instructions/plugin_hook_material 仅属于当前请求的钩子补充，下一步只清理后两类。输入资料仍参与统一容量与实际阅读范围核对。普通对话和插件专用循环共用完整工具组的呈现入口，按实际余量装配正文与附件像素，再写采用范围；不得把附件 ID 当成已经提交的视觉输入。
-# 下一阶段能力边界（2026-09）
 
-统一亮色卡片是确定性派生资产，继续沿 `ToolResult`、媒体资产库和原发送链交付；它不替代原始事件、日程、直播采样或报告 JSON。`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core，Python 工作空间和浏览器也都是默认关闭的插件，均不能访问 OneBot 或启动第二个 AgentLoop。
+## 上一轮能力边界（2026-09，已完成归档）
+
+统一亮色卡片是确定性派生资产，继续沿 `ToolResult`、媒体资产库和原发送链交付；它不替代原始事件、日程、直播采样或报告 JSON。`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core，Python 工作空间和浏览器也都是默认关闭的插件，均不能访问 OneBot 或启动第二个 AgentLoop。本节描述的是本轮已经交付的现状，不再作为下一阶段契约；后续阶段目标见文首的 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。
