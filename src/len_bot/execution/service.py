@@ -78,6 +78,7 @@ class WorkspaceService:
     async def run_python(self, call, request: RunPythonInput) -> dict:
         scope = await self.scope_for(call)
         async with self.worker.run_lock(scope.workspace_id):
+            self.worker.ensure_workspace_available(scope.workspace_id)
             manifest = await self._export_inputs(scope, request.input_result_ids, call.scene_id)
             result = await self.worker._run_python_locked(RunPythonRequest(workspace_id=scope.workspace_id, script=request.script))
             artifacts = self._artifacts(scope)
@@ -94,6 +95,7 @@ class WorkspaceService:
 
     async def read_file(self, call, request: WorkspaceFileInput) -> dict:
         scope = await self.scope_for(call)
+        self.worker.ensure_workspace_available(scope.workspace_id)
         path = self.worker.file_path(scope.workspace_id, request.path)
         if path.is_symlink() or not path.is_file():
             raise ValueError('工作空间文件不存在或不是普通文件')
@@ -105,6 +107,7 @@ class WorkspaceService:
 
     async def export_file(self, call, request: WorkspaceFileInput) -> dict:
         scope = await self.scope_for(call)
+        self.worker.ensure_workspace_available(scope.workspace_id)
         path = self.worker.file_path(scope.workspace_id, request.path)
         if path.is_symlink() or not path.is_file():
             raise ValueError('工作空间文件不存在或不是普通文件')
@@ -144,6 +147,7 @@ class WorkspaceService:
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': requester, 'scene_id': scene_id})()
         scope = await self.scope_for(panel_call, allow_terminal=True)
+        self.worker.ensure_workspace_available(scope.workspace_id)
         file_request = WorkspaceFileInput(path=path, offset=offset, limit=limit)
         file_path = self.worker.file_path(scope.workspace_id, file_request.path)
         if file_path.is_symlink() or not file_path.is_file():
@@ -160,6 +164,7 @@ class WorkspaceService:
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': job['requester_qq_uid'], 'scene_id': scene_id})()
         scope = await self.scope_for(panel_call, allow_terminal=True)
+        self.worker.ensure_workspace_available(scope.workspace_id)
         data = self.worker.read_bytes(FileRequest(workspace_id=scope.workspace_id, path=path))
         mime = mimetypes.guess_type(path)[0] or 'application/octet-stream'
         return data, mime

@@ -17,6 +17,8 @@ class _Page:
     scope_key: str
     page: object
     revision: int = 0
+    text_offset: int = 0
+    text_limit: int | None = None
 
 
 class BrowserWorkerV2:
@@ -86,7 +88,11 @@ class BrowserWorkerV2:
         async with self._lock:
             if self._browser is None:
                 self._playwright = await async_playwright().start()
-                self._browser = await self._playwright.chromium.launch(headless=self.config.headless)
+                # Keep Chromium's OS sandbox enabled for the host-side browser
+                # worker; Python workspace isolation does not protect this
+                # separate process tree.
+                self._browser = await self._playwright.chromium.launch(
+                    headless=self.config.headless, chromium_sandbox=True)
             context = await self._browser.new_context(service_workers='block')
             await context.route('**/*', self._route)
             page = await context.new_page()
@@ -114,10 +120,16 @@ class BrowserWorkerV2:
             ref: node.getAttribute('data-lenbot-ref'), tag: node.tagName.toLowerCase(),
             role: node.getAttribute('role'), text: (node.innerText || node.getAttribute('aria-label') || '').slice(0, 200)
         }))""")
-        text = (await page.locator('body').inner_text())[:self.config.max_text_chars]
+        full_text = await page.locator('body').inner_text()
+        offset = handle.text_offset
+        limit = min(handle.text_limit or self.config.max_text_chars, self.config.max_text_chars)
+        text = full_text[offset:offset + limit]
+        next_offset = offset + len(text) if offset + len(text) < len(full_text) else None
         handle.revision += 1
         return {'page_ref': page_ref, 'snapshot_revision': handle.revision, 'url': page.url,
             'title': await page.title(), 'text': text, 'elements': elements,
+            'text_offset': offset, 'text_limit': limit, 'text_total_chars': len(full_text),
+            'text_next_offset': next_offset, 'text_truncated': next_offset is not None,
             'coverage': 'browser_dom_text', 'pixels_loaded': False}
 
     async def open(self, scope_key: str, request: BrowserOpenInput) -> dict:
@@ -128,12 +140,16 @@ class BrowserWorkerV2:
 
     async def snapshot(self, scope_key: str, request: BrowserPageInput) -> dict:
         handle = self._get(scope_key, request.page_ref)
+        handle.text_offset = request.text_offset
+        handle.text_limit = request.text_limit
         return await self._snapshot(handle, request.page_ref)
 
     async def interact(self, scope_key: str, request: BrowserInteractInput) -> dict:
         if not self.config.allow_interactions:
             raise PermissionError('browser interactions are disabled by configuration')
         handle = self._get(scope_key, request.page_ref)
+        handle.text_offset = request.text_offset
+        handle.text_limit = request.text_limit
         if request.snapshot_revision != handle.revision:
             raise ValueError('页面观察版本已过期，请重新 browser_snapshot')
         page = handle.page

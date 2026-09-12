@@ -14,6 +14,7 @@ from len_bot.plugins.hooks import HOOK_VIEWS, PluginHookDefinition, PluginRunHoo
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
+from len_bot.execution.workspace import WorkspaceCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -761,6 +762,11 @@ class PluginHost:
             result = ToolResult.failure(f'{type(error).__name__}: {error}；本次网络请求失败，未取得来源。','network_error',
                 sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
             result.evidence_kind='external'
+        except WorkspaceCancelled as error:
+            result = ToolResult.failure(
+                f"Plugin tool '{tool_name}' was cancelled during workspace cleanup.",
+                'workspace_cancelled', stage='execution')
+            result.content = json.dumps({'termination': error.termination}, ensure_ascii=False)
         except asyncio.TimeoutError:
             result = ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout", stage='execution')
         except ValidationError as error:

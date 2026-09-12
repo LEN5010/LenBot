@@ -69,7 +69,15 @@ class WorkspaceCancelled(asyncio.CancelledError):
         self.termination = termination
 
 
-_SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*$")
+def _validate_relative_path(relative: str) -> None:
+    """Accept ordinary Unicode filenames while keeping descriptor traversal bounded."""
+    if not isinstance(relative, str) or not relative or "\x00" in relative:
+        raise ValueError('path must be a relative workspace path')
+    if relative.startswith('/') or relative.endswith('/') or '\\' in relative:
+        raise ValueError('path must be a relative workspace path')
+    parts = relative.split('/')
+    if any(not part or part in {'.', '..'} for part in parts):
+        raise ValueError('path must be a relative workspace path')
 
 
 class WorkspaceWorker:
@@ -99,6 +107,15 @@ class WorkspaceWorker:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         return path
 
+    def ensure_workspace_available(self, workspace_id: str) -> None:
+        marker = self.control_root / workspace_id / '.termination_unconfirmed'
+        if marker.exists():
+            raise ValueError('工作空间上次终止未确认，已停止复用；请先由运营者核对并清理该工作')
+
+    def _record_termination(self, workspace_id: str, termination: dict | None) -> None:
+        if termination and termination.get('status') == 'unconfirmed':
+            self._write_control(self.control_directory(workspace_id) / '.termination_unconfirmed', str(termination))
+
     def run_lock(self, workspace_id: str) -> asyncio.Lock:
         return self._run_locks.setdefault(workspace_id, asyncio.Lock())
 
@@ -116,8 +133,7 @@ class WorkspaceWorker:
             raise
 
     def file_path(self, workspace_id: str, relative: str) -> Path:
-        if not _SAFE_PATH.fullmatch(relative) or relative in {".", ".."}:
-            raise ValueError("path must be a relative workspace path")
+        _validate_relative_path(relative)
         directory = self.directory(workspace_id)
         candidate = directory / relative
         current = directory
@@ -135,8 +151,8 @@ class WorkspaceWorker:
     @contextmanager
     def open_file(self, workspace_id: str, relative: str):
         """Open a workspace file by directory descriptors without following links."""
-        if not _SAFE_PATH.fullmatch(relative) or relative in {'.', '..'}:
-            raise ValueError('path must be a relative workspace path')
+        self.ensure_workspace_available(workspace_id)
+        _validate_relative_path(relative)
         directory = self.directory(workspace_id)
         parts = Path(relative).parts
         root_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -147,7 +163,9 @@ class WorkspaceWorker:
                 child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
                 fds.append(child_fd)
                 parent_fd = child_fd
-            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            # O_NONBLOCK prevents an unpaired FIFO from blocking this
+            # event-loop thread; regular files retain normal read semantics.
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
             fds.append(fd)
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
@@ -165,6 +183,7 @@ class WorkspaceWorker:
             return await self._run_python_locked(request)
 
     async def _run_python_locked(self, request: RunPythonRequest) -> dict:
+        self.ensure_workspace_available(request.workspace_id)
         directory = self.directory(request.workspace_id)
         control = self.control_directory(request.workspace_id)
         script = control / "task.py"
@@ -193,11 +212,13 @@ class WorkspaceWorker:
                     if usage_bytes > self.config.max_artifact_bytes or usage_files > self.config.max_artifact_files:
                         exceeded = True
                         termination = await self._terminate(container_name, process)
+                        self._record_termination(request.workspace_id, termination)
                         break
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
                         timed_out = True
                         termination = await self._terminate(container_name, process)
+                        self._record_termination(request.workspace_id, termination)
                         break
                     try:
                         await asyncio.wait_for(process.wait(), min(remaining, 0.25))
@@ -205,6 +226,7 @@ class WorkspaceWorker:
                         continue
             except asyncio.CancelledError:
                 termination = await asyncio.shield(self._terminate(container_name, process))
+                self._record_termination(request.workspace_id, termination)
                 await asyncio.shield(asyncio.gather(stdout_task, stderr_task, return_exceptions=True))
                 raise WorkspaceCancelled(termination) from None
             await process.wait()
@@ -278,6 +300,17 @@ class WorkspaceWorker:
             details.append('docker client did not exit after termination')
         status = 'unconfirmed'
         try:
+            remover = await asyncio.create_subprocess_exec(self.config.runtime_path, "rm", "-f", container_name,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(remover.wait(), timeout=5)
+            if remover.returncode != 0:
+                details.append((await remover.stderr.read()).decode('utf-8', 'replace')[-1000:])
+        except (OSError, asyncio.TimeoutError) as error:
+            details.append(str(error))
+        # Inspect after rm: --rm and a successful explicit removal both make
+        # an absent container a confirmed terminal state.  Never infer safety
+        # from rm alone when the final inspection cannot establish it.
+        try:
             inspector = await asyncio.create_subprocess_exec(self.config.runtime_path, "inspect", "--format", "{{.State.Running}}", container_name,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await asyncio.wait_for(inspector.wait(), timeout=5)
@@ -291,18 +324,11 @@ class WorkspaceWorker:
                 status = 'confirmed_stopped'
         except (OSError, asyncio.TimeoutError) as error:
             details.append(str(error))
-        try:
-            remover = await asyncio.create_subprocess_exec(self.config.runtime_path, "rm", "-f", container_name,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(remover.wait(), timeout=5)
-            if remover.returncode != 0:
-                details.append((await remover.stderr.read()).decode('utf-8', 'replace')[-1000:])
-                status = 'unconfirmed'
-        except (OSError, asyncio.TimeoutError) as error:
-            details.append(str(error))
-        return {'status': status, 'detail': '; '.join(item for item in details if item)[:2000]}
+        return {'container_name': container_name, 'status': status,
+                'detail': '; '.join(item for item in details if item)[:2000]}
 
     def list_files(self, request: WorkspaceRequest) -> dict:
+        self.ensure_workspace_available(request.workspace_id)
         directory = self.directory(request.workspace_id)
         files = [str(path.relative_to(directory)) for path in sorted(directory.rglob("*"))
                  if path.is_file() and not path.is_symlink()]
@@ -310,6 +336,7 @@ class WorkspaceWorker:
                 "truncated": len(files) > self.config.max_artifact_files}
 
     def read_file(self, request: FileRequest) -> dict:
+        self.ensure_workspace_available(request.workspace_id)
         data, next_offset = self.read_text_range(request, 0, self.config.max_output_chars)
         return {"workspace_id": request.workspace_id, "path": request.path,
                 "content": data, "truncated": next_offset is not None}
