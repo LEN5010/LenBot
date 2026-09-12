@@ -25,5 +25,7 @@ uv run len-bot
 - [运行手册](docs/operations.md)：配置、起停、备份与人工操作。
 - [插件开发](docs/plugins.md)：目录、配置、工具与命令注册、Agent 调用、钩子及完整本地插件示例。
 - [工程约束](AGENTS.md)：修改方式与禁止事项。
+- [社会 Agent 完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md)：分阶段目标、D01—D12 裁决与交付合同；待实施，不代表当前能力。
+- [社会 Agent 前期准备](docs/social-agent-readiness.md)：计划条款与当前实现的落点对照、待确认项与首批提交边界。
 - [当前任务](docs/iteration.md)：本轮未完成项与实际核对结果。
 - [人格来源资料](docs/persona/diana/README.md)：运营提供的角色与素材数据。
