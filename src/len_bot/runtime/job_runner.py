@@ -836,5 +836,6 @@ class InformationJobRunner:
                 if event:await runtime.commit_tool_observation(event)
                 await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
                     payload={**trace,'job_revision':revision,'error_type':'CancelledError',
-                             'interrupted':'execution_cancelled','retained_result_ids':list(toolkit.result_ids)})
+                             'interrupted':'execution_cancelled','retained_result_ids':list(toolkit.result_ids),
+                             **({'workspace_termination': error.termination} if getattr(error, 'termination', None) else {})})
             raise

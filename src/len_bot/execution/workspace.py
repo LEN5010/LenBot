@@ -63,6 +63,12 @@ class ExportRequest(FileRequest):
     """A separately named export operation for an operator-approved file."""
 
 
+class WorkspaceCancelled(asyncio.CancelledError):
+    def __init__(self, termination: dict):
+        super().__init__('Python worker execution cancelled')
+        self.termination = termination
+
+
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*$")
 
 
@@ -198,9 +204,9 @@ class WorkspaceWorker:
                     except asyncio.TimeoutError:
                         continue
             except asyncio.CancelledError:
-                await asyncio.shield(self._terminate(container_name, process))
+                termination = await asyncio.shield(self._terminate(container_name, process))
                 await asyncio.shield(asyncio.gather(stdout_task, stderr_task, return_exceptions=True))
-                raise
+                raise WorkspaceCancelled(termination) from None
             await process.wait()
             stdout, stdout_truncated = await stdout_task
             stderr, stderr_truncated = await stderr_task
