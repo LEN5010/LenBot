@@ -50,11 +50,12 @@ class WorkspacePlugin(BasePlugin):
         except (OSError, RuntimeError) as error:
             return ToolResult.failure(str(error), 'workspace_execution_failed')
         status = value.pop('status', 'ok')
+        attachments = value.pop('attachments', [])
         if status == 'unsupported':
-            return ToolResult(status='unsupported', error_code='worker_unavailable', coverage='workspace',
+            return ToolResult(status='unsupported', error_code='worker_unavailable', coverage='workspace', attachments=attachments,
                 content=json.dumps(value, ensure_ascii=False), evidence_kind='retrieval')
-        return ToolResult(status=status, coverage='workspace', content=json.dumps(value, ensure_ascii=False),
-            evidence_kind='retrieval')
+        return ToolResult(status=status, coverage='workspace', attachments=attachments,
+            content=json.dumps(value, ensure_ascii=False), evidence_kind='retrieval')
 
     async def artifact_for_job(self, scene_id: str, job_id: str, path: str, offset: int, limit: int):
         return await self.service.read_for_job(scene_id, job_id, path, offset, limit)

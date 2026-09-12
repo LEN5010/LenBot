@@ -95,6 +95,9 @@ class RuntimeQueryService:
     async def workspace_artifacts(self, scene_id, job_id):
         return await self.runtime.plugin_host.list_workspace_artifacts(scene_id, job_id)
 
+    async def workspace_artifact_bytes(self, scene_id, job_id, path):
+        return await self.runtime.plugin_host.read_workspace_artifact_bytes(scene_id, job_id, path)
+
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
             "attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",

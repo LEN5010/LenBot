@@ -1,7 +1,7 @@
 from typing import Optional, Literal
 import json
 import uuid
-from fastapi import APIRouter, Request, Depends, HTTPException, Query
+from fastapi import APIRouter, Request, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
 from len_bot.memory.models import MemoryProposal
@@ -139,6 +139,19 @@ async def workspace_artifacts(job_id: str, scene_id: str, request: Request,
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作目录')
     return result
+
+@router.get("/jobs/{job_id}/workspace-artifact/download")
+async def workspace_artifact_download(job_id: str, scene_id: str, path: str, request: Request,
+                                      user: str = Depends(get_current_user)):
+    try:
+        result = await _service(request).workspace_artifact_bytes(scene_id, job_id, path)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    if result is None:
+        raise HTTPException(404, '未找到属于该工作的工作产物')
+    data, media_type = result
+    return Response(content=data, media_type=media_type,
+                    headers={'Content-Disposition': 'attachment; filename="workspace-artifact"'})
 
 
 
