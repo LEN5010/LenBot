@@ -13,6 +13,7 @@ from .config import BrowserPluginConfig
 class BrowserAgentPlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
+        self.context = context
         self.config: BrowserPluginConfig = context.config
         self.worker = BrowserWorkerV2(self.config.browser)
 

@@ -31,7 +31,10 @@ def render_live(sample: LiveSample, *, font_path: Path, timezone: str = "Asia/Sh
     draw.text((margin + unit(28), unit(103)), sample.member, font=fonts["title"], fill=THEME.ink)
     title = text_lines(draw, sample.title or "正在直播", fonts["body"], width - margin * 2 - unit(56))
     y = unit(235)
-    for line in title[:4]:
+    title_lines = title[:4]
+    if len(title) > 4:
+        title_lines[-1] = title_lines[-1].rstrip() + "…"
+    for line in title_lines:
         draw.text((margin + unit(28), y), line, font=fonts["body"], fill=THEME.ink)
         y += unit(42)
     started = sample.started_at or "未提供"

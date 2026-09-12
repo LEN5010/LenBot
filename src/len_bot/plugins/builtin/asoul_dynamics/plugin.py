@@ -37,9 +37,9 @@ class AsoulDynamicsPlugin(BasePlugin):
             ("read_asoul_dynamic", DetailRequest, self.read_dynamic, True,
              "读取已取得且尚新鲜的源动态记录。没有详情接口；范围保持为源查询提供的内容，不能视作平台原动态全文或看过图片。"),
             ("render_asoul_dynamic_card", CardRequest, self.render_card, True,
-             "把指定已保存查询资料 result_ref 中的 item_id 渲染为统一亮色卡片并登记图片；也兼容本进程已取得的 dynamic_id。不重新查询、不自动发送，也不表示已读取源图片像素。"),
+             "把指定已保存查询资料 result_id 中的 item_id 渲染为统一亮色卡片并登记图片；也兼容本进程已取得的 dynamic_id。不重新查询、不自动发送，也不表示已读取源图片像素。"),
             ("render_asoul_fanart_card", FanartCardRequest, self.render_fanart_card, True,
-             "把指定已保存查询资料 result_ref 中的二创 item_id 渲染为统一亮色卡片并登记图片；仅使用来源字段，不把图片链接说成已读取像素。"),
+             "把指定已保存查询资料 result_id 中的二创 item_id 渲染为统一亮色卡片并登记图片；仅使用来源字段，不把图片链接说成已读取像素。"),
             ("get_asoul_on_this_day", OnThisDayRequest, self.on_this_day, True,
              "查询源站历史同日内容；month_day为MM-DD，null使用已配置业务时区的今天；limit=null使用配置页量。不自动播报。"),
             ("search_asoul_fanart", FanartSearchRequest, self.search_fanart, True,
@@ -122,7 +122,7 @@ class AsoulDynamicsPlugin(BasePlugin):
 
     async def render_card(self, request: CardRequest, call_context: PluginCallContext) -> ToolResult:
         try:
-            snapshot = await self._card_snapshot(request.result_ref, request.item_id, request.dynamic_id, call_context)
+            snapshot = await self._card_snapshot(request.result_id, request.item_id, request.dynamic_id, call_context)
             from .render import render_dynamic_card
             from pathlib import Path
             import asyncio
@@ -145,7 +145,7 @@ class AsoulDynamicsPlugin(BasePlugin):
 
     async def render_fanart_card(self, request: FanartCardRequest, call_context: PluginCallContext) -> ToolResult:
         try:
-            snapshot = await self._card_snapshot(request.result_ref, request.item_id, request.source_dynamic_id, call_context)
+            snapshot = await self._card_snapshot(request.result_id, request.item_id, request.source_dynamic_id, call_context)
             from .render import render_dynamic_card
             from pathlib import Path
             import asyncio
@@ -164,15 +164,15 @@ class AsoulDynamicsPlugin(BasePlugin):
             sources=[ToolSource(url=snapshot.data.get("url") or snapshot.data.get("sourceDynamicUrl", ""), title="A-SOUL 二创来源")],
             fetched_at=snapshot.fetched_at, cached=True)
 
-    async def _card_snapshot(self, result_ref, item_id, obtained_id, call_context):
-        if result_ref:
-            observation = await call_context.plugin.event_store.read_tool_observation(result_ref, [call_context.scene_id])
+    async def _card_snapshot(self, result_id, item_id, obtained_id, call_context):
+        if result_id:
+            observation = await call_context.plugin.event_store.read_tool_observation(result_id, [call_context.scene_id])
             if observation is None:
-                raise DynamicsLookupError('卡片资料不属于当前场景或已不存在。', 'invalid_result_ref')
+                raise DynamicsLookupError('卡片资料不属于当前场景或已不存在。', 'invalid_result_id')
             try:
                 payload = json.loads(observation.content)
             except json.JSONDecodeError as error:
-                raise DynamicsLookupError('卡片资料不是有效的动态查询结果。', 'invalid_result_ref') from error
+                raise DynamicsLookupError('卡片资料不是有效的动态查询结果。', 'invalid_result_id') from error
             data = payload.get('data', payload)
             items = data.get('items') if isinstance(data, dict) else None
             if not isinstance(items, list):

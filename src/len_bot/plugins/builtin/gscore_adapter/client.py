@@ -18,16 +18,20 @@ class GscoreClient:
         self.config = config
         self._socket = None
         self._lock = asyncio.Lock()
+        self._connection_lock = asyncio.Lock()
 
     async def connect(self):
-        if self._socket is not None:
-            return
-        headers = {'Authorization': f'Bearer {self.config.access_token}'} if self.config.access_token else None
-        self._socket = await websockets.connect(self._url(), additional_headers=headers,
-            open_timeout=self.config.connect_timeout_seconds)
+        async with self._connection_lock:
+            if self._socket is not None:
+                return
+            headers = {'Authorization': f'Bearer {self.config.access_token}'} if self.config.access_token else None
+            socket = await websockets.connect(self._url(), additional_headers=headers,
+                open_timeout=self.config.connect_timeout_seconds)
+            self._socket = socket
 
     async def close(self):
-        socket, self._socket = self._socket, None
+        async with self._connection_lock:
+            socket, self._socket = self._socket, None
         if socket is not None:
             await socket.close()
 
@@ -46,7 +50,10 @@ class GscoreClient:
 
     async def receive_once(self) -> dict:
         await self.connect()
-        raw = await asyncio.wait_for(self._socket.recv(), timeout=self.config.command_timeout_seconds)
+        socket = self._socket
+        if socket is None:
+            raise RuntimeError('GSUID Core connection is unavailable')
+        raw = await asyncio.wait_for(socket.recv(), timeout=self.config.command_timeout_seconds)
         if isinstance(raw, bytes):
             raw = raw.decode('utf-8')
         value = json.loads(raw)

@@ -147,11 +147,29 @@ def render_report_pages(report: SingleGroupReport, font_path: Path) -> list[byte
     if not blocks:
         return [render_report(report, font_path)]
 
+    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+    fonts = {size: ImageFont.truetype(str(font_path), size=size) for size in (22, 25, 28, 32)}
+    content_width = WIDTH - 2 * MARGIN - 52
+
+    def lines(value, size):
+        result = []
+        for paragraph in str(value).split('\n'):
+            current = ''
+            for char in paragraph:
+                candidate = current + char
+                if current and measure.textlength(candidate, font=fonts[size]) > content_width:
+                    result.append(current)
+                    current = char
+                else:
+                    current = candidate
+            result.append(current)
+        return result
+
     def block_height(block):
         item = block[1]
         if block[0] == 'topic':
-            return 180 + (len(item.title) + len(item.summary)) // 2
-        return 120 + len(item.text) // 2 + len(item.comment)
+            return 180 + len(lines(item.title, 32)) * 46 + len(lines(item.summary, 28)) * 42 + 36
+        return 120 + len(lines(item.text, 28)) * 42 + len(lines(item.comment, 25)) * 39
 
     # Header, statistics and chart occupy the first part of every page. Keep
     # semantic blocks whole; an unusually large single block gets its own page
