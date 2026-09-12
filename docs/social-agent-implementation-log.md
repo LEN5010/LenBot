@@ -198,3 +198,50 @@ C05 先于 C04 落地：计划把 C05 的依赖写成 C04，指的是同一批�
 
 - 计划 M03 的“样例不挤掉原话”属于现有容量优先级机制（`voice_examples` 在容量不足时先被省略，原话在 `fit_request` 中保持），本提交未改动该顺序，需要一次真实长上下文观察确认。
 - `delegable_purposes` 只描述用途文本，具体 capability 词汇表属于计划 C06/C07；在 C06 之前这里不出现 `network_python` 等能力 ID，避免提前声明尚不存在的授权。
+
+## C04 话题与对象感知的参与
+
+### 设计判断
+
+计划 M02 要求对话能分清“这是一次观察机会”和“这是一项请求”，并按话题与真实对象决定参与、沉默或委托；同时明确不新增固定前置分类模型、不为本提交增加模型调用。逐条核对当前实现：
+
+| 计划要求 | 当前实现 | 本提交是否改动 |
+|---|---|---|
+| 精确命令先完成归属，普通消息进入既有注意力策略 | `plugin_interactions.classify_event` 在注意力之前写 `plugin_consumed`/`interaction`，`AttentionPolicy.apply` 只在 `plugin_consumed` 之外产生唤醒 | 不改 |
+| 强唤醒与关键词/随机机会分开，公开话题只扩展弱机会 | `attention.py:52-85`：`mention`/`reply_to_bot`/`private_message`/`address_name`/`continuing_interaction`/`in_flight_follow_up`/`work_participant`/`awaiting_response` 为 certain；`keyword_opportunity`/`sample_opportunity` 为非 certain | 不改判定，改为把判定结果交给模型 |
+| 一个 Social Core 决定回应、沉默、澄清、委托，不增加固定规划模型 | `SocialCognitionCore.run` 单入口，respond 单终结；本轮不新增模型调用 | 不改 |
+| 回复针对话题或真实对方 | `MessageProposal.addressed_to` + Gate 的 `response_actor_ids` + `TurnMessage.addressed_to` 字段已具备 | 不改字段，补措辞 |
+| 角色不虚构现实经历 | 人格段落只有“可以角色扮演，但不编造刚刚直播、吃饭、见队友等现实经历” | 在系统提示补通用禁止项 |
+| 弱机会发言不延长关注窗口、不触发新心跳 | `actor._focus_renewal_actors` 只对 `mention`/`reply_to_bot`/`private_message`/`awaiting_response` 或任务/工作关系续期，`sample_opportunity`、`keyword_opportunity` 不在其中 | 不改（读码确认） |
+
+真正的缺口在输入表示：`input_status` 只列出 `ref`、`original_complete` 和 `attention_signals`（`at_bot`/`reply_to_bot`/`name_matches`/`direct_message`）。同一批来源里，**随机抽到的普通消息**和**针对 Bot 的连续交流**在这一层看起来几乎一样：两者都可能带上 `name_matches` 或什么信号都没有。模型只能从原话内容猜这是不是冲自己来的，于是两个方向都出错——把抽样机会当成请求去查资料或建工作，或者把明确的连续交流当成路过而沉默。
+
+计划禁止新增固定前置分类模型，也禁止为分流再跑一次模型，因此本提交不新增判定，而是把**已经算好的注意力判定**暴露给模型：唤醒本身就携带 `reasons` 与 `certain`，本来也随 `pending_directory` 出现在请求里，只是没有与被唤醒的那条原话绑在一起。现在在 `input_status` 的每条待处理来源上补充同一份判定，并在系统提示说明 certain 与 non-certain 的差别、弱机会不能当作委托、沉默是正常结果。
+
+第二处改动是现实经历的表述：原措辞只写在人格资料段落（“可以角色扮演，但不编造刚刚直播、吃饭、见队友等现实经历”），而角色资料是用户可编辑的文本。把同一约束写进系统提示的参与段，并明确“直播、房间和订阅类来源只支持它实际记录的状态”，避免把来源里的房间状态说成 Bot 自己的现实行动。
+
+### 实际改动
+
+- `src/len_bot/cognition/context.py`
+  - `input_message`：待处理来源条目增加 `wake: {reasons, certain}`，直接取自 `session.pending_wakes`；只对确实进入本轮的唤醒附加，未产生唤醒的相关原话不带该字段。不新增存储、不新增模型调用、不改动 `attention.py` 的任何判定。
+  - 系统提示参与段写明：`certain=true`（专门找你、回应你的发言、私聊、你正在进行的交流、明确委托）需要有处理结果；`certain=false`（关键词或随机抽到的公开话题）只是可以接一句的机会，别人互相讨论或话题与你无关时旁听即可，这种机会不是委托，不能据它建立工作、提醒或长期认识；沉默是正常结果，不需要为了参与另找话题。
+  - 系统提示补现实事实边界：没有可核对来源时不声称刚结束直播、正在忙现实中的事、离开/回到某处或参加活动，也不写进旁白。
+
+### 未做的事
+
+- 没有增加前置分类器、没有增加第二次模型调用、没有新增话题图谱或情绪状态：判定仍来自既有 `AttentionPolicy`，参与决定仍由同一个 Social Core 的 respond 给出。
+- 没有新增配置项、没有改 `AttentionPolicy` 的某些/非某些判定、没有改关注窗口续期规则。
+- 没有把 `certain=false` 做成硬校验（例如禁止以弱机会来源建立工作）。计划把发起者类型与计费主体放在 C06/C07，本轮只在提示中说明边界；工具层仍按原有“请求来源必须是已读人类原话”校验，不提前引入第二套授权判定。
+- 没有新增参与理由字段：Trace 里已有的 `respond.note`（`decision_reason`）与 `response_actor_ids` 继续承担参与理由与对象关系，本轮不改 Trace 结构。
+
+### 静态核对
+
+- `git diff --check`
+- `uv run --no-dev python -m compileall -q src/len_bot`
+- 未运行测试、模型或真实群；certain/non-certain 的区分没有在真实对话里确认过模型是否据此改变参与。
+
+### 未确认项
+
+- “弱机会不再被误当成请求”只有输入表示与措辞两处依据，需要真实群聊对照（同一轮里抽样到的无关消息与针对 Bot 的连续交流各一次）才能确认。
+- 现实经历禁止项是提示级约束，`character_context` 仍可被运营者改成包含现实经历的文本；本提交不校验人格字段内容。
+- `_focus_renewal_actors` 对弱机会不续期属于当前实现的读码结论，未在真实发送回执上核对抽样参与后的关注窗口是否真的没有延长。
