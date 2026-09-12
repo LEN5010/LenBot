@@ -13,6 +13,8 @@ class BrowserOpenInput(BaseModel):
 class BrowserPageInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     page_ref: str = Field(pattern=r'^page_[a-f0-9]{20}$')
+    text_offset: int = Field(default=0, ge=0)
+    text_limit: int | None = Field(default=None, ge=100, le=100_000)
 
 
 class BrowserInteractInput(BrowserPageInput):
