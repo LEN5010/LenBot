@@ -22,8 +22,27 @@ from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.agent import PluginExecution
 from len_bot.plugins.work import PluginWorkContext
 from len_bot.cognition.budget import AgentBudget
+from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
+
+
+def _cancellation_termination(error: BaseException, job: dict | None) -> dict | None:
+    """Read the worker termination identity, including after an exception rewrite."""
+    termination = getattr(error, 'termination', None)
+    if termination:
+        return termination
+    origin = (job or {}).get('plugin_origin') or {}
+    plugin_id = origin.get('plugin_id') if isinstance(origin, dict) else None
+    if plugin_id != 'workspace':
+        return None
+    return parked_termination(_workspace_id(job))
+
+
+def _workspace_id(job: dict) -> str:
+    scene = str(job.get('scene_id', '')).replace(':', '_')
+    user = str(job.get('requester_qq_uid', '')).replace(':', '_')
+    return f'{scene}__{user}__{job.get("id", "")}'
 
 
 class WorkGateway(ModelGateway):
@@ -834,8 +853,9 @@ class InformationJobRunner:
                 await store.record_job_elapsed(job_id,scene_id,0,result_ids=toolkit.result_ids)
                 event=await store.interrupt_job(job_id,scene_id,'The active execution was cancelled; no candidate is submitted')
                 if event:await runtime.commit_tool_observation(event)
+                termination = _cancellation_termination(error, job)
                 await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
                     payload={**trace,'job_revision':revision,'error_type':'CancelledError',
                              'interrupted':'execution_cancelled','retained_result_ids':list(toolkit.result_ids),
-                             **({'workspace_termination': error.termination} if getattr(error, 'termination', None) else {})})
+                             **({'workspace_termination': termination} if termination else {})})
             raise
