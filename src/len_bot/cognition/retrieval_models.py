@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from typing import Any
+from collections.abc import Callable
 
 import httpx
 
@@ -14,6 +14,10 @@ from len_bot.cognition.call_store import estimate_tokens
 
 class RetrievalProtocolError(RuntimeError):
     pass
+
+
+class RetrievalOptOut(RuntimeError):
+    """The scene was disabled before a new provider request could start."""
 
 
 class RetrievalModels:
@@ -34,14 +38,19 @@ class RetrievalModels:
             model=profile.model, reasoning_effort=None,
             estimate={"method": "text-estimate-v1", "input_tokens": estimate_tokens(text), "parts": {"text": estimate_tokens(text)}})
 
-    async def embed(self, profile: RetrievalProfile, texts: list[str], *, scene_id: str = "", purpose: str = "embedding_query") -> list[list[float]]:
+    async def embed(self, profile: RetrievalProfile, texts: list[str], *, scene_id: str = "", purpose: str = "embedding_query",
+                    request_guard: Callable[[], bool] | None = None) -> list[list[float]]:
         if not texts or any(not isinstance(item, str) or not item.strip() for item in texts):
             raise ValueError("Embedding input must contain non-empty text")
         binding = self.registry.resolve_retrieval(profile, purpose="embedding")
         call_id = await self._account(scene_id=scene_id, purpose=purpose, profile=profile, text="\n".join(texts))
         started, usage = time.monotonic(), None
         try:
-            raw = await binding.client.embeddings.with_raw_response.create(model=binding.model, input=texts)
+            if request_guard is not None and not request_guard():
+                raise RetrievalOptOut("semantic retrieval was disabled before embedding request")
+            raw = await binding.client.embeddings.with_raw_response.create(
+                model=binding.model, input=texts, encoding_format="float"
+            )
             body = raw.http_response.json()
             usage = body.get("usage") if isinstance(body, dict) else None
             data = body.get("data") if isinstance(body, dict) else None
@@ -73,7 +82,8 @@ class RetrievalModels:
                 await asyncio.shield(self.call_store.end_model_call(call_id, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed", usage=usage, error_type=type(error).__name__))
             raise
 
-    async def rerank(self, profile: RetrievalProfile, query: str, documents: list[str], *, scene_id: str = "") -> list[int]:
+    async def rerank(self, profile: RetrievalProfile, query: str, documents: list[str], *, scene_id: str = "",
+                     request_guard: Callable[[], bool] | None = None) -> list[int]:
         if not query.strip() or not documents:
             return []
         if profile.protocol != "cohere_v1":
@@ -88,6 +98,8 @@ class RetrievalModels:
         call_id = await self._account(scene_id=scene_id, purpose="rerank", profile=profile, text=query + "\n" + "\n".join(documents))
         started, usage = time.monotonic(), None
         try:
+            if request_guard is not None and not request_guard():
+                raise RetrievalOptOut("semantic retrieval was disabled before rerank request")
             url = provider.base_url.rstrip("/") + "/rerank"
             client = self._http_clients.get(provider.id)
             if client is None:
