@@ -36,8 +36,9 @@ class BrowserWorkerV2:
                 return False
         except ValueError:
             pass
-        return any(host == allowed or allowed.startswith('*.') and host.endswith(allowed[1:])
-                   for allowed in self.config.allowed_hosts)
+        return '*' in self.config.allowed_hosts or any(
+            host == allowed or allowed.startswith('*.') and host.endswith(allowed[1:])
+            for allowed in self.config.allowed_hosts)
 
     @staticmethod
     def _address_allowed(address: str) -> bool:
