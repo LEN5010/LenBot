@@ -12,10 +12,12 @@
 | 提交 | 计划依赖 | 代码状态 | 运行验证 |
 |---|---|---|---|
 | C01 `fix(execution): preserve cancellation and termination outcomes` | C00 | 实现完成 | 未运行 |
+| C03 `fix(calendar): deliver explicit source failure cards` | C00 | 实现完成 | 未运行 |
 | C02 `fix(memory): page maintenance reads within request budget` | C00 | 未开始 | 未运行 |
-| C03 `fix(calendar): deliver explicit source failure cards` | C00 | 未开始 | 未运行 |
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 未开始 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 未开始 | 未运行 |
+
+C01 与 C03 都只依赖 C00 且互不影响，因此先提交了 C03；提交顺序不代表计划第 8.2 节的编号顺序，编号只标识范围。
 
 ## C00 契约与文档收口
 
@@ -66,3 +68,48 @@
 - 取消传播只在源码路径上核对；“外部取消不再继续下一步模型调用”需要一次真实的长工作取消才能确认。
 - 外层 30 秒余量是本地可读的常量，部署后内层 `timeout_seconds` 若被调大，外层仍随之增大，不需要额外配置；但实际清理耗时只能在目标机器上核对。
 - 终止停车区是模块内状态，只用于同一进程内读取；跨进程恢复仍以 control 目录的 `.termination_unconfirmed` 标记和既有工作记录为准。
+
+## C03 日历来源失败状态卡
+
+### 设计判断
+
+计划 M01 对日历的要求是三种业务结果分开，且都不新增模型调用：
+
+| 结果 | 应有表现 |
+|---|---|
+| 成功取到源日程（含查询成功但本日为 0 条） | 现有日程卡片 |
+| 来源取得失败 | 明确“日程暂未取得”状态卡，不表示今天没有直播 |
+| 渲染本身失败 | 保留真实失败，不声称发出了错误卡 |
+
+当前实现里，`CalendarService.snapshot()` 在来源异常时直接 `raise`，精确命令入口 `on_command` 对非 `ok/no_results` 状态 `raise ValueError`。结果是精确命令消费了这条消息却没有任何群内结果。
+
+同时有一个必须先解决的技术前提：这类精确命令与卡片由插件 `handler` 直接调用 `call.submit_message(...)`，而 `submit_message` 路径（`plugin_interactions.py:186-189`）位于 Actor 写事务之外，没有任何捕获异常的边界。如果在这里让失败路径抛异常，会变成未处理的任务异常，而不是“明确失败”。因此本提交的状态卡必须在同一个 handler 调用内完成，不能依赖抛错后再由别处补发。
+
+### 实际改动
+
+- `src/len_bot/plugins/builtin/asoul_calendar/calendar.py`
+  - 新增 `ScheduleSourceUnavailable`，携带 `source_url` 与 `attempted_at`；`snapshot()` 的来源异常改为抛出它，保留 `last_error_at`/`last_error` 的既有记录语义。
+  - 新增 `source_failure()`，返回最近一次真实来源失败（且其后没有成功读取），因此不会把更早的失败当成当前事实。
+- `src/len_bot/plugins/builtin/asoul_calendar/plugin.py`
+  - `get_live_schedule` 工具不再让来源失败冒泡：返回 `ToolResult.failure(..., 'source_unavailable', sources=[...])`，措辞明确“这不表示今天没有直播，也不表示能力永久不可用”。
+  - `on_command` 区分三种结果：`source_unavailable` → 渲染状态卡并提交；`ok`/`no_results` → 现有日程卡片；其他状态 → 保持原有明确失败。
+  - 新增 `failure_lines()`：只给出对群可公开的措辞（哪个范围的日程、读取时间），不含源 URL 和内部判断细节，与其他来源失败的公开措辞保持一致。
+- `src/len_bot/plugins/builtin/asoul_calendar/render.py`
+  - 新增 `StatusCardRenderer`，沿用同一套 `cards` tokens、字体与版式；卡片明确写“日程暂未取得”。它不是降级渲染器：成功与空日程仍走原 `ScheduleRenderer`。
+
+### 未做的事
+
+- 没有增加备用源、没有在失败时改调模型、没有新增通用降级框架。
+- `ToolResult.failure` 的构造会添加 `Error: ` 前缀（`tools/results.py:140`）；本提交沿用该既有约定，未为此改动公共结果模型。该前缀只出现在保存的观察文本里，群内交付的是状态卡片本身。
+- 没有改动 `ScheduleResult` 的字段或既有卡片版式。
+
+### 静态核对
+
+- `git diff --check`
+- `uv run --no-dev python -m compileall -q src/len_bot`
+- 未运行测试、模型、OneBot 或真实日历源；来源失败卡片未在真实群里出现过。
+
+### 未确认项
+
+- “来源失败时不新增 LLM 调用”属于控制流事实（handler 内直接渲染），未在真实运行中测量调用账。
+- 渲染失败仍走原有失败路径（提交不成立），需要在真实业务里确认不会留下“消息被消费但无结果”的情况。

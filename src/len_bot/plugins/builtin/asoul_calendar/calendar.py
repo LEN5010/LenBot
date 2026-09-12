@@ -70,6 +70,20 @@ class ScheduleResult(BaseModel):
     limitation: str = "日历未收录不代表确定没有直播；日程时间不证明实际开播。"
 
 
+class ScheduleSourceUnavailable(RuntimeError):
+    """The configured calendar source did not return usable data this time.
+
+    A source failure is a business state, not an empty schedule: callers must
+    present it as such and must not report "no events today" or silently skip a
+    group result.
+    """
+
+    def __init__(self, message: str, *, source_url: str, attempted_at: float):
+        super().__init__(message)
+        self.source_url = source_url
+        self.attempted_at = attempted_at
+
+
 @dataclass(frozen=True)
 class CalendarSnapshot:
     events: tuple[CalendarEvent, ...]
@@ -251,7 +265,8 @@ class CalendarService:
             except Exception as error:
                 self.last_error_at = time.time()
                 self.last_error = f"{type(error).__name__}: {error}"
-                raise
+                raise ScheduleSourceUnavailable(f"{type(error).__name__}: {error}",
+                    source_url=self.config.source_url, attempted_at=self.last_error_at) from error
             fetched_at = time.time()
             self._snapshot = CalendarSnapshot(events, fetched_at, response.headers.get("last-modified"))
             self.last_success_at = fetched_at
@@ -302,3 +317,10 @@ class CalendarService:
         return {"source_url": self.config.source_url, "last_success_at": self.last_success_at,
                 "last_error_at": self.last_error_at, "last_error": self.last_error,
                 "source_updated_at": self._snapshot.source_updated_at if self._snapshot else None}
+
+    def source_failure(self, *, attempted_at: float | None = None) -> ScheduleSourceUnavailable | None:
+        """The most recent real source failure, if the source did not succeed after it."""
+        if self.last_error_at is None or (self.last_success_at is not None and self.last_success_at >= self.last_error_at):
+            return None
+        return ScheduleSourceUnavailable(self.last_error or '日程来源本次未取得',
+            source_url=self.config.source_url, attempted_at=attempted_at if attempted_at is not None else self.last_error_at)

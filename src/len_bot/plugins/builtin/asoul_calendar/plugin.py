@@ -11,9 +11,9 @@ from len_bot.plugins.models import ExactText, PluginCallContext
 from len_bot.media.models import MessageSegment
 from len_bot.tools.results import ToolResult, ToolSource
 
-from .calendar import CalendarService, ScheduleRequest, ScheduleResult
+from .calendar import CalendarService, ScheduleRequest, ScheduleResult, ScheduleSourceUnavailable
 from .config import CalendarCommand, CalendarConfig
-from .render import ScheduleRenderer
+from .render import ScheduleRenderer, StatusCardRenderer
 
 if TYPE_CHECKING:
     from len_bot.config_store import MemberSettings, TimeSettings
@@ -28,6 +28,7 @@ class AsoulCalendarPlugin(BasePlugin):
         self.member_keywords = tuple(value for member in members for value in (member.name, *member.aliases))
         self.service = CalendarService(self.config, self.time_settings.timezone, members)
         self.renderer = ScheduleRenderer(self.config, resource_directory=context.directory)
+        self.status_renderer = StatusCardRenderer(self.config, resource_directory=context.directory)
 
     async def on_load(self, context: PluginContext):
         context.register_tool(name="get_live_schedule",
@@ -50,7 +51,15 @@ class AsoulCalendarPlugin(BasePlugin):
         await self.service.close()
 
     async def get_live_schedule(self, request: ScheduleRequest, call_context: PluginCallContext) -> ToolResult:
-        schedule = await self.service.query(request)
+        try:
+            schedule = await self.service.query(request)
+        except ScheduleSourceUnavailable as error:
+            failure = ToolResult.failure(
+                f'日程来源本次未取得：{error}；这不表示今天没有直播，也不表示整个能力永久不可用。',
+                'source_unavailable', stage='execution',
+                sources=[ToolSource(url=error.source_url, title='A-SOUL 源日历')])
+            failure.evidence_kind = 'external'
+            return failure
         return ToolResult(content=schedule.model_dump_json(), evidence_kind="external",
             coverage=schedule.coverage, status="ok" if schedule.events else "no_results",
             fetched_at=schedule.fetched_at, cached=schedule.cached,
@@ -83,9 +92,31 @@ class AsoulCalendarPlugin(BasePlugin):
         start_at = datetime.combine(start_day, time.min, zone)
         return ScheduleRequest(start_at=start_at, end_at=start_at + timedelta(days=days), member=None), title
 
+    def failure_lines(self, command: CalendarCommand, error: ScheduleSourceUnavailable) -> list[str]:
+        """Public wording for a source failure; no URL, no internal judgement."""
+        zone = ZoneInfo(self.time_settings.timezone)
+        scope = {"calendar_today": "今日", "calendar_tomorrow": "明日", "calendar_week": "本周"}[command]
+        moment = datetime.fromtimestamp(error.attempted_at, zone)
+        return [
+            f"{scope}日程本次暂未取得。",
+            "这不是“没有日程”，也不代表确定没有直播；请稍后再问一次。",
+            f"读取时间 {moment:%Y-%m-%d %H:%M:%S} · {self.time_settings.timezone}",
+        ]
+
     async def on_command(self, call: PluginCallContext):
         request, title = self.command_request(call.origin.entry_id, call.event.timestamp)
         observed = await call.invoke_tool('get_live_schedule', request)
+        source_error = observed.error_code == 'source_unavailable'
+        if source_error:
+            # A source failure keeps its own state. It does not consume the
+            # group silently and is never rendered as an empty schedule.
+            error = self.service.source_failure() or ScheduleSourceUnavailable('日程来源本次未取得',
+                source_url=self.config.source_url, attempted_at=call.event.timestamp)
+            png = await asyncio.to_thread(self.status_renderer.render, title, self.failure_lines(call.origin.entry_id, error),
+                status_label="日程暂未取得")
+            asset_id = await call.save_image(png, '日程来源失败状态卡')
+            await call.submit_message([MessageSegment(type='image', asset_id=asset_id)])
+            return
         if observed.status not in {'ok', 'no_results'}:
             raise ValueError(f'日程来源未完整取得：{observed.content}')
         schedule = ScheduleResult.model_validate_json(observed.content)
