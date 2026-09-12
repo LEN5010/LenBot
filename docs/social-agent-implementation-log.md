@@ -14,12 +14,16 @@
 | C01 `fix(execution): preserve cancellation and termination outcomes` | C00 | 实现完成 | 未运行 |
 | C02 `fix(memory): page maintenance reads within request budget` | C00 | 实现完成 | 未运行 |
 | C03 `fix(calendar): deliver explicit source failure cards` | C00 | 实现完成 | 未运行 |
-| C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 未开始 | 未运行 |
+| C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 实现完成 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
-C05 先于 C04 落地：计划把 C05 的依赖写成 C04，指的是同一批文件（`context.py`、`social_core.py`）上的后续改动，而不是 C05 的验收项需要 C04 的参与判定。C05 只增加“可委托”这一层事实与措辞，C04 要改的注意力与响应对象判定不受其影响，且 C04 会在这两处之上继续改。若 C04 的实现需要回改 C05 引入的措辞，会在 C04 一节记录。
+实际提交顺序是 C01、C03、C02、C05、C04，与计划编号不同：
+
+- C02 与 C03 互不影响，先落地 C03 是因为它牵连同一批精确命令路径，读码集中一次完成。
+- C05 先于 C04 落地：计划把 C05 的依赖写成 C04，指的是同一批文件（`context.py`、`social_core.py`）上的后续改动，而不是 C05 的验收项需要 C04 的参与判定。C05 只增加“可委托”这一层事实与措辞，C04 的输入表示与措辞改动都发生在它之上，两处不冲突。
+- C04 依赖 C01—C03 中的 C03 最紧（同一批插件与对话路径），在 C05 之后落地时只改了 `context.py` 的输入表示与系统提示，没有回改 C05 引入的 `delegable_purposes` 措辞。
 
 ## C00 契约与文档收口
 
@@ -245,3 +249,126 @@ C05 先于 C04 落地：计划把 C05 的依赖写成 C04，指的是同一批�
 - “弱机会不再被误当成请求”只有输入表示与措辞两处依据，需要真实群聊对照（同一轮里抽样到的无关消息与针对 Bot 的连续交流各一次）才能确认。
 - 现实经历禁止项是提示级约束，`character_context` 仍可被运营者改成包含现实经历的文本；本提交不校验人格字段内容。
 - `_focus_renewal_actors` 对弱机会不续期属于当前实现的读码结论，未在真实发送回执上核对抽样参与后的关注窗口是否真的没有延长。
+
+---
+
+# 首批（C00—C05）验收记录
+
+> 按计划第 10.3 节的固定模板记录。状态措辞只用“实现完成 / 部署就绪 / 实际链路通过”三种；本批全部为**实现完成**，没有取得任何真实链路证据。核对方式遵守计划第 10.1 节与 [`AGENTS.md`](../AGENTS.md)：只做阅读、正常编译与 `git diff --check`，未新增或运行测试、夹具、断言式探针或自动截图，未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
+
+## Commit / Parent / 审阅 HEAD
+
+| 提交 | 父提交 | 标题 |
+|---|---|---|
+| `99be439` | `61969fa` | `fix(execution): preserve cancellation and termination outcomes` |
+| `98227ff` | `99be439` | `fix(calendar): deliver explicit source failure cards` |
+| `3b60fbc` | `98227ff` | `fix(memory): page maintenance reads within request budget` |
+| `7564df9` | `3b60fbc` | `feat(context): expose delegable capabilities and focused references` |
+| `70c9720` | `7564df9` | `feat(chat): make participation topic- and addressee-aware` |
+
+审阅 HEAD：`70c9720`（分支 `social-agent-m0-foundation`）。C00 契约与文档收口在此之前完成（`76ef637`、`01241ec`、`f328e64`、`4014f3d`、`61969fa`），本批不重复提交。
+
+本批共 14 个文件、`+592 / −65` 行：
+
+```text
+docs/social-agent-implementation-log.md            | 247 +++++
+src/len_bot/cognition/context.py                   |  25 ++-
+src/len_bot/cognition/social_core.py               |   2 +
+src/len_bot/execution/workspace.py                 | 124 ++++---
+src/len_bot/memory/reflector.py                    |  36 ++-
+src/len_bot/memory/store.py                        |  15 +-
+src/len_bot/plugins/builtin/asoul_calendar/calendar.py |  24 +-
+src/len_bot/plugins/builtin/asoul_calendar/plugin.py   |  37 ++-
+src/len_bot/plugins/builtin/asoul_calendar/render.py   |  50 +++
+src/len_bot/plugins/builtin/workspace/__init__.py  |   7 +-
+src/len_bot/plugins/host.py                        |  37 ++-
+src/len_bot/runtime/job_runner.py                  |  22 +-
+src/len_bot/runtime/scene_policy.py                |  12 +
+src/len_bot/tools/retrieval.py                     |  19 +-
+```
+
+## 涉及模块与新增持久字段
+
+| 提交 | 涉及模块 | 新增持久字段或表 |
+|---|---|---|
+| C01 | `execution/workspace.py`、`plugins/host.py`、`tools/retrieval.py`、`runtime/job_runner.py`、`plugins/builtin/workspace/__init__.py` | 无。`TERMINATION_PARKS` 是进程内模块状态，不落库；终止身份仍写在既有 control 目录标记与既有工作 trace 的 `workspace_termination` 字段里 |
+| C02 | `memory/reflector.py`、`memory/store.py` | 无。`query_memories` 增加 `offset` 形参，不改表结构、不加列、不加索引 |
+| C03 | `plugins/builtin/asoul_calendar/{calendar,plugin,render}.py` | 无。新增异常类型与渲染类，状态卡复用既有卡片资源与既有提交路径 |
+| C04 | `cognition/context.py` | 无。`input_status` 的 `wake` 字段只存在于本轮请求 JSON，不写入事件或场景状态 |
+| C05 | `plugins/host.py`、`cognition/context.py`、`cognition/social_core.py`、`runtime/scene_policy.py` | 无。`delegable_purposes` 只存在于本轮 `runtime_facts`；未新增配置字段、未改根配置、未改前端 |
+
+全批没有 `CREATE TABLE`、`ALTER TABLE`、新列或新表；没有改 `src/len_bot/config.py`、`config_store.py`；`src/len_bot/web/**` 无改动，因此没有前端构建产物需要随提交更新。
+
+## 本提交实现了什么、没有实现什么
+
+**C01 实现完成**：取消在宿主与核心工具入口都不再被降级为普通 `ToolResult`；workspace 工具外层期限严格大于内层执行期限并覆盖清理窗口；清理子进程有统一上限并被回收；终止身份在异常转换之外保留可读。**没有**改动 AgentLoop/Gate/ActionQueue 的异常语义，**没有**把执行边界（`--network none`、只读根、cap-drop）改成可配置，**没有**为清理新增持久表。
+
+**C02 实现完成**：维护循环的 `query_memory` 支持模型给出的 `limit`、`kind` 与 `offset`，返回结构化分页结果与 `next_offset`；词面排序路径在同一完整排序上分页。**没有**改批次投影、覆盖游标、`begin_history_batch` 容量判断或 `history_batches` 记录，**没有**改认识写入路径。
+
+**C03 实现完成**：日历来源失败与“查询成功但本日 0 条”分开；后者仍走原日程卡片，前者在同一个 handler 调用内渲染并提交明确“日程暂未取得”状态卡；工具侧返回 `source_unavailable` 而不是冒泡异常。**没有**增加备用源、**没有**在失败时改调模型、**没有**新增通用降级框架。
+
+**C04 实现完成**：`input_status` 的每条待处理来源带上既有的注意力判定（`reasons`、`certain`）；系统提示说明 certain 与弱机会的差别、弱机会不是委托、沉默是正常结果，并补上不虚构现实经历的通用边界。**没有**增加前置分类器、第二次模型调用、话题图谱或情绪状态，**没有**改动 `attention.py` 的任何判定或关注续期规则。
+
+**C05 实现完成**：能力事实对“已加载但当前角色无直接工具”的模块给出 `delegable_purposes` 与“属于长工作、用 `start_work` 委托”的说明；系统提示说明该说明不是已授予额度或权限、未出现的模块即当前不可用。**没有**向对话暴露 work 工具 schema，**没有**新增工具发现渠道或配置开关；`_delegable_hint` 由既有 `chat_allowed` 派生。
+
+## 输入 → 状态/资料 → 外部操作 → 结果/回执
+
+```text
+C01  外部取消/超时 → 容器终止与清理（含终止身份）→ 工作循环记录 termination → 上抛取消，不再进入下一步模型
+C02  维护请求 → 现有批次投影不变 → query_memory 分页读取认识账本 → 结构化页与 next_offset 作为工具资料
+C03  精确日历命令 → 来源读取结果 → 来源失败时同一次 handler 内渲染状态卡 → 既有 submit_message 提交与回执
+C04  群消息 → 既有注意力判定（未改）→ input_status 带上该判定 → respond 决定参与/沉默/委托 → 既有 Gate 与发送回执
+C05  对话轮次装配 → 既有场景与插件准入 → runtime_facts 附可委托用途摘要 → 模型表述变化，无新增外部操作
+```
+
+以上是源码路径上的数据流，四段链路都**没有**真实运行证据：没有真实的容器取消、没有真实的大批量维护、没有真实的日历来源失败、没有真实的群聊参与对照。
+
+## 已完成静态核对
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check` | 退出码 0，无空白错误 |
+| `git diff --check 61969fa..HEAD` | 退出码 0，无空白错误 |
+| `uv run --no-dev python -m compileall -q src/len_bot` | 退出码 0，无语法错误 |
+
+这三项只证明代码可编译、补丁无空白问题。按计划第 10.1 节，它们**不构成**功能完成或运行通过。
+
+## 已完成正常业务观察
+
+无。本批没有在获准环境中启动服务、读取真实群消息、调用模型、调用 OneBot 或真实发送；表中所列行为都没有被实际观察到。
+
+## 失败原文与所属阶段
+
+本批开发过程中没有留下运行失败原文，因为未运行。开发中被修正的三处错误属于编码阶段，已记录在各自章节：`job_runner.py` 字典字面量中的海象表达式改为两条语句；`retrieval.py` 误用 `ToolResult.failure(content=...)` 改为构造后赋值；`context.py` 一次误删 `facts['capabilities']` 已恢复。三者都不在运行阶段，也不改变上述任何结论。
+
+## 未确认的部署/模型/平台条件
+
+| 未确认项 | 影响 | 所属 |
+|---|---|---|
+| 真实外部取消时“不再继续下一步模型调用” | 计划 A08 | C01 |
+| 目标机器上容器清理的实际耗时 | 计划 A08 | C01 |
+| 真实大批量维护的续读与批次推进 | 计划 A04 | C02 |
+| “来源失败不新增 LLM 调用”的调用账 | 计划 A05 | C03 |
+| 真实群聊中弱机会与针对 Bot 的连续交流是否被区分 | 计划 A01 | C04 |
+| 真实对话中模型是否据此改说“能不能用 Python/浏览器” | 计划 C05 验收项 | C05 |
+| 人格字段仍可由运营者写成含现实经历的文本 | 计划 A01 | C04（提示级约束，不校验字段内容） |
+
+未确认项一律按“未运行”处理，不得写成通过。计划第 10.2 节矩阵中与本批相关的 A01、A02（部分）、A04、A05、A08 均待真实业务核对；A03、A06、A07、A09—A18 属于后续提交。
+
+## 配置或数据库转换步骤
+
+无。本批不新增配置字段、不新增表或列，现有数据库中的历史事件、认识、批次投影与 offset、已发 action 与 message_id、工作模型绑定均不改写。不需要停机迁移、离线转换或重新备份流程；C05 的 `_delegable_hint` 与 C02 的 `offset` 都由既有配置与调用方参数驱动。
+
+## 停用与回退边界
+
+本批全部是代码改动，回退方式是把上述五个提交按反序 revert：没有新写入的事实需要保留，也没有已完成的外部动作需要补偿。C03 的例外在于状态卡一旦真实发出即消失在群聊里，代码回退不会撤回已发消息，也不需要撤回——它就是当时的真实结果。C01 的进程内停车区随进程结束自然清空，回退后旧路径的 `ToolResult.failure(..., 'workspace_cancelled')` 行为恢复。
+
+## 下一提交依赖
+
+计划第 8.2 节的下一段是 C06—C09（来源身份与能力授权、共享预算预占、跨循环资源预算、工作修订与预算归属）。它们依赖 C00 与彼此之间存在明确顺序（C06 → C07 → C08 → C09），**不依赖** C10—C29，也不依赖本批的人工运行证据；但计划同一处写明“代码编写可并行”与“能力放行必须具备”是两件事：没有真实运行证据时，后续提交可以继续编写，不得据此放行任何新权限。
+
+开始 C06 之前需要用户确认的前置项仍然有效：计划第 2 章 D01—D12 推荐裁决是否采纳，以及计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）。这些前置项不阻塞 C06—C09 的代码工作，但 D04/D06/D09 的具体取值会直接决定 C06/C07 的字段与判定，因此在实现前需要明确。
+
+## 本批不宣称的能力
+
+公共兴趣与跨群分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久登录态、B 站账号读写、文件上传与额度、视频片段与转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵：全部仍是计划条款，不是当前能力，不得写入产品文档的已具备章节，也不得在面板显示为可用。
