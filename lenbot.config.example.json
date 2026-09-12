@@ -136,7 +136,9 @@
     "link_parser": {
       "enabled": false,
       "config": {
-        "enabled_platforms": ["bilibili"],
+        "enabled_platforms": [
+          "bilibili"
+        ],
         "request_timeout_seconds": 15.0
       }
     },
@@ -189,7 +191,9 @@
       "enabled": false,
       "config": {
         "browser": {
-          "allowed_hosts": [],
+          "allowed_hosts": [
+            "*"
+          ],
           "headless": true,
           "timeout_seconds": 20.0,
           "max_text_chars": 12000,
@@ -209,7 +213,8 @@
           "max_artifact_bytes": 20000000,
           "container_user": "65532:65532",
           "memory": "512m",
-          "cpus": "1.0"
+          "cpus": "1.0",
+          "max_artifact_files": 1000
         }
       }
     }

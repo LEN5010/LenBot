@@ -98,3 +98,5 @@ A 的实群验收此前明确跳过；不能将旧失败或缺少观察改为通
 群报告分页高度改为沿用 Pillow 实际字体测量，直播标题超出四行时显示省略号；这改善确定性布局但仍未替代获准环境中的 QQ 压缩与可读性观察。
 
 只读环境核对：主机可访问 Docker Engine，但默认 `python:3.13-slim` worker 镜像尚未存在；当前 uv Python 环境未安装 Playwright；运行中的容器与 LenBot 新能力无关。根配置未启用 `gscore_adapter`、`workspace` 或 `browser_agent`，也未发现可用于 Core 联调的已确认端点。未执行拉取镜像、安装依赖、启动服务或外部发送。
+
+2026-09-12 配置准备：按用户要求保持 `gscore_adapter` 未加入根配置；根配置与样例已加入 workspace/browser_agent 的安全默认参数并保持全局及两群停用。浏览器白名单设为 `*` 时仅允许任意公网主机，私网/回环等地址仍由 worker 拦截；Docker 镜像拉取因当前 Docker socket 权限不足且命令被中止，未改变运行环境。浏览器隔离和 Playwright 依赖未完成前不启用 browser_agent。

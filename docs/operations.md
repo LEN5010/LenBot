@@ -2,7 +2,7 @@
 
 面向运营者。行为含义见[产品文档](product.md)，当前实施状态与未确认项见[当前任务](iteration.md)。
 
-首次启用 `gscore_adapter` 前确认 Core WebSocket 协议和 bot 身份；首次启用 `python_workspace` 前确认隔离容器运行时、镜像来源、无网络策略和工作目录权限；首次启用 `browser_agent` 前填写最小域名白名单并确认 Playwright 依赖。三个插件默认关闭，未完成确认时不要改为启用。
+首次启用 `gscore_adapter` 前确认 Core WebSocket 协议和 bot 身份；首次启用 `python_workspace` 前确认隔离容器运行时、镜像来源、无网络策略和工作目录权限；首次启用 `browser_agent` 前填写域名白名单（`*` 仅表示任意公网主机）并确认 Playwright 依赖和独立浏览器隔离。三个插件默认关闭，未完成确认时不要改为启用。
 
 ## 初始化与启动
 
@@ -167,4 +167,4 @@ npm run build
 产物位于 `src/len_bot/web/static/dist`，与同批 API 一起交付。按改动范围人工核对页面，检查方式遵循[工程约束](../AGENTS.md)。
 # 新增可选能力的运维门禁
 
-首次启用 `gscore_adapter` 前必须确认 Core WebSocket 协议和 bot 身份；首次启用 `python_workspace` 前必须确认隔离容器运行时、镜像来源、无网络策略和工作目录权限；首次启用 `browser_agent` 前必须填写最小域名白名单并确认 Playwright 依赖。三个插件默认关闭，未完成确认时不要改为启用。
+首次启用 `gscore_adapter` 前必须确认 Core WebSocket 协议和 bot 身份；首次启用 `python_workspace` 前必须确认隔离容器运行时、镜像来源、无网络策略和工作目录权限；首次启用 `browser_agent` 前必须填写域名白名单（`*` 仅表示任意公网主机）并确认 Playwright 依赖和独立浏览器隔离。三个插件默认关闭，未完成确认时不要改为启用。
