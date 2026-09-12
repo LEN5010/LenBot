@@ -62,6 +62,7 @@ class SummaryCoverage(BaseModel):
     merged_batches: int = Field(default=0,ge=0,title='已经合并的批次')
     report_result_id: str | None = Field(default=None,title='结构化报告',json_schema_extra={'format':'tool-result-id'})
     image_asset_id: str | None = Field(default=None,title='已渲染图片',json_schema_extra={'format':'media-id'})
+    image_asset_ids: list[str] = Field(default_factory=list,title='已渲染分页图片',json_schema_extra={'format':'media-id-list'})
     artifact_result_id: str | None = Field(default=None,title='报告交付资料',json_schema_extra={'format':'tool-result-id'})
     analysis_requirements: str | None = Field(default=None,title='本版实际分析要求')
     phase: Literal['analyzing','merging','report_ready','rendering','render_failed','ready'] = Field(default='analyzing',title='当前业务阶段')

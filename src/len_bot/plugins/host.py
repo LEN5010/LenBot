@@ -3,6 +3,7 @@ import logging
 import json
 import time
 import uuid
+from pathlib import Path
 import httpx
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Awaitable, Literal
@@ -454,6 +455,40 @@ class PluginHost:
     def has_plugin(self, plugin_id: str) -> bool:
         """Public membership lookup for lifecycle and configuration callers."""
         return plugin_id in self._plugins
+
+    async def read_workspace_artifact(self, scene_id: str, job_id: str, path: str, offset: int, limit: int):
+        plugin = self._plugins.get('workspace')
+        if plugin is not None and hasattr(plugin, 'artifact_for_job'):
+            return await plugin.artifact_for_job(scene_id, job_id, path, offset, limit)
+        service = self._workspace_service_for_panel()
+        return await service.read_for_job(scene_id, job_id, path, offset, limit) if service else None
+
+    async def list_workspace_artifacts(self, scene_id: str, job_id: str):
+        plugin = self._plugins.get('workspace')
+        if plugin is not None and hasattr(plugin, 'artifacts_for_job'):
+            return await plugin.artifacts_for_job(scene_id, job_id)
+        service = self._workspace_service_for_panel()
+        return await service.list_for_job(scene_id, job_id) if service else None
+
+    async def close_job_resources(self, job: dict):
+        for plugin in tuple(self._plugins.values()):
+            closer = getattr(plugin, 'close_job', None)
+            if closer is not None:
+                try:
+                    await closer(job)
+                except Exception as error:
+                    self.record_plugin_error(plugin.manifest.id, f'job resource cleanup: {error}')
+
+    def _workspace_service_for_panel(self):
+        setting = self.runtime.config_store.current.plugins.get('workspace')
+        if not setting or setting.config is None or setting.parsed_config is None:
+            return None
+        from len_bot.execution.service import WorkspaceService
+        from len_bot.execution.workspace import WorkspaceWorker
+        context_dir = self.runtime.config.db_path
+        return WorkspaceService(WorkspaceWorker(setting.parsed_config.worker,
+            Path(context_dir).resolve().parent / 'plugins' / 'workspace'),
+            self.runtime.event_store, 'workspace')
 
     def get_plugin(self, plugin_id: str) -> BasePlugin | None:
         return self._plugins.get(plugin_id)

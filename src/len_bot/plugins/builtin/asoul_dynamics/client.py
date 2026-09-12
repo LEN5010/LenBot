@@ -85,6 +85,9 @@ class DynamicsClient:
                 if "dynamicId" in item:
                     self._records[item["dynamicId"]] = SourceSnapshot(copy.deepcopy(item), fetched_at,
                         fetched_at + ttl, str(response.url))
+                elif "sourceDynamicId" in item:
+                    self._records[item["sourceDynamicId"]] = SourceSnapshot(copy.deepcopy(item), fetched_at,
+                        fetched_at + ttl, str(response.url))
             return snapshot, False
 
     async def search(self, *, query: str | None, member: str | None, cursor: str | None,

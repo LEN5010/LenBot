@@ -148,6 +148,9 @@ class ReportArtifact(ReportData):
     job_revision: int
     report_result_id: str
     image_asset_id: str
+    image_asset_ids: list[str] = Field(default_factory=list)
+    theme_version: str = "light-v1"
+    source_result_ids: list[str] = Field(default_factory=list)
     start_at: AwareDatetime
     end_at: AwareDatetime
     generated_at: float

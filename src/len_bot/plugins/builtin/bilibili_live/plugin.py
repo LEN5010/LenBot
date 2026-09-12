@@ -12,6 +12,7 @@ from len_bot.tools.results import ToolResult, ToolSource
 from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
 from .events import LiveEndedSample
+from .render import render_live
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,8 @@ class BilibiliLiveSensor(BasePlugin):
 
     async def invitation_text(self, view, call):
         if call.entry_origin and call.entry_origin.entry_id == 'live_started':
-            if len(view.messages) != 1 or any(segment.type != 'text' for segment in view.messages[0]):
-                view.stop_reason = '开播邀请必须提交一条文本正文'
+            if not view.messages or any(not message for message in view.messages):
+                view.stop_reason = '开播邀请必须包含正文'
         return view
 
     async def on_enable(self):
@@ -119,7 +120,16 @@ class BilibiliLiveSensor(BasePlugin):
             output_mode='result_only', output_model=Invitation,
             max_steps=self.config.announcement_max_steps, max_tool_calls=self.config.announcement_max_tool_calls,
             context_tokens=self.config.announcement_context_tokens, output_tokens=self.config.announcement_output_tokens)
-        await call.submit_message([MessageSegment(type='text', text=result.text)],
+        # The poller may have observed a new sample while the announcement
+        # model was running; never send a stale session after that transition.
+        self.validate_session(sample.member, sample.room_id, sample.started_at)
+        font_path = self.context.directory.parent / 'asoul_calendar' / 'resources' / 'font.ttf'
+        if not font_path.is_file():
+            raise ValueError('直播卡片字体文件不存在')
+        png = await asyncio.to_thread(render_live, sample, font_path=font_path,
+            timezone=self.context.time_settings.timezone)
+        asset_id = await call.save_image(png, '真实开播场次卡片')
+        await call.submit_message([MessageSegment(type='text', text=result.text), MessageSegment(type='image', asset_id=asset_id)],
             mention_all=call.scene_config.mention_all)
 
     def source_status(self):
