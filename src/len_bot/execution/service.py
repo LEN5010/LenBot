@@ -65,11 +65,14 @@ class WorkspaceService:
             relative = str(path.relative_to(directory))
             if relative.startswith('input/'):
                 continue
-            size = path.stat().st_size
-            if size > self.worker.config.max_artifact_bytes:
+            try:
+                info = self.worker.stat_file(FileRequest(workspace_id=scope.workspace_id, path=relative))
+            except (FileNotFoundError, ValueError):
                 continue
+            size = info.st_size
             artifacts.append(WorkspaceArtifact(path=relative, size_bytes=size,
-                media_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream'))
+                media_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream',
+                over_limit=size > self.worker.config.max_artifact_bytes))
         return artifacts[:self.worker.config.max_artifact_files]
 
     async def run_python(self, call, request: RunPythonInput) -> dict:
@@ -77,8 +80,10 @@ class WorkspaceService:
         async with self.worker.run_lock(scope.workspace_id):
             manifest = await self._export_inputs(scope, request.input_result_ids, call.scene_id)
             result = await self.worker._run_python_locked(RunPythonRequest(workspace_id=scope.workspace_id, script=request.script))
+            artifacts = self._artifacts(scope)
         result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
-            'input_manifest': manifest, 'artifacts': [item.model_dump(mode='json') for item in self._artifacts(scope)]}
+            'input_manifest': manifest, 'artifacts': [item.model_dump(mode='json') for item in artifacts],
+            'artifacts_truncated': len(artifacts) >= self.worker.config.max_artifact_files}
         return result
 
     async def list_files(self, call) -> dict:
@@ -103,26 +108,30 @@ class WorkspaceService:
         path = self.worker.file_path(scope.workspace_id, request.path)
         if path.is_symlink() or not path.is_file():
             raise ValueError('工作空间文件不存在或不是普通文件')
-        size = path.stat().st_size
+        size = self.worker.stat_file(FileRequest(workspace_id=scope.workspace_id, path=request.path)).st_size
         if size > self.worker.config.max_artifact_bytes:
             raise ValueError('产物超过配置的字节上限')
         artifact = WorkspaceArtifact(path=request.path, size_bytes=size,
             media_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream')
         attachments = []
+        media_status = 'not_applicable'
         if artifact.media_type.startswith('image/'):
             try:
                 asset_id = await call.save_image(self.worker.read_bytes(
                     FileRequest(workspace_id=scope.workspace_id, path=request.path)),
                     f'工作空间图片产物：{request.path}')
-                artifact = artifact.model_copy(update={'result_id': asset_id})
+                artifact = artifact.model_copy(update={'asset_id': asset_id})
                 attachments.append(asset_id)
-            except (ValueError, OSError):
-                # The panel download remains available when the image is not a
-                # supported media asset for the normal send pipeline.
-                pass
+                media_status = 'registered'
+            except (ValueError, OSError) as error:
+                return {'status': 'partial', 'scene_id': scope.scene_id, 'job_id': scope.job_id,
+                    'artifact': artifact.model_dump(mode='json'), 'attachments': [],
+                    'media_status': 'registration_failed', 'media_error': str(error),
+                    'note': '文件仍可由授权面板下载；图片未登记为可发送媒体。'}
         return {'scene_id': scope.scene_id, 'job_id': scope.job_id,
             'artifact': artifact.model_dump(mode='json'),
             'attachments': attachments,
+            'media_status': media_status,
             'note': '普通文件保留在当前工作目录，由授权工作面板按工作归属读取；本工具不自动发送。'}
 
     async def read_for_job(self, scene_id: str, job_id: str, path: str, offset: int, limit: int) -> dict | None:
@@ -160,5 +169,7 @@ class WorkspaceService:
         if job is None or not job.get('requester_qq_uid'):
             return None
         scope = WorkspaceScope(scene_id=scene_id, requester_qq_uid=job['requester_qq_uid'], job_id=job_id)
+        artifacts = self._artifacts(scope)
         return {'scene_id': scene_id, 'job_id': job_id,
-            'artifacts': [item.model_dump(mode='json') for item in self._artifacts(scope)]}
+            'artifacts': [item.model_dump(mode='json') for item in artifacts],
+            'truncated': len(artifacts) >= self.worker.config.max_artifact_files}

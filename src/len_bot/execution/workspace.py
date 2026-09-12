@@ -10,7 +10,9 @@ import codecs
 import os
 import re
 import signal
+import stat
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -25,7 +27,7 @@ class WorkspaceConfig(BaseModel):
     max_output_chars: int = Field(default=12000, ge=100, le=100000)
     max_artifact_bytes: int = Field(default=20_000_000, ge=1, le=500_000_000)
     max_artifact_files: int = Field(default=1000, ge=1, le=10000)
-    container_user: str = '65532:65532'
+    container_user: str = Field(default_factory=lambda: f'{os.getuid()}:{os.getgid()}')
     memory: str = "512m"
     cpus: str = "1.0"
 
@@ -34,6 +36,13 @@ class WorkspaceConfig(BaseModel):
     def container_runtime_only(cls, value: str) -> str:
         if Path(value).name not in {"docker", "podman"}:
             raise ValueError("runtime_path must point to docker or podman")
+        return value
+
+    @field_validator("container_user")
+    @classmethod
+    def valid_container_user(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+:[0-9]+", value):
+            raise ValueError("container_user must be UID:GID")
         return value
 
 
@@ -117,6 +126,34 @@ class WorkspaceWorker:
             raise ValueError("file path escapes workspace")
         return path
 
+    @contextmanager
+    def open_file(self, workspace_id: str, relative: str):
+        """Open a workspace file by directory descriptors without following links."""
+        if not _SAFE_PATH.fullmatch(relative) or relative in {'.', '..'}:
+            raise ValueError('path must be a relative workspace path')
+        directory = self.directory(workspace_id)
+        parts = Path(relative).parts
+        root_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fds = [root_fd]
+        try:
+            parent_fd = root_fd
+            for part in parts[:-1]:
+                child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                fds.append(child_fd)
+                parent_fd = child_fd
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            fds.append(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError('workspace file is not a regular file')
+            yield fd, info
+        finally:
+            for fd in reversed(fds):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
     async def run_python(self, request: RunPythonRequest) -> dict:
         async with self.run_lock(request.workspace_id):
             return await self._run_python_locked(request)
@@ -135,6 +172,7 @@ class WorkspaceWorker:
                    "-v", f"{control}:/lenbot-control:ro", "-w", "/workspace", self.config.image,
                    "python", "/lenbot-control/task.py"]
         process = None
+        termination = None
         try:
             process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, start_new_session=True)
@@ -148,12 +186,12 @@ class WorkspaceWorker:
                     usage_bytes, usage_files = self._usage(directory)
                     if usage_bytes > self.config.max_artifact_bytes or usage_files > self.config.max_artifact_files:
                         exceeded = True
-                        await self._terminate(container_name, process)
+                        termination = await self._terminate(container_name, process)
                         break
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
                         timed_out = True
-                        await self._terminate(container_name, process)
+                        termination = await self._terminate(container_name, process)
                         break
                     try:
                         await asyncio.wait_for(process.wait(), min(remaining, 0.25))
@@ -166,6 +204,9 @@ class WorkspaceWorker:
             await process.wait()
             stdout, stdout_truncated = await stdout_task
             stderr, stderr_truncated = await stderr_task
+            final_bytes, final_files = self._usage(directory)
+            if final_bytes > self.config.max_artifact_bytes or final_files > self.config.max_artifact_files:
+                exceeded = True
         except FileNotFoundError:
             return {"status": "unsupported", "error": "configured container runtime is unavailable"}
         result_status = "error" if timed_out or exceeded or process.returncode else "ok"
@@ -173,7 +214,9 @@ class WorkspaceWorker:
         return {"status": result_status, "returncode": process.returncode,
                 "stdout": stdout, "stderr": stderr,
                 "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated,
-                "workspace_id": request.workspace_id, **({"error": error} if error else {})}
+                "workspace_id": request.workspace_id,
+                **({"error": error} if error else {}),
+                **({"termination": termination} if termination else {})}
 
     async def _read_limited(self, stream):
         chunks: list[bytes] = []
@@ -206,15 +249,18 @@ class WorkspaceWorker:
                     pass
         return total, count
 
-    async def _terminate(self, container_name: str, process) -> None:
+    async def _terminate(self, container_name: str, process) -> dict:
         if process is None:
-            return
+            return {'status': 'unconfirmed', 'detail': 'worker process was not created'}
+        details = []
         try:
             killer = await asyncio.create_subprocess_exec(self.config.runtime_path, "kill", container_name,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await asyncio.wait_for(killer.wait(), timeout=5)
-        except (OSError, asyncio.TimeoutError):
-            pass
+            if killer.returncode != 0:
+                details.append((await killer.stderr.read()).decode('utf-8', 'replace')[-1000:])
+        except (OSError, asyncio.TimeoutError) as error:
+            details.append(str(error))
         if process.returncode is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -223,13 +269,32 @@ class WorkspaceWorker:
         try:
             await asyncio.wait_for(process.wait(), timeout=5)
         except asyncio.TimeoutError:
-            pass
+            details.append('docker client did not exit after termination')
+        status = 'unconfirmed'
+        try:
+            inspector = await asyncio.create_subprocess_exec(self.config.runtime_path, "inspect", "--format", "{{.State.Running}}", container_name,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(inspector.wait(), timeout=5)
+            if inspector.returncode != 0:
+                error_text = (await inspector.stderr.read()).decode('utf-8', 'replace')[-1000:]
+                if 'no such object' in error_text.lower() or 'not found' in error_text.lower():
+                    status = 'confirmed_absent'
+                else:
+                    details.append(error_text)
+            elif (await inspector.stdout.read()).decode('utf-8', 'replace').strip().lower() == 'false':
+                status = 'confirmed_stopped'
+        except (OSError, asyncio.TimeoutError) as error:
+            details.append(str(error))
         try:
             remover = await asyncio.create_subprocess_exec(self.config.runtime_path, "rm", "-f", container_name,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await asyncio.wait_for(remover.wait(), timeout=5)
-        except (OSError, asyncio.TimeoutError):
-            pass
+            if remover.returncode != 0:
+                details.append((await remover.stderr.read()).decode('utf-8', 'replace')[-1000:])
+                status = 'unconfirmed'
+        except (OSError, asyncio.TimeoutError) as error:
+            details.append(str(error))
+        return {'status': status, 'detail': '; '.join(item for item in details if item)[:2000]}
 
     def list_files(self, request: WorkspaceRequest) -> dict:
         directory = self.directory(request.workspace_id)
@@ -244,27 +309,32 @@ class WorkspaceWorker:
                 "content": data, "truncated": next_offset is not None}
 
     def read_bytes(self, request: FileRequest, limit: int | None = None) -> bytes:
-        path = self.file_path(request.workspace_id, request.path)
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("workspace file does not exist")
         maximum = self.config.max_artifact_bytes if limit is None else min(limit, self.config.max_artifact_bytes)
-        with path.open("rb") as stream:
-            data = stream.read(maximum + 1)
+        with self.open_file(request.workspace_id, request.path) as (fd, _info):
+            chunks, total = [], 0
+            while total <= maximum:
+                chunk = os.read(fd, min(8192, maximum + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            data = b''.join(chunks)
         if len(data) > maximum:
             raise ValueError("产物超过配置的字节上限")
         return data
 
+    def stat_file(self, request: FileRequest):
+        with self.open_file(request.workspace_id, request.path) as (_fd, info):
+            return info
+
     def read_text_range(self, request: FileRequest, offset: int, limit: int) -> tuple[str, int | None]:
         if offset < 0 or limit < 1:
             raise ValueError("invalid text range")
-        path = self.file_path(request.workspace_id, request.path)
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("workspace file does not exist")
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         skip, collected = offset, []
-        with path.open("rb") as stream:
+        with self.open_file(request.workspace_id, request.path) as (fd, _info):
             while True:
-                chunk = stream.read(8192)
+                chunk = os.read(fd, 8192)
                 if not chunk:
                     text = decoder.decode(b"", final=True)
                     if skip < len(text):
