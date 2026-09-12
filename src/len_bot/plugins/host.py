@@ -3,6 +3,7 @@ import logging
 import json
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 import httpx
 from dataclasses import dataclass, replace
@@ -739,6 +740,9 @@ class PluginHost:
             self.record_plugin_run(ptool.plugin_id)
             bound_call = replace(call_context, origin=origin, plugin=self._plugin_contexts[ptool.plugin_id])
             task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call), name=f'tool:{tool_name}',scene_id=call_context.scene_id)
+            # wait_for only rewrites a CancelledError into TimeoutError when its
+            # own deadline expires; a cancellation raised by the handler itself
+            # keeps its identity, so the worker's termination stays readable.
             result = await asyncio.wait_for(
                 task,
                 timeout=ptool.timeout_seconds
@@ -763,10 +767,13 @@ class PluginHost:
                 sources=[ToolSource(url=error_source_url(str(error.request.url)))], stage='execution')
             result.evidence_kind='external'
         except WorkspaceCancelled as error:
-            result = ToolResult.failure(
-                f"Plugin tool '{tool_name}' was cancelled during workspace cleanup.",
-                'workspace_cancelled', stage='execution')
-            result.content = json.dumps({'termination': error.termination}, ensure_ascii=False)
+            # A real cancellation is not a tool failure.  Let the waiting task
+            # finish its own bounded cleanup and container termination, then keep
+            # propagating the cancellation so the agent loop stops instead of
+            # treating it as an ordinary failed tool result.
+            with suppress(asyncio.CancelledError):
+                await task
+            raise
         except asyncio.TimeoutError:
             result = ToolResult.failure(f"Plugin tool '{tool_name}' timed out after {ptool.timeout_seconds}s.", "timeout", stage='execution')
         except ValidationError as error:

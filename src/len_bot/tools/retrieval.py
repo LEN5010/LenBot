@@ -386,9 +386,21 @@ class RetrievalToolkit:
         media_files = []
         invocation = replace(self.call_context(), tool_call_id=tool_call_id, read_slot_owned=True)
         plugin_tool = bool(self.plugin_host and self.plugin_host.has_registered_tool(name))
+        cancelled: BaseException | None = None
         async with (nullcontext() if read_slot_owned else self._parallel):
             if plugin_tool:
-                result = await self.plugin_host.execute_tool(name, args, invocation)
+                try:
+                    result = await self.plugin_host.execute_tool(name, args, invocation)
+                except asyncio.CancelledError as error:
+                    # A worker cancellation is a real termination, not a tool
+                    # failure.  Keep it observable as a saved observation and
+                    # keep propagating it so the agent loop stops here.
+                    detail = getattr(error, 'termination', None)
+                    result = ToolResult.failure(
+                        f'工具 {name} 的执行被取消；终止身份见本观察。', 'workspace_cancelled', stage='execution')
+                    if detail:
+                        result.content = json.dumps({'termination': detail}, ensure_ascii=False)
+                    cancelled = error
             else:
                 try:
                     if name == 'read_web_media':
@@ -405,7 +417,10 @@ class RetrievalToolkit:
             self.external_attempted = True
         if not plugin_tool and result.evidence_kind == 'unknown':
             result.evidence_kind = 'retrieval'
-        return await self.store_observation(name,args,result,media_files=media_files,tool_call_id=tool_call_id)
+        page = await self.store_observation(name,args,result,media_files=media_files,tool_call_id=tool_call_id)
+        if cancelled is not None:
+            raise cancelled
+        return page
 
     async def error_observation(self,name,args,result,*,tool_call_id=None):
         """Persist a returned error once, using the same observation path as reads."""
