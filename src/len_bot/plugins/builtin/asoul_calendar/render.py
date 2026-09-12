@@ -15,21 +15,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .calendar import CalendarEvent, ScheduleResult
 from .config import CalendarConfig
+from len_bot.cards.components import card, header
+from len_bot.cards.layout import text_lines
+from len_bot.cards.tokens import THEME
 
 
 def wrap_lines(draw: ImageDraw.ImageDraw, text: str, font, width: int) -> list[str]:
-    lines = []
-    for paragraph in text.splitlines() or [""]:
-        current = ""
-        for character in paragraph:
-            candidate = current + character
-            if current and draw.textlength(candidate, font=font) > width:
-                lines.append(current)
-                current = character
-            else:
-                current = candidate
-        lines.append(current)
-    return lines
+    return text_lines(draw, text, font, width)
 
 
 class ScheduleRenderer:
@@ -86,32 +78,32 @@ class ScheduleRenderer:
         footer_lines = [line for paragraph in footer
                         for line in wrap_lines(measure, paragraph, fonts["footer"], width - inner * 2)]
         height += len(footer_lines) * unit(28) + unit(50)
-        image = Image.new("RGB", (width, height), "#f3ebdf")
+        image = Image.new("RGB", (width, height), THEME.canvas)
         draw = ImageDraw.Draw(image)
         draw.ellipse((unit(-120), unit(-80), unit(420), unit(300)), fill="#efd4c2")
         draw.ellipse((width - unit(320), unit(-40), width + unit(80), unit(280)), fill="#dce8df")
-        draw.rounded_rectangle((outer, outer, width - outer, height - outer), radius=unit(32), fill="#fffaf4")
-        draw.rounded_rectangle((outer, outer, width - outer, unit(238)), radius=unit(32), fill="#eee0cf")
-        draw.text((inner, unit(62)), "A-SOUL LIVE", font=fonts["meta"], fill="#c56d49")
-        draw.text((inner, unit(110)), title, font=fonts["title"], fill="#201a17")
-        draw.text((inner, unit(180)), f"{len(schedule.events)} 条源日程 · 已取消事项保留标注", font=fonts["meta"], fill="#74685f")
+        card(draw, (outer, outer, width - outer, height - outer), fill=THEME.card, outline=THEME.border, radius=unit(THEME.radius_outer), width=unit(2))
+        draw.rounded_rectangle((outer, outer, width - outer, unit(238)), radius=unit(THEME.radius_outer), fill=THEME.soft)
+        draw.text((inner, unit(62)), "A-SOUL LIVE", font=fonts["meta"], fill=THEME.accent_deep)
+        draw.text((inner, unit(110)), title, font=fonts["title"], fill=THEME.ink)
+        draw.text((inner, unit(180)), f"{len(schedule.events)} 条源日程 · 已取消事项保留标注", font=fonts["meta"], fill=THEME.muted)
         top = unit(260)
         for kind, item, row_height, details in rows:
             if kind == "day":
                 weekday = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")[item.weekday()]
-                draw.text((inner, top + unit(14)), f"{item:%m月%d日} {weekday}", font=fonts["day"], fill="#201a17")
+                draw.text((inner, top + unit(14)), f"{item:%m月%d日} {weekday}", font=fonts["day"], fill=THEME.ink)
             elif kind == "empty":
-                draw.text((inner + unit(22), top + unit(20)), item, font=fonts["meta"], fill="#74685f")
+                draw.text((inner + unit(22), top + unit(20)), item, font=fonts["meta"], fill=THEME.muted)
             else:
                 body, avatar = details
                 draw.rounded_rectangle((inner, top, width - inner, top + row_height), radius=unit(26),
-                    fill="#fffaf4", outline="#eadbc9", width=unit(2))
+                    fill=THEME.card, outline=THEME.border, width=unit(2))
                 draw.rounded_rectangle((inner + unit(18), top + unit(18), inner + time_width, top + row_height - unit(18)),
-                    radius=unit(24), fill="#f1e4d3")
+                    radius=unit(24), fill=THEME.soft)
                 moment = item.start_at.astimezone(zone)
                 time_text = "全天" if item.all_day else f"{moment:%H:%M}"
-                draw.text((inner + unit(32), top + unit(38)), time_text, font=fonts["time"], fill="#201a17")
-                draw.text((inner + unit(32), top + unit(82)), f"{moment:%m/%d}", font=fonts["footer"], fill="#74685f")
+                draw.text((inner + unit(32), top + unit(38)), time_text, font=fonts["time"], fill=THEME.ink)
+                draw.text((inner + unit(32), top + unit(82)), f"{moment:%m/%d}", font=fonts["footer"], fill=THEME.muted)
                 if item.end_at is None:
                     end_lines = ["未提供结束"]
                 else:
@@ -119,12 +111,12 @@ class ScheduleRenderer:
                     end_lines = [f"至 {ending:%H:%M}"] if ending.date() == moment.date() else [f"至 {ending:%m/%d}", f"{ending:%H:%M}"]
                 for index, line in enumerate(end_lines):
                     draw.text((inner + unit(22), top + unit(111) + index * unit(24)), line,
-                        font=fonts["footer"], fill="#74685f")
+                        font=fonts["footer"], fill=THEME.muted)
                 left = inner + time_width + unit(36)
                 label = "已取消" if item.cancelled else item.host_signature or "源日程"
-                draw.text((left, top + unit(23)), label, font=fonts["meta"], fill="#b84d43" if item.cancelled else "#74685f")
+                draw.text((left, top + unit(23)), label, font=fonts["meta"], fill=THEME.accent_deep if item.cancelled else THEME.muted)
                 for index, line in enumerate(body):
-                    draw.text((left, top + unit(67) + index * unit(40)), line, font=fonts["body"], fill="#201a17")
+                    draw.text((left, top + unit(67) + index * unit(40)), line, font=fonts["body"], fill=THEME.ink)
                 if avatar:
                     with Image.open(self.resource_directory / avatar) as source:
                         picture = ImageOps.exif_transpose(source).convert("RGBA")
@@ -132,7 +124,7 @@ class ScheduleRenderer:
                         image.paste(picture, (width - inner - avatar_width - unit(14), top + unit(18)), picture)
             top += row_height + gap
         for line in footer_lines:
-            draw.text((inner, top + unit(12)), line, font=fonts["footer"], fill="#8c8178")
+            draw.text((inner, top + unit(12)), line, font=fonts["footer"], fill=THEME.muted)
             top += unit(28)
         output = io.BytesIO()
         image.save(output, format="PNG")

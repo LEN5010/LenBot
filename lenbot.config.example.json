@@ -169,6 +169,49 @@
         "context_tokens": 8000,
         "output_tokens": 1000
       }
+    },
+    "gscore_adapter": {
+      "enabled": false,
+      "config": {
+        "ws_url": "ws://127.0.0.1:8765/",
+        "access_token": "",
+        "core_bot_id": "LenBot",
+        "platform_bot_id": "onebot",
+        "bot_self_id": "请替换为 Core 使用的 Bot ID",
+        "token_query_parameter": "token",
+        "connect_timeout_seconds": 10.0,
+        "reconnect_seconds": 5.0,
+        "command_timeout_seconds": 20.0,
+        "command_prefix": "/gs"
+      }
+    },
+    "browser_agent": {
+      "enabled": false,
+      "config": {
+        "browser": {
+          "allowed_hosts": [],
+          "headless": true,
+          "timeout_seconds": 20.0,
+          "max_text_chars": 12000,
+          "allow_interactions": false
+        }
+      }
+    },
+    "workspace": {
+      "enabled": false,
+      "config": {
+        "worker": {
+          "runtime_path": "/usr/bin/docker",
+          "image": "python:3.13-slim",
+          "root_directory": "",
+          "timeout_seconds": 30.0,
+          "max_output_chars": 12000,
+          "max_artifact_bytes": 20000000,
+          "container_user": "65532:65532",
+          "memory": "512m",
+          "cpus": "1.0"
+        }
+      }
     }
   },
   "plugin_directories": [

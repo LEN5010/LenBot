@@ -119,6 +119,28 @@ async def job_detail(job_id: str, request: Request, scene_id: str | None = None,
     return result
 
 
+@router.get("/jobs/{job_id}/workspace-artifact")
+async def workspace_artifact(job_id: str, scene_id: str, path: str, request: Request,
+                             offset: int = Query(0, ge=0), limit: int = Query(12000, ge=1, le=100000),
+                             user: str = Depends(get_current_user)):
+    try:
+        result = await _service(request).workspace_artifact(scene_id, job_id, path, offset, limit)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    if result is None:
+        raise HTTPException(404, '未找到属于该工作的工作产物')
+    return result
+
+
+@router.get("/jobs/{job_id}/workspace-artifacts")
+async def workspace_artifacts(job_id: str, scene_id: str, request: Request,
+                              user: str = Depends(get_current_user)):
+    result = await _service(request).workspace_artifacts(scene_id, job_id)
+    if result is None:
+        raise HTTPException(404, '未找到属于该工作的工作目录')
+    return result
+
+
 
 
 class JobControlRequest(BaseModel):

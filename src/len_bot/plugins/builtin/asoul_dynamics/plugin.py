@@ -13,7 +13,7 @@ from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
 from .client import DynamicsClient, DynamicsLookupError, SourceSnapshot
 from .config import DynamicsConfig
-from .models import DetailRequest, FanartSearchRequest, LatestRequest, OnThisDayRequest, RandomFanartRequest, SearchRequest
+from .models import CardRequest, DetailRequest, FanartCardRequest, FanartSearchRequest, LatestRequest, OnThisDayRequest, RandomFanartRequest, SearchRequest
 
 if TYPE_CHECKING:
     from len_bot.config_store import MemberSettings, TimeSettings
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 class AsoulDynamicsPlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
+        self.context = context
         self.config: DynamicsConfig = context.config
         self.zone = ZoneInfo(context.time_settings.timezone)
         self.member_keywords = tuple(value for member in context.members for value in (member.name, *member.aliases))
@@ -35,6 +36,10 @@ class AsoulDynamicsPlugin(BasePlugin):
              "按关键词检索成员历史动态，用户要求搜历史动态或回找曾发过的内容时使用。群消息和网页索引不能代替这个源。query/member/cursor/dynamic_type为null时不加对应筛选，sort/limit为null时使用配置。先读完本次正文，再复制source_next_call取得下一批。未知成员失败，不改查全员。"),
             ("read_asoul_dynamic", DetailRequest, self.read_dynamic, True,
              "读取已取得且尚新鲜的源动态记录。没有详情接口；范围保持为源查询提供的内容，不能视作平台原动态全文或看过图片。"),
+            ("render_asoul_dynamic_card", CardRequest, self.render_card, True,
+             "把指定已保存查询资料 result_ref 中的 item_id 渲染为统一亮色卡片并登记图片；也兼容本进程已取得的 dynamic_id。不重新查询、不自动发送，也不表示已读取源图片像素。"),
+            ("render_asoul_fanart_card", FanartCardRequest, self.render_fanart_card, True,
+             "把指定已保存查询资料 result_ref 中的二创 item_id 渲染为统一亮色卡片并登记图片；仅使用来源字段，不把图片链接说成已读取像素。"),
             ("get_asoul_on_this_day", OnThisDayRequest, self.on_this_day, True,
              "查询源站历史同日内容；month_day为MM-DD，null使用已配置业务时区的今天；limit=null使用配置页量。不自动播报。"),
             ("search_asoul_fanart", FanartSearchRequest, self.search_fanart, True,
@@ -46,6 +51,8 @@ class AsoulDynamicsPlugin(BasePlugin):
             "get_asoul_dynamics": ("读取成员最近动态", ("最新动态", "最近动态"), ("动态", "最近", "最新", "近况")),
             "search_asoul_dynamics": ("按关键词检索成员历史动态", ("历史动态", "搜索动态", "查找动态", "动态关键词"), ("动态", "历史", "检索", "搜索", "关键词", "以前发过")),
             "read_asoul_dynamic": ("回读已取得的动态记录", ("动态详情", "读动态"), ("动态", "详情", "记录", "原文")),
+            "render_asoul_dynamic_card": ("渲染一条动态卡片", ("动态卡片", "做动态卡片"), ("动态", "卡片", "图片")),
+            "render_asoul_fanart_card": ("渲染一条二创卡片", ("二创卡片", "做二创卡片"), ("二创", "同人", "卡片", "图片")),
             "get_asoul_on_this_day": ("查询历史同日动态", ("历史上的今天", "历史同日", "那年今日"), ("往年", "同日", "今天", "历史", "回顾")),
             "search_asoul_fanart": ("按标签查找二创作品", ("二创", "同人图", "查找二创"), ("二创", "同人", "图片", "作品", "标签", "找一张", "发来")),
             "get_random_asoul_fanart": ("随机读取一条二创作品", ("随机二创", "来张二创", "随机同人图"), ("随机", "二创", "同人", "图片", "抽一张", "来一张", "发来")),
@@ -112,6 +119,71 @@ class AsoulDynamicsPlugin(BasePlugin):
         except DynamicsLookupError as error:
             return ToolResult.failure(str(error), error.code)
         return self._result(snapshot, cached=True, coverage="retrieved_source_record")
+
+    async def render_card(self, request: CardRequest, call_context: PluginCallContext) -> ToolResult:
+        try:
+            snapshot = await self._card_snapshot(request.result_ref, request.item_id, request.dynamic_id, call_context)
+            from .render import render_dynamic_card
+            from pathlib import Path
+            import asyncio
+            font = Path(self.context.directory).parent / "asoul_calendar" / "resources" / "font.ttf"
+            if not font.is_file():
+                font = Path(self.context.directory) / "resources" / "font.ttf"
+            png = await asyncio.to_thread(render_dynamic_card, snapshot.data, font)
+            asset_id = await call_context.save_image(png, "A-SOUL 动态亮色卡片")
+        except DynamicsLookupError as error:
+            return ToolResult.failure(str(error), error.code)
+        except (OSError, ValueError) as error:
+            return ToolResult.failure(str(error), "card_render_failed", stage="presentation")
+        return ToolResult(status="ok", coverage="rendered_source_dynamic_card", evidence_kind="external",
+            attachments=[asset_id], content=json.dumps({"dynamic_id": request.item_id or request.dynamic_id,
+                "asset_id": asset_id, "source_url": snapshot.data.get("url"),
+                "theme_version": "light-v1", "pixels_loaded": False,
+                "note": "卡片由已取得的源字段确定性渲染；未读取源图片像素。"}, ensure_ascii=False),
+            sources=[ToolSource(url=snapshot.data.get("url") or snapshot.data.get("sourceDynamicUrl", ""), title="A-SOUL 动态查询站")],
+            fetched_at=snapshot.fetched_at, cached=True)
+
+    async def render_fanart_card(self, request: FanartCardRequest, call_context: PluginCallContext) -> ToolResult:
+        try:
+            snapshot = await self._card_snapshot(request.result_ref, request.item_id, request.source_dynamic_id, call_context)
+            from .render import render_dynamic_card
+            from pathlib import Path
+            import asyncio
+            font = Path(self.context.directory).parent / "asoul_calendar" / "resources" / "font.ttf"
+            if not font.is_file():
+                font = Path(self.context.directory) / "resources" / "font.ttf"
+            png = await asyncio.to_thread(render_dynamic_card, snapshot.data, font, kind="二创来源")
+            asset_id = await call_context.save_image(png, "A-SOUL 二创亮色卡片")
+        except DynamicsLookupError as error:
+            return ToolResult.failure(str(error), error.code)
+        except (OSError, ValueError) as error:
+            return ToolResult.failure(str(error), "card_render_failed", stage="presentation")
+        return ToolResult(status="ok", coverage="rendered_source_fanart_card", evidence_kind="external",
+            attachments=[asset_id], content=json.dumps({"source_dynamic_id": request.item_id or request.source_dynamic_id,
+                "asset_id": asset_id, "theme_version": "light-v1", "pixels_loaded": False}, ensure_ascii=False),
+            sources=[ToolSource(url=snapshot.data.get("url") or snapshot.data.get("sourceDynamicUrl", ""), title="A-SOUL 二创来源")],
+            fetched_at=snapshot.fetched_at, cached=True)
+
+    async def _card_snapshot(self, result_ref, item_id, obtained_id, call_context):
+        if result_ref:
+            observation = await call_context.plugin.event_store.read_tool_observation(result_ref, [call_context.scene_id])
+            if observation is None:
+                raise DynamicsLookupError('卡片资料不属于当前场景或已不存在。', 'invalid_result_ref')
+            try:
+                payload = json.loads(observation.content)
+            except json.JSONDecodeError as error:
+                raise DynamicsLookupError('卡片资料不是有效的动态查询结果。', 'invalid_result_ref') from error
+            data = payload.get('data', payload)
+            items = data.get('items') if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                items = [data] if isinstance(data, dict) else []
+            record = next((item for item in items if isinstance(item, dict) and
+                           (item.get('dynamicId') == item_id or item.get('sourceDynamicId') == item_id)), None)
+            if record is None:
+                raise DynamicsLookupError('卡片 item_id 不在指定的已保存查询资料中。', 'item_not_in_result')
+            url = observation.sources[0].url if observation.sources else ''
+            return SourceSnapshot(record, observation.fetched_at, observation.fetched_at, url)
+        return self.client.read_obtained_dynamic(obtained_id)
 
     async def on_this_day(self, request: OnThisDayRequest, call_context: PluginCallContext) -> ToolResult:
         month_day = request.month_day
