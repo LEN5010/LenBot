@@ -8,7 +8,19 @@
 
 本次实际执行的静态核对：`git diff --check` 与 `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）。未运行测试、容器、浏览器、模型或 QQ。
 
-下一阶段入口：先确认计划第 2 章 D01—D12 推荐裁决，再根据计划第 13 章补齐 Linux VPS、OneBot 文件协议、B 站专用账号、音频转写和可选 Core 的部署信息。未确认项不阻塞不依赖它们的聊天与既有业务，也不能先写入生产配置或验收结论。
+## 2026-09-13 首批 C00—C05 实施
+
+在分支 `social-agent-m0-foundation` 上按计划第 8.2 节完成首批五个提交（实际顺序 C01、C03、C02、C05、C04），并在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md) 逐阶段记录设计判断、实际改动、未做的事、静态核对与未确认项，末尾按计划第 10.3 节模板给出首批验收记录。
+
+- C01 `99be439` 取消与终止结果保留：取消不再被降级为普通 `ToolResult`，workspace 外层期限严格大于内层并覆盖清理窗口，清理子进程有统一上限，终止身份额外保留。
+- C03 `98227ff` 日历来源失败状态卡：来源失败与“本日 0 条”分开，失败在同一个 handler 内渲染并提交明确状态卡。
+- C02 `3b60fbc` 维护读取容量：`query_memory` 支持模型给出的 `limit`/`kind`/`offset`，返回结构化分页与 `next_offset`。
+- C05 `7564df9` 可委托能力摘要：能力事实补充 `delegable_purposes` 与“用 `start_work` 委托”的说明，不暴露 work schema、不新增配置。
+- C04 `70c9720` 话题与对象感知的参与：`input_status` 带上既有注意力判定（`reasons`/`certain`），系统提示区分明确接近与弱机会并补现实事实边界。
+
+验收状态：五个提交均为**实现完成 / 未运行**；没有新增表、列或配置字段，不需要离线转换或停机迁移。本批只执行了 `git diff --check` 与 `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0），未启动服务、容器、浏览器、Core、模型或 OneBot，未真实发送。计划第 10.2 节矩阵中与本批相关的 A01、A02、A04、A05、A08 仍待真实业务核对。
+
+下一阶段入口：先确认计划第 2 章 D01—D12 推荐裁决，再根据计划第 13 章补齐 Linux VPS、OneBot 文件协议、B 站专用账号、音频转写和可选 Core 的部署信息；D04/D06/D09 的具体取值直接决定 C06/C07 的字段与判定，开始 C06 前需要明确。未确认项不阻塞不依赖它们的能力编写，也不能先写入生产配置或验收结论。
 
 ---
 
