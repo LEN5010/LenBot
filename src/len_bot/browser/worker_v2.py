@@ -61,7 +61,10 @@ class BrowserWorkerV2:
         parsed = urlsplit(url)
         port = parsed.port or (443 if parsed.scheme == 'https' else 80)
         loop = asyncio.get_running_loop()
-        infos = await loop.run_in_executor(None, socket.getaddrinfo, parsed.hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        try:
+            infos = await loop.run_in_executor(None, socket.getaddrinfo, parsed.hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except OSError as error:
+            raise ValueError('browser host DNS resolution failed') from error
         if not infos or any(not self._address_allowed(item[4][0]) for item in infos):
             raise ValueError('browser host resolves to a private or otherwise blocked address')
 
@@ -83,13 +86,13 @@ class BrowserWorkerV2:
             if self._browser is None:
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.chromium.launch(headless=self.config.headless)
-            context = await self._browser.new_context()
+            context = await self._browser.new_context(service_workers='block')
             await context.route('**/*', self._route)
             page = await context.new_page()
             handle = _Page(scope_key=scope_key, page=page)
             try:
                 await page.goto(url, wait_until='domcontentloaded', timeout=int(self.config.timeout_seconds * 1000))
-            except Exception:
+            except BaseException:
                 await context.close()
                 raise
             return handle

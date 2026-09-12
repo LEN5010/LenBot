@@ -470,6 +470,10 @@ class PluginHost:
         service = self._workspace_service_for_panel()
         return await service.list_for_job(scene_id, job_id) if service else None
 
+    async def read_workspace_artifact_bytes(self, scene_id: str, job_id: str, path: str):
+        service = self._workspace_service_for_panel()
+        return await service.read_bytes_for_job(scene_id, job_id, path) if service else None
+
     async def close_job_resources(self, job: dict):
         for plugin in tuple(self._plugins.values()):
             closer = getattr(plugin, 'close_job', None)

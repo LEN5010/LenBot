@@ -665,7 +665,7 @@ class RetrievalToolkit:
                 return {'ref':ref,**item}
             if name == 'search_history_summaries':
                 item['batch_id'] = item.pop('id')
-                item['result_ref'] = shown.result_id
+                item['result_id'] = shown.result_id
                 item['key_events'] = [refs.register_event_locator(event_id) for event_id in item.pop('key_event_ids', [])]
                 item['locator_only'] = True
                 return item
