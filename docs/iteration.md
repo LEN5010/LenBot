@@ -102,3 +102,4 @@ A 的实群验收此前明确跳过；不能将旧失败或缺少观察改为通
 2026-09-12 配置准备：按用户要求保持 `gscore_adapter` 未加入根配置；根配置与样例已加入 workspace/browser_agent 的安全默认参数并保持全局及两群停用。浏览器白名单设为 `*` 时仅允许任意公网主机，私网/回环等地址仍由 worker 拦截；Docker 镜像拉取因当前 Docker socket 权限不足且命令被中止，未改变运行环境。浏览器隔离和 Playwright 依赖未完成前不启用 browser_agent。
 
 2026-09-12 测试环境准备：Docker Desktop 已拉取 `python:3.13-slim` 并构建本地 `lenbot-workspace:py313` 镜像，预装 NumPy、Pandas、Matplotlib、Pillow 和 Noto CJK 字体；宿主 uv 环境安装 Playwright 1.62.0 并取得 Chromium。实际根配置已将 workspace 全局及两群启用，使用 `/opt/homebrew/bin/docker`、镜像 `lenbot-workspace:py313` 和本机非 root UID/GID `501:20`；browser_agent 仍全局及两群停用，GSUID Core 未配置。尚未启动 LenBot 或进行真实群聊发送。
+2026-09-12 浏览器功能测试批准：运营者明确批准同进程浏览器的任意公网主机功能测试；实际根配置已启用 browser_agent 全局及两群，GSUID Core 仍未配置。该启用不代表 OS/网络隔离验收通过，未启动 LenBot、未访问网页、未发送 QQ。
