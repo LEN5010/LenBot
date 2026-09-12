@@ -69,6 +69,25 @@ class WorkspaceCancelled(asyncio.CancelledError):
         self.termination = termination
 
 
+# Cleanup runs after the execution deadline is already spent: it gets its own
+# bounded budget and never becomes an unbounded second wait.
+CLEANUP_TIMEOUT_SECONDS = 5.0
+
+# A cancellation notice can be converted by an outer ``wait_for`` while it
+# travels back to the work loop.  Parking the terminal identity here keeps it
+# readable after the fact instead of losing it inside an exception rewrite.
+TERMINATION_PARKS: dict[str, dict] = {}
+
+
+def park_termination(workspace_id: str, termination: dict | None) -> None:
+    if termination:
+        TERMINATION_PARKS[workspace_id] = termination
+
+
+def parked_termination(workspace_id: str) -> dict | None:
+    return TERMINATION_PARKS.get(workspace_id)
+
+
 def _validate_relative_path(relative: str) -> None:
     """Accept ordinary Unicode filenames while keeping descriptor traversal bounded."""
     if not isinstance(relative, str) or not relative or "\x00" in relative:
@@ -113,6 +132,7 @@ class WorkspaceWorker:
             raise ValueError('工作空间上次终止未确认，已停止复用；请先由运营者核对并清理该工作')
 
     def _record_termination(self, workspace_id: str, termination: dict | None) -> None:
+        park_termination(workspace_id, termination)
         if termination and termination.get('status') == 'unconfirmed':
             self._write_control(self.control_directory(workspace_id) / '.termination_unconfirmed', str(termination))
 
@@ -277,53 +297,89 @@ class WorkspaceWorker:
                     pass
         return total, count
 
+    async def _run_cleanup(self, *argv: str) -> tuple[int | None, str]:
+        """Run one bounded cleanup command and always reap its own client process."""
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, start_new_session=True)
+        except OSError as error:
+            return None, str(error)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=CLEANUP_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self._reap_client(process)
+            await self._collect(process)
+            return None, 'cleanup client did not exit'
+        return process.returncode, await self._cleanup_output(process)
+
+    @staticmethod
+    async def _cleanup_output(process) -> str:
+        """Read a finished cleanup client's streams; inspect needs its stdout."""
+        parts = []
+        for stream in (process.stdout, process.stderr):
+            if stream is None:
+                continue
+            try:
+                parts.append((await stream.read()).decode('utf-8', 'replace'))
+            except OSError:
+                pass
+        return ('\n'.join(part for part in parts if part))[-1000:]
+
+    @staticmethod
+    def _reap_client(process) -> None:
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    @staticmethod
+    async def _collect(process) -> None:
+        """Reap a client process; its output tasks still read the pipes to EOF."""
+        try:
+            await asyncio.shield(asyncio.wait_for(process.wait(), timeout=CLEANUP_TIMEOUT_SECONDS))
+        except (asyncio.TimeoutError, asyncio.CancelledError, OSError):
+            pass
+
     async def _terminate(self, container_name: str, process) -> dict:
         if process is None:
             return {'status': 'unconfirmed', 'detail': 'worker process was not created'}
         details = []
-        try:
-            killer = await asyncio.create_subprocess_exec(self.config.runtime_path, "kill", container_name,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(killer.wait(), timeout=5)
-            if killer.returncode != 0:
-                details.append((await killer.stderr.read()).decode('utf-8', 'replace')[-1000:])
-        except (OSError, asyncio.TimeoutError) as error:
-            details.append(str(error))
-        if process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            details.append('docker client did not exit after termination')
+        deadline = asyncio.get_running_loop().time() + CLEANUP_TIMEOUT_SECONDS
+        code, output = await self._run_cleanup(self.config.runtime_path, "kill", container_name)
+        if code is None:
+            details.append(output or 'container kill did not confirm')
+        elif code != 0:
+            details.append(output)
+        self._reap_client(process)
+        await self._collect(process)
         status = 'unconfirmed'
-        try:
-            remover = await asyncio.create_subprocess_exec(self.config.runtime_path, "rm", "-f", container_name,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(remover.wait(), timeout=5)
-            if remover.returncode != 0:
-                details.append((await remover.stderr.read()).decode('utf-8', 'replace')[-1000:])
-        except (OSError, asyncio.TimeoutError) as error:
-            details.append(str(error))
+        if asyncio.get_running_loop().time() < deadline:
+            code, output = await self._run_cleanup(self.config.runtime_path, "rm", "-f", container_name)
+            if code is None:
+                details.append(output or 'container removal did not confirm')
+            elif code != 0:
+                details.append(output)
+        else:
+            details.append('cleanup budget exhausted before container removal')
         # Inspect after rm: --rm and a successful explicit removal both make
         # an absent container a confirmed terminal state.  Never infer safety
         # from rm alone when the final inspection cannot establish it.
-        try:
-            inspector = await asyncio.create_subprocess_exec(self.config.runtime_path, "inspect", "--format", "{{.State.Running}}", container_name,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(inspector.wait(), timeout=5)
-            if inspector.returncode != 0:
-                error_text = (await inspector.stderr.read()).decode('utf-8', 'replace')[-1000:]
-                if 'no such object' in error_text.lower() or 'not found' in error_text.lower():
+        if asyncio.get_running_loop().time() < deadline:
+            code, output = await self._run_cleanup(self.config.runtime_path, "inspect", "--format", "{{.State.Running}}",
+                container_name)
+            if code is None:
+                details.append(output or 'container state could not be inspected')
+            elif code != 0:
+                if 'no such object' in output.lower() or 'not found' in output.lower():
                     status = 'confirmed_absent'
                 else:
-                    details.append(error_text)
-            elif (await inspector.stdout.read()).decode('utf-8', 'replace').strip().lower() == 'false':
+                    details.append(output)
+            elif output.strip().lower() == 'false':
                 status = 'confirmed_stopped'
-        except (OSError, asyncio.TimeoutError) as error:
-            details.append(str(error))
+        else:
+            details.append('cleanup budget exhausted before container inspection')
         return {'container_name': container_name, 'status': status,
                 'detail': '; '.join(item for item in details if item)[:2000]}
 
