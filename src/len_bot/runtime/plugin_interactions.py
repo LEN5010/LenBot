@@ -14,7 +14,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome
 from len_bot.cognition.jobs import JobResult
-from len_bot.cognition.budget import AgentBudget
+from len_bot.cognition.budget import AgentBudget, count_remaining, tightest
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.models import ConversationResume
 from len_bot.cognition.providers import ModelProfile
@@ -283,8 +283,6 @@ async def _respond_agent(runtime, call, request, *, resume=None, resume_event=No
         mailbox.messages_committed=resume.messages_committed
         mailbox.next_checkpoint=resume.next_checkpoint
         mailbox.handled_source_ids.update(resume.source_event_ids)
-        execution.budget=AgentBudget(resume.model_calls_limit,resume.tool_calls_limit,
-            resume.model_calls_used,resume.tool_calls_used)
     current=actor.session.model_copy(deep=True)
     current.pending_wakes=[wake for wake in current.pending_wakes if wake.event_id in ids]
     observed_cutoff=call.cutoff_rowid
@@ -342,6 +340,16 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
                 {'plugin_id':call.origin.plugin_id,'source_event_id':call.source_event_id},observed)).result
         result_ids.append(observed.result_id)
     request=request.model_copy(update={'result_ids':tuple(result_ids)})
+    # A dedicated Agent borrows its parent's account.  When the parent has no
+    # account of its own — a handler invoked outside a loop — this Agent's own
+    # request is all the allowance there is, so it must name at least one
+    # counted dimension: with neither count and nothing to borrow, the run
+    # would have no stopping condition of its own.  Inside a parent account an
+    # unlimited dimension is fine, because that account's deadline, token
+    # allowance and counts still stop the run.
+    if parent.budget is None and request.max_steps is None and request.max_tool_calls is None:
+        raise ValueError('Plugin Agent invoked outside a loop needs a model-call or tool-call limit; '
+                         'without a borrowed account there is no stopping condition')
     parent.budget=parent.budget or AgentBudget(request.max_steps,request.max_tool_calls)
     async with parent.agent_lock:
         async with _model_slot(runtime,parent):
@@ -484,9 +492,19 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         return context.model_messages(trajectory)
 
     state=await execution.budget.state()
+    # One model call is held back when this Agent runs inside a tool call: the
+    # parent still has to submit the terminal for that same call after the
+    # child returns.  Either dimension may be unlimited; `tightest` takes the
+    # smallest bound that actually exists and reports None when none does, so
+    # an unlimited count never becomes a subtraction against `None`.  When no
+    # bound exists at all, this Agent's own account is what refuses — the same
+    # deadline and token allowance that stop its parent.
     reserve=1 if parent.model_slot_owned and call.tool_call_id is not None else 0
-    steps=min(request.max_steps,state['model_calls_limit']-state['model_calls_used']-reserve)
-    if steps<1:raise ValueError('Parent budget has no model call available for this plugin Agent')
+    steps=tightest(request.max_steps, count_remaining(state.get('model_calls_limit'),state['model_calls_used']))
+    if steps is not None:
+        steps=max(0, steps-reserve)
+    if steps is not None and steps<1:
+        raise ValueError('Parent budget has no model call available for this plugin Agent')
     context.tool_definitions=lambda:[*definitions(),terminal() if callable(terminal) else terminal]
     if request.input_mode=='conversation' or nested_respond:
         prepared=messages[1:]

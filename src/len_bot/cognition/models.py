@@ -30,13 +30,15 @@ class ConversationResume(BaseModel):
     episode_id: str
     runtime_started_at: float
     model_profile: ModelProfile
-    model_calls_limit: int = Field(ge=1)
-    tool_calls_limit: int = Field(ge=0)
+    model_calls_limit: int | None = Field(default=None, ge=1)
+    tool_calls_limit: int | None = Field(default=None, ge=0)
     model_calls_used: int = Field(ge=0)
     tool_calls_used: int = Field(ge=0)
     context_tokens: int = Field(ge=1)
     output_tokens: int = Field(ge=1)
     elapsed_seconds: float = Field(ge=0)
+    elapsed_seconds_limit: float | None = Field(default=None, gt=0,
+        description='本轮对话自首次模型调用起的绝对期限（秒）；恢复不重置')
     messages_committed: int = Field(ge=0,le=3)
     next_checkpoint: int = Field(ge=0)
     next_proposal_handle: int = Field(ge=1)

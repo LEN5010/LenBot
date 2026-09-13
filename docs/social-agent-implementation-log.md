@@ -17,6 +17,9 @@
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 实现完成 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 实现完成 | 未运行 |
 | C06 `feat(auth): add typed initiators and capability grants` | C00 | 实现完成 | 未运行 |
+| C07 `feat(budget): reserve and settle shared usage atomically` | C06 | 实现完成 | 未运行 |
+| C08 `feat(agent): enforce resource budgets across native loops` | C07 | 实现完成 | 未运行 |
+| C09 `feat(jobs): preserve revisions and budget ownership on resume` | C08 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
@@ -346,7 +349,286 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 
 ---
 
-# 首批（C00—C05）验收记录
+## C07 共享用量原子预占与结算
+
+### 设计判断
+
+计划 M05 的额度模型有三条互不替代的要求：创建期一次性预占（D06：每日额度只在创建时检查会超发）、调用期可区分真实 usage 与本地估算、以及子调用归同一账。C07 落前两条的全部与第三条的收集，**执行期逐次扣减不属于本提交**（计划 C08）。
+
+| 计划要求 | 当前实现（C07 之前） | 本提交的做法 |
+|---|---|---|
+| 创建时原子预占，并发不重复用同一余额 | 无任何额度概念；只有 `RuntimeConfig` 的单次执行预算（步数/上下文/输出） | 新增 `usage_reservations`；预占写入 `apply_job_proposals_in_transaction`，它已经在 `commit_proposal_transaction` 的 `BEGIN IMMEDIATE` 写事务内，因此工作行与预占同生共死 |
+| 每次调用结算、按唯一 call_id 不重复扣除 | `model_calls` 已按 `call_id` 记录 `usage_json`/`estimate_json`，但没有汇总语义 | `settle_reservation_in_transaction` 按 `job_id` 汇总全部 `model_calls`，一次工作只写一行结论 |
+| 输入输出各计一次，缓存与推理不重复相加 | 无 | `measured_call_tokens()`：`prompt_tokens + completion_tokens` 即整笔计量，`cached_tokens`/`reasoning_tokens` 已含在内，不再二次相加 |
+| 供应商无 usage 时记录估算方法与保守预留，界面不得称为真实计费 | `estimate_json` 已存在，但没有任何路径说明“什么时候它是唯一的数字” | 无可用 usage 时记 `usage_tokens=0`、`estimated_tokens=本地输入估算 + 配置输出上限`；两列在库里分开，页面列名为“实际/本地估算” |
+| 用户额度按真实 UID 在账务时区一天内全局计算，跨群不重复 | 无 | 账务主体取 C06 的 `billing_subject`（`user:<真实UID>`/`system:<用途>`）；`ReservationPolicy.day_key(ts, timezone)` 用既有 `time.timezone` 计日；同一天同一账号跨场景只累加一次 |
+| 跨日归属按工作预占日固定 | 无 | `day_key` 在预占行上落库，结算只改该行状态，不重算日期 |
+| 策略数值只有一个可编辑来源 | 无 | 根配置新增 `resources.policies`；`CapabilityGrant.resource_policy` 只存名称，由 `CapabilityAuthority.policy_for_grant` 解析 |
+
+四处判断值得单独说明：
+
+1. **预占额由既有执行预算推导，而不是新增一个可编辑数字。** 计划要求“创建时预占该工作的预算，不超过 10M”。本提交把预占额算成 `min(work_token_limit, job_max_steps × (job_context_tokens + work_output_tokens))`，即 `min(10_000_000, 24 × (64000 + 16384)) = 1,929,216`。这样预占永远不可能大于运行器实际会执行的量，运营者改根配置的执行预算时预占自动跟随，不需要在第二处同步数字，也不会出现“预占比它能花的更多”这种把并发额度虚占光的形态。`work_token_limit=0` 时预占为 0——那是运营者明确的“本工作不得计费”而不是“不限”。
+
+2. **拒绝文案不静默改写目标。** 计划 D06 要求“授权撤销仍即时限制新操作”，同时 M05 要求“不能静默改写目标或额度”。额度不足时预占直接抛错并上抛为整个提交的 `SILENCE`（`runtime/gate.py:296` 的既有 catch），工作不创建；错误文本写明账号、日期、已占用、本次需要、上限，并指明“可以明确要求一个较小的工作范围”。没有“自动降级到小模型”“自动缩小目标”的分支。
+
+3. **结束方式分三种，取消不能抹掉已花的钱。** `close_reservation_in_transaction` 先查该工作有没有任何 `model_calls`：没有则整份释放（`released`，不占余额）；有则结算为真实消费（`settled`）。`complete_job`、`interrupt_job` 与 `plan` 里的取消操作都走这条判定，且都在各自的既有事务内。因此取消一个尚未开始的工作不消耗额度，取消一个已经调过模型的工作保留其已消费。
+
+4. **`resources.policies` 默认值为空字典，升级不改变行为。** 计划第 5.2 节要求额度策略只有一个可编辑来源。若默认就写入一份 10M/30M 的策略，等于给所有既有部署凭空加了一条限制；因此默认是 `{}`，由 `RuntimePolicy` 的字段默认值（10M/30M/场景不限）兜底，只有运营者显式在根配置或页面里新建策略才改变行为。`CapabilityGrant.resource_policy` 指向一个不存在的名字时同样回到默认，而不是报错或赋零。
+
+### 实际改动
+
+- `src/len_bot/cognition/budget.py`
+  - 新增 `ReservationPolicy`（pydantic，`extra='forbid'`、`strict`）：`work_token_limit`（默认 10M，`None` 表示不设该维度上限）、`daily_user_token_limit`（默认 30M）、`daily_scene_token_limit`（默认 `None`，即本场景未配置）。附 `day_key(timestamp, timezone)` 与 `work_reservation(model_steps, context_tokens, output_tokens)` 两个纯函数。
+  - 既有 `AgentBudget` 未改一行：它仍是执行期次数维度账本，token 维度在执行期的强制属 C08。
+- `src/len_bot/cognition/call_store.py`
+  - 新增纯函数 `measured_call_tokens(usage, estimate, *, conservative_output_tokens) -> (usage_tokens, estimated_tokens)`：两个字段都是数值才算真实 usage（`prompt+completion` 一次计完）；否则记 0 真实 + 本地输入估算加配置输出上限。半份 usage（只有输入没有输出）不拆分，按估算保留，理由写在 docstring。
+  - `initialize_model_calls` 新增 `usage_reservations` 表与 `(subject, day_key)` 索引。
+  - 新增 `account_used_tokens_in_transaction`（held 记 `reserved_tokens`，settled 记 `usage+estimated`）、`reserve_work_in_transaction`（账号日额度与场景日额度两道拒绝）、`release_reservation_in_transaction`、`settle_reservation_in_transaction`、`close_reservation_in_transaction`。全部是“在调用方事务内运行”的原语，自己不开事务、不加锁。
+- `src/len_bot/runtime/job_store.py`
+  - `billing_subject_for()`：账务主体取 C06 的 typed initiator；没有明确身份时 `subject_for` 抛错，不回落成群级或空账号。
+  - `reservation_policy_for()`：取默认策略，若该发起者在当前场景有一条 `long_work` 授予且授予指向可解析的策略名，则用该策略，并把 `grant_id` 记进预占行。
+  - `reserve_job_budget_in_transaction()` / `settle_job_budget()`、`job_reservation()` / `list_job_reservations()`。
+  - 接线：创建分支在 `INSERT INTO agent_jobs` 之后、`_queue_job_event` 之前预占；控制分支 `operation=='cancel'` 关闭预占；`complete_job` 与 `interrupt_job` 在各自 `commit` 之前关闭预占。
+- `src/len_bot/events/store.py`
+  - `EventStore.__init__` 新增三个由 Runtime 注入的属性：`budget_config`（既有 `RuntimeConfig`）、`capability_authority`、`billing_timezone`。缺省时按项目默认策略预占，工作不会静默变成不限额度。
+- `src/len_bot/config_store.py`
+  - 新增 `ResourceSettings(policies: dict[str, ReservationPolicy])` 与 `RootConfig.resources`，默认空。
+- `src/len_bot/runtime/capabilities.py`
+  - `CapabilityAuthority.policy_for_grant(grant)`：按名称解析，未命名/失效/无授予一律返回 `None`，由调用方使用默认策略。
+- `src/len_bot/runtime/agent_runtime.py`
+  - `_apply_budget_configuration()` 在构造期与 `update_root_settings('resources')` 之后注入上述三项配置；`'resources'` 加入允许的根配置节。
+- `src/len_bot/web/query_service.py` / `src/len_bot/web/routes/`
+  - `resource_settings()` 与 `GET/PUT /api/settings/resources`。
+  - `model_reservations()` 与 `GET /api/models/reservations`：按当前账务日给出 limits、逐账号 held/used/available、逐工作预占明细（含 `usage_tokens` 与 `estimated_tokens` 两列）。只读，数字来自预占事务写下的同一批行。
+- `src/len_bot/web/frontend/src/views/`
+  - 模型页新增“工作额度预占”卡片（账务日、三维上限、逐账号余额、逐工作明细，工作 ID 走既有 `EntityLink`）；系统设置页新增“额度策略”页签（JSON 编辑 `policies`），能力授予的 `resource_policy` 提示改为“只填名称”。
+  - 前端已实际重新构建（`npm run build`，442 modules → `ModelsView-B4IlBVo0.js` 49.58 kB、`SettingsView-CuDxwB_Z.js` 53.78 kB），产物与后端同批进入本次提交。
+- `lenbot.config.example.json`
+  - 增加 `"resources": {"policies": {}}`，便于人工初始化时看到该节存在；实际根配置未改动。
+
+### 未做的事
+
+- **没有把 token 维度接进执行期。** `AgentBudget` 仍是次数维度；`usage_reservations` 只在创建与结束时读写，执行中的每次模型调用不会实时扣减工作余额。计划 M05 的“每次调用：检查工作余额 → 预留本次估算 → 结算”属 C08 `feat(agent): enforce resource budgets across native loops` 的完成条件（“deadline 与 token 真实停止”）。本提交因此不能宣称“超过额度会自动停止执行”。
+- **没有新增绝对 deadline 或累计 token 硬停。** 既有 `job_max_seconds` 仍是单次执行超时且恢复会重新计时（见 [`readiness`](social-agent-readiness.md) 第 2 节的“绝对 deadline / 累计 token 上限”行），计划 C08/C09 处理。C08 落地后该行已更新。
+- **没有做跨日结转或历史回填。** 旧工作没有预占行，`list_job_reservations` 只列现有行；不追溯、不补算。
+- **没有为场景维度填默认数值。** `daily_scene_token_limit` 默认 `None`；计划第 2 章未给出场景维度的推荐值，本提交不替运营者决定。
+- **没有新增自动迁移脚本。** `usage_reservations` 由既有 `CREATE TABLE IF NOT EXISTS` 建；没有 ALTER、没有离线转换、没有校验和清单。
+- **没有新增、修改或运行测试、夹具或断言式探针。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `npm run build`（`src/len_bot/web/frontend`，442 modules，成功）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`resources.policies == {}`，`access` 两字段不变
+- 本地对象级核对（非运行服务，临时库 `/tmp`，核对后删除）：
+  - 策略解析：授予指向可解析名称 → 用该策略；指向失效名称/未命名/无授予 → 回到默认（10M/30M/场景不限）。
+  - `work_reservation`：24 步 → 1,929,216；100 步被 10M 上限截断 → 8,038,400；`work_token_limit=0` → 0；`None` → 算术上限。
+  - `measured_call_tokens`：完整 usage `{1200,300}` → `(1500,0)`；带 `cached_tokens`/`reasoning_tokens` 的同一笔仍 → `(1500,0)`（不重复相加）；只有输入 → `(0, 17484)`；无 usage 且估算为 0 → `(0,4096)`。
+  - 日边界：同一时刻在 `Asia/Shanghai` 与 UTC 下 `day_key` 分别为 `2026-09-14` / `2026-09-13`。
+  - 预占生命周期：两次 10M 预占后账号已占用 20,000,000；第三次 10,000,001 被账号日额度拒绝（返回写明的拒绝文本）；场景维度独立计数并按场景上限拒绝；无模型调用的工作关闭后为 `released` 且不再计入；已调用模型的工作结算为 `(1500, 0)`，账号占用从 20,000,000 降为 1500；次日为 0。
+  - 拒绝原子性：在 `BEGIN IMMEDIATE` 中先插入工作行再触发额度拒绝并回滚，工作行与预占行均为 0，证实拒绝不会留下半成品。
+  - 并发：两个创建在同一把写锁上竞争同一份 10 余额，一个 `held`、一个被拒，账号最终占用 6。
+  - 子调用归同账：同一 `job_id` 下的工作调用、压缩调用与插件子代理调用全部汇总进该行的 `usage_tokens`（1000+200+400+100=1700），无 usage 的子调用按估算计入；另一工作的调用未被计入。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D06 的具体数值仍未获用户确认**：本提交按计划第 2 章推荐裁决实现（创建时原子预占、并发不重复用同一余额），但“单工作 10M / 账号日 30M / 场景维度是否设限”这三项取值来自计划 M05 的叙述与 `RuntimeConfig` 既有默认，未获逐项确认。运营者可随时在“额度策略”页改；改成别的数值不需要改代码。
+- **真实并发创建未验证**：上述并发核对是在同一个进程内、同一把 `asyncio.Lock` 上完成的。真实的两个群同时委派工作、或重启后并发，未在真实服务上核对过。
+- **真实供应商 usage 形态未验证**：`prompt_tokens`/`completion_tokens` 之外的字段（如某些供应商的 `total_tokens` 语义）未在真实响应上核对；当前只把它们当作“已含在前两项内”。
+- **执行期额度未生效**：见“未做的事”第一条，任何“超额度会停止”的表述都不成立。
+- **恢复工作的额度归属**：`resume` 目前沿用原预占行（`job_id` 不变，`reservation_policy_for` 不会重写既有行），但“修订后的工作是否需要重新预占、原预占是否随修订放大”未定，计划 C09 `feat(jobs): preserve revisions and budget ownership on resume` 处理。
+- **`policy_name` 存的是 grant_id**：预占行记的是签发它的授予 ID，不是策略名——策略名可以改指，授予 ID 是当时的授权事实。页面“策略”列当前只显示限额，未显示 `policy_name`。
+
+### 涉及持久字段
+
+- 新增表 `usage_reservations`（`job_id` 主键；`scene_id`、`subject`、`day_key`、`policy_name`、`reserved_tokens`、`status`、`usage_tokens`、`estimated_tokens`、`created_at`、`settled_at`），由既有 `CREATE TABLE IF NOT EXISTS` 建立，不需要停机迁移；索引 `idx_usage_reservations_day(subject, day_key)`。
+- 根配置新增 `resources.policies`（默认空）；实际根配置未改动。
+- 既有 `model_calls`、`agent_jobs`、`tasks` 的列没有变化；旧工作没有预占行，读回时不补算。
+
+## C08 跨循环资源预算强制
+
+### 设计判断
+
+计划 M05 要求“不能保留未经检查的 `>= None`、减法或最后一轮判断”，并把停止写成“预算接近结束时，使用同一个 Agent 的预算消息让其收束；终结本身预留必要的输出与时间”。计划第 8.3 节把两个半成品形态明确列为禁止：只让 `AgentBudget` 接受 `None` 而不同时改循环终结判断，以及后端改了而提交旧前端产物。因此本提交不是“给类型加 `| None`”，而是三件事一起做：**把每个 `None` 语义定死、把每个判定改到同一条规则上、给不设次数的那一档一个真实的停止条件**。
+
+| 计划要求 | 当前实现（C08 之前） | 本提交的做法 |
+|---|---|---|
+| 调用次数可以配置为有限或 `None` | `RuntimeConfig` 的六个次数字段全是必填 `int`；`PluginAgentRequest.max_steps`/`max_tool_calls` 同样是必填 | 六个次数字段与插件 Agent 的两个字段改为 `int | None`；`ConversationResume.model_calls_limit`/`tool_calls_limit` 同样 |
+| 不能保留未经检查的 `>= None`、减法 | `social_core.next_is_final()` 直接减；`proposals.terminal_definition` 比 `<=1`；`job_runner` 与 `work_context` 做 `job_max_steps - model_steps`；`plugin_interactions` 做 `min(request.max_steps, limit-used-reserve)`；`group_summary/analysis` 做 `limit-used`；`reflector` 比 `max_steps == 1` | 新增 `count_remaining(limit, used) -> int | None` 与 `tightest(*bounds) -> int | None` 两个纯函数，所有判定经它们收口；`AgentBudget` 内部同样只走这两个函数 |
+| `None` 次数模式没有漏算或类型错误 | — | `AgentBudget.state()/local_state()`、`take_model`/`take_tool`、`force_terminal`、`_refusal` 全部按 `None` 读；`AgentLoop.run` 的入口校验拆成显式分支，`None` 不再进入序比较 |
+| deadline 与 token 真实停止 | `job_max_seconds` 只在执行段开头检查一次并作为 `asyncio.timeout`；恢复会重新计时；token 维度完全没有进入执行期 | `AgentBudget` 增加 `deadline`（绝对 `time.monotonic()` 时刻）与通过 `read_state` 读到的 `tokens_limit`/`tokens_used`；`_refusal()` 在启动下一次模型调用前给出 `elapsed_time`/`model_steps`/`tokens` 三种拒绝；工作的时间与 token 维度由 `budget_state()` 从持久记录读出，不由执行段自己计时 |
+| 预留终结能力 | 只有次数维度预留（“最后一个模型步骤预留终结工具”） | `terminal_seconds_reserve` 与 `terminal_token_reserve`；`force_terminal()` 在剩余额度只够终结时也返回真，等价于既有“最后一次调用只给终结工具”的行为，但对期限与 token 同样成立 |
+| 循环终结判断与恢复字段同步 | — | `ConversationResume.elapsed_seconds_limit` 新增，等待恢复继续用同一个窗口而不是重新计时；`job_runner.remaining_seconds()` 读持久累计时长 |
+
+五处判断值得单独说明：
+
+1. **`None` 的含义只有一种：这一维度不是停止条件。** 计划允许“可配置为有限或 None”，所以 `None` 不是“0 次”“不限但仍按 0 算”或“缺省待填”，而是运营者明确声明“不要用这个维度停止”。因此 `count_remaining(None, used)` 返回 `None` 而不是 0，`tightest()` 把 `None` 当作“本条不构成约束”而不是“最小值为 0”。这条规则让 `None` 在比较、减法与容量计算里都不会伪装成耗尽。
+
+2. **停止条件必须真实存在，配置文件拒绝“全都不设限”。** 一个既没有次数上限、也没有期限的循环没有任何停止条件，`RuntimeConfig.budgets_fit` 因此直接拒绝这种组合（对话次数与期限不能同时为 `null`；工具次数与期限不能同时为 `null`）。历史维护循环本来没有期限维度，所以 `maintenance_max_steps` 保持必填——它不是“本轮新加的限制”，而是既有配置本来就提供的唯一停止条件；`maintenance_max_tool_calls` 才允许 `null`。插件 Agent 借用父账户，只有在父账户本身不存在时（handler 在循环外直接调用）才要求请求自己给出至少一个次数维度，否则运行期直接报错。这些校验都在配置解析时拒绝，不靠运行到一半才发现。
+
+3. **删除 `step_index == max_steps - 1` 而不是给它加 `None` 分支。** `None` 时 `step_index` 由 `itertools.count` 生成、没有上界，保留那句比较就必然要写成 `max_steps is not None and ...`，而它想表达的事实是“这是最后一次调用”。本提交把“是不是最后一次”统一交给 `remaining`（三个来源取最紧：本调用参数、账本计数、调用方报告的持久余量），`agent_loop` 与 `social_core` 的判断因此同源，不会出现两处对同一事实的不同算法。
+
+4. **工作的时间与 token 都由持久记录说话，执行段不再自己计时。** `budget_state()` 从 `agent_jobs` 读累计时长与累计调用次数，并从该工作的 `usage_reservations` 行读它持有的 token 上限、从 `model_calls` 汇总已用 token（含压缩、技能维护与插件子 Agent）。因此“绝对期限”就是既有 `elapsed_seconds` 的语义加一个绝对判定：恢复不重置、排队未开始不计入，D05 说的三件事在同一列数据上成立，不需要新增计时表。`terminal_token_reserve` 取一整次请求（`job_context_tokens + work_output_tokens`），含义是“剩下不足一次请求时才停止”，而不是“剩一万 token 就停”——比它更粗的阈值会让正常收尾被提前打断。
+
+5. **C07 的预占在这一步才真正变成硬上限。** 创建期预占给出该工作最多能花多少，本提交让执行期的 `tokens_limit` 就是那个预占额，两者是同一个数字而不是两个可能互相矛盾的配置。这样 M05 的“每次调用：检查工作余额”与 C07 的“创建时原子预占”闭合成一个环：预占决定上限，上限决定停止，停止时的真实消费又写回同一行。
+
+### 实际改动
+
+- `src/len_bot/cognition/budget.py`
+  - 新增纯函数 `count_remaining(limit, used)`（`None` → `None`）与 `tightest(*bounds)`（忽略 `None`，全为 `None` 时返回 `None`）；新增 `terminal_seconds_reserve(seconds_limit)`（30 秒与上限四分之一取小，`None` → 0）与 `window_deadline(seconds_limit, elapsed)`（绝对窗口，恢复按已用时间继续倒计时）。
+  - `AgentBudget`：`model_limit`/`tool_limit` 允许 `None`；新增 `deadline`、`terminal_token_reserve`、`terminal_seconds_reserve`；新增 `local_state()`（不 await 的计数快照，保留最近一次持久快照的时间与 token 维度）、`_seconds_left()`、`_refusal()`、`deadline_seconds()`、`force_terminal()`；`take_model`/`take_tool` 按 `count_remaining` 判定，拒绝时带 `budget_kind`。
+  - `ReservationPolicy.work_token_limit` 改为 `int | None`（默认仍 10M）；`work_reservation(model_steps=None)` 在没有次数上限时返回策略自身的单工作上限（策略也不设时返回 0）。
+- `src/len_bot/cognition/agent_loop.py`
+  - `max_steps`/`max_tool_calls` 允许 `None`；入口校验拆成显式分支，不再写 `not 0 <= initial < max_steps` 这类会碰到 `None` 的表达式。
+  - 步骤序列：有限用 `range`，不设限用 `itertools.count`；每轮 `remaining = tightest(本调用余量, 账本余量, 调用方报告余量)`，`remaining == 0` 才抛 `AgentBudgetExhausted`，`remaining == 1` 或 `account.force_terminal(state)` 就强制终结。
+  - 删除 `step_index == max_steps - 1` 的两处判断；工具批量检查改为 `tightest(count_remaining(max_tool_calls, initial+local), count_remaining(账本))`。
+  - `execution_budget_message` 在 `None` 档输出 `null` 与“本次执行的调用次数未设上限；期限与累计 token 才是停止条件”，并透出 `tokens_remaining`；`install_budget` 同时返回 view 与 state。
+- `src/len_bot/config.py`
+  - `conversation_max_steps`、`conversation_max_tool_calls`、`job_max_steps`、`job_max_tool_calls`、`maintenance_max_tool_calls` 改为 `int | None`；新增 `conversation_window_seconds`（默认 `None`）。
+  - `budgets_fit` 新增两条拒绝：对话次数与该轮期限不能同时为 `null`，否则该轮没有停止条件。`maintenance_max_steps` 保持必填，理由见设计判断第 2 条。
+  - `EXECUTION_BUDGET_FIELDS` 增加 `conversation_window_seconds`，页面“执行预算”表因此能显示该维度。
+- `src/len_bot/cognition/models.py`
+  - `ConversationResume.model_calls_limit`/`tool_calls_limit` 允许 `None`；新增 `elapsed_seconds_limit`（默认 `None`，即本轮没有期限维度）。
+- `src/len_bot/cognition/social_core.py`
+  - `AgentBudget` 构造带上 `window_deadline(config.conversation_window_seconds, 已用时长)`、`terminal_seconds_reserve(...)` 与 `terminal_token_reserve=conversation_output_tokens`；恢复按 `resume.elapsed_seconds` 继续同一个窗口。
+  - `next_is_final()` 改为问 `force_terminal`；`append_update` 的 `can_absorb` 用 `count_remaining`；`ledger.remaining_model_calls` 改为返回 `None` 表示不设限；`ConversationResume` 保存 `elapsed_seconds_limit`。
+  - `plugin_interactions._respond_agent` 不再为恢复重建一个独立账户，直接用 C07 起父执行持有的那一个（否则新窗口会在恢复时被覆盖）。
+- `src/len_bot/cognition/proposals.py`
+  - `terminal_definition` 与 `finish` 的续跑判断按 `None` 读：不设限时终结工具保留完整 action 集合，不再因为“余量 0”拒绝 `continue`/`wait`。
+- `src/len_bot/runtime/job_runner.py`
+  - `budget_state()` 增加 `tokens_limit`（该工作的预占额）与 `tokens_used`（该 `job_id` 下全部模型调用按 C07 的 `job_measured_tokens` 汇总）；新增 `remaining_seconds()` 从持久累计时长算剩余。
+  - `execution.budget` 带上期限与两个终结预留；`AgentLoop(...)` 的 `max_steps`/`max_tool_calls` 改为 `count_remaining(...)`，`request_definitions` 只在真的只剩一次调用或工具额度用尽时才只给终结。
+  - `finish` 的 partial 原因增加 `token_budget_exhausted_at_finish`，并让每个维度只在真的带数值时参与判定。
+- `src/len_bot/runtime/plugin_interactions.py`
+  - 子 Agent 的 `steps` 改为 `tightest(request.max_steps, count_remaining(账本))` 再减保留位，任一维度不设限都不再参与。
+- `src/len_bot/memory/reflector.py`、`runtime/work_context.py`、`plugins/builtin/group_summary/analysis.py`、`runtime/job_store.py`、`runtime/agent_runtime.py`
+  - 维护、压缩、报告批次与工作恢复的判定全部改到 `count_remaining`/显式 `is not None`，不再做“上限减已用”。
+- `src/len_bot/web/frontend/src/views/`
+  - 运行参数页“执行预算”表增加“每轮对话绝对期限”，并把 `null` 显示为“不设限（由其他维度停止）”而不是空白；Jobs 页用量行同样按 `null` 显示“不设限”。前端已实际重建（`npm run build`，442 modules，成功），产物与后端同批进入本次提交。
+- `lenbot.config.example.json`
+  - 增加 `"conversation_window_seconds": null`，让人工初始化时看得到该维度存在。实际根配置未改动。
+
+### 未做的事
+
+- **没有新增绝对期限的独立计时表。** 计划 D05 的“首次开始后绝对 1800 秒”由既有 `agent_jobs.elapsed_seconds` 加上本次的绝对判定实现；没有新增列、没有第二份计时。
+- **没有把 `conversation_token_limit` 做成配置项。** 对话轮次的 token 维度目前只有“终结预留”而没有独立上限：计划第 2 章只给工作和账号日规定了 token 上限，对话轮次的停止条件是次数与（可配的）期限。因此在 `budgets_fit` 里拒绝“次数与期限同时为空”，而不是凭空加一个没人配置的 token 上限。
+- **没有修改任何既有默认值。** `conversation_window_seconds` 默认 `None`，六个次数字段的数值不变，实际根配置一行未改；升级不会因此多出任何限制。
+- **没有做跨进程恢复的 deadline 重建。** 等待型恢复（`ConversationResume`）保留原窗口；工作恢复读持久累计时长。两者的“进程重启后旧挂起”仍按既有 `review_required` 处理，不自动续跑。
+- **没有新增、修改或运行测试、夹具或断言式探针。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `npm run build`（`src/len_bot/web/frontend`，442 modules，成功）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`conversation 8 16 None`、`job 24 48 600.0`、`maintenance 3 2`、`resources.policies == {}`
+- `lenbot.config.example.json` 的 `runtime` 节可直接解析（`conversation_window_seconds=None`）
+- 本地对象级核对（非运行服务，临时库 `/tmp`，核对后删除）：
+  - `count_remaining(None, 7) → None`、`count_remaining(5, 7) → 0`、`count_remaining(5, 2) → 3`；`tightest(None, None) → None`、`tightest(None, 3, 5) → 3`。
+  - 不设次数的循环 + 30 token 额度、每次调用 15：第 3 次调用被 `tokens` 拒绝（`calls 2`、工具 2 次），即停在一个真实的拒绝上而不是死循环，也不是第一轮就误判耗尽。
+  - 不设次数 + 已过期的绝对期限：第一次调用前即以 `elapsed_time` 拒绝（`calls 0`）。
+  - 只剩终结预留时（100 额度、已用 96、预留 5）：`force_terminal` 为真，第 1 次调用就只给终结工具、工具一次都没跑，正常提交结果。
+  - 额度充足（10000）：工具继续可用，3 次调用后正常终结，未提前强制。
+  - `window_deadline(600, 0) → 600 秒`、`window_deadline(600, 400) → 200 秒`（恢复不重置）；`terminal_seconds_reserve(600) → 30.0`、`(None) → 0.0`。
+  - 预占推导：`model_steps=None` → 10,000,000（策略自身的单工作上限制），24 步 → 1,929,216。
+  - 有限次数 3：第 3 次调用被强制为终结（`calls 3`、工具 0 次），与 C08 之前“最后一个模型步骤预留终结工具”的行为一致。
+  - 工作账户：同一 `job_id` 下的工作调用、压缩调用与无 usage 的维护调用全部汇总（hold 1000 时合计 18134，`count_remaining` 为 0）；按真实规模预占（1,929,216）时单次调用后剩余 1,865,216，正常继续。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D05 的 1800 秒仍未获用户确认。** 本提交实现的是“绝对期限不重置、排队不计入”这一语义，默认值仍是根配置既有的 `job_max_seconds=600`（样例与既有部署都是 600，不是计划叙述里的 1800）。改成 1800 只需改根配置，不需要改代码。
+- **对话轮次的期限维度默认关闭。** `conversation_window_seconds` 默认 `None`，即对话仍只按次数停止；要按计划第 2 章对“心跳 30 分钟”一类准确定义，仍需运营者显式设置。
+- **token 停止只在工作时真正生效。** 对话轮次没有 token 上限（见“未做的事”），所以“超过累计 token 会停止”目前只对工作成立。
+- **真实供应商的 token 计数未验证。** `tokens_used` 用的是 C07 的 `job_measured_tokens`，其口径（`prompt+completion`，无 usage 时按本地估算）仍属未在真实响应上核对的部分。
+- **真实并发与恢复场景未运行。** 上述核对都在单个进程内的对象级调用上完成；真实运行中“期限到点正在等模型返回”“压缩消耗了最后一次调用”等竞态没有现场证据。
+
+### 涉及持久字段
+
+- 没有新增表或列。`agent_jobs.elapsed_seconds`、`model_steps`、`tool_calls` 与 `usage_reservations` 都是既有字段，本提交只是让执行期真正读它们。
+- 新增索引 `idx_model_calls_job(job_id, started_at)`。它解决的具体缺口是：`budget_state()` 每次模型调用前后都要按 `job_id` 汇总该工作的全部调用，没有该索引时每次都是一次全表扫描；这不是缓存层，只是让这次既有查询走索引。
+- `ConversationResume` 新增 `elapsed_seconds_limit`（存在于事件 metadata 的 `conversation_resume` 包内）。旧挂起包缺该字段时按 `None` 读，即“该轮没有期限维度”，与升级前行为一致。
+- 根配置未改动；`lenbot.config.example.json` 增加一个键。
+
+---
+
+## C09 工作修订与预算归属保留
+
+对应计划第 8.2 节的 C09 `feat(jobs): preserve revisions and budget ownership on resume`：`job_store`/`job_runner`、Gate、操作接口；完成条件是**继续不重置模型/预算/deadline**、**授权撤销限制后续操作**、**旧执行不会写新修订**。
+
+这一条在计划里写得很短，但把 C07/C08 的账与 C06 的授权接到一起，落点不是三处新判定，而是让**同一条已存在的规则在控制路径上也成立**：额度只在创建时预占，恢复既然是“同一工作的下一次执行”，就必须重新受同一份额度约束；授权既然是“当前生效事实”，恢复既然是“下一次执行”，就必须重新过当前 grant；修订既然是“新版本”，旧版本的执行就不得再写它。
+
+### 计划要求 / 本提交做法
+
+| 计划要求 | 本提交做法 |
+|---|---|
+| 继续不重置模型 | 未改 `model_binding_json`（`bind_job_model` 仍只在首次绑定且 `revision` 匹配时写入），恢复沿用同一绑定；`_context()` 的 `resume_from` 提示不变。 |
+| 继续不重置预算 | `apply_job_proposals_in_transaction` 在 resume/revise 改回可执行状态时，用**工作自己的 initiator** 把它**重新预占**到同一个累计上限（`rehold_job_budget_in_transaction`），并保留原预占行与原有 `day_key`；已消费的 token 不带回来，上限本身不放大。 |
+| 继续不重置 deadline | 未改：`agent_jobs.elapsed_seconds` 在 resume 时不清零，C08 的 `remaining_seconds()` 继续读它。 |
+| 授权撤销限制后续操作 | Gate 增加 resume 分支：用该工作**创建时的主体**过当前 grant，撤销/停用/过期的授予直接拒绝恢复；revise 与 cancel 不启动执行，保持原样不扩权。 |
+| 旧执行不会写新修订 | 未改：既有写入口都带 `revision` 匹配（`job_checkpoint`/`complete_job`/`update_work_state`/`save_plugin_work_progress`/`pin_job_skill`/`save_job_compression`），`save_job_exchange` 只接受 `1 <= revision <= job['revision']`。本提交只核对，不新增。 |
+| 操作接口 | 面板 `POST /api/cockpit/jobs/{id}/{operation}` 与模型工具 `resume_work` 走的是同一条 `JobProposal` → Gate → 事务路径，因此两处自动获得上述判定。 |
+
+### 设计判断
+
+1. **恢复必须重新预占，否则“继续不重置预算”是空话。** C07 在创建时预占，在 `complete_job`/`interrupt_job`/取消时把预占**换成实际消费**（`settled`）或**整份释放**（`released`）。恢复之后这份行已经不再表示“还能花多少”：`settled` 行的 `reserved_tokens` 等于它**已经花掉**的数，直接拿来做 C08 的 `tokens_limit`，工作会在自己的第一次调用上就因为“已用量 ≥ 上限”被拒绝——即“恢复”变成“立刻停止”。所以本提交把 resume/revise 改回可执行状态时显式重新预占。
+2. **重预占不新增额度，也不搬日子。** 重新预占用的是工作**自己**的累计上限（`work_reservation` 的同一推导），不叠加、不与原值相加；行还在，`day_key` 不变，所以过去消费仍记在它被接受的那一天，D06 的“跨日归属按工作预占日固定”继续成立。重预占时的日/群额度检查用 `exclude_job_id` 把自己排除，避免把“自己那份结算”再算一遍而把一个工作收两次费。上限的**数值**与新建工作时同源——由当前策略与当前运行参数推出——所以运营者若在两次执行之间调高或调低了 `job_max_steps`，继续执行的工作按调整后的配置重开（这与新建一个工作同源，不是本提交新增的延期入口）；调低到已消费之下时，工作会以 `tokens` 在第一次调用前停止并说明原因。
+3. **上限只给已有的预占行补上，不给旧工作发明一个。** 计划第 9.3 节写明“没有预算信息不能填零”；C07 之前创建的工作没有预占行，也就没有可靠口径的已用量。这类工作恢复时保持 `tokens_limit=None`（即“这一维度不是停止条件”，由期限继续停止），而不是拿一个凭空算出的数字当上限。反过来，**有**预占行却没有确切发起者的记录（既没有 `initiator`、也没有可转换的 `requester`+来源）由重预占本身拒绝并给出原因：那说明这笔账没有可归属的主体，不能猜一个来记账。
+4. **恢复要过“当前”授权，而不是“创建时”授权。** 计划 M04 的撤销条款是“撤销阻止未来入场、后续敏感操作和发布”，而恢复恰恰是“未来入场”。因此 resume 用工作创建时的**主体**去过**当下**的 grant：grant 仍在则放行，被停用/撤销/过期或场景失效则拒绝并说明。判断的主体来自工作自身已存的发起者，不来自这次控制提案，所以控制者不能借恢复把自己的权限套到别人的工作上。人类主体的工作不走这支——它们的许可由既有的白名单与 `chat_allowed` 决定，恢复不新增也没减少那条老路。
+5. **修订不重开额度，也不因此被拒。** 修订同样是“下一次执行”，同样需要一份活的预占，所以它与恢复走同一分支；但修订改的是目标与约束，不改变工作的累计上限，这一点由第 2 条保证。把 revise 也纳入这一支是刻意的：只处理 resume 会留下“修订后的工作没有预占行、于是没有 token 维度”的缺口，而这恰好是计划第 8.3 节要避免的那种半成品。
+
+### 实际改动
+
+- `cognition/call_store.py`
+  - `account_used_tokens_in_transaction()` 增加可选 `exclude_job_id`，供重预占时把工作自己排除在外。
+  - 新增 `rehold_work_in_transaction()`：只作用于 `settled`/`released` 的行，把 `reserved_tokens` 改回工作的累计上限、状态改回 `held`、清空 `settled_at`；`held` 行原样返回（控制可以落在工作仍在运行时，此时没有需要重开的账户）；先按 `exclude_job_id` 复核账号日与场景日额度，不足则拒绝并给出可读文本。
+- `runtime/job_store.py`
+  - 新增 `rehold_job_budget_in_transaction(job_id, initiator, scene_id)`：解析策略（仍走 `CapabilityGrant.resource_policy` 的名称解析）后调用上面的方法；没有 typed initiator 时直接拒绝。
+  - 新增 `JobStoreMixin.initiator_of(job)`：读出 `_decode_job` 已经转换好的发起者，控制路径不再自己重建一份。
+  - `apply_job_proposals_in_transaction()` 的 revise/resume 分支（`proposal.operation in {'resume','revise'}`）在有既存预占行时重预占，并把理由写进注释；cancel 分支不变。
+- `runtime/gate.py`
+  - `_capability_refusal()` 增加 `on_behalf_of` 参数，允许用“工作创建时的主体”过一次当前 grant。
+  - `evaluate_and_commit()` 的授权循环改为按操作分支：`create`（非人类来源）照旧；`resume` 读出工作的发起者，非人类时用当前 grant 复核；其余操作明确 `continue`，不做未声明的扩权。
+
+### 未做的事
+
+- **没有让修订重置 `elapsed_seconds`。** 计划 D05 写的是“恢复不重置”，修订在计划里同样是同一工作的新版本（`revision+1`、`result_json` 清空），累计执行时间保留。若运营者需要更多时间，按计划是显式修订策略，不是自动延期。
+- **没有给“额度不足”的恢复提供绕行入口。** 重预占失败即在路径失败中结束工作并保留原因；没有缩小目标、没有改模型、没有从别的账号借额度。
+- **没有改 `job_resume_issue()` 的既有判定。** 那一层仍然决定“这个工作当前是否可继续”（次数/期限/绑定/插件可用性），本提交只在真正要开始执行时补上额度与授权的复核；两层职责不重叠。
+- **没有新增表、列或配置字段。** 重预占只更新既有 `usage_reservations` 行的三个字段，无迁移。
+- **没有新增、修改或运行测试、夹具或断言式探针。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`resources.policies == {}`、`job 24 48 600.0`，未改根配置
+- 本地对象级核对（非运行服务，临时库 `/tmp`，核对后删除）：
+  - 结算后再恢复：预占行从 `settled 1500` 变回 `held 1929216`，`day_key` 仍是原来那一天（`2023-11-14`）；恢复后的计数为 `revision 2 / model_steps 6 / tool_calls 5 / elapsed_seconds 38`，均未清零。
+  - 修订走同一分支：`held 1929216`，任务回到 `pending`，累计消费仍计在同一工作账上。
+  - 账号总额只记一次：该账号当天的占用为两个工作各 1,929,216（`3858432`），没有因为重预占把同一个工作算两次。
+  - 无预占行的旧工作被拒绝并给出原文：`This work has no typed initiator; continuing it would have no account to hold against`。
+  - 授权复核（对象级，用假配置源注入 grant）：grant 存在时恢复无拒绝；`enabled=false` 与“grant 不存在”两种情况都以 `Capability check refused at step 当前 grant: 当前配置没有向该主体授予 public_research；未配置的能力保持关闭` 拒绝。
+  - 旧执行写新修订：`save_job_compression(..., revision=0, ...)` 与对已取消工作的 `revision=1` 均被 `JobChanged: Compression belongs to obsolete work` 拒绝（既有规则，本次核对确认没有被改动破坏）。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D06 的“授权撤销仍即时限制新操作”只在对象级核对。** 上述 grant 判定是在真实 `RuntimeGate._capability_refusal()` 与真实 `CapabilityAuthority` 上调用得到的，但没有跑一次真实“先建工作、再撤 grant、再恢复”的端到端流程，也没有经过面板接口。
+- **重预占的额度不足路径未在真实规模上触发。** 核对用的是默认策略（单工作 10M、账号日 30M），没有构造真实账号日额度被打满的场景，因此那条中文拒绝文本只在代码中审阅，未在运行时打印。
+- **重预占的上限跟着当前配置走。** 两次执行之间运营者若调低 `job_max_steps`（进而调低推导出的单工作额度），继续执行的工作会按调低后的上限重开。这与“新建工作用当前配置”一致，但确实意味着**没有**“恢复一律沿用创建时的额度数值”这条更强的性质；计划写的是“恢复保留已用额度、不重新赠送 10M”，本提交满足该条（上限不放大、已消费不退还），未实现的是把数值也冻结在创建那一刻。
+- **计划里的 `usage_reservations` 重开没有独立的“再次预占”时刻。** 本提交把它做成控制事务内的一步（与工作状态变更同生共死），因此面板上的“预占”只反映控制提交后的状态；控制提交前的一瞬间仍是 `settled`。这与“预占是工作执行的前提”一致，但与“预占=创建时那一次”的朴素读法不同，记录在此。
+- **真实并发未运行。** “控制提交与正在执行重叠”（工作仍在 `processing` 时收到修订）只会走到 `held` 分支，没有现场证据。
+
+### 涉及持久字段
+
+- 没有新增表或列。`usage_reservations` 的 `reserved_tokens`/`status`/`settled_at`/`policy_name` 是既有字段，本提交让 resume/revise 复用它们而不是新开一张表。
+- 没有新增配置字段，根配置与样例均未改动。
+- 无离线转换：C07 之前的工作没有 `usage_reservations` 行，按上面第 3 条保持“没有 token 维度”而不是补一个数字。
+
+---
 
 > 按计划第 10.3 节的固定模板记录。状态措辞只用“实现完成 / 部署就绪 / 实际链路通过”三种；本批全部为**实现完成**，没有取得任何真实链路证据。核对方式遵守计划第 10.1 节与 [`AGENTS.md`](../AGENTS.md)：只做阅读、正常编译与 `git diff --check`，未新增或运行测试、夹具、断言式探针或自动截图，未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
 
@@ -463,7 +745,9 @@ C05  对话轮次装配 → 既有场景与插件准入 → runtime_facts 附可
 
 开始 C06 之前需要用户确认的前置项仍然有效：计划第 2 章 D01—D12 推荐裁决是否采纳，以及计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）。这些前置项不阻塞 C06—C09 的代码工作，但 D04/D06/D09 的具体取值会直接决定 C06/C07 的字段与判定。
 
-C06 已按第 2 章的推荐裁决落地（见上一节），D04/D06/D09 仍未获用户逐项确认。下一提交是 **C07 `feat(budget): reserve and settle shared usage atomically`**：依赖 C06，范围是 `AgentBudget`、`CallStore`/`JobStore`、新增 `usage_reservations` 与模型页面，完成条件是 user+scene 并发预占一致、usage 与估算可区分、子调用归同一账。C07 的创建期预占需要在 `events/store.py:commit_proposal_transaction` 的同一写事务内完成，`CapabilityGrant.resource_policy` 的解析也应在该提交内落到真实策略。D06（每日额度只在创建时检查可能超发）与本提交直接相关，取值需要在实现前明确。
+C06 已按第 2 章的推荐裁决落地，C07、C08、C09 也已完成（见上文各自章节），D04/D06/D09 仍未获用户逐项确认。
+
+下一提交是 **C10 `feat(execution): define owned worker protocol and journal`**：依赖 C09，范围是 `execution` 协议/客户端、`execution_runs`、最小 Gateway 服务，完成条件是幂等接收、状态查询、取消与事件续读可用，且技术状态不冒充业务完成。计划第 8.3 节的“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”是这一条的禁止半成品：新后端与旧宿主路径不能并存。计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）会直接决定 C10—C12 的接口与启用条件，仍待用户提供；缺少目标机器数据不阻塞其代码与接口工作，但阻塞独立执行后端的正式放行。
 
 ## 本批不宣称的能力
 

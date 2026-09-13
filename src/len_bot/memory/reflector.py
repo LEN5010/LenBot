@@ -45,7 +45,7 @@ class LLMReflector:
         memory_store: MemoryStore | None = None,
         memory_limit: int,
         max_steps: int,
-        max_tool_calls: int,
+        max_tool_calls: int | None,
         call_store=None,
         context_tokens: int,
         output_tokens: int,

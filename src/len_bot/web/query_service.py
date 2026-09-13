@@ -10,6 +10,7 @@ import json
 import copy
 import time
 import re
+from len_bot.cognition.budget import ReservationPolicy
 from len_bot.events.models import Event, EventType
 from len_bot.tools.results import ToolResult
 from typing import Optional
@@ -110,6 +111,9 @@ class RuntimeQueryService:
         settings = self.runtime.config_store.current.time
         return settings.model_dump() if settings is not None else None
 
+    def resource_settings(self):
+        return self.runtime.config_store.current.resources.model_dump()
+
     def member_settings(self):
         return [member.model_dump() for member in self.runtime.config_store.current.members]
 
@@ -160,6 +164,38 @@ class RuntimeQueryService:
         item["usage"] = json.loads(usage) if usage else None
         item["estimate"] = json.loads(item.pop("estimate_json"))
         return RuntimeQueryService._public(item)
+
+    async def model_reservations(self, scene_id=None, *, subject=None):
+        """Holds and settled usage for the current billing day, per account.
+
+        Read-only: the numbers come from the same rows the reservation
+        transaction wrote, so what the panel shows is what the next work will
+        actually be checked against.  Nothing here is recomputed from estimates
+        presented as billing.
+        """
+        store = self.runtime.event_store
+        policy = store.reservation_policy or ReservationPolicy()
+        timezone = store.billing_timezone
+        day_key = policy.day_key(store.clock(), timezone)
+        items = await store.list_job_reservations(scene_id, subject=subject, day_key=day_key, limit=100)
+        accounts = {}
+        for item in items:
+            account = accounts.setdefault(item['subject'], {'subject': item['subject'], 'held': 0, 'used': 0})
+            if item['status'] == 'held':
+                account['held'] += item['reserved_tokens']
+            elif item['status'] == 'settled':
+                account['used'] += (item['usage_tokens'] or 0) + (item['estimated_tokens'] or 0)
+        for account in accounts.values():
+            limit = policy.daily_user_token_limit
+            account['daily_limit'] = limit
+            account['available'] = None if limit is None else max(0, limit - account['held'] - account['used'])
+        return {
+            "day_key": day_key, "timezone": timezone,
+            "limits": {"work_token_limit": policy.work_token_limit,
+                       "daily_user_token_limit": policy.daily_user_token_limit,
+                       "daily_scene_token_limit": policy.daily_scene_token_limit},
+            "items": items, "accounts": sorted(accounts.values(), key=lambda row: row['subject']),
+        }
 
     async def model_usage(self, scene_id=None, *, since=None, until=None, purpose=None, status=None, page=1, page_size=30):
         source, params = "FROM model_calls WHERE 1=1", []

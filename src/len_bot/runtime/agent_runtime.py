@@ -118,6 +118,9 @@ class AgentRuntime:
         self.runtime_gate.validate_job_resume = self._validate_job_resume
         self.runtime_gate.scene_policy = self.scene_policy
         self.runtime_gate.capability_authority = CapabilityAuthority(config_store, self.scene_policy)
+        # The store reserves from the same numbers the runner enforces, so a
+        # hold cannot disagree with the limits the work actually runs under.
+        self._apply_budget_configuration()
         self.runtime_gate.validate_plugin_origin = lambda mailbox, scene: validate_plugin_origin(self, mailbox, scene)
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
@@ -206,11 +209,15 @@ class AgentRuntime:
         if issue:return issue
         work=self.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
         needs_model=not work or work.needs_model is None or work.needs_model(job)
-        if needs_model and job['model_steps']>=self.config.job_max_steps:
+        # A dimension the operator left unlimited cannot be the reason a work
+        # may not resume; only a limit that actually carries a number can.
+        if (needs_model and self.config.job_max_steps is not None
+                and job['model_steps']>=self.config.job_max_steps):
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
-        if job['elapsed_seconds']>=self.config.job_max_seconds:
+        if self.config.job_max_seconds is not None and job['elapsed_seconds']>=self.config.job_max_seconds:
             return 'This work has no remaining execution time; its spent budget is not reset by resume'
-        if job['execution_status']=='partial' and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None):
+        if (job['execution_status']=='partial' and self.config.job_max_tool_calls is not None
+                and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None)):
             return 'This partial work has no remaining read-tool budget; continuing does not reset its counters'
         if not needs_model:return None
         try:
@@ -338,8 +345,18 @@ class AgentRuntime:
             self.config_store.save(candidate)
             self.shadow_mode = enabled
 
+    def _apply_budget_configuration(self) -> None:
+        """Point the store at the live limits a reservation is computed from."""
+        from len_bot.cognition.budget import ReservationPolicy
+        self.event_store.budget_config = self.config
+        self.event_store.capability_authority = self.runtime_gate.capability_authority
+        settings = self.config_store.current.time
+        self.event_store.billing_timezone = settings.timezone if settings else None
+        self.event_store.reservation_policy = (
+            self.config_store.current.resources.policies.get('default') or ReservationPolicy())
+
     async def update_root_settings(self, section: str, values) -> None:
-        if section not in {'access', 'time', 'members'}:
+        if section not in {'access', 'time', 'members', 'resources'}:
             raise ValueError('Unknown settings section')
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
@@ -347,6 +364,10 @@ class AgentRuntime:
             self.config_store.save(self.config_store.parse(data))
             if section in {'time', 'members'}:
                 self.restart_required = True
+        if section == 'resources':
+            # Quota numbers take effect for the next work created; already
+            # reserved work keeps the policy named on its own reservation.
+            self._apply_budget_configuration()
 
     async def update_scene_settings(self, scene_id: str, values: dict) -> None:
         was_enabled = self.semantic_retrieval_enabled(scene_id)

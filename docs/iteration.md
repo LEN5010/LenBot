@@ -22,6 +22,54 @@
 
 下一阶段入口：先确认计划第 2 章 D01—D12 推荐裁决，再根据计划第 13 章补齐 Linux VPS、OneBot 文件协议、B 站专用账号、音频转写和可选 Core 的部署信息；D04/D06/D09 的具体取值直接决定 C06/C07 的字段与判定，开始 C06 前需要明确。未确认项不阻塞不依赖它们的能力编写，也不能先写入生产配置或验收结论。
 
+## 2026-09-13 第二批 C06—C07 实施
+
+按计划第 8.2 节完成 C06、C07 两个提交，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)（含设计判断、实际改动、未做的事、静态核对与未确认项）。
+
+- C06 `a06b4c6` 类型化发起者与能力授予：`HumanInitiator`/`SystemInitiator`/`PluginInitiator` 判别联合与只有真实事件能取人的 `human_event_uid`；`JobProposal.initiator` 由内部路径构造、模型不可见；事务内按类型分支二次校验；新增窄 `runtime/capabilities.py` 与根配置 `access.capability_grants`（默认空，未配置即拒绝）。
+- C07 共享用量原子预占与结算：新增 `usage_reservations`；预占在 `commit_proposal_transaction` 的既有写事务内与工作行同生共死；`measured_call_tokens()` 把真实 usage 与本地估算分成两列；`ReservationPolicy` 给出单工作/账号日/场景日三个维度；根配置新增 `resources.policies`（默认空，不改变既有部署行为），`CapabilityGrant.resource_policy` 按名称解析；模型页新增“工作额度预占”，系统设置页新增“额度策略”。
+
+**C07 本轮实际执行的本地核对（非运行服务，临时库核对后删除）**：两次 10M 预占后账号占用 20,000,000，第三次被账号日额度拒绝并给出可读文本；场景维度独立计数并按其上限拒绝；无模型调用的工作关闭后 `released` 且不再占用，已调用模型的工作结算为真实 `(1500, 0)`、账号占用从 20,000,000 降为 1500，次日为 0；`BEGIN IMMEDIATE` 内先插工作行再触发拒绝并回滚后，工作行与预占行均为 0；同锁并发创建同一份余额时一个成功一个被拒；同一 `job_id` 下的工作调用、压缩调用与插件子代理调用汇总进同一账。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）与 `npm run build`（442 modules，成功）。
+
+验收状态：C06、C07 均为**实现完成 / 未运行**。C07 只做创建期预占与结束期结算，**执行中按 token 或 deadline 真正停止属 C08**，本轮不得宣称“超额会自动停止”。D06 的取值（单工作 10M、账号日 30M、场景维度是否设限）仍按计划推荐裁决实现，未获用户逐项确认；运营者可在“额度策略”页改，改数值不需要改代码。计划第 10.2 节矩阵中与本批相关的 A03、A06、A07、A09 待真实业务核对。
+
+下一阶段入口：C08 `feat(agent): enforce resource budgets across native loops`（依赖 C07），完成条件是 None 次数模式无漏算/类型错误、deadline 与 token 真实停止、预留终结能力；随后 C09 `feat(jobs): preserve revisions and budget ownership on resume`。
+
+## 2026-09-13 第二批 C08 实施
+
+按计划第 8.2 节完成 C08 `feat(agent): enforce resource budgets across native loops`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
+
+本轮不是“给类型加 `| None`”，而是把 `None` 语义、判定规则与停止条件一起落地（计划第 8.3 节把只用 `None` 放行、不改循环终结判断列为禁止的半成品）：
+
+- 新增 `count_remaining(limit, used)` 与 `tightest(*bounds)` 两个纯函数，`AgentLoop`、对话、工作、维护、压缩、报告批次与插件子 Agent 的判定全部改到它们上；`job_max_steps`、`job_max_tool_calls`、`conversation_max_steps`、`conversation_max_tool_calls`、`maintenance_max_tool_calls` 与插件 Agent 的两个次数字段改为 `int | None`。
+- `AgentBudget` 增加绝对 `deadline` 与从持久记录读到的 `tokens_limit`/`tokens_used`；`_refusal()` 在启动下一次调用前给出 `elapsed_time`/`model_steps`/`tokens` 三种拒绝；`terminal_seconds_reserve` 与 `terminal_token_reserve` 保证终结本身仍有输出与时间。
+- 工作的时间与 token 维度改由持久记录说话：`budget_state()` 读 `agent_jobs.elapsed_seconds`/`model_steps`/`tool_calls`，token 上限取该工作的 `usage_reservations` 预占额、已用量按同一 `job_id` 汇总全部 `model_calls`（含压缩、技能维护与插件子 Agent）。C07 的预占在这一步才成为真正的执行期硬上限。
+- 对话轮次新增可选 `conversation_window_seconds`（默认 `null`，升级不新增限制），`ConversationResume` 新增 `elapsed_seconds_limit` 使等待恢复继续同一个窗口而不是重新计时。配置在解析期拒绝“次数与期限同时为 `null`”这类没有任何停止条件的组合。
+
+**C08 本轮实际执行的本地核对（非运行服务，临时库核对后删除）**：不设次数 + 30 token 额度在第 3 次调用被 `tokens` 拒绝（此前两次正常），不是死循环也不是首轮误判；不设次数 + 过期期限在第一次调用前即以 `elapsed_time` 拒绝；只剩终结预留时第 1 次调用就只给终结工具且工具一次未跑；额度充足时工具保持可用并正常终结；`window_deadline(600, 0/400)` 为 600/200 秒（恢复不重置）；有限次数 3 仍与既有“最后一次预留终结”行为一致；工作账户把同一 `job_id` 下的工作、压缩与无 usage 维护调用汇总进同一份已用量。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）与 `npm run build`（442 modules，成功）。
+
+验收状态：C08 为**实现完成 / 未运行**。D05 的 1800 秒仍未获确认——本轮实现的是“绝对期限不重置、排队不计入”的语义，默认值仍是根配置既有的 `job_max_seconds=600`；把 `conversation_window_seconds` 从 `null` 改成数值才会让对话轮次也有期限维度，两者都只需改配置。计划第 10.2 节矩阵中与本批相关的 A10、A11 待真实业务核对。
+
+下一阶段入口：C09 `feat(jobs): preserve revisions and budget ownership on resume`（依赖 C08），完成条件是继续不重置模型/预算/deadline、授权撤销限制后续操作、旧执行不会写新修订。
+
+## 2026-09-13 第二批 C09 实施
+
+按计划第 8.2 节完成 C09 `feat(jobs): preserve revisions and budget ownership on resume`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
+
+C09 的落点不是三处新判定，而是让同一条既有规则在**控制路径**上也成立——恢复既然是“同一工作的下一次执行”，就必须重新受同一份额度与**当前**授权约束：
+
+- 恢复/修订重新预占：`runtime/job_store.py:rehold_job_budget_in_transaction` + `cognition/call_store.py:rehold_work_in_transaction`。工作结束时预占已结算成“实际花了多少”，那一行不再表示“还能花多少”；直接拿它当 C08 的 token 上限会让工作在自己的第一次调用上就被判定超额，即“恢复”变成“立刻停止”。重开只作用于 `settled`/`released` 行，`reserved_tokens` 回到工作的累计上限，行与原 `day_key` 保留，不新增额度也不搬日子。
+- 不重复收费：`account_used_tokens_in_transaction` 增加 `exclude_job_id`，重预占复核日/群额度时把自己排除。
+- 恢复过当前 grant：`runtime/gate.py:evaluate_and_commit` 的授权循环按操作分支，`resume` 用**工作自身已存的发起者**（新增 `runtime/job_store.py:initiator_of`）过当前授予；撤销/停用/过期即拒绝恢复，revise 与 cancel 不启动执行、保持原样。控制者不能借恢复替别的来源扩权，人类主体的工作仍走既有白名单路径。
+- 旧执行写新修订：沿用既有 `revision` 匹配（本次只核对，未新增规则）。
+- 旧工作不发明额度：C07 之前的工作没有预占行，恢复时保持“没有 token 维度”由期限停止；有预占行却无从归属发起者的记录由重预占拒绝并给出原因。
+
+**C09 本轮实际执行的本地核对（非运行服务，临时库 `/tmp`，核对后删除）**：结算后再恢复，预占行从 `settled 1500` 变回 `held 1929216`、`day_key` 仍为原来那一天，恢复后计数 `revision 2 / model_steps 6 / tool_calls 5 / elapsed_seconds 38` 未清零；修订走同一分支（`held 1929216`，任务回到 `pending`）；该账号当天总占用为两个工作各 1,929,216，未把同一工作算两次；无预占行的旧工作被拒并给出 `This work has no typed initiator; continuing it would have no account to hold against`；用假配置源注入 grant 时，grant 存在则恢复无拒绝，`enabled=false` 与 grant 不存在都以 `Capability check refused at step 当前 grant` 拒绝；`save_job_compression` 对 `revision=0` 与已取消工作的 `revision=1` 均被 `JobChanged: Compression belongs to obsolete work` 拒绝。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）、`ConfigStore.load()`（实际根配置仍能加载，`resources.policies == {}`，未改根配置）。本次无前端改动，因此未重新执行 `npm run build`。
+
+验收状态：C09 为**实现完成 / 未运行**。本轮没有跑真实的“先建工作、再撤 grant、再恢复”端到端流程，也没有在真实规模上触发“额度不足”拒绝文本；D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。计划第 10.2 节矩阵中与本批相关的 A08（权限撤销）、A09（恢复不清零）待真实业务核对。
+
+下一阶段入口：C10 `feat(execution): define owned worker protocol and journal`（依赖 C09），范围是 `execution` 协议/客户端、`execution_runs` 与最小 Gateway 服务；计划第 8.3 节把“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”列为禁止的半成品，新后端与旧宿主路径不能并存。
+
 ---
 
 # 当前任务：A/B 审查修复与单群报告

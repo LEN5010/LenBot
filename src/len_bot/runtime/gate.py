@@ -118,17 +118,26 @@ class RuntimeGate:
         self.capability_authority = None
         self._publication_locks: dict[str, asyncio.Lock] = {}
 
-    def _capability_refusal(self, proposal, scene_id: str) -> str | None:
+    def _capability_refusal(self, proposal, scene_id: str, *, on_behalf_of=None) -> str | None:
         """The ordered capability check for one non-human work proposal.
 
         Check order stays in one place: scene, then the real source and
         initiator, then the current grant.  Later steps (original revision,
         the operation's own requirement, data scope, budget) are enforced
         where they already live and are not duplicated here.
+
+        A control on an existing work passes `on_behalf_of`, the identity that
+        work was created under: a resume starts new provider calls, so it is
+        checked against the grants that exist now, exactly like the creation
+        it continues.  Revoking a grant therefore blocks the next execution of
+        a work it once authorized, without rewriting anything the work has
+        already done.  The identity comes from the work itself, never from the
+        control's own proposal, so a control cannot lend its permissions to a
+        work someone else's origin created.
         """
         from len_bot.runtime.capabilities import Capability, subject_for
         try:
-            subject = subject_for(proposal.initiator, scene_id)
+            subject = subject_for(on_behalf_of if on_behalf_of is not None else proposal.initiator, scene_id)
         except ValueError as error:
             return str(error)
         authority = self.capability_authority
@@ -231,12 +240,28 @@ class RuntimeGate:
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
         if self.capability_authority:
             for proposal in outcome.job_proposals:
-                if proposal.operation != 'create' or proposal.human_initiator is not None:
+                if proposal.operation == 'create':
+                    if proposal.human_initiator is not None:
+                        continue
+                    # A non-human source never reuses the human request path.
+                    # It needs its own configured grant; an absent, disabled or
+                    # expired grant denies and the work is not created.
+                    refusal = self._capability_refusal(proposal, current_scene_state.scene_id)
+                elif proposal.operation == 'resume':
+                    # A resume starts new provider calls under the identity the
+                    # work was created with, so the grant that identity has now
+                    # is what decides it too.  Revise and cancel are not
+                    # starting execution and are left exactly as they were, and
+                    # the store's own re-validation keeps the revision and the
+                    # spend that must not restart.
+                    current = await self.event_store.get_job(proposal.job_id, current_scene_state.scene_id)
+                    on_behalf_of = self.event_store.initiator_of(current) if current else None
+                    if on_behalf_of is None or on_behalf_of.principal_type == 'human':
+                        continue
+                    refusal = self._capability_refusal(proposal, current_scene_state.scene_id,
+                                                       on_behalf_of=on_behalf_of)
+                else:
                     continue
-                # A non-human source never reuses the human request path.  It
-                # needs its own configured grant; an absent, disabled or
-                # expired grant denies and the work is not created.
-                refusal = self._capability_refusal(proposal, current_scene_state.scene_id)
                 if refusal:
                     return GateDecision(FinalDisposition.SILENCE, refusal, accepted=False)
         if self.validate_job_resume:

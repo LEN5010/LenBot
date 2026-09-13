@@ -6,8 +6,8 @@ AddressName = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 # These limits are captured by a new conversation or work execution segment.
 EXECUTION_BUDGET_FIELDS = frozenset({
-    'conversation_max_steps', 'conversation_max_tool_calls',
-    'job_max_steps', 'job_max_tool_calls', 'job_max_seconds',
+    'conversation_max_steps', 'conversation_max_tool_calls', 'conversation_window_seconds',
+    'job_max_steps', 'job_max_tool_calls', 'job_max_seconds', 'maintenance_max_tool_calls',
 })
 
 class RuntimeConfig(BaseModel):
@@ -23,11 +23,15 @@ class RuntimeConfig(BaseModel):
     db_path: str = Field(description='Path to SQLite database')
     debounce_idle_ms: int = Field(description='Sliding idle window (ms)')
     debounce_max_ms: int = Field(description='Max debounce wait cap (ms)')
-    conversation_max_steps: int = Field(ge=1)
-    conversation_max_tool_calls: int = Field(ge=1)
+    conversation_max_steps: int | None = Field(ge=1,
+        description='每轮对话的模型调用上限；null 表示该维度不设限，此时必须有期限或 token 上限')
+    conversation_max_tool_calls: int | None = Field(ge=1,
+        description='每轮对话的工具调用上限；null 表示该维度不设限')
     conversation_context_tokens: int = Field(ge=4000)
     conversation_output_tokens: int = Field(ge=256)
     conversation_recent_tokens: int = Field(ge=500)
+    conversation_window_seconds: float | None = Field(default=None, gt=0,
+        description='一轮对话自首次模型调用起的绝对期限（秒）；null 表示不设期限维度；恢复不重置')
     attention_keywords: list[str]
     attention_sample_window_seconds: float = Field(gt=0)
     attention_sample_probability: float = Field(ge=0, le=1)
@@ -36,9 +40,12 @@ class RuntimeConfig(BaseModel):
     max_context_images: int = Field(ge=1, le=6)
     work_output_tokens: int = Field(ge=256)
     jobs_enabled: bool
-    job_max_steps: int = Field(ge=1)
-    job_max_tool_calls: int = Field(ge=1)
-    job_max_seconds: float = Field(gt=0)
+    job_max_steps: int | None = Field(ge=1,
+        description='同一工作累计模型调用上限；null 表示该维度不设限，由期限与 token 上限停止')
+    job_max_tool_calls: int | None = Field(ge=1,
+        description='同一工作累计工具调用上限；null 表示该维度不设限')
+    job_max_seconds: float = Field(gt=0,
+        description='同一工作自首次执行起的绝对期限（秒）；次数不设限时由它停止')
     job_context_tokens: int = Field(ge=4000)
     job_compress_trigger: float = Field(gt=0, lt=1)
     job_compress_target: float = Field(gt=0, lt=1)
@@ -52,8 +59,10 @@ class RuntimeConfig(BaseModel):
     open_loop_ttl_seconds: float = Field(gt=0, description='待回应事项期限；表达提交时起算，真实送达后激活')
     media_enabled: bool
     message_pacing: bool
-    maintenance_max_steps: int = Field(ge=1)
-    maintenance_max_tool_calls: int = Field(ge=0)
+    maintenance_max_steps: int = Field(ge=1,
+        description='一次历史维护的模型调用上限；该循环没有期限维度，它是必需的停止条件')
+    maintenance_max_tool_calls: int | None = Field(ge=0,
+        description='一次历史维护的工具调用上限；null 表示该维度不设限')
     maintenance_interval_seconds: float = Field(description='Background maintenance of explicit open-loop expiry')
     identity_name: str
     address_names: list[AddressName] = Field(max_length=32, description='额外呼唤昵称；只提供参与线索，不强制回复')
@@ -118,4 +127,14 @@ class RuntimeConfig(BaseModel):
             raise ValueError("maintenance_output_tokens must leave input capacity")
         if self.job_compress_target >= self.job_compress_trigger:
             raise ValueError("job_compress_target must be less than job_compress_trigger")
+        # An unlimited count is a real choice, but only when something else
+        # genuinely stops the run.  A loop with no call limit and no deadline
+        # has no stopping condition at all, so the file refuses that
+        # combination instead of starting one.
+        if self.conversation_max_steps is None and self.conversation_window_seconds is None:
+            raise ValueError("conversation_max_steps 与 conversation_window_seconds 不能同时为 null；"
+                             "对话次数不设限时必须给出绝对期限")
+        if self.conversation_max_tool_calls is None and self.conversation_window_seconds is None:
+            raise ValueError("conversation_max_tool_calls 与 conversation_window_seconds 不能同时为 null；"
+                             "工具次数不设限时必须给出绝对期限")
         return self
