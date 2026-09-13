@@ -198,3 +198,15 @@ class CapabilityAuthority:
 
     def required_for_work(self, work_operation: str) -> tuple[Capability, ...]:
         return SYSTEM_WORK_CAPABILITIES.get(work_operation, ())
+
+    def policy_for_grant(self, grant: CapabilityGrant | None):
+        """The named policy a grant points at, or None when it names nothing.
+
+        A grant carries `resource_policy` as a name because the plan requires a
+        reference instead of a copied number.  An absent or unresolvable name is
+        reported as absent: the caller then uses the project's own default
+        policy, and no layer invents a quota on the grant's behalf.
+        """
+        if grant is None or not grant.resource_policy:
+            return None
+        return self.config_store.current.resources.policies.get(grant.resource_policy)

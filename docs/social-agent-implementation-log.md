@@ -17,6 +17,7 @@
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 实现完成 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 实现完成 | 未运行 |
 | C06 `feat(auth): add typed initiators and capability grants` | C00 | 实现完成 | 未运行 |
+| C07 `feat(budget): reserve and settle shared usage atomically` | C06 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
@@ -343,6 +344,106 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 - 工作 `tasks.payload` 增加 `initiator`（可选对象）。新记录总是写入；旧记录读回时按自身字段转换，没有离线转换步骤，也不需要停机迁移。
 - 根配置 `access.capability_grants` 增加字段，默认空；实际根配置未改动。
 - 没有 `CREATE TABLE`、`ALTER TABLE`，没有新增列。
+
+---
+
+## C07 共享用量原子预占与结算
+
+### 设计判断
+
+计划 M05 的额度模型有三条互不替代的要求：创建期一次性预占（D06：每日额度只在创建时检查会超发）、调用期可区分真实 usage 与本地估算、以及子调用归同一账。C07 落前两条的全部与第三条的收集，**执行期逐次扣减不属于本提交**（计划 C08）。
+
+| 计划要求 | 当前实现（C07 之前） | 本提交的做法 |
+|---|---|---|
+| 创建时原子预占，并发不重复用同一余额 | 无任何额度概念；只有 `RuntimeConfig` 的单次执行预算（步数/上下文/输出） | 新增 `usage_reservations`；预占写入 `apply_job_proposals_in_transaction`，它已经在 `commit_proposal_transaction` 的 `BEGIN IMMEDIATE` 写事务内，因此工作行与预占同生共死 |
+| 每次调用结算、按唯一 call_id 不重复扣除 | `model_calls` 已按 `call_id` 记录 `usage_json`/`estimate_json`，但没有汇总语义 | `settle_reservation_in_transaction` 按 `job_id` 汇总全部 `model_calls`，一次工作只写一行结论 |
+| 输入输出各计一次，缓存与推理不重复相加 | 无 | `measured_call_tokens()`：`prompt_tokens + completion_tokens` 即整笔计量，`cached_tokens`/`reasoning_tokens` 已含在内，不再二次相加 |
+| 供应商无 usage 时记录估算方法与保守预留，界面不得称为真实计费 | `estimate_json` 已存在，但没有任何路径说明“什么时候它是唯一的数字” | 无可用 usage 时记 `usage_tokens=0`、`estimated_tokens=本地输入估算 + 配置输出上限`；两列在库里分开，页面列名为“实际/本地估算” |
+| 用户额度按真实 UID 在账务时区一天内全局计算，跨群不重复 | 无 | 账务主体取 C06 的 `billing_subject`（`user:<真实UID>`/`system:<用途>`）；`ReservationPolicy.day_key(ts, timezone)` 用既有 `time.timezone` 计日；同一天同一账号跨场景只累加一次 |
+| 跨日归属按工作预占日固定 | 无 | `day_key` 在预占行上落库，结算只改该行状态，不重算日期 |
+| 策略数值只有一个可编辑来源 | 无 | 根配置新增 `resources.policies`；`CapabilityGrant.resource_policy` 只存名称，由 `CapabilityAuthority.policy_for_grant` 解析 |
+
+四处判断值得单独说明：
+
+1. **预占额由既有执行预算推导，而不是新增一个可编辑数字。** 计划要求“创建时预占该工作的预算，不超过 10M”。本提交把预占额算成 `min(work_token_limit, job_max_steps × (job_context_tokens + work_output_tokens))`，即 `min(10_000_000, 24 × (64000 + 16384)) = 1,929,216`。这样预占永远不可能大于运行器实际会执行的量，运营者改根配置的执行预算时预占自动跟随，不需要在第二处同步数字，也不会出现“预占比它能花的更多”这种把并发额度虚占光的形态。`work_token_limit=0` 时预占为 0——那是运营者明确的“本工作不得计费”而不是“不限”。
+
+2. **拒绝文案不静默改写目标。** 计划 D06 要求“授权撤销仍即时限制新操作”，同时 M05 要求“不能静默改写目标或额度”。额度不足时预占直接抛错并上抛为整个提交的 `SILENCE`（`runtime/gate.py:296` 的既有 catch），工作不创建；错误文本写明账号、日期、已占用、本次需要、上限，并指明“可以明确要求一个较小的工作范围”。没有“自动降级到小模型”“自动缩小目标”的分支。
+
+3. **结束方式分三种，取消不能抹掉已花的钱。** `close_reservation_in_transaction` 先查该工作有没有任何 `model_calls`：没有则整份释放（`released`，不占余额）；有则结算为真实消费（`settled`）。`complete_job`、`interrupt_job` 与 `plan` 里的取消操作都走这条判定，且都在各自的既有事务内。因此取消一个尚未开始的工作不消耗额度，取消一个已经调过模型的工作保留其已消费。
+
+4. **`resources.policies` 默认值为空字典，升级不改变行为。** 计划第 5.2 节要求额度策略只有一个可编辑来源。若默认就写入一份 10M/30M 的策略，等于给所有既有部署凭空加了一条限制；因此默认是 `{}`，由 `RuntimePolicy` 的字段默认值（10M/30M/场景不限）兜底，只有运营者显式在根配置或页面里新建策略才改变行为。`CapabilityGrant.resource_policy` 指向一个不存在的名字时同样回到默认，而不是报错或赋零。
+
+### 实际改动
+
+- `src/len_bot/cognition/budget.py`
+  - 新增 `ReservationPolicy`（pydantic，`extra='forbid'`、`strict`）：`work_token_limit`（默认 10M，`None` 表示不设该维度上限）、`daily_user_token_limit`（默认 30M）、`daily_scene_token_limit`（默认 `None`，即本场景未配置）。附 `day_key(timestamp, timezone)` 与 `work_reservation(model_steps, context_tokens, output_tokens)` 两个纯函数。
+  - 既有 `AgentBudget` 未改一行：它仍是执行期次数维度账本，token 维度在执行期的强制属 C08。
+- `src/len_bot/cognition/call_store.py`
+  - 新增纯函数 `measured_call_tokens(usage, estimate, *, conservative_output_tokens) -> (usage_tokens, estimated_tokens)`：两个字段都是数值才算真实 usage（`prompt+completion` 一次计完）；否则记 0 真实 + 本地输入估算加配置输出上限。半份 usage（只有输入没有输出）不拆分，按估算保留，理由写在 docstring。
+  - `initialize_model_calls` 新增 `usage_reservations` 表与 `(subject, day_key)` 索引。
+  - 新增 `account_used_tokens_in_transaction`（held 记 `reserved_tokens`，settled 记 `usage+estimated`）、`reserve_work_in_transaction`（账号日额度与场景日额度两道拒绝）、`release_reservation_in_transaction`、`settle_reservation_in_transaction`、`close_reservation_in_transaction`。全部是“在调用方事务内运行”的原语，自己不开事务、不加锁。
+- `src/len_bot/runtime/job_store.py`
+  - `billing_subject_for()`：账务主体取 C06 的 typed initiator；没有明确身份时 `subject_for` 抛错，不回落成群级或空账号。
+  - `reservation_policy_for()`：取默认策略，若该发起者在当前场景有一条 `long_work` 授予且授予指向可解析的策略名，则用该策略，并把 `grant_id` 记进预占行。
+  - `reserve_job_budget_in_transaction()` / `settle_job_budget()`、`job_reservation()` / `list_job_reservations()`。
+  - 接线：创建分支在 `INSERT INTO agent_jobs` 之后、`_queue_job_event` 之前预占；控制分支 `operation=='cancel'` 关闭预占；`complete_job` 与 `interrupt_job` 在各自 `commit` 之前关闭预占。
+- `src/len_bot/events/store.py`
+  - `EventStore.__init__` 新增三个由 Runtime 注入的属性：`budget_config`（既有 `RuntimeConfig`）、`capability_authority`、`billing_timezone`。缺省时按项目默认策略预占，工作不会静默变成不限额度。
+- `src/len_bot/config_store.py`
+  - 新增 `ResourceSettings(policies: dict[str, ReservationPolicy])` 与 `RootConfig.resources`，默认空。
+- `src/len_bot/runtime/capabilities.py`
+  - `CapabilityAuthority.policy_for_grant(grant)`：按名称解析，未命名/失效/无授予一律返回 `None`，由调用方使用默认策略。
+- `src/len_bot/runtime/agent_runtime.py`
+  - `_apply_budget_configuration()` 在构造期与 `update_root_settings('resources')` 之后注入上述三项配置；`'resources'` 加入允许的根配置节。
+- `src/len_bot/web/query_service.py` / `src/len_bot/web/routes/`
+  - `resource_settings()` 与 `GET/PUT /api/settings/resources`。
+  - `model_reservations()` 与 `GET /api/models/reservations`：按当前账务日给出 limits、逐账号 held/used/available、逐工作预占明细（含 `usage_tokens` 与 `estimated_tokens` 两列）。只读，数字来自预占事务写下的同一批行。
+- `src/len_bot/web/frontend/src/views/`
+  - 模型页新增“工作额度预占”卡片（账务日、三维上限、逐账号余额、逐工作明细，工作 ID 走既有 `EntityLink`）；系统设置页新增“额度策略”页签（JSON 编辑 `policies`），能力授予的 `resource_policy` 提示改为“只填名称”。
+  - 前端已实际重新构建（`npm run build`，442 modules → `ModelsView-B4IlBVo0.js` 49.58 kB、`SettingsView-CuDxwB_Z.js` 53.78 kB），产物与后端同批进入本次提交。
+- `lenbot.config.example.json`
+  - 增加 `"resources": {"policies": {}}`，便于人工初始化时看到该节存在；实际根配置未改动。
+
+### 未做的事
+
+- **没有把 token 维度接进执行期。** `AgentBudget` 仍是次数维度；`usage_reservations` 只在创建与结束时读写，执行中的每次模型调用不会实时扣减工作余额。计划 M05 的“每次调用：检查工作余额 → 预留本次估算 → 结算”属 C08 `feat(agent): enforce resource budgets across native loops` 的完成条件（“deadline 与 token 真实停止”）。本提交因此不能宣称“超过额度会自动停止执行”。
+- **没有新增绝对 deadline 或累计 token 硬停。** 既有 `job_max_seconds` 仍是单次执行超时且恢复会重新计时（见 [`readiness`](social-agent-readiness.md) 第 25 行），计划 C08/C09 处理。
+- **没有做跨日结转或历史回填。** 旧工作没有预占行，`list_job_reservations` 只列现有行；不追溯、不补算。
+- **没有为场景维度填默认数值。** `daily_scene_token_limit` 默认 `None`；计划第 2 章未给出场景维度的推荐值，本提交不替运营者决定。
+- **没有新增自动迁移脚本。** `usage_reservations` 由既有 `CREATE TABLE IF NOT EXISTS` 建；没有 ALTER、没有离线转换、没有校验和清单。
+- **没有新增、修改或运行测试、夹具或断言式探针。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `npm run build`（`src/len_bot/web/frontend`，442 modules，成功）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`resources.policies == {}`，`access` 两字段不变
+- 本地对象级核对（非运行服务，临时库 `/tmp`，核对后删除）：
+  - 策略解析：授予指向可解析名称 → 用该策略；指向失效名称/未命名/无授予 → 回到默认（10M/30M/场景不限）。
+  - `work_reservation`：24 步 → 1,929,216；100 步被 10M 上限截断 → 8,038,400；`work_token_limit=0` → 0；`None` → 算术上限。
+  - `measured_call_tokens`：完整 usage `{1200,300}` → `(1500,0)`；带 `cached_tokens`/`reasoning_tokens` 的同一笔仍 → `(1500,0)`（不重复相加）；只有输入 → `(0, 17484)`；无 usage 且估算为 0 → `(0,4096)`。
+  - 日边界：同一时刻在 `Asia/Shanghai` 与 UTC 下 `day_key` 分别为 `2026-09-14` / `2026-09-13`。
+  - 预占生命周期：两次 10M 预占后账号已占用 20,000,000；第三次 10,000,001 被账号日额度拒绝（返回写明的拒绝文本）；场景维度独立计数并按场景上限拒绝；无模型调用的工作关闭后为 `released` 且不再计入；已调用模型的工作结算为 `(1500, 0)`，账号占用从 20,000,000 降为 1500；次日为 0。
+  - 拒绝原子性：在 `BEGIN IMMEDIATE` 中先插入工作行再触发额度拒绝并回滚，工作行与预占行均为 0，证实拒绝不会留下半成品。
+  - 并发：两个创建在同一把写锁上竞争同一份 10 余额，一个 `held`、一个被拒，账号最终占用 6。
+  - 子调用归同账：同一 `job_id` 下的工作调用、压缩调用与插件子代理调用全部汇总进该行的 `usage_tokens`（1000+200+400+100=1700），无 usage 的子调用按估算计入；另一工作的调用未被计入。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D06 的具体数值仍未获用户确认**：本提交按计划第 2 章推荐裁决实现（创建时原子预占、并发不重复用同一余额），但“单工作 10M / 账号日 30M / 场景维度是否设限”这三项取值来自计划 M05 的叙述与 `RuntimeConfig` 既有默认，未获逐项确认。运营者可随时在“额度策略”页改；改成别的数值不需要改代码。
+- **真实并发创建未验证**：上述并发核对是在同一个进程内、同一把 `asyncio.Lock` 上完成的。真实的两个群同时委派工作、或重启后并发，未在真实服务上核对过。
+- **真实供应商 usage 形态未验证**：`prompt_tokens`/`completion_tokens` 之外的字段（如某些供应商的 `total_tokens` 语义）未在真实响应上核对；当前只把它们当作“已含在前两项内”。
+- **执行期额度未生效**：见“未做的事”第一条，任何“超额度会停止”的表述都不成立。
+- **恢复工作的额度归属**：`resume` 目前沿用原预占行（`job_id` 不变，`reservation_policy_for` 不会重写既有行），但“修订后的工作是否需要重新预占、原预占是否随修订放大”未定，计划 C09 `feat(jobs): preserve revisions and budget ownership on resume` 处理。
+- **`policy_name` 存的是 grant_id**：预占行记的是签发它的授予 ID，不是策略名——策略名可以改指，授予 ID 是当时的授权事实。页面“策略”列当前只显示限额，未显示 `policy_name`。
+
+### 涉及持久字段
+
+- 新增表 `usage_reservations`（`job_id` 主键；`scene_id`、`subject`、`day_key`、`policy_name`、`reserved_tokens`、`status`、`usage_tokens`、`estimated_tokens`、`created_at`、`settled_at`），由既有 `CREATE TABLE IF NOT EXISTS` 建立，不需要停机迁移；索引 `idx_usage_reservations_day(subject, day_key)`。
+- 根配置新增 `resources.policies`（默认空）；实际根配置未改动。
+- 既有 `model_calls`、`agent_jobs`、`tasks` 的列没有变化；旧工作没有预占行，读回时不补算。
 
 ---
 

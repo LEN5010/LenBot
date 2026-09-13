@@ -67,6 +67,106 @@ class JobStoreMixin(SkillStoreMixin):
             return None
         return self.resolve_plugin_work(job['plugin_origin'],job['work_operation'])
 
+    def billing_subject_for(self, initiator, scene_id: str) -> str:
+        """Who pays for a work, taken from its typed initiator.
+
+        A reservation is only ever opened for a typed identity: a human's own
+        request bills that real UID, and a system or plugin origin bills its
+        own explicit scope.  An unestablished identity raises instead of
+        falling back to a group-wide or empty account.
+        """
+        from len_bot.runtime.capabilities import subject_for
+        return subject_for(initiator, scene_id).billing_subject
+
+    def reservation_policy_for(self, initiator, scene_id: str, now: float):
+        """The quota policy a work runs under, plus the grant that named it.
+
+        The base is the operator's own default policy (`resources.policies`),
+        and a grant's `resource_policy` name replaces it when it resolves.
+        Resolving the name here is what lets an operator point a grant at one
+        policy instead of every layer copying a number; a grant that names
+        nothing — or names a policy that no longer exists — keeps the default,
+        which is the project's own 10M per work and 30M per user per day.
+        """
+        from len_bot.cognition.budget import ReservationPolicy
+        from len_bot.runtime.capabilities import Capability, subject_for
+        base = getattr(self, 'reservation_policy', None) or ReservationPolicy()
+        authority = getattr(self, 'capability_authority', None)
+        if authority is None:
+            return base, None
+        try:
+            subject = subject_for(initiator, scene_id)
+        except ValueError:
+            return base, None
+        grant = authority.grant_for(subject, Capability.LONG_WORK, now=now)
+        named = authority.policy_for_grant(grant)
+        if named is not None:
+            return named, grant.grant_id
+        return base, grant.grant_id if grant is not None else None
+
+    async def reserve_job_budget_in_transaction(self, job_id, scene_id, initiator):
+        """Hold this work's budget inside the caller's existing write transaction.
+
+        Called from `apply_job_proposals_in_transaction`, which already runs
+        inside `commit_proposal_transaction`'s write transaction, so the work
+        row and its hold become durable together or not at all.  Two works
+        created at the same moment therefore cannot both read the same free
+        balance and spend it twice.
+        """
+        policy, grant_id = self.reservation_policy_for(initiator, scene_id, self.clock())
+        config = getattr(self, 'budget_config', None)
+        steps = config.job_max_steps if config is not None else 0
+        context = config.job_context_tokens if config is not None else 0
+        output = config.work_output_tokens if config is not None else 0
+        tokens = policy.work_reservation(model_steps=steps, context_tokens=context, output_tokens=output)
+        await self.reserve_work_in_transaction(
+            job_id=job_id, scene_id=scene_id,
+            subject=self.billing_subject_for(initiator, scene_id),
+            day_key=policy.day_key(self.clock(), getattr(self, 'billing_timezone', None)),
+            tokens=tokens, policy_name=grant_id,
+            scene_limit=policy.daily_scene_token_limit, daily_limit=policy.daily_user_token_limit)
+        return tokens
+
+    async def settle_job_budget(self, job_id, reason: str = ''):
+        """End this work's hold: give back the unused part, keep what it spent.
+
+        A work cancelled before its first model call gives the whole hold back.
+        One that already called a provider keeps those tokens on its account,
+        so cancelling is never a way to erase spent budget.  `reason` records
+        why a never-used hold was released.
+        """
+        config = getattr(self, 'budget_config', None)
+        output = config.work_output_tokens if config is not None else 0
+        async with self._write_lock:
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                await self.close_reservation_in_transaction(
+                    job_id, conservative_output_tokens=output)
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def job_reservation(self, job_id):
+        names = ["job_id", "scene_id", "subject", "day_key", "policy_name", "reserved_tokens", "status",
+                 "usage_tokens", "estimated_tokens", "created_at", "settled_at"]
+        row = await (await self._db.execute(
+            f"SELECT {','.join(names)} FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
+        return dict(zip(names, row)) if row else None
+
+    async def list_job_reservations(self, scene_id=None, *, subject=None, day_key=None, limit=100):
+        clause, params = "", []
+        for column, value in (("scene_id", scene_id), ("subject", subject), ("day_key", day_key)):
+            if value is not None:
+                clause += f" AND {column}=?"; params.append(value)
+        rows = await (await self._db.execute(
+            "SELECT job_id,scene_id,subject,day_key,policy_name,reserved_tokens,status,usage_tokens,"
+            f"estimated_tokens,created_at,settled_at FROM usage_reservations WHERE 1=1{clause}"
+            " ORDER BY created_at DESC,job_id DESC LIMIT ?", [*params, limit])).fetchall()
+        names = ["job_id", "scene_id", "subject", "day_key", "policy_name", "reserved_tokens", "status",
+                 "usage_tokens", "estimated_tokens", "created_at", "settled_at"]
+        return [dict(zip(names, row)) for row in rows]
+
     async def _new_work_progress(self, scene_id, proposal, previous=None):
         spec=self.plugin_work({'plugin_origin':proposal.plugin_origin,'work_operation':proposal.work_operation})
         if spec is None:return None
@@ -131,6 +231,9 @@ class JobStoreMixin(SkillStoreMixin):
                 await self._db.execute("UPDATE tasks SET status='review_required' WHERE id=? AND scene_id=?",(job_id,scene_id))
                 event=await self._queue_job_event(EventType.AGENT_JOB_CONTROL,job_id,scene_id,job['revision'],
                     {'operation':'interrupt','reason':reason,'result':result.model_dump(mode='json')})
+                config = getattr(self, 'budget_config', None)
+                await self.close_reservation_in_transaction(
+                    job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
                 await self._db.commit()
                 return event
             except BaseException:
@@ -265,6 +368,7 @@ class JobStoreMixin(SkillStoreMixin):
                         json.dumps(list(dict.fromkeys(proposal.constraints_add)), ensure_ascii=False), json.dumps(sources),
                         json.dumps(list(dict.fromkeys(proposal.result_ids))), self.clock()))
                 tasks.append(task)
+                await self.reserve_job_budget_in_transaction(job_id, scene_id, proposal.initiator)
                 await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, 1, {"operation": "create"})
                 continue
             job_id = proposal.job_id
@@ -294,6 +398,12 @@ class JobStoreMixin(SkillStoreMixin):
                 (status, self.clock(), goal, origin_mode, job_id, scene_id))
             await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.resume_from',json(?)) WHERE id=? AND scene_id=?",
                 (json.dumps(resume_from,ensure_ascii=False),job_id,scene_id))
+            if proposal.operation == 'cancel':
+                # A cancelled work still owes whatever it already spent; only
+                # the unused part of its hold goes back.
+                config = getattr(self, 'budget_config', None)
+                await self.close_reservation_in_transaction(
+                    job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
 
@@ -494,6 +604,12 @@ class JobStoreMixin(SkillStoreMixin):
                     (result.summary, job_id, scene_id))
                 event = await self._queue_job_event(EventType.AGENT_JOB_FINISHED, job_id, scene_id, revision,
                     {"raw_text": "信息工作已有结果，结合最新要求核对后决定如何回应。", "result": result.model_dump(), "origin_mode": job["origin_mode"]})
+                # The hold becomes what this work actually spent, in the same
+                # transaction that records its result: a finished work never
+                # keeps holding budget it did not use.
+                config = getattr(self, 'budget_config', None)
+                await self.settle_reservation_in_transaction(
+                    job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
                 await self._db.commit()
                 return event
             except BaseException:

@@ -233,6 +233,13 @@ async def get_routing_metrics(request: Request, user: str = Depends(get_current_
     return request.app.state.runtime.query_service.metrics()
 
 
+@router.get("/reservations")
+async def get_model_reservations(request: Request, scene_id: str | None = None, subject: str | None = None,
+                                 user: str = Depends(get_current_user)):
+    """Current billing-day holds and available balance; reads only."""
+    return await request.app.state.runtime.query_service.model_reservations(scene_id, subject=subject)
+
+
 @router.get("/usage")
 async def get_model_usage(request: Request, scene_id: str | None = None, since: float | None = None, until: float | None = None,
                           purpose: str | None = None, status: str | None = None, page: int = Query(1,ge=1),

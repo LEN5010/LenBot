@@ -22,6 +22,19 @@
 
 下一阶段入口：先确认计划第 2 章 D01—D12 推荐裁决，再根据计划第 13 章补齐 Linux VPS、OneBot 文件协议、B 站专用账号、音频转写和可选 Core 的部署信息；D04/D06/D09 的具体取值直接决定 C06/C07 的字段与判定，开始 C06 前需要明确。未确认项不阻塞不依赖它们的能力编写，也不能先写入生产配置或验收结论。
 
+## 2026-09-13 第二批 C06—C07 实施
+
+按计划第 8.2 节完成 C06、C07 两个提交，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)（含设计判断、实际改动、未做的事、静态核对与未确认项）。
+
+- C06 `a06b4c6` 类型化发起者与能力授予：`HumanInitiator`/`SystemInitiator`/`PluginInitiator` 判别联合与只有真实事件能取人的 `human_event_uid`；`JobProposal.initiator` 由内部路径构造、模型不可见；事务内按类型分支二次校验；新增窄 `runtime/capabilities.py` 与根配置 `access.capability_grants`（默认空，未配置即拒绝）。
+- C07 共享用量原子预占与结算：新增 `usage_reservations`；预占在 `commit_proposal_transaction` 的既有写事务内与工作行同生共死；`measured_call_tokens()` 把真实 usage 与本地估算分成两列；`ReservationPolicy` 给出单工作/账号日/场景日三个维度；根配置新增 `resources.policies`（默认空，不改变既有部署行为），`CapabilityGrant.resource_policy` 按名称解析；模型页新增“工作额度预占”，系统设置页新增“额度策略”。
+
+**C07 本轮实际执行的本地核对（非运行服务，临时库核对后删除）**：两次 10M 预占后账号占用 20,000,000，第三次被账号日额度拒绝并给出可读文本；场景维度独立计数并按其上限拒绝；无模型调用的工作关闭后 `released` 且不再占用，已调用模型的工作结算为真实 `(1500, 0)`、账号占用从 20,000,000 降为 1500，次日为 0；`BEGIN IMMEDIATE` 内先插工作行再触发拒绝并回滚后，工作行与预占行均为 0；同锁并发创建同一份余额时一个成功一个被拒；同一 `job_id` 下的工作调用、压缩调用与插件子代理调用汇总进同一账。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）与 `npm run build`（442 modules，成功）。
+
+验收状态：C06、C07 均为**实现完成 / 未运行**。C07 只做创建期预占与结束期结算，**执行中按 token 或 deadline 真正停止属 C08**，本轮不得宣称“超额会自动停止”。D06 的取值（单工作 10M、账号日 30M、场景维度是否设限）仍按计划推荐裁决实现，未获用户逐项确认；运营者可在“额度策略”页改，改数值不需要改代码。计划第 10.2 节矩阵中与本批相关的 A03、A06、A07、A09 待真实业务核对。
+
+下一阶段入口：C08 `feat(agent): enforce resource budgets across native loops`（依赖 C07），完成条件是 None 次数模式无漏算/类型错误、deadline 与 token 真实停止、预留终结能力；随后 C09 `feat(jobs): preserve revisions and budget ownership on resume`。
+
 ---
 
 # 当前任务：A/B 审查修复与单群报告

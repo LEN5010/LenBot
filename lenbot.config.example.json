@@ -109,6 +109,9 @@
     "qq_reply_whitelist": [],
     "capability_grants": []
   },
+  "resources": {
+    "policies": {}
+  },
   "scenes": {},
   "time": null,
   "members": [],

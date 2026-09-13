@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.config import AddressName
-from len_bot.config_store import AccessSettings, TimeSettings, MemberSettings
+from len_bot.config_store import AccessSettings, ResourceSettings, TimeSettings, MemberSettings
 from len_bot.runtime.capabilities import CapabilityGrant
 from len_bot.web.auth import get_current_user
 
@@ -73,6 +73,20 @@ async def update_access_settings(values: AccessSettingsRequest, request: Request
 @router.get("/time")
 async def time_settings(request: Request, user: str = Depends(get_current_user)):
     return request.app.state.runtime.query_service.time_settings()
+
+
+@router.get("/resources")
+async def resource_settings(request: Request, user: str = Depends(get_current_user)):
+    return request.app.state.runtime.query_service.resource_settings()
+
+
+@router.put("/resources")
+async def update_resource_settings(request: Request, values: ResourceSettings, user: str = Depends(get_current_user)):
+    """Quota policies live with the capabilities that reference them by name."""
+    runtime = request.app.state.runtime
+    await save_root_section(runtime, "resources", values.model_dump())
+    return {"settings": runtime.query_service.resource_settings(),
+            "message": "额度策略已写入根文件；新策略用于此后新建的工作，已预占的工作保留自己的策略"}
 
 
 @router.put("/time")

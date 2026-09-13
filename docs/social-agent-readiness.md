@@ -19,9 +19,10 @@
 |---|---|---|---|
 | 唯一社会入口、保留既有链 | 已具备 | `cognition/social_core.py`、`runtime/gate.py`、`runtime/attention.py`、`scenes/actor.py` | 保留 |
 | 三项模型绑定（conversation/work/maintenance） | 已具备 | `cognition/providers.py:68-73`；`purpose` 白名单 `cognition/gateway.py:42`；work 绑定冻结在 `agent_jobs.model_binding_json`（`runtime/job_store.py:72`） | 保留 |
-| 调用账与用量记录 | 部分具备 | `model_calls` 表 `cognition/call_store.py:37-42`（含 `purpose`/`usage_json`/`estimate_json`），估算方法 `call_store.py:11-32`，聚合 `:90-119` | C07 |
-| 预算维度 | 部分具备（仅次数与已用时长） | `AgentBudget` 为次数维度 `cognition/budget.py:9-46`；工作三维 `runtime/job_runner.py:354-356`，落地在 `runtime/job_store.py:69-70`、`job_checkpoint():376-395` | C07、C08 |
-| 额度原子预占与结算 | 不存在 | 无 `usage_reservations`、无 daily/quota/settle 逻辑 | C07 |
+| 调用账与用量记录 | 已具备（C07 起含用量/估算区分） | `model_calls` 表 `cognition/call_store.py`（含 `purpose`/`usage_json`/`estimate_json`）；一次调用的真实用量与本地估算由 `measured_call_tokens()` 分开算出，缓存与推理 token 不重复相加 | C07 |
+| 预算维度 | 部分具备（次数、已用时长与 token 预占） | `AgentBudget` 仍为次数维度 `cognition/budget.py`；工作三维 `runtime/job_runner.py:354-356`；C07 起创建期预占与结算落在 `usage_reservations`（`cognition/call_store.py`） | C08 |
+| 额度原子预占与结算 | 已具备（C07 起） | 策略 `cognition/budget.py:ReservationPolicy`；创建期预占在 `commit_proposal_transaction` 的同一写事务内（`runtime/job_store.py:reserve_job_budget_in_transaction`）；结算与释放 `cognition/call_store.py:settle/release/close_reservation_in_transaction`；页面 `/api/models/reservations` 与模型页“工作额度预占” | C07 |
+| 日额度策略的编辑与生效 | 已具备（C07 起，默认不新增限制） | 根配置 `resources.policies`（`config_store.py:ResourceSettings`）；`CapabilityGrant.resource_policy` 按名称解析 `runtime/capabilities.py:policy_for_grant`；页面 `/api/settings/resources` 与系统设置页“额度策略” | C07 |
 | 绝对 deadline / 累计 token 上限 | 部分具备 | 现有 `job_max_seconds` 是单次执行超时（`execution/workspace.py:209`、`job_runner.py` 预算快照），不是“首次开始后的绝对期限”，且恢复会重新计时 | C08、C09 |
 | 三类身份（Human/System/Plugin） | 已具备（C06 起） | 类型定义 `events/models.py` 的 `HumanInitiator`/`SystemInitiator`/`PluginInitiator`；`JobProposal.initiator`（`cognition/jobs.py`）；事务内按类型分支校验 `runtime/job_store.py:_validate_job_initiator_in_transaction`；Gate 非人类分支走独立能力检查 `runtime/gate.py:_capability_refusal` | C06 |
 | CapabilityGrant / 能力集合 | 已具备（C06 起，默认空） | `runtime/capabilities.py` 的能力词汇与 `CapabilityAuthority`；根配置 `access.capability_grants`（`config_store.py`）；页面 `/api/settings/access` 与系统设置页 | C06 |
@@ -76,7 +77,6 @@
 | C05 `feat(context): expose delegable capabilities and focused references` | 可委托能力摘要与聚焦引用 | `cognition/context.py`、`tools/discovery.py`、记忆呈现 |
 
 ## 6. 第二批提交边界（C06）
-
 对应计划第 8.2 节的 C06 `feat(auth): add typed initiators and capability grants`：事件/工作/提案/调用模型、根配置、ScenePolicy/Gate、权限页面；完成条件是 human/system/plugin 分支明确、grant 不能由模型伪造、未配置新能力不扩权。
 
 | 落点 | 本轮改动 |
@@ -90,8 +90,23 @@
 | 根配置与页面 | `config_store.py` 的 `access.capability_grants`（默认空）、`/api/settings/access` 与系统设置页“能力授予” |
 | Gate | `runtime/gate.py` 对非人类发起的工作创建走独立能力分支，缺授予即拒绝，不借用人类请求路径 |
 
-## 7. 当前不可宣称的能力
+## 7. 第二批提交边界（C07）
 
-以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。
+对应计划第 8.2 节的 C07 `feat(budget): reserve and settle shared usage atomically`：`AgentBudget`、CallStore/JobStore、`usage_reservations`、模型页面；完成条件是 user+scene 并发预占一致、usage 与估算可区分、子调用归同一账。
+
+| 落点 | 本轮改动 |
+|---|---|
+| 额度策略 | `cognition/budget.py` 新增 `ReservationPolicy`：单工作上限、账号日上限、场景日上限与账务日边界；缺省为 10M/工作、30M/账号/日、场景维度未配置 |
+| 调用计量 | `cognition/call_store.py:measured_call_tokens()` 把一次调用拆成真实 usage 与本地估算两列；缓存 token 与推理 token 不重复相加；供应商无 usage 时不是 0，而是本地估算加配置的输出上限 |
+| 预占与结算 | `usage_reservations` 表；`reserve_work_in_transaction`（含账号日额度与场景日额度拒绝）、`settle_reservation_in_transaction`（按 `job_id` 汇总 `model_calls`）、`release_reservation_in_transaction`、`close_reservation_in_transaction` |
+| 创建期预占 | `runtime/job_store.py:reserve_job_budget_in_transaction` 在 `apply_job_proposals_in_transaction` 内、`commit_proposal_transaction` 已有写事务里执行，工作行与预占同生共死；并发创建不会读到同一份空闲额度 |
+| 结束期结算 | `complete_job`、`interrupt_job` 与取消操作在同一事务内把预占换成真实消费；未发生模型调用的工作整份释放 |
+| 策略解析 | `runtime/capabilities.py:policy_for_grant` 按名称解析 `CapabilityGrant.resource_policy`；未命名或名称失效时回到默认策略，不推测、不复制数值 |
+| 运行期接线 | `runtime/agent_runtime.py:_apply_budget_configuration` 把 `RuntimeConfig` 的执行预算、`CapabilityAuthority` 与既有业务时区交给存储；`update_root_settings('resources')` 后立即重取 |
+| 根配置与页面 | `config_store.py` 的 `resources.policies`、`/api/settings/resources` 与系统设置页“额度策略”；`/api/models/reservations` 与模型页“工作额度预占” |
+
+## 8. 当前不可宣称的能力
+
+以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 只做额度预占与结算；**执行中按 token 与 deadline 真正停止**属于 C08（当前 `AgentBudget` 仍是次数维度，`usage_reservations` 只在创建与结束时读写，不构成执行期逐次扣减）。
 
 已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。

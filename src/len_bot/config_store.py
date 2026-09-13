@@ -9,6 +9,7 @@ import tempfile
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, field_validator, model_validator
 
 from len_bot.config import RuntimeConfig
+from len_bot.cognition.budget import ReservationPolicy
 from len_bot.cognition.providers import ProviderConfig, RoutingConfig, RetrievalRouting
 from len_bot.plugins.catalog import PluginCatalog
 from len_bot.runtime.capabilities import CapabilityGrant, validate_grants
@@ -60,6 +61,17 @@ class AccessSettings(BaseModel):
     def distinct_grants(self):
         validate_grants(self.capability_grants)
         return self
+
+
+class ResourceSettings(BaseModel):
+    """Named quota policies.  A grant references one by name; no layer copies it.
+
+    The same shape as `access`: one editable list, no second copy in the
+    database.  Defaults stay absent so an upgrade introduces no new limit —
+    only an operator adds a policy and points a grant at it.
+    """
+    model_config = ConfigDict(extra="forbid", strict=True)
+    policies: dict[str, ReservationPolicy] = Field(default_factory=dict)
 
 
 class TimeSettings(BaseModel):
@@ -135,6 +147,7 @@ class RootConfig(BaseModel):
     models: ModelSettings
     delivery: DeliverySettings
     access: AccessSettings
+    resources: ResourceSettings = Field(default_factory=ResourceSettings)
     scenes: dict[GroupSceneId, SceneSettings]
     time: TimeSettings | None
     members: list[MemberSettings]
