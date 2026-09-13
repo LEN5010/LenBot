@@ -35,6 +35,23 @@
 
 下一阶段入口：C08 `feat(agent): enforce resource budgets across native loops`（依赖 C07），完成条件是 None 次数模式无漏算/类型错误、deadline 与 token 真实停止、预留终结能力；随后 C09 `feat(jobs): preserve revisions and budget ownership on resume`。
 
+## 2026-09-13 第二批 C08 实施
+
+按计划第 8.2 节完成 C08 `feat(agent): enforce resource budgets across native loops`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
+
+本轮不是“给类型加 `| None`”，而是把 `None` 语义、判定规则与停止条件一起落地（计划第 8.3 节把只用 `None` 放行、不改循环终结判断列为禁止的半成品）：
+
+- 新增 `count_remaining(limit, used)` 与 `tightest(*bounds)` 两个纯函数，`AgentLoop`、对话、工作、维护、压缩、报告批次与插件子 Agent 的判定全部改到它们上；`job_max_steps`、`job_max_tool_calls`、`conversation_max_steps`、`conversation_max_tool_calls`、`maintenance_max_tool_calls` 与插件 Agent 的两个次数字段改为 `int | None`。
+- `AgentBudget` 增加绝对 `deadline` 与从持久记录读到的 `tokens_limit`/`tokens_used`；`_refusal()` 在启动下一次调用前给出 `elapsed_time`/`model_steps`/`tokens` 三种拒绝；`terminal_seconds_reserve` 与 `terminal_token_reserve` 保证终结本身仍有输出与时间。
+- 工作的时间与 token 维度改由持久记录说话：`budget_state()` 读 `agent_jobs.elapsed_seconds`/`model_steps`/`tool_calls`，token 上限取该工作的 `usage_reservations` 预占额、已用量按同一 `job_id` 汇总全部 `model_calls`（含压缩、技能维护与插件子 Agent）。C07 的预占在这一步才成为真正的执行期硬上限。
+- 对话轮次新增可选 `conversation_window_seconds`（默认 `null`，升级不新增限制），`ConversationResume` 新增 `elapsed_seconds_limit` 使等待恢复继续同一个窗口而不是重新计时。配置在解析期拒绝“次数与期限同时为 `null`”这类没有任何停止条件的组合。
+
+**C08 本轮实际执行的本地核对（非运行服务，临时库核对后删除）**：不设次数 + 30 token 额度在第 3 次调用被 `tokens` 拒绝（此前两次正常），不是死循环也不是首轮误判；不设次数 + 过期期限在第一次调用前即以 `elapsed_time` 拒绝；只剩终结预留时第 1 次调用就只给终结工具且工具一次未跑；额度充足时工具保持可用并正常终结；`window_deadline(600, 0/400)` 为 600/200 秒（恢复不重置）；有限次数 3 仍与既有“最后一次预留终结”行为一致；工作账户把同一 `job_id` 下的工作、压缩与无 usage 维护调用汇总进同一份已用量。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）与 `npm run build`（442 modules，成功）。
+
+验收状态：C08 为**实现完成 / 未运行**。D05 的 1800 秒仍未获确认——本轮实现的是“绝对期限不重置、排队不计入”的语义，默认值仍是根配置既有的 `job_max_seconds=600`；把 `conversation_window_seconds` 从 `null` 改成数值才会让对话轮次也有期限维度，两者都只需改配置。计划第 10.2 节矩阵中与本批相关的 A10、A11 待真实业务核对。
+
+下一阶段入口：C09 `feat(jobs): preserve revisions and budget ownership on resume`（依赖 C08），完成条件是继续不重置模型/预算/deadline、授权撤销限制后续操作、旧执行不会写新修订。
+
 ---
 
 # 当前任务：A/B 审查修复与单群报告

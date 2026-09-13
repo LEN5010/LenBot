@@ -15,7 +15,7 @@ from len_bot.tools.results import ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.cognition.models import ConversationResume
 from len_bot.cognition.providers import ModelProfile
-from len_bot.cognition.budget import AgentBudget
+from len_bot.cognition.budget import AgentBudget, count_remaining, terminal_seconds_reserve, window_deadline
 from len_bot.plugins.agent import PluginExecution
 
 
@@ -46,7 +46,9 @@ class SocialCognitionCore:
         audit.update({'mode':'live','path':'conversation','model':binding.model,'provider_id':binding.provider_id,
                       'reasoning_effort':binding.reasoning_effort,
                       'budget_snapshot':{'model_calls_limit':config.conversation_max_steps,
-                                         'tool_calls_limit':config.conversation_max_tool_calls}})
+                                         'tool_calls_limit':config.conversation_max_tool_calls,
+                                         'elapsed_seconds_limit':config.conversation_window_seconds,
+                                         'resumed_elapsed_seconds':resume.elapsed_seconds if resume else 0}})
         context=ConversationContext(runtime,session,through_rowid)
         context.config=config
         context.input_budget=config.conversation_context_tokens-config.conversation_output_tokens
@@ -58,8 +60,16 @@ class SocialCognitionCore:
         execution=plugin_call.execution if plugin_call else PluginExecution(mailbox, audit)
         execution.context, execution.ledger = context, ledger
         execution.model_slot_owned = True
+        # A conversation window is absolute: it starts at this run's first
+        # model call and a resume keeps counting from where the wait left off
+        # rather than getting a fresh window.  The last call and the terminal
+        # keep a slice of it so the run still submits its result instead of
+        # being cut off mid-thought.
         execution.budget = execution.budget or AgentBudget(config.conversation_max_steps,
-            config.conversation_max_tool_calls, initial_models, initial_tools)
+            config.conversation_max_tool_calls, initial_models, initial_tools,
+            deadline=window_deadline(config.conversation_window_seconds, resume.elapsed_seconds if resume else 0.0),
+            terminal_seconds_reserve=terminal_seconds_reserve(config.conversation_window_seconds),
+            terminal_token_reserve=config.conversation_output_tokens)
         if plugin_call:
             ledger.plugin_source_ids.update(mailbox.plugin_source_ids)
             context.plugin_source_ids=mailbox.plugin_source_ids
@@ -104,7 +114,10 @@ class SocialCognitionCore:
         pending_exchange=None
         pending_presentations=[]
         # Read-tool exhaustion closes reads, not a still-budgeted follow-up or wait.
-        ledger.remaining_model_calls=lambda:config.conversation_max_steps-execution.budget.model_used
+        # An unlimited count has no remaining number to report; the ledger then
+        # keeps offering its full action set and the deadline or the account's
+        # own refusal is what ends the run.
+        ledger.remaining_model_calls=lambda:count_remaining(config.conversation_max_steps, execution.budget.model_used)
         def definitions():
             available=(toolkit.get_tool_definitions() + ledger.definitions()
                     + runtime.plugin_host.get_tool_definitions(plugin_context(), kind='proposal'))
@@ -115,8 +128,10 @@ class SocialCognitionCore:
             if next_is_final():return [terminal_definition()]
             return [*definitions(),terminal_definition()]
         def next_is_final():
-            return (execution.budget.model_used>=config.conversation_max_steps-1
-                    or execution.budget.tool_used>=config.conversation_max_tool_calls)
+            # `force_terminal` is the one place that knows every stopping
+            # dimension, so the request's tool set and the terminal's own
+            # action set both ask it rather than comparing counts here.
+            return execution.budget.force_terminal(execution.budget.local_state())
         try:
             initial_budget,_=execution_budget_message({
                 'model_calls_limit':config.conversation_max_steps,'model_calls_used':initial_models,
@@ -159,7 +174,11 @@ class SocialCognitionCore:
             return result
 
         async def append_update(trajectory):
-            can_absorb=config.conversation_max_steps-audit['model_calls_used']>=1
+            # New input is absorbed only while a further exchange still fits:
+            # an account with two or more calls left can read the new messages
+            # and still submit.  An unlimited count always can.
+            left=count_remaining(config.conversation_max_steps, execution.budget.model_used)
+            can_absorb=left is None or left>=2
             update=await observe() if observe and can_absorb else None
             if update:
                 context.session=update['session']
@@ -270,6 +289,7 @@ class SocialCognitionCore:
                     model_calls_used=execution.budget.model_used,tool_calls_used=execution.budget.tool_used,
                     context_tokens=config.conversation_context_tokens,output_tokens=config.conversation_output_tokens,
                     elapsed_seconds=(resume.elapsed_seconds if resume else 0)+time.monotonic()-started,
+                    elapsed_seconds_limit=config.conversation_window_seconds,
                     messages_committed=ledger.messages_committed+len(outcome.message_proposals),
                     next_checkpoint=ledger.checkpoint_index+1,next_proposal_handle=ledger._next_handle,
                     source_event_ids=[source.source_event_id for source in outcome.source_outcomes if source.status=='waiting'],

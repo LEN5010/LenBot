@@ -18,9 +18,13 @@ const runtimeText = ref(null), runtimeOriginal = ref(''), runtimeRestart = ref(f
 const runtimeSavedBudgets = ref({}), runtimeEffectiveBudgets = ref({})
 const executionBudgets = [{key:'conversation_max_steps',label:'每轮对话模型调用',unit:'次'},
   {key:'conversation_max_tool_calls',label:'每轮对话工具调用',unit:'次'},
+  {key:'conversation_window_seconds',label:'每轮对话绝对期限',unit:'秒'},
   {key:'job_max_steps',label:'同一工作累计模型调用',unit:'次'},
   {key:'job_max_tool_calls',label:'同一工作累计工具调用',unit:'次'},
-  {key:'job_max_seconds',label:'同一工作累计执行时间',unit:'秒'}]
+  {key:'job_max_seconds',label:'同一工作累计执行时间',unit:'秒'},
+  {key:'maintenance_max_tool_calls',label:'一次历史维护工具调用',unit:'次'}]
+const budgetText = (value, unit) => value===undefined ? '未提供'
+  : value===null ? '不设限（由其他维度停止）' : `${value} ${unit}`
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
@@ -441,7 +445,7 @@ watch(tab,load,{immediate:true})
     <v-card v-if="tab==='runtime'&&runtimeText!==null" class="pa-5 form-card">
       <h2>运行参数</h2>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
-      <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ runtimeSavedBudgets[item.key] ?? '未提供' }} {{ item.unit }}</td><td>{{ runtimeEffectiveBudgets[item.key] ?? '未提供' }} {{ item.unit }}</td></tr></tbody></table></div>
+      <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新的工作执行段采用当前发布预算；已开始的一轮使用其预算快照。工作恢复保留累计用量，改变上限不会自动重开已有结果或失败工作。</p>
       <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表单独显示这五项预算的当前发布值。</v-alert>
       <p class="muted my-3">预算、并发、媒体和维护等参数仍通过下方完整 JSON 保存。</p>

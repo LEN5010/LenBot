@@ -209,11 +209,15 @@ class AgentRuntime:
         if issue:return issue
         work=self.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
         needs_model=not work or work.needs_model is None or work.needs_model(job)
-        if needs_model and job['model_steps']>=self.config.job_max_steps:
+        # A dimension the operator left unlimited cannot be the reason a work
+        # may not resume; only a limit that actually carries a number can.
+        if (needs_model and self.config.job_max_steps is not None
+                and job['model_steps']>=self.config.job_max_steps):
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
-        if job['elapsed_seconds']>=self.config.job_max_seconds:
+        if self.config.job_max_seconds is not None and job['elapsed_seconds']>=self.config.job_max_seconds:
             return 'This work has no remaining execution time; its spent budget is not reset by resume'
-        if job['execution_status']=='partial' and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None):
+        if (job['execution_status']=='partial' and self.config.job_max_tool_calls is not None
+                and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None)):
             return 'This partial work has no remaining read-tool budget; continuing does not reset its counters'
         if not needs_model:return None
         try:

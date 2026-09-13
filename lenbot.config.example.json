@@ -13,6 +13,7 @@
     "debounce_max_ms": 2500,
     "conversation_max_steps": 8,
     "conversation_max_tool_calls": 16,
+    "conversation_window_seconds": null,
     "conversation_context_tokens": 24000,
     "conversation_output_tokens": 4096,
     "conversation_recent_tokens": 4000,

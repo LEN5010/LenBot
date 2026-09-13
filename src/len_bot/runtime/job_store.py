@@ -115,7 +115,11 @@ class JobStoreMixin(SkillStoreMixin):
         """
         policy, grant_id = self.reservation_policy_for(initiator, scene_id, self.clock())
         config = getattr(self, 'budget_config', None)
-        steps = config.job_max_steps if config is not None else 0
+        # The hold is the work's own configured ceiling multiplied out.  With
+        # the count dimension unlimited there is nothing to multiply, and with
+        # no runtime configuration at all there is no ceiling to read, so both
+        # fall back to the policy's own per-work number instead of holding zero.
+        steps = config.job_max_steps if config is not None else None
         context = config.job_context_tokens if config is not None else 0
         output = config.work_output_tokens if config is not None else 0
         tokens = policy.work_reservation(model_steps=steps, context_tokens=context, output_tokens=output)
@@ -543,9 +547,14 @@ class JobStoreMixin(SkillStoreMixin):
                 steps, calls = job["model_steps"] + model_steps, job["tool_calls"] + tool_calls
                 elapsed = job["elapsed_seconds"] + max(0, elapsed_seconds)
                 if limits:
-                    if steps>limits[0]:raise JobBudgetExhausted('Work model-step budget exhausted')
-                    if calls>limits[1]:raise JobBudgetExhausted('Work tool-call budget exhausted',budget_kind='tool_calls')
-                    if elapsed>limits[2] or model_steps and elapsed>=limits[2]:
+                    # A count the operator left unlimited is not a bound; only
+                    # the dimensions that actually carry a number can refuse.
+                    steps_limit, calls_limit, seconds_limit = limits
+                    if steps_limit is not None and steps > steps_limit:
+                        raise JobBudgetExhausted('Work model-step budget exhausted')
+                    if calls_limit is not None and calls > calls_limit:
+                        raise JobBudgetExhausted('Work tool-call budget exhausted',budget_kind='tool_calls')
+                    if seconds_limit is not None and (elapsed > seconds_limit or model_steps and elapsed >= seconds_limit):
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted',budget_kind='elapsed_time')
                 ids = list(dict.fromkeys(job["result_ids"] + list(result_ids)))
                 for result_id in ids:
@@ -786,8 +795,10 @@ class JobStoreMixin(SkillStoreMixin):
                     raise JobChanged("Skill source job changed")
                 steps, elapsed = job["model_steps"] + model_steps, job["elapsed_seconds"] + elapsed_seconds
                 if limits:
-                    if steps>limits[0]:raise JobBudgetExhausted('Work model-step budget exhausted before skill maintenance')
-                    if elapsed>limits[2] or model_steps and elapsed>=limits[2]:
+                    steps_limit, _calls_limit, seconds_limit = limits
+                    if steps_limit is not None and steps > steps_limit:
+                        raise JobBudgetExhausted('Work model-step budget exhausted before skill maintenance')
+                    if seconds_limit is not None and (elapsed > seconds_limit or model_steps and elapsed >= seconds_limit):
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted before skill maintenance',budget_kind='elapsed_time')
                 await self._db.execute("UPDATE agent_jobs SET model_steps=?,elapsed_seconds=? WHERE id=? AND scene_id=?", (steps, elapsed, job_id, scene_id))
                 await self._db.commit()

@@ -64,6 +64,11 @@ class ModelCallStoreMixin:
             status TEXT NOT NULL, usage_json TEXT, estimate_json TEXT NOT NULL,
             output_estimate_tokens INTEGER, error_type TEXT, disposition TEXT)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_model_calls_scene ON model_calls(scene_id,started_at)")
+        # The execution-time token stop reads one work's calls on every model
+        # request.  Without this index that read scans the whole call ledger
+        # each time, so the index is what keeps the budget check cheap rather
+        # than a caching layer over it.
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_model_calls_job ON model_calls(job_id,started_at)")
         # One row per accepted work: the quota it holds until it settles.  The
         # actual provider usage still lives in model_calls; this table only
         # answers "how much of today's balance is already spoken for".
@@ -110,13 +115,12 @@ class ModelCallStoreMixin:
         await self._db.execute("""UPDATE usage_reservations SET status='released',settled_at=?
             WHERE job_id=? AND status='held'""", (self.clock(), job_id))
 
-    async def settle_reservation_in_transaction(self, job_id, *, conservative_output_tokens: int):
-        """Replace a hold with what the work actually spent, keeping the split.
+    async def job_measured_tokens(self, job_id: str, *, conservative_output_tokens: int) -> tuple[int, int]:
+        """What this work has spent so far, split into real usage and estimate.
 
-        Every model call carrying this job id counts here, including
-        compression, skill maintenance and plugin sub-agents, so one work has
-        one account.  A provider that returned no usage is recorded from its
-        local estimate instead of being charged as zero.
+        Every call carrying the job id counts, including compression, skill
+        maintenance and plugin sub-agents: one work has one account whether it
+        is being settled or merely read while it still runs.
         """
         rows = await (await self._db.execute(
             "SELECT usage_json,estimate_json FROM model_calls WHERE job_id=?", (job_id,))).fetchall()
@@ -128,6 +132,18 @@ class ModelCallStoreMixin:
                 conservative_output_tokens=conservative_output_tokens)
             usage_tokens += measured
             estimated_tokens += estimated
+        return usage_tokens, estimated_tokens
+
+    async def settle_reservation_in_transaction(self, job_id, *, conservative_output_tokens: int):
+        """Replace a hold with what the work actually spent, keeping the split.
+
+        Every model call carrying this job id counts here, including
+        compression, skill maintenance and plugin sub-agents, so one work has
+        one account.  A provider that returned no usage is recorded from its
+        local estimate instead of being charged as zero.
+        """
+        usage_tokens, estimated_tokens = await self.job_measured_tokens(
+            job_id, conservative_output_tokens=conservative_output_tokens)
         await self._db.execute("""UPDATE usage_reservations SET status='settled',usage_tokens=?,
             estimated_tokens=?,reserved_tokens=?,settled_at=? WHERE job_id=? AND status='held'""",
             (usage_tokens, estimated_tokens, usage_tokens + estimated_tokens, self.clock(), job_id))

@@ -231,7 +231,7 @@ class WorkCompressor:
                 raise JobContextExhausted("没有可压缩的完整旧工具区间，资料引用保留")
             messages[:] = candidate
             return None
-        if job["model_steps"] >= config.job_max_steps - 1:
+        if config.job_max_steps is not None and job["model_steps"] >= config.job_max_steps - 1:
             if cost(candidate) > input_budget:
                 raise JobContextExhausted("剩余工作预算仅可终结，不能额外压缩")
             messages[:] = candidate

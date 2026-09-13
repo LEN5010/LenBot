@@ -19,11 +19,11 @@
 |---|---|---|---|
 | 唯一社会入口、保留既有链 | 已具备 | `cognition/social_core.py`、`runtime/gate.py`、`runtime/attention.py`、`scenes/actor.py` | 保留 |
 | 三项模型绑定（conversation/work/maintenance） | 已具备 | `cognition/providers.py:68-73`；`purpose` 白名单 `cognition/gateway.py:42`；work 绑定冻结在 `agent_jobs.model_binding_json`（`runtime/job_store.py:72`） | 保留 |
-| 调用账与用量记录 | 已具备（C07 起含用量/估算区分） | `model_calls` 表 `cognition/call_store.py`（含 `purpose`/`usage_json`/`estimate_json`）；一次调用的真实用量与本地估算由 `measured_call_tokens()` 分开算出，缓存与推理 token 不重复相加 | C07 |
-| 预算维度 | 部分具备（次数、已用时长与 token 预占） | `AgentBudget` 仍为次数维度 `cognition/budget.py`；工作三维 `runtime/job_runner.py:354-356`；C07 起创建期预占与结算落在 `usage_reservations`（`cognition/call_store.py`） | C08 |
-| 额度原子预占与结算 | 已具备（C07 起） | 策略 `cognition/budget.py:ReservationPolicy`；创建期预占在 `commit_proposal_transaction` 的同一写事务内（`runtime/job_store.py:reserve_job_budget_in_transaction`）；结算与释放 `cognition/call_store.py:settle/release/close_reservation_in_transaction`；页面 `/api/models/reservations` 与模型页“工作额度预占” | C07 |
+| 调用账与用量记录 | 已具备（C07 起含用量/估算区分） | `model_calls` 表 `cognition/call_store.py`（含 `purpose`/`usage_json`/`estimate_json`）；一次调用的真实用量与本地估算由 `measured_call_tokens()` 分开算出，缓存与推理 token 不重复相加；C08 起同一 `job_id` 的汇总（`job_measured_tokens`）也是执行期 token 停止的输入 | C07 |
+| 预算维度 | 已具备（C08 起含次数、期限与累计 token 三维） | `AgentBudget`（`cognition/budget.py`）同时持有次数、绝对 `deadline` 与从持久记录读到的 token 上限；`count_remaining`/`tightest` 是所有循环判定的唯一算法；工作三维快照 `runtime/job_runner.py:budget_state` | C08 |
+| 额度原子预占与结算 | 已具备（C07 起，C08 起成为执行期硬上限） | 策略 `cognition/budget.py:ReservationPolicy`；创建期预占在 `commit_proposal_transaction` 的同一写事务内（`runtime/job_store.py:reserve_job_budget_in_transaction`）；结算与释放 `cognition/call_store.py:settle/release/close_reservation_in_transaction`；页面 `/api/models/reservations` 与模型页“工作额度预占” | C07 |
 | 日额度策略的编辑与生效 | 已具备（C07 起，默认不新增限制） | 根配置 `resources.policies`（`config_store.py:ResourceSettings`）；`CapabilityGrant.resource_policy` 按名称解析 `runtime/capabilities.py:policy_for_grant`；页面 `/api/settings/resources` 与系统设置页“额度策略” | C07 |
-| 绝对 deadline / 累计 token 上限 | 部分具备 | 现有 `job_max_seconds` 是单次执行超时（`execution/workspace.py:209`、`job_runner.py` 预算快照），不是“首次开始后的绝对期限”，且恢复会重新计时 | C08、C09 |
+| 绝对 deadline / 累计 token 上限 | 已具备（C08 起） | 工作时间与 token 维度由 `runtime/job_runner.py:budget_state` 从 `agent_jobs` 与 `usage_reservations` 读出，`AgentBudget._refusal()` 在启动下一次调用前拒绝；工作期限是首次开始后的绝对量，恢复读持久累计时长，不重新计时；对话轮次可用 `runtime.conversation_window_seconds` 配置自己的绝对期限（默认 `null`，即不设该维度），`ConversationResume.elapsed_seconds_limit` 使等待恢复沿用同一窗口 | C08 |
 | 三类身份（Human/System/Plugin） | 已具备（C06 起） | 类型定义 `events/models.py` 的 `HumanInitiator`/`SystemInitiator`/`PluginInitiator`；`JobProposal.initiator`（`cognition/jobs.py`）；事务内按类型分支校验 `runtime/job_store.py:_validate_job_initiator_in_transaction`；Gate 非人类分支走独立能力检查 `runtime/gate.py:_capability_refusal` | C06 |
 | CapabilityGrant / 能力集合 | 已具备（C06 起，默认空） | `runtime/capabilities.py` 的能力词汇与 `CapabilityAuthority`；根配置 `access.capability_grants`（`config_store.py`）；页面 `/api/settings/access` 与系统设置页 | C06 |
 | 插件声明 `required_capabilities` | 不存在（C06 有意不加） | `PluginSpec`（`plugins/catalog.py:21-38`）无该字段；现有分类是 `sensory/tool/scheduled/hybrid`（`plugins/models.py:131-135`）。C06 只有能力词汇与授予结构；逐工具的能力要求随真正需要它的工具（文件上传、账号动作等）各自提交 |
@@ -66,7 +66,7 @@
 
 ## 5. 首批提交边界（C01—C05）
 
-对应计划第 8.2 节。这一批不依赖 Gateway、网络出口、账号或 Core。C06 属第二批，见第 7 节。
+对应计划第 8.2 节。这一批不依赖 Gateway、网络出口、账号或 Core。C06 属第二批，见第 6 节。
 
 | 提交 | 范围 | 本轮落点 |
 |---|---|---|
@@ -105,8 +105,23 @@
 | 运行期接线 | `runtime/agent_runtime.py:_apply_budget_configuration` 把 `RuntimeConfig` 的执行预算、`CapabilityAuthority` 与既有业务时区交给存储；`update_root_settings('resources')` 后立即重取 |
 | 根配置与页面 | `config_store.py` 的 `resources.policies`、`/api/settings/resources` 与系统设置页“额度策略”；`/api/models/reservations` 与模型页“工作额度预占” |
 
-## 8. 当前不可宣称的能力
+## 8. 第二批提交边界（C08）
 
-以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 只做额度预占与结算；**执行中按 token 与 deadline 真正停止**属于 C08（当前 `AgentBudget` 仍是次数维度，`usage_reservations` 只在创建与结束时读写，不构成执行期逐次扣减）。
+对应计划第 8.2 节的 C08 `feat(agent): enforce resource budgets across native loops`：`AgentLoop`、social/work/maintenance 与插件专用入口；完成条件是 None 次数模式无漏算/类型错误、deadline 与 token 真实停止、预留终结能力。
+
+| 落点 | 本轮改动 |
+|---|---|
+| `None` 的语义 | 新增 `count_remaining(limit, used)` 与 `tightest(*bounds)`（`cognition/budget.py`）：`None` 表示该维度不参与停止判定，既不当作 0 也不参与减法 |
+| 循环判定 | `AgentLoop` 每轮的余量 = 本调用参数、账本计数、调用方报告余量三者取最紧；`step_index == max_steps - 1` 这类比较被删除；工具批量检查同样走 `tightest` |
+| 对话 | `conversation_max_steps`/`conversation_max_tool_calls` 允许 `None`；新增可选 `conversation_window_seconds`；`ConversationResume.elapsed_seconds_limit` 让等待恢复沿用同一窗口 |
+| 工作 | `budget_state()` 读 `agent_jobs` 的累计次数与时长、`usage_reservations` 的预占额与同一 `job_id` 的全部 `model_calls` 汇总；`remaining_seconds()` 用持久累计时长算剩余，恢复不重置 |
+| 终结预留 | `terminal_seconds_reserve`（30 秒与上限四分之一取小）与 `terminal_token_reserve`（一次完整请求的容量，工作取 `job_context_tokens + work_output_tokens`） |
+| 配置 | `budgets_fit` 拒绝“次数与期限同时为 `null`”的无停止条件组合；`maintenance_max_steps` 保持必填，因为该循环没有期限维度 |
+| 运行期接线 | `runtime/job_runner.py`、`runtime/plugin_interactions.py`、`memory/reflector.py`、`runtime/work_context.py`、`plugins/builtin/group_summary/analysis.py`、`runtime/job_store.py`、`runtime/agent_runtime.py` |
+| 页面 | 运行参数页“执行预算”表增加“每轮对话绝对期限”并按 `null` 显示“不设限（由其他维度停止）”；Jobs 页用量行同样 |
+
+## 9. 当前不可宣称的能力
+
+以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间）。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
 
 已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。

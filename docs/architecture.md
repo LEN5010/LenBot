@@ -37,11 +37,13 @@ Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Se
 
 ConfigStore 从当前项目根目录的固定 `lenbot.config.json` 读取 RootConfig。先从 plugin_directories 和固定内置目录发现无运行副作用的 PluginSpec，再在同一入口解析 runtime、models、delivery、access、resources、scenes、time、members 与各插件专有 config。插件自己的配置模型及公共资料校验决定是否可用，已解析类型交给创建入口；面板候选也由 ConfigStore.parse 使用同一目录解析。未配置目录展示元数据，不创建实例或填入运行默认值。业务时区未配置为 null，不能启用缺少必需时间或成员资料的能力。样例、环境变量、CLI 与数据库不参与覆盖。模型连接取得实际凭据与端点，网络客户端显式禁用环境继承，连接参数变化时更新客户端。
 
-`resources.policies` 是额度数值的唯一可编辑来源，默认空：按名称保存 `ReservationPolicy`，能力授予里的 `resource_policy` 只存名称，由 `CapabilityAuthority` 在创建工作时解析，未命名或名称失效时回到项目默认策略，任何一层都不复制数值。创建工作的预占在 `commit_proposal_transaction` 已有的写事务内完成，`usage_reservations` 与工作行同生共死；结束（完成、中断、取消）在同一事务内把预占换成实际消费，没有模型调用的工作整份释放。真实用量仍来自 `model_calls`，本地估算与真实 usage 分列存储，`AgentBudget` 的次数维度不变。
+`resources.policies` 是额度数值的唯一可编辑来源，默认空：按名称保存 `ReservationPolicy`，能力授予里的 `resource_policy` 只存名称，由 `CapabilityAuthority` 在创建工作时解析，未命名或名称失效时回到项目默认策略，任何一层都不复制数值。创建工作的预占在 `commit_proposal_transaction` 已有的写事务内完成，`usage_reservations` 与工作行同生共死；结束（完成、中断、取消）在同一事务内把预占换成实际消费，没有模型调用的工作整份释放。真实用量仍来自 `model_calls`，本地估算与真实 usage 分列存储。
+
+`AgentBudget` 是这次判定唯一的账本，语义是“次数、绝对期限与累计 token 三者中任何一个用尽即不再启动下一次模型调用”。`count_remaining(limit, used)` 与 `tightest(*bounds)` 是所有循环唯一的余量算法：次数维度可以配置为有限值或 `null`，`null` 表示该维度不参与停止判定，既不当作 0 也不进入减法或序比较，因此“不设次数上限”不会读成“第一轮就耗尽”。配置解析期拒绝“次数与期限同时为 `null`”这类没有任何停止条件的组合（历史维护循环没有期限维度，它的模型次数因此保持必填）。工作的期限与 token 上限不由执行段自己记账：`budget_state()` 从 `agent_jobs` 读累计时长与调用次数、从该工作的 `usage_reservations` 行读它持有的 token 上限、并按同一 `job_id` 汇总全部 `model_calls`（含压缩、技能维护与插件子 Agent）得到已用量。因此“首次开始后的绝对期限、排队不计入、恢复不重置”都落在同一列既有数据上。终结本身预留一次请求的 token 容量与一段时间，额度只够终结时只提供终结工具，使工作在边界处提交已有结果而不是被截断。对话轮次另有可选的 `conversation_window_seconds`（默认 `null`），等待恢复用 `ConversationResume.elapsed_seconds_limit` 沿用同一窗口而不重新计时。
 
 面板保存持有 Runtime 的 config_update_lock，先验证完整候选并替换根文件，保存成功后发布内存设置。人格、注意力、发送、五项执行预算、额度策略与新轮次模型设置按对应入口发布；需要重新建立运行组件的参数记录需重启，不自动重启。文件失败就是保存失败，没有数据库替代写入、配置指纹或文件监听合并。
 
-SQLite 保存事件、账号、认识、人工样例、素材与来源、工作模型绑定、技能、资料、检查点、额度预占与运行结果，不作为运行配置来源。人格模板只返回候选字段和参考；操作者选择字段填入草稿，再正常保存配置，样例另经现有数据库接口逐条保存，结果分别呈现。
+SQLite 保存事件、账号、认识、人工样例、素材与来源、工作模型绑定、技能、资料、检查点、额度预占与运行结果，不作为运行配置来源。`model_calls` 另按 `job_id` 建索引，因为执行期的 token 停止要在每次请求前后按工作汇总它自己的调用。人格模板只返回候选字段和参考；操作者选择字段填入草稿，再正常保存配置，样例另经现有数据库接口逐条保存，结果分别呈现。
 
 请求来源、逐来源处理结果、checkpoint、挂起预算、交付关联与资料采用范围写入既有事件、task payload、工作结果及检查点 JSON，不为这些字段新增表或列。旧记录缺少独立 request_source_event_id 时保留未知，旧 observation_reads 缺省为空；读取投影不从累积证据猜请求人、推定全文已读或写回历史。
 
