@@ -1,17 +1,19 @@
-# 社会 Agent 前期准备与阶段落点
+# 历史归档：社会 Agent 前期准备与阶段落点
 
 > 制定日期：2026-09-13。计划基线 `LEN5010/LenBot@7a4152d`，第 2 节表格原始核对基线为本仓库 `76ef637`（分支 `social-agent-m0-foundation`）；C06 落地后该表中身份与能力授予两行已更新为当前落点。
 > 本文是实施前的准备材料，不是交付报告，也不是能力清单。计划条款见 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。
+
+> 归档范围：初始准备材料及 C06—C10 期间追加的落点记录，截至 `2c862c6`。本文件停止维护当前状态；下文“已具备”“实现完成”“本机状态”和“下一阶段”仅保留当时判断。相关缺陷见 [FX01—FX13](social-agent-c01-c10-fix.md)，当前状态只看 [iteration](iteration.md)。不能从旧表认定能力可启用。
 
 ## 1. 本次范围
 
 只做阅读、文档归档和静态事实核对：仓库 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）以及按计划条款逐项定位当前代码落点。未修改运行代码、根配置、数据库、模型绑定、人格、Shadow 或生产群名单；未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
 
-计划第 6 章给出的“建议新增文件”目前均不存在，本清单如实标注，不因为文档归档而改变仓库现状。计划第 8 章的提交编号 `C00—C29` 与第 6 章的模块编号 `M01—M20` 是两套索引；[`social-agent-improvement-plan.md`](social-agent-improvement-plan.md) 里的 `M0—M9` 是更早的粗粒度阶段，本文件不沿用该编号。
+初次归档时计划第 6 章给出的“建议新增文件”尚不存在；后续 C06—C10 已增加部分文件，以代码和下文更新记录为准，不能继续把初始清单当作当前文件库存。计划第 8 章的提交编号 `C00—C29` 与第 6 章的模块编号 `M01—M20` 是两套索引；[`social-agent-improvement-plan.md`](social-agent-improvement-plan.md) 里的 `M0—M9` 是更早的粗粒度阶段，本文件不沿用该编号。
 
 归档工作已提交为 `docs: archive social agent implementation plan`、`docs: mark prior phase contracts as archived`、`docs: scope the optional-capability gate to this phase`（`product`、`architecture`、`operations` 中残留的“下一阶段…”标题已改为已完成归档说明，避免两处并列的“下一阶段”相互冲突）。
 
-## 2. 计划条款的当前落点
+## 2. 计划条款的原阶段落点
 
 “落点”指当前实现该事实的确切位置。计划建议的新增文件若标为“不存在”，表示本次核对未在仓库中找到。
 
@@ -155,7 +157,7 @@
 | 持久字段 | 新增 `execution_runs`、`execution_events`（LenBot 与网关各自一份库，同一 schema）；网关另有 `execution_artifacts` |
 | 未取得的证据 | 本机无 Docker daemon，未启动任何容器；A07/A08/A17 相关项全部未确认 |
 
-## 11. 当前不可宣称的能力
+## 11. 原阶段记录的能力限制
 
 以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间），C09 让继续执行的工作重新受同一份额度与**当前**授权约束。**C10 只固定“一个执行”的对外合同、执行日志与最小网关服务**：被执行的 Python 仍在 LenBot 进程内调用宿主 Docker（`execution/workspace.py`），Gateway 客户端没有调用点，本机也没有 Docker daemon，因此“独立 Worker Gateway”本身**不是**当前能力，不得显示为可用。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
 

@@ -2,14 +2,13 @@
 
 面向维护者。产品语义见[产品行为](product.md)，起停与切换见[运行手册](operations.md)，本轮实现状态见[当前任务](iteration.md)。
 
-本阶段新增能力仍沿一条执行链：统一亮色卡片是确定性派生资产，继续使用 `ToolResult`、媒体资产库和原发送链；`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core；Python 工作空间和浏览器是默认关闭的插件，不能访问 OneBot 或启动第二个 AgentLoop。
+本文描述 `2c862c6` 的源码结构，已知缺口随对应模块说明。改造合同见 [C01—C10 fix](social-agent-c01-c10-fix.md)，实际核对证据和进度只写当前任务。
+
+统一亮色卡片是确定性派生资产，继续使用 `ToolResult`、媒体资产库和原发送链；`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core。Python 和浏览器工具返回资料，不提供直接 OneBot 发送入口；实际执行与隔离范围见 [执行边界](execution-boundaries.md)。
 
 ## 社会 Agent 计划与当前实现
 
-完整目标、D01—D12 推荐裁决、M0—M9 阶段和验收证据见 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。该计划是待实施合同；当前架构不因文档归档而获得新权限或新运行后端。现状中的 Python worker 仍按本文件与 [`执行边界`](execution-boundaries.md) 的当前实现运行，浏览器仍是同进程功能测试能力；独立 Gateway、公开网络出口、睡眠/心跳、公共兴趣、B 站账号动作与 OneBot 文件上传均须在对应阶段完成后再宣称可用。
-
-计划要求把 Agent 的公共兴趣存为与群成员认识分开的受限对象（`AgentInterestMemory`/`InterestItem`），沿现有事件和存储边界保存来源、有效期与发布范围；这不改变当前单一认识账本，也不允许把群资料、私聊资料或摘要推断写成公共兴趣。系统工作必须使用可为空目标群的明确 system/plugin 发起身份和独立计费主体，不能伪造人类请求。
-
+完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见 [完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)。本文不复制计划对象与未来拓扑。当前 Python 仍由 LenBot 调宿主容器运行时，浏览器仍在同进程内；新 Gateway 服务尚未接线，公共兴趣、心跳/睡眠、文件上传及点赞收藏未形成当前可用链路。
 
 ## 正常链路与所有权
 
@@ -22,7 +21,7 @@
 | `cognition` | 临时上下文、原生循环、短引用和暂存提案；SocialCognitionCore 是唯一社会判断入口 |
 | `runtime` | 生命周期、Gate、信息工作、预算与调用账；工作和维护不能直接发送 |
 | `scheduler/actions` | 持久认领、到期事件、队列、显式传输与回执 |
-| `memory` | 当前只维护单一认识账本与增量历史；计划中的公共兴趣沿同一事实边界新增受限类型，不与成员认识混用 |
+| `memory` | 单一认识账本与增量历史；当前没有公共兴趣存储 |
 | `skills` | 有来源、场景与版本的方法文档；没有额外执行权 |
 | `plugins/tools` | 注册工具与事件处理器、读取资料、调用公共 Agent 和提交入口；模型与发送仍由现有运行时执行 |
 | `media` | 原图读取、解码与窗口装配，运营素材及其来源；不调用独立视觉模型 |
@@ -35,21 +34,41 @@ Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Se
 
 ## 配置与持续数据
 
-ConfigStore 从当前项目根目录的固定 `lenbot.config.json` 读取 RootConfig。先从 plugin_directories 和固定内置目录发现无运行副作用的 PluginSpec，再在同一入口解析 runtime、models、delivery、access、resources、scenes、time、members 与各插件专有 config。插件自己的配置模型及公共资料校验决定是否可用，已解析类型交给创建入口；面板候选也由 ConfigStore.parse 使用同一目录解析。未配置目录展示元数据，不创建实例或填入运行默认值。业务时区未配置为 null，不能启用缺少必需时间或成员资料的能力。样例、环境变量、CLI 与数据库不参与覆盖。模型连接取得实际凭据与端点，网络客户端显式禁用环境继承，连接参数变化时更新客户端。
+ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig。先发现内置和 plugin_directories 中的无运行副作用描述符，再解析 runtime、models、delivery、access、resources、scenes、time、members 与插件 config。面板候选使用同一解析入口。样例、环境变量、CLI 和数据库不覆盖 LenBot 根配置；网络客户端显式禁用环境继承。业务时区未配置为 null，不满足相关插件必需条件时不能启用。
 
-`resources.policies` 是额度数值的唯一可编辑来源，默认空：按名称保存 `ReservationPolicy`，能力授予里的 `resource_policy` 只存名称，由 `CapabilityAuthority` 在创建工作时解析，未命名或名称失效时回到项目默认策略，任何一层都不复制数值。创建工作的预占在 `commit_proposal_transaction` 已有的写事务内完成，`usage_reservations` 与工作行同生共死；结束（完成、中断、取消）在同一事务内把预占换成实际消费，没有模型调用的工作整份释放。真实用量仍来自 `model_calls`，本地估算与真实 usage 分列存储。
+面板保存持有 Runtime.config_update_lock，先校验完整候选并替换根文件，再发布内存设置。需要重建组件的参数记录需重启，不自动重启。当前预算热更新有一处断点：update_runtime_settings 替换 Runtime.config，但 EventStore.budget_config 仍可能指向旧对象，创建预占和新执行段会读到不同上限，见 FX04。文件保存失败不会改用数据库存配置。
 
-一个工作只有一行预占，它的 `status` 说明这行现在代表什么：`held` 是“还能花多少”，`settled`/`released` 是“已经花了多少”与“还回去多少”。因此让一个已经结束的工作重新可执行（`resume`、`revise`）时，`rehold_work_in_transaction` 把这行重开为 `held` 并恢复到该工作的累计上限：拿 `settled` 的消费额当上限，会让工作在自己的第一次调用上就被判定超额。重开不新增额度、不改变 `day_key`（过去消费仍记在工作被接受的那一天），并在复核账号日与场景日额度时用 `exclude_job_id` 把自己排除，避免一个工作被计两次。没有预占行的旧工作不补数字，保持没有 token 维度；有预占行但无从归属发起者的记录由重开本身拒绝。
+SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 request_source_event_id 缺失保留未知，旧 observation_reads 缺省为空，不补造真实阅读或人类身份。C07 新增 usage_reservations，C10 新增 execution_runs/execution_events，不能再笼统描述本分支“没有新增表”。
 
-`AgentBudget` 是这次判定唯一的账本，语义是“次数、绝对期限与累计 token 三者中任何一个用尽即不再启动下一次模型调用”。`count_remaining(limit, used)` 与 `tightest(*bounds)` 是所有循环唯一的余量算法：次数维度可以配置为有限值或 `null`，`null` 表示该维度不参与停止判定，既不当作 0 也不进入减法或序比较，因此“不设次数上限”不会读成“第一轮就耗尽”。配置解析期拒绝“次数与期限同时为 `null`”这类没有任何停止条件的组合（历史维护循环没有期限维度，它的模型次数因此保持必填）。工作的期限与 token 上限不由执行段自己记账：`budget_state()` 从 `agent_jobs` 读累计时长与调用次数、从该工作的 `usage_reservations` 行读它持有的 token 上限、并按同一 `job_id` 汇总全部 `model_calls`（含压缩、技能维护与插件子 Agent）得到已用量，因此“首次开始后的绝对期限、排队不计入、恢复不重置”都落在同一列既有数据上。工作重新可执行（`resume`、`revise`）时也重新过一遍**当前**的能力授予：Gate 在 `create` 之外为这两条操作补上 `_capability_refusal`，主体取自工作自身已存的发起者（`initiator_of`）而不是这次控制提案，因此控制者不能借恢复替别的来源扩权，人类主体的工作也不走这一支。撤销阻止的是“下一次执行”，已经发生的调用与已发出的字节都不回退。终结本身预留一次请求的 token 容量与一段时间，额度只够终结时只提供终结工具，使工作在边界处提交已有结果而不是被截断。对话轮次另有可选的 `conversation_window_seconds`（默认 `null`），等待恢复用 `ConversationResume.elapsed_seconds_limit` 沿用同一窗口而不重新计时。
+### 发起者与能力检查
 
-面板保存持有 Runtime 的 config_update_lock，先验证完整候选并替换根文件，保存成功后发布内存设置。人格、注意力、发送、五项执行预算、额度策略与新轮次模型设置按对应入口发布；需要重新建立运行组件的参数记录需重启，不自动重启。文件失败就是保存失败，没有数据库替代写入、配置指纹或文件监听合并。
+工作 payload 可以保存 HumanInitiator、SystemInitiator 或 PluginInitiator；旧人类工作仅由其明确 requester/source 字段转换。JobStore 在提案事务内核验对应真实来源。普通 start_work 与插件 stage_work 仍以已读人类请求为入口。
 
-SQLite 保存事件、账号、认识、人工样例、素材与来源、工作模型绑定、技能、资料、检查点、额度预占与运行结果，不作为运行配置来源。`model_calls` 另按 `job_id` 建索引，因为执行期的 token 停止要在每次请求前后按工作汇总它自己的调用。人格模板只返回候选字段和参考；操作者选择字段填入草稿，再正常保存配置，样例另经现有数据库接口逐条保存，结果分别呈现。
+CapabilityGrant 保存在 access.capability_grants，默认空。Gate 对非人类 create/resume 复核当前授予，resume 的主体取自原工作；当前 revise 和执行期未完整覆盖。JobRunner 仍有按人类 chat_allowed 判定的路径，类型中出现 system/plugin 不代表自主工作已经贯通。information 的非人类授权使用 public_research，额度选择却另找 long_work Grant；资源策略引用失效会回退默认值，并发字段尚未执行。面板新增授予的请求还存在签发者校验顺序问题。这些均是 FX05/FX11 的现有缺口，不能通过跳过身份检查解决。
 
-请求来源、逐来源处理结果、checkpoint、挂起预算、交付关联与资料采用范围写入既有事件、task payload、工作结果及检查点 JSON，不为这些字段新增表或列。旧记录缺少独立 request_source_event_id 时保留未知，旧 observation_reads 缺省为空；读取投影不从累积证据猜请求人、推定全文已读或写回历史。
+### 预占、调用与结算
 
-外部执行的归属单独记在 `execution_runs`：一行一个 execution_id，写明它属于哪个工作的哪个修订、在哪个工作空间、按哪份固定镜像与网络策略**引用**运行，以及它实际走到哪里。这张表回答三个问题——哪次执行属于哪个工作版本、它到底做了什么、它的容器是不是真的没了——并且不回答工作是否完成：`exited` 只表示进程退出，业务结论仍读 `agent_jobs`/`tasks`。`execution_events` 按 `(execution_id, sequence)` 顺序保存事实，读取方保留已采用的最高序号，因此断线重读不会重复采用；状态变更与解释它的事件在同一事务里，非法转换两者都不写。execution_id 同时是幂等键：重复提交返回已存行且不重算绝对期限，内容不同则拒绝，因此“客户端超时”只能是查询同一执行，不能变成第二个容器。执行后端本身是一个独立部署的服务（`services/worker_gateway/`），它用自己的配置文件、自己的日志库和部署里唯一的容器运行时；请求只能给出镜像与网络策略的引用名，由该服务的部署配置解析，未登记的引用被拒绝而不是回退默认。它按接受时落库的绝对期限自行收尾，因此 LenBot 停机也能停；重启后只核对旧记录，不重放脚本、不接管上一次运行的容器。这套接口当前**没有接线**：`run_python` 仍在 LenBot 进程内调用宿主 Docker，切换是一个后续的整体动作，两条路径不同时存在。
+resources.policies 保存具名 ReservationPolicy。未命名或名称失效时当前代码回退到默认策略：单工作10M、账号日30M、场景日默认不限。即使根文件没有 resources，工作创建也会预占；这是当前升级行为，不是“默认不新增限制”。账务日使用业务时区，未配置时按 UTC；账号检查跨群聚合，场景检查仅在策略设限时执行。
+
+创建期预占与工作行位于 commit_proposal_transaction 的同一写事务，避免并发创建重复使用同一余额。一工作一行 usage_reservations：held 时 reserved_tokens 是整项工作的预占总量，并非扣除消费后的余额；结算会将它覆盖为已计量消费，未调用模型的取消可释放该行。真实 usage 与估算分列，model_calls 保留各调用身份，按 job_id 建索引。
+
+目前每次模型请求只在 ModelGateway 创建调用记录，没有按最终输入和本次输出上限统一原子预留。AgentBudget 的 token 拒绝仅比较已用量；压缩和技能维护还存在旁路。complete_job 关闭预占后，技能候选仍可能调用模型；晚到 usage 也不会自动修正已结算的日账。不能把模型调用都带 job_id 当作准入和结算已完整共享，见 FX01/FX02。
+
+AgentBudget 使用 count_remaining/tightest 处理可为空的次数字段，接近阈值时隐藏普通工具以促成终结；这不是为终结请求实际保留了足额 token 或时间。次数与单工作 token 上限同时为 null 时，预占计算可能返回0并使首轮被拒，见 FX04。历史维护的模型次数仍必填。
+
+### 工作与对话的恢复限制
+
+工作保存累计 model_steps、tool_calls 和 elapsed_seconds。JobRunner 以配置时限减累计活动时长换算运行段 timeout；执行段以外的暂停和停机间隔不计入。没有保存首次开始后的 deadline，不能将 elapsed_seconds 称为绝对期限。
+
+resume/revise 保留原 ID、资料、模型绑定和累计计数，重开 settled/released 预占时却按当时配置重新算上限；原上限已经被结算覆盖，不能保证恢复同一获准额度。重开保留原 day_key，并排除自己的旧结算再计算占用；无预占的旧工作仍没有 token 维度。修复原快照和期限的要求见 FX03/FX04。
+
+对话可配置 conversation_window_seconds；ConversationResume 保存累计活动时长和 elapsed_seconds_limit，但恢复分支没有采用已存时限，等待间隔也不计入。对话请求及工具等待尚未被该期限完整包围；不能声称等待恢复不延长窗口。人格候选与人工样例仍分别经根配置和数据库接口保存，与这些预算缺口无关。
+
+### 未接线的 Worker Gateway
+
+execution/protocol、client、journal 及 services/worker_gateway 已有代码。LenBot EventStore 初始化 execution_runs/execution_events；独立 Gateway 若启动，使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。当前无客户端接线把 run_python 的实际执行或事件同步到这套记录，不能把两库描述成已同步的事实副本。
+
+Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务，读取 after 返回更大序号，调用者仍负责保存已采用位置。HTTP 客户端严格枚举解析、启动/取消/恢复转换、未知容器清理、工作区所有权、UID/挂载和文件边界均有 FX06—FX10 所述缺口，尚不能承担正式执行。当前 Python 路径及可用安全打开逻辑见执行边界，正式切换条件只在完整计划维护。
 
 ## 输入、注意力与实际阅读
 
@@ -83,7 +102,7 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。提交工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。每个 checkpoint 使用独立 CONVERSATION_COMMITTED 事件与 action_id，发送批次绑定该提交，episode_id 另保留原执行身份；重复提交只返回原记录，不再次发布。Actor 原子提交后更新会话/认识版本和累计消息数，Ledger 才清空该阶段；next=continue 在原 AgentLoop 中得到真实提交/发布回执再继续，步骤和工具额度不重置。发布失败不把 accepted 改成 rejected，后续失败仍保留所有已提交 checkpoint。
 
-核心与插件提案直接返回 status、proposal_ref 及对应 ack_ref／operation_ref，仍只表示未提交意向。最后一个模型步骤预留终结工具，定义由当前提案状态生成，预算耗尽不追加模型请求。每次请求和 Trace 记录运行时生成的调用序号、后续模型余量、工具余量；工作还记录累计执行时间余量。压缩计入原账后，重新生成剩余额度、终结定义和最终容量核对，避免把压缩前的工具额度发送给模型。
+核心与插件提案直接返回 status、proposal_ref 及对应 ack_ref／operation_ref，仍只表示未提交意向。有限模型次数的最后一步只提供终结工具，定义由当前提案状态生成；这项次数限制不证明累计 token 有足额预留。每次请求和 Trace 记录运行时生成的调用序号、后续模型余量、工具余量；工作还记录累计执行时间余量。压缩计入原账后，重新生成剩余额度、终结定义和最终容量核对，避免把压缩前的工具额度发送给模型。
 
 模型返回的所有调用先核对完整 ID、唯一性、工具名与 JSON 对象形状，再执行。非法 JSON、未知工具、缺失或重复 ID、协议截断保持运行失败；已开放工具的参数类型错误形成 invalid_arguments 观察，无结果、单次超时和可处理业务失败保留各自错误码，在原预算内交回模型决策。正常返回与可处理错误保留对应原生回执，成功资料不因同组另一条普通错误而丢失；运行时不自行修改参数、重做相同调用或开启修复模型。
 
@@ -123,9 +142,9 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 面板登录后的无发言管理提案由 Actor 传入可信 operator_control，允许修改／恢复既有工作、修改／触发提醒和其他原有状态管理，不用空 QQ UID 检查聊天资格，也不生成聊天消息。工作和提醒的原请求者保留，后续执行与交付仍检查当前群、插件、版本和请求者资格。管理提交不消费群友未读输入，不记成模型选择沉默。
 
-工作保存目标版本、已用预算、原始资料和简短 WorkState。完整 assistant/tool 交换形成检查点，图片只保存资产引用；查询接口只暴露元数据，不暴露供应商私有续接。修订保留原 ID、绑定、资料及已花预算，旧版本在完整交换边界停止提交；取消后不继续开启工具调用。显式恢复使用最后完整检查点、原绑定和剩余预算，暂停时间不算执行时间，不能通过恢复清零成本或重跑已形成的完整结果。已有明确缺口的 partial 可在 result_ready/completed/failed/review_required 且预算仍有余量时显式 resume；awaiting_delivery、delivery_unknown、cancelled 和 shadow_observed 不因此重开。resume 不接受目标或范围变更，使用原 ID 和新 revision；task.payload.resume_from 保留上一版本结果、交付状态、action/event 关联，原始完成事件与回执不改写。
+工作保存目标版本、已用预算、原始资料和简短 WorkState。完整 assistant/tool 交换形成检查点，图片只保存资产引用；查询接口只暴露元数据，不暴露供应商私有续接。修订保留原 ID、绑定、资料和累计计数，旧版本在完整交换边界停止提交；取消沿原取消路径结束。显式恢复使用最后完整检查点和原绑定，暂停时间当前不计入活动时长；重开额度与绝对期限的缺口见上文，不能把保留计数等同于保留原上限。完整结果不以重送为由重跑。已有明确缺口的 partial 可在 result_ready/completed/failed/review_required 且预算仍有余量时显式 resume；awaiting_delivery、delivery_unknown、cancelled 和 shadow_observed 不因此重开。resume 不接受目标或范围变更，使用原 ID 和新 revision；task.payload.resume_from 保留上一版本结果、交付状态、action/event 关联，原始完成事件与回执不改写。
 
-长结果先换成可续读资料引用；仍需压缩时，maintenance 只整理确定的旧完整工具组，保留近期原生交换、目标与未决项。压缩使用同一工作预算；失败或未缩小不发布覆盖，原交换和观察不删除。
+长结果先换成可续读资料引用；仍需压缩时，maintenance 只整理确定的旧完整工具组，保留近期原生交换、目标与未决项。压缩调用带原 job_id，记录次数和活动时长，但 token 准入旁路仍见 FX01；失败或未缩小不发布覆盖，原交换和观察不删除。
 
 `finish_work` 提交总结、资料引用、evidence_spans 和未决项，运行时据未决项形成 completed 或 partial。每个结论所引 result_id 须有相应实际提供范围，工作状态和已完成步骤也可附范围；存储只核验来源、坐标及实际阅读，不代替模型论证。搜索摘要或失败观察不能冒充外部查证完成，来源可用性不证明自然语言结论正确。
 
@@ -151,7 +170,7 @@ next=wait 只允许一个真实期待回应的消息，并保留后续模型和�
 
 认识账本保存主体、陈述、reported/inferred、原话证据、有效期与修订链。查询先按允许场景、主体、类型、认识创建时间和有效状态筛选，再复用确定性中文片段与别名排序；昵称、群名片和有效 reported 称呼只作同一主体的检索线索，不合并身份或新增认识。当前互动投影限有关参与者与本群的有效明确偏好，其他认识按需读。角色资料、模型摘要和 Bot 自己的发言不能独立证明群友事实或现实能力。
 
-HistoryMaintainer 只处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。
+历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。LLMReflector 的认识读取已有 limit/offset，但尚未按后续请求余量裁定完整记录页，超容量仍在 prepare_request 结束，见 FX13。
 
 技能目录按用途、适用及排除条件确定性检索，返回版本；正文沿普通观察分页，工作首次读取时固定版本。有实际工作观察或明确纠正的候选才触发一次 maintenance，同一次模型调用只接受 save_skill 或 skip_skill 中的一条终结。重复、没有方法价值、来源不足或仅有暂时故障可正常 skipped，原因保存在既有候选结果字段；保存和跳过均核对候选状态与来源工作版本。有效纠正形成新版本并保留前版与依据，人工内容不能自动覆盖，公开针对指定版本。
 
@@ -195,7 +214,7 @@ OneBotAdapter 管理一个消息连接，显式选择主动或反向 WebSocket�
 
 Vue Router hash history 管理页面、对象、筛选与分页，Vuetify 提供控件。正文与凭据不进入 URL 或浏览器持久存储。管理列表返回 `{items,total,page,page_size}`，消息时间线使用原始 rowid 游标和首次 snapshot_rowid；有限配置目录和固定素材目录明确完整返回。
 
-RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
+RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。额度页当前用最近100条明细和默认策略计算余额，按群筛选也影响该汇总；它不等于准入使用的完整账号日账，见 FX12。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
 
 写操作经现有事件／提案边界，保留具体失败，不自动重试；刷新不恢复工作或重发。迟到响应不覆盖新对象，未保存草稿和旧读取时间明确显示。技能 skipped 在面板显示正常原因，不显示为维护失败。
 
@@ -225,7 +244,3 @@ ModelGateway 在真实请求前创建唯一 model_calls 记录，成功、失败
 插件的 before_model、after_model、before_tool、after_tool、before_commit 与 after_delivery 钩子按声明范围及稳定顺序执行。模型原 usage、原调用身份、观察与回执不改写；参数和提交前片段经过原类型边界，附加资料进入 user 投影，实际变化或停止写入 Trace。消息片段钩子在 Actor 提交前调用，送达钩子在回执保存后由宿主任务执行。AgentLoop 的调用计数通过同一个 AgentBudget 账户收口；工作账户继续委托原 JobStore 计费与时间检查，不另建存储。
 
 调用者的 plugin_material 是本次任务输入；plugin_hook_instructions/plugin_hook_material 仅属于当前请求的钩子补充，下一步只清理后两类。输入资料仍参与统一容量与实际阅读范围核对。普通对话和插件专用循环共用完整工具组的呈现入口，按实际余量装配正文与附件像素，再写采用范围；不得把附件 ID 当成已经提交的视觉输入。
-
-## 上一轮能力边界（2026-09，已完成归档）
-
-统一亮色卡片是确定性派生资产，继续沿 `ToolResult`、媒体资产库和原发送链交付；它不替代原始事件、日程、直播采样或报告 JSON。`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core，Python 工作空间和浏览器也都是默认关闭的插件，均不能访问 OneBot 或启动第二个 AgentLoop。本节描述的是本轮已经交付的现状，不再作为下一阶段契约；后续阶段目标见文首的 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。
