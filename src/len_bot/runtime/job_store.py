@@ -131,6 +131,30 @@ class JobStoreMixin(SkillStoreMixin):
             scene_limit=policy.daily_scene_token_limit, daily_limit=policy.daily_user_token_limit)
         return tokens
 
+    async def rehold_job_budget_in_transaction(self, job_id, initiator, scene_id):
+        """Put a continued work back on hold inside the control's own transaction.
+
+        A resume or a revise makes the work executable again, so it needs a
+        live hold under the ceiling it was created with; the hold C07 opened at
+        creation was already settled or released when the previous execution
+        ended.  The initiator is the stored one, so a continuation cannot bill
+        a different account, and the reservation keeps its original day.  A
+        work with no initiator has no account to hold against and is refused
+        rather than billed to a guessed subject.
+        """
+        if initiator is None:
+            raise ValueError('This work has no typed initiator; continuing it would have no account to hold against')
+        policy, grant_id = self.reservation_policy_for(initiator, scene_id, self.clock())
+        config = getattr(self, 'budget_config', None)
+        steps = config.job_max_steps if config is not None else None
+        context = config.job_context_tokens if config is not None else 0
+        output = config.work_output_tokens if config is not None else 0
+        tokens = policy.work_reservation(model_steps=steps, context_tokens=context, output_tokens=output)
+        await self.rehold_work_in_transaction(
+            job_id=job_id, tokens=tokens, policy_name=grant_id,
+            scene_limit=policy.daily_scene_token_limit, daily_limit=policy.daily_user_token_limit)
+        return tokens
+
     async def settle_job_budget(self, job_id, reason: str = ''):
         """End this work's hold: give back the unused part, keep what it spent.
 
@@ -329,6 +353,22 @@ class JobStoreMixin(SkillStoreMixin):
         if initiator.agent_id != actor_id.removeprefix('system:'):
             raise ValueError('System initiator must be the agent that actually produced its source event')
 
+    @staticmethod
+    def initiator_of(job):
+        """The typed initiator a job record already carries, or None.
+
+        `_decode_job` has already converted an older record from its own exact
+        requester and request anchor, so this reads the same stored identity
+        the work was created under instead of rebuilding one at the control
+        site.  A record without a definite anchor keeps None.
+        """
+        stored = job.get('initiator')
+        if stored is None:
+            return None
+        from pydantic import TypeAdapter
+        from len_bot.events.models import Initiator
+        return TypeAdapter(Initiator).validate_python(stored)
+
     async def apply_job_proposals_in_transaction(self, proposals, scene_id, episode_id, origin_mode, observed):
         """Apply the caller's already validated operations in its transaction."""
         tasks, references = [], {}
@@ -404,10 +444,28 @@ class JobStoreMixin(SkillStoreMixin):
                 (json.dumps(resume_from,ensure_ascii=False),job_id,scene_id))
             if proposal.operation == 'cancel':
                 # A cancelled work still owes whatever it already spent; only
-                # the unused part of its hold goes back.
+                # the unused part of its hold goes back.  Its own typed
+                # initiator is already the one its hold was opened under, so
+                # the account cannot be swapped by a control.
                 config = getattr(self, 'budget_config', None)
                 await self.close_reservation_in_transaction(
                     job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
+            elif proposal.operation in {'resume', 'revise'}:
+                # A resume or a revise makes the work executable again — the
+                # next execution is a new run under the same identity — so it
+                # needs a live hold again.  Without one its token dimension
+                # would read as "no ceiling" instead of the ceiling it was
+                # created under, and the work would run with no account at all
+                # while its counts stay unlimited by default.  Neither
+                # operation extends that ceiling: the work's cumulative spend
+                # keeps counting against the same number, on the day it was
+                # accepted.  A work older than the reservation regime has no
+                # hold, so it keeps no token dimension rather than being given
+                # an invented one; a work whose hold exists but whose identity
+                # was never definite is refused by the re-hold itself instead
+                # of being billed to a guessed account.
+                if await self.job_reservation(job_id) is not None:
+                    await self.rehold_job_budget_in_transaction(job_id, self.initiator_of(current), scene_id)
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
 

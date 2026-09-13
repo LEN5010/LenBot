@@ -79,14 +79,23 @@ class ModelCallStoreMixin:
             created_at REAL NOT NULL, settled_at REAL)""")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_usage_reservations_day ON usage_reservations(subject,day_key)")
 
-    async def account_used_tokens_in_transaction(self, subject: str, day_key: str, *, scene_id: str | None = None) -> int:
-        """Held plus already-settled tokens for one account on one day."""
+    async def account_used_tokens_in_transaction(self, subject: str, day_key: str, *,
+                                                 scene_id: str | None = None,
+                                                 exclude_job_id: str | None = None) -> int:
+        """Held plus already-settled tokens for one account on one day.
+
+        `exclude_job_id` leaves one work out of the total.  A work that is put
+        back on hold is re-checked against the same day, and its own earlier
+        settlement is exactly what the new hold replaces; counting both would
+        charge one work twice.
+        """
         column, value = ("subject", subject) if scene_id is None else ("scene_id", scene_id)
         row = await (await self._db.execute(
             f"""SELECT COALESCE(SUM(CASE WHEN status='held' THEN reserved_tokens
                     ELSE COALESCE(usage_tokens,0)+COALESCE(estimated_tokens,0) END),0)
-                FROM usage_reservations WHERE {column}=? AND day_key=? AND status IN ('held','settled')""",
-            (value, day_key))).fetchone()
+                FROM usage_reservations WHERE {column}=? AND day_key=? AND status IN ('held','settled')
+                AND (? IS NULL OR job_id!=?)""",
+            (value, day_key, exclude_job_id, exclude_job_id))).fetchone()
         return int(row[0] or 0)
 
     async def reserve_work_in_transaction(self, *, job_id, scene_id, subject, day_key, tokens,
@@ -109,6 +118,48 @@ class ModelCallStoreMixin:
             (job_id,scene_id,subject,day_key,policy_name,reserved_tokens,status,created_at)
             VALUES(?,?,?,?,?,?,'held',?)""",
             (job_id, scene_id, subject, day_key, policy_name, tokens, self.clock()))
+
+    async def rehold_work_in_transaction(self, *, job_id, tokens, policy_name=None,
+                                        scene_limit=None, daily_limit=None):
+        """Put an ended work's budget back on hold, on its own reservation day.
+
+        A settled hold is what the work spent, not what it may spend: read as
+        a ceiling it would equal the work's own consumption and stop the next
+        revision on its first call.  A released hold is only the amount given
+        back.  Both are re-opened here to the work's cumulative ceiling,
+        keeping one row per work and keeping the consumption attributed to
+        the day the work was accepted instead of moving a past day's account
+        into today.  Past consumption is never refunded: the work's ceiling
+        does not grow, and everything it already spent still counts against
+        the account.
+        """
+        if tokens < 0:
+            raise ValueError('A work reservation cannot be negative')
+        current = await (await self._db.execute(
+            "SELECT scene_id,subject,day_key,status FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
+        if current is None:
+            raise ValueError('This work has no reservation to re-hold')
+        scene_id, subject, day_key, status = current
+        if status == 'held':
+            # A control can land while the work is still running; its original
+            # hold never ended, so there is nothing to reopen.
+            return
+        if status not in {'settled', 'released'}:
+            raise ValueError('This work has no settlement to re-hold')
+        if daily_limit is not None:
+            used = await self.account_used_tokens_in_transaction(subject, day_key, exclude_job_id=job_id)
+            if used + tokens > daily_limit:
+                raise ValueError(
+                    f'每日额度不足：该账号 {day_key} 已占用 {used}（不含本工作），要重新预占 {tokens}，上限 {daily_limit}；'
+                    '继续旧工作不新增额度，需要更多额度请由运营者明确调整策略或另立一个范围更小的工作')
+        if scene_limit is not None:
+            used = await self.account_used_tokens_in_transaction(subject, day_key, scene_id=scene_id, exclude_job_id=job_id)
+            if used + tokens > scene_limit:
+                raise ValueError(
+                    f'本群额度不足：{scene_id} 在 {day_key} 已占用 {used}（不含本工作），要重新预占 {tokens}，上限 {scene_limit}')
+        await self._db.execute("""UPDATE usage_reservations SET reserved_tokens=?,status='held',
+            policy_name=?,settled_at=NULL WHERE job_id=? AND status IN ('settled','released')""",
+            (tokens, policy_name, job_id))
 
     async def release_reservation_in_transaction(self, job_id: str, reason: str = ''):
         """Give back a hold whose work never consumed anything."""

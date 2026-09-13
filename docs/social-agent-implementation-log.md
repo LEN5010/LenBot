@@ -19,6 +19,7 @@
 | C06 `feat(auth): add typed initiators and capability grants` | C00 | 实现完成 | 未运行 |
 | C07 `feat(budget): reserve and settle shared usage atomically` | C06 | 实现完成 | 未运行 |
 | C08 `feat(agent): enforce resource budgets across native loops` | C07 | 实现完成 | 未运行 |
+| C09 `feat(jobs): preserve revisions and budget ownership on resume` | C08 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
@@ -553,6 +554,82 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 
 ---
 
+## C09 工作修订与预算归属保留
+
+对应计划第 8.2 节的 C09 `feat(jobs): preserve revisions and budget ownership on resume`：`job_store`/`job_runner`、Gate、操作接口；完成条件是**继续不重置模型/预算/deadline**、**授权撤销限制后续操作**、**旧执行不会写新修订**。
+
+这一条在计划里写得很短，但把 C07/C08 的账与 C06 的授权接到一起，落点不是三处新判定，而是让**同一条已存在的规则在控制路径上也成立**：额度只在创建时预占，恢复既然是“同一工作的下一次执行”，就必须重新受同一份额度约束；授权既然是“当前生效事实”，恢复既然是“下一次执行”，就必须重新过当前 grant；修订既然是“新版本”，旧版本的执行就不得再写它。
+
+### 计划要求 / 本提交做法
+
+| 计划要求 | 本提交做法 |
+|---|---|
+| 继续不重置模型 | 未改 `model_binding_json`（`bind_job_model` 仍只在首次绑定且 `revision` 匹配时写入），恢复沿用同一绑定；`_context()` 的 `resume_from` 提示不变。 |
+| 继续不重置预算 | `apply_job_proposals_in_transaction` 在 resume/revise 改回可执行状态时，用**工作自己的 initiator** 把它**重新预占**到同一个累计上限（`rehold_job_budget_in_transaction`），并保留原预占行与原有 `day_key`；已消费的 token 不带回来，上限本身不放大。 |
+| 继续不重置 deadline | 未改：`agent_jobs.elapsed_seconds` 在 resume 时不清零，C08 的 `remaining_seconds()` 继续读它。 |
+| 授权撤销限制后续操作 | Gate 增加 resume 分支：用该工作**创建时的主体**过当前 grant，撤销/停用/过期的授予直接拒绝恢复；revise 与 cancel 不启动执行，保持原样不扩权。 |
+| 旧执行不会写新修订 | 未改：既有写入口都带 `revision` 匹配（`job_checkpoint`/`complete_job`/`update_work_state`/`save_plugin_work_progress`/`pin_job_skill`/`save_job_compression`），`save_job_exchange` 只接受 `1 <= revision <= job['revision']`。本提交只核对，不新增。 |
+| 操作接口 | 面板 `POST /api/cockpit/jobs/{id}/{operation}` 与模型工具 `resume_work` 走的是同一条 `JobProposal` → Gate → 事务路径，因此两处自动获得上述判定。 |
+
+### 设计判断
+
+1. **恢复必须重新预占，否则“继续不重置预算”是空话。** C07 在创建时预占，在 `complete_job`/`interrupt_job`/取消时把预占**换成实际消费**（`settled`）或**整份释放**（`released`）。恢复之后这份行已经不再表示“还能花多少”：`settled` 行的 `reserved_tokens` 等于它**已经花掉**的数，直接拿来做 C08 的 `tokens_limit`，工作会在自己的第一次调用上就因为“已用量 ≥ 上限”被拒绝——即“恢复”变成“立刻停止”。所以本提交把 resume/revise 改回可执行状态时显式重新预占。
+2. **重预占不新增额度，也不搬日子。** 重新预占用的是工作**自己**的累计上限（`work_reservation` 的同一推导），不叠加、不与原值相加；行还在，`day_key` 不变，所以过去消费仍记在它被接受的那一天，D06 的“跨日归属按工作预占日固定”继续成立。重预占时的日/群额度检查用 `exclude_job_id` 把自己排除，避免把“自己那份结算”再算一遍而把一个工作收两次费。上限的**数值**与新建工作时同源——由当前策略与当前运行参数推出——所以运营者若在两次执行之间调高或调低了 `job_max_steps`，继续执行的工作按调整后的配置重开（这与新建一个工作同源，不是本提交新增的延期入口）；调低到已消费之下时，工作会以 `tokens` 在第一次调用前停止并说明原因。
+3. **上限只给已有的预占行补上，不给旧工作发明一个。** 计划第 9.3 节写明“没有预算信息不能填零”；C07 之前创建的工作没有预占行，也就没有可靠口径的已用量。这类工作恢复时保持 `tokens_limit=None`（即“这一维度不是停止条件”，由期限继续停止），而不是拿一个凭空算出的数字当上限。反过来，**有**预占行却没有确切发起者的记录（既没有 `initiator`、也没有可转换的 `requester`+来源）由重预占本身拒绝并给出原因：那说明这笔账没有可归属的主体，不能猜一个来记账。
+4. **恢复要过“当前”授权，而不是“创建时”授权。** 计划 M04 的撤销条款是“撤销阻止未来入场、后续敏感操作和发布”，而恢复恰恰是“未来入场”。因此 resume 用工作创建时的**主体**去过**当下**的 grant：grant 仍在则放行，被停用/撤销/过期或场景失效则拒绝并说明。判断的主体来自工作自身已存的发起者，不来自这次控制提案，所以控制者不能借恢复把自己的权限套到别人的工作上。人类主体的工作不走这支——它们的许可由既有的白名单与 `chat_allowed` 决定，恢复不新增也没减少那条老路。
+5. **修订不重开额度，也不因此被拒。** 修订同样是“下一次执行”，同样需要一份活的预占，所以它与恢复走同一分支；但修订改的是目标与约束，不改变工作的累计上限，这一点由第 2 条保证。把 revise 也纳入这一支是刻意的：只处理 resume 会留下“修订后的工作没有预占行、于是没有 token 维度”的缺口，而这恰好是计划第 8.3 节要避免的那种半成品。
+
+### 实际改动
+
+- `cognition/call_store.py`
+  - `account_used_tokens_in_transaction()` 增加可选 `exclude_job_id`，供重预占时把工作自己排除在外。
+  - 新增 `rehold_work_in_transaction()`：只作用于 `settled`/`released` 的行，把 `reserved_tokens` 改回工作的累计上限、状态改回 `held`、清空 `settled_at`；`held` 行原样返回（控制可以落在工作仍在运行时，此时没有需要重开的账户）；先按 `exclude_job_id` 复核账号日与场景日额度，不足则拒绝并给出可读文本。
+- `runtime/job_store.py`
+  - 新增 `rehold_job_budget_in_transaction(job_id, initiator, scene_id)`：解析策略（仍走 `CapabilityGrant.resource_policy` 的名称解析）后调用上面的方法；没有 typed initiator 时直接拒绝。
+  - 新增 `JobStoreMixin.initiator_of(job)`：读出 `_decode_job` 已经转换好的发起者，控制路径不再自己重建一份。
+  - `apply_job_proposals_in_transaction()` 的 revise/resume 分支（`proposal.operation in {'resume','revise'}`）在有既存预占行时重预占，并把理由写进注释；cancel 分支不变。
+- `runtime/gate.py`
+  - `_capability_refusal()` 增加 `on_behalf_of` 参数，允许用“工作创建时的主体”过一次当前 grant。
+  - `evaluate_and_commit()` 的授权循环改为按操作分支：`create`（非人类来源）照旧；`resume` 读出工作的发起者，非人类时用当前 grant 复核；其余操作明确 `continue`，不做未声明的扩权。
+
+### 未做的事
+
+- **没有让修订重置 `elapsed_seconds`。** 计划 D05 写的是“恢复不重置”，修订在计划里同样是同一工作的新版本（`revision+1`、`result_json` 清空），累计执行时间保留。若运营者需要更多时间，按计划是显式修订策略，不是自动延期。
+- **没有给“额度不足”的恢复提供绕行入口。** 重预占失败即在路径失败中结束工作并保留原因；没有缩小目标、没有改模型、没有从别的账号借额度。
+- **没有改 `job_resume_issue()` 的既有判定。** 那一层仍然决定“这个工作当前是否可继续”（次数/期限/绑定/插件可用性），本提交只在真正要开始执行时补上额度与授权的复核；两层职责不重叠。
+- **没有新增表、列或配置字段。** 重预占只更新既有 `usage_reservations` 行的三个字段，无迁移。
+- **没有新增、修改或运行测试、夹具或断言式探针。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`resources.policies == {}`、`job 24 48 600.0`，未改根配置
+- 本地对象级核对（非运行服务，临时库 `/tmp`，核对后删除）：
+  - 结算后再恢复：预占行从 `settled 1500` 变回 `held 1929216`，`day_key` 仍是原来那一天（`2023-11-14`）；恢复后的计数为 `revision 2 / model_steps 6 / tool_calls 5 / elapsed_seconds 38`，均未清零。
+  - 修订走同一分支：`held 1929216`，任务回到 `pending`，累计消费仍计在同一工作账上。
+  - 账号总额只记一次：该账号当天的占用为两个工作各 1,929,216（`3858432`），没有因为重预占把同一个工作算两次。
+  - 无预占行的旧工作被拒绝并给出原文：`This work has no typed initiator; continuing it would have no account to hold against`。
+  - 授权复核（对象级，用假配置源注入 grant）：grant 存在时恢复无拒绝；`enabled=false` 与“grant 不存在”两种情况都以 `Capability check refused at step 当前 grant: 当前配置没有向该主体授予 public_research；未配置的能力保持关闭` 拒绝。
+  - 旧执行写新修订：`save_job_compression(..., revision=0, ...)` 与对已取消工作的 `revision=1` 均被 `JobChanged: Compression belongs to obsolete work` 拒绝（既有规则，本次核对确认没有被改动破坏）。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D06 的“授权撤销仍即时限制新操作”只在对象级核对。** 上述 grant 判定是在真实 `RuntimeGate._capability_refusal()` 与真实 `CapabilityAuthority` 上调用得到的，但没有跑一次真实“先建工作、再撤 grant、再恢复”的端到端流程，也没有经过面板接口。
+- **重预占的额度不足路径未在真实规模上触发。** 核对用的是默认策略（单工作 10M、账号日 30M），没有构造真实账号日额度被打满的场景，因此那条中文拒绝文本只在代码中审阅，未在运行时打印。
+- **重预占的上限跟着当前配置走。** 两次执行之间运营者若调低 `job_max_steps`（进而调低推导出的单工作额度），继续执行的工作会按调低后的上限重开。这与“新建工作用当前配置”一致，但确实意味着**没有**“恢复一律沿用创建时的额度数值”这条更强的性质；计划写的是“恢复保留已用额度、不重新赠送 10M”，本提交满足该条（上限不放大、已消费不退还），未实现的是把数值也冻结在创建那一刻。
+- **计划里的 `usage_reservations` 重开没有独立的“再次预占”时刻。** 本提交把它做成控制事务内的一步（与工作状态变更同生共死），因此面板上的“预占”只反映控制提交后的状态；控制提交前的一瞬间仍是 `settled`。这与“预占是工作执行的前提”一致，但与“预占=创建时那一次”的朴素读法不同，记录在此。
+- **真实并发未运行。** “控制提交与正在执行重叠”（工作仍在 `processing` 时收到修订）只会走到 `held` 分支，没有现场证据。
+
+### 涉及持久字段
+
+- 没有新增表或列。`usage_reservations` 的 `reserved_tokens`/`status`/`settled_at`/`policy_name` 是既有字段，本提交让 resume/revise 复用它们而不是新开一张表。
+- 没有新增配置字段，根配置与样例均未改动。
+- 无离线转换：C07 之前的工作没有 `usage_reservations` 行，按上面第 3 条保持“没有 token 维度”而不是补一个数字。
+
+---
+
 > 按计划第 10.3 节的固定模板记录。状态措辞只用“实现完成 / 部署就绪 / 实际链路通过”三种；本批全部为**实现完成**，没有取得任何真实链路证据。核对方式遵守计划第 10.1 节与 [`AGENTS.md`](../AGENTS.md)：只做阅读、正常编译与 `git diff --check`，未新增或运行测试、夹具、断言式探针或自动截图，未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
 
 ## Commit / Parent / 审阅 HEAD
@@ -668,7 +745,9 @@ C05  对话轮次装配 → 既有场景与插件准入 → runtime_facts 附可
 
 开始 C06 之前需要用户确认的前置项仍然有效：计划第 2 章 D01—D12 推荐裁决是否采纳，以及计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）。这些前置项不阻塞 C06—C09 的代码工作，但 D04/D06/D09 的具体取值会直接决定 C06/C07 的字段与判定。
 
-C06 已按第 2 章的推荐裁决落地（见上一节），D04/D06/D09 仍未获用户逐项确认。下一提交是 **C07 `feat(budget): reserve and settle shared usage atomically`**：依赖 C06，范围是 `AgentBudget`、`CallStore`/`JobStore`、新增 `usage_reservations` 与模型页面，完成条件是 user+scene 并发预占一致、usage 与估算可区分、子调用归同一账。C07 的创建期预占需要在 `events/store.py:commit_proposal_transaction` 的同一写事务内完成，`CapabilityGrant.resource_policy` 的解析也应在该提交内落到真实策略。D06（每日额度只在创建时检查可能超发）与本提交直接相关，取值需要在实现前明确。
+C06 已按第 2 章的推荐裁决落地，C07、C08、C09 也已完成（见上文各自章节），D04/D06/D09 仍未获用户逐项确认。
+
+下一提交是 **C10 `feat(execution): define owned worker protocol and journal`**：依赖 C09，范围是 `execution` 协议/客户端、`execution_runs`、最小 Gateway 服务，完成条件是幂等接收、状态查询、取消与事件续读可用，且技术状态不冒充业务完成。计划第 8.3 节的“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”是这一条的禁止半成品：新后端与旧宿主路径不能并存。计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）会直接决定 C10—C12 的接口与启用条件，仍待用户提供；缺少目标机器数据不阻塞其代码与接口工作，但阻塞独立执行后端的正式放行。
 
 ## 本批不宣称的能力
 

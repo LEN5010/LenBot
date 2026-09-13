@@ -21,10 +21,10 @@
 | 三项模型绑定（conversation/work/maintenance） | 已具备 | `cognition/providers.py:68-73`；`purpose` 白名单 `cognition/gateway.py:42`；work 绑定冻结在 `agent_jobs.model_binding_json`（`runtime/job_store.py:72`） | 保留 |
 | 调用账与用量记录 | 已具备（C07 起含用量/估算区分） | `model_calls` 表 `cognition/call_store.py`（含 `purpose`/`usage_json`/`estimate_json`）；一次调用的真实用量与本地估算由 `measured_call_tokens()` 分开算出，缓存与推理 token 不重复相加；C08 起同一 `job_id` 的汇总（`job_measured_tokens`）也是执行期 token 停止的输入 | C07 |
 | 预算维度 | 已具备（C08 起含次数、期限与累计 token 三维） | `AgentBudget`（`cognition/budget.py`）同时持有次数、绝对 `deadline` 与从持久记录读到的 token 上限；`count_remaining`/`tightest` 是所有循环判定的唯一算法；工作三维快照 `runtime/job_runner.py:budget_state` | C08 |
-| 额度原子预占与结算 | 已具备（C07 起，C08 起成为执行期硬上限） | 策略 `cognition/budget.py:ReservationPolicy`；创建期预占在 `commit_proposal_transaction` 的同一写事务内（`runtime/job_store.py:reserve_job_budget_in_transaction`）；结算与释放 `cognition/call_store.py:settle/release/close_reservation_in_transaction`；页面 `/api/models/reservations` 与模型页“工作额度预占” | C07 |
+| 额度原子预占与结算 | 已具备（C07 起，C08 起成为执行期硬上限，C09 起继续执行时重开） | 策略 `cognition/budget.py:ReservationPolicy`；创建期预占在 `commit_proposal_transaction` 的同一写事务内（`runtime/job_store.py:reserve_job_budget_in_transaction`）；revise/resume 重新预占 `runtime/job_store.py:rehold_job_budget_in_transaction` → `cognition/call_store.py:rehold_work_in_transaction`（只重开 `settled`/`released` 行，保留原 `day_key`，不新增额度）；结算与释放 `settle/release/close_reservation_in_transaction`；页面 `/api/models/reservations` 与模型页“工作额度预占” | C07、C09 |
 | 日额度策略的编辑与生效 | 已具备（C07 起，默认不新增限制） | 根配置 `resources.policies`（`config_store.py:ResourceSettings`）；`CapabilityGrant.resource_policy` 按名称解析 `runtime/capabilities.py:policy_for_grant`；页面 `/api/settings/resources` 与系统设置页“额度策略” | C07 |
-| 绝对 deadline / 累计 token 上限 | 已具备（C08 起） | 工作时间与 token 维度由 `runtime/job_runner.py:budget_state` 从 `agent_jobs` 与 `usage_reservations` 读出，`AgentBudget._refusal()` 在启动下一次调用前拒绝；工作期限是首次开始后的绝对量，恢复读持久累计时长，不重新计时；对话轮次可用 `runtime.conversation_window_seconds` 配置自己的绝对期限（默认 `null`，即不设该维度），`ConversationResume.elapsed_seconds_limit` 使等待恢复沿用同一窗口 | C08 |
-| 三类身份（Human/System/Plugin） | 已具备（C06 起） | 类型定义 `events/models.py` 的 `HumanInitiator`/`SystemInitiator`/`PluginInitiator`；`JobProposal.initiator`（`cognition/jobs.py`）；事务内按类型分支校验 `runtime/job_store.py:_validate_job_initiator_in_transaction`；Gate 非人类分支走独立能力检查 `runtime/gate.py:_capability_refusal` | C06 |
+| 绝对 deadline / 累计 token 上限 | 已具备（C08 起，C09 起恢复沿用同一期限与同一上限） | 工作时间与 token 维度由 `runtime/job_runner.py:budget_state` 从 `agent_jobs` 与 `usage_reservations` 读出，`AgentBudget._refusal()` 在启动下一次调用前拒绝；工作期限是首次开始后的绝对量，恢复读持久累计时长，不重新计时；对话轮次可用 `runtime.conversation_window_seconds` 配置自己的绝对期限（默认 `null`，即不设该维度），`ConversationResume.elapsed_seconds_limit` 使等待恢复沿用同一窗口 | C08 |
+| 三类身份（Human/System/Plugin） | 已具备（C06 起，C09 起恢复也按当前 grant 复核） | 类型定义 `events/models.py` 的 `HumanInitiator`/`SystemInitiator`/`PluginInitiator`；`JobProposal.initiator`（`cognition/jobs.py`）；事务内按类型分支校验 `runtime/job_store.py:_validate_job_initiator_in_transaction`；Gate 非人类分支走独立能力检查 `runtime/gate.py:_capability_refusal`，`create` 与非人类的 `resume` 都过**当前** grant（`on_behalf_of` 取工作自身已存的发起者，`runtime/job_store.py:initiator_of`） | C06、C09 |
 | CapabilityGrant / 能力集合 | 已具备（C06 起，默认空） | `runtime/capabilities.py` 的能力词汇与 `CapabilityAuthority`；根配置 `access.capability_grants`（`config_store.py`）；页面 `/api/settings/access` 与系统设置页 | C06 |
 | 插件声明 `required_capabilities` | 不存在（C06 有意不加） | `PluginSpec`（`plugins/catalog.py:21-38`）无该字段；现有分类是 `sensory/tool/scheduled/hybrid`（`plugins/models.py:131-135`）。C06 只有能力词汇与授予结构；逐工具的能力要求随真正需要它的工具（文件上传、账号动作等）各自提交 |
 | Gate 发送前检查 | 已具备（无额度/睡眠维度） | `runtime/gate.py:120-313`；发送前 `actions/queue.py:114-115` → `agent_runtime.py:106` → `validate_outbound_action():525-548`；插件来源 `plugin_interactions.py:115-131` | 保留 |
@@ -120,8 +120,23 @@
 | 运行期接线 | `runtime/job_runner.py`、`runtime/plugin_interactions.py`、`memory/reflector.py`、`runtime/work_context.py`、`plugins/builtin/group_summary/analysis.py`、`runtime/job_store.py`、`runtime/agent_runtime.py` |
 | 页面 | 运行参数页“执行预算”表增加“每轮对话绝对期限”并按 `null` 显示“不设限（由其他维度停止）”；Jobs 页用量行同样 |
 
-## 9. 当前不可宣称的能力
+## 9. 第二批提交边界（C09）
 
-以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间）。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
+对应计划第 8.2 节的 C09 `feat(jobs): preserve revisions and budget ownership on resume`：`job_store`/`runner`、Gate、操作接口；完成条件是继续不重置模型/预算/deadline、授权撤销限制后续操作、旧执行不会写新修订。
+
+| 落点 | 本轮改动 |
+|---|---|
+| 继续不重置模型 | 未改 `model_binding_json` 的写入条件（只在首次绑定且 `revision` 匹配时写入），恢复沿用同一绑定 |
+| 继续不重置预算 | `runtime/job_store.py:rehold_job_budget_in_transaction` 在 revise/resume 改回可执行状态时重新预占；`cognition/call_store.py:rehold_work_in_transaction` 只重开 `settled`/`released` 行，`reserved_tokens` 回到工作的累计上限，行与原 `day_key` 保留，不新增额度、不搬日子 |
+| 不重复收费 | `account_used_tokens_in_transaction` 新增 `exclude_job_id`，重预占时把工作自己排除，避免把它自己的结算再算一遍 |
+| 继续不重置 deadline | 未改：`agent_jobs.elapsed_seconds` 在 resume 时不清零，C08 的 `remaining_seconds()` 继续读它 |
+| 授权撤销限制后续操作 | `runtime/gate.py:_capability_refusal` 的 `on_behalf_of` 与 `evaluate_and_commit` 的 resume 分支：用工作创建时的主体过**当前** grant，撤销/停用/过期即拒绝恢复；revise 与 cancel 不启动执行，保持原样 |
+| 旧执行不会写新修订 | 未改：既有写入口都带 `revision` 匹配，`save_job_exchange` 只接受 `1 <= revision <= job['revision']` |
+| 身份读取 | 新增 `runtime/job_store.py:JobStoreMixin.initiator_of`，控制路径读 `_decode_job` 已转换好的发起者，不自己重建；没有预占行的旧工作保持“没有 token 维度”，有预占行却无从归属的记录由重预占拒绝并给出原因 |
+| 操作接口 | 面板 `POST /api/cockpit/jobs/{id}/{operation}` 与模型工具 `resume_work` 走同一条 `JobProposal` → Gate → 事务路径，自动获得上述判定 |
+
+## 10. 当前不可宣称的能力
+
+以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间），C09 让继续执行的工作重新受同一份额度与**当前**授权约束。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
 
 已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。
