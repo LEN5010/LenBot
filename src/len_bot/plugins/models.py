@@ -5,7 +5,7 @@ import re
 from enum import StrEnum
 from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field
-from len_bot.events.models import Event, EventType, PluginOrigin
+from len_bot.events.models import Event, EventType, Initiator, PluginOrigin
 from len_bot.tools.results import ToolResult
 
 if TYPE_CHECKING:
@@ -36,6 +36,10 @@ class PluginCallContext:
     entry_origin: PluginOrigin | None = None
     entry: Literal['chat', 'handler', 'work'] = 'chat'
     event: Event | None = None
+    # A tool sees the typed branch rather than inferring "system" from a
+    # missing QQ number.  `None` means the initiator was not established for
+    # this call, which is not the same as a system call.
+    initiator: Initiator | None = None
     plugin: PluginContext | None = field(default=None, repr=False, compare=False)
     execution: PluginExecution | None = field(default=None, repr=False, compare=False)
     read_slot_owned: bool = field(default=False, repr=False, compare=False)

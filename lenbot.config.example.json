@@ -106,7 +106,8 @@
     "shadow": true
   },
   "access": {
-    "qq_reply_whitelist": []
+    "qq_reply_whitelist": [],
+    "capability_grants": []
   },
   "scenes": {},
   "time": null,
