@@ -10,7 +10,7 @@ from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentErro
 from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal
 from len_bot.memory.models import MemoryProposal
-from len_bot.events.models import PluginOrigin
+from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
 
 
 class StrictModel(BaseModel):
@@ -216,10 +216,17 @@ class ProposalLedger:
         if event_id not in refs.read_events:
             raise ValueError('请求来源原话尚未完整读取；先读对应消息，再绑定来源')
         events = await self.context.runtime.event_store.events_by_ids(refs.scene_id, [event_id], refs.cutoff)
-        if (len(events) != 1 or events[0].event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
-                or not events[0].actor_id.startswith('user:') or events[0].actor_id == refs.bot_actor_id):
+        if len(events) != 1 or human_event_uid(events[0]) is None or events[0].actor_id == refs.bot_actor_id:
             raise ValueError('请求来源必须是当前场景与截点内已读的人类原话')
         return events[0]
+
+    @staticmethod
+    def human_source(event):
+        """The typed human branch for one real request source, or refuse."""
+        initiator = human_initiator_for(event)
+        if initiator is None:
+            raise ValueError('人类发起者只能来自当前场景中真实人物的原话')
+        return initiator
 
     async def stage_plugin_work(self, call, *, goal, evidence, request_source, parameters=None, constraints=(), result_refs=()):
         refs = self.context.refs
@@ -241,7 +248,7 @@ class ProposalLedger:
         proposal = JobProposal(proposal_id=proposal_ref,
             goal=goal,constraints_add=list(constraints),result_ids=[refs.result_id(reference) for reference in result_refs],
             source_event_ids=sources, requester_qq_uid=source.actor_id.removeprefix('user:'),
-            request_source_event_id=source.id,
+            request_source_event_id=source.id, initiator=self.human_source(source),
             work_operation=work.operation if work else 'information',plugin_origin=call.origin,
             work_parameters=encoded)
         self._next_handle += 1
@@ -333,7 +340,8 @@ class ProposalLedger:
                 collection='jobs'
                 value=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
                     source_event_ids=list(dict.fromkeys([source.id,*evidence])),result_ids=[refs.result_id(r) for r in model.result_refs],
-                    requester_qq_uid=source.actor_id.removeprefix('user:'),request_source_event_id=source.id)
+                    requester_qq_uid=source.actor_id.removeprefix('user:'),request_source_event_id=source.id,
+                    initiator=self.human_source(source))
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
                 collection='jobs'
