@@ -16,6 +16,7 @@
 | C03 `fix(calendar): deliver explicit source failure cards` | C00 | 实现完成 | 未运行 |
 | C04 `feat(chat): make participation topic- and addressee-aware` | C01—C03 | 实现完成 | 未运行 |
 | C05 `feat(context): expose delegable capabilities and focused references` | C04 | 实现完成 | 未运行 |
+| C06 `feat(auth): add typed initiators and capability grants` | C00 | 实现完成 | 未运行 |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
@@ -252,6 +253,99 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 
 ---
 
+## C06 类型化发起者与能力授予
+
+### 设计判断
+
+计划 M04 的要求可以拆成四件互不替代的事，C06 只做前三件的结构与判定，第四件（各类新能力自身的实现与放开）留给依赖它们的提交。
+
+| 计划要求 | 当前实现（C06 之前） | 本提交的做法 |
+|---|---|---|
+| human/system/plugin 分支明确，不填假 QQ 号 | 工作创建要求人类来源，但“哪一类发起者”只从是否有 `requester_qq_uid` 推断；无 system/plugin 发起工作的路径 | 新增判别联合 `Initiator = Human \| System \| Plugin`；创建时必须恰有一个分支，且各分支有各自成立条件 |
+| 不以 None/空 UID 绕过原请求来源验证 | 人类来源校验是 `actor_id != 'user:' + proposal.requester_qq_uid`；一条 `requester_qq_uid=None` 必然不相等，因此“拒绝”本身依赖字符串拼接的副作用 | 抽出唯一判定 `human_event_uid(event)`（事件类型 + `user:` 前缀 + 纯数字 UID），调用方按类型分支，系统/插件来源不再经过人类分支 |
+| grant 不能由模型伪造 | 不存在 grant | 授予只在根配置 `access.capability_grants`，只由已登录面板写入；模型面向的工具参数里没有该字段，提案模型也不导出它 |
+| 未配置新能力不扩权 | 不存在能力概念 | 授予默认空列表；`CapabilityAuthority.check()` 在缺失、停用或过期时一律拒绝，且不缩小用户目标或改写额度 |
+| 检查顺序 | 分散在各处 | 新窄模块封装前三步（当前场景 → 真实来源与发起者 → 当前 grant），后四步仍留在原位置 |
+
+三处判断值得单独说明：
+
+1. **为什么新增 `runtime/capabilities.py` 而不是扩展现有判定。** 计划 M04 明确允许“可新增窄 `runtime/capabilities.py`，仅封装本项目能力检查”，同时 [`AGENTS.md`](../AGENTS.md) 禁止“不新增…权限平台”。两者的分界在于：这里只放本项目的能力词汇、一条授予记录和一次检查函数，不引入策略引擎、评分、签名或第二份 ACL。数据库里没有第二份可编辑授权表——这是计划第 5.2 节对 CapabilityGrant 存放位置的直接要求。
+
+2. **为什么旧的 `requester_qq_uid`/`request_source_event_id` 两个字段保留。** 它们已经是工作记录、面板、Gate 白名单判定和插件调用的既有事实来源，删除它们会牵动 `scenes/actor.py`、`cognition/context.py`、`tools/retrieval.py` 等与本次业务缺口无关的路径。计划第 9.3 节要求“旧工作能从明确 requester/source 字段形成 Human initiator；缺乏确切来源的旧记录保留 `legacy_unknown`”。因此保留字段，并让 `legacy_initiator()` 只在这两个字段都确切存在时形成人类分支；否则 `initiator` 保持 `None`（即计划所说的缺少确切来源，如实保留为空，不猜、不补默认值）。
+
+3. **`JobProposal.initiator` 对模型不可见。** 计划 D04 要求“系统事件 ID 由 Scheduler/Runtime 生成，模型只能引用，不能自己构造一条‘已获授权’的 system-origin”。`start_work` 只让模型填 `request_source`（一个已读原话引用），`stage()` 与 `stage_plugin_work()` 再从该真实事件构造人类分支；`JobProposal` 是内部模型，不从模型 JSON 直接解析，模型提交的 `Respond`/`StartWork` schema 里没有 `initiator`。
+
+### 实际改动
+
+- `src/len_bot/events/models.py`
+  - 新增 `HumanInitiator(user_id, request_event_id)`、`SystemInitiator(agent_id, trigger_event_id, purpose?, cycle_id?)`、`PluginInitiator(plugin_id, source_event_id, run_id)`，三者各自 `frozen`、`extra='forbid'`、`strict`，并各自给出 `billing_subject`（`user:<真实UID>` 或 `system:<明确用途>`）。
+  - 新增判别联合 `Initiator`（`principal_type` 判别）与 `legacy_initiator(requester, request_source)`：只有两个字段都确切存在才转换，否则返回 `None`。
+  - 新增 `human_event_uid(event)`：本项目唯一判断“这条事件能否代表一个人”的位置——事件类型必须是群/私聊入站，`actor_id` 必须是 `user:` 前缀且剩余部分是正整数；否则返回 `None`。新增 `human_initiator_for(event, bot_actor_id)` 在其上构造人类分支。
+- `src/len_bot/cognition/jobs.py`
+  - `JobProposal` 增加 `initiator: Initiator | None`；新增 `human_initiator` 只读属性。
+  - 创建分支改走 `_resolve_initiator()`：先按旧的明确字段尝试转换人类分支；仍为空则明确要求 typed system/plugin；然后要求请求锚点必须出现在本次证据中，并逐项核对人类分支的 UID 与请求原话和旧字段一致。非人类分支携带 `requester_qq_uid` 直接拒绝。
+  - 控制操作（revise/cancel/resume）不接受自带 `initiator`：计划要求它们沿用原工作发起者，不能借控制替换身份。
+- `src/len_bot/cognition/proposals.py`
+  - `request_event()` 的人类来源校验改用 `human_event_uid()`，语义不变（当前场景、截点内、已读、非 Bot 自己）。
+  - 新增 `human_source(event)`：从真实事件构造人类分支，失败即拒绝。`start_work` 与插件 `stage_work` 都填该值，模型参数不参与。
+- `src/len_bot/plugins/models.py` / `src/len_bot/plugins/host.py`
+  - `PluginCallContext` 增加 `initiator`，`None` 表示本次调用未建立发起者，明确区别于“系统发起”。
+  - 新增 `handler_initiator(event, origin, bot_actor_id)`：真实插件事件 → 插件分支；人类原话 → 人类分支；其余（含 Bot 自己的消息、系统事件）→ `None`。`handler_call()` 使用该结果。
+- `src/len_bot/runtime/job_store.py`
+  - 创建校验从单条字符串比较改为 `_validate_job_initiator_in_transaction()`：先确认请求锚点是本场景中真实存在且列入证据的事件，再按 `principal_type` 分三条互斥路径——human 要求 `GROUP/PRIVATE_MESSAGE_RECEIVED` 且 `actor_id == 'user:' + user_id`；plugin 要求 `actor_id == 'plugin:' + plugin_id`；system 要求 `actor_id` 以 `system:` 开头且 `agent_id` 与实际生产者一致。三条路径都额外要求发起者引用的原话与其请求锚点一致，非人类分支一律不得携带 QQ 号。
+  - 工作 payload 写入 `initiator`；`_decode_job()` 读回时，旧记录按自身 `requester_qq_uid`/`request_source_event_id` 转换，缺锚点则保持 `None`。
+  - 同一人类请求的重复创建仍按原样比对，新增比对 `initiator`，避免同一请求锚点下出现不同身份的工作。
+- `src/len_bot/runtime/capabilities.py`（新增，窄）
+  - `Capability` 词汇表按计划 M04 建议：`long_work`、`public_research`、`network_python`、`proactive_chat`、`interest_share`、`send_file`、`bilibili_authenticated_read`、`bilibili_like`、`bilibili_favorite`。能力是本次项目自己的词，不把工具名当权限。
+  - `CapabilityGrant` 按计划最小字段：`grant_id`、`revision`、`operator_id`、`principal_type`/`principal_id`、`scene_id` **或** `system_scope`、`capabilities`、`expires_at`、`resource_policy`、`concurrency`、`enabled`。`resource_policy` 只是既有策略的名称引用，不在此复制额度数值。
+  - `CapabilityAuthority`：`required_for_work()` 给出“这一类工作需要哪些能力”（目前 information 工作对应 `public_research`，其余未知类型回落到 `long_work`）；`check()` 按**当前场景 → 当前 grant** 顺序判定，返回带 `step` 与 `reason` 的 `CapabilityDecision`，便于真实拒绝理由可读。
+- `src/len_bot/config_store.py`
+  - `AccessSettings` 增加 `capability_grants`（默认空）与 `grant_id` 唯一性校验。`qq_reply_whitelist` 语义未变。
+- `src/len_bot/runtime/gate.py` / `src/len_bot/runtime/agent_runtime.py`
+  - `RuntimeGate` 增加 `capability_authority`；在既有“工作已启用”检查之后，对 `operation=='create'` 且非人类分支的提案执行 `_capability_refusal()`，任一必需能力未被授予即整个提交以 `SILENCE` 拒绝，不落到事务里。
+  - 人类发起的工作创建完全不走该分支；白名单与普通聊天判定未改。同时把 `requesters` 收集的 `None` 过滤掉（此前 `requester_qq_uid=None` 会进入集合并被 `chat_allowed` 判为不合格，属于隐式依赖）。
+- `src/len_bot/web/routes/settings.py` / `src/len_bot/web/frontend/src/views/SettingsView.vue`
+  - `GET /api/settings/access` 继续返回该节完整内容（现在含 `capability_grants`）。
+  - `PUT` 改为 `AccessSettingsRequest`：`capability_grants` 省略时保留当前授予（旧页面只提交白名单不会静默清空授权）；每次保存把签发运营者改写为当前登录账号（`user` 由既有鉴权给出），并在授予集合实际变化时写一条 `capability_grants` 的 `OPERATOR_ACTION`。路由仍只挂在既有登录态之后。
+  - 系统设置“QQ 回复资格”页在原有白名单下新增“能力授予”区：每条授予可编辑 ID、版本、主体类型与标识、生效场景或系统范围、能力列表、有效期、资源策略引用、并发与启停；写明未配置/停用/过期一律不放行，撤销只阻止后续操作。
+  - 前端已实际重新构建（`npm run build`，442 modules → `SettingsView-CZQASS93.js` 51.69 kB），生成产物与后端同批进入本次提交。
+
+### 未做的事
+
+- 没有为任何插件加 `required_capabilities` 字段，也没有按工具名生成授权：现有工具准入仍由 `plugin_allowed`/`roles`/`available` 决定。**逐工具的能力要求随真正需要它的能力（文件上传、账号动作等）在各自提交引入**，此时提前加一个没有调用方的字段只会制造第二份不生效的判定。
+- 没有实现 `proactive_chat`、`interest_share`、`send_file`、B 站读写的任何行为：本提交只有能力词汇与授予结构，出现某个能力名不等于该能力可用。
+- 没有建立 `usage_reservations`、日额度或任何计费逻辑（计划 C07）；`CapabilityGrant.resource_policy` 目前只是一个名称引用，没有解析器。
+- 没有新增系统工作入口：`SystemInitiator` 类型与事务校验已就位，但当前没有 Scheduler/心跳创建系统工作的路径（属计划 C12/M12），因此非人类分支在本轮只有插件事件处理器这一条真实来源。
+- 没有改动 `cognition/models.py` 的 `EpisodeOutcome`、`TaskProposal`、`MessageProposal` 字段结构；消息与提醒的既有归属规则未动。
+- 没有改 `ScenePolicy` 的既有判定（`enabled`/`chat_allowed`/`plugin_allowed`/`maintenance_allowed` 全部保持原样）；`delegable_work_allowed` 仍是 C05 的派生实现。
+- 没有改实际根配置 `lenbot.config.json`：它仍由原解析器读为 `capability_grants: []`（本次只读核对了加载结果）。样例配置补上显式空列表，便于人工初始化时看到该字段存在。
+- 没有新增、修改或运行测试、夹具或断言式探针。
+
+### 静态核对
+
+- `git diff --check`
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `npm run build`（`src/len_bot/web/frontend`，442 modules，成功）
+- `uv run --no-dev python -c "ConfigStore.load()"`：实际根配置仍能加载，`access = {'qq_reply_whitelist': [], 'capability_grants': []}`
+- 本地对象级核对（非运行服务）：已授予/未授予/已过期/已停用/场景关闭五种情况各返回预期判定；`handler_initiator` 对群消息、插件事件、Bot 自身消息、系统事件分别返回人类、插件、`None`、`None`。
+- 未运行测试、模型、OneBot、容器、浏览器或真实群；未启动服务。
+
+### 未确认项
+
+- **D04/D06/D09 的具体取值仍未获用户确认**：本提交按计划第 2 章的推荐裁决实现（D04 显式区分三类发起者、不填假 QQ 号；D09 uncertain ≠ allow——C06 尚未引入审查，故当前只是“无授予即拒绝”）。若用户选择不同取值，只需调整依赖该条的判定，不影响其余模块。
+- **真实 system 来源路径未经验证**：`SystemInitiator` 的事务校验只有在存在系统工作创建者时才会实际走到；本轮没有该路径，因此该分支只有源码级依据。
+- **插件的真实来源前缀**：校验假定插件事件 `actor_id == 'plugin:' + plugin_id`（读码确认 `plugins/base.py:117` 如此写入），未在真实插件事件上核对过。
+- **撤销语义**：计划要求“保存配置成功后更新生效版本；已经发送的字节无法撤回”，本提交实现了保存即生效与 `OPERATOR_ACTION` 记录，但“正在执行的工作按能力策略停止并收尾”属于 C09/C10 范围，本轮未实现，因此不能在文档中宣称撤销会停止进行中的工作。
+- **`legacy_unknown`**：计划第 9.3 节提到的这个标记名本轮未落库——缺少确切来源的旧记录在读取时 `initiator` 为 `None`，没有新增列或状态值。是否需要显式标记名，取决于后续是否有依赖它的迁移动作。
+
+### 涉及持久字段
+
+- 工作 `tasks.payload` 增加 `initiator`（可选对象）。新记录总是写入；旧记录读回时按自身字段转换，没有离线转换步骤，也不需要停机迁移。
+- 根配置 `access.capability_grants` 增加字段，默认空；实际根配置未改动。
+- 没有 `CREATE TABLE`、`ALTER TABLE`，没有新增列。
+
+---
+
 # 首批（C00—C05）验收记录
 
 > 按计划第 10.3 节的固定模板记录。状态措辞只用“实现完成 / 部署就绪 / 实际链路通过”三种；本批全部为**实现完成**，没有取得任何真实链路证据。核对方式遵守计划第 10.1 节与 [`AGENTS.md`](../AGENTS.md)：只做阅读、正常编译与 `git diff --check`，未新增或运行测试、夹具、断言式探针或自动截图，未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
@@ -367,7 +461,9 @@ C05  对话轮次装配 → 既有场景与插件准入 → runtime_facts 附可
 
 计划第 8.2 节的下一段是 C06—C09（来源身份与能力授权、共享预算预占、跨循环资源预算、工作修订与预算归属）。它们依赖 C00 与彼此之间存在明确顺序（C06 → C07 → C08 → C09），**不依赖** C10—C29，也不依赖本批的人工运行证据；但计划同一处写明“代码编写可并行”与“能力放行必须具备”是两件事：没有真实运行证据时，后续提交可以继续编写，不得据此放行任何新权限。
 
-开始 C06 之前需要用户确认的前置项仍然有效：计划第 2 章 D01—D12 推荐裁决是否采纳，以及计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）。这些前置项不阻塞 C06—C09 的代码工作，但 D04/D06/D09 的具体取值会直接决定 C06/C07 的字段与判定，因此在实现前需要明确。
+开始 C06 之前需要用户确认的前置项仍然有效：计划第 2 章 D01—D12 推荐裁决是否采纳，以及计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）。这些前置项不阻塞 C06—C09 的代码工作，但 D04/D06/D09 的具体取值会直接决定 C06/C07 的字段与判定。
+
+C06 已按第 2 章的推荐裁决落地（见上一节），D04/D06/D09 仍未获用户逐项确认。下一提交是 **C07 `feat(budget): reserve and settle shared usage atomically`**：依赖 C06，范围是 `AgentBudget`、`CallStore`/`JobStore`、新增 `usage_reservations` 与模型页面，完成条件是 user+scene 并发预占一致、usage 与估算可区分、子调用归同一账。C07 的创建期预占需要在 `events/store.py:commit_proposal_transaction` 的同一写事务内完成，`CapabilityGrant.resource_policy` 的解析也应在该提交内落到真实策略。D06（每日额度只在创建时检查可能超发）与本提交直接相关，取值需要在实现前明确。
 
 ## 本批不宣称的能力
 
