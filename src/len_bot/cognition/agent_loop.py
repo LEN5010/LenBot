@@ -7,6 +7,7 @@ import copy
 import json
 import re
 from collections.abc import Awaitable, Callable
+from itertools import count as unbounded_steps
 from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -14,7 +15,7 @@ from pydantic import ValidationError
 from len_bot.cognition.gateway import ModelGateway, ToolCall
 from len_bot.tools.results import ToolResult, error_message
 from len_bot.tools.retrieval import ObservationPage
-from len_bot.cognition.budget import AgentBudget
+from len_bot.cognition.budget import AgentBudget, count_remaining, tightest
 
 if TYPE_CHECKING:
     from len_bot.plugins.hooks import PluginRunHooks
@@ -62,18 +63,34 @@ def final_step_message(terminal_name: str) -> dict:
 
 
 def execution_budget_message(state: dict[str, Any], terminal_name: str) -> tuple[dict, dict]:
-    """The same runtime budget fact is used for initial packing and each call."""
-    remaining = max(0, state['model_calls_limit'] - state['model_calls_used'] - 1)
+    """The same runtime budget fact is used for initial packing and each call.
+
+    A dimension the operator left unlimited is reported as `null` and is not
+    subtracted from, compared against, or turned into a zero that would read
+    as exhausted.
+    """
+    model_remaining = count_remaining(state.get('model_calls_limit'), state['model_calls_used'])
+    remaining = None if model_remaining is None else max(0, model_remaining - 1)
     view = {**state, 'model_call_index': state['model_calls_used'] + 1,
             'model_calls_remaining_after': remaining,
-            'tool_calls_remaining': max(0, state['tool_calls_limit'] - state['tool_calls_used']),
+            'tool_calls_remaining': count_remaining(state.get('tool_calls_limit'), state['tool_calls_used']),
             'terminal_required': terminal_name}
     if 'elapsed_seconds_limit' in state:
         view['elapsed_seconds_remaining'] = max(0, round(state['elapsed_seconds_limit'] - state['elapsed_seconds_used'], 3))
+    if 'tokens_limit' in state:
+        view['tokens_remaining'] = count_remaining(state.get('tokens_limit'), state.get('tokens_used', 0))
+    if remaining == 0:
+        closing = '本次已是最后一次模型调用，必须提交已有结果与缺口。'
+    elif remaining is None:
+        # The counts are not the stop; the deadline and the token allowance
+        # are, and the terminal's own reserve is why there is still room for
+        # one submission when they run low.
+        closing = '本次执行的调用次数未设上限；期限与累计 token 是停止条件，额度接近时同样须提交已有结果与缺口。'
+    else:
+        closing = '后续至少留一次模型调用组织并提交终结。'
     note = {'role': 'developer', '_context_section': 'execution_budget', 'content':
             '本次执行额度由运行时提供；优先推进当前请求的直接路径，无需额外读取时即可终结。'
-            + ('本次已是最后一次模型调用，必须提交已有结果与缺口。' if remaining == 0
-               else '后续至少留一次模型调用组织并提交终结。')
+            + closing
             + '终结不计普通工具次数。\n'
             + json.dumps(view, ensure_ascii=False)}
     return note, view
@@ -142,8 +159,8 @@ class AgentLoop:
         finish: Callable[[dict[str, Any]], Awaitable[Any]],
         after_finish: Callable[[Any], Awaitable[dict[str, Any] | None]] | None = None,
         proposal_tool_names: set[str] | frozenset[str] = frozenset(),
-        max_steps: int = 5,
-        max_tool_calls: int = 6,
+        max_steps: int | None = 5,
+        max_tool_calls: int | None = 6,
         before_model: Callable[[], Awaitable[None]] | None = None,
         before_tool: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         observe: Callable[[], Awaitable[list[dict[str, Any]] | None]] | None = None,
@@ -151,7 +168,7 @@ class AgentLoop:
         prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
         prepare_tool_results: Callable[[list[dict], list[tuple[ToolCall, ToolResult | ObservationPage | dict[str, Any]]]], Awaitable[list[str]]] | None = None,
         exchange_checkpoint: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
-        remaining_steps: Callable[[], Awaitable[int]] | None = None,
+        remaining_steps: Callable[[], Awaitable[int | None]] | None = None,
         budget_state: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         finalize_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
         record_tool_result: Callable[[ToolCall, dict, Any], Awaitable[Any]] | None = None,
@@ -162,9 +179,22 @@ class AgentLoop:
         hooks: PluginRunHooks | None = None,
         external_outcome: Callable[[], Any] | None = None,
     ) -> Any:
-        if max_steps < 1 or max_tool_calls < 0 or not 0 <= initial_model_calls < max_steps or not 0 <= initial_tool_calls <= max_tool_calls:
-            raise ValueError("Invalid agent run budget")
         terminal_name = (terminal() if callable(terminal) else terminal)["function"]["name"]
+        # Every count is either a positive limit or explicitly unlimited, and
+        # no negative or oversized starting count is accepted.  These checks
+        # are explicit rather than one comparison chain because a `None` limit
+        # must not slip into an ordering test: an unlimited count is a real
+        # choice whose stop is the account's own refusal, not an error here.
+        if max_steps is not None and max_steps < 1:
+            raise ValueError("Invalid agent run budget")
+        if max_tool_calls is not None and max_tool_calls < 0:
+            raise ValueError("Invalid agent run budget")
+        if initial_model_calls < 0 or initial_tool_calls < 0:
+            raise ValueError("Invalid agent run budget")
+        if max_steps is not None and initial_model_calls >= max_steps:
+            raise ValueError("Invalid agent run budget")
+        if max_tool_calls is not None and initial_tool_calls > max_tool_calls:
+            raise ValueError("Invalid agent run budget")
         account = budget or AgentBudget(max_steps, max_tool_calls, initial_model_calls, initial_tool_calls,
             on_model=before_model, on_tool=before_tool, read_state=budget_state)
         trajectory = copy.deepcopy(messages)
@@ -232,19 +262,31 @@ class AgentLoop:
             note, view = execution_budget_message(state, terminal_name)
             target[:] = [message for message in target if message.get('_context_section') != 'execution_budget']
             target.append(note)
-            return view
+            return view, state
 
         step = None
         try:
-            for step_index in range(initial_model_calls,max_steps):
+            # The step argument is a bound only when the operator set one.  An
+            # unlimited count still ends: the deadline, the token allowance or
+            # the terminal proposal is what stops it, and the account refuses
+            # the next call once one of those is used up.
+            steps = (unbounded_steps(initial_model_calls) if max_steps is None
+                     else range(initial_model_calls, max_steps))
+            for step_index in steps:
                 step = None
                 state = await account.state()
-                remaining = await remaining_steps() if remaining_steps is not None else max_steps - step_index
-                remaining = min(remaining, state['model_calls_limit'] - state['model_calls_used'])
-                if remaining < 1:
+                # Three sources bound the remaining steps: this call's own
+                # argument, the account's count, and whatever the caller
+                # reports as still persisted.  Any of them may be unlimited;
+                # the tightest known one is what the loop uses, so a None
+                # never turns into a subtraction or an accidental zero.
+                remaining = tightest(count_remaining(max_steps, step_index),
+                                     count_remaining(state.get('model_calls_limit'), state['model_calls_used']))
+                if remaining_steps is not None:
+                    remaining = tightest(remaining, await remaining_steps())
+                if remaining == 0:
                     raise AgentBudgetExhausted("No persistent model budget remains")
-                forced_final = (step_index == max_steps - 1 or local_tools_used >= max_tool_calls-initial_tool_calls
-                    or state['tool_calls_used'] >= state['tool_calls_limit'] or remaining == 1)
+                forced_final = account.force_terminal(state) or remaining == 1
                 definitions = [] if forced_final else copy.deepcopy(tool_definitions())
                 definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
@@ -255,8 +297,10 @@ class AgentLoop:
                 await install_budget(trajectory)
                 request_messages = await prepare_request(trajectory, definitions) if prepare_request else None
                 if remaining_steps is not None:
-                    remaining = await remaining_steps()
-                    if remaining < 1:
+                    # Compression inside prepare_request may have spent model
+                    # calls; the reported balance is re-read after it returns.
+                    remaining = tightest(remaining, await remaining_steps())
+                    if remaining == 0:
                         raise AgentBudgetExhausted("Context maintenance used the remaining model budget")
                     if remaining == 1 and not forced_final:
                         forced_final = True
@@ -270,8 +314,10 @@ class AgentLoop:
                 # Compression may have spent model calls. Rebuild the factual
                 # budget and tool list from that same current accounting before
                 # checking the final request, without asking another model.
-                budget = await install_budget(trajectory)
-                forced_final = forced_final or budget['model_calls_remaining_after'] == 0 or budget['tool_calls_remaining'] == 0
+                budget, state = await install_budget(trajectory)
+                forced_final = (forced_final or account.force_terminal(state)
+                                or budget['model_calls_remaining_after'] == 0
+                                or budget['tool_calls_remaining'] == 0)
                 definitions = [] if forced_final else copy.deepcopy(tool_definitions())
                 definitions = [item for item in definitions if item['function']['name'] != terminal_name]
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
@@ -360,8 +406,13 @@ class AgentLoop:
                         raise AgentProtocolError('A terminal call must be in its own response, after every prior tool receipt')
                     external_count = len(calls) - len(terminal_calls)
                     state = await account.state()
-                    if external_count > min(max_tool_calls-initial_tool_calls-local_tools_used,
-                                            state['tool_calls_limit']-state['tool_calls_used']):
+                    # The same tightest-known-bound rule as the loop head: an
+                    # unlimited dimension is not a bound, and the local count,
+                    # the account's count and the caller's own limit are all
+                    # compared before any tool in this response runs.
+                    allowed_tools = tightest(count_remaining(max_tool_calls, initial_tool_calls + local_tools_used),
+                                             count_remaining(state.get('tool_calls_limit'), state['tool_calls_used']))
+                    if allowed_tools is not None and external_count > allowed_tools:
                         raise AgentBudgetExhausted("Tool execution budget exceeded; no calls in this response were executed",budget_kind='tool_calls')
                     if forced_final and not terminal_calls:
                         raise AgentProtocolError(f"Only {terminal_name} is available for this model call")
@@ -440,7 +491,7 @@ class AgentLoop:
                                                                   "message": str(exc)}, ensure_ascii=False)})
                         if exchange_checkpoint is not None:
                             await exchange_checkpoint(copy.deepcopy(trajectory))
-                        if step_index == max_steps - 1 or remaining == 1:
+                        if remaining == 1:
                             audit['termination_reason'] = 'final_step_fresh_input_conflict'
                             raise
                         if observe is not None:
@@ -464,7 +515,7 @@ class AgentLoop:
                                            'content': json.dumps(receipt, ensure_ascii=False)})
                         if exchange_checkpoint is not None:
                             await exchange_checkpoint(copy.deepcopy(trajectory))
-                        if step_index == max_steps - 1 or remaining == 1:
+                        if remaining == 1:
                             audit['termination_reason'] = 'final_step_invalid_arguments'
                             raise
                         if observe is not None:

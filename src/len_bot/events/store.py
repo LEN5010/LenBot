@@ -26,6 +26,15 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         self._db: Optional[aiosqlite.Connection] = None
         self._write_lock = asyncio.Lock()
         self.resolve_plugin_work = None
+        # The Runtime sets these three once.  They are the live configuration
+        # a reservation is computed from (its step/context/output limits), the
+        # capability authority whose grant names the quota policy, and the
+        # business timezone the billing day is counted on.  Absent (a store
+        # built without a Runtime) still reserves, using the project's own
+        # default policy, so a work is never silently unlimited.
+        self.budget_config = None
+        self.capability_authority = None
+        self.billing_timezone = None
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)

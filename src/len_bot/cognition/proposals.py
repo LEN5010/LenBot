@@ -205,6 +205,9 @@ class ProposalLedger:
         self.messages_committed=0
         self.continuing_sources=set()
         self.plugin_source_ids=set()
+        # The caller installs the run's real count reader.  Until it does, a
+        # ledger has no continuation allowance, which is the safe reading for
+        # a ledger that was never attached to a run.
         self.remaining_model_calls=lambda:0
 
     async def request_source(self, reference):
@@ -269,7 +272,11 @@ class ProposalLedger:
                          or any(w.event_id == event_id for w in self.context.session.pending_wakes))]
         parameters=result['function']['parameters']['properties']
         parameters['messages']['maxItems']=3-self.messages_committed
-        if self.remaining_model_calls()<=1:parameters['next']['enum']=['end']
+        # `None` means this run's call count is not what stops it, so the
+        # terminal offers its full action set; the runtime's own deadline and
+        # token allowance end the run instead.
+        remaining=self.remaining_model_calls()
+        if remaining is not None and remaining<=1:parameters['next']['enum']=['end']
         handled = parameters['sources']
         if available:
             handled['items']['properties']['source']['enum'] = available
@@ -404,7 +411,7 @@ class ProposalLedger:
             refs=self.context.refs;messages=[]
             if len(result.messages)+self.messages_committed>3:
                 raise ValueError('所有checkpoint共用本轮三条消息上限')
-            if result.next!='end' and self.remaining_model_calls()<=0:
+            if result.next!='end' and self.remaining_model_calls()==0:
                 raise ValueError('原执行预算不足以继续或恢复等待，请结束并保留未完成项')
             handled=[refs.event_id(item.source) for item in result.sources]
             pending=self.plugin_source_ids or {wake.event_id for wake in self.context.session.pending_wakes}

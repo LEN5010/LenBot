@@ -30,8 +30,10 @@ class PluginAgentRequest(BaseModel):
     instructions: str = Field(min_length=1)
     tool_names: tuple[str, ...]
     model_role: Literal['conversation', 'work']
-    max_steps: int = Field(ge=1)
-    max_tool_calls: int = Field(ge=0)
+    max_steps: int | None = Field(default=None, ge=1,
+        description='本次插件 Agent 的模型调用上限；null 表示由期限与父预算停止')
+    max_tool_calls: int | None = Field(default=None, ge=0,
+        description='本次插件 Agent 的工具调用上限；null 表示该维度不设限')
     context_tokens: int = Field(ge=1)
     output_tokens: int = Field(ge=1)
     include_identity: bool = False
