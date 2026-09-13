@@ -11,6 +11,7 @@ from len_bot.memory.writes import validate_memory_proposal, commit_memory_propos
 from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
+from len_bot.execution.journal import ExecutionJournalMixin
 from len_bot.media.store import MediaStoreMixin
 from len_bot.cognition.call_store import ModelCallStoreMixin
 from len_bot.cognition.models import EpisodeOutcome, MessageProposal, OperationReceipt
@@ -19,7 +20,7 @@ from len_bot.scheduler.models import TaskItem, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCallStoreMixin, HistoryStoreMixin):
+class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCallStoreMixin, HistoryStoreMixin, ExecutionJournalMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -52,6 +53,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         await self._db.execute("PRAGMA synchronous=NORMAL;")
         await self.initialize_observations()
         await self.initialize_jobs()
+        await self.initialize_executions()
         await self.initialize_media()
         await self.initialize_model_calls()
         await self.initialize_history()

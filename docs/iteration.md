@@ -70,6 +70,27 @@ C09 的落点不是三处新判定，而是让同一条既有规则在**控制�
 
 下一阶段入口：C10 `feat(execution): define owned worker protocol and journal`（依赖 C09），范围是 `execution` 协议/客户端、`execution_runs` 与最小 Gateway 服务；计划第 8.3 节把“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”列为禁止的半成品，新后端与旧宿主路径不能并存。
 
+## 2026-09-13 第二批 C10 实施
+
+按计划第 8.2 节完成 C10 `feat(execution): define owned worker protocol and journal`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
+
+C10 只做两件事：把“一个执行”的对外合同与归属固定下来，并把它的生命周期记进 `execution_runs`。**没有**把 Python 执行切到 Gateway——那是 C11，且计划第 8.3 节要求整体切换、不允许新旧路径并存。
+
+- 请求合同即权限边界：`execution/protocol.py:ExecutionRequest` 只接受宿主组装的 execution_id、scene/job/revision、workspace_id、typed `initiator`、worker_type、script、已登记 `input_assets`、镜像与网络策略的**引用名**、`deadline_seconds`。没有 owner、挂载、宿主目录、Docker 参数或任意镜像字段，因此“模型写了代码”与“模型决定在哪跑”在类型层面就分开。
+- 幂等接收：`execution/journal.py:record_execution` 以 execution_id 为主键，重复提交返回**已存行**（`accepted=false`）且不重算 `deadline_at`（重试不能推后期限）；同 ID 内容不同（脚本/归属/引用/inputs/initiator 任一不同）以 `ExecutionIdentityConflict` → 409 拒绝，而不是按新内容覆盖。
+- 先持久化再启动：网关先写 `accepted` 行再创建容器任务；写入失败即失败。
+- 状态机与终止：`ALLOWED_TRANSITIONS` 实现 accepted → starting → running → exited/failed/cancel_requested → termination_confirmed/termination_unconfirmed，事件与状态同一 `BEGIN IMMEDIATE`，非法转换整体回滚。`cancel_requested` 只是“收到请求”，实际停止由 kill → 回收 client → rm -f → inspect 确认，只有 inspect 证实才写 `confirmed_*`，否则 `unconfirmed` 并记原因。
+- 事件续读：事件带自增 `sequence`，`?after=` 只返回更大的序号，重复读取不重复采用。
+- 本地期限与重启：期限在接受时落库，`_watch()` 与周期 `sweep()` 都读这个存储值，因此 LenBot 不在也能按原期限收尾；网关重启只核对旧记录（超期即停，无法接续监视的记为 `termination_unconfirmed` 并说明需运营者核对），不重放脚本、不接管旧容器。
+- 未实现即如实失败：`input_assets` 非空在接受时写 `inputs_unsupported` 并落 `failed`（输入导入属 C12）；`worker_type` 必须与引用所声明的类型一致；未登记的镜像/网络策略引用直接拒绝，不回退默认。
+- 持久字段：新增 `execution_runs`、`execution_events`（LenBot 与网关各一份库，同一份 schema 与状态机，由 `ExecutionJournalMixin` 复用）；网关另有 `execution_artifacts` 产物登记清单。
+
+**C10 本轮实际执行的核对**：本机**没有可用的 Docker daemon**（`docker version` 报 `failed to connect to the docker API at unix:///Users/len5010/.docker/run/docker.sock`），因此没有启动任何真实容器、没有期限停止或终止确认的现场证据。静态核对为 `git diff --check`、`uv run --no-dev python -m compileall -q src/len_bot`、以及 `len_bot.services.worker_gateway` 与 `len_bot.execution` 的实际导入（退出码均为 0）。开发中修正了三处自身错误：`src/len_bot/services/worker_gateway/` 缺少 `__init__.py` 导致整包不可导入；`_decode_execution` 未把 SQLite 的文本状态与 0/1 标志转回枚举/布尔、并把 `termination_json` 留在字典里传给 `extra='forbid'` 的记录模型；`worker_type` 未与引用声明的类型核对。本次无前端改动，因此未重新执行 `npm run build`。
+
+验收状态：C10 为**实现完成 / 未运行（无 Docker 环境）**。计划 A07（工作计算与图表）、A08（取消/超时）、A17（服务重启后不重放）中与执行后端相关的部分全部未取得证据；本提交在真实运行环境中不改变任何现有行为（宿主路径未改，Gateway 客户端没有调用点）。`execution_runs` 已建表但没有生产写入者。计划第 11.2 节的“缺少目标机器数据阻塞独立执行后端的正式放行”继续成立。
+
+下一阶段入口：C11 `feat(worker): move offline Python to the isolated gateway`（依赖 C10），范围是 Gateway 的 Docker 后端、workspace 接线、镜像构建与网络/卷部署；完成条件是 LenBot 容器没有 socket、离线 Python 能处理资料、只有一个正式后端且**没有宿主 fallback**。这是一次整体切换，不是在 `run_python` 里加“失败就回落”的分支。
+
 ---
 
 # 当前任务：A/B 审查修复与单群报告

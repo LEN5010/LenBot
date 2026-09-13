@@ -29,7 +29,7 @@
 | 插件声明 `required_capabilities` | 不存在（C06 有意不加） | `PluginSpec`（`plugins/catalog.py:21-38`）无该字段；现有分类是 `sensory/tool/scheduled/hybrid`（`plugins/models.py:131-135`）。C06 只有能力词汇与授予结构；逐工具的能力要求随真正需要它的工具（文件上传、账号动作等）各自提交 |
 | Gate 发送前检查 | 已具备（无额度/睡眠维度） | `runtime/gate.py:120-313`；发送前 `actions/queue.py:114-115` → `agent_runtime.py:106` → `validate_outbound_action():525-548`；插件来源 `plugin_interactions.py:115-131` | 保留 |
 | 离线 Python worker | 已具备 | `--network none` 硬编码 `execution/workspace.py:192`，容器参数 `:192-198`（只读根、cap drop、非 root、pids/内存/CPU/tmpfs 限额），镜像 `containers/workspace/Dockerfile` | 保留现状 |
-| 独立 Worker Gateway、`execution_runs` | 不存在 | 无 `execution/protocol.py`、`execution/client.py`、`services/worker_gateway/`；当前在 LenBot 进程内直接调用 `docker` CLI（`execution/workspace.py:202`） | C10、C11 |
+| 独立 Worker Gateway、`execution_runs` | 部分具备（C10 只做接口、日志与最小服务；**未接线**） | 已有 `execution/protocol.py`、`execution/client.py`、`execution/journal.py`、`services/worker_gateway/`（config/store/runner/app），`EventStore` 已建 `execution_runs`/`execution_events`；但 `run_python` 仍在 LenBot 进程内直接调用 `docker` CLI（`execution/workspace.py:202`），Gateway 客户端没有调用点 | C11（整体切换） |
 | 执行终止与未确认阻断 | 已具备 | `_terminate()` `execution/workspace.py:280-328`（confirmed_absent/confirmed_stopped/unconfirmed，未确认时写 `.termination_unconfirmed` 并拒绝复用 `:110-117`） | 保留 |
 | 浏览器 | 部分具备（同进程、无独立隔离） | 同进程 Playwright `browser/worker_v2.py:90-96`；无持久 profile、无 `user_data_dir`/`storage_state` | C14 |
 | 公开研究与 B 站读取原语 | 部分具备 | 现有 `web_search`、`bilibili_content`、`link_parser`、`asoul_dynamics` 插件与 `tools/retrieval.py`；无统一 research facade、无评论/字幕专用读取 | C16 |
@@ -135,8 +135,28 @@
 | 身份读取 | 新增 `runtime/job_store.py:JobStoreMixin.initiator_of`，控制路径读 `_decode_job` 已转换好的发起者，不自己重建；没有预占行的旧工作保持“没有 token 维度”，有预占行却无从归属的记录由重预占拒绝并给出原因 |
 | 操作接口 | 面板 `POST /api/cockpit/jobs/{id}/{operation}` 与模型工具 `resume_work` 走同一条 `JobProposal` → Gate → 事务路径，自动获得上述判定 |
 
-## 10. 当前不可宣称的能力
+## 10. 第二批提交边界（C10）
 
-以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间），C09 让继续执行的工作重新受同一份额度与**当前**授权约束。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
+对应计划第 8.2 节的 C10 `feat(execution): define owned worker protocol and journal`：`execution` 协议/客户端、`execution_runs`、最小 Gateway 服务；完成条件是幂等接收、状态查询、取消与事件续读可用，且技术状态不冒充业务完成。
+
+| 落点 | 本轮改动 |
+|---|---|
+| 请求合同 | `execution/protocol.py:ExecutionRequest` 只接受宿主组装的 execution_id、scene/job/revision、workspace_id、typed `initiator`、worker_type、script、已登记 `input_assets`、镜像与网络策略**引用名**、`deadline_seconds`；无 owner/挂载/宿主目录/Docker 参数/任意镜像字段 |
+| 先持久化再启动 | 网关 `store.record_execution()` 先写 `execution_runs`（`state=accepted`）再创建容器任务；写入失败即失败 |
+| 幂等接收 | `execution_id` 是主键：重复提交返回已存行（`accepted=false`）且不重算 `deadline_at`；同 ID 内容不同以 409 拒绝（`ExecutionIdentityConflict`） |
+| 状态机 | `ALLOWED_TRANSITIONS`（`execution/journal.py`）实现 accepted → starting → running → exited/failed/cancel_requested → termination_confirmed/termination_unconfirmed；事件与状态同事务，非法转换整体回滚 |
+| 技术状态不冒充业务完成 | `ExecutionRecord` 只有技术事实（状态、返回码、终止、stdout/stderr 与截断标记），没有业务 completed/partial/failed 字段；工作是否完成仍读 `agent_jobs`/`tasks` |
+| 取消与终止 | `cancel_requested` 只记请求；`_terminate()` 依次 kill → 回收 client → rm -f → inspect，只有 inspect 确认才写 `confirmed_absent`/`confirmed_stopped`，否则 `unconfirmed` 并记原因 |
+| 事件续读 | 事件带自增 `sequence`，`GET /v1/executions/{id}/events?after=` 只返回更大的序号，重复读取不重复采用 |
+| 服务间认证 | `Authorization: Bearer <token>` 常量时间比较；认证只证明来自 LenBot，归属与状态仍按 job/execution 核对，网关不自行生成系统授权 |
+| 本地期限 | 期限在接受时落库，`_watch()` 与周期 `sweep()` 都读存储值，因此 LenBot 停机也能按原期限收尾；网关重启只核对旧执行，不重放、不接管容器 |
+| 未实现即如实失败 | `input_assets` 非空在接受时写 `inputs_unsupported` 并落 `failed`（导入属 C12）；`worker_type` 与引用声明的类型必须一致；未登记的镜像/策略引用被拒绝，不回退默认 |
+| 与宿主路径的关系 | `execution/workspace.py` 与 workspace 插件未改，宿主路径照旧；计划第 8.3 节禁止两路径并存，**切换是 C11 的一次整体动作**，本提交不接 `run_python` |
+| 持久字段 | 新增 `execution_runs`、`execution_events`（LenBot 与网关各自一份库，同一 schema）；网关另有 `execution_artifacts` |
+| 未取得的证据 | 本机无 Docker daemon，未启动任何容器；A07/A08/A17 相关项全部未确认 |
+
+## 11. 当前不可宣称的能力
+
+以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间），C09 让继续执行的工作重新受同一份额度与**当前**授权约束。**C10 只固定“一个执行”的对外合同、执行日志与最小网关服务**：被执行的 Python 仍在 LenBot 进程内调用宿主 Docker（`execution/workspace.py`），Gateway 客户端没有调用点，本机也没有 Docker daemon，因此“独立 Worker Gateway”本身**不是**当前能力，不得显示为可用。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
 
 已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。

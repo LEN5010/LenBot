@@ -20,6 +20,7 @@
 | C07 `feat(budget): reserve and settle shared usage atomically` | C06 | 实现完成 | 未运行 |
 | C08 `feat(agent): enforce resource budgets across native loops` | C07 | 实现完成 | 未运行 |
 | C09 `feat(jobs): preserve revisions and budget ownership on resume` | C08 | 实现完成 | 未运行 |
+| C10 `feat(execution): define owned worker protocol and journal` | C09 | 实现完成 | 未运行（无 Docker 环境，未启动容器） |
 
 C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记录，编号只标识计划第 8.2 节的范围。
 
@@ -630,6 +631,83 @@ C01、C02、C03 都只依赖 C00 且互不影响；本文件按完成顺序记�
 
 ---
 
+## C10 归属明确的 worker 协议与执行日志
+
+对应计划第 8.2 节的 C10 `feat(execution): define owned worker protocol and journal`：`execution` 协议/客户端、`execution_runs`、最小 Gateway 服务；完成条件是**幂等接收**、**状态查询**、**取消**与**事件续读**可用，且**技术状态不冒充业务完成**。
+
+计划 M06 把执行位置从 LenBot 进程内搬到独立服务，但明确要求“对外工具不变”：`run_python`、`list_workspace_files`、`read_workspace_file`、`export_workspace_artifact` 仍由原工作 Agent 调用。因此这一条**不把 Python 执行切到 Gateway**（那是 C11），它只做两件事：把“一个执行”的对外合同与归属固定下来，并把它的生命周期记进 `execution_runs`。计划第 8.3 节把“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”列为禁止的半成品，本提交按此处理：**在 C11 完成切换之前，宿主路径保持原样、Gateway 路径没有被接进 `run_python`**，两条路径不会同时可用。
+
+### 计划要求 / 本提交做法
+
+| 计划要求 | 本提交做法 |
+|---|---|
+| 请求合同只接受宿主组装的字段 | `execution/protocol.py:ExecutionRequest` 只含 execution_id、job/revision、scene、workspace_id、typed `initiator`、worker_type、script、**已登记** `input_assets`、`image_ref`/`network_policy` 引用与 `deadline_seconds`；没有 owner、mount、宿主目录、Docker 参数或镜像名字段，模型能填的只有脚本与业务参数。 |
+| 先持久化再启动 | `POST /v1/executions` 先在网关自己的日志里写入这一行（`state=accepted`）再创建容器任务；写入失败即返回失败，不会出现“跑了但查不到”。 |
+| 同 ID 不重复启动 | `record_execution()` 以 execution_id 为主键；重复提交返回**已存行**并标 `accepted=false`，不建第二个容器。同一 ID 内容不同（脚本、归属、引用、input_assets、initiator 任一不同）以 409 拒绝，而不是悄悄按新内容跑。 |
+| 重试不延长期限 | `deadline_at` 在首次接受时算好并落库；重复提交不重算，因此重试不能把绝对期限推后。 |
+| 状态机 | `accepted → starting → running → exited/failed/cancel_requested → termination_confirmed/termination_unconfirmed`；转换表在 `execution/journal.py:ALLOWED_TRANSITIONS`，非法转换由日志层拒绝（事件与状态同事务，拒绝时两者都不写）。 |
+| 技术状态不冒充业务完成 | `ExecutionRecord` 里只有技术事实（状态、返回码、终止、stdout/stderr 与截断标记）；没有任何 completed/partial/failed 业务字段。`exited` 只表示进程退出，工作是否完成仍读 `agent_jobs`/`tasks`。 |
+| 取消可确认或未确认 | `cancel_requested` 只是“收到请求”；`_terminate()` 依次 kill → 回收 client → rm -f → inspect，只有 inspect 确认消失/停止才写 `confirmed_absent`/`confirmed_stopped`，否则 `unconfirmed` 并记原因。 |
+| 事件续读不重复 | 每个事件带自增 `sequence`，`GET .../events?after=` 只返回更大的序号，重复读取同一窗口不重复采用。 |
+| 服务间认证 | `Authorization: Bearer <token>`（常量时间比较），401 不透露哪部分不对；认证只说明“来自 LenBot”，归属与状态仍按 job/execution 核对，网关不接受自己生成系统授权。 |
+| 租约与修订代次 | 每行记 `job_id` + `job_revision`；`executions_for_job()` 可按工作读回全部代次，旧修订的执行与当前修订各自有行、各自有终态。 |
+| Gateway 按本地期限收尾 | 期限在**接受时**落库；`_watch()` 与周期性 `sweep()` 都按这个存储值停止，因此 LenBot 不在也能停。 |
+| 重启只核对、不重放 | `sweep()` 只读旧记录：超期就停；无法接续监视的执行写成 `termination_unconfirmed` 并说明需运营者核对，**不重跑脚本、不自动接管容器**。 |
+| Bot 容器没有 Docker socket | 本提交没有把任何容器运行能力放进 LenBot 进程：Gateway 是独立服务与独立配置，Docker 控制只存在于它内部。 |
+
+### 设计判断
+
+1. **请求类型本身就是权限边界。** `ExecutionRequest` 里没有任何“选镜像/选挂载/选用户”的字段，镜像与网络策略是**引用名**，只在网关自己的部署配置里解析（`GatewayConfig.worker_for`/`policy_for`）。这样“模型写了代码”与“模型决定了在哪跑”被结构性地分开，而不是靠一层校验去拦。引用不存在时**拒绝**而不是回退成默认：一个部署没有建的镜像或出口，不能被读成“运行时没说要，于是随便用一个”。
+2. **执行身份是幂等键，因此“重试”不是“再跑一次”。** 客户端超时后最危险的动作是提交一份新的执行：那会变成第二个容器、第二份副作用。所以同一 ID 重复提交返回**原来那行**，期限也不重算；内容不同则明确 409，让调用者去查询而不是覆盖。这是计划验收里“客户端超时后能查询同一执行、重复提交不会创建第二容器”的实现方式。
+3. **`cancel_requested` 与终止结果是两件事，分开记录。** 计划写“请求取消不是已停止”。因此取消先写 `cancel_requested`（这是一条真实事件），再由 `_terminate()` 实际执行并写 `termination_*`；无法确认时状态是 `termination_unconfirmed` 而不是“大概停了”。这条与 C01 在宿主 worker 里建立的口径一致，但记录位置从进程内停车区换成了持久日志——跨进程、跨重启都读得到。
+4. **网关有自己的日志，因为“控制服务不在”正是它要覆盖的场景。** 若执行记录只存在 LenBot 的库里，那么 LenBot 停机时没有任何组件知道“还有一个容器在跑、它还有个原定期限”。所以网关的日志是它自己的 SQLite 文件（`GatewayConfig.database_path`），表结构与状态机复用 `len_bot.execution.journal` 同一份定义——一个合同、两个进程，而不是两份会各自漂移的实现。
+5. **`input_assets` 非空即失败，而不是“先跑起来再说”。** 输入字节的传输路径属于 C12；本版若把一个带输入资料的执行真的启动，脚本会读到一个不存在的文件，那看起来像“任务失败”而不是“这个功能还没有”。所以接受时明确记录 `inputs_unsupported` 并落到 `failed`，让缺失的能力显示为缺失。同理，`worker_type` 与引用所声明的类型必须一致（`py313` 实现的是 `python`），否则请求 `browser` 却拿到 `py313` 就是一次未声明的换实现。
+6. **不自动接管上一次运行的容器。** 网关重启后，一个“已登记但本进程没有监视任务”的执行无法确认其容器的真实状态；`sweep()` 把它记为 `termination_unconfirmed`。这与计划“unconfirmed 保留目录并阻止复用”一致，也避免把“我看不到它”写成“它已经停了”。
+
+### 实际改动
+
+- `execution/protocol.py`（新增）：`ExecutionState`、`TERMINAL_STATES`、`TerminationReport`、`ExecutionEvent`、`ExecutionRecord`、`ExecutionRequest`、`is_terminal()`；引用名模式 `WORKER_TYPE_PATTERN`；输出上限常量 `MAX_OUTPUT_CHARS`（线上上限，不属于部署自己的输出限制）。
+- `execution/journal.py`（新增）：`ExecutionJournalMixin` + `ALLOWED_TRANSITIONS` + `ExecutionIdentityConflict`。`initialize_executions()` 建 `execution_runs`（一行一执行，含工作代次、固定引用、状态、期限、终止、stdout/stderr 与截断标记、`last_sequence`）与 `execution_events`（`PRIMARY KEY(execution_id,sequence)`）；`record_execution()`、`get_execution()`、`execution_request_of()`、`executions_for_job()`、`append_execution_event()`、`read_execution_events()`、`execution_view()`。事件插入与状态更新在同一 `BEGIN IMMEDIATE` 内，拒绝即回滚。
+- `execution/client.py`（新增）：`WorkerGatewayConfig`（base_url/token/两个引用/超时）、`WorkerGatewayClient`（submit/get/cancel/events/artifacts/artifact_bytes），并把两类失败分开：`GatewayRefused`（网关看到了并拒绝，什么都没启动）与 `GatewayUnavailable`（没得到答复，结局未知，只能查询同一执行 ID，不能新建）。
+- `events/store.py`：`EventStore` 混入 `ExecutionJournalMixin`，`initialize()` 调用 `initialize_executions()`。这是 LenBot 侧的执行关联；网关侧用同一个 mixin，但库是它自己的文件。
+- `services/worker_gateway/`（新增，部署为独立服务）：`config.py`（镜像/网络策略的引用注册表与 `worker_for`/`policy_for`）、`store.py`（网关自己的日志，复用上面同一份表结构与状态机；另加 `execution_artifacts` 登记清单）、`runner.py`（容器命令组装、启动确认、期限监视、取消与终止确认、重启核对、产物登记）、`app.py`（六条窄接口与 Bearer 认证）、`__main__.py`（`python -m len_bot.services.worker_gateway --config <网关配置文件>`）。
+
+### 未做的事
+
+- **没有把 `run_python` 切到 Gateway，也没有在任何地方保留宿主 `docker run` 回落。** `execution/workspace.py` 与 workspace 插件本提交未改动，宿主路径照旧；Gateway 客户端目前没有调用点。切换是 C11，且按计划第 8.3 节只能整体切换、不能并存。
+- **没有做输入资料导入。** 见设计判断第 5 条：`input_assets` 非空即 `failed` 并说明原因，传输路径留给 C12。
+- **没有做出网。** `NetworkPolicy.mode` 本版只允许 `none`；未知策略引用被拒绝，`network_python` 能力与出口网络属于 C13。
+- **没有新增前端页面。** 面板仍显示既有内容；执行日志的呈现（工作详情里的 execution 行）不在本提交的验收条件里，也没有对应的构建产物改动。
+- **没有新增能力授予或额度维度。** 执行本身不预占 token、不扣用户账；它只消耗计划 M06 说的 worker 容量（本版用 `max_concurrent` 显式拒绝而非排队）。
+- **没有新增、修改或运行测试、夹具或断言式探针；没有真实容器、模型、OneBot 或群发送。**
+
+### 静态核对
+
+- `git diff --check`（退出码 0，无空白错误）
+- `uv run --no-dev python -m compileall -q src/len_bot`（退出码 0）
+- `uv run --no-dev python -c "import len_bot.services.worker_gateway.{app,config,runner,store}; import len_bot.execution.{protocol,client,journal}"`（导入成功；此前发现并修正了 `src/len_bot/services/worker_gateway/` 缺 `__init__.py` 导致整包不可导入的问题）
+- 本机**没有可用的 Docker daemon**（`docker version` 报 `failed to connect to the docker API at unix:///Users/len5010/.docker/run/docker.sock`），因此**没有启动任何真实容器**，计划 A07/A08/A17 的相关项未取得运行证据。
+
+### 未确认项
+
+- **容器实际运行、期限停止与终止确认都没有现场证据。** 本机无 Docker daemon，无法核对“到点是否真的被 kill 并被 inspect 确认”。`_terminate()` 的判定逻辑与 C01 在宿主 worker 上已验证过的同构逻辑一致，但它在本服务里的实际行为未观察。
+- **`max_concurrent` 的拒绝阈值未在真实并发下触发。** 该值取部署配置，默认 2；没有构造真实的并发占用场景。
+- **重启核对（`sweep()`）只在代码层面成立。** 没有做“网关带一个在跑的容器被杀掉再拉起”的实际演练，因此“重新拉起后旧执行是否真的读到 `termination_unconfirmed`”未确认。
+- **`execution_runs` 已建表但当前没有生产写入者。** 宿主路径不写它（C11 才接），网关只有被部署并接受请求时才会写。也就是说这次提交在真实运行环境中不改变任何现有行为。
+- **网关配置尚未进入根配置。** 计划第 9.1 节把 `plugins.workspace` 指向 Gateway 地址；本提交只用网关自己的配置文件（`--config`），根配置与样例均未改动，接线留给 C11。
+- **面板没有暴露执行状态。** 运维者目前只能通过网关接口或 `execution_runs` 直接查看，工作页不显示 execution 行。
+
+### 涉及持久字段
+
+- 新增两张表，均在 `EventStore.initialize()` 中随既有结构一起建立（`CREATE TABLE IF NOT EXISTS`，无需停机转换、无列变更）：
+  - `execution_runs`：`execution_id`(PK)、`scene_id`、`job_id`、`job_revision`、`workspace_id`、`worker_type`、`image_ref`、`network_policy`、`request_json`、`state`、`accepted_at`、`deadline_at`、`started_at`、`ended_at`、`returncode`、`error`、`termination_json`、`stdout`、`stderr`、`stdout_truncated`、`stderr_truncated`、`last_sequence`。
+  - `execution_events`：`(execution_id, sequence)` 主键、`kind`、`at`、`detail`。
+- 网关侧另有 `execution_artifacts`（产物登记清单：`artifact_id`(PK)、`execution_id`、`path`、`size_bytes`、`media_type`、`registered_at`），只存在于网关自己的库里。
+- 没有新增配置字段；根配置与 `lenbot.config.example.json` 均未改动。
+- 无离线转换：两张表都是新增空表，旧记录不读也不改写。
+
+---
+
 > 按计划第 10.3 节的固定模板记录。状态措辞只用“实现完成 / 部署就绪 / 实际链路通过”三种；本批全部为**实现完成**，没有取得任何真实链路证据。核对方式遵守计划第 10.1 节与 [`AGENTS.md`](../AGENTS.md)：只做阅读、正常编译与 `git diff --check`，未新增或运行测试、夹具、断言式探针或自动截图，未启动服务、容器、浏览器、Core、模型或 OneBot，未进行真实发送。
 
 ## Commit / Parent / 审阅 HEAD
@@ -747,7 +825,9 @@ C05  对话轮次装配 → 既有场景与插件准入 → runtime_facts 附可
 
 C06 已按第 2 章的推荐裁决落地，C07、C08、C09 也已完成（见上文各自章节），D04/D06/D09 仍未获用户逐项确认。
 
-下一提交是 **C10 `feat(execution): define owned worker protocol and journal`**：依赖 C09，范围是 `execution` 协议/客户端、`execution_runs`、最小 Gateway 服务，完成条件是幂等接收、状态查询、取消与事件续读可用，且技术状态不冒充业务完成。计划第 8.3 节的“添加 Gateway 客户端后继续在失败时回落宿主 `docker run`”是这一条的禁止半成品：新后端与旧宿主路径不能并存。计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）会直接决定 C10—C12 的接口与启用条件，仍待用户提供；缺少目标机器数据不阻塞其代码与接口工作，但阻塞独立执行后端的正式放行。
+C10 已完成（见上一节）。它只固定“一个执行”的对外合同与归属，**没有**把 Python 执行切到 Gateway：`run_python` 仍走宿主路径，Gateway 客户端目前没有调用点。计划第 8.3 节禁止“新客户端与旧宿主路径并存”，因此 C11 必须是**一次整体切换**，而不是在 `run_python` 里加一条“失败就回落”的分支。
+
+下一提交是 **C11 `feat(worker): move offline Python to the isolated gateway`**：依赖 C10，范围是 Gateway 的 Docker 后端、workspace 接线、镜像构建与网络/卷部署，完成条件是 LenBot 容器没有 socket、离线 Python 能处理资料、**只有一个正式后端且没有宿主 fallback**。计划第 11.2 节写明“缺少目标机器数据不阻塞 C00—C09 的代码和接口工作，但阻塞独立执行后端的正式放行”，因此 C11 的代码可以继续，但独立执行后端在拿到目标机信息前不得宣布放行。计划第 13 章的部署信息（Linux VPS、OneBot 文件协议、B 站专用账号、音频转写、可选 Core）仍待用户提供。
 
 ## 本批不宣称的能力
 
