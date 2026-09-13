@@ -21,7 +21,7 @@ from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.agent import PluginExecution
 from len_bot.plugins.work import PluginWorkContext
-from len_bot.cognition.budget import AgentBudget
+from len_bot.cognition.budget import AgentBudget, count_remaining, terminal_seconds_reserve, tightest
 from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
@@ -530,19 +530,49 @@ class InformationJobRunner:
             current = await store.get_job(job_id,scene_id)
             if not current or current['revision'] != revision or current['status'] != 'processing':
                 raise JobChanged('Work changed before budget snapshot')
+            # The token dimension is this work's own reservation, which C07
+            # opened at creation for exactly this purpose: what the work holds
+            # is the most it may spend.  Every call carrying this job id counts,
+            # including compression, skill maintenance and plugin sub-agents.
+            reservation = await store.job_reservation(job_id)
+            used_usage, used_estimate = await store.job_measured_tokens(
+                job_id, conservative_output_tokens=config.work_output_tokens)
             return {'model_calls_limit':config.job_max_steps,'model_calls_used':current['model_steps'],
                     'tool_calls_limit':config.job_max_tool_calls,'tool_calls_used':current['tool_calls'],
                     'elapsed_seconds_limit':config.job_max_seconds,
-                    'elapsed_seconds_used':round(current['elapsed_seconds']+time.monotonic()-last_charge,3)}
+                    'elapsed_seconds_used':round(current['elapsed_seconds']+time.monotonic()-last_charge,3),
+                    'tokens_limit':reservation['reserved_tokens'] if reservation else None,
+                    'tokens_used':used_usage + used_estimate}
+
+        async def remaining_seconds():
+            """Seconds left of this work's absolute deadline.
+
+            The deadline is absolute from the work's first execution and a
+            resume never resets it, so this reads the persisted elapsed time
+            rather than starting a new clock.  `job_max_seconds` is required,
+            which is what stops a work whose count dimensions are unlimited.
+            """
+            current = await store.get_job(job_id,scene_id)
+            if not current or current['revision'] != revision or current['status'] != 'processing':
+                raise JobChanged('Work changed before time budget snapshot')
+            return config.job_max_seconds - current['elapsed_seconds'] - (time.monotonic()-last_charge)
+
+        # The work's own deadline and token dimensions come from the durable
+        # snapshot, so the account holds no second copy of them.  The token
+        # reserve is one whole request — the work's configured context plus its
+        # output — because the terminal is a request like any other, and
+        # stopping only once one full request no longer fits is what keeps the
+        # last calls for the submission instead of for one more read.
+        execution.budget=AgentBudget(config.job_max_steps,config.job_max_tool_calls,
+            on_model=before_model,on_tool=before_tool,read_state=budget_state,
+            terminal_seconds_reserve=terminal_seconds_reserve(config.job_max_seconds),
+            terminal_token_reserve=config.job_context_tokens + config.work_output_tokens)
 
         async def observe():
             await charge(revision)
             additions = list(pending_additions)
             pending_additions.clear()
             return additions or None
-
-        execution.budget=AgentBudget(config.job_max_steps,config.job_max_tool_calls,
-            on_model=before_model,on_tool=before_tool,read_state=budget_state)
 
         async def evidence_correction(result_ids):
             current = await store.get_job(job_id,scene_id)
@@ -576,13 +606,19 @@ class InformationJobRunner:
                 raise TerminalArgumentError(str(error), correction=await evidence_correction(conclusion.result_ids)) from error
             result = JobResult(status="partial" if conclusion.unresolved else "completed", **conclusion.model_dump(exclude={"skill_candidate"}))
             if result.status=='partial':
+                # The reported reason names whichever dimension actually ran
+                # out; a dimension the operator left unlimited is never one.
                 budget=await budget_state()
-                if budget['model_calls_used']>=budget['model_calls_limit']:
+                if count_remaining(budget['model_calls_limit'],budget['model_calls_used'])==0:
                     result.reason='model_budget_exhausted_at_finish'
-                elif budget['tool_calls_used']>=budget['tool_calls_limit']:
+                elif count_remaining(budget['tool_calls_limit'],budget['tool_calls_used'])==0:
                     result.reason='tool_budget_exhausted_at_finish'
-                elif budget['elapsed_seconds_used']>=budget['elapsed_seconds_limit']:
+                elif (budget['elapsed_seconds_limit'] is not None
+                      and budget['elapsed_seconds_used']>=budget['elapsed_seconds_limit']):
                     result.reason='time_budget_exhausted_at_finish'
+                elif (budget['tokens_limit'] is not None
+                      and budget['tokens_used']>=budget['tokens_limit']):
+                    result.reason='token_budget_exhausted_at_finish'
                 else:
                     result.reason='agent_finished_partial'
             try:
@@ -655,9 +691,9 @@ class InformationJobRunner:
                     needs_model=not work or work.needs_model is None or work.needs_model(job)
                     current_cutoff=(await store.load_scene_session(scene_id))['last_observed_event_rowid']
                     work_cutoff=work.input_cutoff(work.parameters_model.model_validate(job['work_parameters']),current_cutoff) if work else current_cutoff
-                    if needs_model and job['model_steps']>=config.job_max_steps:
+                    if needs_model and config.job_max_steps is not None and job['model_steps']>=config.job_max_steps:
                         raise JobBudgetExhausted('Work model-step budget exhausted')
-                    if job['elapsed_seconds']>=config.job_max_seconds:
+                    if config.job_max_seconds is not None and job['elapsed_seconds']>=config.job_max_seconds:
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted',budget_kind='elapsed_time')
                     if gateway is None and needs_model:
                         if job["model_binding"]:
@@ -675,10 +711,10 @@ class InformationJobRunner:
                     job = await store.get_job(job_id, scene_id)
                     if job is None or job["revision"] != revision or job["status"] != "processing":
                         raise JobChanged("Job changed while assembling context")
-                    remaining = config.job_max_seconds - job["elapsed_seconds"] - (time.monotonic()-last_charge)
-                    if needs_model and job['model_steps']>=config.job_max_steps:
+                    remaining = await remaining_seconds()
+                    if needs_model and config.job_max_steps is not None and job['model_steps']>=config.job_max_steps:
                         raise JobBudgetExhausted('Work model-step budget exhausted')
-                    if remaining<=0:
+                    if remaining is not None and remaining<=0:
                         raise JobBudgetExhausted('Work elapsed-time budget exhausted',budget_kind='elapsed_time')
                     if work and work.execute is not None:
                         execution.audit=run_trace
@@ -710,7 +746,7 @@ class InformationJobRunner:
                             current = await store.get_job(job_id, scene_id)
                             if not current or current["revision"] != revision or current["status"] != "processing":
                                 raise JobChanged("Work changed before request")
-                            return config.job_max_steps-current["model_steps"]
+                            return count_remaining(config.job_max_steps, current["model_steps"])
 
                         compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config)
                         presentation = WorkToolPresentation(runtime, scene_id)
@@ -723,7 +759,15 @@ class InformationJobRunner:
                             return [item for item in available if item['function']['name'] in work.allowed_tools] if work else available
 
                         def request_definitions():
-                            if job['model_steps']>=config.job_max_steps-1 or job['tool_calls']>=config.job_max_tool_calls:
+                            # The terminal alone is offered when no further
+                            # exchange fits: one model call left is already the
+                            # submission's own call, and a spent tool budget
+                            # leaves nothing to read with.  An unlimited count
+                            # never triggers this, and the account's own refusal
+                            # still ends the run on its deadline or allowance.
+                            steps_left = count_remaining(config.job_max_steps, job['model_steps'])
+                            calls_left = count_remaining(config.job_max_tool_calls, job['tool_calls'])
+                            if (steps_left is not None and steps_left <= 1) or calls_left == 0:
                                 return [FINISH_WORK]
                             return [*work_definitions(), FINISH_WORK]
 
@@ -789,8 +833,10 @@ class InformationJobRunner:
                         result = await AgentLoop(gateway).run(messages=messages,
                             tool_definitions=work_definitions,
                             execute_tool=execute_tool, terminal=FINISH_WORK, finish=finish,
-                            proposal_tool_names={"report_progress", "update_work_state"}, max_steps=config.job_max_steps-job["model_steps"],
-                            max_tool_calls=max(0, config.job_max_tool_calls-job["tool_calls"]), before_model=before_model,
+                            proposal_tool_names={"report_progress", "update_work_state"},
+                            max_steps=count_remaining(config.job_max_steps, job["model_steps"]),
+                            max_tool_calls=count_remaining(config.job_max_tool_calls, job["tool_calls"]),
+                            before_model=before_model,
                             before_tool=before_tool, observe=observe, checkpoint=checkpoint, trace=run_trace,
                             exchange_checkpoint=persist_exchange, remaining_steps=remaining_steps, prepare_request=prepare_request,
                             prepare_tool_results=prepare_tool_results, finalize_request=finalize_request,

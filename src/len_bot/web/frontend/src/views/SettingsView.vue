@@ -10,7 +10,7 @@ import EntityLink from '../components/EntityLink.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 
 const route = useRoute(), router = useRouter()
-const tabs = [{value:'persona',title:'人格与表达'},{value:'attention',title:'注意力'},{value:'access',title:'QQ 回复资格'},{value:'time',title:'业务时间'},{value:'members',title:'成员'},{value:'connection',title:'连接'},{value:'delivery',title:'发送'},{value:'runtime',title:'运行参数'},{value:'account',title:'账户'}]
+const tabs = [{value:'persona',title:'人格与表达'},{value:'attention',title:'注意力'},{value:'access',title:'QQ 回复资格'},{value:'resources',title:'额度策略'},{value:'time',title:'业务时间'},{value:'members',title:'成员'},{value:'connection',title:'连接'},{value:'delivery',title:'发送'},{value:'runtime',title:'运行参数'},{value:'account',title:'账户'}]
 const tab = computed(() => tabs.some(item=>item.value===route.query.tab) ? route.query.tab : 'persona')
 const loading = ref(false), error = ref(''), message = ref(''), readAt = ref({}), busy = ref('')
 const persona = ref(null), personaOriginal = ref(''), attention = ref(null), attentionOriginal = ref('')
@@ -18,13 +18,19 @@ const runtimeText = ref(null), runtimeOriginal = ref(''), runtimeRestart = ref(f
 const runtimeSavedBudgets = ref({}), runtimeEffectiveBudgets = ref({})
 const executionBudgets = [{key:'conversation_max_steps',label:'每轮对话模型调用',unit:'次'},
   {key:'conversation_max_tool_calls',label:'每轮对话工具调用',unit:'次'},
+  {key:'conversation_window_seconds',label:'每轮对话绝对期限',unit:'秒'},
   {key:'job_max_steps',label:'同一工作累计模型调用',unit:'次'},
   {key:'job_max_tool_calls',label:'同一工作累计工具调用',unit:'次'},
-  {key:'job_max_seconds',label:'同一工作累计执行时间',unit:'秒'}]
+  {key:'job_max_seconds',label:'同一工作累计执行时间',unit:'秒'},
+  {key:'maintenance_max_tool_calls',label:'一次历史维护工具调用',unit:'次'}]
+const budgetText = (value, unit) => value===undefined ? '未提供'
+  : value===null ? '不设限（由其他维度停止）' : `${value} ${unit}`
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
 const timeDraft = ref(null), timeOriginal = ref(''), timeConfigured = ref(false), timeLoaded = ref(false), timeRestart = ref(false)
+const quotaText = ref(null), quotaOriginal = ref('')
+const quotaDirty = computed(()=>quotaText.value!==null&&quotaText.value!==quotaOriginal.value)
 const members = ref(null), membersOriginal = ref(''), membersRestart = ref(false)
 const weekdays = [{title:'周一',value:0},{title:'周二',value:1},{title:'周三',value:2},{title:'周四',value:3},{title:'周五',value:4},{title:'周六',value:5},{title:'周日',value:6}]
 const me = ref(null), passwords = ref({current_password:'',new_password:''}), leavingAfterLogout = ref(false)
@@ -42,7 +48,7 @@ const accessDirty = computed(()=>accessText.value!==null&&(accessText.value!==ac
 const timeDirty = computed(()=>timeDraft.value!==null&&JSON.stringify(timeDraft.value)!==timeOriginal.value)
 const membersDirty = computed(()=>members.value!==null&&JSON.stringify(members.value)!==membersOriginal.value)
 const exampleDirty = computed(()=>exampleOpen.value&&JSON.stringify(example.value)!==exampleOriginal.value)
-const dirty = computed(()=>!leavingAfterLogout.value&&(personaDirty.value||attentionDirty.value||runtimeDirty.value||connectionDirty.value||accessDirty.value||timeDirty.value||membersDirty.value||exampleDirty.value||!!passwords.value.current_password||!!passwords.value.new_password))
+const dirty = computed(()=>!leavingAfterLogout.value&&(personaDirty.value||attentionDirty.value||runtimeDirty.value||connectionDirty.value||accessDirty.value||quotaDirty.value||timeDirty.value||membersDirty.value||exampleDirty.value||!!passwords.value.current_password||!!passwords.value.new_password))
 const { confirmLeave } = useUnsavedChanges(dirty)
 let requestId = 0, mediaRequest = 0, presetRequest = 0
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -69,6 +75,9 @@ async function load() {
         grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', ')}))
         grantsOriginal.value=JSON.stringify(grants.value)
       }
+    } else if (currentTab==='resources') {
+      const settings = await api('/api/settings/resources'); if (request!==requestId) return
+      if (!quotaDirty.value) { quotaText.value=JSON.stringify(settings.policies,null,2); quotaOriginal.value=quotaText.value }
     } else if (currentTab==='time') {
       const settings = await api('/api/settings/time'); if (request!==requestId) return
       timeLoaded.value = true
@@ -148,6 +157,18 @@ async function saveAccess() {
 function addGrant() {
   grants.value.push({grant_id:'',revision:1,operator_id:'',principal_type:'human',principal_id:'',
     scene_id:'',system_scope:'',capabilityText:'',expires_at:null,resource_policy:'',concurrency:null,enabled:false})
+}
+async function saveQuota() {
+  if (busy.value) return
+  busy.value='resources'; error.value=''; message.value=''
+  try {
+    let policies
+    try { policies = JSON.parse(quotaText.value || '{}') } catch(e) { throw new Error('额度策略必须是 JSON 对象：' + e.message) }
+    if (policies===null || Array.isArray(policies) || typeof policies!=='object') throw new Error('额度策略必须是“策略名 → 数值”的 JSON 对象')
+    const result = await api('/api/settings/resources',{method:'PUT',body:JSON.stringify({policies})})
+    quotaText.value=JSON.stringify(result.settings.policies,null,2); quotaOriginal.value=quotaText.value
+    message.value=result.message
+  } catch(e) { error.value=e.message } finally { busy.value='' }
 }
 async function saveTime() {
   if (busy.value || !timeDraft.value) return
@@ -370,12 +391,21 @@ watch(tab,load,{immediate:true})
             <v-text-field v-else v-model="grant.system_scope" label="系统范围" hint="明确的系统用途，例如 heartbeat。" required />
             <v-text-field v-model="grant.capabilityText" label="能力" hint="用逗号分隔：long_work、public_research、network_python、proactive_chat、interest_share、send_file、bilibili_authenticated_read、bilibili_like、bilibili_favorite。" persistent-hint required />
             <v-text-field v-model.number="grant.expires_at" type="number" label="有效期（绝对 Unix 时间）" hint="留空表示长期有效。" />
-            <v-text-field v-model="grant.resource_policy" label="资源策略引用" hint="引用既有资源策略名称，不在这里填写额度数值。" />
+            <v-text-field v-model="grant.resource_policy" label="资源策略引用" hint="引用下方“额度策略”里的名称，不在这里填写额度数值；留空使用默认策略。" />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限" />
             <v-switch v-model="grant.enabled" label="启用" color="primary" /></div>
           <v-btn variant="text" color="error" :disabled="!!busy" @click="grants.splice(index,1)">删除这条授予</v-btn>
         </article>
         <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!accessDirty">保存白名单与能力授予</v-btn>
+      </v-form>
+    </v-card>
+    <v-card v-if="tab==='resources'&&quotaText!==null" class="pa-5 form-card">
+      <h2>额度策略</h2>
+      <p class="muted my-3">这里定义命名的额度策略；能力授予的“资源策略引用”填写这里的名称，不在授予里复制额度数值。没有填写的账号使用默认策略（单工作 10M、每账号每日 30M）。null 表示该维度不设上限，此时仍有绝对期限与单工作上限作为停止条件。</p>
+      <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
+        <v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}' persistent-hint />
+        <v-btn type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
+        <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>
     </v-card>
     <v-card v-if="tab==='time'&&timeLoaded" class="pa-5 form-card">
@@ -415,7 +445,7 @@ watch(tab,load,{immediate:true})
     <v-card v-if="tab==='runtime'&&runtimeText!==null" class="pa-5 form-card">
       <h2>运行参数</h2>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
-      <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ runtimeSavedBudgets[item.key] ?? '未提供' }} {{ item.unit }}</td><td>{{ runtimeEffectiveBudgets[item.key] ?? '未提供' }} {{ item.unit }}</td></tr></tbody></table></div>
+      <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新的工作执行段采用当前发布预算；已开始的一轮使用其预算快照。工作恢复保留累计用量，改变上限不会自动重开已有结果或失败工作。</p>
       <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表单独显示这五项预算的当前发布值。</v-alert>
       <p class="muted my-3">预算、并发、媒体和维护等参数仍通过下方完整 JSON 保存。</p>

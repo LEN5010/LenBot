@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, fmtTime } from '../api.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import EntityLink from '../components/EntityLink.vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 
 const route = useRoute(), router = useRouter()
@@ -13,6 +14,14 @@ const error = ref(''), message = ref(''), busy = ref(''), catalogs = ref({}), se
 const providerOpen = ref(false), editingProvider = ref(''), providerForm = ref(null), providerOriginal = ref('')
 const routesOpen = ref(false), routingForm = ref(null), routingOriginal = ref(''), roleEnabled = ref({})
 const testConfirm = ref(null), testResult = ref(null)
+const reservations = ref(null), reservationError = ref('')
+const reservationRows = computed(() => reservations.value?.items || [])
+const reservationAccounts = computed(() => reservations.value?.accounts || [])
+async function loadReservations() {
+  reservationError.value = ''
+  try { reservations.value = await api('/api/models/reservations') }
+  catch (e) { reservationError.value = e.message }
+}
 const emptyRetrievalProfile = () => ({provider_id:'', model:'', dimension:null, protocol:null})
 const retrievalOpen = ref(false), retrievalForm = ref({embedding:emptyRetrievalProfile(), rerank:emptyRetrievalProfile()}), retrievalOriginal = ref('')
 const roles = [
@@ -62,6 +71,7 @@ async function load() {
     if (request !== requestId) return
     data.value = result; loaded.value = true; readAt.value = Date.now()/1000
     if (!routingDirty.value) initialiseRouting()
+    await loadReservations()
   } catch (e) { if (request === requestId) error.value = e.message }
   finally { if (request === requestId) loading.value = false }
 }
@@ -170,6 +180,18 @@ watch(() => route.name, load, { immediate: true })
     <PageHeader title="模型设置" description="三个职责显式配置，每次运行固定提供商、模型和推理强度。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn><v-btn v-if="tab==='roles'" color="primary" :disabled="!loaded" @click="editRouting">编辑职责配置</v-btn><v-btn v-else color="primary" @click="editProvider()">添加供应商</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <v-card v-if="loaded" class="pa-4 retrieval-card"><div class="role-title"><h2>语义检索</h2><div class="actions"><v-chip size="small" :color="data.retrieval?.embedding ? 'primary' : 'default'">{{ data.retrieval?.embedding ? '已绑定' : '未启用' }}</v-chip><v-btn variant="outlined" size="small" :disabled="!!busy" @click="editRetrieval">编辑</v-btn></div></div><p class="muted">只在 Agent 主动查询认识时使用；索引失败不会回滚已提交认识。Embedding 与 rerank 请求单独计量。</p><p v-if="data.retrieval?.embedding" class="auxiliary">Embedding：{{ data.retrieval.embedding.provider_id }} · {{ data.retrieval.embedding.model }}<span v-if="data.retrieval.embedding.dimension"> · {{ data.retrieval.embedding.dimension }} 维</span></p><p v-if="data.retrieval?.rerank" class="auxiliary">Rerank：{{ data.retrieval.rerank.provider_id }} · {{ data.retrieval.rerank.model }}</p></v-card>
+    <v-card v-if="loaded" class="pa-4 usage-card">
+      <div class="role-title"><h2>工作额度预占</h2><v-chip size="small" :color="reservationAccounts.length ? 'primary' : 'default'">{{ reservations?.day_key || '未读取' }}</v-chip></div>
+      <p class="muted">账务日 {{ reservations?.day_key || '未读取' }}{{ reservations?.timezone ? ` · ${reservations.timezone}` : '' }}。预占是创建工作时的原子占用，结算后换成实际用量；本地估算与供应商 usage 分开统计。</p>
+      <v-alert v-if="reservationError" type="error" variant="tonal" class="my-3">读取失败：{{ reservationError }}</v-alert>
+      <template v-if="reservations">
+        <div class="limit-row"><span>单工作上限</span><strong>{{ reservations.limits.work_token_limit === null ? '不设上限' : reservations.limits.work_token_limit.toLocaleString() }}</strong><span>每账号每日上限</span><strong>{{ reservations.limits.daily_user_token_limit === null ? '不设上限' : reservations.limits.daily_user_token_limit.toLocaleString() }}</strong><span>每群每日上限</span><strong>{{ reservations.limits.daily_scene_token_limit === null ? '未配置' : reservations.limits.daily_scene_token_limit.toLocaleString() }}</strong></div>
+        <p v-if="!reservationAccounts.length" class="muted py-3">今天还没有工作预占记录。</p>
+        <div v-else class="reservation-table-wrap"><table class="reservation-table"><thead><tr><th scope="col">账户</th><th scope="col">预占中</th><th scope="col">已结算</th><th scope="col">可用余额</th></tr></thead><tbody><tr v-for="account in reservationAccounts" :key="account.subject"><th scope="row">{{ account.subject }}</th><td>{{ account.held.toLocaleString() }}</td><td>{{ account.used.toLocaleString() }}</td><td>{{ account.available === null ? '不设上限' : account.available.toLocaleString() }}</td></tr></tbody></table></div>
+        <div v-if="reservationRows.length" class="reservation-table-wrap mt-4"><table class="reservation-table"><caption>本日工作</caption><thead><tr><th scope="col">工作</th><th scope="col">账户</th><th scope="col">状态</th><th scope="col">预占</th><th scope="col">实际</th><th scope="col">本地估算</th></tr></thead><tbody><tr v-for="item in reservationRows" :key="item.job_id"><td><EntityLink type="job" :id="item.job_id" :scene-id="item.scene_id" /></td><td>{{ item.subject }}</td><td>{{ {held:'预占中',settled:'已结算',released:'已释放'}[item.status] || item.status }}</td><td>{{ item.reserved_tokens.toLocaleString() }}</td><td>{{ item.usage_tokens === null ? '未结算' : item.usage_tokens.toLocaleString() }}</td><td>{{ item.estimated_tokens === null ? '未结算' : item.estimated_tokens.toLocaleString() }}</td></tr></tbody></table></div>
+      </template>
+      <RouterLink :to="{name:'activity',query:{tab:'calls'}}">前往运行记录查看逐次调用与原始 usage</RouterLink>
+    </v-card>
     <v-tabs :model-value="tab" color="primary" @update:model-value="value=>router.push({name:'models',query:{tab:value}})"><v-tab value="roles">职责配置</v-tab><v-tab value="providers">供应商</v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
     <template v-if="tab==='roles'">
@@ -227,5 +249,5 @@ watch(() => route.name, load, { immediate: true })
   </div>
 </template>
 <style scoped>
-.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.role-card{display:flex;flex-direction:column;gap:16px;min-width:0}.role-title,.provider-heading,.dialog-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.role-title h2,.provider-heading h2{font-size:19px}.role-description{min-height:3.5em;line-height:1.7}.role-card dl{display:grid;grid-template-columns:75px minmax(0,1fr);gap:12px;font-size:14px}.role-card dt{color:#64748b}.role-card dd{margin:0;overflow-wrap:anywhere}.provider-card{min-width:0}.provider-name{min-width:0}.provider-url{overflow-wrap:anywhere;margin-top:8px}.provider-meta,.actions,.model-tags{display:flex;flex-wrap:wrap;gap:10px 16px}.provider-meta{font-size:13px;color:#64748b;margin:16px 0}.model-tags .v-chip{max-width:100%;height:auto;min-height:26px;white-space:normal;overflow-wrap:anywhere}.config-form{display:grid;gap:8px}.config-form>.v-btn{justify-self:start}.routing-section{padding:18px 0;border-bottom:1px solid #e2e8f0;margin-bottom:18px}.route-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:12px;margin-top:16px}.route-fields>:last-child{grid-column:1/-1}.check-list{display:flex;flex-wrap:wrap;gap:8px 20px}@media(max-width:1100px){.role-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:600px){.route-fields{grid-template-columns:minmax(0,1fr)}.role-description{min-height:0}}
+.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.role-card{display:flex;flex-direction:column;gap:16px;min-width:0}.usage-card{display:grid;gap:12px}.limit-row{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:baseline;font-size:13px}.limit-row span{color:#64748b}.reservation-table-wrap{overflow-x:auto}.reservation-table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}.reservation-table caption{text-align:left;font-weight:600;padding:4px 0 10px}.reservation-table th,.reservation-table td{padding:10px 12px;border-bottom:1px solid #e2e8f0;white-space:nowrap}.reservation-table thead{background:rgb(var(--v-theme-surface-variant))}.reservation-table tbody th{font-weight:500}.role-title,.provider-heading,.dialog-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.role-title h2,.provider-heading h2{font-size:19px}.role-description{min-height:3.5em;line-height:1.7}.role-card dl{display:grid;grid-template-columns:75px minmax(0,1fr);gap:12px;font-size:14px}.role-card dt{color:#64748b}.role-card dd{margin:0;overflow-wrap:anywhere}.provider-card{min-width:0}.provider-name{min-width:0}.provider-url{overflow-wrap:anywhere;margin-top:8px}.provider-meta,.actions,.model-tags{display:flex;flex-wrap:wrap;gap:10px 16px}.provider-meta{font-size:13px;color:#64748b;margin:16px 0}.model-tags .v-chip{max-width:100%;height:auto;min-height:26px;white-space:normal;overflow-wrap:anywhere}.config-form{display:grid;gap:8px}.config-form>.v-btn{justify-self:start}.routing-section{padding:18px 0;border-bottom:1px solid #e2e8f0;margin-bottom:18px}.route-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:12px;margin-top:16px}.route-fields>:last-child{grid-column:1/-1}.check-list{display:flex;flex-wrap:wrap;gap:8px 20px}@media(max-width:1100px){.role-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:600px){.route-fields{grid-template-columns:minmax(0,1fr)}.role-description{min-height:0}}
 </style>
