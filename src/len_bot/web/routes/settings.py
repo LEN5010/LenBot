@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.config import AddressName
 from len_bot.config_store import AccessSettings, TimeSettings, MemberSettings
+from len_bot.runtime.capabilities import CapabilityGrant
 from len_bot.web.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -32,12 +33,41 @@ async def access_settings(request: Request, user: str = Depends(get_current_user
     return request.app.state.runtime.query_service.access_settings()
 
 
+class AccessSettingsRequest(BaseModel):
+    """The reply white list and the capability grants save through one page.
+
+    Omitting `capability_grants` keeps the current grants, so an older panel
+    that only sends the white list cannot silently wipe an operator's
+    authorization.
+    """
+    model_config = ConfigDict(extra="forbid")
+    qq_reply_whitelist: list[int]
+    capability_grants: list[CapabilityGrant] | None = None
+
+
 @router.put("/access")
-async def update_access_settings(values: AccessSettings, request: Request, user: str = Depends(get_current_user)):
+async def update_access_settings(values: AccessSettingsRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    await save_root_section(runtime, "access", values.model_dump())
+    current = runtime.config_store.current.access
+    # The issuer is whoever is authenticated on this panel, not a field the
+    # form can type.  A group admin or a chat message cannot reach this route.
+    grants = [grant.model_copy(update={'operator_id': user})
+              for grant in (current.capability_grants if values.capability_grants is None
+                            else values.capability_grants)]
+    merged = AccessSettings(
+        qq_reply_whitelist=values.qq_reply_whitelist,
+        capability_grants=grants,
+    ).model_dump()
+    changed = merged['capability_grants'] != current.model_dump()['capability_grants']
+    await save_root_section(runtime, "access", merged)
+    if changed:
+        # A grant revision is an operator action; the saved file is the
+        # effective version from this point, and an already-sent message
+        # cannot be recalled by revoking later.
+        await runtime.record_operator_event("system:settings", "capability_grants", user,
+            {"grant_ids": [grant['grant_id'] for grant in merged['capability_grants']]})
     return {"settings": runtime.query_service.access_settings(), "requires_restart": False,
-            "message": "QQ 回复白名单已保存，在已启用群中生效；不会强制每条消息回复"}
+            "message": "QQ 回复白名单与能力授予已保存；未配置的能力保持关闭，撤销只阻止后续操作"}
 
 
 @router.get("/time")

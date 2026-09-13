@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraint
 from len_bot.config import RuntimeConfig
 from len_bot.cognition.providers import ProviderConfig, RoutingConfig, RetrievalRouting
 from len_bot.plugins.catalog import PluginCatalog
+from len_bot.runtime.capabilities import CapabilityGrant, validate_grants
 
 
 GroupSceneId = Annotated[str, StringConstraints(pattern=r"^group:[1-9][0-9]*$")]
@@ -50,6 +51,15 @@ class DeliverySettings(BaseModel):
 class AccessSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     qq_reply_whitelist: list[PositiveUid]
+    # The engine's own new capabilities stay off until an operator writes an
+    # explicit grant here.  This is the only editable access-control list; the
+    # database does not keep a second copy.
+    capability_grants: list[CapabilityGrant] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def distinct_grants(self):
+        validate_grants(self.capability_grants)
+        return self
 
 
 class TimeSettings(BaseModel):

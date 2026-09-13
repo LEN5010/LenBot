@@ -1,7 +1,7 @@
 """Information-work proposal contract. Execution never owns social authority."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from len_bot.events.models import PluginOrigin
+from len_bot.events.models import HumanInitiator, Initiator, PluginOrigin, legacy_initiator
 from len_bot.media.models import MessageSegment
 
 
@@ -18,19 +18,25 @@ class JobProposal(BaseModel):
     result_ids: list[str] = Field(default_factory=list)
     requester_qq_uid: str | None = None
     request_source_event_id: str | None = None
+    # A typed initiator is only ever built here, in internal code, from a
+    # stored event.  No model-facing tool argument can set it: `start_work`
+    # and the plugin staging entries fill `request_source` and evidence, and
+    # this field is derived from those real events.
+    initiator: Initiator | None = None
     work_operation: str = Field(default='information',min_length=1)
     work_parameters: dict | None = None
     plugin_origin: PluginOrigin | None = None
+
+    @property
+    def human_initiator(self) -> HumanInitiator | None:
+        return self.initiator if isinstance(self.initiator, HumanInitiator) else None
 
     @model_validator(mode="after")
     def validate_operation(self):
         if self.goal is not None and not self.goal.strip():
             raise ValueError("Job goal cannot be blank")
         if self.operation == "create":
-            if not self.request_source_event_id or not self.requester_qq_uid:
-                raise ValueError("Job creation needs an explicit human request source and its requester")
-            if self.request_source_event_id not in self.source_event_ids:
-                raise ValueError("The request source must be part of the supplied original evidence")
+            self._resolve_initiator()
             if not self.proposal_id or not self.goal or not self.goal.strip() or self.job_id:
                 raise ValueError("Job creation needs proposal_id and goal, not job_id")
             if self.work_operation!='information' and (self.plugin_origin is None or self.work_parameters is None):
@@ -39,9 +45,39 @@ class JobProposal(BaseModel):
                 raise ValueError('Ordinary information work has no specialized parameters')
         elif not self.job_id or self.expected_revision is None:
             raise ValueError("Job control needs real job_id and expected_revision")
+        if self.operation!='create' and self.initiator is not None:
+            raise ValueError('Job controls inherit the original work initiator and cannot replace it')
         if self.operation=='resume' and (self.goal is not None or self.constraints_add or self.constraints_remove or self.work_parameters is not None):
             raise ValueError('Resume preserves the existing goal and scope; changing them requires revise')
         return self
+
+    def _resolve_initiator(self):
+        """Require one typed branch; never accept a missing identity.
+
+        Older callers that predate the typed initiator keep working: their
+        exact `requester_qq_uid` and `request_source_event_id` still describe a
+        real human request, so the human branch is derived from those two
+        fields rather than guessed from accumulated evidence.  A system or
+        plugin origin must be stated outright — it is never inferred, and it
+        never carries a borrowed QQ number.
+        """
+        if self.initiator is None:
+            self.initiator = legacy_initiator(self.requester_qq_uid, self.request_source_event_id)
+        if self.initiator is None:
+            raise ValueError("Job creation needs an explicit human request source and its requester, "
+                             "or a typed system/plugin initiator; identity is never inferred")
+        if not self.request_source_event_id or self.request_source_event_id not in self.source_event_ids:
+            raise ValueError("Job creation needs a real request anchor in its supplied evidence")
+        human = self.human_initiator
+        if human is not None:
+            if not self.requester_qq_uid or self.requester_qq_uid != human.user_id:
+                raise ValueError('Human initiator must be the same real requester as its request source')
+            if self.request_source_event_id != human.request_event_id:
+                raise ValueError('Human initiator must be the same real request source as its request anchor')
+            return
+        if self.requester_qq_uid is not None:
+            raise ValueError('Only a human initiator may carry a QQ requester; '
+                             'system and plugin work must not borrow a QQ identity')
 
 
 class ResultSpan(BaseModel):

@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 import uuid
 import time
@@ -57,6 +57,85 @@ class PluginEventPayload(BaseModel):
     plugin_version: str
     name: str
     data: dict[str, Any]
+
+
+class HumanInitiator(BaseModel):
+    """A real person's own words are the only source of a human initiator."""
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    principal_type: Literal['human'] = 'human'
+    user_id: str = Field(min_length=1, description="真实 QQ UID，不是显示名或自报身份")
+    request_event_id: str = Field(min_length=1)
+
+    @property
+    def billing_subject(self) -> str:
+        return 'user:' + self.user_id
+
+
+class SystemInitiator(BaseModel):
+    """Runtime, Scheduler and panel operators; never a fabricated QQ account."""
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    principal_type: Literal['system'] = 'system'
+    agent_id: str = Field(min_length=1, description="runtime / scheduler / operator:<账号>")
+    trigger_event_id: str = Field(min_length=1, description="真实系统事件 ID，由 Runtime 或 Scheduler 生成")
+    purpose: str | None = Field(default=None, min_length=1, description="明确用途；计费与授权主体用它区分")
+    cycle_id: str | None = None
+
+    @property
+    def billing_subject(self) -> str:
+        return 'system:' + (self.purpose or self.agent_id)
+
+
+class PluginInitiator(BaseModel):
+    """A plugin's own entry; its human request source stays a separate fact."""
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    principal_type: Literal['plugin'] = 'plugin'
+    plugin_id: str = Field(min_length=1)
+    source_event_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+    @property
+    def billing_subject(self) -> str:
+        return 'system:plugin:' + self.plugin_id
+
+
+Initiator = Annotated[HumanInitiator | SystemInitiator | PluginInitiator,
+                      Field(discriminator='principal_type')]
+
+
+def legacy_initiator(requester_qq_uid: str | None, request_source_event_id: str | None) -> Initiator | None:
+    """Convert an existing work record from its own exact fields.
+
+    Older work that lacks a definite request anchor keeps no initiator; it is
+    never inferred from accumulated evidence.
+    """
+    if requester_qq_uid and request_source_event_id:
+        return HumanInitiator(user_id=str(requester_qq_uid), request_event_id=request_source_event_id)
+    return None
+
+
+def human_event_uid(event) -> str | None:
+    """The real QQ UID behind a human message event, or None.
+
+    This is the one place that decides whether an event may stand for a human
+    request.  Callers branch on the result instead of comparing a possibly
+    empty UID, so a system or plugin source can never be read as a person.
+    """
+    if event is None or event.event_type not in (EventType.GROUP_MESSAGE_RECEIVED,
+                                                 EventType.PRIVATE_MESSAGE_RECEIVED):
+        return None
+    actor_id = event.actor_id or ''
+    if not actor_id.startswith('user:'):
+        return None
+    uid = actor_id.removeprefix('user:')
+    return uid if uid.isdigit() and uid[0] != '0' else None
+
+
+def human_initiator_for(event, bot_actor_id: str = '') -> HumanInitiator | None:
+    """Build the human branch only from a real person's own stored message."""
+    if bot_actor_id and event is not None and event.actor_id == bot_actor_id:
+        return None
+    uid = human_event_uid(event)
+    return HumanInitiator(user_id=uid, request_event_id=event.id) if uid else None
 
 
 class Event(BaseModel):

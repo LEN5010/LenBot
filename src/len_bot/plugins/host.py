@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
 from len_bot.plugins.models import ExactText, PluginCallContext, PluginHandlerDefinition, PluginManifest, PluginToolDefinition
-from len_bot.events.models import EventType, PluginEventPayload, PluginOrigin
+from len_bot.events.models import (EventType, PluginEventPayload, PluginInitiator, PluginOrigin,
+                                   human_initiator_for)
 from len_bot.plugins.hooks import HOOK_VIEWS, PluginHookDefinition, PluginRunHooks
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
@@ -18,6 +19,20 @@ from len_bot.tools.discovery import rank_discovery
 from len_bot.execution.workspace import WorkspaceCancelled
 
 logger = logging.getLogger(__name__)
+
+
+def handler_initiator(event, origin, bot_actor_id: str = ''):
+    """Whose entry is this plugin call running under.
+
+    A handler triggered by a real plugin event keeps the plugin branch; one
+    that matched a person's own message keeps the human branch.  The type is
+    decided here rather than inferred from whether a QQ number is missing, so
+    an absent requester never reads as a system origin.  Anything else has no
+    initiator at all.
+    """
+    if event is not None and event.event_type == EventType.PLUGIN_EVENT:
+        return PluginInitiator(plugin_id=origin.plugin_id, source_event_id=event.id, run_id=origin.run_id)
+    return human_initiator_for(event, bot_actor_id=bot_actor_id)
 
 
 def _registration_source(plugin_id, handler):
@@ -172,7 +187,7 @@ class PluginHost:
             requester_qq_uid=event.metadata.get('requester_qq_uid'), now=self.runtime.clock(),
             cutoff_rowid=cutoff, episode_id=origin.run_id, job_id=None, role='conversation',
             source_event_id=origin.source_event_id, origin=origin, entry_origin=origin.handler_origin or origin,
-            entry=origin.scene_entry,
+            entry=origin.scene_entry, initiator=handler_initiator(event, origin, self.runtime.bot_actor_id),
             event=event.model_copy(deep=True), plugin=self._plugin_contexts[origin.plugin_id], execution=execution)
 
     def match_event(self, event, cutoff):

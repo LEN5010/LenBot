@@ -8,6 +8,16 @@ from len_bot.scheduler.models import TaskItem
 from len_bot.skills.store import SkillStoreMixin
 
 
+def _typed_initiator(task_payload):
+    """Read a stored initiator, converting an older record from its own fields."""
+    from pydantic import TypeAdapter
+    from len_bot.events.models import Initiator, legacy_initiator
+    stored = task_payload.get('initiator')
+    if stored is not None:
+        return TypeAdapter(Initiator).validate_python(stored)
+    return legacy_initiator(task_payload.get('requester_qq_uid'), task_payload.get('request_source_event_id'))
+
+
 def _decode_job(row):
     if not row:
         return None
@@ -34,6 +44,10 @@ def _decode_job(row):
     data['delivery_event_id'] = task_payload.get('delivery_event_id')
     data['observation_reads'] = task_payload.get('observation_reads', {})
     data['resume_from'] = task_payload.get('resume_from')
+    # Older work keeps its exact requester and request anchor; convert those
+    # two fields into the typed human initiator rather than guessing one.
+    # Records without a definite anchor keep no initiator at all.
+    data['initiator'] = (initiator.model_dump(mode='json') if (initiator := _typed_initiator(task_payload)) else None)
     # Task status describes response/delivery, not whether execution succeeded.
     data["execution_status"] = (data["result"] or {}).get("status") or {
         "pending": "pending", "claimed": "pending", "processing": "running",
@@ -145,13 +159,7 @@ class JobStoreMixin(SkillStoreMixin):
                 if await self.read_tool_observation(result_id, [scene_id]) is None:
                     raise ValueError("Transferred work result outside scene")
             if proposal.operation == "create":
-                request = await (await self._db.execute(
-                    'SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?',
-                    (proposal.request_source_event_id,scene_id))).fetchone()
-                if (request is None or request[0] not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
-                        or request[1] != 'user:' + proposal.requester_qq_uid
-                        or proposal.request_source_event_id not in sources):
-                    raise ValueError('Work requester must match its explicit human request source')
+                await self._validate_job_initiator_in_transaction(proposal, scene_id, sources)
                 continue
             if proposal.job_id in observed:
                 raise ValueError('One transaction cannot control the same work more than once')
@@ -175,6 +183,45 @@ class JobStoreMixin(SkillStoreMixin):
             observed[proposal.job_id] = current
         return observed
 
+    async def _validate_job_initiator_in_transaction(self, proposal, scene_id, sources):
+        """Verify the stated branch against its real stored event.
+
+        The three branches are validated separately.  A system or plugin
+        origin is never accepted through the human branch, and no branch may
+        pass by leaving its identity empty.
+        """
+        initiator = proposal.initiator
+        if initiator is None:
+            raise ValueError('Work creation needs an explicit initiator')
+        row = await (await self._db.execute(
+            'SELECT event_type,actor_id FROM events WHERE id=? AND scene_id=?',
+            (proposal.request_source_event_id, scene_id))).fetchone()
+        if row is None or proposal.request_source_event_id not in sources:
+            raise ValueError('Work request anchor must be a real event of this scene')
+        event_type, actor_id = row
+        if initiator.principal_type == 'human':
+            if event_type not in {'GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED'}:
+                raise ValueError('Work requester must match its explicit human request source')
+            if actor_id != 'user:' + initiator.user_id or initiator.user_id != proposal.requester_qq_uid:
+                raise ValueError('Work requester must match its explicit human request source')
+            if proposal.request_source_event_id != initiator.request_event_id:
+                raise ValueError('Human initiator must be the same real request source as its request anchor')
+            return
+        if proposal.requester_qq_uid is not None:
+            raise ValueError('Only a human initiator may carry a QQ requester')
+        if initiator.principal_type == 'plugin':
+            if initiator.source_event_id != proposal.request_source_event_id:
+                raise ValueError('Plugin initiator must be the same real request source as its request anchor')
+            if actor_id != 'plugin:' + initiator.plugin_id:
+                raise ValueError('Plugin work must name the plugin that actually produced its source event')
+            return
+        if initiator.trigger_event_id != proposal.request_source_event_id:
+            raise ValueError('System initiator must be the same real request source as its request anchor')
+        if not actor_id.startswith('system:'):
+            raise ValueError('System work must name a real system-produced source event, not a group message')
+        if initiator.agent_id != actor_id.removeprefix('system:'):
+            raise ValueError('System initiator must be the agent that actually produced its source event')
+
     async def apply_job_proposals_in_transaction(self, proposals, scene_id, episode_id, origin_mode, observed):
         """Apply the caller's already validated operations in its transaction."""
         tasks, references = [], {}
@@ -189,6 +236,7 @@ class JobStoreMixin(SkillStoreMixin):
                 if existing:
                     if (existing['requester_qq_uid'] != proposal.requester_qq_uid
                             or existing['request_source_event_id'] != proposal.request_source_event_id
+                            or existing['initiator'] != (proposal.initiator.model_dump(mode='json') if proposal.initiator else None)
                             or existing['goal'] != proposal.goal
                             or existing['work_operation'] != proposal.work_operation
                             or existing['work_parameters'] != parameters
@@ -203,6 +251,7 @@ class JobStoreMixin(SkillStoreMixin):
                 payload = {"kind": "agent_job", "proposal_id": proposal.proposal_id, "source_event_ids": sources,
                            "work_operation":proposal.work_operation, "requester_qq_uid":proposal.requester_qq_uid,
                            "request_source_event_id":proposal.request_source_event_id,
+                           "initiator":proposal.initiator.model_dump(mode='json') if proposal.initiator else None,
                            "observation_reads":{},
                            'plugin_origin':proposal.plugin_origin.model_dump() if proposal.plugin_origin else None,
                            'work_parameters':parameters,'work_progress':progress}

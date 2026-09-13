@@ -1,6 +1,6 @@
 # 社会 Agent 前期准备与阶段落点
 
-> 制定日期：2026-09-13。计划基线 `LEN5010/LenBot@7a4152d`，本文核对基线为本仓库 `76ef637`（分支 `social-agent-m0-foundation`）。
+> 制定日期：2026-09-13。计划基线 `LEN5010/LenBot@7a4152d`，第 2 节表格原始核对基线为本仓库 `76ef637`（分支 `social-agent-m0-foundation`）；C06 落地后该表中身份与能力授予两行已更新为当前落点。
 > 本文是实施前的准备材料，不是交付报告，也不是能力清单。计划条款见 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。
 
 ## 1. 本次范围
@@ -23,9 +23,9 @@
 | 预算维度 | 部分具备（仅次数与已用时长） | `AgentBudget` 为次数维度 `cognition/budget.py:9-46`；工作三维 `runtime/job_runner.py:354-356`，落地在 `runtime/job_store.py:69-70`、`job_checkpoint():376-395` | C07、C08 |
 | 额度原子预占与结算 | 不存在 | 无 `usage_reservations`、无 daily/quota/settle 逻辑 | C07 |
 | 绝对 deadline / 累计 token 上限 | 部分具备 | 现有 `job_max_seconds` 是单次执行超时（`execution/workspace.py:209`、`job_runner.py` 预算快照），不是“首次开始后的绝对期限”，且恢复会重新计时 | C08、C09 |
-| 三类身份（Human/System/Plugin） | 部分具备 | 工作创建强制人类来源 `cognition/jobs.py:19-20、29-33`，二次校验 `runtime/job_store.py:151-153`；Gate 逐条要求人类请求来源 `runtime/gate.py:156-161`。`system:`/`plugin:` 前缀已用于事件 `actor_id`，但没有显式起始者类型，也没有 system/plugin 发起工作的路径 | C06 |
-| CapabilityGrant / 能力集合 | 不存在 | `AccessSettings` 只有 `qq_reply_whitelist`（`config_store.py:50-52`）；无 grant/capability 字段 | C06 |
-| 插件声明 `required_capabilities` | 不存在 | `PluginSpec`（`plugins/catalog.py:21-38`）无该字段；现有分类是 `sensory/tool/scheduled/hybrid`（`plugins/models.py:131-135`） | C06、C19 |
+| 三类身份（Human/System/Plugin） | 已具备（C06 起） | 类型定义 `events/models.py` 的 `HumanInitiator`/`SystemInitiator`/`PluginInitiator`；`JobProposal.initiator`（`cognition/jobs.py`）；事务内按类型分支校验 `runtime/job_store.py:_validate_job_initiator_in_transaction`；Gate 非人类分支走独立能力检查 `runtime/gate.py:_capability_refusal` | C06 |
+| CapabilityGrant / 能力集合 | 已具备（C06 起，默认空） | `runtime/capabilities.py` 的能力词汇与 `CapabilityAuthority`；根配置 `access.capability_grants`（`config_store.py`）；页面 `/api/settings/access` 与系统设置页 | C06 |
+| 插件声明 `required_capabilities` | 不存在（C06 有意不加） | `PluginSpec`（`plugins/catalog.py:21-38`）无该字段；现有分类是 `sensory/tool/scheduled/hybrid`（`plugins/models.py:131-135`）。C06 只有能力词汇与授予结构；逐工具的能力要求随真正需要它的工具（文件上传、账号动作等）各自提交 |
 | Gate 发送前检查 | 已具备（无额度/睡眠维度） | `runtime/gate.py:120-313`；发送前 `actions/queue.py:114-115` → `agent_runtime.py:106` → `validate_outbound_action():525-548`；插件来源 `plugin_interactions.py:115-131` | 保留 |
 | 离线 Python worker | 已具备 | `--network none` 硬编码 `execution/workspace.py:192`，容器参数 `:192-198`（只读根、cap drop、非 root、pids/内存/CPU/tmpfs 限额），镜像 `containers/workspace/Dockerfile` | 保留现状 |
 | 独立 Worker Gateway、`execution_runs` | 不存在 | 无 `execution/protocol.py`、`execution/client.py`、`services/worker_gateway/`；当前在 LenBot 进程内直接调用 `docker` CLI（`execution/workspace.py:202`） | C10、C11 |
@@ -65,7 +65,7 @@
 
 ## 5. 首批提交边界（C01—C05）
 
-对应计划第 8.2 节。这一批不依赖 Gateway、网络出口、账号或 Core。
+对应计划第 8.2 节。这一批不依赖 Gateway、网络出口、账号或 Core。C06 属第二批，见第 7 节。
 
 | 提交 | 范围 | 本轮落点 |
 |---|---|---|
@@ -75,8 +75,23 @@
 | C04 `feat(chat): make participation topic- and addressee-aware` | 话题与对象感知的参与 | 依赖 C01—C03（计划在此处给出的是完整依赖，实施时按实际范围说明） |
 | C05 `feat(context): expose delegable capabilities and focused references` | 可委托能力摘要与聚焦引用 | `cognition/context.py`、`tools/discovery.py`、记忆呈现 |
 
-## 6. 当前不可宣称的能力
+## 6. 第二批提交边界（C06）
 
-以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。
+对应计划第 8.2 节的 C06 `feat(auth): add typed initiators and capability grants`：事件/工作/提案/调用模型、根配置、ScenePolicy/Gate、权限页面；完成条件是 human/system/plugin 分支明确、grant 不能由模型伪造、未配置新能力不扩权。
+
+| 落点 | 本轮改动 |
+|---|---|
+| 事件与身份类型 | `events/models.py` 新增 `HumanInitiator`/`SystemInitiator`/`PluginInitiator` 与 `Initiator` 判别联合，以及只从真实事件取人的 `human_event_uid`/`human_initiator_for` |
+| 工作提案 | `cognition/jobs.py` 增加 `initiator`；创建时必须有且只有一个明确分支，控制操作不替换原发起者 |
+| 提案暂存 | `cognition/proposals.py` 的人类来源校验改用同一 `human_event_uid`，并在 `start_work` 与插件 `stage_work` 填typed人类发起者 |
+| 插件调用模型 | `plugins/models.py` 的 `PluginCallContext` 带上 `initiator`；`plugins/host.py` 按真实事件类型决定 human/plugin，缺来源时保持 None 而不是读成系统 |
+| 工作存储 | `runtime/job_store.py` 按类型分支二次校验（human/plugin/system 各自对应真实事件前缀），并把发起者写入工作 payload；旧记录只按自身确切字段转换 |
+| 能力检查 | 新增窄 `runtime/capabilities.py`：能力词汇、`CapabilityGrant`、检查顺序前 3 步与唯一的 `check()`；后续步骤仍留在原有位置 |
+| 根配置与页面 | `config_store.py` 的 `access.capability_grants`（默认空）、`/api/settings/access` 与系统设置页“能力授予” |
+| Gate | `runtime/gate.py` 对非人类发起的工作创建走独立能力分支，缺授予即拒绝，不借用人类请求路径 |
+
+## 7. 当前不可宣称的能力
+
+以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。
 
 已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。
