@@ -115,7 +115,30 @@ class RuntimeGate:
         self.validate_job_resume = None
         self.validate_plugin_origin = None
         self.scene_policy = None
+        self.capability_authority = None
         self._publication_locks: dict[str, asyncio.Lock] = {}
+
+    def _capability_refusal(self, proposal, scene_id: str) -> str | None:
+        """The ordered capability check for one non-human work proposal.
+
+        Check order stays in one place: scene, then the real source and
+        initiator, then the current grant.  Later steps (original revision,
+        the operation's own requirement, data scope, budget) are enforced
+        where they already live and are not duplicated here.
+        """
+        from len_bot.runtime.capabilities import Capability, subject_for
+        try:
+            subject = subject_for(proposal.initiator, scene_id)
+        except ValueError as error:
+            return str(error)
+        authority = self.capability_authority
+        operation = proposal.work_operation
+        required = authority.required_for_work(operation) or (Capability.LONG_WORK,)
+        for capability in required:
+            decision = authority.check(capability, subject, now=self.event_store.clock())
+            if not decision.allowed:
+                return f"Capability check refused at step {decision.step}: {decision.reason}"
+        return None
 
     async def evaluate_and_commit(
         self,
@@ -163,7 +186,8 @@ class RuntimeGate:
                 if message.job_id and message.fulfils_task_id:
                     job=await self.event_store.get_job(message.job_id,current_scene_state.scene_id)
                     if job:requesters.add(job['requester_qq_uid'])
-            requesters.update(proposal.requester_qq_uid for proposal in outcome.job_proposals)
+            requesters.update(proposal.requester_qq_uid for proposal in outcome.job_proposals
+                              if proposal.requester_qq_uid is not None)
             task_rows = {task['id']:task for task in await self.event_store.scene_tasks(current_scene_state.scene_id)}
             for proposal in outcome.task_proposals:
                 if proposal.operation == 'create':
@@ -205,6 +229,16 @@ class RuntimeGate:
         # Resolve references before any transaction or visible acknowledgement.
         if not self.jobs_enabled_probe() and any(p.operation == 'create' for p in outcome.job_proposals):
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
+        if self.capability_authority:
+            for proposal in outcome.job_proposals:
+                if proposal.operation != 'create' or proposal.human_initiator is not None:
+                    continue
+                # A non-human source never reuses the human request path.  It
+                # needs its own configured grant; an absent, disabled or
+                # expired grant denies and the work is not created.
+                refusal = self._capability_refusal(proposal, current_scene_state.scene_id)
+                if refusal:
+                    return GateDecision(FinalDisposition.SILENCE, refusal, accepted=False)
         if self.validate_job_resume:
             for proposal in outcome.job_proposals:
                 if proposal.operation == 'resume':

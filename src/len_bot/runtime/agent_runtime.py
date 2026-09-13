@@ -31,6 +31,7 @@ from len_bot.memory.store import MemoryStore
 from len_bot.memory.index import MemoryIndex
 from len_bot.plugins.host import PluginHost, PluginConfigurationApplyError
 from len_bot.runtime.gate import GateDecision, RuntimeGate
+from len_bot.runtime.capabilities import CapabilityAuthority
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
@@ -116,6 +117,7 @@ class AgentRuntime:
         self.runtime_gate.jobs_enabled_probe = self._work_enabled
         self.runtime_gate.validate_job_resume = self._validate_job_resume
         self.runtime_gate.scene_policy = self.scene_policy
+        self.runtime_gate.capability_authority = CapabilityAuthority(config_store, self.scene_policy)
         self.runtime_gate.validate_plugin_origin = lambda mailbox, scene: validate_plugin_origin(self, mailbox, scene)
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:

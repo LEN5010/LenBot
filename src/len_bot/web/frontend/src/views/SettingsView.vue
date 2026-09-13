@@ -23,6 +23,7 @@ const executionBudgets = [{key:'conversation_max_steps',label:'每轮对话模�
   {key:'job_max_seconds',label:'同一工作累计执行时间',unit:'秒'}]
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
 const accessText = ref(null), accessOriginal = ref('')
+const grants = ref([]), grantsOriginal = ref('')
 const timeDraft = ref(null), timeOriginal = ref(''), timeConfigured = ref(false), timeLoaded = ref(false), timeRestart = ref(false)
 const members = ref(null), membersOriginal = ref(''), membersRestart = ref(false)
 const weekdays = [{title:'周一',value:0},{title:'周二',value:1},{title:'周三',value:2},{title:'周四',value:3},{title:'周五',value:4},{title:'周六',value:5},{title:'周日',value:6}]
@@ -37,7 +38,7 @@ const personaDirty = computed(()=>!!persona.value&&JSON.stringify(persona.value)
 const attentionDirty = computed(()=>!!attention.value&&JSON.stringify(attention.value)!==attentionOriginal.value)
 const runtimeDirty = computed(()=>runtimeText.value!==null&&runtimeText.value!==runtimeOriginal.value)
 const connectionDirty = computed(()=>!!connection.value&&JSON.stringify(connection.value)!==connectionOriginal.value)
-const accessDirty = computed(()=>accessText.value!==null&&accessText.value!==accessOriginal.value)
+const accessDirty = computed(()=>accessText.value!==null&&(accessText.value!==accessOriginal.value||JSON.stringify(grants.value)!==grantsOriginal.value))
 const timeDirty = computed(()=>timeDraft.value!==null&&JSON.stringify(timeDraft.value)!==timeOriginal.value)
 const membersDirty = computed(()=>members.value!==null&&JSON.stringify(members.value)!==membersOriginal.value)
 const exampleDirty = computed(()=>exampleOpen.value&&JSON.stringify(example.value)!==exampleOriginal.value)
@@ -63,7 +64,11 @@ async function load() {
       if (!attentionDirty.value) { const {attention_keywords,...rest}=settings; attention.value={...rest,keywords:attention_keywords.join('\n')}; attentionOriginal.value=JSON.stringify(attention.value) }
     } else if (currentTab==='access') {
       const settings = await api('/api/settings/access'); if (request!==requestId) return
-      if (!accessDirty.value) { accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value }
+      if (!accessDirty.value) {
+        accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
+        grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', ')}))
+        grantsOriginal.value=JSON.stringify(grants.value)
+      }
     } else if (currentTab==='time') {
       const settings = await api('/api/settings/time'); if (request!==requestId) return
       timeLoaded.value = true
@@ -127,9 +132,22 @@ async function saveAccess() {
   busy.value='access'; error.value=''; message.value=''
   try {
     const values = accessText.value.split(/[,，\s]+/).filter(Boolean).map(value=>positiveInteger(value,'QQ 账号'))
-    const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({qq_reply_whitelist:values})})
-    accessText.value=result.settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value; message.value=result.message
+    const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({qq_reply_whitelist:values,capability_grants:grants.value.map(grant=>({
+      grant_id:grant.grant_id,revision:grant.revision,operator_id:grant.operator_id,
+      principal_type:grant.principal_type,principal_id:grant.principal_id,
+      scene_id:grant.scene_id||null,system_scope:grant.system_scope||null,
+      capabilities:grant.capabilityText.split(/[,，\s]+/).filter(Boolean),
+      expires_at:grant.expires_at||null,resource_policy:grant.resource_policy||null,
+      concurrency:grant.concurrency||null,enabled:!!grant.enabled}))})})
+    const settings=result.settings
+    accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
+    grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', ')}))
+    grantsOriginal.value=JSON.stringify(grants.value); message.value=result.message
   } catch(e) { error.value=e.message } finally { busy.value='' }
+}
+function addGrant() {
+  grants.value.push({grant_id:'',revision:1,operator_id:'',principal_type:'human',principal_id:'',
+    scene_id:'',system_scope:'',capabilityText:'',expires_at:null,resource_policy:'',concurrency:null,enabled:false})
 }
 async function saveTime() {
   if (busy.value || !timeDraft.value) return
@@ -338,7 +356,26 @@ watch(tab,load,{immediate:true})
       <p class="muted my-3">在已启用但关闭普通聊天的群中，白名单成员仍可正常提问和继续互动。白名单不会强制每条消息回复，也不授予管理员、跨群读取或 @全体权限；日程命令及引用评论仍保持安静。</p>
       <v-form :disabled="!!busy" @submit.prevent="saveAccess">
         <v-textarea v-model="accessText" label="QQ 账号" rows="6" hint="每行一个 QQ 账号，或用逗号分隔。这里填写 QQ 账号，不是 B 站 UID。空列表表示没有额外回复资格。" persistent-hint />
-        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!accessDirty">保存 QQ 白名单</v-btn>
+        <v-divider class="my-5" />
+        <div class="section-header"><div><h2>能力授予</h2><p class="muted mt-2">只影响本计划新增的自主能力；普通聊天不需要这里的任何一条。未配置、已停用或已过期的授予一律不放行，撤销只阻止后续操作，已发出的字节无法撤回。</p></div><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addGrant">添加授予</v-btn></div>
+        <p v-if="!grants.length" class="muted py-4">当前没有任何能力授予；新增自主能力保持关闭。</p>
+        <article v-for="(grant,index) in grants" :key="index" class="mb-5">
+          <div class="form-grid">
+            <v-text-field v-model="grant.grant_id" label="授予 ID" required />
+            <v-text-field v-model.number="grant.revision" type="number" min="1" label="版本号" required />
+            <v-text-field v-model="grant.operator_id" label="签发运营者" hint="保存时按当前登录账号记录，不需要手工填写。" persistent-hint readonly />
+            <v-select v-model="grant.principal_type" label="主体类型" :items="[{title:'人类',value:'human'},{title:'系统',value:'system'},{title:'插件',value:'plugin'}]" />
+            <v-text-field v-model="grant.principal_id" label="主体标识" hint="人类填 QQ 账号，系统填 runtime/scheduler/operator:账号，插件填插件 ID；不是显示名。" persistent-hint required />
+            <v-text-field v-if="grant.principal_type!=='system'" v-model="grant.scene_id" label="生效场景" placeholder="group:123" required />
+            <v-text-field v-else v-model="grant.system_scope" label="系统范围" hint="明确的系统用途，例如 heartbeat。" required />
+            <v-text-field v-model="grant.capabilityText" label="能力" hint="用逗号分隔：long_work、public_research、network_python、proactive_chat、interest_share、send_file、bilibili_authenticated_read、bilibili_like、bilibili_favorite。" persistent-hint required />
+            <v-text-field v-model.number="grant.expires_at" type="number" label="有效期（绝对 Unix 时间）" hint="留空表示长期有效。" />
+            <v-text-field v-model="grant.resource_policy" label="资源策略引用" hint="引用既有资源策略名称，不在这里填写额度数值。" />
+            <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限" />
+            <v-switch v-model="grant.enabled" label="启用" color="primary" /></div>
+          <v-btn variant="text" color="error" :disabled="!!busy" @click="grants.splice(index,1)">删除这条授予</v-btn>
+        </article>
+        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!accessDirty">保存白名单与能力授予</v-btn>
       </v-form>
     </v-card>
     <v-card v-if="tab==='time'&&timeLoaded" class="pa-5 form-card">

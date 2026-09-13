@@ -7,7 +7,7 @@ import json
 import time
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, create_model, model_validator
 
 from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
@@ -15,7 +15,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
-from len_bot.events.models import Event, EventType, PluginOrigin
+from len_bot.events.models import Event, EventType, Initiator, PluginOrigin
 from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
@@ -25,6 +25,19 @@ from len_bot.cognition.budget import AgentBudget
 from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
+
+
+def job_initiator(job: dict) -> Initiator | None:
+    """The typed branch a work item actually carries, or None if it never had one.
+
+    `job_store` already converts an older record from its own exact requester
+    and request anchor, so a record without a definite anchor stays None here
+    instead of becoming a default principal.
+    """
+    stored = job.get('initiator')
+    if stored is None:
+        return None
+    return TypeAdapter(Initiator).validate_python(stored)
 
 
 def _cancellation_termination(error: BaseException, job: dict | None) -> dict | None:
@@ -360,6 +373,7 @@ class InformationJobRunner:
                 source_event_id=origin.source_event_id if origin else job['request_source_event_id'],
                 origin=origin,entry_origin=origin.handler_origin or origin if origin else None,
                 entry=origin.scene_entry if origin else 'work',execution=execution,
+                initiator=job_initiator(job),
                 plugin=runtime.plugin_host.context_for(origin.plugin_id) if origin else None)
 
         toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
