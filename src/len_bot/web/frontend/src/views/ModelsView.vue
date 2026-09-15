@@ -22,6 +22,22 @@ async function loadReservations() {
   try { reservations.value = await api('/api/models/reservations') }
   catch (e) { reservationError.value = e.message }
 }
+// An absent number is only "no limit" when a policy actually said so.  A day
+// spanning several grants has no single admission balance, and a reference
+// whose policy no longer resolves is not the same as the default's numbers.
+const admissionText = account => {
+  const state = account.admission?.state
+  if (state === 'mixed_scope_required') return '需先选择范围'
+  if (state === 'policy_unresolved') return '策略引用失效'
+  return account.available === null ? '不设上限' : account.available.toLocaleString()
+}
+const admissionReason = account => {
+  const state = account.admission?.state
+  if (state === 'mixed_scope_required') return `当日涉及 ${account.admission.scope_required.length} 个授予引用`
+  if (state === 'policy_unresolved') return '引用的具名策略已不存在'
+  if (state === 'resolved') return `按授予 ${account.grant_reference} 指向的策略`
+  return '按默认策略'
+}
 const emptyRetrievalProfile = () => ({provider_id:'', model:'', dimension:null, protocol:null})
 const retrievalOpen = ref(false), retrievalForm = ref({embedding:emptyRetrievalProfile(), rerank:emptyRetrievalProfile()}), retrievalOriginal = ref('')
 const roles = [
@@ -187,7 +203,8 @@ watch(() => route.name, load, { immediate: true })
       <template v-if="reservations">
         <div class="limit-row"><span>单工作上限</span><strong>{{ reservations.limits.work_token_limit === null ? '不设上限' : reservations.limits.work_token_limit.toLocaleString() }}</strong><span>每账号每日上限</span><strong>{{ reservations.limits.daily_user_token_limit === null ? '不设上限' : reservations.limits.daily_user_token_limit.toLocaleString() }}</strong><span>每群每日上限</span><strong>{{ reservations.limits.daily_scene_token_limit === null ? '未配置' : reservations.limits.daily_scene_token_limit.toLocaleString() }}</strong></div>
         <p v-if="!reservationAccounts.length" class="muted py-3">今天还没有工作预占记录。</p>
-        <div v-else class="reservation-table-wrap"><table class="reservation-table"><thead><tr><th scope="col">账户</th><th scope="col">预占中</th><th scope="col">已结算</th><th scope="col">可用余额</th></tr></thead><tbody><tr v-for="account in reservationAccounts" :key="account.subject"><th scope="row">{{ account.subject }}</th><td>{{ account.held.toLocaleString() }}</td><td>{{ account.used.toLocaleString() }}</td><td>{{ account.available === null ? '不设上限' : account.available.toLocaleString() }}</td></tr></tbody></table></div>
+        <div v-else class="reservation-table-wrap"><table class="reservation-table"><thead><tr><th scope="col">账户</th><th scope="col">预占中</th><th scope="col">已结算</th><th scope="col">准入余量</th><th scope="col">依据</th></tr></thead><tbody><tr v-for="account in reservationAccounts" :key="account.subject"><th scope="row">{{ account.subject }}</th><td>{{ account.held.toLocaleString() }}</td><td>{{ account.used.toLocaleString() }}</td><td>{{ admissionText(account) }}</td><td class="muted">{{ admissionReason(account) }}</td></tr></tbody></table></div>
+        <p class="muted mt-2">“预占中／已结算”是账户当日已占用的事实；“准入余量”是当前主体与范围下下一次工作可能获批的结果，两者不是同一个数。账户当日跨多个授予时不给单一余量。</p>
         <div v-if="reservationRows.length" class="reservation-table-wrap mt-4"><table class="reservation-table"><caption>最近预占明细（最多 100 条）</caption><thead><tr><th scope="col">工作</th><th scope="col">账户</th><th scope="col">状态</th><th scope="col">预占</th><th scope="col">实际</th><th scope="col">本地估算</th></tr></thead><tbody><tr v-for="item in reservationRows" :key="item.job_id"><td><EntityLink type="job" :id="item.job_id" :scene-id="item.scene_id" /></td><td>{{ item.subject }}</td><td>{{ {held:'预占中',settling:'待收口',settled:'已结算',released:'已释放'}[item.status] || item.status }}</td><td>{{ item.reserved_tokens.toLocaleString() }}</td><td>{{ item.usage_tokens === null ? '未结算' : item.usage_tokens.toLocaleString() }}</td><td>{{ item.estimated_tokens === null ? '未结算' : item.estimated_tokens.toLocaleString() }}</td></tr></tbody></table></div>
       </template>
       <RouterLink :to="{name:'activity',query:{tab:'calls'}}">前往运行记录查看逐次调用与原始 usage</RouterLink>
