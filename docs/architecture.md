@@ -64,7 +64,7 @@ resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照
 
 ### Worker Gateway（配置可选）
 
-execution/protocol、client、journal 及 services/worker_gateway 已有代码。workspace 配置为 `gateway` 时，`GatewayWorkspaceService` 在提交前写入宿主 `execution_runs`，经客户端把脚本和 `input_files` 交给独立网关；超时只查询同一执行 ID。独立 Gateway 使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。宿主行与网关行不是已同步的事实副本。配置为 `worker` 时仍由宿主 `run_python` 调容器运行时，两条路径不会在一次调用里回落切换。
+execution/protocol、client、journal 及 services/worker_gateway 已有代码。workspace 配置为 `gateway` 时，`GatewayWorkspaceService` 要求工作已有类型化发起者，在提交前写入宿主 `execution_runs`，经客户端把脚本和 `input_files` 交给独立网关；`input_assets` 只作来源登记，字节不由网关拉取。超时只查询同一执行 ID；新执行前对同一工作区未终结行对账，不重跑。独立 Gateway 使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。宿主行与网关行不是已同步的事实副本。配置为 `worker` 时仍由宿主 `run_python` 调容器运行时，两条路径不会在一次调用里回落切换。
 
 Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务。短执行未确认 running 时仍记录进程结果；取消后不再启动；重启 sweep 经取消/停止边收口，单条失败不拖垮查询服务。新执行核对工作区归属，占用含未知终止。HTTP 客户端把枚举字符串解析为内部状态，并区分已拒绝、身份冲突和结果未知。控制目录按 worker GID 授权读取脚本，产物复制到不可变存放后按描述符打开。目录字节/文件数在运行中检查。正式放行条件只在完整计划和当前任务维护。
 

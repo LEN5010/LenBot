@@ -32,8 +32,8 @@ HTTP(S) 主机按配置白名单检查；`*` 表示允许任意公网主机，�
 
 ## 可选的 Gateway 后端
 
-`run_python` 已能经 `GatewayWorkspaceService` 提交 `ExecutionRequest`：宿主先写自己的 `execution_runs` 行，再把脚本文本与 `input_files` 交给网关；超时或结果未知只查询同一执行 ID。列表、分页读取、导出和面板下载走网关产物 API。网关不按资产 ID 自行拉取资料。
+`run_python` 已能经 `GatewayWorkspaceService` 提交 `ExecutionRequest`：工作必须已有类型化发起者，否则拒绝。宿主先写自己的 `execution_runs` 行，再把脚本文本与 `input_files` 交给网关；单次期限取网关配置与该工作剩余期限的较小值。超时或结果未知只查询同一执行 ID。新执行前对同一工作区未终结行做一次对账：网关未见过的记失败，已终结的补记，不重跑。取消走网关并把终止回执 park 回原工作。列表、分页读取、导出和面板下载走网关产物 API，取该工作最新一次执行已登记的产物；没有执行则列表为空。网关不按资产 ID 自行拉取资料。
 
-源码接线不等于生产已切换。样例和未改根配置的环境仍走宿主 worker。不能宣称 LenBot 已移除容器运行时访问、两库已同步，或隔离已通过实机验收。正式放行仍需运营者改选 gateway、部署网关服务与镜像，并补离线证据；输入/媒体导入等后续功能不因此提前开放。
+源码接线不等于生产已切换。样例和未改根配置的环境仍走宿主 worker。不能宣称 LenBot 已移除容器运行时访问、两库已同步，或隔离已通过实机验收。正式放行仍需运营者改选 gateway、部署网关服务与镜像，并补离线证据；输入/媒体导入等后续功能不因此提前开放。启动命令、根配置字段和备份范围见 [运行手册](operations.md)。
 
 Gateway 源码已按 FX06—FX10 及其外部复审修订：状态机含 `termination_unconfirmed` 复核释放、启动确认与未确认启动的监视、产物先复制后登记与逐层 `O_NOFOLLOW` 打开、HTTP 分类、worker GID 权限失败记录、非 ASCII 下载文件名（原合同见 [归档 fix 文档](archive/social-agent-c01-c10-fix.md)）。
