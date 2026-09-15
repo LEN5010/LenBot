@@ -37,9 +37,20 @@ class GatewayResponse:
 
 
 class ModelGateway:
+    """One provider binding plus the admission every one of its requests passes.
+
+    `admission`, when a caller supplies one, is the account this request is
+    charged to.  It runs inside the same write transaction that registers the
+    call, so the tokens one request holds are visible to the next request for
+    the same work before that request is sent — two concurrent calls cannot
+    both read the same free balance and spend it twice.  It returns the
+    amount to hold, or None for a call with no work account behind it.
+    """
+
     def __init__(self, binding: RouteResolution, max_output_tokens: int = 4096, *,
                  call_store=None, scene_id: str = "", episode_id: str | None = None,
-                 job_id: str | None = None, batch_id: str | None = None, purpose: str | None = None):
+                 job_id: str | None = None, batch_id: str | None = None, purpose: str | None = None,
+                 admission=None):
         if max_output_tokens < 1:
             raise ValueError("max_output_tokens must be positive")
         self.binding = binding
@@ -49,6 +60,7 @@ class ModelGateway:
         self.episode_id = episode_id
         self.job_id = job_id
         self.batch_id = batch_id
+        self.admission = admission
         self.purpose = purpose or binding.role
         if self.purpose not in {"conversation", "plugin_agent", "announcement", "work", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
             raise ValueError(f"Unsupported model-call accounting purpose: {self.purpose}")
@@ -74,11 +86,17 @@ class ModelGateway:
             message.pop('_context_section', None)
         call_id = None
         if self.call_store is not None:
+            admission = self.admission
+            async def admit_call():
+                return await admission(estimate, self.max_output_tokens)
             call_id = await self.call_store.begin_model_call(
                 scene_id=self.scene_id, episode_id=self.episode_id, job_id=self.job_id, batch_id=self.batch_id,
                 role=self.binding.role, purpose=self.purpose, provider_id=self.binding.provider_id,
                 model=self.binding.model, reasoning_effort=self.binding.reasoning_effort, estimate=estimate,
+                output_tokens=self.max_output_tokens,
+                admission=None if admission is None else admit_call,
             )
+
         started = time.monotonic()
         usage = None
         try:

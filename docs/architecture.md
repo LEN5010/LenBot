@@ -36,7 +36,7 @@ Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Se
 
 ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig。先发现内置和 plugin_directories 中的无运行副作用描述符，再解析 runtime、models、delivery、access、resources、scenes、time、members 与插件 config。面板候选使用同一解析入口。样例、环境变量、CLI 和数据库不覆盖 LenBot 根配置；网络客户端显式禁用环境继承。业务时区未配置为 null，不满足相关插件必需条件时不能启用。
 
-面板保存持有 Runtime.config_update_lock，先校验完整候选并替换根文件，再发布内存设置。需要重建组件的参数记录需重启，不自动重启。当前预算热更新有一处断点：update_runtime_settings 替换 Runtime.config，但 EventStore.budget_config 仍可能指向旧对象，创建预占和新执行段会读到不同上限，见 FX04。文件保存失败不会改用数据库存配置。
+面板保存持有 Runtime.config_update_lock，先校验完整候选并替换根文件，再发布内存设置。需要重建组件的参数记录需重启，不自动重启。运行参数热更新会同步 `EventStore.budget_config`，因此新工作预占与新执行段读同一份已发布上限；已有工作仍读自己的创建快照。文件保存失败不会改用数据库存配置。
 
 SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 request_source_event_id 缺失保留未知，旧 observation_reads 缺省为空，不补造真实阅读或人类身份。C07 新增 usage_reservations，C10 新增 execution_runs/execution_events，不能再笼统描述本分支“没有新增表”。
 
@@ -48,21 +48,19 @@ CapabilityGrant 保存在 access.capability_grants，默认空。Gate 对非人�
 
 ### 预占、调用与结算
 
-resources.policies 保存具名 ReservationPolicy。未命名或名称失效时当前代码回退到默认策略：单工作10M、账号日30M、场景日默认不限。即使根文件没有 resources，工作创建也会预占；这是当前升级行为，不是“默认不新增限制”。账务日使用业务时区，未配置时按 UTC；账号检查跨群聚合，场景检查仅在策略设限时执行。
+resources.policies 保存具名 ReservationPolicy。未配置时各维度默认为 null（不设 token 上限），不再隐式套用 10M/30M。有限日额度必须能在创建时算出有限单工作预占，否则拒绝该组合。账务日使用业务时区，未配置时按 UTC；账号检查跨群聚合，场景检查仅在策略设限时执行。Grant 仍可能指向 long_work 以外的策略，见 FX05。
 
-创建期预占与工作行位于 commit_proposal_transaction 的同一写事务，避免并发创建重复使用同一余额。一工作一行 usage_reservations：held 时 reserved_tokens 是整项工作的预占总量，并非扣除消费后的余额；结算会将它覆盖为已计量消费，未调用模型的取消可释放该行。真实 usage 与估算分列，model_calls 保留各调用身份，按 job_id 建索引。
+创建期预占与工作行位于 commit_proposal_transaction 的同一写事务，避免并发创建重复使用同一余额。一工作一行 usage_reservations：`limit_tokens` 保存创建时的累计上限，held/settling 时 `reserved_tokens` 是对该上限的占用；结算把它改成已计量消费，未调用模型的取消可释放该行。工作行另存 `budget_json` 快照（执行上限、token 上限、首次开始后的 `deadline_at`）。真实 usage 与估算分列，model_calls 另记本次输出上限和在途占用。
 
-目前每次模型请求只在 ModelGateway 创建调用记录，没有按最终输入和本次输出上限统一原子预留。AgentBudget 的 token 拒绝仅比较已用量；压缩和技能维护还存在旁路。complete_job 关闭预占后，技能候选仍可能调用模型；晚到 usage 也不会自动修正已结算的日账。不能把模型调用都带 job_id 当作准入和结算已完整共享，见 FX01/FX02。
-
-AgentBudget 使用 count_remaining/tightest 处理可为空的次数字段，接近阈值时隐藏普通工具以促成终结；这不是为终结请求实际保留了足额 token 或时间。次数与单工作 token 上限同时为 null 时，预占计算可能返回0并使首轮被拒，见 FX04。历史维护的模型次数仍必填。
+每次工作侧 ModelGateway 请求在写入调用行的同一事务里按最终输入估算和本次输出上限准入。压缩、技能维护和插件工作子调用走同一入口。complete_job 在仍有技能候选时把预占标为 settling 而不是立刻按消费收口；最后一次回执按该调用自己的记录重算日账。次数与 token 上限同时为 null 且日额度有限时拒绝创建，而不是预占 0。历史维护的模型次数仍必填。
 
 ### 工作与对话的恢复限制
 
-工作保存累计 model_steps、tool_calls 和 elapsed_seconds。JobRunner 以配置时限减累计活动时长换算运行段 timeout；执行段以外的暂停和停机间隔不计入。没有保存首次开始后的 deadline，不能将 elapsed_seconds 称为绝对期限。
+工作保存累计 model_steps、tool_calls 和 elapsed_seconds，并在首次真正开始时写入绝对 `deadline_at`。运行段 timeout 和对话循环 timeout 都对着该持久期限（或对话已存窗口）的剩余时间；排队未开始不计时。没有 `deadline_at` 的旧工作仍按累计活动时长换算，不能补造首次开始时刻。
 
-resume/revise 保留原 ID、资料、模型绑定和累计计数，重开 settled/released 预占时却按当时配置重新算上限；原上限已经被结算覆盖，不能保证恢复同一获准额度。重开保留原 day_key，并排除自己的旧结算再计算占用；无预占的旧工作仍没有 token 维度。修复原快照和期限的要求见 FX03/FX04。
+resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照；重开 settled/released 预占时使用原 `limit_tokens`，排除本工作后再检查日账。没有存档上限的旧已结算行拒绝自动恢复，不能按当前默认策略补造。无预占的旧工作仍没有 token 维度。
 
-对话可配置 conversation_window_seconds；ConversationResume 保存累计活动时长和 elapsed_seconds_limit，但恢复分支没有采用已存时限，等待间隔也不计入。对话请求及工具等待尚未被该期限完整包围；不能声称等待恢复不延长窗口。人格候选与人工样例仍分别经根配置和数据库接口保存，与这些预算缺口无关。
+对话可配置 conversation_window_seconds；ConversationResume 保存累计活动时长和 elapsed_seconds_limit，恢复时写回该窗口，AgentLoop 受剩余期限包围。人格候选与人工样例仍分别经根配置和数据库接口保存。
 
 ### 未接线的 Worker Gateway
 
@@ -142,9 +140,9 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 面板登录后的无发言管理提案由 Actor 传入可信 operator_control，允许修改／恢复既有工作、修改／触发提醒和其他原有状态管理，不用空 QQ UID 检查聊天资格，也不生成聊天消息。工作和提醒的原请求者保留，后续执行与交付仍检查当前群、插件、版本和请求者资格。管理提交不消费群友未读输入，不记成模型选择沉默。
 
-工作保存目标版本、已用预算、原始资料和简短 WorkState。完整 assistant/tool 交换形成检查点，图片只保存资产引用；查询接口只暴露元数据，不暴露供应商私有续接。修订保留原 ID、绑定、资料和累计计数，旧版本在完整交换边界停止提交；取消沿原取消路径结束。显式恢复使用最后完整检查点和原绑定，暂停时间当前不计入活动时长；重开额度与绝对期限的缺口见上文，不能把保留计数等同于保留原上限。完整结果不以重送为由重跑。已有明确缺口的 partial 可在 result_ready/completed/failed/review_required 且预算仍有余量时显式 resume；awaiting_delivery、delivery_unknown、cancelled 和 shadow_observed 不因此重开。resume 不接受目标或范围变更，使用原 ID 和新 revision；task.payload.resume_from 保留上一版本结果、交付状态、action/event 关联，原始完成事件与回执不改写。
+工作保存目标版本、已用预算、原始资料和简短 WorkState。完整 assistant/tool 交换形成检查点，图片只保存资产引用；查询接口只暴露元数据，不暴露供应商私有续接。修订保留原 ID、绑定、资料、累计计数和创建快照，旧版本在完整交换边界停止提交；取消沿原取消路径结束。显式恢复使用最后完整检查点和原绑定；首次开始后的等待计入绝对期限。重开读取原上限，不能把保留计数等同于保留原上限的旧已结算行仍须运营处理。完整结果不以重送为由重跑。已有明确缺口的 partial 可在 result_ready/completed/failed/review_required 且预算仍有余量时显式 resume；awaiting_delivery、delivery_unknown、cancelled 和 shadow_observed 不因此重开。resume 不接受目标或范围变更，使用原 ID 和新 revision；task.payload.resume_from 保留上一版本结果、交付状态、action/event 关联，原始完成事件与回执不改写。
 
-长结果先换成可续读资料引用；仍需压缩时，maintenance 只整理确定的旧完整工具组，保留近期原生交换、目标与未决项。压缩调用带原 job_id，记录次数和活动时长，但 token 准入旁路仍见 FX01；失败或未缩小不发布覆盖，原交换和观察不删除。
+长结果先换成可续读资料引用；仍需压缩时，maintenance 只整理确定的旧完整工具组，保留近期原生交换、目标与未决项。压缩调用带原 job_id，记录次数和活动时长，并走与主循环相同的请求准入；失败或未缩小不发布覆盖，原交换和观察不删除。
 
 `finish_work` 提交总结、资料引用、evidence_spans 和未决项，运行时据未决项形成 completed 或 partial。每个结论所引 result_id 须有相应实际提供范围，工作状态和已完成步骤也可附范围；存储只核验来源、坐标及实际阅读，不代替模型论证。搜索摘要或失败观察不能冒充外部查证完成，来源可用性不证明自然语言结论正确。
 
@@ -214,7 +212,7 @@ OneBotAdapter 管理一个消息连接，显式选择主动或反向 WebSocket�
 
 Vue Router hash history 管理页面、对象、筛选与分页，Vuetify 提供控件。正文与凭据不进入 URL 或浏览器持久存储。管理列表返回 `{items,total,page,page_size}`，消息时间线使用原始 rowid 游标和首次 snapshot_rowid；有限配置目录和固定素材目录明确完整返回。
 
-RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。额度页当前用最近100条明细和默认策略计算余额，按群筛选也影响该汇总；它不等于准入使用的完整账号日账，见 FX12。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
+RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。额度页账户合计按全日预占/待收口/已结算聚合，明细仍最多 100 条；群筛选时另给场景小计，不再把截断明细当成账号余额。具名策略主体仍显示默认策略上限，与 FX05 的 Grant 选择缺口有关。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
 
 写操作经现有事件／提案边界，保留具体失败，不自动重试；刷新不恢复工作或重发。迟到响应不覆盖新对象，未保存草稿和旧读取时间明确显示。技能 skipped 在面板显示正常原因，不显示为维护失败。
 

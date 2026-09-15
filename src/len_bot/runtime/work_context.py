@@ -180,10 +180,11 @@ class WorkSegment(BaseModel):
 
 
 class WorkCompressor:
-    def __init__(self, runtime, job_id, scene_id, revision, charge, exchange_count, *, config=None):
+    def __init__(self, runtime, job_id, scene_id, revision, charge, exchange_count, *, config=None, admission=None):
         self.runtime, self.job_id, self.scene_id, self.revision = runtime, job_id, scene_id, revision
         self.charge, self.exchange_count = charge, exchange_count
         self.config = config if config is not None else runtime.config.model_copy(deep=True)
+        self.admission = admission
 
     async def prepare(self, messages, tools, *, reserved=()):
         config, store = self.config, self.runtime.event_store
@@ -266,7 +267,8 @@ class WorkCompressor:
             end_exchange = start_exchange + group_count - 1
             await self.charge(self.revision, model_steps=1)
             response = await ModelGateway(binding, max_output_tokens=config.maintenance_output_tokens, call_store=store,
-                scene_id=self.scene_id, job_id=self.job_id, purpose="work_compression").complete(request, [terminal], {"type": "function", "function": {"name": "summarize_work_segment"}})
+                scene_id=self.scene_id, job_id=self.job_id, purpose="work_compression",
+                admission=self.admission).complete(request, [terminal], {"type": "function", "function": {"name": "summarize_work_segment"}})
             if response.finish_reason not in {"stop", "tool_calls"} or len(response.tool_calls) != 1 or response.tool_calls[0].name != "summarize_work_segment":
                 raise ValueError("Incomplete work compression response")
             segment = WorkSegment.model_validate_json(response.tool_calls[0].arguments)
