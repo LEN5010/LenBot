@@ -5,4 +5,4 @@ the Bot process, with its own configuration, its own journal and the only
 container runtime in the deployment.
 """
 
-__all__ = ['config', 'store', 'runner', 'app']
+__all__ = ['config', 'store', 'runner', 'app', 'egress_policy', 'egress_proxy', 'egress_control']

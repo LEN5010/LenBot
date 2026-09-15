@@ -49,7 +49,7 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
 # to push the absolute deadline out, and the stored ``deadline_at`` is what a
 # later read — and a Gateway restarting on its own — both use.
 _RESUBMIT_FIELDS = ('scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
-                    'image_ref', 'network_policy', 'script')
+                    'image_ref', 'network_policy', 'script', 'egress_authorized')
 
 _RECORD_NAMES = ('execution_id', 'scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
                  'image_ref', 'network_policy', 'state', 'accepted_at', 'deadline_at', 'started_at',

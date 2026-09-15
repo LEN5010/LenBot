@@ -263,13 +263,27 @@ class GatewayWorkspaceService:
             if conclusion != 'available':
                 raise ValueError(detail)
             input_files, manifest, input_assets = await self._input_files(job, request, call.scene_id)
+            initiator = TypeAdapter(Initiator).validate_python(stored_initiator)
+            # Egress is authorized here, by the host, and travels as a plain
+            # fact the Gateway can check before it starts anything.  Two
+            # answers have to be yes: the run's own initiator holds a current
+            # `network_python` grant, and the run carries no group material of
+            # its own — an imported picture is exactly the private data the
+            # plan keeps offline, and uploading it to a public address is a
+            # data export that needs its own scope, which does not exist yet.
+            # The Gateway refuses a forwarding policy without this answer, so
+            # a deployment that has built egress cannot start a run the host
+            # did not authorize.
+            egress_authorized = await self._egress_authorized(job, call.scene_id, initiator,
+                                                              input_assets)
             execution = ExecutionRequest(
                 execution_id='x' + uuid.uuid4().hex,
                 scene_id=call.scene_id, job_id=scope.job_id, job_revision=job['revision'],
                 workspace_id=scope.workspace_id,
-                initiator=TypeAdapter(Initiator).validate_python(stored_initiator),
+                initiator=initiator,
                 worker_type='python', script=request.script,
                 image_ref=self.config.image_ref, network_policy=self.config.network_policy,
+                egress_authorized=egress_authorized,
                 input_assets=input_assets,
                 input_files=input_files,
                 deadline_seconds=self._deadline_seconds(job))
@@ -326,6 +340,31 @@ class GatewayWorkspaceService:
             termination = await asyncio.shield(
                 self._cancel_execution(execution.execution_id, scope))
             raise WorkspaceCancelled(termination) from None
+
+    async def _egress_authorized(self, job, scene_id: str, initiator, input_assets) -> bool:
+        """Whether this execution may be started under an egress policy.
+
+        False is the answer in every case that is not a current grant plus a
+        run carrying no group material of its own.  That is deliberate: a
+        policy reference existing is not an authorization, and the absence of
+        an answer is a refusal, not a default.  Nothing here inspects the
+        script: the plan's point is that no reviewer can prove a script does
+        not exfiltrate, so what is decided is who may run with egress at all
+        and over what input, not what the script looks like.
+        """
+        if input_assets:
+            return False
+        authority = getattr(self.event_store, 'capability_authority', None)
+        if authority is None:
+            return False
+        from len_bot.runtime.capabilities import Capability, subject_for
+        try:
+            subject = subject_for(initiator, scene_id)
+        except ValueError:
+            return False
+        decision = authority.check(Capability.NETWORK_PYTHON, subject,
+                                   now=self.event_store.clock())
+        return bool(decision.allowed)
 
     async def _input_files(self, job, request: RunPythonInput, scene_id):
         """This request's inputs as wire files, its manifest, and its provenance.

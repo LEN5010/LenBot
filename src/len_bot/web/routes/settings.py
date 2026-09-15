@@ -36,7 +36,7 @@ async def access_settings(request: Request, user: str = Depends(get_current_user
 CAPABILITY_TITLES = {
     'long_work': '后台工作与恢复',
     'public_research': '系统公共研究（只读 global-safe）',
-    'network_python': '联网 Python（尚未实现）',
+    'network_python': '联网 Python（需 gateway 后端且网关已建出口策略）',
     'proactive_chat': '主动聊天（尚未实现）',
     'interest_share': '公共兴趣分享（尚未实现）',
     'send_file': '发送文件（尚未实现）',
@@ -53,8 +53,14 @@ async def capability_vocabulary(user: str = Depends(get_current_user)):
     The panel offers these names as a choice and states the ones that are
     only vocabulary; naming a capability was never the same as implementing
     it, and a grant for an unimplemented capability still permits nothing.
+
+    ``network_python`` is implemented in the sense that it is checked where an
+    execution is admitted — but only the Gateway backend can carry egress at
+    all (the local trial worker runs ``--network none``), and only for a
+    deployment that built a proxy policy.  The title says so, because a grant
+    on its own still permits nothing.
     """
-    implemented = {'long_work', 'public_research'}
+    implemented = {'long_work', 'public_research', 'network_python'}
     return {'items': [{'value': capability.value,
                        'title': CAPABILITY_TITLES.get(capability.value, capability.value),
                        'implemented': capability.value in implemented}
