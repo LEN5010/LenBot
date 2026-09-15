@@ -41,12 +41,15 @@ async function exit(){busy.value=true;error.value='';try{await logout();await ro
       <template #activator="{props}"><v-btn v-bind="props" variant="text" :append-icon="mdiChevronDown" class="toolbar-status" aria-label="查看当前运行状态"><span class="status-indicator" :class="{healthy:!app.error && app.status?.running}"></span>{{ statusText }}</v-btn></template>
       <v-card width="340" max-width="calc(100vw - 32px)"><v-card-title>当前状态</v-card-title><v-card-text class="status-details">
         <v-alert v-if="app.error" type="error" variant="tonal">刷新失败：{{ app.error }}。下方为上次读取结果。</v-alert>
-        <template v-if="app.status"><p>运行时：{{ app.status.running?'已启动':'已停止' }}</p><p>OneBot：{{ app.status.onebot.connected?'已连接':'未连接' }}</p><p>发送方式：{{ app.status.shadow_mode?'Shadow · 仅记录候选':'实发 · 按各群规则' }}</p><p class="muted">采样于 {{ fmtTime(app.status.sampled_at) }}</p></template>
+        <template v-if="app.status"><p>运行时：{{ app.status.running?'已启动':'已停止' }}</p><p>OneBot：{{ app.status.onebot.connected?'已连接':'未连接' }}</p>
+          <p>发送方式：{{ app.status.shadow_mode?'Shadow · 仅记录候选':'按各群规则实际发送' }}</p>
+          <p>业务时间：{{ app.status.business_timezone || '未填写' }}</p>
+          <p class="muted">采样于 {{ fmtTime(app.status.sampled_at) }}</p></template>
         <p v-else class="muted">尚无状态样本</p>
       </v-card-text><v-card-actions><v-btn :prepend-icon="mdiRefresh" :loading="app.loading" @click="refreshStatus">刷新状态</v-btn></v-card-actions></v-card>
     </v-menu>
     <v-divider vertical class="toolbar-divider" />
-    <v-chip v-if="app.status" size="small" variant="tonal" :color="app.status.shadow_mode?'secondary':'warning'" class="mode-chip">{{ app.status.shadow_mode?'Shadow':'名单实发' }}</v-chip>
+    <v-chip v-if="app.status" size="small" variant="tonal" :color="app.status.shadow_mode?'secondary':'warning'" class="mode-chip">{{ app.status.shadow_mode?'Shadow':'按群规则发送' }}</v-chip>
   </v-app-bar>
   <v-main tag="div"><main class="app-page" id="main-content"><v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert><slot /></main></v-main>
 </template>
