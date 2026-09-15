@@ -244,7 +244,7 @@ class AgentBudget:
         state = {'model_calls_limit': self.model_limit, 'model_calls_used': self.model_used,
                  'tool_calls_limit': self.tool_limit, 'tool_calls_used': self.tool_used}
         state.update({key: value for key, value in self._last_durable.items()
-                      if key in {'elapsed_seconds_limit', 'elapsed_seconds_used',
+                      if key in {'deadline_at', 'elapsed_seconds_limit', 'elapsed_seconds_used',
                                  'tokens_limit', 'tokens_used'}})
         return state
 
@@ -258,7 +258,7 @@ class AgentBudget:
         """
         if state.get('deadline_at') is not None:
             return seconds_left_to(state.get('deadline_at'))
-        if 'elapsed_seconds_limit' in state:
+        if state.get('elapsed_seconds_limit') is not None:
             return state['elapsed_seconds_limit'] - state['elapsed_seconds_used']
         return self.deadline_seconds()
 

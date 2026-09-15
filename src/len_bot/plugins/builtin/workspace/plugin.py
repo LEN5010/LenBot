@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 
+from len_bot.execution.client import WorkerGatewayClient
 from len_bot.execution.models import ListWorkspaceInput, RunPythonInput, WorkspaceFileInput
-from len_bot.execution.service import WorkspaceService
+from len_bot.execution.service import GatewayWorkspaceService, WorkspaceService
 from len_bot.execution.workspace import WorkspaceWorker
 from len_bot.plugins.api import BasePlugin, PluginCallContext, PluginContext, ToolResult
 
@@ -14,8 +15,15 @@ class WorkspacePlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
         self.config: WorkspacePluginConfig = context.config
-        self.service = WorkspaceService(WorkspaceWorker(self.config.worker, context.data_directory),
-            context.event_store, self.manifest.id)
+        if self.config.gateway is not None:
+            # The gateway is the one backend when configured; the host keeps
+            # no container runtime and never falls back to a local run.
+            self.service = GatewayWorkspaceService(
+                WorkerGatewayClient(self.config.gateway), self.config.gateway,
+                context.event_store, self.manifest.id)
+        else:
+            self.service = WorkspaceService(WorkspaceWorker(self.config.worker, context.data_directory),
+                context.event_store, self.manifest.id)
 
     async def on_load(self, context: PluginContext):
         context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，产物写入当前目录 /workspace；依赖由已配置镜像提供。',
@@ -29,6 +37,12 @@ class WorkspacePlugin(BasePlugin):
         context.register_tool('export_workspace_artifact', '导出当前工作的文件产物。支持的图片登记为 attachments 中的场景媒体引用，普通文件可在授权面板下载；不自动发送。',
             WorkspaceFileInput, self.export_file, purpose='导出工作区产物', aliases=('导出文件',),
             keywords=('工作区', '文件', '导出', '产物'), kind='read', roles=('work',))
+
+    async def on_unload(self):
+        service = getattr(self, 'service', None)
+        client = getattr(service, 'client', None)
+        if client is not None:
+            await client.close()
 
     async def run_python(self, values: RunPythonInput, call: PluginCallContext):
         return await self._run(lambda: self.service.run_python(call, values))

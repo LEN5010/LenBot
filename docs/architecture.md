@@ -2,13 +2,13 @@
 
 面向维护者。产品语义见[产品行为](product.md)，起停与切换见[运行手册](operations.md)，本轮实现状态见[当前任务](iteration.md)。
 
-本文描述 `2c862c6` 的源码结构，已知缺口随对应模块说明。改造合同见 [C01—C10 fix](social-agent-c01-c10-fix.md)，实际核对证据和进度只写当前任务。
+本文描述 `2c862c6` 的源码结构，已知缺口随对应模块说明。改造合同见 [C01—C10 fix](archive/social-agent-c01-c10-fix.md)，实际核对证据和进度只写当前任务。
 
 统一亮色卡片是确定性派生资产，继续使用 `ToolResult`、媒体资产库和原发送链；`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core。Python 和浏览器工具返回资料，不提供直接 OneBot 发送入口；实际执行与隔离范围见 [执行边界](execution-boundaries.md)。
 
 ## 社会 Agent 计划与当前实现
 
-完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见 [完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)。本文不复制计划对象与未来拓扑。当前 Python 仍由 LenBot 调宿主容器运行时，浏览器仍在同进程内；新 Gateway 服务尚未接线，公共兴趣、心跳/睡眠、文件上传及点赞收藏未形成当前可用链路。
+完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见 [完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)。本文不复制计划对象与未来拓扑。Python 执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，默认样例仍是宿主 worker；浏览器仍在同进程内。公共兴趣、心跳/睡眠、文件上传及点赞收藏未形成当前可用链路。
 
 ## 正常链路与所有权
 
@@ -60,13 +60,13 @@ resources.policies 保存具名 ReservationPolicy。未配置时各维度默认�
 
 resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照；重开 settled/released 预占时使用原 `limit_tokens`，排除本工作后再检查日账。没有存档上限的旧已结算行拒绝自动恢复，不能按当前默认策略补造。无预占的旧工作仍没有 token 维度。
 
-对话可配置 conversation_window_seconds；ConversationResume 保存累计活动时长和 elapsed_seconds_limit，恢复时写回该窗口，AgentLoop 受剩余期限包围。人格候选与人工样例仍分别经根配置和数据库接口保存。
+对话可配置 conversation_window_seconds；ConversationResume 保存绝对截止时刻 `deadline_at` 与原窗口值（含明确的 `null`），恢复时按该时刻继续，等待时间计入窗口。人格候选与人工样例仍分别经根配置和数据库接口保存。
 
-### 未接线的 Worker Gateway
+### Worker Gateway（配置可选）
 
-execution/protocol、client、journal 及 services/worker_gateway 已有代码。LenBot EventStore 初始化 execution_runs/execution_events；独立 Gateway 若启动，使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。当前无客户端接线把 run_python 的实际执行或事件同步到这套记录，不能把两库描述成已同步的事实副本。
+execution/protocol、client、journal 及 services/worker_gateway 已有代码。workspace 配置为 `gateway` 时，`GatewayWorkspaceService` 要求工作已有类型化发起者，在提交前写入宿主 `execution_runs`，经客户端把脚本和 `input_files` 交给独立网关；`input_assets` 只作来源登记，字节不由网关拉取。超时只查询同一执行 ID；新执行前对同一工作区未终结行对账，不重跑。独立 Gateway 使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。宿主行与网关行不是已同步的事实副本。配置为 `worker` 时仍由宿主 `run_python` 调容器运行时，两条路径不会在一次调用里回落切换。
 
-Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务。短执行未确认 running 时仍记录进程结果；取消后不再启动；重启 sweep 经取消/停止边收口，单条失败不拖垮查询服务。新执行核对工作区归属，占用含未知终止。HTTP 客户端把枚举字符串解析为内部状态，并区分已拒绝、身份冲突和结果未知。控制目录按 worker GID 授权读取脚本，产物复制到不可变存放后按描述符打开。目录字节/文件数在运行中检查。当前 Python 仍由宿主 `run_python` 执行，正式切换条件只在完整计划维护。
+Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务。短执行未确认 running 时仍记录进程结果；取消后不再启动；重启 sweep 经取消/停止边收口，单条失败不拖垮查询服务。新执行核对工作区归属，占用含未知终止。HTTP 客户端把枚举字符串解析为内部状态，并区分已拒绝、身份冲突和结果未知。控制目录按 worker GID 授权读取脚本，产物复制到不可变存放后按描述符打开。目录字节/文件数在运行中检查。正式放行条件只在完整计划和当前任务维护。
 
 ## 输入、注意力与实际阅读
 

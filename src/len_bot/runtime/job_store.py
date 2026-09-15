@@ -97,8 +97,17 @@ class JobStoreMixin(SkillStoreMixin):
             subject = subject_for(initiator, scene_id)
         except ValueError:
             return base, None, None
+        # The operation mapping (e.g. information → public_research) is the
+        # requirement for autonomous, non-human sources.  A human's work is
+        # authorized by the chat whitelist and billed under the human's own
+        # long_work grant, so the human branch keeps selecting by LONG_WORK
+        # instead of skipping the grant because a system capability exists.
+        if subject.principal_type == 'human':
+            candidates = (Capability.LONG_WORK,)
+        else:
+            candidates = authority.required_for_work(work_operation) or (Capability.LONG_WORK,)
         grant = None
-        for capability in authority.required_for_work(work_operation) or (Capability.LONG_WORK,):
+        for capability in candidates:
             grant = authority.grant_for(subject, capability, now=now)
             if grant is not None:
                 break
@@ -177,7 +186,8 @@ class JobStoreMixin(SkillStoreMixin):
             scene_limit=policy.daily_scene_token_limit, daily_limit=policy.daily_user_token_limit)
         return tokens
 
-    async def rehold_job_budget_in_transaction(self, job_id, initiator, scene_id):
+    async def rehold_job_budget_in_transaction(self, job_id, initiator, scene_id, *,
+                                               work_operation: str = 'information'):
         """Put a continued work back on hold under the ceiling it was created with.
 
         A resume or a revise makes the work executable again, so it needs a
@@ -187,11 +197,20 @@ class JobStoreMixin(SkillStoreMixin):
         work that consumed most of its allowance does not require the day to
         cover that allowance a second time.  The initiator is the stored one,
         so a continuation cannot bill a different account, and the hold keeps
-        the day the work was accepted on.
+        the day the work was accepted on.  The grant's concurrency counts here
+        the same way it counts at creation: a continuation occupies a slot
+        exactly like a new work does.
         """
         if initiator is None:
             raise ValueError('This work has no typed initiator; continuing it would have no account to hold against')
-        policy, _grant_id, _grant = self.reservation_policy_for(initiator, scene_id, self.clock())
+        policy, _grant_id, grant = self.reservation_policy_for(
+            initiator, scene_id, self.clock(), work_operation=work_operation)
+        if grant is not None and grant.concurrency is not None:
+            active = await self.count_subject_active_jobs(
+                self.billing_subject_for(initiator, scene_id), exclude_job_id=job_id)
+            if active >= grant.concurrency:
+                raise ValueError(
+                    f'该主体并发工作已达授予上限 {grant.concurrency}；请等待已有工作结束，或由运营者修订授予')
         await self.rehold_work_in_transaction(
             job_id=job_id, scene_limit=policy.daily_scene_token_limit,
             daily_limit=policy.daily_user_token_limit)
@@ -563,7 +582,9 @@ class JobStoreMixin(SkillStoreMixin):
                 # was never definite is refused by the re-hold itself instead
                 # of being billed to a guessed account.
                 if await self.job_reservation(job_id) is not None:
-                    await self.rehold_job_budget_in_transaction(job_id, self.initiator_of(current), scene_id)
+                    await self.rehold_job_budget_in_transaction(
+                        job_id, self.initiator_of(current), scene_id,
+                        work_operation=current['work_operation'])
             await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, revision, {"operation": proposal.operation})
         return tasks, references
 
@@ -769,17 +790,15 @@ class JobStoreMixin(SkillStoreMixin):
                     (result.summary, job_id, scene_id))
                 event = await self._queue_job_event(EventType.AGENT_JOB_FINISHED, job_id, scene_id, revision,
                     {"raw_text": "信息工作已有结果，结合最新要求核对后决定如何回应。", "result": result.model_dump(), "origin_mode": job["origin_mode"]})
-                # A skill candidate still spends this work's original hold.
-                # Keep the ceiling occupied until those requests end; otherwise
-                # close now so unused remainder returns to the day.
+                # A skill candidate committed above is admitted consumption of
+                # this work's original hold.  The close below reads the
+                # persisted candidates — not just this call's argument — so a
+                # candidate saved earlier through update_work_state keeps the
+                # ceiling occupied the same way; otherwise unused remainder
+                # returns to the day now.
                 config = getattr(self, 'budget_config', None)
-                if skill_candidate is not None:
-                    await self._db.execute(
-                        "UPDATE usage_reservations SET status='settling' WHERE job_id=? AND status='held'",
-                        (job_id,))
-                else:
-                    await self.close_reservation_in_transaction(
-                        job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
+                await self.close_reservation_in_transaction(
+                    job_id, conservative_output_tokens=config.work_output_tokens if config is not None else 0)
                 await self._db.commit()
                 return event
             except BaseException:

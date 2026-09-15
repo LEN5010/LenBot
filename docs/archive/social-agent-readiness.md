@@ -1,9 +1,9 @@
 # 历史归档：社会 Agent 前期准备与阶段落点
 
 > 制定日期：2026-09-13。计划基线 `LEN5010/LenBot@7a4152d`，第 2 节表格原始核对基线为本仓库 `76ef637`（分支 `social-agent-m0-foundation`）；C06 落地后该表中身份与能力授予两行已更新为当前落点。
-> 本文是实施前的准备材料，不是交付报告，也不是能力清单。计划条款见 [`LenBot 社会 Agent 完整实施计划`](LenBot_社会Agent_完整实施计划_7a4152d.md)。
+> 本文是实施前的准备材料，不是交付报告，也不是能力清单。计划条款见 [`LenBot 社会 Agent 完整实施计划`](../LenBot_社会Agent_完整实施计划_7a4152d.md)。
 
-> 归档范围：初始准备材料及 C06—C10 期间追加的落点记录，截至 `2c862c6`。本文件停止维护当前状态；下文“已具备”“实现完成”“本机状态”和“下一阶段”仅保留当时判断。相关缺陷见 [FX01—FX13](social-agent-c01-c10-fix.md)，当前状态只看 [iteration](iteration.md)。不能从旧表认定能力可启用。
+> 归档范围：初始准备材料及 C06—C10 期间追加的落点记录，截至 `2c862c6`。本文件停止维护当前状态；下文“已具备”“实现完成”“本机状态”和“下一阶段”仅保留当时判断。相关缺陷见 [FX01—FX13](social-agent-c01-c10-fix.md)，当前状态只看 [iteration](../iteration.md)。不能从旧表认定能力可启用。
 
 ## 1. 本次范围
 
@@ -44,9 +44,9 @@
 | 文件资产与 OneBot 上传 | 不存在 | `media_assets` 无有效期列（`media/store.py:36-41`）；`MessageSegment` 仅 text/image/video/audio/at（`media/models.py:14`）；`ActionType` 仅 `SEND_GROUP_MESSAGE`/`SEND_PRIVATE_MESSAGE`（`actions/models.py:22-24`）；`adapters/onebot.py:235-260` 无 file 段与 `upload_group_file` | C23、C24 |
 | B 站登录态 | 部分具备（位置与计划不同） | 凭据当前在插件配置 `plugins/builtin/bilibili_content/config.py:4-9`（`sessdata`/`bili_jct`），消费处 `plugin.py:63-65、:125`；序列化已做遮蔽（`web/query_service.py:1010`）。计划要求收回根配置专用字段并隔离账号读取 | C25、C26 |
 | 点赞/收藏 | 不存在 | 无窄动作提案、无账号写路径 | C26 |
-| 可选 GSUID Core | 已具备（未配置） | `plugins/builtin/gscore_adapter/`，现状见 [`gscore-adapter.md`](gscore-adapter.md)；实际根配置未启用 | C27 |
+| 可选 GSUID Core | 已具备（未配置） | `plugins/builtin/gscore_adapter/`，现状见 [`gscore-adapter.md`](../gscore-adapter.md)；实际根配置未启用 | C27 |
 | 面板 | 部分具备 | 现有 Jobs/Scenes/Models/Plugins/Memory/TasksLoops 视图（`web/frontend/src/views/`）与 `web/query_service.py`；缺 Interest、Artifacts 与跨模块来源收口 | C28 |
-| 工程约束与验收方式 | 已具备 | [`AGENTS.md`](../AGENTS.md)。仓库虽存在 `tests/`，但约束禁止新增、修改或运行测试；本计划验收只走静态编译、`git diff --check` 与获准环境中的人工业务核对 | 全程 |
+| 工程约束与验收方式 | 已具备 | [`AGENTS.md`](../../AGENTS.md)。仓库虽存在 `tests/`，但约束禁止新增、修改或运行测试；本计划验收只走静态编译、`git diff --check` 与获准环境中的人工业务核对 | 全程 |
 
 ## 3. 实施前建议复核的存量疑点
 
@@ -161,4 +161,4 @@
 
 以下内容在计划对应阶段完成并取得人工运行证据前，不得写入产品文档的“已具备”，也不得在面板显示为可用：公共兴趣与跨群兴趣分享、心跳与睡眠、独立 Worker Gateway 与执行出网、独立浏览器与持久 profile/登录态、B 站账号读写动作、文件上传与 50MB/10 次额度、视频片段与音频转写、`proactive_chat`/`interest_share`/`send_file` 独立授权、GSUID Core 支持矩阵。C06 只建立能力词汇、授予结构与检查顺序；上述能力本身仍未实现，授予结构里出现某个能力名不代表该能力可用。C07 做额度预占与结算，C08 让工作的时间与 token 维度在执行期真正停止（含为终结本身预留输出与时间），C09 让继续执行的工作重新受同一份额度与**当前**授权约束。**C10 只固定“一个执行”的对外合同、执行日志与最小网关服务**：被执行的 Python 仍在 LenBot 进程内调用宿主 Docker（`execution/workspace.py`），Gateway 客户端没有调用点，本机也没有 Docker daemon，因此“独立 Worker Gateway”本身**不是**当前能力，不得显示为可用。**C08 没有把对话轮次的 token 维度做成配置项**：对话仍按次数与可选期限停止，凡“超过累计 token 会自动停止”的说法只对工作成立。D05 的 1800 秒与 D06 的具体数值仍未获逐项确认。
 
-已交付状态仍以 [`当前任务`](iteration.md) 与[产品文档](product.md)的现状章节为准。
+已交付状态仍以 [`当前任务`](../iteration.md) 与[产品文档](../product.md)的现状章节为准。

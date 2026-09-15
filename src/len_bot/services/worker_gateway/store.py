@@ -34,6 +34,7 @@ class GatewayStore(ExecutionJournalMixin):
         self._db = await aiosqlite.connect(self.database_path)
         await self._db.execute('PRAGMA journal_mode=WAL;')
         await self._db.execute('PRAGMA synchronous=NORMAL;')
+        await self._db.execute('PRAGMA busy_timeout=5000;')
         await self.initialize_executions()
         # A registered artifact belongs to one execution and to no other.  The
         # row is what a download is looked up by, so a caller can only fetch a
@@ -56,6 +57,13 @@ class GatewayStore(ExecutionJournalMixin):
             " ('accepted','starting','running','cancel_requested') ORDER BY accepted_at")).fetchall()
         return [row[0] for row in rows]
 
+    async def unconfirmed_terminations(self) -> list[str]:
+        """Runs whose stop could not be confirmed; each recheck may release one."""
+        rows = await (await self._db.execute(
+            "SELECT execution_id FROM execution_runs WHERE state='termination_unconfirmed'"
+            " ORDER BY accepted_at")).fetchall()
+        return [row[0] for row in rows]
+
     async def count_unfinished(self) -> int:
         row = await (await self._db.execute(
             "SELECT COUNT(*) FROM execution_runs WHERE state IN"
@@ -71,15 +79,20 @@ class GatewayStore(ExecutionJournalMixin):
         return [(int(row[0]), row[1]) for row in rows]
 
     async def register_artifact(self, execution_id: str, path: str, size_bytes: int,
-                                media_type: str) -> dict:
-        """Record one listed output file under a stable id of its own."""
+                                media_type: str, *, artifact_id: str | None = None) -> dict:
+        """Record one listed output file under a stable id of its own.
+
+        The caller passes the id it already stored the bytes under, so a row
+        here always names a file that exists; a row for the same path keeps
+        its original id.
+        """
         existing = await (await self._db.execute(
             "SELECT artifact_id,size_bytes,media_type FROM execution_artifacts"
             " WHERE execution_id=? AND path=?", (execution_id, path))).fetchone()
         if existing is not None:
             return {'artifact_id': existing[0], 'execution_id': execution_id, 'path': path,
                     'size_bytes': int(existing[1]), 'media_type': existing[2]}
-        artifact_id = uuid.uuid4().hex
+        artifact_id = artifact_id or uuid.uuid4().hex
         await self._db.execute(
             "INSERT INTO execution_artifacts(artifact_id,execution_id,path,size_bytes,media_type,"
             "registered_at) VALUES(?,?,?,?,?,?)",

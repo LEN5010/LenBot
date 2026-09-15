@@ -51,6 +51,9 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             raise RuntimeError("非现行注意力结构；保持停机，使用对应旧版本完成离线处理后再启动")
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.execute("PRAGMA synchronous=NORMAL;")
+        # A reader that hits a writer's lock waits briefly instead of failing
+        # the request with an immediate "database is locked".
+        await self._db.execute("PRAGMA busy_timeout=5000;")
         await self.initialize_observations()
         await self.initialize_jobs()
         await self.initialize_executions()
