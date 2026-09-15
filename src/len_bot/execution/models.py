@@ -13,8 +13,10 @@ class RunPythonInput(BaseModel):
 class WorkspaceFileInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     path: str = Field(min_length=1, max_length=240)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, description='文本字符偏移；不是字节偏移')
     limit: int = Field(default=12_000, ge=1, le=100_000)
+    execution_id: str | None = Field(default=None, max_length=64,
+        description='历史产物读取：指定某次执行的产物身份；不填只读当前工作区已确认快照')
 
 
 class ListWorkspaceInput(BaseModel):

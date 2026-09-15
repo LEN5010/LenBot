@@ -176,15 +176,30 @@ class WorkerGatewayClient:
     async def artifacts(self, execution_id: str) -> dict:
         return await self._request('GET', f'/v1/executions/{execution_id}/artifacts')
 
-    async def artifact_bytes(self, artifact_id: str) -> tuple[bytes, str]:
-        """One registered file's bytes and media type, or a refusal."""
+    async def artifact_chunks(self, artifact_id: str, *, offset: int = 0, limit: int | None = None):
+        """One registered file's bytes as they arrive, from a byte position.
+
+        The Gateway seeks on its own stored copy before reading, so a caller
+        that wants a page of a large file never pulls the whole file through
+        itself first.
+        """
+        params = {'offset': offset} if offset else None
+        if limit is not None:
+            params = {**(params or {}), 'limit': limit}
         try:
-            response = await self._client.get(f'/v1/artifacts/{artifact_id}')
+            async with self._client.stream('GET', f'/v1/artifacts/{artifact_id}',
+                                           params=params) as response:
+                if response.status_code >= 500:
+                    await response.aread()
+                    raise GatewayResultUnknown(
+                        f'HTTP {response.status_code}：{_detail_of(response)}')
+                if response.status_code >= 400:
+                    await response.aread()
+                    raise GatewayRefused(response.status_code, _detail_of(response))
+                async for chunk in response.aiter_bytes():
+                    yield chunk
         except httpx.HTTPError as error:
             raise GatewayUnavailable(f'Gateway 未响应：{error}') from None
-        if response.status_code >= 400:
-            raise GatewayRefused(response.status_code, _detail_of(response))
-        return response.content, response.headers.get('content-type', 'application/octet-stream')
 
 
 def _detail_of(response: httpx.Response) -> str:
