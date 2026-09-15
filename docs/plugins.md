@@ -8,7 +8,7 @@
 
 `PluginSpec` 是唯一元数据，包含 ID、名称、版本、描述、全局 config_model、scene_config_model 和 `create(context)`。已有资源权限与类型在同一处声明；工具清单从实际 `register_tool` 生成。描述符导入只定义类型和入口，不能建立 HTTP 客户端、启动轮询或请求模型。参照[日历描述符](../src/len_bot/plugins/builtin/asoul_calendar/__init__.py)和[网页描述符](../src/len_bot/plugins/builtin/web_search/__init__.py)，不再编辑中央插件清单或配置类型映射。
 
-根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后解析一次专有参数，启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。
+根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后解析一次专有参数，启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。同一个插件在全局与某个群各有一份开关：本群条目只有在全局已配置、全局已启用、本群已启用且本群启用的场景都成立时才生效，面板据此逐项说明，不把“在本群打开”写成已经可用。
 
 面板表单由 `config_model` 生成的 JSON Schema 驱动，不手写字段清单。互斥的配置形状（例如 workspace 的 `worker` 与 `gateway`）用 `json_schema_extra` 的 `x-lenbot-exclusive` 声明字段组，表单据此渲染成一次单选，不构造同时给出两个分支的草稿；该键只是表单提示，服务端的模型校验仍然是准入依据。列表与详情按 Schema 字段逐个渲染：布尔、枚举、数字、文本和按 JSON 编辑的对象／列表；`title`、`description` 与上下限来自 Schema，前端不另写一份字段说明。枚举在界面上显示中文名，保存的仍是 Schema 里的原值；中文名用 `x-lenbot-enum-labels` 写在声明该字段的模型上，新枚举值没有中文名时回落显示原值，不会从选项里消失。取值封闭的简单列表（link_parser 的平台）用 `x-lenbot-list-choices` 声明成勾选项，没有声明的列表仍是可增删的行。三个扩展键都只是表单提示，不参与服务端校验。保存前表单先核对必填项与 JSON 结构，服务端拒绝时按其返回路径把错误落到对应字段并保留草稿。
 
