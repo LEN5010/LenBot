@@ -157,10 +157,19 @@ def work_call_admission(store, job_id: str, *, now: Callable[[], float] | None =
 
     async def admit(input_estimate: dict, output_tokens: int) -> int | None:
         from len_bot.cognition.agent_loop import AgentBudgetExhausted
-        ceiling, deadline_at = await store.work_budget_facts(job_id)
+        recorded, ceiling = await store.recorded_work_ceiling(job_id)
+        _limit, deadline_at = await store.work_budget_facts(job_id)
         if deadline_at is not None and deadline_at - clock() <= 0:
             raise AgentBudgetExhausted('The work reached its absolute deadline', budget_kind='elapsed_time')
         request_tokens = max(0, int(input_estimate.get('input_tokens') or 0)) + max(0, int(output_tokens))
+        if not recorded:
+            # No ceiling was ever established for this work.  A missing record
+            # is not an unlimited grant: the day's balance this work is counted
+            # against cannot be checked at all, so the request is refused with
+            # the reason instead of being admitted without a bound.
+            raise AgentBudgetExhausted(
+                '本工作没有可核对的上限记录（早于预算快照，也没有预占上限），不能按无限额度继续调用；'
+                '已有结果与进度按原样保留，请由运营者核对后再决定是否另立工作', budget_kind='tokens')
         if ceiling is None:
             return None
         spent_usage, spent_estimate = await store.job_measured_tokens(

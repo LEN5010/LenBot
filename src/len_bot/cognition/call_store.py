@@ -1,4 +1,17 @@
-"""Durable accounting for actual provider requests, without a billing claim."""
+"""Durable accounting for actual provider requests, without a billing claim.
+
+Two absences are kept apart throughout this module, because the plan treats
+them as different facts and a caller that conflates them would either hand out
+unnumbered execution or refuse a work the operator deliberately left open:
+
+* ``NULL`` in a *recorded* ceiling column means the operator configured no
+  token dimension for that work — a real choice, and the work's deadline and
+  message limits are then its whole stopping condition;
+* *no record at all* means the work predates the snapshot, so its ceiling was
+  never written down and cannot be reconstructed from its own rows.  That is
+  read as "unknown", refused by admission, and never quietly turned into
+  unlimited.
+"""
 
 from __future__ import annotations
 
@@ -169,6 +182,13 @@ class ModelCallStoreMixin:
         nothing but still records a null ceiling, and a work re-held after a
         partial spend holds only its remainder.  When the caller does not
         distinguish the two, the hold is the ceiling.
+
+        The caller must say which of the two it means, because the caller is
+        the only side that knows: a caller that omits the ceiling is recorded
+        with the one that applies.  Saying nothing and meaning "no ceiling" is
+        expressible as `limit_tokens=None` together with `tokens=0`; the
+        default of "the hold is the ceiling" is what keeps an old caller from
+        writing a row whose two columns disagree.
         """
         if tokens < 0:
             raise ValueError('A work reservation cannot be negative')
@@ -268,7 +288,19 @@ class ModelCallStoreMixin:
         return int(row[0] or 0) if row else 0
 
     async def work_budget_facts(self, job_id: str) -> tuple[int | None, float | None]:
-        """This work's recorded token ceiling and absolute deadline, if any."""
+        """This work's recorded token ceiling and absolute deadline, if any.
+
+        Two different absences must not read the same.  A work whose snapshot
+        records `token_limit: null` was created with *no token dimension at
+        all* — the operator's own choice, and its deadline and message limits
+        are its whole stopping condition.  A work that predates the snapshot
+        has no recorded ceiling either, but nothing about it says that; reading
+        that as unlimited would let it spend without bound on a day whose
+        balance it never counted against.  Since this reader cannot tell those
+        apart from the work row alone, it answers conservatively and lets the
+        caller decide: the reservation is the other durable fact, and a work
+        that has one knows its ceiling from `limit_tokens`.
+        """
         row = await (await self._db.execute(
             "SELECT budget_json FROM agent_jobs WHERE id=?", (job_id,))).fetchone()
         if row is None or not row[0]:
@@ -280,6 +312,31 @@ class ModelCallStoreMixin:
         deadline = (float(deadline_at) if isinstance(deadline_at, (int, float))
                     and not isinstance(deadline_at, bool) else None)
         return ceiling, deadline
+
+    async def recorded_work_ceiling(self, job_id: str) -> tuple[bool, int | None]:
+        """The work's ceiling as a recorded-or-not answer, from both durable facts.
+
+        Returns `(recorded, ceiling)`.  `recorded` false means no ceiling was
+        ever established for this work; that is a refusal, not "unlimited".
+        A recorded `None` is the operator's explicit no-token-dimension choice,
+        taken from the snapshot when it says so, or from the reservation's
+        `limit_tokens` for a work whose snapshot predates the column.
+        """
+        row = await (await self._db.execute(
+            "SELECT budget_json FROM agent_jobs WHERE id=?", (job_id,))).fetchone()
+        if row is not None and row[0]:
+            data = json.loads(row[0])
+            if 'token_limit' in data:
+                limit = data['token_limit']
+                if limit is None:
+                    return True, None
+                if isinstance(limit, (int, float)) and not isinstance(limit, bool):
+                    return True, int(limit)
+        reservation = await (await self._db.execute(
+            "SELECT limit_tokens FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
+        if reservation is not None and reservation[0] is not None:
+            return True, int(reservation[0])
+        return False, None
 
     async def job_measured_tokens(self, job_id: str, *, conservative_output_tokens: int = 0) -> tuple[int, int]:
         """What this work has spent so far, split into real usage and estimate.

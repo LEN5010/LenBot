@@ -140,10 +140,18 @@ class ExecutionRunner:
         used (`/lenbot-control/manifest.json`); every other input lands under
         `/lenbot-control/input/`.  Total decoded bytes stay under the same
         bound the workspace itself has.
+
+        Nothing is published until every input of this request has decoded and
+        the total is inside the limit: the bytes are written into this
+        execution's own staging area first, and only a request that passes in
+        full is moved into place.  A rejected request therefore leaves no
+        input file behind, and the cleanup only ever removes this execution's
+        own staging files — never another run's data.
         """
         import base64
         import binascii
-        control = self.control_directory(request.execution_id)
+
+        decoded: list[tuple[str, bytes]] = []
         total = 0
         for item in request.input_files:
             if item.text is not None:
@@ -156,12 +164,43 @@ class ExecutionRunner:
             total += len(data)
             if total > self.config.max_workspace_bytes:
                 raise GatewayRefusal('输入资料合计超过网关的工作目录字节上限')
-            if item.name == 'manifest.json':
-                target = control / item.name
-            else:
-                (control / 'input').mkdir(parents=True, exist_ok=True, mode=0o750)
-                target = control / 'input' / item.name
-            self._write_control_bytes(target, data)
+            decoded.append((item.name, data))
+
+        control = self.control_directory(request.execution_id)
+        staging = self.staging_directory(request.execution_id)
+        try:
+            for name, data in decoded:
+                self._write_control_bytes(staging / name, data)
+            for name, _data in decoded:
+                if name == 'manifest.json':
+                    target = control / name
+                else:
+                    (control / 'input').mkdir(parents=True, exist_ok=True, mode=0o750)
+                    target = control / 'input' / name
+                os.replace(staging / name, target)
+        finally:
+            # Staging is this request's own scratch area; a refusal half way
+            # through removes only what this call wrote.
+            self._remove_staging(staging)
+
+    def staging_directory(self, execution_id: str) -> Path:
+        """This execution's own scratch area for inputs that are not yet live."""
+        self._require_safe_name(execution_id, 'execution_id')
+        root = self.controls / '_staging'
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = root / execution_id
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return path.resolve()
+
+    @staticmethod
+    def _remove_staging(staging: Path) -> None:
+        try:
+            for entry in staging.iterdir():
+                if entry.is_file() and not entry.is_symlink():
+                    entry.unlink(missing_ok=True)
+            staging.rmdir()
+        except OSError:
+            pass
 
     @staticmethod
     def _write_control_bytes(path: Path, content: bytes) -> None:
@@ -199,13 +238,13 @@ class ExecutionRunner:
             self._write_control(control / 'task.py', request.script)
             denied = self._apply_worker_access(control, workspace, worker)
             if denied:
-                # A refused chmod/chown is a deployment fact worth keeping: the
-                # worker UID may be unable to write its own workspace, and a
-                # permission failure inside the container should be traceable
-                # to this cause instead of looking like a task failure.
-                await self.store.append_execution_event(
-                    execution_id, 'permissions_warning',
-                    '目录权限未完全生效：' + '; '.join(denied)[:1800])
+                # The run cannot read its own script, inputs or workspace, and
+                # a permission failure inside the container would be misread as
+                # a script bug.  That is a deployment error, so the run stops
+                # here with the reason instead of starting and failing later.
+                await self._fail(execution_id, 'permissions_insufficient',
+                                 '目录权限未生效，无法启动执行：' + '; '.join(denied)[:1800])
+                return
             command = self._command(container_name, worker, policy.mode, control, workspace)
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -244,6 +283,11 @@ class ExecutionRunner:
             current = await self.store.get_execution(execution_id)
             if stopped or current is None or current.state not in {
                     ExecutionState.STARTING, ExecutionState.RUNNING}:
+                # A stop happened before the end state could be recorded.  The
+                # process's own output still exists and is still the evidence
+                # of what it did: it is written as a fact beside the terminal
+                # state instead of being dropped with the stream objects.
+                await self._record_stopped_output(execution_id, results)
                 return
             await self._record_process_end(execution_id, process, results, workspace)
         except asyncio.CancelledError:
@@ -623,7 +667,19 @@ class ExecutionRunner:
                     f'工作区 {request.workspace_id} 仍有未释放执行 {other.execution_id}（{other.state.value}）')
 
     def _apply_worker_access(self, control: Path, workspace: Path, worker) -> list[str]:
-        """Give the worker GID its access; report what the host refused."""
+        """Give the worker GID its access; report what could not be established.
+
+        A target that already has the required owner, group and mode bits is
+        left alone — repeating a chown that would change nothing is not what
+        makes the run work, and it is exactly what fails on a deployment whose
+        Gateway process may not chgrp to the worker's group.  A target that
+        genuinely lacks the access is fixed here, then re-read: what decides
+        the answer is the access that actually exists afterwards, not whether a
+        chown call returned an error.  An unresolved target is returned so the
+        caller can stop the run as a deployment problem — the container would
+        otherwise fail inside the user's script, and a real permission problem
+        would be misread as a script bug.
+        """
         _uid, gid = (int(part) for part in worker.container_user.split(':'))
         script = control / 'task.py'
         targets: list[tuple[Path, int]] = [(control, 0o750), (workspace, 0o770), (script, 0o640)]
@@ -635,19 +691,30 @@ class ExecutionRunner:
             targets.append((inputs, 0o750))
             targets.extend((entry, 0o640) for entry in sorted(inputs.iterdir())
                            if entry.is_file() and not entry.is_symlink())
-        denied: list[str] = []
+        unresolved: list[str] = []
         for path, mode in targets:
             if not path.exists():
                 continue
             try:
                 os.chmod(path, mode)
-            except OSError as error:
-                denied.append(f'chmod {path.name}: {error}')
+            except OSError:
+                pass
             try:
                 os.chown(path, os.getuid(), gid)
+            except OSError:
+                pass
+            try:
+                info = path.stat()
             except OSError as error:
-                denied.append(f'chown {path.name}: {error}')
-        return denied
+                unresolved.append(f'无法读取 {path.name} 的权限：{error}')
+                continue
+            # The worker's group must be able to enter a directory and read a
+            # file; the group bits are what the container's user relies on.
+            needed = 0o050 if stat.S_ISDIR(info.st_mode) else 0o040
+            if stat.S_IMODE(info.st_mode) & needed != needed:
+                unresolved.append(
+                    f'{path.name} 的权限 {oct(stat.S_IMODE(info.st_mode))} 不允许 worker 组访问')
+        return unresolved
 
     async def _record_process_end(self, execution_id, process, results, workspace: Path) -> None:
         stdout, stdout_truncated = self._stream_result(results, 0)
@@ -674,6 +741,29 @@ class ExecutionRunner:
             error=None if state is ExecutionState.EXITED else '进程以非零返回码结束',
             stdout=stdout, stderr=stderr, stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated)
+
+    async def _record_stopped_output(self, execution_id: str, results: list) -> None:
+        """Keep the limited output a stopped run already produced.
+
+        A cancelled or deadline-stopped execution has a terminal state already,
+        which must not be rewritten.  What the process had already written is a
+        separate fact and is appended as one, so a reader of a stopped run can
+        still see why it stopped instead of finding empty streams.
+        """
+        stdout, stdout_truncated = self._stream_result(results, 0)
+        stderr, stderr_truncated = self._stream_result(results, 1)
+        if not stdout and not stderr and not stdout_truncated and not stderr_truncated:
+            return
+        try:
+            await self.store.append_execution_event(
+                execution_id, 'final_output', '停止前已取得的有限输出',
+                stdout=stdout, stderr=stderr,
+                stdout_truncated=stdout_truncated, stderr_truncated=stderr_truncated)
+        except (ValueError, OSError):
+            # The row is already in a terminal state that cannot carry this
+            # fact; the log is not lost silently, but it must not turn a real
+            # stop into an executor failure either.
+            pass
 
     def _workspace_over_limit(self, workspace: Path) -> str | None:
         files = total = 0
@@ -727,10 +817,18 @@ class ExecutionRunner:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         return path.resolve()
 
-    def open_stored_artifact(self, execution_id: str, artifact_id: str) -> int:
+    def open_stored_artifact(self, execution_id: str, artifact_id: str, *, offset: int = 0) -> int:
+        """One stored artifact's descriptor, positioned at a byte offset.
+
+        The position is a real seek on the file itself, so a reader asking for
+        a page of a large file does not have to pull the whole thing through
+        the process that owns it first.
+        """
         self._require_safe_name(execution_id, 'execution_id')
         if not re.fullmatch(r'^[0-9a-f]{32}$', artifact_id or ''):
             raise GatewayRefusal('产物标识不合法')
+        if offset < 0:
+            raise GatewayRefusal('产物偏移量不能为负')
         directory = self.artifacts_store(execution_id)
         dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -741,6 +839,12 @@ class ExecutionRunner:
         if not stat.S_ISREG(info.st_mode):
             os.close(fd)
             raise GatewayRefusal('产物不是普通文件')
+        if offset:
+            try:
+                os.lseek(fd, offset, os.SEEK_SET)
+            except OSError:
+                os.close(fd)
+                raise GatewayRefusal('产物偏移量超出文件范围') from None
         return fd
 
     def _open_workspace_source(self, workspace: Path, relative: str) -> int:
