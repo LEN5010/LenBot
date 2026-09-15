@@ -27,6 +27,10 @@ class PluginCallContext:
     episode_id: str | None
     job_id: str | None
     role: Literal["conversation", "work"]
+    # The work revision this call belongs to.  A tool call that waited on a
+    # lock can outlive a revision; the call carries the one it was admitted
+    # under so it cannot be filed under a later revision's identity.
+    job_revision: int | None = None
     ledger: ProposalLedger | None = None
     work_operation: str | None = None
     requester_qq_uids: tuple[str, ...] = ()

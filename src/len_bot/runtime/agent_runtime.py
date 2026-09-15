@@ -325,7 +325,13 @@ class AgentRuntime:
             if enabled is not None:
                 state["enabled"] = enabled
             if values is not None:
-                state["config"] = {**(state['config'] or {}), **values}
+                # Credentials have no readable form, so they cannot round trip
+                # through a form: a request that omits one, or sends it back
+                # empty, keeps the stored value instead of erasing it.  Only a
+                # non-empty value replaces it, and an explicit null clears it.
+                from len_bot.plugins.credentials import merge_config, schema_of
+                schema = schema_of(self.config_store.catalog.entries[plugin_id].spec)
+                state["config"] = merge_config(state["config"], values, schema)
             candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
             try:
