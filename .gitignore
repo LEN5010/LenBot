@@ -20,6 +20,17 @@ wheels/
 .installed.cfg
 *.egg
 
+# The bare `dist/` rule above would also swallow the built control plane, which
+# FastAPI serves and which ships with the same batch of API changes.  These
+# un-ignores keep that one path committable while a same-named directory
+# somewhere new still stays out (git ignores a file inside an ignored
+# directory, so every level of the path has to be un-ignored, not just the
+# leaf).  They must stay below the rule they counter; gitignore order decides.
+!src/len_bot/
+!src/len_bot/web/
+!src/len_bot/web/static/
+!src/len_bot/web/static/dist/**
+
 # Virtual Environment
 .venv/
 env/
@@ -45,6 +56,7 @@ htmlcov/
 
 # Node / frontend tooling
 node_modules/
+.vite/
 
 # ZCode session artifacts
 .zcode/
