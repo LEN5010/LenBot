@@ -25,6 +25,7 @@ class WorkspacePluginConfig(BaseModel):
             'x-lenbot-exclusive': [{
                 'fields': ['worker', 'gateway'],
                 'title': '执行后端',
+                'required': True,
                 'hint': '本机试用 worker 与隔离 gateway 只能选择一个；两者之间没有运行时回落，'
                         '切换由运营者改根配置完成。未选中的后端不会写入配置。'}]})
     worker: WorkspaceConfig | None = None

@@ -161,8 +161,11 @@ async function save() {
     const config=configValue(draft.value,selected.value.config_schema,
       {secrets:selected.value.secret_paths||[],preserveSecrets:selected.value.configured})
     // A branch that this save is actually submitting has to carry its own
-    // required fields; the check runs on the submitted object, not the draft.
-    const problems=draftProblems(selected.value.config_schema,config,{secrets:selected.value.secret_paths||[]})
+    // required fields.  The same holds for a first configuration: every field
+    // there is being defined, so an unfilled required one is a gap the
+    // operator can still fix, not a stored value to leave alone.
+    const problems=draftProblems(selected.value.config_schema,config,
+      {secrets:selected.value.secret_paths||[],requirePresent:!selected.value.configured})
     if (problems.length) {
       serverProblems.value=problems
       error.value='参数尚未通过本地检查，未提交保存；请修正下列字段后重试。'

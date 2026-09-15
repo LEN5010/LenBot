@@ -2,23 +2,42 @@
 //
 // A field is rendered from its own declaration, not from a list kept here:
 // nested objects with declared properties become grouped subfields (the
-// workspace worker/gateway backends are the case that exists today), a list of
-// simple values becomes editable rows, and anything else compound stays an
-// explicit JSON value.  There is deliberately no general schema editor.
+// workspace worker/gateway backends and the browser settings are the cases
+// that exist today), a list of simple values becomes editable rows, and
+// anything else compound stays an explicit JSON value.  There is deliberately
+// no general schema editor.  A field that is only ever a JSON reference to
+// another definition is resolved before it is classified, so `$ref` does not
+// decide the widget.
 const SIMPLE = ['string', 'number', 'integer', 'boolean']
 
+function definitionsOf(schema) {
+  return (schema && schema.$defs) || {}
+}
+
+export function resolveField(field, definitions) {
+  let current = field
+  const seen = new Set()
+  while (current?.$ref?.startsWith('#/$defs/') && !seen.has(current.$ref)) {
+    seen.add(current.$ref)
+    const target = definitions[current.$ref.slice(8)]
+    if (!target) break
+    current = {...target, ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== '$ref'))}
+  }
+  return current
+}
+
 export function configFields(schema, definitions) {
-  const defs = definitions || (schema && schema.$defs) || {}
-  const resolve = value => value?.$ref?.startsWith('#/$defs/')
-    ? {...defs[value.$ref.slice(8)], ...value} : value
+  const defs = definitions || definitionsOf(schema)
   return Object.entries((schema && schema.properties) || {}).map(([key, original]) => {
-    let field = resolve(original)
+    let field = resolveField(original, defs)
     const nullable = field.anyOf?.some(item => item.type === 'null') || false
-    if (nullable && field.anyOf.length === 2) field = {...resolve(field.anyOf.find(item => item.type !== 'null')), ...original}
+    if (nullable && field.anyOf.length === 2) {
+      field = {...resolveField(field.anyOf.find(item => item.type !== 'null'), defs), ...original}
+    }
     const nested = field.type === 'object' && !!field.properties
     const list = field.type === 'array' && SIMPLE.includes(field.items?.type)
     const json = !nested && !list && (['object', 'array'].includes(field.type) || (!field.type && !field.enum && field.const === undefined))
-    return {key, schema: field, nullable, nested, list, json, required: (schema.required || []).includes(key)}
+    return {key, schema: field, definitions: defs, nullable, nested, list, json, required: (schema.required || []).includes(key)}
   })
 }
 
@@ -73,11 +92,26 @@ export function configDraft(config, schema, secrets = [], prefix = '') {
 // value; everything else is left unset, so saving does not write a null or an
 // empty object over a field the operator never touched.  Two exclusive
 // branches are never both seeded.
+// A one-of declaration carries `required: true` when the schema itself cannot
+// exist without a choice: workspace has no valid configuration with neither
+// backend, so a submit that leaves the choice unselected is refused here with
+// the same reason the model would give, instead of being sent.
+export function groupGaps(schema, draft) {
+  return exclusiveGroups(schema).filter(group => group.required && !selectedBranch(draft, group))
+    .map(group => ({key: group.fields[0], message: `${group.title}：必须选择其中一项`}))
+}
+
 export function blankConfigDraft(schema, secrets = [], prefix = '') {
   const draft = {}
   for (const field of configFields(schema)) {
     const path = fieldPath(prefix, field.key)
-    if (field.nested) continue
+    if (field.nested) {
+      // A required sub-object is part of the first configuration, so it starts
+      // from its own defaults; an optional one is left for the operator to
+      // choose, and is never seeded as an empty object.
+      if (field.required) draft[field.key] = blankConfigDraft(field.schema, secrets, path)
+      continue
+    }
     if (secrets.includes(path)) { draft[field.key] = ''; continue }
     if (field.schema.const !== undefined) { draft[field.key] = field.schema.const; continue }
     if (field.schema.default !== undefined) {
@@ -136,6 +170,7 @@ export function configValue(draft, schema, {secrets = [], preserveSecrets = fals
 // branch is being submitted — so its required fields are checked.
 export function draftProblems(schema, draft, {secrets = [], configSet = {}, requirePresent = false} = {}, prefix = '') {
   const problems = []
+  for (const gap of groupGaps(schema, draft)) problems.push({key: fieldPath(prefix, gap.key), message: gap.message})
   for (const field of configFields(schema)) {
     const path = fieldPath(prefix, field.key)
     const title = field.schema.title || field.key
