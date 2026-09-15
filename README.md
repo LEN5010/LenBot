@@ -31,7 +31,7 @@ uv run len-bot
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
 | 工程约束 | [AGENTS.md](AGENTS.md) |
 | 社会 Agent 后续目标与提交依赖 | [完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md) |
-| 审查发现的问题与修复合同 | [C01—C10 fix](docs/social-agent-c01-c10-fix.md) |
+| 审查发现的问题与修复合同 | [C01—C10 fix](docs/archive/social-agent-c01-c10-fix.md) |
 | 本轮状态、下一步和实际核对结果 | [当前任务](docs/iteration.md) |
 | 历史计划、阶段记录和运维证据 | [历史文档索引](docs/archive/README.md) |
 | 人格与素材的原始资料 | [人格来源资料](docs/persona/diana/README.md) |

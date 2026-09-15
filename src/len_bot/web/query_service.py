@@ -170,20 +170,49 @@ class RuntimeQueryService:
 
         Read-only: the numbers come from the same rows the reservation
         transaction wrote, so what the panel shows is what the next work will
-        actually be checked against.  Nothing here is recomputed from estimates
-        presented as billing.
+        actually be checked against.  An account whose day ran entirely under
+        one grant-named policy is therefore shown that policy's daily limit —
+        the number admission actually used — and only an account with no named
+        policy (or a mixed day) falls back to the default's numbers.
         """
         store = self.runtime.event_store
         policy = store.reservation_policy or ReservationPolicy()
         timezone = store.billing_timezone
         day_key = policy.day_key(store.clock(), timezone)
         items = await store.list_job_reservations(scene_id, subject=subject, day_key=day_key, limit=100)
+        authority = getattr(store, 'capability_authority', None)
+
+        def named_policy(grant_id):
+            if not grant_id or authority is None:
+                return None
+            grant = next((item for item in authority.grants() if item.grant_id == grant_id), None)
+            try:
+                return authority.policy_for_grant(grant)
+            except ValueError:
+                return None
+
+        named_by_subject: dict[str, set] = {}
+        rows = await self._rows(
+            "SELECT DISTINCT subject, policy_name FROM usage_reservations WHERE day_key=?"
+            " AND status IN ('held','settling','settled')"
+            + (" AND subject=?" if subject is not None else ""),
+            [day_key, subject] if subject is not None else [day_key])
+        for row in rows:
+            named_by_subject.setdefault(row['subject'], set()).add(row['policy_name'])
         accounts = {}
         for row in await store.account_reservation_totals(day_key, subject=subject):
-            limit = policy.daily_user_token_limit
+            names = named_by_subject.get(row['subject'], set())
+            distinct = {name for name in names if name}
+            resolved, policy_name = policy, None
+            if len(distinct) == 1 and names == distinct:
+                candidate = named_policy(next(iter(distinct)))
+                if candidate is not None:
+                    resolved, policy_name = candidate, next(iter(distinct))
+            limit = resolved.daily_user_token_limit
             accounts[row['subject']] = {
                 'subject': row['subject'], 'held': row['held'], 'used': row['used'],
-                'daily_limit': limit,
+                'daily_limit': limit, 'policy_name': policy_name,
+                'policy_names': sorted(distinct),
                 'available': None if limit is None else max(0, limit - row['held'] - row['used']),
             }
         scene_subtotals = None

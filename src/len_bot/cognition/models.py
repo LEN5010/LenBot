@@ -39,6 +39,8 @@ class ConversationResume(BaseModel):
     elapsed_seconds: float = Field(ge=0)
     elapsed_seconds_limit: float | None = Field(default=None, gt=0,
         description='本轮对话自首次模型调用起的绝对期限（秒）；恢复不重置')
+    deadline_at: float | None = Field(default=None, gt=0,
+        description='本轮对话窗口关闭的绝对 Unix 时刻；等待经过的时间同样计入，恢复对着同一时刻')
     messages_committed: int = Field(ge=0,le=3)
     next_checkpoint: int = Field(ge=0)
     next_proposal_handle: int = Field(ge=1)
