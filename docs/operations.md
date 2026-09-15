@@ -100,6 +100,8 @@ uv run python -m len_bot.services.worker_gateway --config /绝对路径/gateway.
 
 `image_ref` 与 `network_policy` 必须能在网关自己的表里解析，否则请求被拒绝而不是换成默认镜像。本版网络策略只实现离线 `none`。Linux 部署需让 Gateway 进程能把控制目录/工作目录的组拥有者设为 worker GID，否则非 root worker 读不到脚本。停机后若使用该后端，普通备份还要包含网关的 `database_path` 与 `workspaces_root`；LenBot 进程退出不代表网关容器已停止。
 
+执行输入由宿主导出，网关只落盘：一次执行的图片附件来自本工作来源里已登记的媒体，因此**媒体能力必须已启用且根配置可读到这些资产**——`media_enabled` 为假时附件导入会被明确拒绝，而不是只导出文字。目标主机的镜像需已包含 Pillow（仓库自带 `containers/workspace/Dockerfile` 已安装 NumPy/Pandas/Matplotlib/Pillow 与中文字体），脚本才能直接打开导入的图片。单次执行的输入上限是观察与附件合计 8 份、总字节 24 MB；超过时该次调用失败，不会截断后继续。控制目录中的 `manifest.json` 与 `input/` 下文件由网关按 worker GID 授权只读，排障时可据此核对脚本实际拿到了哪些输入。
+
 工作进展冷却由 runtime.job_progress_interval_seconds 决定，正常等待回应的存续时间由 runtime.open_loop_ttl_seconds 决定。原话和工具资料共用现有字符页参数；消息检索、原文邻居、待处理目录、工具发现、摘要／发送事实候选与媒体检索的条数也从 runtime 读取。Schema 展示与实际查询使用同一组值，越界请求明确失败；具体参数和分页坐标见[架构](architecture.md)。
 
 ### 场景、授予与额度策略

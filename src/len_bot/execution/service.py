@@ -14,8 +14,11 @@ from len_bot.events.models import Initiator
 from len_bot.execution.client import (
     GatewayConflict, GatewayRefused, GatewayResultUnknown, GatewayUnavailable,
 )
+from len_bot.execution.inputs import (
+    collect_input_entries, manifest_of, wire_input_files,
+)
 from len_bot.execution.models import RunPythonInput, WorkspaceArtifact, WorkspaceFileInput, WorkspaceScope
-from len_bot.execution.protocol import ExecutionInputFile, ExecutionRequest, ExecutionState, is_terminal
+from len_bot.execution.protocol import ExecutionRequest, ExecutionState, is_terminal
 from len_bot.execution.workspace import (
     FileRequest, RunPythonRequest, WorkspaceCancelled, WorkspaceRequest, WorkspaceWorker,
     _validate_relative_path, park_termination,
@@ -23,10 +26,15 @@ from len_bot.execution.workspace import (
 
 
 class WorkspaceService:
-    def __init__(self, worker: WorkspaceWorker, event_store, plugin_id: str):
+    def __init__(self, worker: WorkspaceWorker, event_store, plugin_id: str,
+                 media_service=None):
         self.worker = worker
         self.event_store = event_store
         self.plugin_id = plugin_id
+        # Only the panel's backend reader may be built without it; a service
+        # that was given no media reader refuses attachment imports instead of
+        # silently exporting the work's observations only.
+        self.media_service = media_service
 
     async def scope_for(self, call, *, allow_terminal: bool = False) -> WorkspaceScope:
         if call.role != 'work' or not call.job_id or not call.requester_qq_uid:
@@ -46,28 +54,43 @@ class WorkspaceService:
             raise ValueError('当前工作已结束，不能继续使用其执行目录')
         return WorkspaceScope(scene_id=call.scene_id, requester_qq_uid=call.requester_qq_uid, job_id=call.job_id)
 
-    async def _export_inputs(self, scope: WorkspaceScope, result_ids: list[str], scene_id: str) -> list[dict]:
-        if len(result_ids) > 8:
-            raise ValueError('一次执行最多导出 8 份已取得资料')
+    async def _export_inputs(self, scope: WorkspaceScope, request: RunPythonInput, scene_id: str) -> dict:
+        """Write this request's inputs into the read-only control area.
+
+        The manifest is a statement about *this* export: which observation or
+        asset id each file came from, its coverage, and how many bytes were
+        actually written.  Nothing is exported that this work never referred
+        to, and a named input that cannot be read aborts the export instead of
+        leaving a partial input directory behind.
+        """
         directory = self.worker.control_directory(scope.workspace_id) / 'input'
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         job = await self.event_store.get_job(scope.job_id, scene_id)
-        allowed_results = set(job.get('result_ids', ())) if job else set()
-        manifest = []
-        for index, result_id in enumerate(dict.fromkeys(result_ids), 1):
-            if result_id not in allowed_results:
-                raise ValueError(f'资料 {result_id} 尚未登记为当前工作的资料')
-            observation = await self.event_store.read_tool_observation(result_id, [scene_id])
-            if observation is None:
-                raise ValueError(f'资料 {result_id} 不属于当前场景或已不存在')
-            path = directory / f'result_{index}.txt'
-            self.worker._write_control(path, observation.content)
-            manifest.append({'result_id': result_id, 'path': f'/lenbot-control/input/result_{index}.txt',
-                'coverage': observation.coverage, 'status': observation.status,
-                'sources': [source.model_dump(mode='json') for source in observation.sources]})
+        entries = await collect_input_entries(self.event_store, job or {}, scope.job_id, scene_id,
+            request.input_result_ids, request.input_asset_ids, self._read_asset(scene_id))
+        for entry in entries:
+            path = directory / entry['name']
+            if entry['kind'] == 'text':
+                self.worker._write_control(path, entry['text'])
+            else:
+                self.worker._write_control_bytes(path, entry['data'])
+        manifest = manifest_of(entries, scope.job_id, scene_id)
         self.worker._write_control(self.worker.control_directory(scope.workspace_id) / 'manifest.json',
             json.dumps(manifest, ensure_ascii=False, indent=2))
         return manifest
+
+    def _read_asset(self, scene_id: str):
+        """The scoped media read this service exports attachments through.
+
+        A service built without a media reader (the panel's read-only backend)
+        never reaches this path: it refuses the import instead of exporting a
+        work's observations and quietly dropping its pictures.
+        """
+        async def read(asset_id: str):
+            if self.media_service is None:
+                raise ValueError('当前后端没有配置媒体读取，不能导入图片附件')
+            return await self.media_service.read_image_bytes(asset_id, scene_id)
+        return read
 
     def _artifacts(self, scope: WorkspaceScope) -> list[WorkspaceArtifact]:
         directory = self.worker.directory(scope.workspace_id)
@@ -92,7 +115,7 @@ class WorkspaceService:
         scope = await self.scope_for(call)
         async with self.worker.run_lock(scope.workspace_id):
             self.worker.ensure_workspace_available(scope.workspace_id)
-            manifest = await self._export_inputs(scope, request.input_result_ids, call.scene_id)
+            manifest = await self._export_inputs(scope, request, call.scene_id)
             result = await self.worker._run_python_locked(RunPythonRequest(workspace_id=scope.workspace_id, script=request.script))
             artifacts = self._artifacts(scope)
         result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
@@ -206,12 +229,14 @@ class GatewayWorkspaceService:
     """
 
     scope_for = WorkspaceService.scope_for
+    _read_asset = WorkspaceService._read_asset
 
-    def __init__(self, client, config, event_store, plugin_id: str):
+    def __init__(self, client, config, event_store, plugin_id: str, media_service=None):
         self.client = client
         self.config = config
         self.event_store = event_store
         self.plugin_id = plugin_id
+        self.media_service = media_service
         self._run_locks: dict[str, asyncio.Lock] = {}
 
     def run_lock(self, workspace_id: str) -> asyncio.Lock:
@@ -237,7 +262,7 @@ class GatewayWorkspaceService:
             conclusion, detail = await self._reconcile_workspace(scope.workspace_id)
             if conclusion != 'available':
                 raise ValueError(detail)
-            input_files, manifest = await self._input_files(job, request.input_result_ids, call.scene_id)
+            input_files, manifest, input_assets = await self._input_files(job, request, call.scene_id)
             execution = ExecutionRequest(
                 execution_id='x' + uuid.uuid4().hex,
                 scene_id=call.scene_id, job_id=scope.job_id, job_revision=job['revision'],
@@ -245,6 +270,7 @@ class GatewayWorkspaceService:
                 initiator=TypeAdapter(Initiator).validate_python(stored_initiator),
                 worker_type='python', script=request.script,
                 image_ref=self.config.image_ref, network_policy=self.config.network_policy,
+                input_assets=input_assets,
                 input_files=input_files,
                 deadline_seconds=self._deadline_seconds(job))
             # The host row exists before the wire request: a timeout after this
@@ -254,18 +280,17 @@ class GatewayWorkspaceService:
             final = await self._await_result(execution.execution_id, record.deadline_at, scope)
             result = self._execution_result(execution.execution_id, final, scope)
             try:
-                listed, truncated = await self._artifacts_summary(execution.execution_id)
-                artifacts_known = True
+                listed, truncated, artifacts_known = await self._artifacts_summary(execution.execution_id)
             except RuntimeError as error:
                 # The execution itself has an answer; only the file listing
                 # does not.  Saying that plainly is not the same as an empty
                 # directory, and it must not turn a finished run into a failure.
-                listed, truncated, artifacts_known = [], None, False
+                listed, truncated, artifacts_known = [], False, False
                 result['artifacts_error'] = str(error)
             result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
                 'input_manifest': manifest, 'artifacts': listed,
                 'artifacts_known': artifacts_known,
-                'artifacts_truncated': bool(truncated) if artifacts_known else None}
+                'artifacts_truncated': truncated if artifacts_known else None}
             return result
 
     async def _submit_once(self, execution: ExecutionRequest, scope) -> None:
@@ -302,25 +327,19 @@ class GatewayWorkspaceService:
                 self._cancel_execution(execution.execution_id, scope))
             raise WorkspaceCancelled(termination) from None
 
-    async def _input_files(self, job, result_ids, scene_id):
-        if len(result_ids) > 8:
-            raise ValueError('一次执行最多导出 8 份已取得资料')
-        allowed = set(job.get('result_ids', ()))
-        files, manifest = [], []
-        for index, result_id in enumerate(dict.fromkeys(result_ids), 1):
-            if result_id not in allowed:
-                raise ValueError(f'资料 {result_id} 尚未登记为当前工作的资料')
-            observation = await self.event_store.read_tool_observation(result_id, [scene_id])
-            if observation is None:
-                raise ValueError(f'资料 {result_id} 不属于当前场景或已不存在')
-            name = f'result_{index}.txt'
-            files.append(ExecutionInputFile(name=name, text=observation.content))
-            manifest.append({'result_id': result_id, 'path': f'/lenbot-control/input/{name}',
-                'coverage': observation.coverage, 'status': observation.status,
-                'sources': [source.model_dump(mode='json') for source in observation.sources]})
-        files.append(ExecutionInputFile(name='manifest.json',
-                                        text=json.dumps(manifest, ensure_ascii=False, indent=2)))
-        return files, manifest
+    async def _input_files(self, job, request: RunPythonInput, scene_id):
+        """This request's inputs as wire files, its manifest, and its provenance.
+
+        The bytes come from the work's own saved sources; the Gateway only ever
+        writes them down.  ``input_assets`` names the media ids this export
+        actually read, so the execution's stored request says where a picture
+        came from even though the Gateway never fetches one by id.
+        """
+        entries = await collect_input_entries(self.event_store, job, job['id'], scene_id,
+            request.input_result_ids, request.input_asset_ids, self._read_asset(scene_id))
+        assets = [entry['asset_id'] for entry in entries if entry['kind'] == 'asset']
+        manifest = manifest_of(entries, job['id'], scene_id)
+        return wire_input_files(entries, manifest), manifest, assets
 
     def _deadline_seconds(self, job) -> float:
         seconds = self.config.execution_timeout_seconds
@@ -507,12 +526,15 @@ class GatewayWorkspaceService:
             pass
 
     # ---- artifact reads ------------------------------------------------------
-    async def _artifacts_summary(self, execution_id: str) -> tuple[list[dict], bool | None]:
-        """This execution's registered outputs, and whether the listing was cut.
+    async def _artifacts_summary(self, execution_id: str) -> tuple[list[dict], bool, bool]:
+        """This execution's registered outputs, whether it was cut, and whether
+        the read itself succeeded.
 
         An unreachable Gateway is "not readable yet", not an empty directory:
         the two are returned differently so a caller cannot report a failed
-        listing as a work that produced nothing.
+        listing as a work that produced nothing.  A listing that *was* read is
+        known; if it was cut at the deployment's artifact cap, the flag says so
+        rather than the read being reported as unknown.
         """
         try:
             listing = await self.client.artifacts(execution_id)
@@ -521,7 +543,7 @@ class GatewayWorkspaceService:
         return ([{'path': item['path'], 'size_bytes': item['size_bytes'],
                   'media_type': item['media_type'], 'artifact_id': item['artifact_id'],
                   'over_limit': False} for item in listing.get('artifacts', [])],
-                listing.get('truncated'))
+                bool(listing.get('truncated')), True)
 
     async def _listing_for(self, execution_id: str) -> dict | None:
         """One execution's listing, or None when the Gateway has no such log."""
@@ -627,7 +649,8 @@ class GatewayWorkspaceService:
             raise RuntimeError('该工作还没有已确认的执行快照，文件清单暂不可读')
         return {'workspace_id': scope.workspace_id, 'scene_id': scope.scene_id, 'job_id': scope.job_id,
                 'files': sorted(item['path'] for item in listing.get('artifacts', [])),
-                'truncated': bool(listing.get('truncated'))}
+                'truncated': bool(listing.get('truncated')),
+                'truncated_reason': 'artifact_cap' if listing.get('truncated') else None}
 
     async def read_file(self, call, request: WorkspaceFileInput) -> dict:
         scope = await self.scope_for(call)
@@ -705,4 +728,5 @@ class GatewayWorkspaceService:
                                        media_type=item['media_type']).model_dump(mode='json')
                      for item in listing.get('artifacts', [])]
         return {'scene_id': scene_id, 'job_id': job_id, 'artifacts': artifacts,
-                'truncated': bool(listing.get('truncated'))}
+                'truncated': bool(listing.get('truncated')),
+                'truncated_reason': 'artifact_cap' if listing.get('truncated') else None}

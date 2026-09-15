@@ -514,6 +514,11 @@ class PluginHost:
         read-only entries of this service are used.  A gateway client opened
         here owns its connection, so it is closed when the read ends instead of
         leaking one per panel request.
+
+        This reader is built without the deployment's media reader on purpose:
+        a panel read never imports an attachment, and a service that cannot
+        read media refuses such an import instead of exporting less than the
+        caller asked for.
         """
         setting = self.runtime.config_store.current.plugins.get('workspace')
         if not setting or setting.config is None or setting.parsed_config is None:

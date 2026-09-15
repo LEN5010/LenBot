@@ -113,12 +113,14 @@ class ExecutionRunner:
                 self.config.policy_for(request.network_policy)
             except KeyError as error:
                 raise GatewayRefusal(str(error.args[0])) from None
-            if request.input_assets:
+            if request.input_assets and not request.input_files:
                 # Asset ids are provenance only.  The host is the side that
-                # reads observations and assets; bytes reach this Gateway as
-                # ``input_files``, and a request expecting the Gateway itself
-                # to fetch assets is refused rather than silently run without
-                # its inputs.
+                # reads observations and assets; its exported bytes reach this
+                # Gateway as ``input_files``, and a request that names assets
+                # without exporting anything is refused rather than silently
+                # run with its inputs missing.  When both are present the ids
+                # are recorded and never fetched — this Gateway has no media
+                # client and no route to one.
                 raise GatewayRefusal('本网关不按资产 ID 拉取输入；请由宿主经 input_files 传输字节')
             if request.input_files:
                 # Written before the row exists: a refused input never

@@ -11,19 +11,28 @@ from len_bot.plugins.api import BasePlugin, PluginCallContext, PluginContext, To
 from .config import WorkspacePluginConfig
 
 
-def build_workspace_service(config: WorkspacePluginConfig, data_directory, event_store, plugin_id: str):
+def build_workspace_service(config: WorkspacePluginConfig, data_directory, event_store, plugin_id: str,
+                            media_service=None):
     """The one execution and read service the configured backend selects.
 
     Every caller — the plugin's tools and the panel's read-only artifact
     entries — comes through here, so a backend is chosen in exactly one place
     and a gateway-only configuration never constructs a local worker.
+
+    ``media_service`` is this deployment's scoped media reader.  It is what an
+    authorized attachment import reads real bytes through; a caller that has
+    none (the panel's read-only backend) can still list and read artifacts,
+    and its attachment imports fail loudly instead of exporting less than the
+    caller asked for.
     """
     if config.gateway is not None:
         # The gateway is the one backend when configured; the host keeps
         # no container runtime and never falls back to a local run.
         return GatewayWorkspaceService(
-            WorkerGatewayClient(config.gateway), config.gateway, event_store, plugin_id)
-    return WorkspaceService(WorkspaceWorker(config.worker, data_directory), event_store, plugin_id)
+            WorkerGatewayClient(config.gateway), config.gateway, event_store, plugin_id,
+            media_service)
+    return WorkspaceService(WorkspaceWorker(config.worker, data_directory), event_store, plugin_id,
+                            media_service)
 
 
 class WorkspacePlugin(BasePlugin):
@@ -31,10 +40,11 @@ class WorkspacePlugin(BasePlugin):
         super().__init__(context.manifest)
         self.config: WorkspacePluginConfig = context.config
         self.service = build_workspace_service(
-            self.config, context.data_directory, context.event_store, self.manifest.id)
+            self.config, context.data_directory, context.event_store, self.manifest.id,
+            context.media_service)
 
     async def on_load(self, context: PluginContext):
-        context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，产物写入当前目录 /workspace；依赖由已配置镜像提供。',
+        context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，输入文件在与它同级的 input/ 下；产物写入当前目录 /workspace；依赖由已配置镜像提供。可导入本工作已保存的文本资料（input_result_ids）与本工作来源里已登记的图片（input_asset_ids）；每个文件的来源身份记在清单的 inputs 里，面板与发送都不会因导入而被触发。',
             RunPythonInput, self.run_python, purpose='执行隔离 Python 处理', aliases=('运行Python', 'Python处理'),
             keywords=('Python', '代码', '脚本', '表格', '图表'), kind='read', roles=('work',), deferred=True)
         context.register_tool('list_workspace_files', '列出当前信息工作归属的相对文件，不浏览宿主目录。',
