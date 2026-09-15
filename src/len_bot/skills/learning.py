@@ -21,6 +21,36 @@ MAINTENANCE_TOOLS = [
 ]
 
 
+def _maintenance_access_issue(runtime, store, job) -> str | None:
+    """Why this work may not spend on skill maintenance right now, or None.
+
+    Maintenance is a further model call on the founding work's account, so it
+    passes the same current-access check an execution step does: the plugin
+    must still be usable, a non-human source must still hold its capability
+    grant, and a human requester must still be allowed to talk here.
+    """
+    issue = runtime.plugin_host.work_issue(job)
+    if issue:
+        return issue
+    initiator = store.initiator_of(job)
+    if initiator is not None and initiator.principal_type != 'human':
+        from len_bot.runtime.capabilities import Capability, subject_for
+        authority = runtime.runtime_gate.capability_authority
+        if authority is None:
+            return '非人类工作需要当前能力授予，当前运行时没有授予检查'
+        subject = subject_for(initiator, job['scene_id'])
+        required = authority.required_for_work(job['work_operation']) or (Capability.LONG_WORK,)
+        for capability in required:
+            decision = authority.check(capability, subject, now=runtime.clock())
+            if not decision.allowed:
+                return f'当前授予不允许此工作继续技能维护：{decision.reason}'
+        return None
+    handler_owned = job['plugin_origin'] and job['plugin_origin']['scene_entry'] == 'handler'
+    if not handler_owned and not runtime.scene_policy.chat_allowed(job['scene_id'], job['requester_qq_uid']):
+        return '当前群或原请求者已不具备此工作的对话资格，不再执行技能维护'
+    return None
+
+
 async def maintain_candidates(runtime, scene_id):
     store = runtime.event_store
     attempted = 0
@@ -30,8 +60,27 @@ async def maintain_candidates(runtime, scene_id):
         job = await store.get_job(record["job_id"], scene_id)
         if not job or job["revision"] != record["job_revision"] or job["status"] == "cancelled":
             await store.set_skill_candidate_status(record["id"], scene_id, "obsolete", "来源工作已修订或取消")
+            # An ended work whose account was left settling for this candidate
+            # has nothing else to close it; a revised work still manages its
+            # own hold and is left alone.
+            if not job or job["status"] == "cancelled":
+                try:
+                    await store.settle_job_budget(record["job_id"])
+                except Exception:
+                    pass
             continue
         if job["result"] is None:
+            continue
+        # The founding work's account only pays for maintenance while its own
+        # authorization still stands; a candidate whose grant or chat access
+        # is gone is closed instead of left pending against a settling hold.
+        access_issue = _maintenance_access_issue(runtime, store, job)
+        if access_issue is not None:
+            await store.set_skill_candidate_status(record["id"], scene_id, "failed", access_issue)
+            try:
+                await store.settle_job_budget(record["job_id"])
+            except Exception:
+                pass
             continue
         # This maintenance spends the founding work's own allowance and runs
         # under the limits that work was created with, not today's defaults:

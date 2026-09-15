@@ -59,6 +59,7 @@ class LLMReflector:
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
         self._last_input_tokens = 0
+        self._pending_pages: dict[str, tuple] = {}
 
     @staticmethod
     def terminal_definition() -> dict:
@@ -106,6 +107,19 @@ class LLMReflector:
         messages.append(budget)
         return estimate_request(messages, definitions)['input_tokens']
 
+    @staticmethod
+    def _memory_page(lookup: MemoryLookup, items, *, next_offset, note) -> str:
+        return json.dumps({
+            'records': [{
+                'memory_id': item.id, 'scope': item.scope, 'subject': item.subject,
+                'kind': item.kind.value, 'basis': item.basis.value, 'statement': item.statement,
+                'created_at': item.created_at, 'expires_at': item.expires_at,
+                'status': item.status.value,
+            } for item in items],
+            'offset': lookup.offset, 'returned': len(items), 'next_offset': next_offset,
+            'note': note,
+        }, ensure_ascii=False)
+
     async def __call__(self, batch: HistoryBatch, context: dict | None = None) -> ReflectionResult:
         scene_id = batch.scene_id
         known = set(batch.complete_event_ids)
@@ -128,37 +142,78 @@ class LLMReflector:
             )
             has_more = len(rows) > lookup.limit
             candidates = rows[:lookup.limit]
-            budget = self.context_tokens - self.output_tokens
-            remaining = max(0, budget - self._last_input_tokens - 256)
-
-            def payload(items, *, next_offset, note):
-                return json.dumps({
-                    'records': [{
-                        'memory_id': item.id, 'scope': item.scope, 'subject': item.subject,
-                        'kind': item.kind.value, 'basis': item.basis.value, 'statement': item.statement,
-                        'created_at': item.created_at, 'expires_at': item.expires_at,
-                        'status': item.status.value,
-                    } for item in items],
-                    'offset': lookup.offset, 'returned': len(items), 'next_offset': next_offset,
-                    'note': note,
-                }, ensure_ascii=False)
-
-            fitted = list(candidates)
-            next_offset = lookup.offset + len(fitted) if has_more or len(fitted) < len(candidates) else None
+            # The full page is returned here; what actually fits is decided in
+            # prepare_tool_results, where every sibling call of this response
+            # is visible and the whole round shares one remaining budget.
+            if tool_call_id:
+                self._pending_pages[tool_call_id] = (lookup, candidates, has_more)
             note = '认识账本是既有判断，不是原始证据；修订时使用memory_id。本页只含装得下的完整记录。'
-            while fitted and estimate_tokens(payload(fitted, next_offset=lookup.offset + len(fitted), note=note)) > remaining:
-                fitted.pop()
-            if candidates and not fitted:
-                content = payload([], next_offset=lookup.offset, note=(
-                    '当前请求余量连一条完整认识记录都装不下；分页位置未推进，原区间未覆盖。'))
-                return ToolResult(status='error', content=content, coverage='memory_ledger_unread',
-                                  evidence_kind='retrieval')
-            if len(fitted) < len(candidates):
-                has_more = True
-            next_offset = lookup.offset + len(fitted) if has_more else None
-            content = payload(fitted, next_offset=next_offset, note=note)
-            return ToolResult(status="ok" if fitted else "no_results", content=content,
+            content = self._memory_page(lookup, candidates,
+                                        next_offset=lookup.offset + len(candidates) if has_more else None,
+                                        note=note)
+            return ToolResult(status="ok" if candidates else "no_results", content=content,
                               coverage="memory_ledger", evidence_kind="retrieval")
+
+        async def prepare_tool_results(trajectory, entries):
+            # One response's memory pages are fitted together, in call order,
+            # against the one input budget the next request actually has.
+            # Sizing each page against the same allowance separately would let
+            # three parallel reads collectively overflow the request and fail
+            # the batch with its interval unadvanced.
+            note = '认识账本是既有判断，不是原始证据；修订时使用memory_id。本页只含装得下的完整记录。'
+            definitions = [*self.tool_definitions(), terminal]
+            pending = [(call, result, self._pending_pages.pop(call.id, None))
+                       for call, result in entries]
+
+            def encoded(result):
+                return (result.model_dump_json(exclude_none=True) if isinstance(result, ToolResult)
+                        else json.dumps(result, ensure_ascii=False))
+
+            def refused(result, lookup):
+                empty = self._memory_page(lookup, [], next_offset=lookup.offset, note=(
+                    '当前请求余量连一条完整认识记录都装不下；分页位置未推进，原区间未覆盖。'))
+                return result.model_copy(update={
+                    'status': 'error', 'content': empty,
+                    'coverage': 'memory_ledger_unread'}).model_dump_json(exclude_none=True)
+
+            def page(result, lookup, items, candidates, has_more):
+                more = has_more or len(items) < len(candidates)
+                payload = self._memory_page(lookup, items,
+                                            next_offset=lookup.offset + len(items) if more else None,
+                                            note=note)
+                return result.model_copy(update={'content': payload}).model_dump_json(exclude_none=True)
+
+            # Start every fittable page at its smallest honest form, measure
+            # the request as it would actually be sent, then grow pages in
+            # call order within what remains.
+            contents = []
+            for call, result, stashed in pending:
+                if stashed is None or not isinstance(result, ToolResult):
+                    contents.append(encoded(result))
+                else:
+                    lookup, candidates, has_more = stashed
+                    contents.append(refused(result, lookup) if candidates
+                                    else page(result, lookup, [], candidates, has_more))
+            placeholders = [{'role': 'tool', 'tool_call_id': call.id, 'content': content}
+                            for (call, _result, _stashed), content in zip(pending, contents)]
+            budget = self.context_tokens - self.output_tokens - 256
+            pool = budget - estimate_request([*trajectory, *placeholders], definitions)['input_tokens']
+            for index, (call, result, stashed) in enumerate(pending):
+                if stashed is None or not isinstance(result, ToolResult):
+                    continue
+                lookup, candidates, has_more = stashed
+                fitted = list(candidates)
+                while fitted:
+                    grown = page(result, lookup, fitted, candidates, has_more)
+                    cost = estimate_tokens(grown) - estimate_tokens(contents[index])
+                    if cost <= pool:
+                        pool -= cost
+                        contents[index] = grown
+                        break
+                    fitted.pop()
+            trace.setdefault('memory_page_fitting', []).append(
+                {'entries': len(entries), 'pool_left_tokens': max(0, pool)})
+            return contents
 
         async def finish(arguments: dict) -> ReflectionResult:
             try:
@@ -199,6 +254,7 @@ class LLMReflector:
                 messages=self.messages(batch, context or {}), tool_definitions=self.tool_definitions, execute_tool=execute,
                 terminal=terminal, finish=finish, max_steps=self.max_steps,
                 max_tool_calls=self.max_tool_calls, trace=trace, prepare_request=prepare_request,
+                prepare_tool_results=prepare_tool_results,
             )
         except Exception as error:
             error.trace = trace

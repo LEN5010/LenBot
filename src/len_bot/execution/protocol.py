@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.events.models import Initiator
 
@@ -117,6 +117,28 @@ class ExecutionRecord(BaseModel):
     last_sequence: int = Field(ge=0)
 
 
+class ExecutionInputFile(BaseModel):
+    """One input the host exports into the execution's read-only control area.
+
+    The host is the only side that reads observations and assets; the Gateway
+    receives bytes it merely writes down.  A name is a bare filename — the
+    Gateway decides the directory, so a request cannot place a file outside
+    the execution's own control area.
+    """
+    model_config = ConfigDict(extra='forbid', strict=True)
+    name: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$',
+                      description='input/ 下的文件名；不含路径分隔')
+    text: str | None = Field(default=None, max_length=5_000_000)
+    content_base64: str | None = Field(default=None, max_length=48_000_000,
+                                       description='二进制输入（媒体导入）；与 text 二选一')
+
+    @model_validator(mode='after')
+    def one_body(self):
+        if (self.text is None) == (self.content_base64 is None):
+            raise ValueError('输入文件必须且只能提供 text 或 content_base64 之一')
+        return self
+
+
 class ExecutionRequest(BaseModel):
     """What LenBot asks the Gateway to run.
 
@@ -141,9 +163,19 @@ class ExecutionRequest(BaseModel):
                            description='固定镜像配置引用，由 Gateway 解析为实际镜像')
     network_policy: str = Field(min_length=1, max_length=64,
                                description='网络策略引用，由 Gateway 解析为实际出口规则')
-    input_assets: list[str] = Field(default_factory=list, max_length=8)
+    input_assets: list[str] = Field(default_factory=list, max_length=8,
+                                    description='仅作来源登记的资产 ID；实际字节经 input_files 传输')
+    input_files: list[ExecutionInputFile] = Field(default_factory=list, max_length=9,
+                                                  description='宿主导出的输入文件；网关只落盘，不自行读取资料')
     deadline_seconds: float = Field(gt=0, le=3600,
                                     description='宿主愿意为本次执行支付的绝对时间；从被接受时起算')
+
+    @model_validator(mode='after')
+    def unique_input_names(self):
+        names = [item.name for item in self.input_files]
+        if len(names) != len(set(names)):
+            raise ValueError('输入文件名不能重复')
+        return self
 
 
 def is_terminal(state: ExecutionState) -> bool:
