@@ -44,11 +44,11 @@ SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点
 
 工作 payload 可以保存 HumanInitiator、SystemInitiator 或 PluginInitiator；旧人类工作仅由其明确 requester/source 字段转换。JobStore 在提案事务内核验对应真实来源。普通 start_work 与插件 stage_work 仍以已读人类请求为入口。
 
-CapabilityGrant 保存在 access.capability_grants，默认空。Gate 对非人类 create/resume 复核当前授予，resume 的主体取自原工作；当前 revise 和执行期未完整覆盖。JobRunner 仍有按人类 chat_allowed 判定的路径，类型中出现 system/plugin 不代表自主工作已经贯通。information 的非人类授权使用 public_research，额度选择却另找 long_work Grant；资源策略引用失效会回退默认值，并发字段尚未执行。面板新增授予的请求还存在签发者校验顺序问题。这些均是 FX05/FX11 的现有缺口，不能通过跳过身份检查解决。
+CapabilityGrant 保存在 access.capability_grants，默认空。Gate 对非人类 create/revise/resume 复核当前授予，主体取自原工作；cancel 不另开执行。JobRunner 在每次模型/工具前对非人类再查当前 grant，人类仍走 chat_allowed。information 使用 public_research 授予及其绑定策略；策略名称失效直接拒绝。系统工作的检索范围只有 `global-safe`。并发上限计入创建准入。面板提交可编辑授予字段，认证后再绑定签发者；只改白名单保留原授予。类型中出现 system/plugin 仍不表示计划中的全部自主能力已经开放。
 
 ### 预占、调用与结算
 
-resources.policies 保存具名 ReservationPolicy。未配置时各维度默认为 null（不设 token 上限），不再隐式套用 10M/30M。有限日额度必须能在创建时算出有限单工作预占，否则拒绝该组合。账务日使用业务时区，未配置时按 UTC；账号检查跨群聚合，场景检查仅在策略设限时执行。Grant 仍可能指向 long_work 以外的策略，见 FX05。
+resources.policies 保存具名 ReservationPolicy。未配置时各维度默认为 null（不设 token 上限），不再隐式套用 10M/30M。有限日额度必须能在创建时算出有限单工作预占，否则拒绝该组合。账务日使用业务时区，未配置时按 UTC；账号检查跨群聚合，场景检查仅在策略设限时执行。预占绑定授权该工作能力的那条 Grant。
 
 创建期预占与工作行位于 commit_proposal_transaction 的同一写事务，避免并发创建重复使用同一余额。一工作一行 usage_reservations：`limit_tokens` 保存创建时的累计上限，held/settling 时 `reserved_tokens` 是对该上限的占用；结算把它改成已计量消费，未调用模型的取消可释放该行。工作行另存 `budget_json` 快照（执行上限、token 上限、首次开始后的 `deadline_at`）。真实 usage 与估算分列，model_calls 另记本次输出上限和在途占用。
 
@@ -66,7 +66,7 @@ resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照
 
 execution/protocol、client、journal 及 services/worker_gateway 已有代码。LenBot EventStore 初始化 execution_runs/execution_events；独立 Gateway 若启动，使用自己的配置和数据库，同一 journal schema 复用，另登记 execution_artifacts。当前无客户端接线把 run_python 的实际执行或事件同步到这套记录，不能把两库描述成已同步的事实副本。
 
-Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务，读取 after 返回更大序号，调用者仍负责保存已采用位置。HTTP 客户端严格枚举解析、启动/取消/恢复转换、未知容器清理、工作区所有权、UID/挂载和文件边界均有 FX06—FX10 所述缺口，尚不能承担正式执行。当前 Python 路径及可用安全打开逻辑见执行边界，正式切换条件只在完整计划维护。
+Gateway 的 execution_id 用于重复提交核对，记录 job/revision、workspace、镜像/网络策略引用、状态、输出和终止事实；exited 不表示业务结果正确。状态更新和序列事件共用事务。短执行未确认 running 时仍记录进程结果；取消后不再启动；重启 sweep 经取消/停止边收口，单条失败不拖垮查询服务。新执行核对工作区归属，占用含未知终止。HTTP 客户端把枚举字符串解析为内部状态，并区分已拒绝、身份冲突和结果未知。控制目录按 worker GID 授权读取脚本，产物复制到不可变存放后按描述符打开。目录字节/文件数在运行中检查。当前 Python 仍由宿主 `run_python` 执行，正式切换条件只在完整计划维护。
 
 ## 输入、注意力与实际阅读
 
@@ -168,7 +168,7 @@ next=wait 只允许一个真实期待回应的消息，并保留后续模型和�
 
 认识账本保存主体、陈述、reported/inferred、原话证据、有效期与修订链。查询先按允许场景、主体、类型、认识创建时间和有效状态筛选，再复用确定性中文片段与别名排序；昵称、群名片和有效 reported 称呼只作同一主体的检索线索，不合并身份或新增认识。当前互动投影限有关参与者与本群的有效明确偏好，其他认识按需读。角色资料、模型摘要和 Bot 自己的发言不能独立证明群友事实或现实能力。
 
-历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。LLMReflector 的认识读取已有 limit/offset，但尚未按后续请求余量裁定完整记录页，超容量仍在 prepare_request 结束，见 FX13。
+历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。LLMReflector 的认识读取按当前请求余量装入完整记录；装不下时保留原 offset，不把截断正文当作已读认识。
 
 技能目录按用途、适用及排除条件确定性检索，返回版本；正文沿普通观察分页，工作首次读取时固定版本。有实际工作观察或明确纠正的候选才触发一次 maintenance，同一次模型调用只接受 save_skill 或 skip_skill 中的一条终结。重复、没有方法价值、来源不足或仅有暂时故障可正常 skipped，原因保存在既有候选结果字段；保存和跳过均核对候选状态与来源工作版本。有效纠正形成新版本并保留前版与依据，人工内容不能自动覆盖，公开针对指定版本。
 
@@ -212,7 +212,7 @@ OneBotAdapter 管理一个消息连接，显式选择主动或反向 WebSocket�
 
 Vue Router hash history 管理页面、对象、筛选与分页，Vuetify 提供控件。正文与凭据不进入 URL 或浏览器持久存储。管理列表返回 `{items,total,page,page_size}`，消息时间线使用原始 rowid 游标和首次 snapshot_rowid；有限配置目录和固定素材目录明确完整返回。
 
-RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。额度页账户合计按全日预占/待收口/已结算聚合，明细仍最多 100 条；群筛选时另给场景小计，不再把截断明细当成账号余额。具名策略主体仍显示默认策略上限，与 FX05 的 Grant 选择缺口有关。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
+RuntimeQueryService 按保存的事件、episode、job、action 和 result ID 组合公开投影，不以时间相近猜因果。额度页账户合计按全日预占/待收口/已结算聚合，明细仍最多 100 条；群筛选时另给场景小计，不再把截断明细当成账号余额。具名策略主体在额度页仍显示默认策略上限，创建准入则使用该 Grant 绑定的策略。消息详情区分已读来源、处理来源与当前 pending；工作页分开显示请求原话、创建确认、当前版本、结果交付及实际采用范围；同轮其他请求保留各自归属。资料详情区分本地正文续读和“源端下一批，仅位置未取得”，页面只读已保存资料，不执行源端参数。原话安全显示，媒体走鉴权接口，磁盘路径、凭据和私有续接不外露。
 
 写操作经现有事件／提案边界，保留具体失败，不自动重试；刷新不恢复工作或重发。迟到响应不覆盖新对象，未保存草稿和旧读取时间明确显示。技能 skipped 在面板显示正常原因，不显示为维护失败。
 

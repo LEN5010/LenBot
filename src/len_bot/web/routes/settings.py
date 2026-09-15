@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, Body
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from len_bot.config import AddressName
 from len_bot.config_store import AccessSettings, ResourceSettings, TimeSettings, MemberSettings
-from len_bot.runtime.capabilities import CapabilityGrant
+from len_bot.runtime.capabilities import Capability, CapabilityGrant
 from len_bot.web.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -33,6 +33,34 @@ async def access_settings(request: Request, user: str = Depends(get_current_user
     return request.app.state.runtime.query_service.access_settings()
 
 
+class CapabilityGrantEdit(BaseModel):
+    """Fields an operator may submit; the issuer is bound after authentication."""
+    model_config = ConfigDict(extra='forbid')
+    grant_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    principal_type: str
+    principal_id: str = Field(min_length=1)
+    scene_id: str | None = None
+    system_scope: str | None = None
+    capabilities: list[str] = Field(min_length=1)
+    expires_at: float | None = None
+    resource_policy: str | None = None
+    concurrency: int | None = Field(default=None, ge=1)
+    enabled: bool
+
+    @model_validator(mode='after')
+    def matching_scope(self):
+        if self.principal_type == 'system':
+            self.scene_id = None
+            if not self.system_scope:
+                raise ValueError('系统授予必须填写系统范围，不能残留场景字段')
+        else:
+            self.system_scope = None
+            if not self.scene_id:
+                raise ValueError('人类与插件授予必须填写场景，不能残留系统范围')
+        return self
+
+
 class AccessSettingsRequest(BaseModel):
     """The reply white list and the capability grants save through one page.
 
@@ -42,18 +70,40 @@ class AccessSettingsRequest(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     qq_reply_whitelist: list[int]
-    capability_grants: list[CapabilityGrant] | None = None
+    capability_grants: list[CapabilityGrantEdit] | None = None
+
+
+def _grant_from_edit(edit: CapabilityGrantEdit, *, operator_id: str, revision: int) -> CapabilityGrant:
+    return CapabilityGrant(
+        grant_id=edit.grant_id, revision=revision, operator_id=operator_id,
+        principal_type=edit.principal_type, principal_id=edit.principal_id,
+        scene_id=edit.scene_id, system_scope=edit.system_scope,
+        capabilities=[Capability(item) for item in edit.capabilities],
+        expires_at=edit.expires_at, resource_policy=edit.resource_policy or None,
+        concurrency=edit.concurrency, enabled=edit.enabled)
+
+
+def _grant_content(grant: CapabilityGrant) -> dict:
+    return grant.model_dump(exclude={'operator_id', 'revision'})
 
 
 @router.put("/access")
 async def update_access_settings(values: AccessSettingsRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     current = runtime.config_store.current.access
-    # The issuer is whoever is authenticated on this panel, not a field the
-    # form can type.  A group admin or a chat message cannot reach this route.
-    grants = [grant.model_copy(update={'operator_id': user})
-              for grant in (current.capability_grants if values.capability_grants is None
-                            else values.capability_grants)]
+    if values.capability_grants is None:
+        grants = list(current.capability_grants)
+    else:
+        previous = {grant.grant_id: grant for grant in current.capability_grants}
+        grants = []
+        for edit in values.capability_grants:
+            stored = previous.get(edit.grant_id)
+            candidate = _grant_from_edit(edit, operator_id=user, revision=edit.revision)
+            if stored is not None and _grant_content(stored) == _grant_content(candidate):
+                grants.append(stored)
+            else:
+                revision = (stored.revision + 1) if stored is not None else max(1, edit.revision)
+                grants.append(_grant_from_edit(edit, operator_id=user, revision=revision))
     merged = AccessSettings(
         qq_reply_whitelist=values.qq_reply_whitelist,
         capability_grants=grants,

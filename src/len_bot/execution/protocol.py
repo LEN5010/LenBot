@@ -58,6 +58,13 @@ TERMINAL_STATES = frozenset({
     ExecutionState.TERMINATION_CONFIRMED, ExecutionState.TERMINATION_UNCONFIRMED,
 })
 
+# Capacity and workspace occupancy include unknown stops: the container may
+# still be using the directory even though the run is no longer watched.
+OCCUPYING_STATES = frozenset({
+    ExecutionState.ACCEPTED, ExecutionState.STARTING, ExecutionState.RUNNING,
+    ExecutionState.CANCEL_REQUESTED, ExecutionState.TERMINATION_UNCONFIRMED,
+})
+
 
 class TerminationReport(BaseModel):
     """How an execution's container ended, as far as it could be established.

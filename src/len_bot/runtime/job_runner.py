@@ -393,6 +393,11 @@ class InformationJobRunner:
         runtime, store = self.runtime, self.runtime.event_store
         job = await store.get_job(job_id, scene_id)
         config = self.work_config(job)
+        initiator = job_initiator(job)
+        if initiator is not None and initiator.principal_type == 'system':
+            read_scopes = ['global-safe']
+        else:
+            read_scopes = [scene_id, 'global-safe']
         job = None
         work_cutoff = 0
         execution=PluginExecution(None,model_slot_owned=True)
@@ -408,7 +413,7 @@ class InformationJobRunner:
                 initiator=job_initiator(job),
                 plugin=runtime.plugin_host.context_for(origin.plugin_id) if origin else None)
 
-        toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
+        toolkit = RetrievalToolkit(store, read_scopes, scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
             checkpoint=runtime.evaluation_hook, media_service=runtime.media_service,
             config=config, call_context=plugin_context)
@@ -429,6 +434,19 @@ class InformationJobRunner:
         def require_current_access():
             issue=runtime.plugin_host.work_issue(job)
             if issue:raise PermissionError(issue)
+            current_initiator = job_initiator(job)
+            if current_initiator is not None and current_initiator.principal_type != 'human':
+                from len_bot.runtime.capabilities import Capability, subject_for
+                authority = runtime.runtime_gate.capability_authority
+                if authority is None:
+                    raise PermissionError('非人类工作需要当前能力授予，当前运行时没有授予检查')
+                subject = subject_for(current_initiator, scene_id)
+                required = authority.required_for_work(job['work_operation']) or (Capability.LONG_WORK,)
+                for capability in required:
+                    decision = authority.check(capability, subject, now=runtime.clock())
+                    if not decision.allowed:
+                        raise PermissionError(f'当前授予不允许继续此工作：{decision.reason}')
+                return
             handler_owned=job['plugin_origin'] and job['plugin_origin']['scene_entry']=='handler'
             if not handler_owned and not runtime.scene_policy.chat_allowed(scene_id, job["requester_qq_uid"]):
                 raise PermissionError("当前群或原请求者已不具备此工作的对话资格")

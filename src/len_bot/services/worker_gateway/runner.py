@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 
 from len_bot.execution.protocol import (
-    ExecutionRecord, ExecutionRequest, ExecutionState, TerminationReport,
+    OCCUPYING_STATES, ExecutionRecord, ExecutionRequest, ExecutionState, TerminationReport,
 )
 from len_bot.services.worker_gateway.config import GatewayConfig, WorkerImage
 from len_bot.services.worker_gateway.store import GatewayStore
@@ -72,7 +72,7 @@ class ExecutionRunner:
         path = (self.controls / execution_id).resolve()
         if root not in path.parents:
             raise GatewayRefusal('控制目录越出网关配置的根目录')
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.mkdir(parents=True, exist_ok=True, mode=0o750)
         return path
 
     @staticmethod
@@ -103,9 +103,10 @@ class ExecutionRunner:
         async with self._accept_lock:
             if await self.store.get_execution(request.execution_id) is not None:
                 return await self.store.record_execution(request)
+            await self._assert_workspace_available(request)
             if await self.store.count_unfinished() >= self.config.max_concurrent:
                 raise GatewayRefusal(
-                    f'网关已有 {self.config.max_concurrent} 个未终结执行；本次不排队、不启动，'
+                    f'网关已有 {self.config.max_concurrent} 个未释放执行；本次不排队、不启动，'
                     '请稍后以同一执行 ID 重试')
             try:
                 self.config.worker_for(request.image_ref, request.worker_type)
@@ -143,13 +144,17 @@ class ExecutionRunner:
         container_name = self.container_name(execution_id)
         process = None
         streams: list[asyncio.Task] = []
+        workspace = self.workspace_directory(request.workspace_id)
         try:
             record = await self._stored(execution_id)
+            if record.state is ExecutionState.CANCEL_REQUESTED:
+                await self._stop(execution_id, container_name, None, reason='启动前已取消，不再创建容器')
+                return
             worker = self.config.worker_for(request.image_ref, request.worker_type)
             policy = self.config.policy_for(request.network_policy)
             control = self.control_directory(execution_id)
-            workspace = self.workspace_directory(request.workspace_id)
             self._write_control(control / 'task.py', request.script)
+            self._apply_worker_access(control, workspace, worker)
             command = self._command(container_name, worker, policy.mode, control, workspace)
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -158,13 +163,27 @@ class ExecutionRunner:
             except OSError as error:
                 await self._fail(execution_id, 'start_failed', f'容器运行时不可用：{error}')
                 return
+            current = await self._stored(execution_id)
+            if current.state is ExecutionState.CANCEL_REQUESTED:
+                await self._stop(execution_id, container_name, process, reason='启动过程中已取消')
+                return
             await self.store.append_execution_event(
                 execution_id, 'starting', f'容器 {container_name} 已创建，等待运行确认',
                 state=ExecutionState.STARTING)
-            await self._confirm_started(execution_id, container_name)
+            confirmed = await self._confirm_started(execution_id, container_name)
             streams = [asyncio.create_task(self._read_limited(process.stdout)),
                        asyncio.create_task(self._read_limited(process.stderr))]
-            stopped = await self._watch(execution_id, container_name, process, record.deadline_at)
+            if not confirmed:
+                await process.wait()
+                await self._collect(process)
+                for stream in streams:
+                    if not stream.done():
+                        stream.cancel()
+                results = await asyncio.gather(*streams, return_exceptions=True)
+                await self._record_process_end(execution_id, process, results, workspace)
+                return
+            stopped = await self._watch(execution_id, container_name, process, record.deadline_at,
+                                        workspace)
             if not stopped:
                 await process.wait()
             else:
@@ -173,28 +192,25 @@ class ExecutionRunner:
                 if not stream.done():
                     stream.cancel()
             results = await asyncio.gather(*streams, return_exceptions=True)
-            stdout, stdout_truncated = self._stream_result(results, 0)
-            stderr, stderr_truncated = self._stream_result(results, 1)
             current = await self.store.get_execution(execution_id)
             if stopped or current is None or current.state is not ExecutionState.RUNNING:
-                # The stop path already recorded the outcome; a run that was
-                # stopped is not also an exit.
                 return
-            state = ExecutionState.EXITED if process.returncode == 0 else ExecutionState.FAILED
-            await self.store.append_execution_event(
-                execution_id, 'exited' if state is ExecutionState.EXITED else 'failed',
-                f'进程以返回码 {process.returncode} 结束', state=state,
-                returncode=process.returncode,
-                error=None if state is ExecutionState.EXITED else '进程以非零返回码结束',
-                stdout=stdout, stderr=stderr, stdout_truncated=stdout_truncated,
-                stderr_truncated=stderr_truncated)
-            await self._register_artifacts(execution_id, workspace)
+            await self._record_process_end(execution_id, process, results, workspace)
         except asyncio.CancelledError:
             await asyncio.shield(self._stop(execution_id, container_name, process,
                                             reason='网关正在停止该执行'))
             raise
-        except Exception as error:  # recorded as the run's own failure, never swallowed silently
-            await self._fail(execution_id, 'runner_error', f'执行器失败：{error}')
+        except Exception as error:
+            await asyncio.shield(self._stop(execution_id, container_name, process,
+                                            reason=f'执行器失败，转入停止核对：{error}'))
+            current = await self.store.get_execution(execution_id)
+            if current is not None and current.state not in {
+                    ExecutionState.EXITED, ExecutionState.FAILED,
+                    ExecutionState.TERMINATION_CONFIRMED, ExecutionState.TERMINATION_UNCONFIRMED}:
+                try:
+                    await self._fail(execution_id, 'runner_error', f'执行器失败：{error}')
+                except ValueError:
+                    pass
         finally:
             for stream in streams:
                 if not stream.done():
@@ -242,26 +258,27 @@ class ExecutionRunner:
                     '-w', '/workspace', worker.image, 'python', '/lenbot-control/task.py']
         return command
 
-    async def _confirm_started(self, execution_id: str, container_name: str) -> None:
+    async def _confirm_started(self, execution_id: str, container_name: str) -> bool:
         """Wait until the runtime reports the container actually running.
 
-        A created client process is not yet a running container, and recording
-        ``running`` from the client alone would claim execution that may never
-        have begun.
+        Returns False when inspect says the container is gone or never
+        appeared, so the caller can record the real process result instead of
+        leaving the row in starting.
         """
         for _ in range(self.config.start_confirm_attempts):
             running = await self._inspect_running(container_name)
             if running is True:
                 await self.store.append_execution_event(execution_id, 'running',
                                                         '容器已确认运行', state=ExecutionState.RUNNING)
-                return
+                return True
             if running is False:
-                return
+                return False
             await asyncio.sleep(self.config.start_confirm_interval_seconds)
+        return False
 
     # ---- watching and stopping --------------------------------------------
     async def _watch(self, execution_id: str, container_name: str, process,
-                     deadline_at: float) -> bool:
+                     deadline_at: float, workspace: Path) -> bool:
         """Wait for the process or stop it, on the Gateway's own clock.
 
         Returns true when a stop was carried out here.  The deadline is the
@@ -279,6 +296,10 @@ class ExecutionRunner:
             if remaining <= 0:
                 await self._stop(execution_id, container_name, process,
                                  reason='到达执行期限，网关按原期限停止')
+                return True
+            over = self._workspace_over_limit(workspace)
+            if over:
+                await self._stop(execution_id, container_name, process, reason=over)
                 return True
             try:
                 await asyncio.wait_for(process.wait(), min(0.5, max(0.05, remaining)))
@@ -318,9 +339,13 @@ class ExecutionRunner:
         alone is not a stop: only the termination state says what happened.
         """
         current = await self._stored(execution_id)
+        if current.state is ExecutionState.TERMINATION_UNCONFIRMED:
+            await self._terminate(self.container_name(execution_id), None)
+            await self.store.append_execution_event(
+                execution_id, 'termination_recheck', '对未知终止再次核对容器，不改写原终态')
+            return await self._stored(execution_id), True
         if current.state in {ExecutionState.EXITED, ExecutionState.FAILED,
-                             ExecutionState.TERMINATION_CONFIRMED,
-                             ExecutionState.TERMINATION_UNCONFIRMED}:
+                             ExecutionState.TERMINATION_CONFIRMED}:
             return current, False
         task = self._tasks.get(execution_id)
         if task is None:
@@ -346,27 +371,33 @@ class ExecutionRunner:
         until an operator looks at it.
         """
         for execution_id in await self.store.unfinished():
-            record = await self.store.get_execution(execution_id)
-            if record is None or execution_id in self._tasks:
-                continue
-            if self.clock() >= record.deadline_at:
-                await self._stop(execution_id, self.container_name(execution_id), None,
-                                 reason='网关重启后发现该执行已超过原期限，按原期限停止')
-                continue
-            await self.store.append_execution_event(
-                execution_id, 'orphaned',
-                '网关重启后该执行没有可接续的监视进程；容器状态未确认，需由运营者核对',
-                state=ExecutionState.TERMINATION_UNCONFIRMED,
-                termination=TerminationReport(
-                    status='unconfirmed',
-                    detail='网关重启，无法确认上一次运行的容器是否仍存在；目录保持封锁'))
+            try:
+                record = await self.store.get_execution(execution_id)
+                if record is None or execution_id in self._tasks:
+                    continue
+                reason = ('网关重启后发现该执行已超过原期限，按原期限停止'
+                          if self.clock() >= record.deadline_at
+                          else '网关重启后该执行没有可接续的监视进程，转入停止核对')
+                await self._stop(execution_id, self.container_name(execution_id), None, reason=reason)
+            except Exception as error:
+                try:
+                    await self.store.append_execution_event(
+                        execution_id, 'sweep_error', f'单条恢复失败，保留阻断：{error}')
+                except Exception:
+                    pass
 
     # ---- container client helpers -----------------------------------------
     async def _inspect_running(self, container_name: str) -> bool | None:
+        """True if running, False if absent or stopped, None if inspect itself failed."""
         code, output = await self._run_bounded(self.runtime_path, 'inspect', '--format',
                                                '{{.State.Running}}', container_name)
+        if code is None:
+            return None
         if code != 0:
-            return None if code is None else False
+            text = (output or '').lower()
+            if 'no such' in text or 'not found' in text:
+                return False
+            return None
         return output.strip().lower() == 'true'
 
     async def _terminate(self, container_name: str, process) -> TerminationReport:
@@ -470,51 +501,191 @@ class ExecutionRunner:
                 truncated = True
         return b''.join(chunks).decode('utf-8', 'replace'), truncated
 
-    # ---- artifacts ---------------------------------------------------------
-    async def _register_artifacts(self, execution_id: str, workspace: Path) -> list[dict]:
-        """Record the output files a run left, under stable ids of their own.
+    async def _assert_workspace_available(self, request: ExecutionRequest) -> None:
+        owners = await self.store.executions_for_workspace(request.workspace_id)
+        for other in owners:
+            if other.execution_id == request.execution_id:
+                continue
+            if other.scene_id != request.scene_id or other.job_id != request.job_id:
+                raise GatewayRefusal(
+                    f'工作区 {request.workspace_id} 已属于工作 {other.job_id}，不能借给其他工作')
+            stored = await self.store.execution_request_of(other.execution_id)
+            if stored is not None and stored.initiator != request.initiator:
+                raise GatewayRefusal(f'工作区 {request.workspace_id} 已绑定其他发起者，不能改写归属')
+            if other.job_revision != request.job_revision and other.state in OCCUPYING_STATES:
+                raise GatewayRefusal(
+                    f'工作区 {request.workspace_id} 仍被修订 {other.job_revision} 占用，旧修订只可观察')
+            if other.state in OCCUPYING_STATES:
+                raise GatewayRefusal(
+                    f'工作区 {request.workspace_id} 仍有未释放执行 {other.execution_id}（{other.state.value}）')
 
-        Registration is what a download is looked up by, so a caller can only
-        fetch what a run actually produced, never a path it composed itself.
-        """
-        registered = []
-        for relative in self._list_workspace_files(workspace):
-            path = workspace / relative
+    def _apply_worker_access(self, control: Path, workspace: Path, worker) -> None:
+        _uid, gid = (int(part) for part in worker.container_user.split(':'))
+        script = control / 'task.py'
+        for path, mode in ((control, 0o750), (workspace, 0o770), (script, 0o640)):
+            if not path.exists():
+                continue
             try:
-                info = os.stat(path, follow_symlinks=False)
+                os.chmod(path, mode)
+            except OSError:
+                pass
+            try:
+                os.chown(path, os.getuid(), gid)
+            except OSError:
+                pass
+
+    async def _record_process_end(self, execution_id, process, results, workspace: Path) -> None:
+        stdout, stdout_truncated = self._stream_result(results, 0)
+        stderr, stderr_truncated = self._stream_result(results, 1)
+        current = await self.store.get_execution(execution_id)
+        if current is None or current.state in {
+                ExecutionState.TERMINATION_CONFIRMED, ExecutionState.TERMINATION_UNCONFIRMED,
+                ExecutionState.EXITED, ExecutionState.FAILED}:
+            return
+        if current.state is ExecutionState.CANCEL_REQUESTED:
+            await self._stop(execution_id, self.container_name(execution_id), process,
+                             reason='取消后收集到进程结果')
+            return
+        state = ExecutionState.EXITED if process.returncode == 0 else ExecutionState.FAILED
+        await self.store.append_execution_event(
+            execution_id, 'exited' if state is ExecutionState.EXITED else 'failed',
+            f'进程以返回码 {process.returncode} 结束', state=state,
+            returncode=process.returncode,
+            error=None if state is ExecutionState.EXITED else '进程以非零返回码结束',
+            stdout=stdout, stderr=stderr, stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated)
+        await self._register_artifacts(execution_id, workspace)
+
+    def _workspace_over_limit(self, workspace: Path) -> str | None:
+        files = total = 0
+        for _relative, size in self._iter_workspace_files(workspace):
+            files += 1
+            total += size
+            if files > self.config.max_workspace_files:
+                return f'工作目录文件数超过上限 {self.config.max_workspace_files}，已停止'
+            if total > self.config.max_workspace_bytes:
+                return f'工作目录字节数超过上限 {self.config.max_workspace_bytes}，已停止'
+        return None
+
+    def _iter_workspace_files(self, workspace: Path):
+        root = workspace.resolve()
+        stack = [root]
+        seen = 0
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        try:
+                            info = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        if not stat.S_ISREG(info.st_mode):
+                            continue
+                        try:
+                            rel = str(Path(entry.path).relative_to(root))
+                        except ValueError:
+                            continue
+                        yield rel, info.st_size
+                        seen += 1
+                        if seen >= max(self.config.max_artifacts, self.config.max_workspace_files) + 1:
+                            return
             except OSError:
                 continue
+
+    def artifacts_store(self, execution_id: str) -> Path:
+        self._require_safe_name(execution_id, 'execution_id')
+        root = self.controls / '_artifacts'
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = root / execution_id
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return path.resolve()
+
+    def open_stored_artifact(self, execution_id: str, artifact_id: str) -> int:
+        self._require_safe_name(execution_id, 'execution_id')
+        if not re.fullmatch(r'^[0-9a-f]{32}$', artifact_id or ''):
+            raise GatewayRefusal('产物标识不合法')
+        directory = self.artifacts_store(execution_id)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fd = os.open(artifact_id, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            raise GatewayRefusal('产物不是普通文件')
+        return fd
+
+    def _copy_regular_file(self, source: Path, destination: Path, *, size_limit: int) -> None:
+        src = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(src)
             if not stat.S_ISREG(info.st_mode):
-                continue
-            registered.append(await self.store.register_artifact(
-                execution_id, relative, info.st_size,
-                mimetypes.guess_type(relative)[0] or 'application/octet-stream'))
+                raise GatewayRefusal('产物不是普通文件')
+            if info.st_size > size_limit:
+                raise GatewayRefusal('产物超过可保存字节上限')
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            dst = os.open(destination, flags, 0o600)
+            try:
+                copied = 0
+                while True:
+                    chunk = os.read(src, 65536)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > size_limit:
+                        raise GatewayRefusal('产物超过可保存字节上限')
+                    os.write(dst, chunk)
+            finally:
+                os.close(dst)
+        finally:
+            os.close(src)
+
+    # ---- artifacts ---------------------------------------------------------
+    async def _register_artifacts(self, execution_id: str, workspace: Path) -> list[dict]:
+        registered = []
+        store_dir = self.artifacts_store(execution_id)
+        for relative, size in self._iter_workspace_files(workspace):
+            if len(registered) >= self.config.max_artifacts:
+                break
+            over = self._workspace_over_limit(workspace)
+            if over:
+                await self.store.append_execution_event(execution_id, 'workspace_limit', over)
+                break
+            item = await self.store.register_artifact(
+                execution_id, relative, size,
+                mimetypes.guess_type(relative)[0] or 'application/octet-stream')
+            stored = store_dir / item['artifact_id']
+            if not stored.exists():
+                try:
+                    self._copy_regular_file(workspace / relative, stored,
+                                            size_limit=self.config.max_workspace_bytes)
+                except (OSError, GatewayRefusal):
+                    continue
+            registered.append(item)
         return registered
 
     def _list_workspace_files(self, workspace: Path) -> list[str]:
-        """Ordinary files a run left, bounded and never through a link."""
         found: list[str] = []
-        root = workspace.resolve()
-        for path in sorted(workspace.rglob('*')):
+        for relative, _size in self._iter_workspace_files(workspace):
             if len(found) >= self.config.max_artifacts:
                 break
-            if path.is_symlink():
-                continue
-            try:
-                resolved = path.resolve()
-                info = os.stat(resolved)
-            except OSError:
-                continue
-            if root not in resolved.parents or not stat.S_ISREG(info.st_mode):
-                continue
-            found.append(str(resolved.relative_to(root)))
+            found.append(relative)
         return found
 
     @staticmethod
     def _write_control(path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
                 stream.write(content)

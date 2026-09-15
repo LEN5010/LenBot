@@ -63,6 +63,10 @@ class GatewayConfig(BaseModel):
     max_output_chars: int = Field(default=12000, ge=100, le=100_000)
     max_artifacts: int = Field(default=1000, ge=1, le=10000,
                                description='一次执行登记产物条目上限；超出时只登记已列出的部分')
+    max_workspace_bytes: int = Field(default=64 * 1024 * 1024, ge=1024, le=1024 * 1024 * 1024,
+                                     description='单次执行工作目录字节上限；超出时停止并如实标记')
+    max_workspace_files: int = Field(default=2000, ge=1, le=100_000,
+                                     description='单次执行工作目录普通文件数上限')
     cleanup_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     start_confirm_attempts: int = Field(default=20, ge=1, le=200)
     start_confirm_interval_seconds: float = Field(default=0.25, gt=0, le=5)

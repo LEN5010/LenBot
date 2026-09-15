@@ -32,4 +32,4 @@ HTTP(S) 主机按配置白名单检查；`*` 表示允许任意公网主机，�
 
 execution/protocol、client、journal 和 services/worker_gateway 已存在，但 WorkspaceService 没有调用该客户端。当前不能宣称 LenBot 已移除容器运行时访问、执行已迁到独立服务或两库已同步。
 
-新 Gateway 的 HTTP 解析、短执行/取消/重启、未知终止清理、工作区归属、UID/卷及文件资源限制存在 [FX06—FX10](social-agent-c01-c10-fix.md) 缺口。已有宿主路径的安全文件打开和目录限制不会自动出现在新服务。C11 正式切换前须修复相关项，并按完整计划补实际环境证据；输入/媒体导入等后续功能不因此提前开放。
+新 Gateway 源码已按 [FX06—FX10](social-agent-c01-c10-fix.md) 修订状态机、工作区占用、HTTP 分类、worker GID 权限和产物描述符打开。它仍未接入 `run_python`，不能当作执行隔离已完成。C11 正式切换前须补实际环境证据；输入/媒体导入等后续功能不因此提前开放。

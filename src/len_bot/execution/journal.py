@@ -26,7 +26,8 @@ from len_bot.execution.protocol import (
 # container's removal is a separate recorded fact, not a change of outcome.
 ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
     ExecutionState.ACCEPTED: frozenset({
-        ExecutionState.STARTING, ExecutionState.FAILED, ExecutionState.CANCEL_REQUESTED}),
+        ExecutionState.STARTING, ExecutionState.EXITED, ExecutionState.FAILED,
+        ExecutionState.CANCEL_REQUESTED}),
     ExecutionState.STARTING: frozenset({
         ExecutionState.RUNNING, ExecutionState.EXITED, ExecutionState.FAILED,
         ExecutionState.CANCEL_REQUESTED}),
@@ -167,6 +168,12 @@ class ExecutionJournalMixin:
         if row is None:
             return None
         return ExecutionRequest.model_validate_json(row[-1])
+
+    async def executions_for_workspace(self, workspace_id: str) -> list[ExecutionRecord]:
+        rows = await (await self._db.execute(
+            f"SELECT {_RECORD_COLUMNS} FROM execution_runs WHERE workspace_id=?"
+            " ORDER BY accepted_at,execution_id", (workspace_id,))).fetchall()
+        return [record for record in map(_decode_execution, rows) if record is not None]
 
     async def executions_for_job(self, scene_id: str, job_id: str) -> list[ExecutionRecord]:
         rows = await (await self._db.execute(

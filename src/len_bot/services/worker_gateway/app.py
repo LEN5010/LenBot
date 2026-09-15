@@ -23,11 +23,12 @@ business result stays in LenBot's ledger.
 from __future__ import annotations
 
 import mimetypes
+import os
 import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 from len_bot.execution.journal import ExecutionIdentityConflict
 from len_bot.execution.protocol import ExecutionRequest
@@ -55,8 +56,6 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         except GatewayRefusal as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ExecutionIdentityConflict as error:
-            # A conflict is the caller's own decision to revisit: it already
-            # holds this execution id and must query it instead of resubmitting.
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
@@ -117,15 +116,28 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         # The path is re-resolved through the same rule the workspace uses and
         # re-checked as an ordinary file: a registered row never becomes a way
         # to open a link or a directory.
-        root = runner.workspace_directory(record.workspace_id)
-        candidate = (root / artifact['path']).resolve()
-        if root not in candidate.parents or candidate.is_symlink() or not candidate.is_file():
-            raise HTTPException(status_code=409, detail='产物不再是可下载的普通文件')
-        return FileResponse(candidate,
-                            media_type=artifact['media_type']
-                            or mimetypes.guess_type(candidate.name)[0]
-                            or 'application/octet-stream',
-                            filename=Path(artifact['path']).name)
+        try:
+            fd = runner.open_stored_artifact(artifact['execution_id'], artifact_id)
+        except GatewayRefusal as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except OSError:
+            raise HTTPException(status_code=409, detail='产物不再是可下载的普通文件') from None
+
+        def chunks():
+            try:
+                while True:
+                    data = os.read(fd, 65536)
+                    if not data:
+                        break
+                    yield data
+            finally:
+                os.close(fd)
+
+        media_type = (artifact['media_type'] or mimetypes.guess_type(artifact['path'])[0]
+                      or 'application/octet-stream')
+        filename = Path(artifact['path']).name
+        return StreamingResponse(chunks(), media_type=media_type, headers={
+            'Content-Disposition': f'attachment; filename="{filename}"'})
 
     @app.on_event('startup')
     async def reconcile():

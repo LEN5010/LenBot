@@ -79,31 +79,33 @@ class JobStoreMixin(SkillStoreMixin):
         from len_bot.runtime.capabilities import subject_for
         return subject_for(initiator, scene_id).billing_subject
 
-    def reservation_policy_for(self, initiator, scene_id: str, now: float):
+    def reservation_policy_for(self, initiator, scene_id: str, now: float, *,
+                               work_operation: str = 'information'):
         """The quota policy a work runs under, plus the grant that named it.
 
-        The base is the operator's own default policy (`resources.policies`),
-        and a grant's `resource_policy` name replaces it when it resolves.
-        Resolving the name here is what lets an operator point a grant at one
-        policy instead of every layer copying a number; a grant that names
-        nothing — or names a policy that no longer exists — keeps the default,
-        which is the project's own 10M per work and 30M per user per day.
+        The grant is the one that authorized this work's own capability, not
+        an unrelated long_work row.  A named policy that no longer exists is
+        refused rather than replaced by the empty default.
         """
         from len_bot.cognition.budget import ReservationPolicy
         from len_bot.runtime.capabilities import Capability, subject_for
         base = getattr(self, 'reservation_policy', None) or ReservationPolicy()
         authority = getattr(self, 'capability_authority', None)
         if authority is None:
-            return base, None
+            return base, None, None
         try:
             subject = subject_for(initiator, scene_id)
         except ValueError:
-            return base, None
-        grant = authority.grant_for(subject, Capability.LONG_WORK, now=now)
+            return base, None, None
+        grant = None
+        for capability in authority.required_for_work(work_operation) or (Capability.LONG_WORK,):
+            grant = authority.grant_for(subject, capability, now=now)
+            if grant is not None:
+                break
         named = authority.policy_for_grant(grant)
         if named is not None:
-            return named, grant.grant_id
-        return base, grant.grant_id if grant is not None else None
+            return named, grant.grant_id, grant
+        return base, grant.grant_id if grant is not None else None, grant
 
     def budget_snapshot(self, *, token_limit: int | None = None):
         """The execution and ceiling facts a work is created under.
@@ -128,7 +130,8 @@ class JobStoreMixin(SkillStoreMixin):
             maintenance_output_tokens=config.maintenance_output_tokens,
             token_limit=token_limit)
 
-    async def reserve_job_budget_in_transaction(self, job_id, scene_id, initiator):
+    async def reserve_job_budget_in_transaction(self, job_id, scene_id, initiator, *,
+                                                work_operation: str = 'information'):
         """Hold this work's budget inside the caller's existing write transaction.
 
         Called from `apply_job_proposals_in_transaction`, which already runs
@@ -143,7 +146,14 @@ class JobStoreMixin(SkillStoreMixin):
         reservable; when neither exists the hold is None and the work's own
         deadline and message limits are its whole stopping condition.
         """
-        policy, grant_id = self.reservation_policy_for(initiator, scene_id, self.clock())
+        policy, grant_id, grant = self.reservation_policy_for(
+            initiator, scene_id, self.clock(), work_operation=work_operation)
+        if grant is not None and grant.concurrency is not None:
+            active = await self.count_subject_active_jobs(
+                self.billing_subject_for(initiator, scene_id), exclude_job_id=job_id)
+            if active >= grant.concurrency:
+                raise ValueError(
+                    f'该主体并发工作已达授予上限 {grant.concurrency}；请等待已有工作结束，或由运营者修订授予')
         snapshot = self.budget_snapshot()
         tokens = policy.work_reservation(model_steps=snapshot.job_max_steps,
             context_tokens=snapshot.job_context_tokens, output_tokens=snapshot.work_output_tokens)
@@ -181,7 +191,7 @@ class JobStoreMixin(SkillStoreMixin):
         """
         if initiator is None:
             raise ValueError('This work has no typed initiator; continuing it would have no account to hold against')
-        policy, _grant_id = self.reservation_policy_for(initiator, scene_id, self.clock())
+        policy, _grant_id, _grant = self.reservation_policy_for(initiator, scene_id, self.clock())
         await self.rehold_work_in_transaction(
             job_id=job_id, scene_limit=policy.daily_scene_token_limit,
             daily_limit=policy.daily_user_token_limit)
@@ -235,6 +245,17 @@ class JobStoreMixin(SkillStoreMixin):
             except BaseException:
                 await self._db.rollback()
                 raise
+
+    async def count_subject_active_jobs(self, subject: str, *, exclude_job_id: str | None = None) -> int:
+        """How many of this account's works are still occupying a live hold."""
+        row = await (await self._db.execute(
+            """SELECT COUNT(*) FROM usage_reservations r
+               JOIN tasks t ON t.id=r.job_id AND t.scene_id=r.scene_id
+               WHERE r.subject=? AND r.status='held'
+                 AND t.status IN ('pending','claimed','processing')
+                 AND (? IS NULL OR r.job_id!=?)""",
+            (subject, exclude_job_id, exclude_job_id))).fetchone()
+        return int(row[0] or 0)
 
     async def job_reservation(self, job_id):
         names = ["job_id", "scene_id", "subject", "day_key", "policy_name", "reserved_tokens", "limit_tokens",
@@ -485,7 +506,8 @@ class JobStoreMixin(SkillStoreMixin):
                 # the hold: a later revision or resume reads these rather than
                 # today's defaults, and a work whose result has been settled
                 # still knows what it was originally allowed to spend.
-                tokens = await self.reserve_job_budget_in_transaction(job_id, scene_id, proposal.initiator)
+                tokens = await self.reserve_job_budget_in_transaction(
+                    job_id, scene_id, proposal.initiator, work_operation=proposal.work_operation)
                 snapshot = self.budget_snapshot(token_limit=tokens)
                 await self._db.execute("UPDATE agent_jobs SET budget_json=? WHERE id=? AND scene_id=?",
                     (snapshot.model_dump_json(), job_id, scene_id))

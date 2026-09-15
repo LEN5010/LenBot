@@ -59,7 +59,8 @@ class GatewayStore(ExecutionJournalMixin):
     async def count_unfinished(self) -> int:
         row = await (await self._db.execute(
             "SELECT COUNT(*) FROM execution_runs WHERE state IN"
-            " ('accepted','starting','running','cancel_requested')")).fetchone()
+            " ('accepted','starting','running','cancel_requested',"
+            "'termination_unconfirmed')")).fetchone()
         return int(row[0] or 0)
 
     async def events_for(self, execution_id: str) -> list[tuple[int, str]]:

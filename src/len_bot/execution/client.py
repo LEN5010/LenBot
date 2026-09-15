@@ -17,7 +17,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.execution.protocol import (
-    ExecutionEvent, ExecutionRecord, ExecutionRequest, TerminationReport,
+    ExecutionEvent, ExecutionRecord, ExecutionRequest, ExecutionState, TerminationReport,
 )
 
 # References are names the Gateway resolves against its own deployment
@@ -37,11 +37,28 @@ class WorkerGatewayConfig(BaseModel):
 
 
 class GatewayRefused(RuntimeError):
-    """The Gateway answered and refused; nothing was started."""
+    """The Gateway answered and refused before starting this request."""
 
     def __init__(self, status_code: int, detail: str):
         super().__init__(f'Gateway 拒绝（HTTP {status_code}）：{detail}')
         self.status_code = status_code
+        self.detail = detail
+
+
+class GatewayConflict(RuntimeError):
+    """The identity already exists or the workspace is occupied; query that id."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(f'Gateway 身份冲突（HTTP {status_code}）：{detail}')
+        self.status_code = status_code
+        self.detail = detail
+
+
+class GatewayResultUnknown(RuntimeError):
+    """The answer cannot prove whether an execution exists; do not start a new id."""
+
+    def __init__(self, detail: str):
+        super().__init__(f'Gateway 结果不能确认：{detail}')
         self.detail = detail
 
 
@@ -91,22 +108,54 @@ class WorkerGatewayClient:
             response = await self._client.request(method, path, json=json, params=params)
         except httpx.HTTPError as error:
             raise GatewayUnavailable(f'Gateway 未响应：{error}') from None
-        if response.status_code >= 400:
+        if response.status_code == 409:
+            raise GatewayConflict(response.status_code, _detail_of(response))
+        if 400 <= response.status_code < 500:
             raise GatewayRefused(response.status_code, _detail_of(response))
-        return response.json()
+        if response.status_code >= 500:
+            raise GatewayResultUnknown(f'HTTP {response.status_code}：{_detail_of(response)}')
+        try:
+            return response.json()
+        except ValueError as error:
+            raise GatewayResultUnknown(f'响应不是合法 JSON：{error}') from None
+
+    @staticmethod
+    def _record(payload) -> ExecutionRecord:
+        if not isinstance(payload, dict):
+            raise GatewayResultUnknown('执行记录不是对象')
+        data = dict(payload)
+        state = data.get('state')
+        if isinstance(state, str):
+            try:
+                data['state'] = ExecutionState(state)
+            except ValueError as error:
+                raise GatewayResultUnknown(f'无法解析执行状态：{error}') from None
+        try:
+            return ExecutionRecord.model_validate(data)
+        except Exception as error:
+            raise GatewayResultUnknown(f'执行记录无法解析：{error}') from None
 
     async def submit(self, request: ExecutionRequest) -> SubmittedExecution:
         """Register one execution; the same id is never started twice."""
         payload = await self._request('POST', '/v1/executions', json=request.model_dump(mode='json'))
-        return SubmittedExecution.model_validate(payload)
+        if not isinstance(payload, dict):
+            raise GatewayResultUnknown('提交响应不是对象')
+        return SubmittedExecution(record=self._record(payload.get('record')),
+                                  accepted=bool(payload.get('accepted')))
 
     async def get(self, execution_id: str) -> ExecutionRecord:
-        return ExecutionRecord.model_validate(await self._request('GET', f'/v1/executions/{execution_id}'))
+        return self._record(await self._request('GET', f'/v1/executions/{execution_id}'))
 
     async def cancel(self, execution_id: str, reason: str) -> CancellationOutcome:
         payload = await self._request('POST', f'/v1/executions/{execution_id}/cancel',
                                       json={'reason': reason})
-        return CancellationOutcome.model_validate(payload)
+        if not isinstance(payload, dict):
+            raise GatewayResultUnknown('取消响应不是对象')
+        termination = payload.get('termination')
+        return CancellationOutcome(
+            record=self._record(payload.get('record')),
+            requested=bool(payload.get('requested')),
+            termination=None if termination is None else TerminationReport.model_validate(termination))
 
     async def events(self, execution_id: str, after: int = 0) -> list[ExecutionEvent]:
         """Facts with a sequence above ``after``; re-reading never repeats one."""
