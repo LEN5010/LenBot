@@ -33,6 +33,34 @@ async def access_settings(request: Request, user: str = Depends(get_current_user
     return request.app.state.runtime.query_service.access_settings()
 
 
+CAPABILITY_TITLES = {
+    'long_work': '后台工作与恢复',
+    'public_research': '系统公共研究（只读 global-safe）',
+    'network_python': '联网 Python（尚未实现）',
+    'proactive_chat': '主动聊天（尚未实现）',
+    'interest_share': '公共兴趣分享（尚未实现）',
+    'send_file': '发送文件（尚未实现）',
+    'bilibili_authenticated_read': 'B 站登录态读取（尚未实现）',
+    'bilibili_like': 'B 站点赞（尚未实现）',
+    'bilibili_favorite': 'B 站收藏（尚未实现）',
+}
+
+
+@router.get("/capabilities")
+async def capability_vocabulary(user: str = Depends(get_current_user)):
+    """The vocabulary an operator may grant, with which entries are implemented.
+
+    The panel offers these names as a choice and states the ones that are
+    only vocabulary; naming a capability was never the same as implementing
+    it, and a grant for an unimplemented capability still permits nothing.
+    """
+    implemented = {'long_work', 'public_research'}
+    return {'items': [{'value': capability.value,
+                       'title': CAPABILITY_TITLES.get(capability.value, capability.value),
+                       'implemented': capability.value in implemented}
+                      for capability in Capability]}
+
+
 class CapabilityGrantEdit(BaseModel):
     """Fields an operator may submit; the issuer is bound after authentication."""
     model_config = ConfigDict(extra='forbid')

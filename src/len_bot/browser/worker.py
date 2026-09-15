@@ -8,11 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class BrowserConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    allowed_hosts: list[str] = Field(default_factory=list)
-    headless: bool = True
-    timeout_seconds: float = Field(default=20.0, gt=0, le=120)
-    max_text_chars: int = Field(default=12000, ge=100, le=100000)
-    allow_interactions: bool = False
+    allowed_hosts: list[str] = Field(default_factory=list, title="允许访问的域名",
+        description="只读白名单，逐个域名填写；空列表表示不访问任何站点")
+    headless: bool = Field(default=True, title="无界面运行",
+        description="保持开启；这是运行参数，不是隔离证明")
+    timeout_seconds: float = Field(default=20.0, gt=0, le=120, title="单次读取超时（秒）",
+        description="单次页面读取的期限，不超过 120 秒")
+    max_text_chars: int = Field(default=12000, ge=100, le=100000, title="正文保留字符数",
+        description="保留的页面正文字符数，100—100000")
+    allow_interactions: bool = Field(default=False, title="允许页面交互",
+        description="默认关闭；开启后仍只在获准的功能范围内操作，不替代隔离验收")
 
 
 class UrlRequest(BaseModel):

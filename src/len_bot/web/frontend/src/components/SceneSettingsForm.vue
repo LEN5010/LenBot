@@ -16,6 +16,18 @@ const dirty = computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==ori
 const {confirmLeave} = useUnsavedChanges(dirty)
 onBeforeRouteUpdate((to,from)=>to.params.sceneId===from.params.sceneId&&to.query.tab===from.query.tab||confirmLeave())
 const isGroup = computed(()=>/^group:[1-9]\d*$/.test(props.sceneId))
+// The scene form links the same plugin switch to the global facts instead of
+// keeping its own copy: "this plugin is on here" is only meaningful next to
+// "it is configured and enabled globally", which the plugin list already
+// owns.  The sentence states the three facts in their real order, so turning
+// a switch on is not mistaken for the plugin becoming usable.
+const pluginFact = plugin => !plugin.configured ? '全局参数尚未填写，本群开关保存后也不会装载'
+  : !plugin.enabled ? '全局已停用，本群开关保存后不会生效'
+  : '全局已配置并启用；这里决定本群是否使用'
+// Readiness is the plugin's own declared requirements, not a second list of
+// "ready" plugins: a scene config with required fields is not usable until
+// those fields are filled.
+const readyToAdd = plugin => plugin.configured && Object.keys((plugin.scene_config_schema||{}).properties||{}).length
 function makeDraft(settings) {
   if (!settings) return null
   return {...settings,plugins:Object.fromEntries(Object.entries(settings.plugins).map(([id,item])=>[id,
@@ -81,6 +93,7 @@ onBeforeUnmount(()=>{++requestId})
         <v-btn v-if="!draft" color="primary" variant="tonal" @click="beginConfiguration">为本群填写设置</v-btn>
         <v-form v-if="draft" :disabled="saving" @submit.prevent="save">
           <div class="settings-actions mb-4"><v-btn variant="tonal" :disabled="saving" @click="setChat(true)">填为聊天群</v-btn><v-btn variant="tonal" :disabled="saving" @click="setChat(false)">填为仅播报群</v-btn><span class="muted-copy">只修改启用与聊天字段，仍需保存。</span></div>
+          <p class="muted-copy mb-4">“填为仅播报群”只关掉本群普通成员闲聊（QQ 白名单仍可提问）：它不开启任何插件，也不代表已有播报来源。要真的播报，还需在下方为本群开启对应插件，且该插件已在全局配置并启用。</p>
           <div class="settings-grid">
             <v-switch v-model="draft.enabled" label="启用本群" color="primary" />
             <v-switch v-model="draft.chat" label="允许普通成员聊天" color="primary" />
@@ -88,8 +101,8 @@ onBeforeUnmount(()=>{++requestId})
           </div>
           <p class="muted-copy">开启后，本群已提交的认识和历史摘要可能发送给根配置中绑定的检索供应方；关闭时只使用本地词面读取。</p>
           <div v-for="plugin in record.plugins" :key="plugin.id" class="plugin-setting">
-            <div class="settings-heading"><h4>{{ plugin.name }}</h4><v-btn v-if="!draft.plugins[plugin.id]" variant="tonal" :disabled="!plugin.configured" @click="addPlugin(plugin)">添加本群设置</v-btn></div>
-            <p class="muted-copy mb-3">{{ !plugin.configured?'尚未配置全局参数':!plugin.enabled?'全局已停用':'全局已启用' }}</p>
+            <div class="settings-heading"><h4>{{ plugin.name }}</h4><v-btn v-if="!draft.plugins[plugin.id]" variant="tonal" :disabled="!readyToAdd(plugin)" @click="addPlugin(plugin)">{{ readyToAdd(plugin)?'添加本群设置':'需先填全局参数' }}</v-btn></div>
+            <p class="muted-copy mb-3">{{ pluginFact(plugin) }}</p>
             <template v-if="draft.plugins[plugin.id]">
               <v-switch v-model="draft.plugins[plugin.id].enabled" label="在本群启用此插件" color="primary" />
               <PluginConfigFields v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" />
