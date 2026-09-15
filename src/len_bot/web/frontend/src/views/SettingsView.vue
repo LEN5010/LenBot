@@ -29,6 +29,30 @@ const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), 
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
 const capabilities = ref([]), plugins = ref([]), scopeOptions = ref([])
+// References an operator may choose instead of typing: the scenes already
+// known to the control plane, the plugins in the declared catalog, the client
+// ids seen in this scene, and the named quota policies.  These are the
+// registered objects the panel can list; "系统用途" stays a written value
+// because its vocabulary is not a registry.
+const policyOptions = ref([]), referenceError = ref(''), participantOptions = ref([])
+async function loadReferences() {
+  try {
+    const [scenes, catalog, policies] = await Promise.all([
+      api('/api/cockpit/scenes'), api('/api/plugins/list'), api('/api/settings/resources')])
+    scopeOptions.value = scenes.scenes.map(scene=>({title:`${scene.display_name} · ${scene.scene_id}`,value:scene.scene_id}))
+    plugins.value = catalog.map(item=>({title:`${item.name} · ${item.id}`,value:item.id}))
+    policyOptions.value = Object.keys(policies.policies || {}).map(name=>({title:name,value:name}))
+  } catch(e) { referenceError.value=e.message }
+}
+async function loadParticipants(sceneId) {
+  participantOptions.value = []
+  if (!/^group:[1-9]\d*$/.test(sceneId || '')) return
+  try {
+    const detail = await api(`/api/cockpit/scenes/${encodeURIComponent(sceneId)}`)
+    participantOptions.value = Object.entries(detail.session.participants || {})
+      .map(([id,item])=>({title:`${item.card || item.nickname || id} · ${id}`,value:id}))
+  } catch(e) { referenceError.value=e.message }
+}
 // An operator picks a name; the panel never asks for a capability enum, an
 // absolute Unix time or a version number.  Those stay server-side facts.
 const capabilityItems = computed(()=>capabilities.value.map(item=>({...item,
@@ -87,7 +111,7 @@ async function load() {
       const settings = await api('/api/settings/attention'); if (request!==requestId) return
       if (!attentionDirty.value) { const {attention_keywords,...rest}=settings; attention.value={...rest,keywords:attention_keywords.join('\n')}; attentionOriginal.value=JSON.stringify(attention.value) }
     } else if (currentTab==='access') {
-      const [settings, vocabulary] = await Promise.all([api('/api/settings/access'),api('/api/settings/capabilities')])
+      const [settings, vocabulary] = await Promise.all([api('/api/settings/access'),api('/api/settings/capabilities'),loadReferences()])
       if (request!==requestId) return
       capabilities.value = vocabulary.items
       if (!accessDirty.value) {
@@ -96,6 +120,7 @@ async function load() {
           expiresInput:toLocalInput(grant.expires_at)}))
         grantsOriginal.value=JSON.stringify(grants.value)
       }
+      await loadParticipants(grants.value.find(grant=>grant.principal_type!=='system')?.scene_id)
     } else if (currentTab==='resources') {
       const settings = await api('/api/settings/resources'); if (request!==requestId) return
       if (!quotaDirty.value) { quotaText.value=JSON.stringify(settings.policies,null,2); quotaOriginal.value=quotaText.value }
@@ -444,12 +469,14 @@ watch(tab,load,{immediate:true})
           </v-alert>
           <div class="form-grid">
             <v-select v-model="grant.principal_type" label="谁" :items="[{title:'一个群友（人类）',value:'human'},{title:'系统用途',value:'system'},{title:'一个插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
-            <v-text-field v-model="grant.principal_id" :data-field="`principal_id:${index}`" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :hint="grant.principal_type==='human'?'填 QQ 账号；不是昵称或群名片。':grant.principal_type==='plugin'?'填插件 ID。':'填明确的系统用途标识，例如 heartbeat。'" persistent-hint required />
-            <v-text-field v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" label="在哪个场景生效" placeholder="group:123" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" required />
-            <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" hint="明确的系统范围，例如 heartbeat。" persistent-hint required />
+            <v-combobox v-if="grant.principal_type==='human'" v-model="grant.principal_id" :data-field="`principal_id:${index}`" :items="participantOptions" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="从本群已记录成员中选择，或直接填 QQ 账号；昵称与群名片不是账号。" persistent-hint required />
+            <v-select v-else-if="grant.principal_type==='plugin'" v-model="grant.principal_id" :data-field="`principal_id:${index}`" :items="plugins" label="哪个插件" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="从当前已声明插件中选择。" persistent-hint required />
+            <v-text-field v-else v-model="grant.principal_id" :data-field="`principal_id:${index}`" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="填明确的系统用途标识，例如 heartbeat。" persistent-hint required />
+            <v-select v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" :items="scopeOptions" label="在哪个场景生效" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`scene_id:${index}`).map(item=>item.message)" hint="从已保存的场景中选择；这里不新建群。" persistent-hint required @update:model-value="loadParticipants($event)" />
+            <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`system_scope:${index}`).map(item=>item.message)" hint="明确的系统范围，例如 heartbeat；该词表不是登记表，需要人工填写。" persistent-hint required />
             <v-select v-model="grant.capabilityText" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
             <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（业务时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" hint="留空表示长期有效；保存时换算为绝对时间。" persistent-hint />
-            <v-text-field v-model="grant.resource_policy" label="使用哪项额度策略" hint="引用“额度策略”里的名称；留空使用默认策略。引用失效的名称会被拒绝。" persistent-hint />
+            <v-select v-model="grant.resource_policy" :items="policyOptions" label="使用哪项额度策略" clearable hint="从已保存的策略中选择；留空使用默认策略。没有可选策略时先去“额度策略”页保存。" persistent-hint />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
             <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>
           <p class="muted mt-2">授予 ID 与版本由服务端负责：保存时按内容自动递增，签发者取当前登录账号。{{ grant.grant_id?`当前 ID ${grant.grant_id} · 第 ${grant.revision} 版；修改内容后版本自动加一。`:'新建的授予由服务端生成 ID。' }}</p>

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.execution.client import WorkerGatewayConfig
 from len_bot.execution.workspace import WorkspaceConfig
@@ -28,8 +28,10 @@ class WorkspacePluginConfig(BaseModel):
                 'required': True,
                 'hint': '本机试用 worker 与隔离 gateway 只能选择一个；两者之间没有运行时回落，'
                         '切换由运营者改根配置完成。未选中的后端不会写入配置。'}]})
-    worker: WorkspaceConfig | None = None
-    gateway: WorkerGatewayConfig | None = None
+    worker: WorkspaceConfig | None = Field(default=None, title="本机试用 worker",
+        description="LenBot 调用宿主容器运行时；需要有 docker 或 podman 与可用镜像")
+    gateway: WorkerGatewayConfig | None = Field(default=None, title="隔离 Gateway",
+        description="提交给独立网关进程执行；网关及其镜像需另行部署")
 
     @model_validator(mode='after')
     def one_backend(self):
