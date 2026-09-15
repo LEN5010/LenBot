@@ -100,6 +100,9 @@ const policyEditable = item => item && ['work_token_limit','daily_user_token_lim
 const rawPolicies = computed(()=>Object.fromEntries(Object.entries(quotaRecord.value).filter(([,item])=>!policyEditable(item))))
 const quotaRecord = ref({})
 const quotaProblemsFor = index => quotaProblems.value.filter(item=>item.key===`policy:${index}`)
+// The summary names the same sentence as the policy it belongs to, and moves
+// the operator to that policy instead of leaving a bare list at the bottom.
+const focusPolicy = key => document.querySelector(`[data-policy="${key}"]`)?.scrollIntoView({block:'center',behavior:'smooth'})
 // The JSON pane is a read-only view of what is saved, not a second editor: it
 // has no save action and leaving it rebuilds the rows from the stored record,
 // so a value typed there can never be silently half-submitted.
@@ -310,7 +313,16 @@ async function saveQuota() {
     quotaText.value=JSON.stringify(result.settings.policies,null,2)
     quotaRows.value=policyRows(result.settings.policies); quotaOriginal.value=JSON.stringify(quotaRows.value)
     message.value=result.message
-  } catch(e) { error.value=e.message } finally { busy.value='' }
+  } catch(e) {
+    // A server rejection names the policy it belongs to; the same sentence is
+    // shown beside that policy with a position the operator can act on.
+    quotaProblems.value=(Array.isArray(e.details)?e.details:[]).map(item=>{
+      const name=(item.loc||[]).filter(part=>typeof part==='string'&&part!=='body'&&part!=='policies')[0]
+      const index=quotaRows.value.findIndex(row=>row.name.trim()===name)
+      return {key:index>=0?`policy:${index}`:'',message:`${name?`策略“${name}” · `:''}${item.msg}`}
+    })
+    error.value=e.message
+  } finally { busy.value='' }
 }
 async function saveTime() {
   if (busy.value || !timeDraft.value) return
@@ -560,7 +572,7 @@ watch(tab,load,{immediate:true})
       <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；留空表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
       <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
         <template v-if="!quotaRaw">
-          <div v-for="(row,index) in quotaRows" :key="index" class="wide policy-row">
+          <div v-for="(row,index) in quotaRows" :key="index" class="wide policy-row" :data-policy="`policy:${index}`">
             <div class="policy-heading"><h3>策略 {{ index+1 }}</h3><v-btn variant="text" color="error" size="small" :disabled="!!busy" @click="quotaRows.splice(index,1)">删除这项策略</v-btn></div>
             <div class="policy-fields">
               <v-text-field v-model="row.name" label="策略名称" hint="能力授予按这个名字引用；改名等于新建一项策略" persistent-hint required />
@@ -573,14 +585,14 @@ watch(tab,load,{immediate:true})
           <div v-if="!quotaRows.length" class="wide muted">当前没有具名策略；不配置时各维度不设 token 上限，由期限和消息上限结束。</div>
           <div class="wide actions"><v-btn variant="tonal" :disabled="!!busy" @click="quotaRows.push({name:'',work:null,user:null,scene:null})">添加一项策略</v-btn></div>
           <p class="wide muted">这里改的是往后新建工作的上限；已在执行的工作保留创建时的快照。已保存的精确取值在下方 JSON 里逐字对照。</p>
+          <ul v-if="quotaProblems.length" class="wide error-summary">
+            <li v-for="problem in quotaProblems" :key="problem.message"><button class="error-link" type="button" @click="focusPolicy(problem.key)">{{ problem.message }}</button></li>
+          </ul>
         </template>
-        <v-textarea v-if="quotaRaw" v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}。这里的编辑不影响上方表单；返回表单时会按当前已保存内容重建行。' persistent-hint />
+        <template v-if="quotaRaw"><v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}。' persistent-hint /><p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p></template>
         <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略的形状不是这三个字段（{{ Object.keys(rawPolicies).join('、') }}），表单原样保留它们，只在保存时一起写回。</p>
         <ResourceViewer v-if="!quotaRaw" class="wide" title="已保存的精确取值（只读对照）" :content="quotaText" />
-        <p v-else class="wide muted">JSON 视图只用于查看与复制；保存仍以表单行为准。需要改形状时用上方“按 JSON 编辑”切换到表单再逐项填写。</p>
-        <template v-if="!Object.keys(rawPolicies).length">
-          <v-btn class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'按 JSON 编辑' }}</v-btn>
-        </template>
+        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'按 JSON 编辑' }}</v-btn>
         <v-btn v-if="!quotaRaw" type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
         <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>

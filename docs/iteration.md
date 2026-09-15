@@ -35,7 +35,7 @@
 ## 实际核对与限制
 
 - `uv run python -m py_compile` 通过本批改动文件；`PluginCatalog.discover([])` 导出全部 11 个已声明插件的 JSON Schema 后核对：顶层字段无缺失标题，`worker`／`gateway`／`browser` 均为可展开的嵌套对象，`worker` 默认镜像与 gateway 超时取值未变；扩展键只出现在声明它们的三个插件上（`x-lenbot-exclusive` 于 workspace 两支，`x-lenbot-enum-labels` 于 `asoul_dynamics`／`bilibili_live_sensor`，`x-lenbot-list-choices` 于 `link_parser`），其余八个插件不带扩展键；枚举标签与 Schema 枚举值逐项覆盖一致。`WorkspacePluginConfig` 对示例配置、纯 gateway（`call_timeout_seconds` 90.0、执行期限 30.0）、空配置、同时给出两个后端四种输入的接受／拒绝已用解释器核对；凭据的替换／保持／清除与 `x-lenbot-exclusive` 的存在用解释器核对；`/api/settings/capabilities` 的返回用解释器直接调用核对。
-- `src/len_bot/web/frontend` 执行 `npm run build` 成功（1.26s）；概览依赖卡与额度策略表单只做了静态代码结论，未在真实实例上核对插件清单取值与保存往返。**未**打开浏览器面板，未取得任何像素或人工页面核对，导航分组、群页分区、插件列表分区、字段级错误定位、授权表单与窄屏表现都只有静态代码结论。U06 要求的键盘进入／返回焦点与窄屏主要动作仍是待人工核对的交互项。
+- `src/len_bot/web/frontend` 执行 `npm run build` 成功（1.33s）；概览依赖卡与额度策略表单只做了静态代码结论，未在真实实例上核对插件清单取值与保存往返；额度策略的服务端字段边界（留空、三个数字被接受，单工作上限 0 与未知字段被拒绝，错误路径为 `policies.<名称>.<字段>`）用解释器核对。**未**打开浏览器面板，未取得任何像素或人工页面核对，导航分组、群页分区、插件列表分区、字段级错误定位、授权表单与窄屏表现都只有静态代码结论。U06 要求的键盘进入／返回焦点与窄屏主要动作仍是待人工核对的交互项。
 - 未运行网关、容器或真实工作；未改真实根配置；未发消息；未重置数据库。
 - 未确认：宿主 `execution_runs` 与网关日志在超时／重启后的对账、取消 park 回原工作、历史产物按 `execution_id` 读取、`mixed_scope_required` 账户在真实数据下的显示、Linux UID/卷映射与 chown 实效、凭据保持／清除在真实保存往返中的表现、授权表单保存后服务端版本递增与签发者写入的真实结果、插件清单字段（`active_enabled`／`state`／`open_scenes`）在真实运行实例上的取值是否与卡片五行一致。
 - 已知未修（记录在案，非本轮任务）：`plugins/net_policy.py` 解析-连接间隙（DNS rebinding 窗口）；面板端口如对外暴露仍建议反代加固；`.backups/` 内多份真实配置副本（含密钥）需人工清理；数据库无保留策略；`reset_conversation_data` 的清理表列表未含 usage_reservations、execution_runs、execution_events。
