@@ -202,11 +202,14 @@ class CapabilityAuthority:
     def policy_for_grant(self, grant: CapabilityGrant | None):
         """The named policy a grant points at, or None when it names nothing.
 
-        A grant carries `resource_policy` as a name because the plan requires a
-        reference instead of a copied number.  An absent or unresolvable name is
-        reported as absent: the caller then uses the project's own default
-        policy, and no layer invents a quota on the grant's behalf.
+        A missing name is absence.  A name that no longer resolves is a
+        refusal: the caller must not silently substitute the default policy.
         """
         if grant is None or not grant.resource_policy:
             return None
-        return self.config_store.current.resources.policies.get(grant.resource_policy)
+        named = self.config_store.current.resources.policies.get(grant.resource_policy)
+        if named is None:
+            raise ValueError(
+                f'授予 {grant.grant_id} 引用的额度策略 {grant.resource_policy} 不存在或已失效，'
+                '不能改用默认策略')
+        return named

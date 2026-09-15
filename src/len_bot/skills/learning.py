@@ -3,6 +3,7 @@ import asyncio
 import json
 import time
 
+from len_bot.cognition.budget import seconds_left_to, work_call_admission
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.agent_loop import _error_text
 from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged, SkillCandidate
@@ -21,7 +22,7 @@ MAINTENANCE_TOOLS = [
 
 
 async def maintain_candidates(runtime, scene_id):
-    store, config = runtime.event_store, runtime.config
+    store = runtime.event_store
     attempted = 0
     for record in await store.list_skill_candidates(scene_id):
         if record["status"] != "pending":
@@ -32,6 +33,11 @@ async def maintain_candidates(runtime, scene_id):
             continue
         if job["result"] is None:
             continue
+        # This maintenance spends the founding work's own allowance and runs
+        # under the limits that work was created with, not today's defaults:
+        # the work's result is what is being processed, so the grant behind it
+        # is the grant that pays for it.
+        config = runtime.job_runner.work_config(job)
         attempted += 1
         started, charged_elapsed = time.monotonic(), 0.0
         try:
@@ -65,12 +71,16 @@ async def maintain_candidates(runtime, scene_id):
                 limits=(config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds))
             charged_elapsed = preparation_elapsed
             await store.set_skill_candidate_status(record["id"], scene_id, "processing")
-            remaining = config.job_max_seconds-balance["elapsed_seconds"]-(time.monotonic()-budget_clock)
-            if remaining <= 0:
+            deadline_at = runtime.job_runner.work_deadline(job)
+            remaining = (seconds_left_to(deadline_at, runtime.clock()) if deadline_at is not None
+                         else config.job_max_seconds-balance["elapsed_seconds"]-(time.monotonic()-budget_clock))
+            if remaining is None or remaining <= 0:
                 raise JobBudgetExhausted("No work runtime remains for skill maintenance",budget_kind='elapsed_time')
             async with asyncio.timeout(remaining):
                 response = await ModelGateway(binding, max_output_tokens=config.maintenance_output_tokens, call_store=store,
-                    scene_id=scene_id, job_id=job["id"], purpose="skill_maintenance").complete(messages, MAINTENANCE_TOOLS, "required")
+                    scene_id=scene_id, job_id=job["id"], purpose="skill_maintenance",
+                    admission=work_call_admission(store, job["id"], now=runtime.clock)).complete(messages, MAINTENANCE_TOOLS, "required")
+
             if response.finish_reason not in {"stop", "tool_calls"} or len(response.tool_calls) != 1:
                 raise ValueError("Skill maintenance must return exactly one save_skill or skip_skill decision")
             call = response.tool_calls[0]
@@ -97,5 +107,9 @@ async def maintain_candidates(runtime, scene_id):
             try:
                 await store.charge_skill_maintenance(job["id"], scene_id, job["revision"], elapsed_seconds=time.monotonic()-started-charged_elapsed)
             except JobChanged:
+                pass
+            try:
+                await store.settle_job_budget(job["id"])
+            except Exception:
                 pass
     return attempted

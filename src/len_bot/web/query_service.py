@@ -179,22 +179,24 @@ class RuntimeQueryService:
         day_key = policy.day_key(store.clock(), timezone)
         items = await store.list_job_reservations(scene_id, subject=subject, day_key=day_key, limit=100)
         accounts = {}
-        for item in items:
-            account = accounts.setdefault(item['subject'], {'subject': item['subject'], 'held': 0, 'used': 0})
-            if item['status'] == 'held':
-                account['held'] += item['reserved_tokens']
-            elif item['status'] == 'settled':
-                account['used'] += (item['usage_tokens'] or 0) + (item['estimated_tokens'] or 0)
-        for account in accounts.values():
+        for row in await store.account_reservation_totals(day_key, subject=subject):
             limit = policy.daily_user_token_limit
-            account['daily_limit'] = limit
-            account['available'] = None if limit is None else max(0, limit - account['held'] - account['used'])
+            accounts[row['subject']] = {
+                'subject': row['subject'], 'held': row['held'], 'used': row['used'],
+                'daily_limit': limit,
+                'available': None if limit is None else max(0, limit - row['held'] - row['used']),
+            }
+        scene_subtotals = None
+        if scene_id is not None:
+            scene_subtotals = await store.account_reservation_totals(
+                day_key, scene_id=scene_id, subject=subject)
         return {
             "day_key": day_key, "timezone": timezone,
             "limits": {"work_token_limit": policy.work_token_limit,
                        "daily_user_token_limit": policy.daily_user_token_limit,
                        "daily_scene_token_limit": policy.daily_scene_token_limit},
             "items": items, "accounts": sorted(accounts.values(), key=lambda row: row['subject']),
+            "scene_subtotals": scene_subtotals,
         }
 
     async def model_usage(self, scene_id=None, *, since=None, until=None, purpose=None, status=None, page=1, page_size=30):

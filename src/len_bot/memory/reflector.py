@@ -58,6 +58,7 @@ class LLMReflector:
         self.memory_limit = memory_limit
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
+        self._last_input_tokens = 0
 
     @staticmethod
     def terminal_definition() -> dict:
@@ -81,8 +82,9 @@ class LLMReflector:
                     "Read this scene's existing reported/inferred beliefs, including the IDs needed to revise them. "
                     "Returns a short page plus offset/next_offset; follow next_offset to continue the same query "
                     "instead of repeating it with a larger limit. Fewer records than requested means the end. "
-                    "Stored beliefs are not original evidence, and a directory page is not a substitute for the "
-                    "original text of this batch."
+                    "A page contains only complete records that fit the remaining request budget; "
+                    "it is not a substitute for the original text of this batch. "
+                    "Stored beliefs are not original evidence."
                 ),
                 "parameters": MemoryLookup.model_json_schema(),
             },
@@ -125,18 +127,37 @@ class LLMReflector:
                 offset=lookup.offset,
             )
             has_more = len(rows) > lookup.limit
-            page = rows[:lookup.limit]
-            next_offset = lookup.offset + len(page) if has_more else None
-            content = json.dumps({
-                'records': [{
-                    'memory_id': item.id, 'scope': item.scope, 'subject': item.subject, 'kind': item.kind.value,
-                    'basis': item.basis.value, 'statement': item.statement, 'created_at': item.created_at,
-                    'expires_at': item.expires_at, 'status': item.status.value,
-                } for item in page],
-                'offset': lookup.offset, 'returned': len(page), 'next_offset': next_offset,
-                'note': '认识账本是既有判断，不是原始证据；修订时使用memory_id。',
-            }, ensure_ascii=False)
-            return ToolResult(status="ok" if page else "no_results", content=content,
+            candidates = rows[:lookup.limit]
+            budget = self.context_tokens - self.output_tokens
+            remaining = max(0, budget - self._last_input_tokens - 256)
+
+            def payload(items, *, next_offset, note):
+                return json.dumps({
+                    'records': [{
+                        'memory_id': item.id, 'scope': item.scope, 'subject': item.subject,
+                        'kind': item.kind.value, 'basis': item.basis.value, 'statement': item.statement,
+                        'created_at': item.created_at, 'expires_at': item.expires_at,
+                        'status': item.status.value,
+                    } for item in items],
+                    'offset': lookup.offset, 'returned': len(items), 'next_offset': next_offset,
+                    'note': note,
+                }, ensure_ascii=False)
+
+            fitted = list(candidates)
+            next_offset = lookup.offset + len(fitted) if has_more or len(fitted) < len(candidates) else None
+            note = '认识账本是既有判断，不是原始证据；修订时使用memory_id。本页只含装得下的完整记录。'
+            while fitted and estimate_tokens(payload(fitted, next_offset=lookup.offset + len(fitted), note=note)) > remaining:
+                fitted.pop()
+            if candidates and not fitted:
+                content = payload([], next_offset=lookup.offset, note=(
+                    '当前请求余量连一条完整认识记录都装不下；分页位置未推进，原区间未覆盖。'))
+                return ToolResult(status='error', content=content, coverage='memory_ledger_unread',
+                                  evidence_kind='retrieval')
+            if len(fitted) < len(candidates):
+                has_more = True
+            next_offset = lookup.offset + len(fitted) if has_more else None
+            content = payload(fitted, next_offset=next_offset, note=note)
+            return ToolResult(status="ok" if fitted else "no_results", content=content,
                               coverage="memory_ledger", evidence_kind="retrieval")
 
         async def finish(arguments: dict) -> ReflectionResult:
@@ -162,6 +183,7 @@ class LLMReflector:
         async def prepare_request(trajectory, definitions):
             estimate = estimate_request(trajectory, definitions)
             budget = self.context_tokens - self.output_tokens
+            self._last_input_tokens = estimate['input_tokens']
             trace['input_estimate'] = estimate
             trace['input_budget_tokens'] = budget
             if estimate['input_tokens'] > budget:

@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。公共导出在 [plugins/api.py](../src/len_bot/plugins/api.py)；执行和事实边界见[架构](architecture.md)，部署与配置操作见[运行手册](operations.md)。未实现的本轮目标只记在[当前任务](iteration.md)。
+面向维护 LenBot 业务插件的开发者。本文按 `2c862c6` 的公共接口整理；导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行和事实边界见[架构](architecture.md)，部署见[运行手册](operations.md)。后续目标见完整计划，已知缺陷见 [fix 文档](social-agent-c01-c10-fix.md)，最新进度只记在[当前任务](iteration.md)。
 
 ## 目录、描述符与配置
 
@@ -18,34 +18,31 @@
 
 在 `on_load(context)` 调用 `register_tool`，提供名称、用途、明确的 Pydantic 参数模型、handler、read/proposal 类别和可用角色。低频工具可声明 deferred，并提供业务别名和关键词；实际执行名保持唯一。参数模型同时用于校验与 Schema，handler 接收已解析参数和本次 `PluginCallContext`。
 
-调用字段包括当前场景、请求者、真实 source_event_id、时间、读取截点、episode/job、角色、工具调用 ID、PluginOrigin 和当前提案 Ledger。系统来源没有人类请求者，不伪造 user 身份。长期插件实例不保存可变的“当前群”。只读服务返回 `ToolResult`，暂存操作复用 Ledger；原资料与视觉覆盖、提交和送达的含义继续由架构规定。
+调用字段包括当前场景、请求者、真实 source_event_id、时间、读取截点、episode/job、角色、工具调用 ID、PluginOrigin、可选 initiator 和当前提案 Ledger。initiator 未建立时保持 None，不等于系统授权；类型字段存在不代表所有系统工作路径已接通，见 FX05。长期插件实例不保存可变的“当前群”。只读服务返回 `ToolResult`，暂存操作复用 Ledger；原资料与视觉覆盖、提交和送达的含义继续由架构规定。
 
 工具 timeout 可由描述符的 `call_timeout(config)` 从实际配置读取，也可在注册时明确传入。工具定义和调用时均检查当前角色、场景与启用状态；工具名冲突会报告实际注册双方，不覆盖前者。
+
+WorkspaceCancelled 属于取消信号，当前 Host 继续传播以结束等待它的 Agent；插件不要将其统一转成普通失败结果后继续循环。执行与清理期限分别有界，终止是否确认需要原执行回执，不能仅凭收到取消就声明容器已停止。
 
 ### 日历：同一服务供工具和精确消息调用
 
 [现有日历实现](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py)是共用读取服务的最小业务示例。on_load 把 get_live_schedule 注册为工具，同时为配置中的命令词注册 ExactText、consume=True 的 handler。两者都调用 get_live_schedule；精确命令不需要普通聊天先决定是否查询。
 
-下面是其 on_command 的实际处理路径。request 由 command_request 使用原命令时间及业务时区计算；渲染和失败处置属于本插件。
+request 由 command_request 使用原命令时间及业务时区计算。[on_command](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py#L106) 随后调用同一工具，按以下分支处理；完整代码直接以该实现为准。
 
-```python
-request, title = self.command_request(call.origin.entry_id, call.event.timestamp)
-observed = await call.invoke_tool('get_live_schedule', request)
-if observed.status not in {'ok', 'no_results'}:
-    raise ValueError(f'日程来源未完整取得：{observed.content}')
-schedule = ScheduleResult.model_validate_json(observed.content)
-png = await asyncio.to_thread(self.renderer.render, schedule, title)
-asset_id = await call.save_image(png, '日程命令生成图片')
-await call.submit_message([MessageSegment(type='image', asset_id=asset_id)])
-```
+| 工具结果 | 处理路径 |
+|---|---|
+| error_code=source_unavailable | 取得本次来源失败信息，StatusCardRenderer 生成“日程暂未取得”，save_image 后 submit_message |
+| ok 或 no_results | 解析 ScheduleResult，使用 ScheduleRenderer 生成正常或空日程卡，保存并提交图片 |
+| 其他错误 | 在该 handler 结束并保留错误，不转成空日程或普通对话 |
 
-自然语言读取取得同一 ToolResult，由当前 Agent 继续使用；精确命令取得资料后渲染一次并提交图片。业务时钟的“现在几点”沿相同路径直接提交文字，“时间简报”则显式调用 run_agent，展示插件如何选择是否使用模型。三者均通过原提交和发送服务。
+上述确定性分支不新增模型调用，渲染失败与发送失败仍分别处理。自然语言读取取得同一 ToolResult，由当前 Agent 继续使用。业务时钟的“现在几点”直接提交文字，“时间简报”则显式调用 run_agent。所有提交均经原发送链，工具返回或图片登记不等于送达。
 
 ## 加载与停用
 
 宿主创建实例并调用 `on_load` 建立资源与注册，再调用 `on_enable` 启动任务；插件不在 `on_load` 自行再次启用。`on_disable` 结束本插件活动，`on_unload` 释放资源。重复启用已启用实例不重复调用钩子；资源参数已变化时先正常释放旧实例，再按已解析的新参数加载。
 
-加载或启用失败会释放已建立的资源并注销工具，保留发现的描述符及实际错误供面板查看。代码变更按正常停机升级处理；本轮不提供在线安装或代码热替换。验证方式遵循[工程约束](../AGENTS.md)。
+加载或启用失败会释放已建立的资源并注销工具，保留发现的描述符及实际错误供面板查看。代码变更按正常停机升级处理；当前不提供在线安装或代码热替换。验证方式遵循[工程约束](../AGENTS.md)。
 
 ## 消息处理与公共调用
 
@@ -57,13 +54,15 @@ call.invoke_tool(name, typed_arguments) 复用注册服务和原观察存储，�
 
 call.run_agent 接收 instructions、input_observations、tool_names、model_role、max_steps、max_tool_calls、context_tokens、output_tokens；参数由 PluginAgentRequest 在入口解析。模型路由和额度从插件的根配置取得。include_identity 决定是否带入当前身份；input_mode 可选 materials（仅资料）、source（真实触发和引用）、conversation（普通对话投影，含当前群史及参考）。外部资料保持带类型的 user 投影，不提升为指令。
 
+max_steps/max_tool_calls 的类型允许 None，但不能据此假定所有资源限制都已贯通。没有父预算的入口应显式提供有界模型次数；共享父账户的调用仍受 FX01—FX04 所述 token/期限缺口影响。插件不得绕过公共调用入口自建模型客户端，也不能通过新建账户解决剩余额度不足。
+
 output_mode=result_only 必须提供 output_model。Agent 调用 return_result 返回该 Pydantic 类型，不能使用提案工具或自动发送；[直播实现](../src/len_bot/plugins/builtin/bilibili_live/plugin.py)使用公告配置的既有模型路由，只带场次资料，随后明确提交一次邀请。
 
 返回结果不改变普通对话 disposition；模型 status 与 plugin_agent 用途保留实际调用，提交和送达另查回执。input_observations 不会被下一步钩子的临时资料清理移除。专用循环的图片读取与普通对话共用正文、附件和阅读范围装配，实际像素及资料位置可在对应步骤中核对。
 
 output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、respond、Actor 和 ActionQueue。source 或 conversation 投影给出真实来源 M，插件可按 tool_names 明确开放已有工作、提醒或记忆提案；这些操作仍须满足原人类请求和证据契约。全部 checkpoint 共用消息额度，continue 继续当前运行，wait 在真实送达后由 open loop 等待目标的回复。恢复保留原插件、入口、模型绑定、请求参数、已存资料及累计预算；旧进程或已变化的入口不能被当作一次新运行重做。
 
-工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作仍由原 JobStore 收取调用与时间额度。专用 Agent 串行使用父账户并为父调用留一次收尾调用，不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 也保留真实父来源，调用不制造模型 tool_call。
+工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作由原 JobStore 记录调用与活动时长。专用 Agent 串行使用父账户，有限模型次数下为父调用留一次收尾调用；这不等于 token 已原子预留。不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 保留真实父来源，不制造模型 tool_call。
 
 嵌套表达共享原 Ledger 和引用身份；本次窗口、工具集合、容量和像素范围在调用结束后恢复父运行的设置。新取得的观察仍保存，实际展示进入子调用 Trace，不通过替换父窗口破坏原工具交换。
 
@@ -81,7 +80,7 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 
 需要插件安排完整执行顺序时，声明 `execute(context: PluginWorkContext) -> JobResult`。它在原工作运行器、取消关系与时限中执行；上下文提供 call、revision、parameters、goal、constraints、输入／输出窗口和 resume_from。`progress()` 读取当前版本，`save_progress(typed_progress)` 保存并核对版本，`save_result(operation, ToolResult)` 将长资料存入原观察库，`adopt_results(ids)` 复用本群已有资料。不要在进度里反复复制长正文。
 
-`context.run_agent(instructions=..., input_observations=..., output_model=...)` 使用该工作的原绑定和累计预算，每次只做一次 materials/result_only 的结构化调用，不开放工具、身份资料或直接发送。`input_tokens(...)` 使用公共请求估算器为批次分配容量，最终仍经过实际请求装配检查。`budget()` 返回已用与上限，继续或修订不清零。可选 `needs_model(job)` 是只读本地判断，用于允许仅剩渲染的工作在没有模型余量时继续；它不能增加预算。
+`context.run_agent(instructions=..., input_observations=..., output_model=...)` 使用该工作的原绑定和账户，每次只做一次 materials/result_only 的结构化调用，不开放工具、身份资料或直接发送。`input_tokens(...)` 使用公共请求估算器为批次分配容量，最终仍经过实际请求装配检查。`budget()` 返回当前记录中的已用与上限；累计计数保留，但恢复重算上限的缺口见 FX04。可选 `needs_model(job)` 是只读本地判断，用于允许仅剩渲染的工作在没有模型余量时继续；它不能增加预算。
 
 成品使用 `JobResult.delivery = PreparedWorkDelivery(result_id=..., segments=...)`：result_id 必须属于本次成果，图片先通过 `call.save_image` 登记。本次 execute 返回后，由原完成事件和 Actor/Gate 交付保存的片段；插件不能从后台工作调用 submit_message。新相关输入先由原对话处理；已提交或发送未知不重复提交，渲染错误与送达错误分开。
 
@@ -104,4 +103,4 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 | before_commit / BeforeCommit | 提交前调整每条消息的片段 | 消息数、来源关系不变，类型、人物与素材资格再次校验；提交后不改正文 |
 | after_delivery / AfterDelivery | 读取已保存的真实回执 | 不改写 sent、not_sent、unknown 或 Shadow；错误另记插件钩子 Trace |
 
-直播插件的公告指令通过 before_model 加入；其 before_commit 保持一条文本邀请的业务契约。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
+直播插件的公告指令通过 before_model 加入；其 before_commit 按当前插件合同核对邀请与卡片片段。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
