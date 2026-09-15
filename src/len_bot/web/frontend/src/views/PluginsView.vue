@@ -8,7 +8,7 @@ import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import PluginConfigFields from '../components/PluginConfigFields.vue'
-import {blankConfigDraft,configDraft,configFields,configValue} from '../lib/pluginConfig.js'
+import {blankConfigDraft,configDraft,draftProblems,configValue} from '../lib/pluginConfig.js'
 
 const route=useRoute(), router=useRouter()
 const appState=useAppState()
@@ -62,6 +62,10 @@ const counts=computed(()=>({all:plugins.value.length,attention:plugins.value.fil
 const filters=[{value:'all',title:'全部'},{value:'attention',title:'需要处理'},{value:'available',title:'当前可用'},{value:'unconfigured',title:'未配置'}]
 const detailTabs=[{value:'config',title:'配置'},{value:'scenes',title:'开放群'},{value:'diagnostics',title:'诊断'}]
 const configFieldsRef=ref(null)
+// The dotted paths the schema declares as credentials.  A nested credential
+// (the Gateway service token) is the same secret as a top-level one, so the
+// form is told the path and not just the leaf name.
+const secretPaths=computed(()=>selected.value?.secret_paths||[])
 // A summary that names a field is only a summary if the field can be reached
 // from it; the field itself carries the same explanation.
 const configuredSaved=computed(()=>Boolean(selected.value?.configured)&&!dirty.value)
@@ -71,23 +75,9 @@ const saveHint=computed(()=>{
     ? '保存先写入根配置，然后重新装载该插件；重新装载完成前页面显示的还是上一次的运行状态。'
     : '保存先写入根配置，再由该插件原位应用；应用失败时保存仍在，页面会同时显示两种结果。'
 })
-const localProblems=computed(()=>{
-  if (!draft.value) return []
-  const problems=[]
-  for (const field of configFields(selected.value.config_schema)) {
-    if (!Object.hasOwn(draft.value,field.key)) continue
-    const value=draft.value[field.key]
-    const title=field.schema.title||field.key
-    const keptSecret=selected.value.secret_fields.includes(field.key)&&selected.value.config_set[field.key]
-    if (field.required&&(value===''||value===null||value===undefined)&&!keptSecret) {
-      problems.push({key:field.key,message:`${title}：必填，当前为空`}); continue
-    }
-    if (field.json&&typeof value==='string'&&value.trim()!=='') {
-      try { JSON.parse(value) } catch { problems.push({key:field.key,message:`${title}：不是合法 JSON，请按字段下方说明的结构填写` }) }
-    }
-  }
-  return problems
-})
+const localProblems=computed(()=>draft.value
+  ? draftProblems(selected.value.config_schema,draft.value,{secrets:secretPaths.value,configSet:selected.value.config_set})
+  : [])
 function focusField(key) { configFieldsRef.value?.focus(key) }
 // A server rejection keeps the draft and points at the field it names; the
 // same sentence appears next to that field through PluginConfigFields.
@@ -97,17 +87,19 @@ function locate(error) {
   const detail=Array.isArray(error.details)?error.details:[]
   const found=[]
   for (const item of detail) {
+    // The server names a field by its path; the form matches on the same
+    // dotted path so a nested backend field is reached, not just its parent.
     const path=(item.loc||[]).filter(part=>typeof part==='string'&&part!=='body'&&part!=='config')
-    found.push({key:path[0]||'',message:path.length?`${path.join(' → ')}：${item.msg}`:item.msg})
+    found.push({key:path.join('.'),message:path.length?`${path.join(' → ')}：${item.msg}`:item.msg})
   }
   return found
 }
 function setDraft(plugin) {
-  draft.value=plugin.config===null?null:configDraft(plugin.config,plugin.config_schema,plugin.secret_fields)
+  draft.value=plugin.config===null?null:configDraft(plugin.config,plugin.config_schema,plugin.secret_paths||[])
   original.value=JSON.stringify(draft.value)
 }
 function beginConfiguration() {
-  draft.value=blankConfigDraft(selected.value.config_schema,selected.value.secret_fields)
+  draft.value=blankConfigDraft(selected.value.config_schema,selected.value.secret_paths||[])
 }
 function selectFromRoute() {
   const plugin=plugins.value.find(item=>item.id===route.query.id)||null
@@ -167,7 +159,16 @@ async function save() {
   const savedEnabled=selected.value.enabled
   try {
     const config=configValue(draft.value,selected.value.config_schema,
-      {secrets:selected.value.secret_fields,preserveSecrets:selected.value.configured})
+      {secrets:selected.value.secret_paths||[],preserveSecrets:selected.value.configured})
+    // A branch that this save is actually submitting has to carry its own
+    // required fields; the check runs on the submitted object, not the draft.
+    const problems=draftProblems(selected.value.config_schema,config,{secrets:selected.value.secret_paths||[]})
+    if (problems.length) {
+      serverProblems.value=problems
+      error.value='参数尚未通过本地检查，未提交保存；请修正下列字段后重试。'
+      focusField(problems[0].key)
+      return
+    }
     await api('/api/plugins/config',{method:'POST',body:JSON.stringify({plugin_id:selected.value.id,config})})
     original.value=JSON.stringify(draft.value)
     // Reaching here means the file was written and the runtime apply did not
@@ -232,8 +233,8 @@ loadScopes()
                   <p class="mb-2">请先修正以下参数；修正前不会提交保存。</p>
                   <ul class="error-summary"><li v-for="item in problems" :key="item.key+item.message"><button type="button" class="error-link" @click="focusField(item.key)">{{ item.message }}</button></li></ul>
                 </v-alert>
-                <PluginConfigFields ref="configFieldsRef" v-model="draft" :schema="selected.config_schema" :secrets="selected.secret_fields" :config-set="selected.config_set" :problems="problems" />
-                <p v-if="selected.secret_fields.length" class="muted my-4">凭据仅显示是否已保存。已保存的凭据留空时保留；首次配置必需凭据须实际填写。</p>
+                <PluginConfigFields ref="configFieldsRef" v-model="draft" :schema="selected.config_schema" :secrets="selected.secret_paths" :config-set="selected.config_set" :problems="problems" />
+                <p v-if="selected.secret_paths.length" class="muted my-4">凭据仅显示是否已保存。已保存的凭据留空时保留；首次配置必需凭据须实际填写。</p>
                 <div class="actions mt-5"><v-btn type="submit" color="primary" :loading="busy==='config'" :disabled="!!busy">{{ selected.config_apply==='restart_plugin'?'保存并重新装载该插件':'保存插件参数' }}</v-btn><span v-if="dirty" class="muted">有未保存的修改，保存后会写入根配置</span><span v-else-if="configuredSaved" class="muted">当前显示的是已写入根配置的值</span></div>
                 <p class="muted mt-3">{{ saveHint }}</p>
               </v-form>
