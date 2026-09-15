@@ -1,12 +1,28 @@
 <script setup>
-import {computed} from 'vue'
+import {computed,nextTick,ref} from 'vue'
 import {configFields, exclusiveGroups, groupFor, selectedBranch, chooseBranch} from '../lib/pluginConfig.js'
 
 const props=defineProps({modelValue:{type:Object,required:true},schema:{type:Object,required:true},
-  secrets:{type:Array,default:()=>[]},configSet:{type:Object,default:()=>({})}})
+  secrets:{type:Array,default:()=>[]},configSet:{type:Object,default:()=>({})},
+  problems:{type:Array,default:()=>[]}})
 const emit=defineEmits(['update:modelValue'])
 const fields=computed(()=>configFields(props.schema))
 const groups=computed(()=>exclusiveGroups(props.schema))
+const anchors={}
+const setAnchor=key=>element=>{ if (element) anchors[key]=element }
+// The same sentence the summary shows, repeated beside the field it names.
+const messages=key=>props.problems.filter(item=>item.key===key).map(item=>item.message)
+const hasProblem=key=>messages(key).length>0
+async function focus(key) {
+  const element=key&&anchors[key]
+  if (!element) return
+  // v-input components expose focus(); the DOM fallback covers a field whose
+  // component has not rendered an input of its own yet.
+  if (typeof element.focus==='function') element.focus()
+  else element.$el?.querySelector?.('input,textarea,select,button')?.focus?.()
+  await nextTick()
+}
+defineExpose({focus})
 const visible=key=>{
   // A field inside an exclusive group is one branch of a choice: it is only
   // edited while that branch is the chosen one, and the file above the toggle
@@ -39,19 +55,25 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
     </template>
     <template v-for="field in fields" :key="field.key">
       <template v-if="visible(field.key)">
-      <v-text-field v-if="secrets.includes(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :label="label(field)" type="password" autocomplete="new-password" :placeholder="configSet[field.key]?'已保存，留空保留':'尚未配置'" :hint="field.schema.description" />
+      <v-text-field v-if="secrets.includes(field.key)" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+        :label="label(field)" type="password" autocomplete="new-password" :placeholder="configSet[field.key]?'已保存，留空保留':'尚未配置'"
+        :hint="field.schema.description" :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       <v-text-field v-else-if="field.schema.const!==undefined" :model-value="field.schema.const" :label="label(field)" readonly />
-      <v-select v-else-if="field.schema.enum" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :items="field.nullable?[...field.schema.enum,null]:field.schema.enum" :label="label(field)" :hint="field.schema.description" persistent-hint />
-      <v-select v-else-if="field.schema.type==='boolean'" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :items="[{title:'是',value:true},{title:'否',value:false},...(field.nullable?[{title:'未指定',value:null}]:[])]" :label="label(field)" :hint="field.schema.description" persistent-hint />
-      <v-text-field v-else-if="['number','integer'].includes(field.schema.type)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value===''?null:Number(value))"
-        :label="label(field)" type="number" :min="field.schema.minimum" :max="field.schema.maximum" :step="field.schema.type==='integer'?1:'any'" :hint="field.schema.description" persistent-hint />
-      <v-textarea v-else-if="field.json" class="compound-field" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :label="label(field)+' · JSON'" rows="4" auto-grow :hint="field.schema.description||'按下方插件 Schema 填写对象或列表；保存时校验结构。'" persistent-hint />
-      <v-textarea v-else :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :label="label(field)" rows="2" auto-grow :hint="field.schema.description" persistent-hint />
+      <v-select v-else-if="field.schema.enum" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+        :items="field.nullable?[...field.schema.enum,null]:field.schema.enum" :label="label(field)" :hint="field.schema.description"
+        :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
+      <v-select v-else-if="field.schema.type==='boolean'" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+        :items="[{title:'是',value:true},{title:'否',value:false},...(field.nullable?[{title:'未指定',value:null}]:[])]" :label="label(field)" :hint="field.schema.description"
+        :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
+      <v-text-field v-else-if="['number','integer'].includes(field.schema.type)" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value===''?null:Number(value))"
+        :label="label(field)" type="number" :min="field.schema.minimum" :max="field.schema.maximum" :step="field.schema.type==='integer'?1:'any'" :hint="field.schema.description"
+        :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
+      <v-textarea v-else-if="field.json" :ref="setAnchor(field.key)" class="compound-field" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+        :label="label(field)+' · JSON'" rows="4" auto-grow :hint="field.schema.description||'按下方插件 Schema 填写对象或列表；保存时校验结构。'"
+        :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
+      <v-textarea v-else :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+        :label="label(field)" rows="2" auto-grow :hint="field.schema.description"
+        :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       </template>
     </template>
   </div>

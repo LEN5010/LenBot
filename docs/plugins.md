@@ -46,6 +46,8 @@ request 由 command_request 使用原命令时间及业务时区计算。[on_com
 
 加载或启用失败会释放已建立的资源并注销工具，保留发现的描述符及实际错误供面板查看。代码变更按正常停机升级处理；当前不提供在线安装或代码热替换。验证方式遵循[工程约束](../AGENTS.md)。
 
+**“已配置”“全局保存为启用”“运行时已加载启用”“本群已加入”是四件独立的事实**，面板分别显示，不压成一个开关。全局保存为启用的插件仍可能因为参数校验失败而不在运行时；已经加载也不代表目标群加入了它。缺少已声明参数时插件不装载，也不会建立源连接。保存参数只写根配置并按 `config_apply` 原位应用或重新装载该插件，不会顺带启用它。
+
 ## 消息处理与公共调用
 
 在 on_load 中 register_handler，声明 id、description、match、handler、event_types、sources、priority、consume 和 require_to_me。ExactText、Command、RegexText 或本地同步函数返回 bool；数值优先级小者先匹配，同级按稳定注册顺序。冲突的独占精确命令在注册时报告双方，匹配不请求网络或模型。available(call) 检查插件群配置；validate(call) 只核对已保存资料与当前本地状态，它也会在提交边界调用，不能请求 HTTP/模型。原话与归属先保存，耗时读取和处理放在 handler 中，消费后失败不转普通聊天。
