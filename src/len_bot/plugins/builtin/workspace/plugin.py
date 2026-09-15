@@ -11,19 +11,27 @@ from len_bot.plugins.api import BasePlugin, PluginCallContext, PluginContext, To
 from .config import WorkspacePluginConfig
 
 
+def build_workspace_service(config: WorkspacePluginConfig, data_directory, event_store, plugin_id: str):
+    """The one execution and read service the configured backend selects.
+
+    Every caller — the plugin's tools and the panel's read-only artifact
+    entries — comes through here, so a backend is chosen in exactly one place
+    and a gateway-only configuration never constructs a local worker.
+    """
+    if config.gateway is not None:
+        # The gateway is the one backend when configured; the host keeps
+        # no container runtime and never falls back to a local run.
+        return GatewayWorkspaceService(
+            WorkerGatewayClient(config.gateway), config.gateway, event_store, plugin_id)
+    return WorkspaceService(WorkspaceWorker(config.worker, data_directory), event_store, plugin_id)
+
+
 class WorkspacePlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
         self.config: WorkspacePluginConfig = context.config
-        if self.config.gateway is not None:
-            # The gateway is the one backend when configured; the host keeps
-            # no container runtime and never falls back to a local run.
-            self.service = GatewayWorkspaceService(
-                WorkerGatewayClient(self.config.gateway), self.config.gateway,
-                context.event_store, self.manifest.id)
-        else:
-            self.service = WorkspaceService(WorkspaceWorker(self.config.worker, context.data_directory),
-                context.event_store, self.manifest.id)
+        self.service = build_workspace_service(
+            self.config, context.data_directory, context.event_store, self.manifest.id)
 
     async def on_load(self, context: PluginContext):
         context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，产物写入当前目录 /workspace；依赖由已配置镜像提供。',
@@ -76,3 +84,6 @@ class WorkspacePlugin(BasePlugin):
 
     async def artifacts_for_job(self, scene_id: str, job_id: str):
         return await self.service.list_for_job(scene_id, job_id)
+
+    async def artifact_bytes_for_job(self, scene_id: str, job_id: str, path: str):
+        return await self.service.read_bytes_for_job(scene_id, job_id, path)

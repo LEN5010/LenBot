@@ -3,7 +3,7 @@ import logging
 import json
 import time
 import uuid
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 import httpx
 from dataclasses import dataclass, replace
@@ -477,19 +477,22 @@ class PluginHost:
         plugin = self._plugins.get('workspace')
         if plugin is not None and hasattr(plugin, 'artifact_for_job'):
             return await plugin.artifact_for_job(scene_id, job_id, path, offset, limit)
-        service = self._workspace_service_for_panel()
-        return await service.read_for_job(scene_id, job_id, path, offset, limit) if service else None
+        async with self._workspace_service_for_panel() as service:
+            return await service.read_for_job(scene_id, job_id, path, offset, limit) if service else None
 
     async def list_workspace_artifacts(self, scene_id: str, job_id: str):
         plugin = self._plugins.get('workspace')
         if plugin is not None and hasattr(plugin, 'artifacts_for_job'):
             return await plugin.artifacts_for_job(scene_id, job_id)
-        service = self._workspace_service_for_panel()
-        return await service.list_for_job(scene_id, job_id) if service else None
+        async with self._workspace_service_for_panel() as service:
+            return await service.list_for_job(scene_id, job_id) if service else None
 
     async def read_workspace_artifact_bytes(self, scene_id: str, job_id: str, path: str):
-        service = self._workspace_service_for_panel()
-        return await service.read_bytes_for_job(scene_id, job_id, path) if service else None
+        plugin = self._plugins.get('workspace')
+        if plugin is not None and hasattr(plugin, 'artifact_bytes_for_job'):
+            return await plugin.artifact_bytes_for_job(scene_id, job_id, path)
+        async with self._workspace_service_for_panel() as service:
+            return await service.read_bytes_for_job(scene_id, job_id, path) if service else None
 
     async def close_job_resources(self, job: dict):
         for plugin in tuple(self._plugins.values()):
@@ -500,16 +503,34 @@ class PluginHost:
                 except Exception as error:
                     self.record_plugin_error(plugin.manifest.id, f'job resource cleanup: {error}')
 
-    def _workspace_service_for_panel(self):
+    @asynccontextmanager
+    async def _workspace_service_for_panel(self):
+        """The saved configuration's own read backend, for a disabled plugin.
+
+        The panel stays readable when the plugin is not loaded, but it reads
+        through the backend the saved configuration actually selected — never a
+        local worker for a gateway deployment.  Looking at a file must not
+        start a worker, run a script or register a new execution, so only the
+        read-only entries of this service are used.  A gateway client opened
+        here owns its connection, so it is closed when the read ends instead of
+        leaking one per panel request.
+        """
         setting = self.runtime.config_store.current.plugins.get('workspace')
         if not setting or setting.config is None or setting.parsed_config is None:
-            return None
-        from len_bot.execution.service import WorkspaceService
-        from len_bot.execution.workspace import WorkspaceWorker
+            yield None
+            return
+        from len_bot.plugins.builtin.workspace.plugin import build_workspace_service
         context_dir = self.runtime.config.db_path
-        return WorkspaceService(WorkspaceWorker(setting.parsed_config.worker,
-            Path(context_dir).resolve().parent / 'plugins' / 'workspace'),
+        service = build_workspace_service(
+            setting.parsed_config,
+            Path(context_dir).resolve().parent / 'plugins' / 'workspace',
             self.runtime.event_store, 'workspace')
+        try:
+            yield service
+        finally:
+            client = getattr(service, 'client', None)
+            if client is not None:
+                await client.close()
 
     def get_plugin(self, plugin_id: str) -> BasePlugin | None:
         return self._plugins.get(plugin_id)

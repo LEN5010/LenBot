@@ -102,11 +102,25 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         if record is None:
             raise HTTPException(status_code=404, detail='执行不在日志中')
         listed = await store.artifacts_for(execution_id)
+        # A registered artifact is one whose bytes were stored, so it is not
+        # individually over a limit.  The listing itself can be cut off at the
+        # deployment's artifact cap, and that is reported as truncation rather
+        # than as a complete directory.
         return {'execution_id': execution_id, 'artifacts': listed,
+                'truncated': len(listed) >= config.max_artifacts,
                 'workspace_id': record.workspace_id}
 
     @app.get('/v1/artifacts/{artifact_id}')
-    async def artifact_bytes(artifact_id: str, authorization: str | None = Header(default=None)):
+    async def artifact_bytes(artifact_id: str, authorization: str | None = Header(default=None),
+                             offset: int = Query(default=0, ge=0),
+                             limit: int | None = Query(default=None, ge=1, le=1_000_000)):
+        """One registered file's bytes, optionally one bounded range of them.
+
+        A range is served as an actual suffix of the stored file: the
+        descriptor is positioned before reading, so a caller asking for a page
+        of a large artifact does not pay for the whole file.  The length of the
+        bytes sent back is what tells the caller whether it reached the end.
+        """
         authorize(authorization)
         artifact = await store.artifact(artifact_id)
         if artifact is None:
@@ -126,18 +140,22 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         disposition = (f'attachment; filename="{fallback}"; '
                        f"filename*=UTF-8''{quote(filename, safe='')}")
         try:
-            fd = runner.open_stored_artifact(artifact['execution_id'], artifact_id)
+            fd = runner.open_stored_artifact(artifact['execution_id'], artifact_id, offset=offset)
         except GatewayRefusal as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except OSError:
             raise HTTPException(status_code=409, detail='产物不再是可下载的普通文件') from None
 
         def chunks():
+            remaining = limit
             try:
-                while True:
-                    data = os.read(fd, 65536)
+                while remaining is None or remaining > 0:
+                    want = 65536 if remaining is None else min(65536, remaining)
+                    data = os.read(fd, want)
                     if not data:
                         break
+                    if remaining is not None:
+                        remaining -= len(data)
                     yield data
             finally:
                 os.close(fd)

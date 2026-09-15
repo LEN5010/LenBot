@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import mimetypes
 import uuid
@@ -224,7 +225,18 @@ class GatewayWorkspaceService:
             stored_initiator = (job or {}).get('initiator')
             if not job or stored_initiator is None:
                 raise ValueError('该工作没有类型化发起者，不能通过网关执行')
-            await self._reconcile_workspace(scope.workspace_id)
+            # The revision this call was admitted under, carried on the call
+            # itself.  A tool call that waited on the run lock while the work
+            # was revised must not have its old script filed under the new
+            # revision: the two are different executions of different goals.
+            expected_revision = getattr(call, 'job_revision', None)
+            if expected_revision is not None and job['revision'] != expected_revision:
+                raise ValueError(
+                    f'该工具调用属于工作版本 {expected_revision}，当前工作已是版本 {job["revision"]}；'
+                    '不能把旧脚本贴到新修订的身份上，请按当前目标重新发起')
+            conclusion, detail = await self._reconcile_workspace(scope.workspace_id)
+            if conclusion != 'available':
+                raise ValueError(detail)
             input_files, manifest = await self._input_files(job, request.input_result_ids, call.scene_id)
             execution = ExecutionRequest(
                 execution_id='x' + uuid.uuid4().hex,
@@ -237,21 +249,58 @@ class GatewayWorkspaceService:
                 deadline_seconds=self._deadline_seconds(job))
             # The host row exists before the wire request: a timeout after this
             # point is "query the same id", never "submit a fresh one".
-            await self.event_store.record_execution(execution)
+            record, _created = await self.event_store.record_execution(execution)
+            await self._submit_once(execution, scope)
+            final = await self._await_result(execution.execution_id, record.deadline_at, scope)
+            result = self._execution_result(execution.execution_id, final, scope)
             try:
-                await self.client.submit(execution)
-            except (GatewayRefused, GatewayConflict) as error:
-                await self._mark_refused(execution.execution_id, str(error))
-                raise ValueError(str(error)) from None
-            except (GatewayUnavailable, GatewayResultUnknown):
-                pass  # the execution may exist; the poll below reads the same id
-            record = await self._await_result(execution.execution_id, execution.deadline_seconds, scope)
-            result = self._execution_result(execution.execution_id, record, scope)
+                listed, truncated = await self._artifacts_summary(execution.execution_id)
+                artifacts_known = True
+            except RuntimeError as error:
+                # The execution itself has an answer; only the file listing
+                # does not.  Saying that plainly is not the same as an empty
+                # directory, and it must not turn a finished run into a failure.
+                listed, truncated, artifacts_known = [], None, False
+                result['artifacts_error'] = str(error)
             result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
-                'input_manifest': manifest,
-                'artifacts': await self._artifacts_summary(execution.execution_id),
-                'artifacts_truncated': False}
+                'input_manifest': manifest, 'artifacts': listed,
+                'artifacts_known': artifacts_known,
+                'artifacts_truncated': bool(truncated) if artifacts_known else None}
             return result
+
+    async def _submit_once(self, execution: ExecutionRequest, scope) -> None:
+        """Send one submission, under the same cancellation path as the poll.
+
+        From the moment the host owns an execution id the cancellation path is
+        one continuous one: a cancel that arrives while the request is still on
+        the wire is not allowed to skip the stop, and it never resubmits the
+        script.  The outcomes are kept apart rather than flattened:
+
+        * an answered refusal means the Gateway rejected this request before
+          starting anything, so this id has no execution to query;
+        * a conflict means the id already exists on the Gateway — the poll
+          below reads that same execution instead of starting a second one;
+        * a transmission failure or an unreadable answer proves nothing about
+          whether the request arrived, so the id is kept and only polled.
+
+        Only a cancellation that happens before the request could have left is
+        answered as "nothing was sent"; after that, the honest answer is the
+        one the Gateway returns for that id.
+        """
+        try:
+            await self.client.submit(execution)
+        except GatewayConflict:
+            # Same id upstream: not an error and not a reason to start again.
+            return
+        except GatewayRefused as error:
+            await self._mark_refused(execution.execution_id, str(error))
+            raise ValueError(str(error)) from None
+        except (GatewayUnavailable, GatewayResultUnknown):
+            return
+        except asyncio.CancelledError:
+            termination = await asyncio.shield(
+                self._cancel_execution(execution.execution_id, scope))
+            raise WorkspaceCancelled(termination) from None
 
     async def _input_files(self, job, result_ids, scene_id):
         if len(result_ids) > 8:
@@ -283,9 +332,17 @@ class GatewayWorkspaceService:
             seconds = min(seconds, remaining)
         return max(1.0, min(seconds, 3600.0))
 
-    async def _await_result(self, execution_id: str, deadline_seconds: float, scope):
+    async def _await_result(self, execution_id: str, deadline_at: float, scope):
+        """Poll the same execution id until it ends, its deadline passes, or we are cancelled.
+
+        The stop instant is computed from the execution's own absolute deadline
+        — the one written when it was accepted — plus one request round trip
+        for the final read.  Neither a slow submit nor a retry hands out extra
+        execution time.
+        """
         loop = asyncio.get_running_loop()
-        stop_at = loop.time() + deadline_seconds + self.config.request_timeout_seconds + 30.0
+        stop_at = loop.time() + max(0.0, deadline_at - self.event_store.clock()) \
+            + self.config.request_timeout_seconds + 30.0
         try:
             while True:
                 record = None
@@ -372,87 +429,211 @@ class GatewayWorkspaceService:
         except ValueError:
             pass
 
-    async def _reconcile_workspace(self, workspace_id: str) -> None:
+    async def _reconcile_workspace(self, workspace_id: str) -> tuple[str, str]:
         """Settle host rows whose gateway outcome is already knowable.
 
         A crash between the host row and the wire request leaves an accepted
-        row the gateway never saw; a crash while polling leaves one the
-        gateway finished on its own.  Both are read back here, never re-run.
+        row the gateway never saw; a crash while polling leaves one the gateway
+        finished on its own.  Both are read back here, never re-run.
+
+        The answer is one of three executable conclusions, not a log line:
+
+        * ``available`` — nothing in this workspace is still occupiable, so a
+          new execution may be submitted;
+        * ``occupied`` — a row is still running, or its stop is unconfirmed;
+        * ``unknown`` — the Gateway could not be asked, so nothing about the
+          workspace is established and nothing new may start in it.
+
+        Each row is closed by what its own answer means.  A 404 says this
+        Gateway's journal has no record of that id, which is not proof that no
+        side effect ever happened elsewhere; the row is recorded as unrecorded
+        rather than as never having run.  An authentication or other 4xx
+        answer is about the request, not about the execution, and is never
+        folded into "it never started".
         """
+        blocked, blocking = False, None
         for host in await self.event_store.executions_for_workspace(workspace_id):
-            if is_terminal(host.state):
+            if is_terminal(host.state) and host.state is not ExecutionState.TERMINATION_UNCONFIRMED:
+                # A confirmed end no longer occupies the workspace.  An
+                # unconfirmed termination is terminal yet still owes an answer,
+                # so it is rechecked below instead of being skipped.
                 continue
             try:
                 record = await self.client.get(host.execution_id)
-            except (GatewayUnavailable, GatewayResultUnknown):
-                continue
-            except GatewayRefused:
-                await self._mark_refused(host.execution_id, '网关执行日志中没有该执行；请求从未到达，不再启动')
+            except GatewayUnavailable:
+                return 'unknown', f'网关暂时不可达，工作区 {workspace_id} 的占用无法核实；本次不开始新执行'
+            except GatewayResultUnknown as error:
+                return 'unknown', f'网关未能确认工作区 {workspace_id} 的执行结果：{error}；本次不开始新执行'
+            except GatewayConflict as error:
+                await self._mark_unresolved(host.execution_id, f'身份冲突：{error}')
+                return 'unknown', f'工作区 {workspace_id} 的执行身份冲突；保持占用，等待运营者核对'
+            except GatewayRefused as error:
+                if error.status_code == 404:
+                    await self._mark_unrecorded(
+                        host.execution_id, f'网关日志中没有该执行（HTTP 404）：{error.detail}')
+                else:
+                    await self._mark_unresolved(
+                        host.execution_id, f'网关拒绝了查询（HTTP {error.status_code}）：{error.detail}')
+                    return 'unknown', (f'网关未接受对工作区 {workspace_id} 的核对'
+                                       f'（HTTP {error.status_code}）：{error.detail}；本次不开始新执行')
                 continue
             await self._mirror_terminal(record)
+            if record.state is ExecutionState.TERMINATION_UNCONFIRMED:
+                blocked, blocking = True, record.execution_id
+        if blocked:
+            return 'occupied', (f'工作区 {workspace_id} 的执行 {blocking} 终止未确认，仍不能新用；'
+                                '请先由运营者核对容器并确认终止')
+        return 'available', '工作区可用'
+
+    async def _mark_unrecorded(self, execution_id: str, detail: str) -> None:
+        """Close a row the Gateway's own journal has no record of.
+
+        That is the Gateway's answer about its log, not a proof about the
+        world: the row is closed as failed with the answer it actually got, so
+        a later reader is never told that nothing ever happened.
+        """
+        try:
+            await self.event_store.append_execution_event(
+                execution_id, 'gateway_unrecorded', detail,
+                state=ExecutionState.FAILED, error=detail[:2000])
+        except ValueError:
+            pass
+
+    async def _mark_unresolved(self, execution_id: str, detail: str) -> None:
+        """The Gateway could not answer about this id; the row keeps occupying."""
+        try:
+            await self.event_store.append_execution_event(execution_id, 'gateway_unresolved', detail)
+        except ValueError:
+            pass
 
     # ---- artifact reads ------------------------------------------------------
-    async def _artifacts_summary(self, execution_id: str) -> list[dict]:
+    async def _artifacts_summary(self, execution_id: str) -> tuple[list[dict], bool | None]:
+        """This execution's registered outputs, and whether the listing was cut.
+
+        An unreachable Gateway is "not readable yet", not an empty directory:
+        the two are returned differently so a caller cannot report a failed
+        listing as a work that produced nothing.
+        """
         try:
             listing = await self.client.artifacts(execution_id)
-        except (GatewayRefused, GatewayUnavailable, GatewayResultUnknown):
-            return []
-        return [{'path': item['path'], 'size_bytes': item['size_bytes'],
-                 'media_type': item['media_type'], 'artifact_id': item['artifact_id'],
-                 'over_limit': False} for item in listing.get('artifacts', [])]
+        except (GatewayRefused, GatewayUnavailable, GatewayResultUnknown) as error:
+            raise RuntimeError(f'网关暂时不可用，产物清单暂不可读：{error}') from None
+        return ([{'path': item['path'], 'size_bytes': item['size_bytes'],
+                  'media_type': item['media_type'], 'artifact_id': item['artifact_id'],
+                  'over_limit': False} for item in listing.get('artifacts', [])],
+                listing.get('truncated'))
 
-    async def _latest_artifacts(self, scene_id: str, job_id: str) -> list[dict]:
-        """The newest execution's registered outputs: the directory's end state."""
+    async def _listing_for(self, execution_id: str) -> dict | None:
+        """One execution's listing, or None when the Gateway has no such log."""
+        try:
+            return await self.client.artifacts(execution_id)
+        except GatewayRefused:
+            return None
+        except (GatewayUnavailable, GatewayResultUnknown) as error:
+            raise RuntimeError(f'网关暂时不可用，产物暂不可读：{error}') from None
+
+    async def _snapshot_execution(self, scene_id: str, job_id: str):
+        """The execution whose registered outputs are this job's current files.
+
+        The current workspace is a *confirmed* snapshot: the newest execution
+        the Gateway actually finished.  A row that was refused, or that is
+        still running or unknown, has no confirmed outputs yet, so the current
+        listing must not fall back to an older execution's files and must not
+        report "no files" either — it reports that the snapshot is not
+        readable yet.
+        """
         records = await self.event_store.executions_for_job(scene_id, job_id)
         for host in reversed(records):
-            try:
-                listing = await self.client.artifacts(host.execution_id)
-            except (GatewayUnavailable, GatewayResultUnknown) as error:
-                raise RuntimeError(f'网关暂时不可用，产物暂不可读：{error}') from None
-            except GatewayRefused:
+            if not is_terminal(host.state):
                 continue
-            return listing.get('artifacts', [])
-        return []
+            listing = await self._listing_for(host.execution_id)
+            if listing is None:
+                continue
+            return host, listing
+        pending = [host for host in records
+                   if host.state in {ExecutionState.ACCEPTED, ExecutionState.STARTING,
+                                     ExecutionState.RUNNING, ExecutionState.CANCEL_REQUESTED}]
+        if pending:
+            raise RuntimeError('当前工作区还没有已确认的执行快照，产物暂不可读')
+        return None, None
 
-    async def _artifact_by_path(self, scene_id: str, job_id: str, path: str) -> dict | None:
+    async def _artifact_by_path(self, scene_id: str, job_id: str, path: str,
+                                *, execution_id: str | None = None) -> dict | None:
+        """One artifact identity, from the current snapshot or a named execution.
+
+        Reading the current workspace never silently walks back into an older
+        execution: a file the newest confirmed execution no longer produces is
+        gone from the snapshot, and finding it again requires naming the
+        execution that did produce it.
+        """
         _validate_relative_path(path)
-        records = await self.event_store.executions_for_job(scene_id, job_id)
-        for host in reversed(records):
-            try:
-                listing = await self.client.artifacts(host.execution_id)
-            except (GatewayUnavailable, GatewayResultUnknown) as error:
-                raise RuntimeError(f'网关暂时不可用，产物暂不可读：{error}') from None
-            except GatewayRefused:
-                continue
+        if execution_id is not None:
+            host = await self.event_store.get_execution(execution_id)
+            if host is None or host.scene_id != scene_id or host.job_id != job_id:
+                raise ValueError('指定的执行不属于当前工作')
+            listing = await self._listing_for(execution_id)
+            if listing is None:
+                raise ValueError('指定的执行不在网关日志中，其产物身份无法确认')
             for item in listing.get('artifacts', []):
                 if item.get('path') == path:
                     return item
+            return None
+        _host, listing = await self._snapshot_execution(scene_id, job_id)
+        if listing is None:
+            raise ValueError('该工作还没有已确认的执行快照，无法读取当前产物')
+        for item in listing.get('artifacts', []):
+            if item.get('path') == path:
+                return item
         return None
 
-    async def _artifact_text(self, scene_id: str, job_id: str, path: str, offset: int, limit: int) -> dict:
+    async def _artifact_text(self, scene_id: str, job_id: str, path: str, offset: int, limit: int,
+                             *, execution_id: str | None = None) -> dict:
+        """A page of one artifact, decoded as text from a bounded byte range.
+
+        The page is a character range and the bytes are read from the Gateway
+        as they are needed, so a small page never pulls a whole large file.
+        Decoding is incremental: only complete UTF-8 sequences are handed to
+        the page, so a Chinese character is never split across a page boundary
+        and the page coordinates stay one continuous character sequence.
+        """
         if offset < 0 or limit < 1:
             raise ValueError('invalid text range')
-        artifact = await self._artifact_by_path(scene_id, job_id, path)
+        artifact = await self._artifact_by_path(scene_id, job_id, path, execution_id=execution_id)
         if artifact is None:
             raise ValueError('工作空间文件不存在或尚未登记为产物')
-        data, _media_type = await self.client.artifact_bytes(artifact['artifact_id'])
-        text = data.decode('utf-8', 'replace')
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        collected: list[str] = []
+        total = 0
+        async for chunk in self.client.artifact_chunks(artifact['artifact_id']):
+            collected.append(decoder.decode(chunk, final=False))
+            total = sum(map(len, collected))
+            # One chunk past the page is enough to tell that more follows; the
+            # reader stops there instead of walking the rest of the file.
+            if total > offset + limit:
+                break
+        else:
+            collected.append(decoder.decode(b'', final=True))
+        text = ''.join(collected)
         piece = text[offset:offset + limit]
-        next_offset = offset + len(piece) if offset + len(piece) < len(text) else None
+        reach = offset + len(piece) if len(text) > offset + len(piece) else None
         return {'scene_id': scene_id, 'job_id': job_id, 'path': path, 'content': piece,
-                'offset': offset, 'next_offset': next_offset, 'truncated': next_offset is not None}
+                'offset': offset, 'next_offset': reach, 'truncated': reach is not None}
 
     # ---- tool entries --------------------------------------------------------
     async def list_files(self, call) -> dict:
         scope = await self.scope_for(call)
-        listing = await self._latest_artifacts(scope.scene_id, scope.job_id)
+        _host, listing = await self._snapshot_execution(scope.scene_id, scope.job_id)
+        if listing is None:
+            raise RuntimeError('该工作还没有已确认的执行快照，文件清单暂不可读')
         return {'workspace_id': scope.workspace_id, 'scene_id': scope.scene_id, 'job_id': scope.job_id,
-                'files': sorted(item['path'] for item in listing), 'truncated': False}
+                'files': sorted(item['path'] for item in listing.get('artifacts', [])),
+                'truncated': bool(listing.get('truncated'))}
 
     async def read_file(self, call, request: WorkspaceFileInput) -> dict:
         scope = await self.scope_for(call)
         return await self._artifact_text(scope.scene_id, scope.job_id, request.path,
-                                         request.offset, request.limit)
+                                         request.offset, request.limit,
+                                         execution_id=request.execution_id)
 
     async def export_file(self, call, request: WorkspaceFileInput) -> dict:
         scope = await self.scope_for(call)
@@ -465,8 +646,10 @@ class GatewayWorkspaceService:
         media_status = 'not_applicable'
         if artifact.media_type.startswith('image/'):
             try:
-                data, _media_type = await self.client.artifact_bytes(row['artifact_id'])
-                asset_id = await call.save_image(data, f'工作空间图片产物：{request.path}')
+                buffer = bytearray()
+                async for chunk in self.client.artifact_chunks(row['artifact_id']):
+                    buffer.extend(chunk)
+                asset_id = await call.save_image(bytes(buffer), f'工作空间图片产物：{request.path}')
                 artifact = artifact.model_copy(update={'asset_id': asset_id})
                 attachments.append(asset_id)
                 media_status = 'registered'
@@ -503,15 +686,23 @@ class GatewayWorkspaceService:
         row = await self._artifact_by_path(scene_id, job_id, path)
         if row is None:
             raise ValueError('工作空间文件不存在或尚未登记为产物')
-        data, media_type = await self.client.artifact_bytes(row['artifact_id'])
-        return data, row['media_type'] or media_type or 'application/octet-stream'
+        buffer = bytearray()
+        async for chunk in self.client.artifact_chunks(row['artifact_id']):
+            buffer.extend(chunk)
+        data = bytes(buffer)
+        return data, row['media_type'] or 'application/octet-stream'
 
     async def list_for_job(self, scene_id: str, job_id: str) -> dict | None:
         job = await self.event_store.get_job(job_id, scene_id)
         if job is None or not job.get('requester_qq_uid'):
             return None
-        listing = await self._latest_artifacts(scene_id, job_id)
+        _host, listing = await self._snapshot_execution(scene_id, job_id)
+        if listing is None:
+            # No confirmed snapshot yet: an honest "not readable", never an
+            # empty directory that reads as "this work produced nothing".
+            raise RuntimeError('该工作还没有已确认的执行快照，产物清单暂不可读')
         artifacts = [WorkspaceArtifact(path=item['path'], size_bytes=item['size_bytes'],
                                        media_type=item['media_type']).model_dump(mode='json')
-                     for item in listing]
-        return {'scene_id': scene_id, 'job_id': job_id, 'artifacts': artifacts, 'truncated': False}
+                     for item in listing.get('artifacts', [])]
+        return {'scene_id': scene_id, 'job_id': job_id, 'artifacts': artifacts,
+                'truncated': bool(listing.get('truncated'))}
