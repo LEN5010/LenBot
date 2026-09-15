@@ -113,24 +113,67 @@ class ExecutionRunner:
                 self.config.policy_for(request.network_policy)
             except KeyError as error:
                 raise GatewayRefusal(str(error.args[0])) from None
+            if request.input_assets:
+                # Asset ids are provenance only.  The host is the side that
+                # reads observations and assets; bytes reach this Gateway as
+                # ``input_files``, and a request expecting the Gateway itself
+                # to fetch assets is refused rather than silently run without
+                # its inputs.
+                raise GatewayRefusal('本网关不按资产 ID 拉取输入；请由宿主经 input_files 传输字节')
+            if request.input_files:
+                # Written before the row exists: a refused input never
+                # occupies an execution identity, and a duplicate submit finds
+                # the same files already on disk.
+                self._write_input_files(request)
             record, created = await self.store.record_execution(request)
             if not created:
                 return record, False
-            if request.input_assets:
-                # Input bytes are transferred by the host export path, which
-                # this version does not implement.  Starting a run that never
-                # receives them would let the script read a missing file and
-                # look like a task failure instead of an absent feature.
-                await self.store.append_execution_event(
-                    request.execution_id, 'inputs_unsupported',
-                    f'本版不接受输入资料导入（{len(request.input_assets)} 项）；执行未启动',
-                    state=ExecutionState.FAILED,
-                    error='输入资料导入尚未实现，执行未启动')
-                return await self._stored(request.execution_id), True
             await self.store.append_execution_event(request.execution_id, 'accepted',
                                                     '执行已登记；容器尚未启动')
             self._tasks[request.execution_id] = asyncio.create_task(self._run(request))
             return await self._stored(request.execution_id), True
+
+    def _write_input_files(self, request: ExecutionRequest) -> None:
+        """Persist host-exported inputs into this execution's control area.
+
+        ``manifest.json`` keeps the same in-container path the local worker
+        used (`/lenbot-control/manifest.json`); every other input lands under
+        `/lenbot-control/input/`.  Total decoded bytes stay under the same
+        bound the workspace itself has.
+        """
+        import base64
+        import binascii
+        control = self.control_directory(request.execution_id)
+        total = 0
+        for item in request.input_files:
+            if item.text is not None:
+                data = item.text.encode('utf-8')
+            else:
+                try:
+                    data = base64.b64decode(item.content_base64, validate=True)
+                except (binascii.Error, ValueError) as error:
+                    raise GatewayRefusal(f'输入文件 {item.name} 不是合法 base64：{error}') from None
+            total += len(data)
+            if total > self.config.max_workspace_bytes:
+                raise GatewayRefusal('输入资料合计超过网关的工作目录字节上限')
+            if item.name == 'manifest.json':
+                target = control / item.name
+            else:
+                (control / 'input').mkdir(parents=True, exist_ok=True, mode=0o750)
+                target = control / 'input' / item.name
+            self._write_control_bytes(target, data)
+
+    @staticmethod
+    def _write_control_bytes(path: Path, content: bytes) -> None:
+        temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(content)
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
     async def _stored(self, execution_id: str) -> ExecutionRecord:
         record = await self.store.get_execution(execution_id)
@@ -583,8 +626,17 @@ class ExecutionRunner:
         """Give the worker GID its access; report what the host refused."""
         _uid, gid = (int(part) for part in worker.container_user.split(':'))
         script = control / 'task.py'
+        targets: list[tuple[Path, int]] = [(control, 0o750), (workspace, 0o770), (script, 0o640)]
+        manifest = control / 'manifest.json'
+        if manifest.exists():
+            targets.append((manifest, 0o640))
+        inputs = control / 'input'
+        if inputs.is_dir():
+            targets.append((inputs, 0o750))
+            targets.extend((entry, 0o640) for entry in sorted(inputs.iterdir())
+                           if entry.is_file() and not entry.is_symlink())
         denied: list[str] = []
-        for path, mode in ((control, 0o750), (workspace, 0o770), (script, 0o640)):
+        for path, mode in targets:
             if not path.exists():
                 continue
             try:

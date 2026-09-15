@@ -75,7 +75,7 @@ OneBot 显式选择主动／反向 WebSocket 与发送通道，保存后需正�
 
 工作首次开始时写入绝对期限，排队不计时，之后的等待和停机都计入。没有该字段的旧工作仍按累计活动时长换算。对话恢复沿用已存窗口，循环受剩余期限包围。继续工作保留累计次数、资料、原模型绑定和创建时的累计上限；没有存档上限的旧已结算行不能自动恢复。恢复前核对工作记录和完整调用账，不能为重送完整结果而恢复分析。
 
-Gateway 的协议、日志和独立服务代码尚未接入 run_python，当前 Python 仍由 LenBot 调宿主容器运行时。源码已按 FX06—FX10 收口启动/取消、工作区占用、HTTP 分类、worker GID 挂载和产物边界；本手册仍不把它列为生产切换步骤。后续 C11 切换前按完整计划核对原执行和依赖，不增加 Gateway 失败后回落宿主的执行分支。Linux 部署需让 Gateway 进程能把控制目录/工作目录的组拥有者设为 worker GID，否则非 root worker 读不到脚本。
+workspace 插件在根配置里二选一：`worker`（LenBot 调宿主容器运行时）或 `gateway`（独立 Worker Gateway）。两者不能同时配置，网关失败不会回落宿主执行。样例保持 worker；把真实根配置改成 gateway、部署网关服务与镜像，才是生产切换，本手册在未取得离线证据前不把它列为已完成步骤。源码已按 FX06—FX10 收口启动/取消、工作区占用、HTTP 分类、worker GID 挂载和产物边界。Linux 部署需让 Gateway 进程能把控制目录/工作目录的组拥有者设为 worker GID，否则非 root worker 读不到脚本。
 
 工作进展冷却由 runtime.job_progress_interval_seconds 决定，正常等待回应的存续时间由 runtime.open_loop_ttl_seconds 决定。原话和工具资料共用现有字符页参数；消息检索、原文邻居、待处理目录、工具发现、摘要／发送事实候选与媒体检索的条数也从 runtime 读取。Schema 展示与实际查询使用同一组值，越界请求明确失败；具体参数和分页坐标见[架构](architecture.md)。
 

@@ -1,12 +1,32 @@
-# 当前任务：复审回归与 FX03/FX05/FX12/FX13、Gateway 复审批修复
+# 当前任务：C11 离线 Python 切换到隔离 Gateway（源码已接）
 
-更新时间：2026-09-16。本批相对 `c590855`；计划比较基线 `7a4152d`。本文件只维护最新状态；C01—C10 与 FX01—FX13 的原始合同随本批收口移入 [archive/social-agent-c01-c10-fix.md](archive/social-agent-c01-c10-fix.md)，同批归档早期计划、readiness 与实施日志。
+更新时间：2026-09-16。本批相对 `35f2694`；计划比较基线 `7a4152d`。上一批（复审回归 + FX03/FX05/FX12/FX13 + Gateway 复审批 + 审计小修）已提交为 `35f2694`，其记录并入本文件历史；C01—C10 与 FX 合同见 [archive/social-agent-c01-c10-fix.md](archive/social-agent-c01-c10-fix.md)。
 
 ## 当前结论与授权范围
 
-用户要求按外部复审队列直接修复并提交本批。不改根配置、不启动生产、不真实发送、不把 Gateway 接到 `run_python`（C11 仍关闭）、不新增或运行测试。
+用户要求按计划推进 C11—C20 并逐段提交。本批完成 C11 源码；不改真实根配置（示例配置保持 worker 模式、`gateway: null`）、不启动生产、不运行容器、不新增或运行测试。正式切换仍需运营者在根配置改选 gateway 后端并补实机证据。
 
-## 本批行为变化（源码已接，仅编译核对）
+## C11 行为变化（源码已接，仅编译核对）
+
+- `execution/protocol.py`：`ExecutionRequest` 新增 `input_files`（宿主导出的文本/base64 输入，名称无路径分隔、不重复；`input_assets` 只作来源登记）；`execution/journal.py` 把 `input_files` 纳入同 ID 重复提交的身份核对。
+- `services/worker_gateway/runner.py`：登记前把输入落盘到执行控制区（`manifest.json` 保持容器内原路径 `/lenbot-control/manifest.json`，其余进 `/lenbot-control/input/`），合计字节受工作目录上限约束，坏 base64 在占用执行身份前拒绝；worker GID 权限同时覆盖输入文件；按资产 ID 拉取输入被明确拒绝（字节只能来自宿主）。
+- `execution/client.py`：`WorkerGatewayConfig` 新增 `execution_timeout_seconds`、`poll_interval_seconds`。
+- `execution/service.py`：新增 `GatewayWorkspaceService`——`run_python` 组装 `ExecutionRequest`（工作的类型化发起者、修订、工作区、期限取网关配置与工作剩余期限的较小值），先写宿主侧 `execution_runs` 行再发请求；超时/未知只轮询同一执行 ID，不重复提交；取消经网关执行并把终止回执 park 回原工作；网关终态回读镜像进宿主日志；启动前对本工作区做一次对账（网关从未见过的行记失败，已终结的补记）。文件列表/分页读取/导出/面板下载全部改走网关产物 API（最新执行的登记产物即目录终态），图片导出仍走原 `save_image` 登记链。
+- `plugins/builtin/workspace/`：配置改为 `worker` 与 `gateway` 二选一（互斥校验），插件按配置选择后端，两者之间没有运行时回落；卸载时关闭网关客户端。`lenbot.config.example.json` 的 workspace 配置补 `"gateway": null`。
+- 所属文档：`execution-boundaries.md`、`operations.md`、`product.md`、`architecture.md` 改为描述配置可选后端，不再把 Gateway 写成未接线。
+
+实际核对：`py_compile` 通过；`WorkspacePluginConfig` 对示例配置、纯 gateway 配置、空配置三种输入的接受/拒绝已用解释器核对。未运行网关、容器或真实工作。未改真实根配置。
+
+## 未完成（C12—C20 未开始）
+
+C12 资料导入导出、C13 出口网络、C14 独立浏览器、C15 动作审查、C16 B 站研究原语、C17 公共兴趣、C18 心跳、C19 睡眠、C20 持久延期交付均未动工。上一批遗留未修事项（net_policy TOCTOU、`.backups/` 密钥副本、无保留策略）不变。`uv run pytest` 收集仍中断（5 个旧测试文件引用已删符号），按约束未触碰。
+
+## 下一步
+
+按依赖顺序实施 C12、C13、C15、C16、C17、C18、C19、C20（C14 视浏览器后端形态另定）。C11 正式放行需要：运营者在真实根配置把 workspace 后端改为 gateway、部署网关服务与镜像、离线实机证据（A22/A23）。
+
+
+## 上一批行为变化（35f2694，源码已接，仅编译核对）
 
 预算与工作账户：
 

@@ -129,6 +129,9 @@ class ExecutionJournalMixin:
                         mismatch.append('initiator')
                     if stored.get('input_assets') != request.input_assets:
                         mismatch.append('input_assets')
+                    if (stored.get('input_files') or []) != [item.model_dump(mode='json')
+                                                             for item in request.input_files]:
+                        mismatch.append('input_files')
                     if mismatch:
                         raise ExecutionIdentityConflict(
                             f'执行身份 {request.execution_id} 已存在且内容不同（{",".join(mismatch)}）；'

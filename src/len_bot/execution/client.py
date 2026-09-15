@@ -34,6 +34,9 @@ class WorkerGatewayConfig(BaseModel):
     image_ref: str = Field(pattern=REFERENCE_PATTERN)
     network_policy: str = Field(pattern=REFERENCE_PATTERN)
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    execution_timeout_seconds: float = Field(default=30.0, gt=0, le=3600,
+        description='单次执行的绝对期限；实际提交时不超过原工作剩余期限')
+    poll_interval_seconds: float = Field(default=1.0, gt=0, le=30)
 
 
 class GatewayRefused(RuntimeError):
