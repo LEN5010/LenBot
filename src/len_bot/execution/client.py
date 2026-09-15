@@ -29,14 +29,19 @@ REFERENCE_PATTERN = r'^[a-z][a-z0-9_-]{0,63}$'
 class WorkerGatewayConfig(BaseModel):
     """Where the Gateway is and which fixed references this deployment uses."""
     model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
-    base_url: str = Field(pattern=r'^https?://[^\s]+$')
-    token: str = Field(min_length=16, description='服务间认证密钥；不交给执行容器')
-    image_ref: str = Field(pattern=REFERENCE_PATTERN)
-    network_policy: str = Field(pattern=REFERENCE_PATTERN)
-    request_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    execution_timeout_seconds: float = Field(default=30.0, gt=0, le=3600,
+    base_url: str = Field(pattern=r'^https?://[^\s]+$', title='网关地址',
+        description='网关 HTTP 地址；容器运行时不在 LenBot 进程里')
+    token: str = Field(min_length=16, title='服务 token', description='服务间认证密钥；不交给执行容器')
+    image_ref: str = Field(pattern=REFERENCE_PATTERN, title='镜像引用名',
+        description='网关自己 images 表里的引用名，不是镜像名或 Docker 参数')
+    network_policy: str = Field(pattern=REFERENCE_PATTERN, title='网络策略引用名',
+        description='网关自己 network_policies 表里的引用名；本版只实现离线 none')
+    request_timeout_seconds: float = Field(default=30.0, gt=0, le=300, title='单次 HTTP 超时（秒）',
+        description='提交与查询各自的 HTTP 超时')
+    execution_timeout_seconds: float = Field(default=30.0, gt=0, le=3600, title='单次执行期限（秒）',
         description='单次执行的绝对期限；实际提交时不超过原工作剩余期限')
-    poll_interval_seconds: float = Field(default=1.0, gt=0, le=30)
+    poll_interval_seconds: float = Field(default=1.0, gt=0, le=30, title='终态查询间隔（秒）',
+        description='查询同一执行 ID 的间隔；取消或冲突时仍只查这个 ID')
 
 
 class GatewayRefused(RuntimeError):

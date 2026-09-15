@@ -11,7 +11,9 @@ class LiveSceneConfig(BaseModel):
 
 
 class LivePluginConfig(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
+    model_config = ConfigDict(extra='forbid', strict=True,
+        json_schema_extra={'x-lenbot-enum-labels': {
+            'announcement_model_role': {'conversation': '对话角色', 'work': '工作角色'}}})
     api_url: str = Field(min_length=1)
     interval_seconds: float = Field(ge=10)
     request_timeout_seconds: float = Field(gt=0)
@@ -19,7 +21,8 @@ class LivePluginConfig(BaseModel):
     max_age_seconds: float = Field(gt=0)
     source_timezone: str
     announcement_instructions: str = Field(min_length=1)
-    announcement_model_role: Literal['conversation','work'] = Field(description='使用根配置中已存在的模型路由')
+    announcement_model_role: Literal['conversation','work'] = Field(
+        title='播报使用的模型角色', description='使用根配置中已存在的模型路由；面板显示的是角色名，保存的仍是原枚举值')
     announcement_max_steps: int = Field(ge=1)
     announcement_max_tool_calls: int = Field(ge=0)
     announcement_context_tokens: int = Field(gt=0)

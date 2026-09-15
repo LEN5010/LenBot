@@ -20,29 +20,51 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class WorkspaceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    runtime_path: str = "/usr/bin/docker"
-    image: str = "python:3.13-slim"
-    root_directory: str = ""
-    timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    max_output_chars: int = Field(default=12000, ge=100, le=100000)
-    max_artifact_bytes: int = Field(default=20_000_000, ge=1, le=500_000_000)
-    max_artifact_files: int = Field(default=1000, ge=1, le=10000)
-    container_user: str = Field(default_factory=lambda: f'{os.getuid()}:{os.getgid()}')
-    memory: str = "512m"
-    cpus: str = "1.0"
+    runtime_path: str = Field(default="/usr/bin/docker", title="容器运行时路径",
+        description="必须指向 docker 或 podman；只写可执行文件名，不写参数")
+    image: str = Field(default="python:3.13-slim", title="执行镜像",
+        description="目标主机上必须已能取得或已构建；本机试用默认用 python:3.13-slim")
+    root_directory: str = Field(default="", title="工作目录根",
+        description="留空使用运行目录下的默认位置；容器进程需要有该目录的读写权限")
+    timeout_seconds: float = Field(default=30.0, gt=0, le=300, title="单次执行期限（秒）",
+        description="容器运行的绝对期限，单位秒，不超过 300")
+    max_output_chars: int = Field(default=12000, ge=100, le=100000, title="输出保留字符数",
+        description="保留的标准输出＋错误字符数，100—100000")
+    max_artifact_bytes: int = Field(default=20_000_000, ge=1, le=500_000_000, title="产物总字节上限",
+        description="单个工作全部产物合计的字节上限")
+    max_artifact_files: int = Field(default=1000, ge=1, le=10000, title="产物文件数上限",
+        description="单个工作允许登记的产物文件数上限")
+    container_user: str = Field(default_factory=lambda: f'{os.getuid()}:{os.getgid()}', title="容器内用户",
+        description="写成 UID:GID；默认沿用当前进程用户，容器与宿主目录权限需与它一致")
+    memory: str = Field(default="512m", title="内存上限", description="写成数字加单位，例如 512m 或 1g")
+    cpus: str = Field(default="1.0", title="CPU 上限", description="写成数字，例如 1.0；不是核数范围")
 
     @field_validator("runtime_path")
     @classmethod
     def container_runtime_only(cls, value: str) -> str:
         if Path(value).name not in {"docker", "podman"}:
-            raise ValueError("runtime_path must point to docker or podman")
+            raise ValueError("runtime_path 必须指向 docker 或 podman")
         return value
 
     @field_validator("container_user")
     @classmethod
     def valid_container_user(cls, value: str) -> str:
         if not re.fullmatch(r"[0-9]+:[0-9]+", value):
-            raise ValueError("container_user must be UID:GID")
+            raise ValueError("container_user 必须写成 UID:GID")
+        return value
+
+    @field_validator("memory")
+    @classmethod
+    def memory_limit(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(\.[0-9]+)?[kmgKMG]?", value):
+            raise ValueError("内存上限写成数字加单位，例如 512m 或 1g")
+        return value
+
+    @field_validator("cpus")
+    @classmethod
+    def cpu_limit(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
+            raise ValueError("CPU 上限写成数字，例如 1.0")
         return value
 
 
