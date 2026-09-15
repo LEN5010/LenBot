@@ -43,6 +43,9 @@ const toLocalInput = seconds => {
 }
 const fromLocalInput = value => value ? Math.floor(new Date(value).getTime()/1000) : null
 const accessProblems = ref([])
+// A server rejection names a field by path; the same sentence appears both in
+// the summary and beside the field it belongs to.
+const grantCardProblems = index => accessProblems.value.filter(item=>item.key===`grant:${index}` || item.key.endsWith(`:${index}`))
 const timeDraft = ref(null), timeOriginal = ref(''), timeConfigured = ref(false), timeLoaded = ref(false), timeRestart = ref(false)
 const quotaText = ref(null), quotaOriginal = ref('')
 const quotaDirty = computed(()=>quotaText.value!==null&&quotaText.value!==quotaOriginal.value)
@@ -436,8 +439,8 @@ watch(tab,load,{immediate:true})
         <p v-if="!grants.length" class="muted py-4">当前没有任何能力授予；新增自主能力保持关闭。</p>
         <section v-for="(grant,index) in grants" :key="index" class="grant-card">
           <h3>{{ index+1 }}. 谁 · 什么范围 · 允许什么</h3>
-          <v-alert v-if="accessProblems.some(item=>item.key.startsWith('grant:')&&item.key.endsWith(':'+index))" type="error" variant="tonal" density="compact" class="mb-3">
-            <ul class="error-summary"><li v-for="item in accessProblems.filter(item=>item.key===`grant:${index}`)" :key="item.key">{{ item.message }}</li></ul>
+          <v-alert v-if="grantCardProblems(index).length" type="error" variant="tonal" density="compact" class="mb-3">
+            <ul class="error-summary"><li v-for="item in grantCardProblems(index)" :key="item.key+item.message">{{ item.message }}</li></ul>
           </v-alert>
           <div class="form-grid">
             <v-select v-model="grant.principal_type" label="谁" :items="[{title:'一个群友（人类）',value:'human'},{title:'系统用途',value:'system'},{title:'一个插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
