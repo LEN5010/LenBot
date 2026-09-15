@@ -3,10 +3,10 @@
 > 基线：`LEN5010/LenBot@7a4152d734b1430f0f42c728cae0c850cc9afae3`  
 > 制定日期：2026-09-12  
 > 文档性质：供逐阶段实现的设计与交付合同；不是已经完成的功能说明，也不是生产验收报告。  
-> 前置材料：`docs/social-agent-improvement-plan.md`、当前架构与工程约束、此前能力评审，以及文末列出的开源项目官方资料。  
+> 前置材料：`docs/archive/social-agent-improvement-plan.md`、当前架构与工程约束、此前能力评审，以及文末列出的开源项目官方资料。  
 > 初稿范围：只制定计划，不实施运行代码、配置或部署变更。后续文档修订范围另行注明。
 
-> 2026-09-13 审查修订：保留原计划基线和 C00—C29 编号，补充基于分支 `social-agent-m0-foundation@2c862c6` 的修复合同。问题、源码依据和修复顺序见 [C01—C10 fix 文档](social-agent-c01-c10-fix.md)。本次仅修订文档，所有修复仍待实施；不因此启用能力或修改实际配置。
+> 2026-09-13 审查修订：保留原计划基线和 C00—C29 编号，补充基于分支 `social-agent-m0-foundation@2c862c6` 的修复合同。问题、源码依据和修复顺序见 [C01—C10 fix 文档](archive/social-agent-c01-c10-fix.md)。本次仅修订文档，所有修复仍待实施；不因此启用能力或修改实际配置。
 
 ## 本次审查后的执行约束
 
@@ -907,7 +907,7 @@ C00—C05 为第一批发布，不等后续基础设施。C06—C09 是新自主
 
 ### 8.2.1 C01—C10 审查修复插入点
 
-保留上表原编号，修复项单独使用 `FX01—FX13`，详细合同见 [fix 文档](social-agent-c01-c10-fix.md)。这些是已有阶段的补交，不是把后续能力提前算成完成。
+保留上表原编号，修复项单独使用 `FX01—FX13`，详细合同见 [fix 文档](archive/social-agent-c01-c10-fix.md)。这些是已有阶段的补交，不是把后续能力提前算成完成。
 
 | 修复批次 | 对应项 | 依赖与交付边界 |
 |---|---|---|
@@ -1180,7 +1180,7 @@ Compose 网络与容器参数属于部署静态事实，业务授权仍由根配
 
 ## LenBot固定基线资料
 
-- [R01] 当前社会Agent草案：`https://github.com/LEN5010/LenBot/blob/7a4152d734b1430f0f42c728cae0c850cc9afae3/docs/social-agent-improvement-plan.md`
+- [R01] 当前社会Agent草案：`https://github.com/LEN5010/LenBot/blob/7a4152d734b1430f0f42c728cae0c850cc9afae3/docs/archive/social-agent-improvement-plan.md`
 - [R02] 当前架构与事务/配置/读取边界：`https://github.com/LEN5010/LenBot/blob/7a4152d734b1430f0f42c728cae0c850cc9afae3/docs/architecture.md`
 - [R03] AttentionPolicy：`https://github.com/LEN5010/LenBot/blob/7a4152d734b1430f0f42c728cae0c850cc9afae3/src/len_bot/runtime/attention.py`
 - [R04] SocialCognitionCore：`https://github.com/LEN5010/LenBot/blob/7a4152d734b1430f0f42c728cae0c850cc9afae3/src/len_bot/cognition/social_core.py`

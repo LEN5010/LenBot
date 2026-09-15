@@ -38,11 +38,12 @@ class SocialCognitionCore:
                 'conversation_max_tool_calls':resume.tool_calls_limit,'conversation_context_tokens':resume.context_tokens,
                 'conversation_output_tokens':resume.output_tokens,
                 # The window a waiting turn is measured against is the one it
-                # was granted, not whichever value the root configuration
-                # happens to carry by the time the reply arrives.  A turn that
-                # waited does not get a re-derived window out of a policy edit.
-                **({'conversation_window_seconds':resume.elapsed_seconds_limit}
-                   if resume.elapsed_seconds_limit is not None else {})})
+                # was granted — including "no window at all" — not whichever
+                # value the root configuration happens to carry by the time
+                # the reply arrives.  A turn that waited does not get a
+                # re-derived window out of a policy edit, and a window the
+                # operator left unlimited stays unlimited on resume.
+                'conversation_window_seconds':resume.elapsed_seconds_limit})
         role=plugin_request.model_role if plugin_request else 'conversation'
         binding=(runtime.provider_registry.resolve_profile(resume.model_profile,role) if resume
                  else runtime.provider_registry.resolve(role))
@@ -68,13 +69,21 @@ class SocialCognitionCore:
         execution.context, execution.ledger = context, ledger
         execution.model_slot_owned = True
         # A conversation window is absolute: it starts at this run's first
-        # model call and a resume keeps counting from where the wait left off
-        # rather than getting a fresh window.  The last call and the terminal
-        # keep a slice of it so the run still submits its result instead of
-        # being cut off mid-thought.
+        # model call and closes at one instant.  A resumed wait carries that
+        # instant itself, so the time spent waiting for the reply counts
+        # against the same window rather than only the time spent running; a
+        # record from before the instant was stored falls back to the
+        # accumulated running seconds, the only fact it carries.  The last
+        # call and the terminal keep a slice of the window so the run still
+        # submits its result instead of being cut off mid-thought.
+        if resume and resume.deadline_at is not None:
+            restored_deadline = time.monotonic() + (resume.deadline_at - runtime.clock())
+        else:
+            restored_deadline = window_deadline(config.conversation_window_seconds,
+                                                resume.elapsed_seconds if resume else 0.0)
         execution.budget = execution.budget or AgentBudget(config.conversation_max_steps,
             config.conversation_max_tool_calls, initial_models, initial_tools,
-            deadline=window_deadline(config.conversation_window_seconds, resume.elapsed_seconds if resume else 0.0),
+            deadline=restored_deadline,
             terminal_seconds_reserve=terminal_seconds_reserve(config.conversation_window_seconds),
             terminal_token_reserve=config.conversation_output_tokens)
         if plugin_call:
@@ -297,6 +306,8 @@ class SocialCognitionCore:
                     context_tokens=config.conversation_context_tokens,output_tokens=config.conversation_output_tokens,
                     elapsed_seconds=(resume.elapsed_seconds if resume else 0)+time.monotonic()-started,
                     elapsed_seconds_limit=config.conversation_window_seconds,
+                    deadline_at=(runtime.clock()+execution.budget.deadline-time.monotonic()
+                                 if execution.budget.deadline is not None else None),
                     messages_committed=ledger.messages_committed+len(outcome.message_proposals),
                     next_checkpoint=ledger.checkpoint_index+1,next_proposal_handle=ledger._next_handle,
                     source_event_ids=[source.source_event_id for source in outcome.source_outcomes if source.status=='waiting'],

@@ -2,7 +2,7 @@
 
 面向维护者。产品语义见[产品行为](product.md)，起停与切换见[运行手册](operations.md)，本轮实现状态见[当前任务](iteration.md)。
 
-本文描述 `2c862c6` 的源码结构，已知缺口随对应模块说明。改造合同见 [C01—C10 fix](social-agent-c01-c10-fix.md)，实际核对证据和进度只写当前任务。
+本文描述 `2c862c6` 的源码结构，已知缺口随对应模块说明。改造合同见 [C01—C10 fix](archive/social-agent-c01-c10-fix.md)，实际核对证据和进度只写当前任务。
 
 统一亮色卡片是确定性派生资产，继续使用 `ToolResult`、媒体资产库和原发送链；`gscore_adapter` 只桥接明确 `/gs` 命令到独立 Core。Python 和浏览器工具返回资料，不提供直接 OneBot 发送入口；实际执行与隔离范围见 [执行边界](execution-boundaries.md)。
 

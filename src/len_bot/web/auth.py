@@ -9,6 +9,39 @@ from fastapi import Request, HTTPException, Depends, status
 _ACTIVE_SESSIONS: dict[str, dict] = {}
 SESSION_TTL = 7 * 86400.0  # 7 days
 
+# Failed-login throttle: "client:username" -> recent failure timestamps.  The
+# dashboard port may be reachable beyond localhost, and PBKDF2 alone does not
+# stop an online guessing loop.
+_FAILED_LOGINS: dict[str, list[float]] = {}
+LOGIN_ATTEMPT_WINDOW = 900.0
+LOGIN_ATTEMPT_LIMIT = 5
+
+
+def login_blocked(key: str) -> bool:
+    now = time.time()
+    attempts = [moment for moment in _FAILED_LOGINS.get(key, []) if now - moment < LOGIN_ATTEMPT_WINDOW]
+    if attempts:
+        _FAILED_LOGINS[key] = attempts
+    else:
+        _FAILED_LOGINS.pop(key, None)
+    return len(attempts) >= LOGIN_ATTEMPT_LIMIT
+
+
+def record_login_failure(key: str) -> None:
+    now = time.time()
+    if len(_FAILED_LOGINS) > 10000:
+        for stale in [name for name, moments in _FAILED_LOGINS.items()
+                      if not moments or now - moments[-1] >= LOGIN_ATTEMPT_WINDOW]:
+            _FAILED_LOGINS.pop(stale, None)
+    attempts = [moment for moment in _FAILED_LOGINS.get(key, []) if now - moment < LOGIN_ATTEMPT_WINDOW]
+    attempts.append(now)
+    _FAILED_LOGINS[key] = attempts
+
+
+def clear_login_failures(key: str) -> None:
+    _FAILED_LOGINS.pop(key, None)
+
+
 def hash_password(password: str, salt: Optional[str] = None) -> str:
     """PBKDF2-HMAC-SHA256 password hasher with random salt."""
     if not salt:

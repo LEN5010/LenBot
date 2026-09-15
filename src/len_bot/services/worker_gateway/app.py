@@ -26,6 +26,7 @@ import mimetypes
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -113,9 +114,17 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         record = await store.get_execution(artifact['execution_id'])
         if record is None:
             raise HTTPException(status_code=404, detail='产物所属执行不在日志中')
-        # The path is re-resolved through the same rule the workspace uses and
-        # re-checked as an ordinary file: a registered row never becomes a way
-        # to open a link or a directory.
+        # The header itself must stay latin-1 encodable, so a non-ASCII
+        # filename (中文等) travels in RFC 5987 ``filename*=`` with a plain
+        # ASCII fallback, instead of raising during response encoding.  The
+        # headers are built before the descriptor is opened, and a failure to
+        # build the response closes the descriptor instead of leaking it.
+        media_type = (artifact['media_type'] or mimetypes.guess_type(artifact['path'])[0]
+                      or 'application/octet-stream')
+        filename = Path(artifact['path']).name
+        fallback = filename.encode('ascii', 'ignore').decode().replace('"', '_') or 'artifact'
+        disposition = (f'attachment; filename="{fallback}"; '
+                       f"filename*=UTF-8''{quote(filename, safe='')}")
         try:
             fd = runner.open_stored_artifact(artifact['execution_id'], artifact_id)
         except GatewayRefusal as error:
@@ -133,11 +142,12 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
             finally:
                 os.close(fd)
 
-        media_type = (artifact['media_type'] or mimetypes.guess_type(artifact['path'])[0]
-                      or 'application/octet-stream')
-        filename = Path(artifact['path']).name
-        return StreamingResponse(chunks(), media_type=media_type, headers={
-            'Content-Disposition': f'attachment; filename="{filename}"'})
+        try:
+            return StreamingResponse(chunks(), media_type=media_type,
+                                     headers={'Content-Disposition': disposition})
+        except BaseException:
+            os.close(fd)
+            raise
 
     @app.on_event('startup')
     async def reconcile():

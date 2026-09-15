@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。本文按 `2c862c6` 的公共接口整理；导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行和事实边界见[架构](architecture.md)，部署见[运行手册](operations.md)。后续目标见完整计划，已知缺陷见 [fix 文档](social-agent-c01-c10-fix.md)，最新进度只记在[当前任务](iteration.md)。
+面向维护 LenBot 业务插件的开发者。本文按 `2c862c6` 的公共接口整理；导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行和事实边界见[架构](architecture.md)，部署见[运行手册](operations.md)。后续目标见完整计划，已知缺陷见 [fix 文档](archive/social-agent-c01-c10-fix.md)，最新进度只记在[当前任务](iteration.md)。
 
 ## 目录、描述符与配置
 

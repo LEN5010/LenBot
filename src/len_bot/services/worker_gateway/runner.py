@@ -154,7 +154,15 @@ class ExecutionRunner:
             policy = self.config.policy_for(request.network_policy)
             control = self.control_directory(execution_id)
             self._write_control(control / 'task.py', request.script)
-            self._apply_worker_access(control, workspace, worker)
+            denied = self._apply_worker_access(control, workspace, worker)
+            if denied:
+                # A refused chmod/chown is a deployment fact worth keeping: the
+                # worker UID may be unable to write its own workspace, and a
+                # permission failure inside the container should be traceable
+                # to this cause instead of looking like a task failure.
+                await self.store.append_execution_event(
+                    execution_id, 'permissions_warning',
+                    '目录权限未完全生效：' + '; '.join(denied)[:1800])
             command = self._command(container_name, worker, policy.mode, control, workspace)
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -163,6 +171,11 @@ class ExecutionRunner:
             except OSError as error:
                 await self._fail(execution_id, 'start_failed', f'容器运行时不可用：{error}')
                 return
+            # The readers start with the process: a container that writes a
+            # burst of output before its start is confirmed must not fill the
+            # pipe and stall against readers that do not exist yet.
+            streams = [asyncio.create_task(self._read_limited(process.stdout)),
+                       asyncio.create_task(self._read_limited(process.stderr))]
             current = await self._stored(execution_id)
             if current.state is ExecutionState.CANCEL_REQUESTED:
                 await self._stop(execution_id, container_name, process, reason='启动过程中已取消')
@@ -170,18 +183,11 @@ class ExecutionRunner:
             await self.store.append_execution_event(
                 execution_id, 'starting', f'容器 {container_name} 已创建，等待运行确认',
                 state=ExecutionState.STARTING)
-            confirmed = await self._confirm_started(execution_id, container_name)
-            streams = [asyncio.create_task(self._read_limited(process.stdout)),
-                       asyncio.create_task(self._read_limited(process.stderr))]
-            if not confirmed:
-                await process.wait()
-                await self._collect(process)
-                for stream in streams:
-                    if not stream.done():
-                        stream.cancel()
-                results = await asyncio.gather(*streams, return_exceptions=True)
-                await self._record_process_end(execution_id, process, results, workspace)
-                return
+            await self._confirm_started(execution_id, container_name, process)
+            # Confirmed or not, the run is watched the same way: an unconfirmed
+            # start may only mean the runtime was slow to create the container,
+            # and the deadline, an external cancellation and the workspace
+            # limits must hold for it exactly as for a confirmed one.
             stopped = await self._watch(execution_id, container_name, process, record.deadline_at,
                                         workspace)
             if not stopped:
@@ -193,7 +199,8 @@ class ExecutionRunner:
                     stream.cancel()
             results = await asyncio.gather(*streams, return_exceptions=True)
             current = await self.store.get_execution(execution_id)
-            if stopped or current is None or current.state is not ExecutionState.RUNNING:
+            if stopped or current is None or current.state not in {
+                    ExecutionState.STARTING, ExecutionState.RUNNING}:
                 return
             await self._record_process_end(execution_id, process, results, workspace)
         except asyncio.CancelledError:
@@ -258,12 +265,14 @@ class ExecutionRunner:
                     '-w', '/workspace', worker.image, 'python', '/lenbot-control/task.py']
         return command
 
-    async def _confirm_started(self, execution_id: str, container_name: str) -> bool:
+    async def _confirm_started(self, execution_id: str, container_name: str, process) -> bool:
         """Wait until the runtime reports the container actually running.
 
-        Returns False when inspect says the container is gone or never
-        appeared, so the caller can record the real process result instead of
-        leaving the row in starting.
+        "Not found" alone does not mean gone: the runtime may simply not have
+        created the container yet.  Only an absent container whose own client
+        process has already exited is really over; anything else keeps being
+        checked here and is then watched under the run's own deadline either
+        way, so a slow creation is never mistaken for a finished run.
         """
         for _ in range(self.config.start_confirm_attempts):
             running = await self._inspect_running(container_name)
@@ -271,7 +280,7 @@ class ExecutionRunner:
                 await self.store.append_execution_event(execution_id, 'running',
                                                         '容器已确认运行', state=ExecutionState.RUNNING)
                 return True
-            if running is False:
+            if running is False and process.returncode is not None:
                 return False
             await asyncio.sleep(self.config.start_confirm_interval_seconds)
         return False
@@ -314,20 +323,50 @@ class ExecutionRunner:
         if current is None or current.state in {ExecutionState.TERMINATION_CONFIRMED,
                                                ExecutionState.TERMINATION_UNCONFIRMED}:
             return current.termination if current is not None else None
-        if current.state not in {ExecutionState.EXITED, ExecutionState.FAILED}:
-            if current.state is not ExecutionState.CANCEL_REQUESTED:
-                await self.store.append_execution_event(execution_id, 'cancel_requested', reason,
-                                                        state=ExecutionState.CANCEL_REQUESTED)
+        if current.state in {ExecutionState.EXITED, ExecutionState.FAILED}:
+            # The run already ended on its own; there is no end state to
+            # rewrite.  The container client is still cleaned up.
+            await self._terminate(container_name, process)
+            return None
+        if current.state is not ExecutionState.CANCEL_REQUESTED:
+            await self.store.append_execution_event(execution_id, 'cancel_requested', reason,
+                                                    state=ExecutionState.CANCEL_REQUESTED)
         report = await self._terminate(container_name, process)
+        if report.status != 'unconfirmed':
+            # Outputs are copied while the row still says cancel_requested and
+            # therefore still occupies its workspace; only then is the
+            # terminal state written.  A next revision claiming the directory
+            # can never overlap the copy.
+            await self._register_artifacts(execution_id,
+                                           self.workspace_directory(current.workspace_id))
         state = (ExecutionState.TERMINATION_CONFIRMED if report.status != 'unconfirmed'
                  else ExecutionState.TERMINATION_UNCONFIRMED)
         await self.store.append_execution_event(
             execution_id, 'termination', f'终止结果：{report.status}；{report.detail}', state=state,
             termination=report, error=None if report.status != 'unconfirmed' else '终止未确认')
+        return report
+
+    async def _recheck_unconfirmed(self, execution_id: str) -> ExecutionRecord:
+        """Re-inspect an unknown termination; confirm it only on real evidence.
+
+        This is the release path for ``termination_unconfirmed``: a later
+        inspection that actually establishes the container is stopped or gone
+        moves the run to ``termination_confirmed``, which frees its workspace
+        and its capacity slot.  A recheck that still cannot tell keeps the
+        original honest answer and the block that goes with it.
+        """
+        current = await self._stored(execution_id)
+        report = await self._terminate(self.container_name(execution_id), None)
         if report.status != 'unconfirmed':
             await self._register_artifacts(execution_id,
                                            self.workspace_directory(current.workspace_id))
-        return report
+            await self.store.append_execution_event(
+                execution_id, 'termination', f'复核终止结果：{report.status}；{report.detail}',
+                state=ExecutionState.TERMINATION_CONFIRMED, termination=report, error='')
+        else:
+            await self.store.append_execution_event(
+                execution_id, 'termination_recheck', '再次核对容器仍无法确认终止，保留原终态')
+        return await self._stored(execution_id)
 
     async def cancel(self, execution_id: str, reason: str) -> tuple[ExecutionRecord, bool]:
         """Ask for a stop and report how far it got.
@@ -340,10 +379,7 @@ class ExecutionRunner:
         """
         current = await self._stored(execution_id)
         if current.state is ExecutionState.TERMINATION_UNCONFIRMED:
-            await self._terminate(self.container_name(execution_id), None)
-            await self.store.append_execution_event(
-                execution_id, 'termination_recheck', '对未知终止再次核对容器，不改写原终态')
-            return await self._stored(execution_id), True
+            return await self._recheck_unconfirmed(execution_id), True
         if current.state in {ExecutionState.EXITED, ExecutionState.FAILED,
                              ExecutionState.TERMINATION_CONFIRMED}:
             return current, False
@@ -385,6 +421,18 @@ class ExecutionRunner:
                         execution_id, 'sweep_error', f'单条恢复失败，保留阻断：{error}')
                 except Exception:
                     pass
+        # An unknown termination is also rechecked on restart: the inspection
+        # is the same evidence an operator's recheck uses, and a container
+        # proven gone releases the workspace instead of blocking it forever.
+        for execution_id in await self.store.unconfirmed_terminations():
+            try:
+                await self._recheck_unconfirmed(execution_id)
+            except Exception as error:
+                try:
+                    await self.store.append_execution_event(
+                        execution_id, 'sweep_error', f'未知终止复核失败，保留阻断：{error}')
+                except Exception:
+                    pass
 
     # ---- container client helpers -----------------------------------------
     async def _inspect_running(self, container_name: str) -> bool | None:
@@ -403,17 +451,25 @@ class ExecutionRunner:
     async def _terminate(self, container_name: str, process) -> TerminationReport:
         details: list[str] = []
         deadline = self.clock() + self.config.cleanup_timeout_seconds
-        code, output = await self._run_bounded(self.runtime_path, 'kill', container_name)
+
+        def left() -> float:
+            # One cleanup budget covers the whole confirmation, so each step
+            # gets what remains of it rather than a full budget of its own.
+            return max(0.1, deadline - self.clock())
+
+        code, output = await self._run_bounded(self.runtime_path, 'kill', container_name,
+                                               timeout=left())
         if code is None:
             details.append(output or 'container kill did not confirm')
         elif code != 0:
             details.append(output or 'container kill failed')
         if process is not None:
             self._reap(process)
-            await self._collect(process)
+            await self._collect(process, timeout=left())
         status = 'unconfirmed'
         if self.clock() < deadline:
-            code, output = await self._run_bounded(self.runtime_path, 'rm', '-f', container_name)
+            code, output = await self._run_bounded(self.runtime_path, 'rm', '-f', container_name,
+                                                   timeout=left())
             if code is None:
                 details.append(output or 'container removal did not confirm')
             elif code != 0:
@@ -425,7 +481,8 @@ class ExecutionRunner:
         # removal alone when the final inspection cannot establish it.
         if self.clock() < deadline:
             code, output = await self._run_bounded(
-                self.runtime_path, 'inspect', '--format', '{{.State.Running}}', container_name)
+                self.runtime_path, 'inspect', '--format', '{{.State.Running}}', container_name,
+                timeout=left())
             if code is None:
                 details.append(output or 'container state could not be inspected')
             elif code != 0:
@@ -441,7 +498,7 @@ class ExecutionRunner:
         return TerminationReport(status=status, container_name=container_name,
                                  detail='; '.join(item for item in details if item)[:2000])
 
-    async def _run_bounded(self, *argv: str) -> tuple[int | None, str]:
+    async def _run_bounded(self, *argv: str, timeout: float | None = None) -> tuple[int | None, str]:
         """Run one bounded runtime command and always reap its own client."""
         process = None
         try:
@@ -451,7 +508,9 @@ class ExecutionRunner:
         except OSError as error:
             return None, str(error)
         try:
-            await asyncio.wait_for(process.wait(), timeout=self.config.cleanup_timeout_seconds)
+            await asyncio.wait_for(process.wait(),
+                                   timeout=timeout if timeout is not None
+                                   else self.config.cleanup_timeout_seconds)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             self._reap(process)
             await self._collect(process)
@@ -474,11 +533,12 @@ class ExecutionRunner:
             except (ProcessLookupError, PermissionError):
                 pass
 
-    async def _collect(self, process) -> None:
+    async def _collect(self, process, timeout: float | None = None) -> None:
         """Reap a client process; its own output tasks read the pipes to EOF."""
         try:
             await asyncio.shield(asyncio.wait_for(
-                process.wait(), timeout=self.config.cleanup_timeout_seconds))
+                process.wait(), timeout=timeout if timeout is not None
+                else self.config.cleanup_timeout_seconds))
         except (asyncio.TimeoutError, asyncio.CancelledError, OSError):
             pass
 
@@ -519,20 +579,23 @@ class ExecutionRunner:
                 raise GatewayRefusal(
                     f'工作区 {request.workspace_id} 仍有未释放执行 {other.execution_id}（{other.state.value}）')
 
-    def _apply_worker_access(self, control: Path, workspace: Path, worker) -> None:
+    def _apply_worker_access(self, control: Path, workspace: Path, worker) -> list[str]:
+        """Give the worker GID its access; report what the host refused."""
         _uid, gid = (int(part) for part in worker.container_user.split(':'))
         script = control / 'task.py'
+        denied: list[str] = []
         for path, mode in ((control, 0o750), (workspace, 0o770), (script, 0o640)):
             if not path.exists():
                 continue
             try:
                 os.chmod(path, mode)
-            except OSError:
-                pass
+            except OSError as error:
+                denied.append(f'chmod {path.name}: {error}')
             try:
                 os.chown(path, os.getuid(), gid)
-            except OSError:
-                pass
+            except OSError as error:
+                denied.append(f'chown {path.name}: {error}')
+        return denied
 
     async def _record_process_end(self, execution_id, process, results, workspace: Path) -> None:
         stdout, stdout_truncated = self._stream_result(results, 0)
@@ -547,6 +610,11 @@ class ExecutionRunner:
                              reason='取消后收集到进程结果')
             return
         state = ExecutionState.EXITED if process.returncode == 0 else ExecutionState.FAILED
+        # Outputs are copied while this row still occupies its workspace; only
+        # then is the end state written.  Written the other way around, a next
+        # revision could claim the directory mid-copy, and a crash between the
+        # two would leave a terminal run whose artifacts nothing re-collects.
+        await self._register_artifacts(execution_id, workspace)
         await self.store.append_execution_event(
             execution_id, 'exited' if state is ExecutionState.EXITED else 'failed',
             f'进程以返回码 {process.returncode} 结束', state=state,
@@ -554,7 +622,6 @@ class ExecutionRunner:
             error=None if state is ExecutionState.EXITED else '进程以非零返回码结束',
             stdout=stdout, stderr=stderr, stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated)
-        await self._register_artifacts(execution_id, workspace)
 
     def _workspace_over_limit(self, workspace: Path) -> str | None:
         files = total = 0
@@ -624,8 +691,30 @@ class ExecutionRunner:
             raise GatewayRefusal('产物不是普通文件')
         return fd
 
-    def _copy_regular_file(self, source: Path, destination: Path, *, size_limit: int) -> None:
-        src = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    def _open_workspace_source(self, workspace: Path, relative: str) -> int:
+        """Open one scanned workspace file without following any symlink.
+
+        ``O_NOFOLLOW`` guards only the final component, so every directory on
+        the way is opened the same way against its parent's descriptor; a
+        component swapped for a link after the scan is refused instead of
+        being read through to somewhere outside the workspace.
+        """
+        parts = Path(relative).parts
+        if not parts or any(part in ('..', '/', '') for part in parts):
+            raise GatewayRefusal('产物路径不合法')
+        fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                fd_next = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = fd_next
+            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        finally:
+            os.close(fd)
+
+    def _copy_regular_file(self, workspace: Path, relative: str, destination: Path,
+                           *, size_limit: int) -> None:
+        src = self._open_workspace_source(workspace, relative)
         try:
             info = os.fstat(src)
             if not stat.S_ISREG(info.st_mode):
@@ -646,6 +735,9 @@ class ExecutionRunner:
                     os.write(dst, chunk)
             finally:
                 os.close(dst)
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
         finally:
             os.close(src)
 
@@ -660,16 +752,24 @@ class ExecutionRunner:
             if over:
                 await self.store.append_execution_event(execution_id, 'workspace_limit', over)
                 break
-            item = await self.store.register_artifact(
-                execution_id, relative, size,
-                mimetypes.guess_type(relative)[0] or 'application/octet-stream')
-            stored = store_dir / item['artifact_id']
+            # The id is derived from the execution and the path, so a copy
+            # that crashed before its row can be finished later under the same
+            # name; and the row is only written once the bytes are safely in
+            # the immutable store — a registered artifact is a downloadable
+            # one, never a promise.
+            artifact_id = uuid.uuid5(uuid.NAMESPACE_URL,
+                                     f'lenbot-artifact:{execution_id}:{relative}').hex
+            stored = store_dir / artifact_id
             if not stored.exists():
                 try:
-                    self._copy_regular_file(workspace / relative, stored,
+                    self._copy_regular_file(workspace, relative, stored,
                                             size_limit=self.config.max_workspace_bytes)
                 except (OSError, GatewayRefusal):
                     continue
+            item = await self.store.register_artifact(
+                execution_id, relative, size,
+                mimetypes.guess_type(relative)[0] or 'application/octet-stream',
+                artifact_id=artifact_id)
             registered.append(item)
         return registered
 

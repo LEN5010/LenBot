@@ -8,7 +8,7 @@
 用户授权先修订开发计划并新增 C1—C10 fix 文档，本轮不实施代码修复。审查基线为 `social-agent-m0-foundation@2c862c6`，比较基线为 `7a4152d`；开始时工作树干净。
 
 - 已修订 [完整实施计划](../LenBot_社会Agent_完整实施计划_7a4152d.md)，补明确的调用预留、结算时序、原预算/期限持久化、授权复核、Gateway 恢复和产物边界；保留 C00—C29 编号，增加修复插入点及 A19—A24 人工核对目标。
-- 新增 [C01—C10 fix 文档](../social-agent-c01-c10-fix.md)，使用 FX01—FX13 记录源码依据、触发条件、影响、拟修复合同与核对目标。全部修复仍待实施。
+- 新增 [C01—C10 fix 文档](social-agent-c01-c10-fix.md)，使用 FX01—FX13 记录源码依据、触发条件、影响、拟修复合同与核对目标。全部修复仍待实施。
 - 保留 C01/C03/C04/C05 的已写代码及历史记录；C02 容量适配为部分实现，C06—C10 对应缺口重新打开。既有“实现完成 / 未运行”不再作为有缺口条目的完成依据。后续先修共同预算与授权，再修未接线 Gateway，相关项收口前不进行 C11 正式切换。
 - 校正上一轮口头审查：Gateway 重启首先存在非法状态转换，可能阻止应用启动；合法的终止未确认记录又未继续参与清理。短执行不一定永久卡死，但会丢失原退出结果并遗留 starting。accepted=true 原意是新登记，不是执行成功；计划头部 Markdown 双空格换行不是代码缺陷；本地 token 估算不能证明供应商计费绝不超出。
 
@@ -28,7 +28,7 @@
 
 ## 2026-09-13 首批 C00—C05 实施
 
-在分支 `social-agent-m0-foundation` 上按计划第 8.2 节完成首批五个提交（实际顺序 C01、C03、C02、C05、C04），并在 [`social-agent-implementation-log.md`](../social-agent-implementation-log.md) 逐阶段记录设计判断、实际改动、未做的事、静态核对与未确认项，末尾按计划第 10.3 节模板给出首批验收记录。
+在分支 `social-agent-m0-foundation` 上按计划第 8.2 节完成首批五个提交（实际顺序 C01、C03、C02、C05、C04），并在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md) 逐阶段记录设计判断、实际改动、未做的事、静态核对与未确认项，末尾按计划第 10.3 节模板给出首批验收记录。
 
 - C01 `99be439` 取消与终止结果保留：取消不再被降级为普通 `ToolResult`，workspace 外层期限严格大于内层并覆盖清理窗口，清理子进程有统一上限，终止身份额外保留。
 - C03 `98227ff` 日历来源失败状态卡：来源失败与“本日 0 条”分开，失败在同一个 handler 内渲染并提交明确状态卡。
@@ -42,7 +42,7 @@
 
 ## 2026-09-13 第二批 C06—C07 实施
 
-按计划第 8.2 节完成 C06、C07 两个提交，逐阶段记录写在 [`social-agent-implementation-log.md`](../social-agent-implementation-log.md)（含设计判断、实际改动、未做的事、静态核对与未确认项）。
+按计划第 8.2 节完成 C06、C07 两个提交，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)（含设计判断、实际改动、未做的事、静态核对与未确认项）。
 
 - C06 `a06b4c6` 类型化发起者与能力授予：`HumanInitiator`/`SystemInitiator`/`PluginInitiator` 判别联合与只有真实事件能取人的 `human_event_uid`；`JobProposal.initiator` 由内部路径构造、模型不可见；事务内按类型分支二次校验；新增窄 `runtime/capabilities.py` 与根配置 `access.capability_grants`（默认空，未配置即拒绝）。
 - C07 共享用量原子预占与结算：新增 `usage_reservations`；预占在 `commit_proposal_transaction` 的既有写事务内与工作行同生共死；`measured_call_tokens()` 把真实 usage 与本地估算分成两列；`ReservationPolicy` 给出单工作/账号日/场景日三个维度；根配置新增 `resources.policies`（默认空，不改变既有部署行为），`CapabilityGrant.resource_policy` 按名称解析；模型页新增“工作额度预占”，系统设置页新增“额度策略”。
@@ -55,7 +55,7 @@
 
 ## 2026-09-13 第二批 C08 实施
 
-按计划第 8.2 节完成 C08 `feat(agent): enforce resource budgets across native loops`，逐阶段记录写在 [`social-agent-implementation-log.md`](../social-agent-implementation-log.md)。
+按计划第 8.2 节完成 C08 `feat(agent): enforce resource budgets across native loops`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
 
 本轮不是“给类型加 `| None`”，而是把 `None` 语义、判定规则与停止条件一起落地（计划第 8.3 节把只用 `None` 放行、不改循环终结判断列为禁止的半成品）：
 
@@ -72,7 +72,7 @@
 
 ## 2026-09-13 第二批 C09 实施
 
-按计划第 8.2 节完成 C09 `feat(jobs): preserve revisions and budget ownership on resume`，逐阶段记录写在 [`social-agent-implementation-log.md`](../social-agent-implementation-log.md)。
+按计划第 8.2 节完成 C09 `feat(jobs): preserve revisions and budget ownership on resume`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
 
 C09 的落点不是三处新判定，而是让同一条既有规则在**控制路径**上也成立——恢复既然是“同一工作的下一次执行”，就必须重新受同一份额度与**当前**授权约束：
 
@@ -90,7 +90,7 @@ C09 的落点不是三处新判定，而是让同一条既有规则在**控制�
 
 ## 2026-09-13 第二批 C10 实施
 
-按计划第 8.2 节完成 C10 `feat(execution): define owned worker protocol and journal`，逐阶段记录写在 [`social-agent-implementation-log.md`](../social-agent-implementation-log.md)。
+按计划第 8.2 节完成 C10 `feat(execution): define owned worker protocol and journal`，逐阶段记录写在 [`social-agent-implementation-log.md`](social-agent-implementation-log.md)。
 
 C10 只做两件事：把“一个执行”的对外合同与归属固定下来，并把它的生命周期记进 `execution_runs`。**没有**把 Python 执行切到 Gateway——那是 C11，且计划第 8.3 节要求整体切换、不允许新旧路径并存。
 
@@ -263,4 +263,4 @@ F04 所述宿主浏览器网络出口与资源隔离不是一个只改一处即�
 
 ## 2026-09-12 群聊社会 Agent 改进计划
 
-用户确认进入下一阶段方案收敛，详细计划写入 [`docs/social-agent-improvement-plan.md`](../social-agent-improvement-plan.md)。本轮只记录已确认的产品与部署决策，未实施新的运行代码、配置迁移或 VPS 部署；后续按该文件的 M0—M9 分阶段交付和人工验收。当前计划特别区分代码/配置就绪与 Linux VPS、OneBot、GSUID、B 站登录态、worker 和真实回执的运行证据。该文件的阶段编号 `M0—M9` 与 [`社会 Agent 完整实施计划`](../LenBot_社会Agent_完整实施计划_7a4152d.md) 的模块编号 `M01—M20`、提交编号 `C00—C29` 是三套不同索引，执行时按完整实施计划为准。
+用户确认进入下一阶段方案收敛，详细计划写入 [`docs/social-agent-improvement-plan.md`](social-agent-improvement-plan.md)。本轮只记录已确认的产品与部署决策，未实施新的运行代码、配置迁移或 VPS 部署；后续按该文件的 M0—M9 分阶段交付和人工验收。当前计划特别区分代码/配置就绪与 Linux VPS、OneBot、GSUID、B 站登录态、worker 和真实回执的运行证据。该文件的阶段编号 `M0—M9` 与 [`社会 Agent 完整实施计划`](../LenBot_社会Agent_完整实施计划_7a4152d.md) 的模块编号 `M01—M20`、提交编号 `C00—C29` 是三套不同索引，执行时按完整实施计划为准。

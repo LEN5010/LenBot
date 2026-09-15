@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from len_bot.cognition.gateway import ModelGateway, ToolCall
 from len_bot.tools.results import ToolResult, error_message
 from len_bot.tools.retrieval import ObservationPage
-from len_bot.cognition.budget import AgentBudget, count_remaining, tightest
+from len_bot.cognition.budget import AgentBudget, count_remaining, seconds_left_to, tightest
 
 if TYPE_CHECKING:
     from len_bot.plugins.hooks import PluginRunHooks
@@ -75,8 +75,14 @@ def execution_budget_message(state: dict[str, Any], terminal_name: str) -> tuple
             'model_calls_remaining_after': remaining,
             'tool_calls_remaining': count_remaining(state.get('tool_calls_limit'), state['tool_calls_used']),
             'terminal_required': terminal_name}
-    if 'elapsed_seconds_limit' in state:
-        view['elapsed_seconds_remaining'] = max(0, round(state['elapsed_seconds_limit'] - state['elapsed_seconds_used'], 3))
+    # A work with an absolute deadline reports elapsed_seconds_limit as None;
+    # the deadline is the fact the remaining time comes from, and a dimension
+    # whose value is None stays out of the arithmetic entirely.
+    seconds_remaining = seconds_left_to(state.get('deadline_at'))
+    if seconds_remaining is None and state.get('elapsed_seconds_limit') is not None:
+        seconds_remaining = state['elapsed_seconds_limit'] - state['elapsed_seconds_used']
+    if seconds_remaining is not None:
+        view['elapsed_seconds_remaining'] = max(0, round(seconds_remaining, 3))
     if 'tokens_limit' in state:
         view['tokens_remaining'] = count_remaining(state.get('tokens_limit'), state.get('tokens_used', 0))
     if remaining == 0:

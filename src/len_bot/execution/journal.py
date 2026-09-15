@@ -24,6 +24,9 @@ from len_bot.execution.protocol import (
 
 # Which state may follow which.  A run that ended on its own is terminal: its
 # container's removal is a separate recorded fact, not a change of outcome.
+# An unconfirmed termination has one way out: a later re-inspection that
+# actually establishes the container is gone confirms it, which is what
+# releases the workspace and the capacity it was honestly blocking.
 ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
     ExecutionState.ACCEPTED: frozenset({
         ExecutionState.STARTING, ExecutionState.EXITED, ExecutionState.FAILED,
@@ -38,7 +41,7 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
     ExecutionState.EXITED: frozenset(),
     ExecutionState.FAILED: frozenset(),
     ExecutionState.TERMINATION_CONFIRMED: frozenset(),
-    ExecutionState.TERMINATION_UNCONFIRMED: frozenset(),
+    ExecutionState.TERMINATION_UNCONFIRMED: frozenset({ExecutionState.TERMINATION_CONFIRMED}),
 }
 
 # What has to agree for a repeated submission to count as the same execution.

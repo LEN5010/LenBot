@@ -14,7 +14,7 @@ LenBot 进程直接调用配置的 Docker/Podman 兼容运行时。容器使用�
 
 目录字节数和文件数在执行中轮询，退出后再核对；这是应用层限制，不是底层文件系统硬配额。超限产物保留元信息和 over_limit。宿主文件读取通过固定工作区描述符逐级 O_NOFOLLOW 打开，以 O_NONBLOCK 避免特殊文件阻塞，并对同一 fd 做 fstat；文本按范围读取，二进制读取受字节上限约束。图片导出须成功登记媒体才成为附件，普通文件沿已授权工作面板下载，均不自动发群。
 
-工作恢复的累计 token、原上限和绝对期限缺口仍见 [FX01—FX04](social-agent-c01-c10-fix.md)；容器有独立单次时限不代表整个工作恢复合同已完成。
+工作恢复的累计 token、原上限和绝对期限已按 FX01—FX04 接入源码并在复审后修正回归（原合同见 [归档 fix 文档](archive/social-agent-c01-c10-fix.md)，实施与核对状态只看 [当前任务](iteration.md)）；容器有独立单次时限不代表整个工作恢复合同已经真实运行核对。
 
 ## 当前浏览器路径
 
@@ -32,4 +32,4 @@ HTTP(S) 主机按配置白名单检查；`*` 表示允许任意公网主机，�
 
 execution/protocol、client、journal 和 services/worker_gateway 已存在，但 WorkspaceService 没有调用该客户端。当前不能宣称 LenBot 已移除容器运行时访问、执行已迁到独立服务或两库已同步。
 
-新 Gateway 源码已按 [FX06—FX10](social-agent-c01-c10-fix.md) 修订状态机、工作区占用、HTTP 分类、worker GID 权限和产物描述符打开。它仍未接入 `run_python`，不能当作执行隔离已完成。C11 正式切换前须补实际环境证据；输入/媒体导入等后续功能不因此提前开放。
+新 Gateway 源码已按 FX06—FX10 及其外部复审修订：状态机含 `termination_unconfirmed` 复核释放、启动确认与未确认启动的监视、产物先复制后登记与逐层 `O_NOFOLLOW` 打开、HTTP 分类、worker GID 权限失败记录、非 ASCII 下载文件名（原合同见 [归档 fix 文档](archive/social-agent-c01-c10-fix.md)）。它仍未接入 `run_python`，不能当作执行隔离已完成。C11 正式切换前须补实际环境证据；输入/媒体导入等后续功能不因此提前开放。

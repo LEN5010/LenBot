@@ -140,8 +140,12 @@ class WorkerGatewayClient:
         payload = await self._request('POST', '/v1/executions', json=request.model_dump(mode='json'))
         if not isinstance(payload, dict):
             raise GatewayResultUnknown('提交响应不是对象')
-        return SubmittedExecution(record=self._record(payload.get('record')),
-                                  accepted=bool(payload.get('accepted')))
+        accepted = payload.get('accepted')
+        if not isinstance(accepted, bool):
+            # A missing flag must not be read as "already existed": that answer
+            # decides whether a run was started, so its absence is unknown.
+            raise GatewayResultUnknown('提交响应缺少明确的 accepted 布尔标记')
+        return SubmittedExecution(record=self._record(payload.get('record')), accepted=accepted)
 
     async def get(self, execution_id: str) -> ExecutionRecord:
         return self._record(await self._request('GET', f'/v1/executions/{execution_id}'))
@@ -151,10 +155,13 @@ class WorkerGatewayClient:
                                       json={'reason': reason})
         if not isinstance(payload, dict):
             raise GatewayResultUnknown('取消响应不是对象')
+        requested = payload.get('requested')
+        if not isinstance(requested, bool):
+            raise GatewayResultUnknown('取消响应缺少明确的 requested 布尔标记')
         termination = payload.get('termination')
         return CancellationOutcome(
             record=self._record(payload.get('record')),
-            requested=bool(payload.get('requested')),
+            requested=requested,
             termination=None if termination is None else TerminationReport.model_validate(termination))
 
     async def events(self, execution_id: str, after: int = 0) -> list[ExecutionEvent]:

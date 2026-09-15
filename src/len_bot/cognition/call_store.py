@@ -123,6 +123,19 @@ class ModelCallStoreMixin:
         # from the current default policy.
         await self._db.execute("""UPDATE usage_reservations SET limit_tokens=reserved_tokens
             WHERE limit_tokens IS NULL AND status='held'""")
+        # A request that was in flight when the process last stopped has no
+        # receipt and can never get one: nothing will call end_model_call for
+        # it.  Left open, it keeps its work settling forever and its hold
+        # counted against the day.  It is closed here as failed with what is
+        # known, and every work that was only waiting on such a request
+        # settles on its real receipts — unless an admitted skill candidate
+        # still has to run under the same hold.
+        await self._db.execute("""UPDATE model_calls SET ended_at=?,status='failed',held_tokens=NULL,
+            error_type='process_restart' WHERE ended_at IS NULL""", (self.clock(),))
+        settling = await (await self._db.execute(
+            "SELECT job_id FROM usage_reservations WHERE status='settling'")).fetchall()
+        for (job_id,) in settling:
+            await self._settle_if_open_in_transaction(job_id)
 
     async def account_used_tokens_in_transaction(self, subject: str, day_key: str, *,
                                                  scene_id: str | None = None,
@@ -228,17 +241,20 @@ class ModelCallStoreMixin:
 
         A work may still have requests in flight when this is reached, and a
         cancelled or interrupted request cannot be proven to have stopped
-        billing.  Such a work is left settling: its hold stays, the in-flight
-        amount keeps counting, and the last request to end closes the account
-        with its real receipt instead of a number a later receipt would have
-        to fight.
+        billing.  A pending skill candidate is admitted future consumption of
+        the same hold.  Either way the work is left settling: its hold stays,
+        the in-flight amount keeps counting, and the last request to end —
+        after the last candidate is resolved — closes the account with its
+        real receipt.  Settling early would return remainder to the day that
+        maintenance then takes back without any admission check.
         """
+        pending_maintenance = await self._pending_skill_candidates_in_transaction(job_id)
         row = await (await self._db.execute(
             "SELECT 1 FROM model_calls WHERE job_id=? LIMIT 1", (job_id,))).fetchone()
-        if row is None:
+        if row is None and not pending_maintenance:
             await self.release_reservation_in_transaction(job_id, 'work_ended_without_a_model_call')
             return
-        if await self.in_flight_model_calls(job_id) > 0:
+        if await self.in_flight_model_calls(job_id) > 0 or pending_maintenance:
             await self._db.execute(
                 """UPDATE usage_reservations SET status='settling' WHERE job_id=? AND status='held'""",
                 (job_id,))
@@ -374,24 +390,34 @@ class ModelCallStoreMixin:
                 raise
 
     async def _reopen_settled_reservation_in_transaction(self, job_id: str) -> None:
-        """Keep a finished work occupying its original ceiling while later calls run.
+        """Refuse a new charge against an account that already settled.
 
-        Skill maintenance and a late receipt still belong to the founding
-        work.  If the business result already settled the hold, this takes the
-        recorded ceiling back until the last in-flight request ends.
+        While admitted follow-ups remain — in-flight requests or pending skill
+        candidates — the account is kept settling and never reaches this
+        state.  A settled account therefore has no admitted consumption left,
+        and re-holding its old ceiling here would take back tokens the day may
+        have already granted to other works, without any daily-ledger check.
+        A resume or revision re-holds through the admission-checked path.
         """
         row = await (await self._db.execute(
-            "SELECT status,limit_tokens,reserved_tokens FROM usage_reservations WHERE job_id=?",
+            "SELECT status FROM usage_reservations WHERE job_id=?",
             (job_id,))).fetchone()
         if row is None or row[0] != 'settled':
             return
-        _status, limit_tokens, reserved_tokens = row
-        ceiling = int(limit_tokens) if limit_tokens is not None else int(reserved_tokens or 0)
-        await self._db.execute(
-            """UPDATE usage_reservations SET status='settling',reserved_tokens=?,settled_at=NULL
-               WHERE job_id=? AND status='settled'""", (ceiling, job_id))
+        raise ValueError(
+            '该工作的预占已结算，没有获准的后续消费；不能未经日额核对重新占用已退回的额度。'
+            '恢复或修订工作请走带日账检查的重占流程。')
+
+    async def _pending_skill_candidates_in_transaction(self, job_id: str) -> bool:
+        """Whether this work still has an admitted skill candidate waiting to run."""
+        row = await (await self._db.execute(
+            "SELECT 1 FROM skill_candidates WHERE job_id=? AND status='pending' LIMIT 1",
+            (job_id,))).fetchone()
+        return row is not None
 
     async def _settle_if_open_in_transaction(self, job_id: str) -> bool:
+        if await self._pending_skill_candidates_in_transaction(job_id):
+            return False
         row = await (await self._db.execute(
             "SELECT status FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
         if row is None or row[0] not in {'settling', 'settled'}:
