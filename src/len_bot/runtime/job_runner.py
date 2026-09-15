@@ -406,6 +406,10 @@ class InformationJobRunner:
             origin=PluginOrigin.model_validate(job['plugin_origin']) if job['plugin_origin'] else None
             return PluginCallContext(scene_id=scene_id, requester_qq_uid=job["requester_qq_uid"],
                 now=runtime.clock(), cutoff_rowid=work_cutoff, episode_id=None, job_id=job_id, role="work",
+                # The revision this call belongs to travels with the call: a
+                # tool that waits on a lock while the work is revised must not
+                # act under the new revision's identity.
+                job_revision=job['revision'],
                 work_operation=job['work_operation'], tool_call_id=tool_call_id,
                 source_event_id=origin.source_event_id if origin else job['request_source_event_id'],
                 origin=origin,entry_origin=origin.handler_origin or origin if origin else None,
