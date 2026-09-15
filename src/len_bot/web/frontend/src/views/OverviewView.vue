@@ -9,11 +9,58 @@ import StatusBadge from '../components/StatusBadge.vue'
 const app=useAppState(),data=ref(null),review=ref(null),unknown=ref(null),unknownJobs=ref(null),failed=ref(null),error=ref(''),loading=ref(false)
 let sequence=0
 async function load(){const own=++sequence;loading.value=true;try{const result=await Promise.all([api('/api/overview/stats'),api('/api/cockpit/jobs?status=review_required&page_size=4'),api('/api/cockpit/tasks?status=delivery_unknown&page_size=4'),api('/api/cockpit/jobs?status=delivery_unknown&page_size=4'),api('/api/models/usage?status=failed&page_size=4')]);if(own===sequence){[data.value,review.value,unknown.value,unknownJobs.value,failed.value]=result;app.scenes=data.value.scenes;app.loadedScenes=true;error.value=''}}catch(e){if(own===sequence)error.value=e.message}finally{if(own===sequence)loading.value=false}}
-async function refresh(){await Promise.all([load(),refreshStatus()])}
+async function refresh(){await Promise.all([load(),loadPlugins(),refreshStatus()])}
 const roleNames={conversation:'对话',work:'后台工作',maintenance:'维护整理'}
 const hasIssues=computed(()=>review.value.total+unknown.value.total+unknownJobs.value.total+failed.value.total>0)
 const unknownCount=computed(()=>unknown.value.total+unknownJobs.value.total)
 const unknownItems=computed(()=>[...unknown.value.items.map(item=>({...item,entityType:'task'})),...unknownJobs.value.items.map(item=>({...item,description:item.goal,entityType:'job'}))])
+// A first configuration needs to see, from one place, which dependency is
+// actually missing and where it is filled in.  Every row below is derived from
+// records already saved — the plugin list, the role projection and the scene
+// counts — and none of them calls an external service, so refreshing the page
+// never probes a source, sends a message or switches anything on.  The plugin
+// list is fetched separately from the overview stats so a plugin read failure
+// cannot blank the rest of the page.
+const plugins=ref([]),pluginError=ref('')
+async function loadPlugins(){
+  try{plugins.value=await api('/api/plugins/list');pluginError.value=''}
+  catch(e){pluginError.value=e.message}
+}
+// The three ways a declared plugin is not usable yet.  Whether it is open in
+// some group is a per-group decision made in that group's settings, so it is
+// deliberately not counted as a missing dependency here.
+const pluginGap=plugin=>!plugin.configured?'尚未填写全局参数'
+  :plugin.last_error?'加载或运行报错'
+  :plugin.enabled&&!plugin.active_enabled?'已保存为启用，但运行时没有装载':null
+const pluginGaps=computed(()=>plugins.value.map(plugin=>({id:plugin.id,name:plugin.name,reason:pluginGap(plugin)}))
+  .filter(item=>item.reason))
+const readiness=computed(()=>{
+  const rows=[],status=app.status,stats=data.value?.stats
+  if(status){
+    const missing=Object.entries(status.roles).filter(([,role])=>!role.ready)
+      .map(([key,role])=>`${roleNames[key]}（${role.reason}）`)
+    rows.push({key:'models',label:'模型角色',ok:!missing.length,
+      text:missing.length?`还有 ${missing.length} 个角色不能用：${missing.join('、')}`:'对话、工作、维护三个角色都已就绪',
+      to:{name:'models',query:{tab:'roles'}}})
+    rows.push({key:'time',label:'业务时间',ok:!!status.business_timezone,
+      text:status.business_timezone?`按 ${status.business_timezone} 解释日期与自然周`:'尚未填写时区；依赖时间口径的插件不能启用',
+      to:{name:'settings',query:{tab:'time'}}})
+    rows.push({key:'scenes',label:'可用群',ok:status.scene_counts.enabled>0,
+      text:status.scene_counts.enabled?`已启用 ${status.scene_counts.enabled} 个群，其中 ${status.scene_counts.chat_enabled} 个开放普通聊天`:'还没有启用的群；在群聊里按群号填写本群设置',
+      to:{name:'scenes'}})
+  }
+  if(stats)rows.push({key:'onebot',label:'OneBot 连接',ok:stats.websocket_connected,
+    text:stats.websocket_connected?'连接已建立；每条消息是否送达仍看真实回执':'没有可确认的连接，消息不会进入认知',
+    to:{name:'settings',query:{tab:'connection'}}})
+  const gaps=pluginGaps.value
+  rows.push({key:'plugins',label:'插件参数',ok:!gaps.length,
+    text:pluginError.value?`插件清单读取失败：${pluginError.value}`
+      :!plugins.value.length?'没有发现任何插件目录'
+      :gaps.length?`${gaps.length} 个插件需要处理：${gaps.slice(0,3).map(item=>`${item.name}（${item.reason}）`).join('、')}${gaps.length>3?` 等 ${gaps.length} 项`:''}`
+      :`${plugins.value.length} 个已声明插件都没有待处理项`,
+    to:{name:'plugins'}})
+  return rows
+})
 onMounted(load)
 onBeforeUnmount(()=>sequence++)
 </script>
@@ -22,6 +69,18 @@ onBeforeUnmount(()=>sequence++)
     <PageHeader title="运行概览" description="先看当前连接与待处理事项，再查看对话、工作和持久资料。"><v-btn :prepend-icon="mdiRefresh" variant="outlined" :loading="loading" @click="refresh">刷新</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">读取失败：{{ error }}<span v-if="data">。下方保留 {{ fmtTime(data.sampled_at) }} 的结果。</span></v-alert>
     <v-progress-linear v-if="loading && !data" indeterminate color="primary" />
+    <v-card v-if="readiness.length" class="readiness-card">
+      <v-card-text>
+        <div class="section-heading"><div><h2>当前依赖</h2><p class="muted">下面每一项都来自已保存的记录，刷新不会去请求外部服务、发送消息或打开任何能力；点击跳到填写位置。</p></div><v-btn :prepend-icon="mdiRefresh" variant="text" color="primary" size="small" @click="refresh">重新读取</v-btn></div>
+        <ul class="readiness-list">
+          <li v-for="row in readiness" :key="row.key" class="readiness-row">
+            <span class="readiness-mark" :class="{ok:row.ok}">{{ row.ok?'已就绪':'待处理' }}</span>
+            <div class="readiness-body"><strong>{{ row.label }}</strong><span class="muted">{{ row.text }}</span></div>
+            <router-link :to="row.to">{{ row.ok?'查看':'去填写' }}</router-link>
+          </li>
+        </ul>
+      </v-card-text>
+    </v-card>
     <template v-if="data">
       <div class="connection-grid">
         <v-card class="connection-card"><v-card-text><div class="eyebrow">ONEBOT 连接</div><div class="connection-value"><span class="connection-dot" :class="{connected:data.stats.websocket_connected}"></span>{{ data.stats.websocket_connected?'已连接':'未连接' }}</div><p class="muted">{{ data.stats.websocket_connected?'连接已建立；送达仍以每条回执为准。':'当前没有可确认的 OneBot 连接。' }}</p><v-btn variant="text" color="primary" size="small" :append-icon="mdiArrowRight" :to="{name:'settings',query:{tab:'connection'}}">连接设置</v-btn></v-card-text></v-card>
@@ -45,6 +104,7 @@ onBeforeUnmount(()=>sequence++)
 </template>
 <style scoped>
 .connection-grid,.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}.connection-card .v-card-text{padding:24px}.eyebrow{font-size:11px;font-weight:650;letter-spacing:.06em;color:var(--muted)}.connection-value{font-size:24px;font-weight:650;letter-spacing:-.03em;margin:16px 0 10px;display:flex;align-items:center;gap:10px}.connection-dot{width:10px;height:10px;border-radius:50%;background:#adb8c7}.connection-dot.connected{background:#16845c}.connection-card p{min-height:44px;line-height:1.7;font-size:13px;margin-bottom:12px}h2{font-size:16px;line-height:1.4;font-weight:650;margin:0 0 8px}.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}.section-heading p{font-size:12px;margin:0;line-height:1.6}.issues-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.issues-grid>section{min-width:0}.issue-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px}.issue-title span{background:#f2f5fa;padding:0 8px;border-radius:5px;font-size:12px}.issue-item{padding-block:8px;border-top:1px solid var(--line);font-size:13px}.issues-grid p,.issues-grid a{font-size:12px}.role-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}.role-model{font-size:16px;font-weight:600;margin:16px 0 6px;overflow-wrap:anywhere}.role-grid .muted,.role-grid a{font-size:12px}.overview-bottom{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}.interaction-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.interaction-stats strong{display:block;font-size:28px;font-weight:650}.interaction-stats span{font-size:12px;color:var(--muted)}.persistent-stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px}.persistent-stats span{display:flex;justify-content:space-between;font-size:13px}.footnote{font-size:11px;margin:20px 0 0}.recent-scene{display:flex;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line);color:var(--ink);text-decoration:none}.recent-scene:hover{color:var(--primary)}.scene-initial{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:#edf2fa;color:#647c9b;flex:none;font-size:12px}.scene-summary{min-width:0;flex:1}.scene-summary strong{font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scene-summary span,.scene-timing{font-size:11px;color:var(--muted)}.scene-timing{display:grid;gap:4px;text-align:right}.pending-count{color:#326fa8}.sample-note{font-size:11px;color:var(--muted);margin:0;display:flex;align-items:center;gap:6px}
+.readiness-list{list-style:none;margin:0;padding:0}.readiness-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:12px 0;border-top:1px solid var(--line)}.readiness-row:first-child{border-top:0}.readiness-mark{font-size:11px;font-weight:650;padding:2px 8px;border-radius:5px;background:#fbeade;color:#9a5514;white-space:nowrap}.readiness-mark.ok{background:#e3f3ec;color:#16845c}.readiness-body{min-width:0;font-size:13px;line-height:1.7}.readiness-body strong{display:block}.readiness-body .muted{font-size:12px}.readiness-row a{font-size:12px;white-space:nowrap}
 @media(max-width:1200px){.connection-grid{grid-template-columns:1fr 1fr}.connection-grid>:last-child{grid-column:1/-1}.role-grid{gap:12px}.overview-bottom{grid-template-columns:1fr}}
 @media(max-width:700px){.connection-grid,.role-grid,.issues-grid{grid-template-columns:1fr}.connection-grid>:last-child{grid-column:auto}.connection-card p{min-height:0}.connection-card .v-card-text{padding:20px}.connection-value{font-size:22px}.interaction-stats{grid-template-columns:1fr 1fr}.scene-timing time{display:none}.issues-grid{gap:20px}.persistent-stats{grid-template-columns:1fr 1fr}}
 </style>

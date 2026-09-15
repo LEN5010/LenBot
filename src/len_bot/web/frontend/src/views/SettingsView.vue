@@ -66,13 +66,65 @@ const toLocalInput = seconds => {
   return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 const fromLocalInput = value => value ? Math.floor(new Date(value).getTime()/1000) : null
+// The picker holds wall-clock time in the browser's own zone, but the stored
+// value is absolute.  The hint says both, so an operator in a different zone
+// than the business one can see what the saved instant actually is.
+const expiryPreview = index => {
+  const seconds = fromLocalInput(grants.value[index]?.expiresInput)
+  if (!seconds) return '长期有效'
+  return `保存后为 ${new Date(seconds*1000).toISOString()}（UTC）`
+}
 const accessProblems = ref([])
 // A server rejection names a field by path; the same sentence appears both in
 // the summary and beside the field it belongs to.
 const grantCardProblems = index => accessProblems.value.filter(item=>item.key===`grant:${index}` || item.key.endsWith(`:${index}`))
 const timeDraft = ref(null), timeOriginal = ref(''), timeConfigured = ref(false), timeLoaded = ref(false), timeRestart = ref(false)
 const quotaText = ref(null), quotaOriginal = ref('')
-const quotaDirty = computed(()=>quotaText.value!==null&&quotaText.value!==quotaOriginal.value)
+const quotaDirty = computed(()=>quotaText.value!==null&&JSON.stringify(quotaRows.value)!==quotaOriginal.value)
+// Quota policies are three named numbers with a real "not limited" state, so
+// the form edits the numbers and keeps the exact JSON one disclosure away.
+// `null` and 0 are different choices and stay different here: null means the
+// dimension is not limited, 0 is a real ceiling of zero.
+const policyRows = policies => Object.entries(policies || {}).map(([name,item])=>({name,
+  work:item.work_token_limit ?? null, user:item.daily_user_token_limit ?? null, scene:item.daily_scene_token_limit ?? null}))
+const policiesFromRows = rows => Object.fromEntries(rows.map(row=>[row.name.trim(),
+  {work_token_limit:row.work, daily_user_token_limit:row.user, daily_scene_token_limit:row.scene}]))
+const quotaRows = ref([]), quotaProblems = ref([]), quotaRaw = ref(false)
+// A row the form cannot hold — a named policy whose shape is not the declared
+// three numbers — is kept verbatim and edited in JSON below rather than being
+// silently dropped on save.
+const policyEditable = item => item && ['work_token_limit','daily_user_token_limit','daily_scene_token_limit']
+  .every(key=>item[key]===undefined || item[key]===null || Number.isInteger(item[key]))
+// Anything the rows cannot represent is kept here and folded back in on save,
+// so switching a policy to the JSON editor never deletes it.
+const rawPolicies = computed(()=>Object.fromEntries(Object.entries(quotaRecord.value).filter(([,item])=>!policyEditable(item))))
+const quotaRecord = ref({})
+const quotaProblemsFor = index => quotaProblems.value.filter(item=>item.key===`policy:${index}`)
+// The summary names the same sentence as the policy it belongs to, and moves
+// the operator to that policy instead of leaving a bare list at the bottom.
+const focusPolicy = key => document.querySelector(`[data-policy="${key}"]`)?.scrollIntoView({block:'center',behavior:'smooth'})
+// The JSON pane is a read-only view of what is saved, not a second editor: it
+// has no save action and leaving it rebuilds the rows from the stored record,
+// so a value typed there can never be silently half-submitted.
+const toggleQuotaRaw = () => {
+  if (quotaRaw.value) { quotaRows.value=policyRows(quotaRecord.value); quotaOriginal.value=JSON.stringify(quotaRows.value) }
+  quotaRaw.value=!quotaRaw.value
+}
+// An empty box means "not limited", which the backend writes as null.  The
+// bounds mirror the model rather than being stricter or looser: a single
+// work's ceiling must be at least one token (a ceiling of zero would mean the
+// work was granted nothing), while a day's balance may legitimately be zero.
+const quotaNumber = (value,label,key,{minimum=0}={}) => {
+  if (value===null || value===undefined || value==='') return null
+  const number = Math.trunc(Number(value))
+  if (!Number.isFinite(number) || number<minimum) {
+    quotaProblems.value=[...quotaProblems.value,{key,
+      message:minimum>0?`${label}：请填 ${minimum} 或更大的整数；不设该维度上限请留空`
+        :`${label}：请填 0 或更大的整数；留空表示不设该维度上限`}]
+    return null
+  }
+  return number
+}
 const members = ref(null), membersOriginal = ref(''), membersRestart = ref(false)
 const weekdays = [{title:'周一',value:0},{title:'周二',value:1},{title:'周三',value:2},{title:'周四',value:3},{title:'周五',value:4},{title:'周六',value:5},{title:'周日',value:6}]
 const me = ref(null), passwords = ref({current_password:'',new_password:''}), leavingAfterLogout = ref(false)
@@ -123,7 +175,11 @@ async function load() {
       await loadParticipants(grants.value.find(grant=>grant.principal_type!=='system')?.scene_id)
     } else if (currentTab==='resources') {
       const settings = await api('/api/settings/resources'); if (request!==requestId) return
-      if (!quotaDirty.value) { quotaText.value=JSON.stringify(settings.policies,null,2); quotaOriginal.value=quotaText.value }
+      quotaRecord.value=settings.policies||{}
+      quotaText.value=JSON.stringify(settings.policies,null,2)
+      if (!quotaDirty.value) {
+        quotaRows.value=policyRows(settings.policies); quotaOriginal.value=JSON.stringify(quotaRows.value)
+      }
     } else if (currentTab==='time') {
       const settings = await api('/api/settings/time'); if (request!==requestId) return
       timeLoaded.value = true
@@ -238,15 +294,35 @@ const grantImpact = computed(()=>grants.value.filter(grant=>grant.enabled&&grant
   .map(grant=>`${grant.principal_type==='system'?grant.system_scope:grant.scene_id||'未指定范围'} · ${grant.principal_id} · ${grantCapabilities(grant).join('、')}`))
 async function saveQuota() {
   if (busy.value) return
-  busy.value='resources'; error.value=''; message.value=''
+  busy.value='resources'; error.value=''; message.value=''; quotaProblems.value=[]
   try {
-    let policies
-    try { policies = JSON.parse(quotaText.value || '{}') } catch(e) { throw new Error('额度策略必须是 JSON 对象：' + e.message) }
-    if (policies===null || Array.isArray(policies) || typeof policies!=='object') throw new Error('额度策略必须是“策略名 → 数值”的 JSON 对象')
+    const policies={...rawPolicies.value}
+    for (const [index,row] of quotaRows.value.entries()) {
+      const name=row.name.trim()
+      if (!name) { quotaProblems.value=[{key:`policy:${index}`,message:`第 ${index+1} 项：策略名不能为空`}]; return }
+      if (name in policies) { quotaProblems.value=[{key:`policy:${index}`,message:`第 ${index+1} 项：策略名“${name}”已有同名策略`}]; return }
+      policies[name]={
+        work_token_limit:quotaNumber(row.work,'单工作累计 token',`policy:${index}`,{minimum:1}),
+        daily_user_token_limit:quotaNumber(row.user,'主体日额度',`policy:${index}`),
+        daily_scene_token_limit:quotaNumber(row.scene,'群日额度',`policy:${index}`)}
+      if (quotaProblems.value.length) return
+    }
+    quotaProblems.value=[]
     const result = await api('/api/settings/resources',{method:'PUT',body:JSON.stringify({policies})})
-    quotaText.value=JSON.stringify(result.settings.policies,null,2); quotaOriginal.value=quotaText.value
+    quotaRecord.value=result.settings.policies||{}
+    quotaText.value=JSON.stringify(result.settings.policies,null,2)
+    quotaRows.value=policyRows(result.settings.policies); quotaOriginal.value=JSON.stringify(quotaRows.value)
     message.value=result.message
-  } catch(e) { error.value=e.message } finally { busy.value='' }
+  } catch(e) {
+    // A server rejection names the policy it belongs to; the same sentence is
+    // shown beside that policy with a position the operator can act on.
+    quotaProblems.value=(Array.isArray(e.details)?e.details:[]).map(item=>{
+      const name=(item.loc||[]).filter(part=>typeof part==='string'&&part!=='body'&&part!=='policies')[0]
+      const index=quotaRows.value.findIndex(row=>row.name.trim()===name)
+      return {key:index>=0?`policy:${index}`:'',message:`${name?`策略“${name}” · `:''}${item.msg}`}
+    })
+    error.value=e.message
+  } finally { busy.value='' }
 }
 async function saveTime() {
   if (busy.value || !timeDraft.value) return
@@ -475,7 +551,7 @@ watch(tab,load,{immediate:true})
             <v-select v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" :items="scopeOptions" label="在哪个场景生效" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`scene_id:${index}`).map(item=>item.message)" hint="从已保存的场景中选择；这里不新建群。" persistent-hint required @update:model-value="loadParticipants($event)" />
             <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`system_scope:${index}`).map(item=>item.message)" hint="明确的系统范围，例如 heartbeat；该词表不是登记表，需要人工填写。" persistent-hint required />
             <v-select v-model="grant.capabilityText" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
-            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（业务时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" hint="留空表示长期有效；保存时换算为绝对时间。" persistent-hint />
+            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（本机时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" :hint="`留空表示长期有效。这里按你这台机器的时区填写，保存时换算成绝对时间：${expiryPreview(index)}`" persistent-hint />
             <v-select v-model="grant.resource_policy" :items="policyOptions" label="使用哪项额度策略" clearable hint="从已保存的策略中选择；留空使用默认策略。没有可选策略时先去“额度策略”页保存。" persistent-hint />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
             <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>
@@ -493,10 +569,31 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='resources'&&quotaText!==null" class="pa-5 form-card">
       <h2>额度策略</h2>
-      <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；null 表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
+      <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；留空表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
       <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
-        <v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}' persistent-hint />
-        <v-btn type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
+        <template v-if="!quotaRaw">
+          <div v-for="(row,index) in quotaRows" :key="index" class="wide policy-row" :data-policy="`policy:${index}`">
+            <div class="policy-heading"><h3>策略 {{ index+1 }}</h3><v-btn variant="text" color="error" size="small" :disabled="!!busy" @click="quotaRows.splice(index,1)">删除这项策略</v-btn></div>
+            <div class="policy-fields">
+              <v-text-field v-model="row.name" label="策略名称" hint="能力授予按这个名字引用；改名等于新建一项策略" persistent-hint required />
+              <v-text-field v-model.number="row.work" label="单工作累计 token" type="number" min="1" hint="单个工作累计模型 token 上限，至少为 1；留空表示不设该维度" persistent-hint />
+              <v-text-field v-model.number="row.user" label="主体日额度（token）" type="number" min="0" hint="同一账号在账务日内的上限，可填 0；留空表示不设该维度" persistent-hint />
+              <v-text-field v-model.number="row.scene" label="群日额度（token，可选）" type="number" min="0" hint="同一场景在账务日内的上限，可填 0；留空表示本场景未配置该维度" persistent-hint />
+            </div>
+            <p v-for="problem in quotaProblemsFor(index)" :key="problem.message" class="policy-error">{{ problem.message }}</p>
+          </div>
+          <div v-if="!quotaRows.length" class="wide muted">当前没有具名策略；不配置时各维度不设 token 上限，由期限和消息上限结束。</div>
+          <div class="wide actions"><v-btn variant="tonal" :disabled="!!busy" @click="quotaRows.push({name:'',work:null,user:null,scene:null})">添加一项策略</v-btn></div>
+          <p class="wide muted">这里改的是往后新建工作的上限；已在执行的工作保留创建时的快照。已保存的精确取值在下方 JSON 里逐字对照。</p>
+          <ul v-if="quotaProblems.length" class="wide error-summary">
+            <li v-for="problem in quotaProblems" :key="problem.message"><button class="error-link" type="button" @click="focusPolicy(problem.key)">{{ problem.message }}</button></li>
+          </ul>
+        </template>
+        <template v-if="quotaRaw"><v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}。' persistent-hint /><p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p></template>
+        <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略的形状不是这三个字段（{{ Object.keys(rawPolicies).join('、') }}），表单原样保留它们，只在保存时一起写回。</p>
+        <ResourceViewer v-if="!quotaRaw" class="wide" title="已保存的精确取值（只读对照）" :content="quotaText" />
+        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'按 JSON 编辑' }}</v-btn>
+        <v-btn v-if="!quotaRaw" type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
         <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>
     </v-card>
@@ -600,5 +697,5 @@ watch(tab,load,{immediate:true})
 .budget-table-wrap{overflow-x:auto}.budget-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}.budget-table caption{text-align:left;font-weight:600;padding:8px 0 12px}.budget-table th,.budget-table td{padding:12px;border-bottom:1px solid var(--line);white-space:nowrap}.budget-table thead{background:rgb(var(--v-theme-surface-variant))}.budget-table tbody th{font-weight:500}.preset-field{margin-bottom:12px}.runtime-json :deep(textarea){font-family:monospace;font-size:13px;line-height:1.6}
 
 .form-card{max-width:1000px;width:100%}.grant-card{border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:18px}.grant-card h3{font-size:14px;font-weight:650;margin-bottom:12px}.impact-summary{border-left:3px solid rgb(var(--v-theme-primary));padding:12px 14px;margin:16px 0;background:rgb(var(--v-theme-surface-variant));max-width:1000px}.impact-summary p{margin:4px 0;font-size:13px;line-height:1.7}.section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.section-header h2,.form-card>h2{font-size:20px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.wide{grid-column:1/-1}.form-grid>.v-btn{justify-self:start}.actions,.meta,.delivery-state,.saved-scenes{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}.meta{font-size:13px;color:#64748b}.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}.example-row:last-child{border:0;padding-bottom:0}.example-main{min-width:0;flex:1}.example-row>.actions{max-width:220px;justify-content:flex-end}.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}.example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}.example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}.example-body img{max-width:180px;max-height:180px;object-fit:contain}.part-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}.part-toolbar>.v-input{flex:1;min-width:140px;max-width:180px}.part-image{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.part-image img{max-width:100%;height:170px;object-fit:contain}.media-filter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.media-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.media-picker img{width:100%;height:150px;object-fit:contain;background:#f4f6f9}.media-picker p{overflow-wrap:anywhere;min-height:3em}.danger-zone{max-width:1000px;margin-top:12px}
-.error-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px}.settings-view p{line-height:1.7}@media(max-width:650px){.form-grid{grid-template-columns:minmax(0,1fr)}.example-row{flex-direction:column}.example-row>.actions{max-width:none;justify-content:flex-start}.section-header{align-items:flex-start}.media-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.part-toolbar>.actions{width:100%}.example-body img{max-width:140px;max-height:140px}}
+.error-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px}.policy-row{border:1px solid #e2e8f0;border-radius:8px;padding:16px}.policy-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.policy-heading h3{font-size:14px;font-weight:650}.policy-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.policy-error{color:#b3261e;font-size:13px;margin:8px 0 0}.settings-view p{line-height:1.7}@media(max-width:650px){.form-grid{grid-template-columns:minmax(0,1fr)}.policy-fields{grid-template-columns:minmax(0,1fr)}.example-row{flex-direction:column}.example-row>.actions{max-width:none;justify-content:flex-start}.section-header{align-items:flex-start}.media-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.part-toolbar>.actions{width:100%}.example-body img{max-width:140px;max-height:140px}}
 </style>
