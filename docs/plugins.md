@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。本文按 `2c862c6` 的公共接口整理；导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行和事实边界见[架构](architecture.md)，部署见[运行手册](operations.md)。后续目标见完整计划，已知缺陷见 [fix 文档](archive/social-agent-c01-c10-fix.md)，最新进度只记在[当前任务](iteration.md)。
+面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，后续目标见[完整计划](LenBot_社会Agent_完整实施计划_7a4152d.md)，最新进度只记在[当前任务](iteration.md)。
 
 ## 目录、描述符与配置
 
@@ -9,6 +9,8 @@
 `PluginSpec` 是唯一元数据，包含 ID、名称、版本、描述、全局 config_model、scene_config_model 和 `create(context)`。已有资源权限与类型在同一处声明；工具清单从实际 `register_tool` 生成。描述符导入只定义类型和入口，不能建立 HTTP 客户端、启动轮询或请求模型。参照[日历描述符](../src/len_bot/plugins/builtin/asoul_calendar/__init__.py)和[网页描述符](../src/len_bot/plugins/builtin/web_search/__init__.py)，不再编辑中央插件清单或配置类型映射。
 
 根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后解析一次专有参数，启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。
+
+面板表单由 `config_model` 生成的 JSON Schema 驱动，不手写字段清单。互斥的配置形状（例如 workspace 的 `worker` 与 `gateway`）用 `json_schema_extra` 的 `x-lenbot-exclusive` 声明字段组，表单据此渲染成一次单选，不构造同时给出两个分支的草稿；该键只是表单提示，服务端的模型校验仍然是准入依据。
 
 实现类继承 `BasePlugin`，构造时使用 `super().__init__(context.manifest)`；取得的 `context.config` 已通过该插件模型解析。插件文件和资源相对于 `context.directory`，运行数据需要时写入 `context.data_directory`。目录不自动创建空数据文件。项目依赖继续由 uv 管理，插件不自行安装依赖。
 
@@ -22,7 +24,7 @@
 
 工具 timeout 可由描述符的 `call_timeout(config)` 从实际配置读取，也可在注册时明确传入。工具定义和调用时均检查当前角色、场景与启用状态；工具名冲突会报告实际注册双方，不覆盖前者。
 
-WorkspaceCancelled 属于取消信号，当前 Host 继续传播以结束等待它的 Agent；插件不要将其统一转成普通失败结果后继续循环。执行与清理期限分别有界，终止是否确认需要原执行回执，不能仅凭收到取消就声明容器已停止。
+WorkspaceCancelled 属于取消信号，当前 Host 继续传播以结束等待它的 Agent；插件不要将其统一转成普通失败结果后继续循环。执行与清理期限分别有界，终止是否确认需要原执行回执，不能仅凭收到取消就声明容器已停止。插件描述符目前不声明逐工具的 `required_capabilities`；能力要求在每项能力落地时逐个工具加入，不预先声明一套并假定它已经生效。
 
 ### 日历：同一服务供工具和精确消息调用
 

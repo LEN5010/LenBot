@@ -1,73 +1,61 @@
-# 当前任务：C11 离线 Python 切换到隔离 Gateway（源码已提交）
+# 当前任务
 
-更新时间：2026-09-16。本批已提交 `f879f18`，相对 `35f2694`；计划比较基线 `7a4152d`。上一批（复审回归 + FX03/FX05/FX12/FX13 + Gateway 复审批 + 审计小修）为 `35f2694`，记录保留在本文后半；C01—C10 与 FX 合同见 [archive/social-agent-c01-c10-fix.md](archive/social-agent-c01-c10-fix.md)。
+更新时间：2026-09-16。上一提交 `141ec2e`（C11 运营说明收口），其父为 `f879f18`；社会 Agent 计划基线 `7a4152d`。本页只记当前状态、本轮实际核对和未确认项，历史过程通过 Git 提交回查（见文末）。
 
-## 当前结论与授权范围
+## 本轮范围与授权
 
-用户要求按计划推进 C11—C20 并逐段提交。本批完成 C11 源码接线并提交；不改真实根配置（示例配置保持 worker 模式、`gateway: null`）、不启动生产、不运行容器、不新增或运行测试。正式切换仍需运营者在根配置改选 gateway 后端、部署网关自己的配置与镜像，并补实机证据。
+本轮按 `LenBot_P0文档收敛与修复_P1配置面板改进计划_141ec2e.md` 推进 P0-D 文档收敛、P0-C01—C09 正确性修复与 P1-U 面板改进。不改真实根配置（样例保持 worker 模式、`gateway: null`）、不启动生产、不运行容器、不新增或运行测试、不发送、不重置数据库。正式切换到 gateway 仍需运营者改根配置、部署网关服务与镜像并补离线证据。
 
-## C11 行为变化（源码已接，仅编译核对）
+## P0-C 行为变化（源码已接，仅编译与解释器核对）
 
-- `execution/protocol.py`：`ExecutionRequest` 新增 `input_files`（宿主导出的文本/base64 输入，名称无路径分隔、不重复；`input_assets` 只作来源登记）；`execution/journal.py` 把 `input_files` 纳入同 ID 重复提交的身份核对。
-- `services/worker_gateway/runner.py`：登记前把输入落盘到执行控制区（`manifest.json` 保持容器内原路径 `/lenbot-control/manifest.json`，其余进 `/lenbot-control/input/`），合计字节受工作目录上限约束，坏 base64 在占用执行身份前拒绝；worker GID 权限同时覆盖输入文件；按资产 ID 拉取输入被明确拒绝（字节只能来自宿主）。
-- `execution/client.py`：`WorkerGatewayConfig` 新增 `execution_timeout_seconds`、`poll_interval_seconds`。
-- `execution/service.py`：新增 `GatewayWorkspaceService`——`run_python` 组装 `ExecutionRequest`（工作必须已有类型化发起者，否则拒绝；修订、工作区、期限取网关配置与工作剩余期限的较小值），先写宿主侧 `execution_runs` 行再发请求；超时/未知只轮询同一执行 ID，不重复提交；取消经网关执行并把终止回执 park 回原工作；网关终态回读镜像进宿主日志；启动前对本工作区做一次对账（网关从未见过的行记失败，已终结的补记）。文件列表/分页读取/导出/面板下载全部改走网关产物 API（最新执行的登记产物即目录终态），图片导出仍走原 `save_image` 登记链。
-- `plugins/builtin/workspace/`：配置改为 `worker` 与 `gateway` 二选一（互斥校验），插件按配置选择后端，两者之间没有运行时回落；卸载时关闭网关客户端。`lenbot.config.example.json` 的 workspace 配置补 `"gateway": null`。
-- 所属文档：`execution-boundaries.md`、`operations.md`、`product.md`、`architecture.md` 改为描述配置可选后端，并补上网关进程启动、根配置字段与备份范围。
+- **C01 加载与后端入口**：`python_workspace` 与 `workspace` 共用 `WorkspacePluginConfig`，`python_workspace/config.py` 删除（旧 ID 原本会因缺 `call_timeout_seconds` 在加载时抛 `AttributeError`）。`execution_timeout_seconds`／`call_timeout_seconds` 只读取当前选中的后端，纯 gateway 配置不再解引用 `worker`。
+- **C02 嵌套凭据**：新增 `plugins/credentials.py`，按 Schema 路径（任意深度、支持 `$ref`）扫描凭据字段；`query_service.plugins()` 返回的 `config` 在所有深度去掉凭据，另给 `config_set`（点路径 → 是否已配置）与 `secret_fields`。保存走 `merge_config`：省略／空串保持原值、非空替换、显式 `null` 清除；占位值不会作为真实密钥回写。
+- **C03 取消与对账**：`run_python` 从提交前到轮询结束走同一条取消路径（`asyncio.shield` 保护取消调用再抛 `WorkspaceCancelled`）；`GatewayConflict` 不再重复提交，只轮询同一执行 ID；`GatewayRefused`／`GatewayUnavailable`／`GatewayResultUnknown` 分开处理；`_reconcile_workspace()` 对同一工作区的未终结行（含 `termination_unconfirmed`）给出 `available`／`occupied`／`unknown` 结论而非只记日志。宿主调用携带被准入时的 `job_revision`，跨修订不再续接。
+- **C04 产物身份**：当前读取只取最新一次**已确认（终态）**执行的快照，没有记录时明确报错而不是返回空列表；历史产物必须显式带 `execution_id`，不再隐式回退到更早的执行；`artifact_chunks` 流式读取并用增量 UTF-8 解码按字符分页，文件名按 RFC 5987 编码。
+- **C05／C08 预算与余额**：新增 `recorded_work_ceiling()` 区分“写出的无维度上限”和“没有可核对的上限记录”，后者按拒绝准入处理而不是当作无限；工作面板返回 `token_limit_state: recorded|unrecorded`。混策略账户不再显示由默认策略推导出的假余额，`policy_name`（曾是 grant id）改为 `grant_reference` + `policy_reference_names` 与 `mixed_scope_required` 状态。
+- **C06 输入与收尾**：Gateway 输入文件先全部解码校验到暂存目录再 `os.replace` 就位，被拒绝的输入不留半成品；停止的执行会记录有限输出；权限准备改为核对实际组访问位，不满足时按部署错误结束本次执行而不是记成脚本失败。
+- **C07 初次草稿**：`workspace` 的 `worker`／`gateway` 用 `x-lenbot-exclusive` 声明为互斥组，表单渲染成单选并在切换分支时清掉未选分支，初次配置不会再同时提交两个对象。
+- **C09 单后端收口**：两条路径互斥、无运行时回落，切换是运营者改根配置的操作；本轮文档与面板按此描述。
+
+## P1-U 面板改进
+
+- 配置表单按 Schema 渲染，互斥组渲染为单选、隐藏未选分支；不含手写枚举或内部 ID。
+- 凭据字段按 Schema 路径显示“已保存，留空保留／尚未配置”，不显示旧值。
+- 额度页改为账户／预占中／已结算／准入余量／依据，并说明混策略时的范围要求。
 
 ## 实际核对与限制
 
-- `uv run python -m py_compile` 通过本批改动文件；`WorkspacePluginConfig` 对示例配置、纯 gateway 配置、空配置、同时给出两个后端四种输入的接受/拒绝已用解释器核对。
-- 未运行网关、容器或真实工作；未改真实根配置；未打开浏览器面板。
-- 未确认：宿主 `execution_runs` 与网关日志在超时/重启后的对账、取消 park 回原工作、产物列表取最新执行、无类型化发起者时的拒绝、Linux UID/卷映射与 chown 实效。计划完成条件中的「LenBot 无 socket、镜像/网络/卷部署、一个正式后端」仍未在真实环境兑现。
-- 已知未修（记录在案）：`plugins/net_policy.py` 解析-连接间隙（DNS rebinding 窗口）；面板端口如对外暴露仍建议反代加固；`.backups/` 内多份真实配置副本（含密钥）需人工清理；数据库无保留策略。
+- `uv run python -m py_compile` 通过本批改动文件；`WorkspacePluginConfig` 对示例配置、纯 gateway、空配置、同时给出两个后端四种输入的接受／拒绝已用解释器核对；凭据的替换／保持／清除与 `x-lenbot-exclusive` 的存在用解释器核对。
+- `src/len_bot/web/frontend` 执行 `npm run build` 成功；**未**打开浏览器面板，未取得任何像素或人工页面核对。
+- 未运行网关、容器或真实工作；未改真实根配置；未发消息；未重置数据库。
+- 未确认：宿主 `execution_runs` 与网关日志在超时／重启后的对账、取消 park 回原工作、历史产物按 `execution_id` 读取、`mixed_scope_required` 账户在真实数据下的显示、Linux UID/卷映射与 chown 实效、凭据保持／清除在真实保存往返中的表现。
+- 已知未修（记录在案，非本轮任务）：`plugins/net_policy.py` 解析-连接间隙（DNS rebinding 窗口）；面板端口如对外暴露仍建议反代加固；`.backups/` 内多份真实配置副本（含密钥）需人工清理；数据库无保留策略；`reset_conversation_data` 的清理表列表未含 usage_reservations、execution_runs、execution_events。
 - `uv run pytest` 在 collection 阶段因 5 个测试文件引用已删除符号中断（0 用例执行）；`ci.yml` 不运行 pytest。按项目约束本批未新增或修改任何测试。
 
-## 未完成（C12—C20 未开始）
+## P0-D 文档收敛结果
 
-C12 资料导入导出、C13 出口网络、C14 独立浏览器、C15 动作审查、C16 B 站研究原语、C17 公共兴趣、C18 心跳、C19 睡眠、C20 持久延期交付均未动工。
+- 从工作树删除：`docs/archive/` 全部七份 Markdown（六份历史正文与目录说明），以及 `docs/product.md`、`docs/execution-boundaries.md`、`docs/gscore-adapter.md`。保留下来的当前文档只有本文、`architecture.md`、`operations.md`、`plugins.md`、`README.md` 与保护计划。
+- 独有内容去向：用户可见语义进 `README.md`；权限、失败与发送语义、执行后端与浏览器边界进 `architecture.md`；部署、资源参数、未知执行处置与 Core 配置入口进 `operations.md`；`x-lenbot-exclusive` 与插件配置保存契约进 `plugins.md`；未来目标仍在保护计划。
+- 保护文件 `LenBot_社会Agent_完整实施计划_7a4152d.md` 与 `docs/persona/diana/**` 未删改，只做了因删除文件引起的机械链接替换（改指固定提交 `141ec2e` 的历史文件链接）。计划正文、阶段编号、目标与裁决未变。
+- 未达标的部分：非保护工程 Markdown（含本计划全文）当前约 165 KiB，高于计划里“收敛到不超过 100 KiB”的目标值；达标需要删掉本计划在工作树中的副本（其验收要求见该计划 D01/D04），本轮未做，故如实记录为未达成。已完成的一次收敛是：`docs/archive/` 七份文件（269,897 字节）与 `product.md`／`execution-boundaries.md`／`gscore-adapter.md` 三份（8,041 字节）从工作树消失，内容合并进现行文档。
+
+## 仍未解决（跨轮记录）
+
+- 系统发起的工作没有生产者：类型化 system/plugin 发起者只在源码路径上存在，没有 Scheduler／心跳接通，不能声称已有自主系统工作。
+- 宿主 `execution_runs` 与 `execution_events` 没有生产消费者，面板也没有执行记录页；现场核对只能通过网关 API 或直接读日志库。
+- 真实供应商计费无法用本地估算证明：估算不能保证真实 usage，需要先确认真实 prompt/completion 形状才能声明硬性计费上限。
+- 本地估算与实际计费之间的差额处理（A19/A20）已在源码中按同一准入入口与幂等结算实现，但只有静态路径，没有真实调用核对。
+- 运营可编辑的人格文本仍可能包含“真实经历”式内容，没有校验；该约束目前只在提示层。
+- 旧 `FX01—FX13` 编号与本轮 P0-C 编号指向同一批代码路径，但两者没有写成对照表；原合同只存在于 Git 提交 `141ec2e` 的 `docs/archive/social-agent-c01-c10-fix.md`。
+
+## 未完成（社会 Agent 计划 C12—C20 未开始）
+
+C12 资料导入导出、C13 出口网络、C14 独立浏览器、C15 动作审查、C16 B 站研究原语、C17 公共兴趣、C18 心跳、C19 睡眠、C20 持久延期交付均未动工。C11 正式放行需要运营者在真实根配置改选 gateway、部署网关服务与镜像、补离线实机证据。
 
 ## 下一步
 
-按依赖顺序实施 C12、C13、C15、C16、C17、C18、C19、C20（C14 视浏览器后端形态另定）。C11 正式放行需要：运营者在真实根配置把 workspace 后端改为 gateway（`worker` 置 `null`）、部署网关服务与镜像、离线实机证据（A22/A23）。获准环境中的短时工作与面板核对（A08/A24）仍未做。
+按依赖顺序实施 C12、C13、C15、C16、C17、C18、C19、C20（C14 视浏览器后端形态另定）。P1-U 剩余项为 U01 导航整理、U02 群配置中心、U03 插件列表分组、U05 授权／额度业务表单。
 
+## 历史回查入口
 
-## 上一批行为变化（35f2694，源码已接，仅编译核对）
-
-预算与工作账户：
-
-- `cognition/agent_loop.py`、`cognition/budget.py`：预算消息与 `_seconds_left` 在有 `deadline_at` 时按绝对期限计剩余秒；值为 `None` 的维度不参与运算；`local_state()` 透传 `deadline_at`。修复 `f4115e4` 引入的绝对期限工作 `None - float` 回归。
-- `cognition/call_store.py`：待处理（`pending`）技能候选成为结算统一门槛，无模型调用但有候选的工作不再提前 `released`；已 `settled` 账户拒绝无日账重占（`ValueError`）；启动时把 `ended_at IS NULL` 的在途调用记为 `failed/process_restart`，并结算只等这些回执的 `settling` 账户。
-- `runtime/job_store.py::complete_job`：统一走 `close_reservation_in_transaction` 读取已持久化候选，不再按单次入参决定保留 `settling`。
-- FX05：`reservation_policy_for` 人类主体按 `long_work` 选授予与具名策略（系统主体保持 information→public_research 映射，未映射操作回退 `long_work`）；`rehold_job_budget_in_transaction` 接收 `work_operation` 并做授予并发准入，resume/revise 调用点透传原 `work_operation`。
-- 维护入口（`skills/learning.py`）：候选处理前按执行期同一规则复核当前访问（插件可用、非人类主体当前 grant、人类请求者对话资格）；不通过则候选记 `failed` 并结算账户；来源工作取消/缺失的作废候选同样补一次结算，避免账户永久 `settling`。
-
-对话等待（FX03）：
-
-- `cognition/models.py::ConversationResume` 新增 `deadline_at`（窗口关闭的绝对 Unix 时刻）。`cognition/social_core.py` 挂起时写入、恢复时按该时刻恢复预算期限，等待经过的时间同样计入窗口；旧记录回退到累计秒。`conversation_window_seconds` 恢复改为显式透传：原窗口为 `null` 时不再被当前配置的窗口替换。
-
-历史维护（FX13）：
-
-- `memory/reflector.py`：同一轮多条 `query_memory` 的展示改到 `prepare_tool_results` 内整组装填——按调用顺序共享一份剩余输入余量，先到先装，装不下的逐条退化为不推进分页的明确拒绝页；trace 记录 `memory_page_fitting`。不再出现各调用按同一余量各自裁剪后合并超限。
-
-面板（FX12）：
-
-- `web/query_service.py::model_reservations`：账户全天只在同一具名策略（grant 引用）下运行时，日上限与余量按该策略数字显示并附 `policy_name`；混用或无具名策略回落默认策略并列出 `policy_names`。
-
-Gateway（该提交时仍未接线，属当时 C11 切换前合同）：
-
-- `execution/journal.py`：`termination_unconfirmed → termination_confirmed` 成为唯一放行转移，其余终态仍不可变。
-- `services/worker_gateway/runner.py`：输出读取任务随进程一起启动（不再等启动确认，避免管道充满阻塞容器）；启动确认区分"容器暂未创建"与"客户端已退出且容器不存在"，未确认启动同样进入 `_watch`，期限、外部取消与工作区上限对其全部生效；产物在写终态之前复制并登记（先字节后登记；产物 ID 用 `uuid5(execution_id:path)` 固定，崩溃后可续），产物源文件按目录逐层 `O_NOFOLLOW` 打开；`_terminate` 各步骤共享同一份清理预算；`chmod/chown` 失败记入 `permissions_warning` 事件而非静默；`EXITED/FAILED` 记录不再被改写成终止态（只做客户端清理）；`cancel` 与重启 `sweep` 对 `termination_unconfirmed` 复核，确认容器不在后转 `termination_confirmed`，释放容量与工作区。
-- `services/worker_gateway/store.py`：新增 `unconfirmed_terminations()`；`register_artifact` 接受调用方已存字节的产物 ID。
-- `services/worker_gateway/app.py`：下载文件名按 RFC 5987 编码（非 ASCII 文件名不再抛 `UnicodeEncodeError`），响应构造失败时关闭描述符不泄漏。
-- `execution/client.py`：`accepted`/`requested` 缺失或非布尔按 `GatewayResultUnknown` 处理，不再静默当 `False`。
-
-其他（本轮审计项）：
-
-- `events/store.py`、`services/worker_gateway/store.py`：SQLite `busy_timeout=5000`。
-- `web/auth.py`、`web/routes/auth.py`：登录失败节流（同 IP+用户名 15 分钟内 5 次后 429）；PBKDF2 经 `asyncio.to_thread` 移出事件循环。
-
-## 上一批实际核对与限制
-
-- 仅 `uv run python -m py_compile` 通过该批改动文件；未运行真实工作、未启动生产、未运行 Gateway 容器、未打开浏览器面板。
-- 未确认：Linux UID/卷映射与 chown 实效、短执行与取消竞态、真实容器下的启动确认与终止复核、恢复窗口在等待中过期时的真实中断表现、混策略账户的面板展示、面板登录与授予保存。
+被删除的文档、旧 `iteration` 全文与旧运行手册都在 Git 历史中：`git show 141ec2e:docs/archive/<文件名>`。它们只说明当时的情况，不作为当前配置、授权或机器状态的依据。
