@@ -66,6 +66,14 @@ const toLocalInput = seconds => {
   return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 const fromLocalInput = value => value ? Math.floor(new Date(value).getTime()/1000) : null
+// The picker holds wall-clock time in the browser's own zone, but the stored
+// value is absolute.  The hint says both, so an operator in a different zone
+// than the business one can see what the saved instant actually is.
+const expiryPreview = index => {
+  const seconds = fromLocalInput(grants.value[index]?.expiresInput)
+  if (!seconds) return '长期有效'
+  return `保存后为 ${new Date(seconds*1000).toISOString()}（UTC）`
+}
 const accessProblems = ref([])
 // A server rejection names a field by path; the same sentence appears both in
 // the summary and beside the field it belongs to.
@@ -531,7 +539,7 @@ watch(tab,load,{immediate:true})
             <v-select v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" :items="scopeOptions" label="在哪个场景生效" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`scene_id:${index}`).map(item=>item.message)" hint="从已保存的场景中选择；这里不新建群。" persistent-hint required @update:model-value="loadParticipants($event)" />
             <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`system_scope:${index}`).map(item=>item.message)" hint="明确的系统范围，例如 heartbeat；该词表不是登记表，需要人工填写。" persistent-hint required />
             <v-select v-model="grant.capabilityText" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
-            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（业务时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" hint="留空表示长期有效；保存时换算为绝对时间。" persistent-hint />
+            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（本机时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" :hint="`留空表示长期有效。这里按你这台机器的时区填写，保存时换算成绝对时间：${expiryPreview(index)}`" persistent-hint />
             <v-select v-model="grant.resource_policy" :items="policyOptions" label="使用哪项额度策略" clearable hint="从已保存的策略中选择；留空使用默认策略。没有可选策略时先去“额度策略”页保存。" persistent-hint />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
             <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>
