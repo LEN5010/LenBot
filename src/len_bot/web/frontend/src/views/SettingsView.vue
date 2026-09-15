@@ -142,9 +142,10 @@ async function saveAccess() {
   try {
     const values = accessText.value.split(/[,，\s]+/).filter(Boolean).map(value=>positiveInteger(value,'QQ 账号'))
     const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({qq_reply_whitelist:values,capability_grants:grants.value.map(grant=>({
-      grant_id:grant.grant_id,revision:grant.revision,operator_id:grant.operator_id,
+      grant_id:grant.grant_id,revision:grant.revision,
       principal_type:grant.principal_type,principal_id:grant.principal_id,
-      scene_id:grant.scene_id||null,system_scope:grant.system_scope||null,
+      scene_id:grant.principal_type==='system'?null:(grant.scene_id||null),
+      system_scope:grant.principal_type==='system'?(grant.system_scope||null):null,
       capabilities:grant.capabilityText.split(/[,，\s]+/).filter(Boolean),
       expires_at:grant.expires_at||null,resource_policy:grant.resource_policy||null,
       concurrency:grant.concurrency||null,enabled:!!grant.enabled}))})})
@@ -384,8 +385,8 @@ watch(tab,load,{immediate:true})
           <div class="form-grid">
             <v-text-field v-model="grant.grant_id" label="授予 ID" required />
             <v-text-field v-model.number="grant.revision" type="number" min="1" label="版本号" required />
-            <v-text-field v-model="grant.operator_id" label="签发运营者" hint="保存时按当前登录账号记录，不需要手工填写。" persistent-hint readonly />
-            <v-select v-model="grant.principal_type" label="主体类型" :items="[{title:'人类',value:'human'},{title:'系统',value:'system'},{title:'插件',value:'plugin'}]" />
+            <v-text-field v-model="grant.operator_id" label="签发运营者" hint="保存时由服务端写入当前登录账号；新建时留空。" persistent-hint readonly />
+            <v-select v-model="grant.principal_type" label="主体类型" :items="[{title:'人类',value:'human'},{title:'系统',value:'system'},{title:'插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
             <v-text-field v-model="grant.principal_id" label="主体标识" hint="人类填 QQ 账号，系统填 runtime/scheduler/operator:账号，插件填插件 ID；不是显示名。" persistent-hint required />
             <v-text-field v-if="grant.principal_type!=='system'" v-model="grant.scene_id" label="生效场景" placeholder="group:123" required />
             <v-text-field v-else v-model="grant.system_scope" label="系统范围" hint="明确的系统用途，例如 heartbeat。" required />
@@ -401,7 +402,7 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='resources'&&quotaText!==null" class="pa-5 form-card">
       <h2>额度策略</h2>
-      <p class="muted my-3">这里定义命名的额度策略；能力授予的“资源策略引用”填写这里的名称，不在授予里复制额度数值。没有填写的账号使用默认策略（单工作 10M、每账号每日 30M）。null 表示该维度不设上限，此时仍有绝对期限与单工作上限作为停止条件。</p>
+      <p class="muted my-3">这里定义命名的额度策略；能力授予的“资源策略引用”填写这里的名称，不在授予里复制额度数值。未配置策略时各维度不设 token 上限，由期限和消息上限结束。null 表示该维度不设上限。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。</p>
       <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
         <v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}' persistent-hint />
         <v-btn type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>

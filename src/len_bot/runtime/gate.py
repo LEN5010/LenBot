@@ -240,28 +240,19 @@ class RuntimeGate:
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
         if self.capability_authority:
             for proposal in outcome.job_proposals:
+                if proposal.operation == 'cancel':
+                    continue
                 if proposal.operation == 'create':
                     if proposal.human_initiator is not None:
                         continue
-                    # A non-human source never reuses the human request path.
-                    # It needs its own configured grant; an absent, disabled or
-                    # expired grant denies and the work is not created.
                     refusal = self._capability_refusal(proposal, current_scene_state.scene_id)
-                elif proposal.operation == 'resume':
-                    # A resume starts new provider calls under the identity the
-                    # work was created with, so the grant that identity has now
-                    # is what decides it too.  Revise and cancel are not
-                    # starting execution and are left exactly as they were, and
-                    # the store's own re-validation keeps the revision and the
-                    # spend that must not restart.
+                else:
                     current = await self.event_store.get_job(proposal.job_id, current_scene_state.scene_id)
                     on_behalf_of = self.event_store.initiator_of(current) if current else None
                     if on_behalf_of is None or on_behalf_of.principal_type == 'human':
                         continue
                     refusal = self._capability_refusal(proposal, current_scene_state.scene_id,
                                                        on_behalf_of=on_behalf_of)
-                else:
-                    continue
                 if refusal:
                     return GateDecision(FinalDisposition.SILENCE, refusal, accepted=False)
         if self.validate_job_resume:

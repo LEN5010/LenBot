@@ -21,7 +21,7 @@ from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.agent import PluginExecution
 from len_bot.plugins.work import PluginWorkContext
-from len_bot.cognition.budget import AgentBudget, count_remaining, terminal_seconds_reserve, tightest
+from len_bot.cognition.budget import AgentBudget, count_remaining, seconds_left_to, terminal_seconds_reserve, tightest, work_call_admission
 from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
 from len_bot.skills.learning import maintain_candidates
@@ -73,12 +73,14 @@ class WorkToolPresentation:
     """Use the existing whole-group page packer with work pixels and budget."""
     pack_tool_pages = ConversationContext.pack_tool_pages
 
-    def __init__(self, runtime, scene_id):
+    def __init__(self, runtime, scene_id, config=None):
         self.runtime = runtime
         self.scene_id = scene_id
-        self.input_budget = runtime.config.job_context_tokens - runtime.config.work_output_tokens
+        cfg = config if config is not None else runtime.config
+        self.input_budget = cfg.job_context_tokens - cfg.work_output_tokens
         self.attached = set()
         self.omissions = []
+        self._image_limit = cfg.max_context_images
 
     def omit(self,section,reason,**details):
         item={'section':section,'reason':reason,**details}
@@ -91,7 +93,7 @@ class WorkToolPresentation:
         self.attached = set(snapshot)
 
     def limit_image_window(self, messages):
-        self.attached = synchronize_image_window(messages, self.runtime.config.max_context_images)
+        self.attached = synchronize_image_window(messages, self._image_limit)
 
     def request_tokens(self, messages, definitions):
         return request_tokens(messages, definitions)
@@ -108,7 +110,7 @@ class WorkToolPresentation:
         if not pending:
             return []
         prepared = await self.runtime.media_service.prepare_context_images(
-            self.scene_id, pending, limit=self.runtime.config.max_context_images, read_cache=read_cache)
+            self.scene_id, pending, limit=self._image_limit, read_cache=read_cache)
         self.attached.update(item["asset_id"] for item in prepared["manifest"] if item["status"] == "included")
         return [{"role":"user", "content":[
             {"type":"text", "text":"工具读取的原始图片：" + json.dumps(prepared["manifest"], ensure_ascii=False)},
@@ -359,8 +361,43 @@ class InformationJobRunner:
                 messages.append({'role':'developer','content':note})
         return messages, synchronize_image_window(messages, self.runtime.config.max_context_images)
 
+    def work_config(self, job):
+        """This work's own execution limits, from the record it was created under.
+
+        An execution limit is part of what the work was granted, not a live
+        setting: the ceiling reserved for it and the numbers that ceiling was
+        derived from have to be the same numbers it runs under, or a policy
+        edit mid-flight would change what an accepted work is allowed to do.
+        A work that predates the record keeps the current configuration, which
+        is the only value that then exists for it.
+        """
+        from len_bot.cognition.budget import WorkBudgetSnapshot
+        config = self.runtime.config.model_copy(deep=True)
+        stored = (job or {}).get('budget')
+        if not stored:
+            return config
+        snapshot = WorkBudgetSnapshot.model_validate(stored)
+        return config.model_copy(update=snapshot.runtime_values())
+
+    def work_ceiling(self, job):
+        """The cumulative token ceiling this work holds, or None for none."""
+        stored = (job or {}).get('budget')
+        return None if not stored else stored.get('token_limit')
+
+    def work_deadline(self, job):
+        """The absolute instant this work's window closes, or None for none."""
+        stored = (job or {}).get('budget')
+        return None if not stored else stored.get('deadline_at')
+
     async def _run_job(self, job_id, scene_id):
-        runtime, store, config = self.runtime, self.runtime.event_store, self.runtime.config.model_copy(deep=True)
+        runtime, store = self.runtime, self.runtime.event_store
+        job = await store.get_job(job_id, scene_id)
+        config = self.work_config(job)
+        initiator = job_initiator(job)
+        if initiator is not None and initiator.principal_type == 'system':
+            read_scopes = ['global-safe']
+        else:
+            read_scopes = [scene_id, 'global-safe']
         job = None
         work_cutoff = 0
         execution=PluginExecution(None,model_slot_owned=True)
@@ -376,7 +413,7 @@ class InformationJobRunner:
                 initiator=job_initiator(job),
                 plugin=runtime.plugin_host.context_for(origin.plugin_id) if origin else None)
 
-        toolkit = RetrievalToolkit(store, [scene_id, "global-safe"], scene_id, memory_store=runtime.memory_store,
+        toolkit = RetrievalToolkit(store, read_scopes, scene_id, memory_store=runtime.memory_store,
             plugin_host=runtime.plugin_host, bot_qq=config.bot_qq, on_observation=runtime.commit_tool_observation,
             checkpoint=runtime.evaluation_hook, media_service=runtime.media_service,
             config=config, call_context=plugin_context)
@@ -397,6 +434,19 @@ class InformationJobRunner:
         def require_current_access():
             issue=runtime.plugin_host.work_issue(job)
             if issue:raise PermissionError(issue)
+            current_initiator = job_initiator(job)
+            if current_initiator is not None and current_initiator.principal_type != 'human':
+                from len_bot.runtime.capabilities import Capability, subject_for
+                authority = runtime.runtime_gate.capability_authority
+                if authority is None:
+                    raise PermissionError('非人类工作需要当前能力授予，当前运行时没有授予检查')
+                subject = subject_for(current_initiator, scene_id)
+                required = authority.required_for_work(job['work_operation']) or (Capability.LONG_WORK,)
+                for capability in required:
+                    decision = authority.check(capability, subject, now=runtime.clock())
+                    if not decision.allowed:
+                        raise PermissionError(f'当前授予不允许继续此工作：{decision.reason}')
+                return
             handler_owned=job['plugin_origin'] and job['plugin_origin']['scene_entry']=='handler'
             if not handler_owned and not runtime.scene_policy.chat_allowed(scene_id, job["requester_qq_uid"]):
                 raise PermissionError("当前群或原请求者已不具备此工作的对话资格")
@@ -430,7 +480,14 @@ class InformationJobRunner:
                 runtime.metrics.inc_social("jobs_finished")
                 if result.status in {'completed','partial'}:
                     work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
-                    if work is None or work.allow_learning:self._start_learning(scene_id)
+                    if work is None or work.allow_learning:
+                        # Skill maintenance keeps spending this work's original
+                        # allowance, and its result is already committed: the
+                        # work's final close waits for those calls instead of
+                        # settling now and letting them land on a closed day.
+                        # The wait is bounded — a work with no token headroom
+                        # left does not start maintenance at all.
+                        self._start_learning(scene_id)
             except Exception as error:
                 await store.save_trace(kind='agent_job_error',scene_id=scene_id,ref_id=job_id,
                     payload={**trace,'job_revision':expected,'result':result.model_dump(),
@@ -530,32 +587,50 @@ class InformationJobRunner:
             current = await store.get_job(job_id,scene_id)
             if not current or current['revision'] != revision or current['status'] != 'processing':
                 raise JobChanged('Work changed before budget snapshot')
-            # The token dimension is this work's own reservation, which C07
-            # opened at creation for exactly this purpose: what the work holds
-            # is the most it may spend.  Every call carrying this job id counts,
-            # including compression, skill maintenance and plugin sub-agents.
-            reservation = await store.job_reservation(job_id)
+            # The token dimension is the ceiling recorded on the work at
+            # creation.  A work that holds no token dimension reports None,
+            # which the account reads as "not a stop" rather than as zero.
+            # Every call carrying this job id counts, including compression,
+            # skill maintenance and plugin sub-agents, and a call that has not
+            # returned yet counts at what it holds.
+            allowance = budget_ceiling(current)
             used_usage, used_estimate = await store.job_measured_tokens(
                 job_id, conservative_output_tokens=config.work_output_tokens)
+            deadline_at = work_deadline(current)
             return {'model_calls_limit':config.job_max_steps,'model_calls_used':current['model_steps'],
                     'tool_calls_limit':config.job_max_tool_calls,'tool_calls_used':current['tool_calls'],
-                    'elapsed_seconds_limit':config.job_max_seconds,
-                    'elapsed_seconds_used':round(current['elapsed_seconds']+time.monotonic()-last_charge,3),
-                    'tokens_limit':reservation['reserved_tokens'] if reservation else None,
+                    'deadline_at':deadline_at,
+                    'elapsed_seconds_limit':None if deadline_at is not None else config.job_max_seconds,
+                    'elapsed_seconds_used':current['elapsed_seconds'] + (time.monotonic()-last_charge),
+                    'tokens_limit':allowance,
                     'tokens_used':used_usage + used_estimate}
+
 
         async def remaining_seconds():
             """Seconds left of this work's absolute deadline.
 
-            The deadline is absolute from the work's first execution and a
-            resume never resets it, so this reads the persisted elapsed time
-            rather than starting a new clock.  `job_max_seconds` is required,
-            which is what stops a work whose count dimensions are unlimited.
+            The deadline is the instant saved when the work first started, so
+            a resume, a queue wait and a shutdown all count against the same
+            one instead of granting a fresh window.  A work from before the
+            deadline was recorded falls back to its accumulated execution
+            time, which is the only fact that exists for it.
             """
             current = await store.get_job(job_id,scene_id)
             if not current or current['revision'] != revision or current['status'] != 'processing':
                 raise JobChanged('Work changed before time budget snapshot')
+            deadline_at = work_deadline(current)
+            if deadline_at is not None:
+                return seconds_left_to(deadline_at, runtime.clock())
             return config.job_max_seconds - current['elapsed_seconds'] - (time.monotonic()-last_charge)
+
+        def work_deadline(state):
+            """The absolute instant this work's window closes, if it has one."""
+            return (state.get('budget') or {}).get('deadline_at')
+
+        def budget_ceiling(state):
+            """The cumulative token ceiling this work holds, or None for none."""
+            stored = state.get('budget')
+            return None if not stored else stored.get('token_limit')
 
         # The work's own deadline and token dimensions come from the durable
         # snapshot, so the account holds no second copy of them.  The token
@@ -567,6 +642,14 @@ class InformationJobRunner:
             on_model=before_model,on_tool=before_tool,read_state=budget_state,
             terminal_seconds_reserve=terminal_seconds_reserve(config.job_max_seconds),
             terminal_token_reserve=config.job_context_tokens + config.work_output_tokens)
+
+        # Every request this work makes — the main loop, its context
+        # compression and any plugin sub-agent — passes the same admission, so
+        # what one call holds is already on the account when the next one
+        # looks.  The work's context ceiling and its own ceiling are separate
+        # numbers and both are enforced: one bounds what fits in a request,
+        # the other what the whole work may spend.
+        work_admission = work_call_admission(store, job_id, now=runtime.clock)
 
         async def observe():
             await charge(revision)
@@ -613,8 +696,11 @@ class InformationJobRunner:
                     result.reason='model_budget_exhausted_at_finish'
                 elif count_remaining(budget['tool_calls_limit'],budget['tool_calls_used'])==0:
                     result.reason='tool_budget_exhausted_at_finish'
-                elif (budget['elapsed_seconds_limit'] is not None
-                      and budget['elapsed_seconds_used']>=budget['elapsed_seconds_limit']):
+                elif (seconds_left_to(budget.get('deadline_at')) is not None
+                      and seconds_left_to(budget.get('deadline_at')) <= 0):
+                    result.reason='time_budget_exhausted_at_finish'
+                elif (budget.get('elapsed_seconds_limit') is not None
+                      and budget.get('elapsed_seconds_used', 0)>=budget['elapsed_seconds_limit']):
                     result.reason='time_budget_exhausted_at_finish'
                 elif (budget['tokens_limit'] is not None
                       and budget['tokens_used']>=budget['tokens_limit']):
@@ -673,7 +759,6 @@ class InformationJobRunner:
 
         try:
             while self.running and runtime.config.jobs_enabled:
-                config = runtime.config.model_copy(deep=True)
                 limits = (config.job_max_steps, config.job_max_tool_calls, config.job_max_seconds)
                 job = await store.get_job(job_id, scene_id)
                 if not job or job["status"] != "processing":
@@ -683,8 +768,18 @@ class InformationJobRunner:
                     'model_calls_limit':config.job_max_steps,'tool_calls_limit':config.job_max_tool_calls,
                     'elapsed_seconds_limit':config.job_max_seconds,
                     'model_calls_used':job['model_steps'],'tool_calls_used':job['tool_calls'],
-                    'elapsed_seconds_used':job['elapsed_seconds']}}
+                    'elapsed_seconds_used':job['elapsed_seconds'],
+                    'tokens_limit':self.work_ceiling(job)}}
                 trace["runs"].append(run_trace)
+                # The deadline is a fact saved on the work the first time it
+                # actually starts, not a number recomputed from however long
+                # it has accumulated: a work that waited in the queue or was
+                # stopped for an hour is still measured against the instant it
+                # first began, which is what the operator granted.  A work from
+                # before this record keeps the elapsed-counting rule it had:
+                # its first start is not recoverable, so one cannot be invented.
+                if job.get('budget') and job['budget'].get('deadline_at') is None:
+                    await store.record_job_deadline(job_id, scene_id, runtime.clock() + config.job_max_seconds)
                 try:
                     require_current_access()
                     work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
@@ -704,7 +799,8 @@ class InformationJobRunner:
                             binding = runtime.provider_registry.resolve("work")
                             await store.bind_job_model(job_id, scene_id, revision, {"provider_id": binding.provider_id, "model": binding.model, "reasoning_effort": binding.reasoning_effort})
                         gateway = WorkGateway(binding, config.job_context_tokens, config.work_output_tokens,
-                                              call_store=store, scene_id=scene_id, job_id=job_id, purpose="work")
+                                              call_store=store, scene_id=scene_id, job_id=job_id, purpose="work",
+                                              admission=work_admission)
                     await toolkit.import_results(job["result_ids"])
                     toolkit.restore_presentations(job['observation_reads'])
                     await charge(revision, enforce=False)
@@ -748,8 +844,9 @@ class InformationJobRunner:
                                 raise JobChanged("Work changed before request")
                             return count_remaining(config.job_max_steps, current["model_steps"])
 
-                        compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config)
-                        presentation = WorkToolPresentation(runtime, scene_id)
+                        compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config,
+                            admission=work_admission)
+                        presentation = WorkToolPresentation(runtime, scene_id, config)
 
                         def work_definitions():
                             reads = toolkit.get_tool_definitions()

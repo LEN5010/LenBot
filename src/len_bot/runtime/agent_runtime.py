@@ -281,6 +281,7 @@ class AgentRuntime:
             live_keys = set(values) if live else set(values) & EXECUTION_BUDGET_FIELDS
             if live_keys:
                 self.config = self.config.model_copy(update={key: getattr(candidate.runtime, key) for key in live_keys})
+                self.event_store.budget_config = self.config
                 self.attention_policy.config = self.config
                 self.burst_assembler.config = self.config
             if not live and any(getattr(candidate.runtime, key) != getattr(self.config, key)

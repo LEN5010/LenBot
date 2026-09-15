@@ -39,11 +39,11 @@ def measured_call_tokens(usage, estimate: dict, *, conservative_output_tokens: i
     `prompt_tokens` and reasoning tokens are already inside
     `completion_tokens`, so neither is added again.  A call whose provider
     returned no usable usage is never counted as zero: its own local estimate
-    stands in, and its output is bounded by the work's configured output
-    limit.  The two totals stay separable so no view can call an estimate
-    real billing.  A half-reported usage is not split between the two: an
-    input without its matching output cannot be attributed, so that call is
-    kept as an estimate rather than guessed at.
+    stands in, and its output is bounded by that request's own recorded
+    output ceiling.  The two totals stay separable so no view can call an
+    estimate real billing.  A half-reported usage is not split between the
+    two: an input without its matching output cannot be attributed, so that
+    call is kept as an estimate rather than guessed at.
     """
     if isinstance(usage, dict):
         prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
@@ -55,6 +55,23 @@ def measured_call_tokens(usage, estimate: dict, *, conservative_output_tokens: i
     return 0, max(0, estimated)
 
 
+def call_output_bound(row) -> int:
+    """This request's own output bound, for a call that never reported usage.
+
+    The number is read from the call itself rather than from the running
+    configuration: the output an already-finished request was allowed to
+    produce is a fact about that request, and a later policy edit must not
+    rewrite what past calls are counted as.  A completed call's actual
+    continuation length is the closest thing to its real output; a call that
+    ended without one keeps the ceiling it was admitted under.  Only a row
+    that predates both columns falls back to the caller's current value.
+    """
+    for value in (row.get('output_estimate_tokens'), row.get('output_ceiling_tokens')):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return int(value)
+    return 0
+
+
 class ModelCallStoreMixin:
     async def initialize_model_calls(self):
         await self._db.execute("""CREATE TABLE IF NOT EXISTS model_calls (
@@ -63,6 +80,15 @@ class ModelCallStoreMixin:
             reasoning_effort TEXT, started_at REAL NOT NULL, ended_at REAL,
             status TEXT NOT NULL, usage_json TEXT, estimate_json TEXT NOT NULL,
             output_estimate_tokens INTEGER, error_type TEXT, disposition TEXT)""")
+        # Two facts a call has to carry once its own budget is admitted: the
+        # output ceiling it was admitted under (so the split a later settle
+        # does is this call's own, not today's configuration) and the tokens
+        # it holds in flight (so the next call can see that they are spoken
+        # for).  Both are added in place on an existing ledger.
+        columns = {column[1] for column in await (await self._db.execute("PRAGMA table_info(model_calls)")).fetchall()}
+        for name, declaration in (('output_ceiling_tokens', 'INTEGER'), ('held_tokens', 'INTEGER')):
+            if name not in columns:
+                await self._db.execute(f'ALTER TABLE model_calls ADD COLUMN {name} {declaration}')
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_model_calls_scene ON model_calls(scene_id,started_at)")
         # The execution-time token stop reads one work's calls on every model
         # request.  Without this index that read scans the whole call ledger
@@ -77,32 +103,63 @@ class ModelCallStoreMixin:
             day_key TEXT NOT NULL, policy_name TEXT, reserved_tokens INTEGER NOT NULL,
             status TEXT NOT NULL, usage_tokens INTEGER, estimated_tokens INTEGER,
             created_at REAL NOT NULL, settled_at REAL)""")
+        # The ceiling the work was accepted under, kept beside what it has
+        # consumed.  Settling overwrites `reserved_tokens` with the spend, so
+        # without this column the original allowance is gone the moment a work
+        # finishes; a continuation would then be re-measured against today's
+        # policy instead of the number it was actually granted.
+        reservation_columns = {column[1] for column in await (await self._db.execute(
+            "PRAGMA table_info(usage_reservations)")).fetchall()}
+        if 'limit_tokens' not in reservation_columns:
+            await self._db.execute('ALTER TABLE usage_reservations ADD COLUMN limit_tokens INTEGER')
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_usage_reservations_day ON usage_reservations(subject,day_key)")
+        # A hold that already existed when this column was added still knows
+        # its ceiling: for a row that has never been settled, `reserved_tokens`
+        # is still that number.  Filling it once is restoring the fact that was
+        # there all along, not inventing one.  A row that was already settled
+        # before the column existed cannot be reconstructed from its own rows
+        # and is left null, which reads as "this work has no recorded ceiling"
+        # and is refused by the re-hold instead of being silently re-created
+        # from the current default policy.
+        await self._db.execute("""UPDATE usage_reservations SET limit_tokens=reserved_tokens
+            WHERE limit_tokens IS NULL AND status='held'""")
 
     async def account_used_tokens_in_transaction(self, subject: str, day_key: str, *,
                                                  scene_id: str | None = None,
                                                  exclude_job_id: str | None = None) -> int:
         """Held plus already-settled tokens for one account on one day.
 
-        `exclude_job_id` leaves one work out of the total.  A work that is put
-        back on hold is re-checked against the same day, and its own earlier
-        settlement is exactly what the new hold replaces; counting both would
-        charge one work twice.
+        `settling` counts as held: a work whose business result is committed
+        but whose requests are still unanswered is still occupying the day it
+        was accepted on, and reading it as free would let the next work spend
+        the same tokens.  `exclude_job_id` leaves one work out of the total —
+        a work being put back on hold is re-checked against the same day, and
+        its own earlier settlement is exactly what the new hold replaces;
+        counting both would charge one work twice.
         """
         column, value = ("subject", subject) if scene_id is None else ("scene_id", scene_id)
         row = await (await self._db.execute(
-            f"""SELECT COALESCE(SUM(CASE WHEN status='held' THEN reserved_tokens
+            f"""SELECT COALESCE(SUM(CASE WHEN status IN ('held','settling') THEN reserved_tokens
                     ELSE COALESCE(usage_tokens,0)+COALESCE(estimated_tokens,0) END),0)
-                FROM usage_reservations WHERE {column}=? AND day_key=? AND status IN ('held','settled')
+                FROM usage_reservations WHERE {column}=? AND day_key=?
+                AND status IN ('held','settling','settled')
                 AND (? IS NULL OR job_id!=?)""",
             (value, day_key, exclude_job_id, exclude_job_id))).fetchone()
         return int(row[0] or 0)
 
     async def reserve_work_in_transaction(self, *, job_id, scene_id, subject, day_key, tokens,
-                                          policy_name=None, scene_limit=None, daily_limit=None):
-        """Hold one work's budget inside the caller's existing write transaction."""
+                                          limit_tokens=None, policy_name=None, scene_limit=None, daily_limit=None):
+        """Hold one work's budget inside the caller's existing write transaction.
+
+        `limit_tokens` is the work's cumulative ceiling, which is not always
+        the same number as this hold: a work with no token dimension holds
+        nothing but still records a null ceiling, and a work re-held after a
+        partial spend holds only its remainder.  When the caller does not
+        distinguish the two, the hold is the ceiling.
+        """
         if tokens < 0:
             raise ValueError('A work reservation cannot be negative')
+        ceiling = tokens if limit_tokens is None else limit_tokens
         if daily_limit is not None:
             used = await self.account_used_tokens_in_transaction(subject, day_key)
             if used + tokens > daily_limit:
@@ -115,89 +172,52 @@ class ModelCallStoreMixin:
                 raise ValueError(
                     f'本群额度不足：{scene_id} 在 {day_key} 已占用 {used}，本次工作需要预占 {tokens}，上限 {scene_limit}')
         await self._db.execute("""INSERT INTO usage_reservations
-            (job_id,scene_id,subject,day_key,policy_name,reserved_tokens,status,created_at)
-            VALUES(?,?,?,?,?,?,'held',?)""",
-            (job_id, scene_id, subject, day_key, policy_name, tokens, self.clock()))
+            (job_id,scene_id,subject,day_key,policy_name,reserved_tokens,limit_tokens,status,created_at)
+            VALUES(?,?,?,?,?,?,?,'held',?)""",
+            (job_id, scene_id, subject, day_key, policy_name, tokens, ceiling, self.clock()))
 
-    async def rehold_work_in_transaction(self, *, job_id, tokens, policy_name=None,
-                                        scene_limit=None, daily_limit=None):
-        """Put an ended work's budget back on hold, on its own reservation day.
+    async def rehold_work_in_transaction(self, *, job_id, scene_limit=None, daily_limit=None):
+        """Put an ended work back on hold under the ceiling it was created with.
 
-        A settled hold is what the work spent, not what it may spend: read as
-        a ceiling it would equal the work's own consumption and stop the next
-        revision on its first call.  A released hold is only the amount given
-        back.  Both are re-opened here to the work's cumulative ceiling,
-        keeping one row per work and keeping the consumption attributed to
-        the day the work was accepted instead of moving a past day's account
-        into today.  Past consumption is never refunded: the work's ceiling
-        does not grow, and everything it already spent still counts against
-        the account.
+        The hold is the recorded `limit_tokens`, not today's policy and not
+        the last settlement amount.  The day is charged for that ceiling in
+        place of this work's earlier settlement, so the same allowance is not
+        counted twice and unused remainder is taken back from the day.
         """
-        if tokens < 0:
-            raise ValueError('A work reservation cannot be negative')
         current = await (await self._db.execute(
-            "SELECT scene_id,subject,day_key,status FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
+            "SELECT scene_id,subject,day_key,status,limit_tokens FROM usage_reservations WHERE job_id=?",
+            (job_id,))).fetchone()
         if current is None:
             raise ValueError('This work has no reservation to re-hold')
-        scene_id, subject, day_key, status = current
-        if status == 'held':
-            # A control can land while the work is still running; its original
-            # hold never ended, so there is nothing to reopen.
+        scene_id, subject, day_key, status, limit_tokens = current
+        if status in {'held', 'settling'}:
             return
         if status not in {'settled', 'released'}:
             raise ValueError('This work has no settlement to re-hold')
+        if limit_tokens is None:
+            raise ValueError(
+                '该工作没有记录创建时的累计上限（早于预占上限存档，或已被结算覆盖），'
+                '不能按当前默认策略补造一个额度；请保留原记录并交由运营者决定是否另立工作')
+        ceiling = int(limit_tokens)
         if daily_limit is not None:
             used = await self.account_used_tokens_in_transaction(subject, day_key, exclude_job_id=job_id)
-            if used + tokens > daily_limit:
+            if used + ceiling > daily_limit:
                 raise ValueError(
-                    f'每日额度不足：该账号 {day_key} 已占用 {used}（不含本工作），要重新预占 {tokens}，上限 {daily_limit}；'
-                    '继续旧工作不新增额度，需要更多额度请由运营者明确调整策略或另立一个范围更小的工作')
+                    f'每日额度不足：该账号 {day_key} 已占用 {used}（不含本工作），本工作要继续还需预占 {ceiling}，'
+                    f'上限 {daily_limit}；继续旧工作不新增额度，需要更多额度请由运营者明确调整策略或另立一个范围更小的工作')
         if scene_limit is not None:
             used = await self.account_used_tokens_in_transaction(subject, day_key, scene_id=scene_id, exclude_job_id=job_id)
-            if used + tokens > scene_limit:
+            if used + ceiling > scene_limit:
                 raise ValueError(
-                    f'本群额度不足：{scene_id} 在 {day_key} 已占用 {used}（不含本工作），要重新预占 {tokens}，上限 {scene_limit}')
-        await self._db.execute("""UPDATE usage_reservations SET reserved_tokens=?,status='held',
-            policy_name=?,settled_at=NULL WHERE job_id=? AND status IN ('settled','released')""",
-            (tokens, policy_name, job_id))
+                    f'本群额度不足：{scene_id} 在 {day_key} 已占用 {used}（不含本工作），本工作要继续还需预占 {ceiling}，'
+                    f'上限 {scene_limit}')
+        await self._db.execute("""UPDATE usage_reservations SET reserved_tokens=?,status='held',settled_at=NULL
+            WHERE job_id=? AND status IN ('settled','released')""", (ceiling, job_id))
 
     async def release_reservation_in_transaction(self, job_id: str, reason: str = ''):
         """Give back a hold whose work never consumed anything."""
         await self._db.execute("""UPDATE usage_reservations SET status='released',settled_at=?
             WHERE job_id=? AND status='held'""", (self.clock(), job_id))
-
-    async def job_measured_tokens(self, job_id: str, *, conservative_output_tokens: int) -> tuple[int, int]:
-        """What this work has spent so far, split into real usage and estimate.
-
-        Every call carrying the job id counts, including compression, skill
-        maintenance and plugin sub-agents: one work has one account whether it
-        is being settled or merely read while it still runs.
-        """
-        rows = await (await self._db.execute(
-            "SELECT usage_json,estimate_json FROM model_calls WHERE job_id=?", (job_id,))).fetchall()
-        usage_tokens = estimated_tokens = 0
-        for encoded_usage, encoded_estimate in rows:
-            usage = json.loads(encoded_usage) if encoded_usage else None
-            estimate = json.loads(encoded_estimate) if encoded_estimate else {}
-            measured, estimated = measured_call_tokens(usage, estimate,
-                conservative_output_tokens=conservative_output_tokens)
-            usage_tokens += measured
-            estimated_tokens += estimated
-        return usage_tokens, estimated_tokens
-
-    async def settle_reservation_in_transaction(self, job_id, *, conservative_output_tokens: int):
-        """Replace a hold with what the work actually spent, keeping the split.
-
-        Every model call carrying this job id counts here, including
-        compression, skill maintenance and plugin sub-agents, so one work has
-        one account.  A provider that returned no usage is recorded from its
-        local estimate instead of being charged as zero.
-        """
-        usage_tokens, estimated_tokens = await self.job_measured_tokens(
-            job_id, conservative_output_tokens=conservative_output_tokens)
-        await self._db.execute("""UPDATE usage_reservations SET status='settled',usage_tokens=?,
-            estimated_tokens=?,reserved_tokens=?,settled_at=? WHERE job_id=? AND status='held'""",
-            (usage_tokens, estimated_tokens, usage_tokens + estimated_tokens, self.clock(), job_id))
 
     async def close_reservation_in_transaction(self, job_id, *, conservative_output_tokens: int):
         """End a hold: release it free, or settle it if the work already billed.
@@ -205,37 +225,210 @@ class ModelCallStoreMixin:
         A work cancelled before its first model call gives the whole hold back.
         One that already called a provider keeps those real tokens on its
         account, so cancelling is never a way to erase spent budget.
+
+        A work may still have requests in flight when this is reached, and a
+        cancelled or interrupted request cannot be proven to have stopped
+        billing.  Such a work is left settling: its hold stays, the in-flight
+        amount keeps counting, and the last request to end closes the account
+        with its real receipt instead of a number a later receipt would have
+        to fight.
         """
         row = await (await self._db.execute(
             "SELECT 1 FROM model_calls WHERE job_id=? LIMIT 1", (job_id,))).fetchone()
         if row is None:
             await self.release_reservation_in_transaction(job_id, 'work_ended_without_a_model_call')
             return
+        if await self.in_flight_model_calls(job_id) > 0:
+            await self._db.execute(
+                """UPDATE usage_reservations SET status='settling' WHERE job_id=? AND status='held'""",
+                (job_id,))
+            return
         await self.settle_reservation_in_transaction(job_id, conservative_output_tokens=conservative_output_tokens)
 
+    async def in_flight_model_calls(self, job_id: str) -> int:
+        """How many of this work's requests have not yet recorded an ending."""
+        row = await (await self._db.execute(
+            "SELECT COUNT(*) FROM model_calls WHERE job_id=? AND ended_at IS NULL", (job_id,))).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    async def work_budget_facts(self, job_id: str) -> tuple[int | None, float | None]:
+        """This work's recorded token ceiling and absolute deadline, if any."""
+        row = await (await self._db.execute(
+            "SELECT budget_json FROM agent_jobs WHERE id=?", (job_id,))).fetchone()
+        if row is None or not row[0]:
+            return None, None
+        data = json.loads(row[0])
+        token_limit, deadline_at = data.get('token_limit'), data.get('deadline_at')
+        ceiling = (int(token_limit) if isinstance(token_limit, (int, float))
+                   and not isinstance(token_limit, bool) else None)
+        deadline = (float(deadline_at) if isinstance(deadline_at, (int, float))
+                    and not isinstance(deadline_at, bool) else None)
+        return ceiling, deadline
+
+    async def job_measured_tokens(self, job_id: str, *, conservative_output_tokens: int = 0) -> tuple[int, int]:
+        """What this work has spent so far, split into real usage and estimate.
+
+        Ended calls use their own recorded output bound.  A request still in
+        flight counts at the tokens it was admitted to hold, so the next
+        admission can see them.  Rows that predate those columns fall back to
+        the caller's current conservative output, which is only a last resort.
+        """
+        rows = await (await self._db.execute(
+            """SELECT usage_json,estimate_json,output_estimate_tokens,output_ceiling_tokens,held_tokens,ended_at
+               FROM model_calls WHERE job_id=?""", (job_id,))).fetchall()
+        usage_tokens = estimated_tokens = 0
+        for encoded_usage, encoded_estimate, output_estimate, output_ceiling, held, ended_at in rows:
+            estimate = json.loads(encoded_estimate) if encoded_estimate else {}
+            bound = call_output_bound({
+                'output_estimate_tokens': output_estimate, 'output_ceiling_tokens': output_ceiling,
+            }) or conservative_output_tokens
+            if ended_at is None:
+                if held is not None:
+                    estimated_tokens += max(0, int(held))
+                else:
+                    estimated_tokens += measured_call_tokens(
+                        None, estimate, conservative_output_tokens=bound)[1]
+                continue
+            usage = json.loads(encoded_usage) if encoded_usage else None
+            measured, estimated = measured_call_tokens(
+                usage, estimate, conservative_output_tokens=bound)
+            usage_tokens += measured
+            estimated_tokens += estimated
+        return usage_tokens, estimated_tokens
+
+    async def account_reservation_totals(self, day_key: str, *, scene_id=None, subject=None):
+        """Full-day held and settled totals per billing subject, not a truncated list."""
+        clause, params = "day_key=?", [day_key]
+        if scene_id is not None:
+            clause += " AND scene_id=?"; params.append(scene_id)
+        if subject is not None:
+            clause += " AND subject=?"; params.append(subject)
+        rows = await (await self._db.execute(
+            f"""SELECT subject,
+                    COALESCE(SUM(CASE WHEN status IN ('held','settling') THEN reserved_tokens ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN status='settled'
+                        THEN COALESCE(usage_tokens,0)+COALESCE(estimated_tokens,0) ELSE 0 END),0)
+                FROM usage_reservations WHERE {clause}
+                    AND status IN ('held','settling','settled')
+                GROUP BY subject ORDER BY subject""", params)).fetchall()
+        return [{'subject': row[0], 'held': int(row[1] or 0), 'used': int(row[2] or 0)} for row in rows]
+
     async def begin_model_call(self, *, scene_id, episode_id, job_id, batch_id, role, purpose,
-                               provider_id, model, reasoning_effort, estimate):
+                               provider_id, model, reasoning_effort, estimate, output_tokens=0,
+                               admission=None):
+        """Register one outbound request and hold what it may spend.
+
+        `admission` runs inside this write transaction, before the call row
+        exists: it is what decides whether this request may be sent at all,
+        and what it holds if it may.  Running it here rather than before the
+        transaction is what makes two concurrent requests for one work
+        serialise — the first one's hold is already written when the second
+        one reads the account.  A refusal rolls the transaction back, so a
+        request that was not admitted leaves no call row and no charge behind.
+        A call with no work account behind it (a conversation, a probe) passes
+        no admission and holds nothing.
+        """
         call_id = uuid.uuid4().hex
         async with self._write_lock:
-            await self._db.execute("""INSERT INTO model_calls
-                (id,scene_id,episode_id,job_id,batch_id,role,purpose,provider_id,model,reasoning_effort,
-                 started_at,status,estimate_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,'unconfirmed',?)""",
-                (call_id, scene_id, episode_id, job_id, batch_id, role, purpose, provider_id, model,
-                 reasoning_effort, self.clock(), json.dumps(estimate)))
-            await self._db.commit()
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                held = None if admission is None else await admission()
+                await self._db.execute("""INSERT INTO model_calls
+                    (id,scene_id,episode_id,job_id,batch_id,role,purpose,provider_id,model,reasoning_effort,
+                     started_at,status,estimate_json,output_ceiling_tokens,held_tokens)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,'unconfirmed',?,?,?)""",
+                    (call_id, scene_id, episode_id, job_id, batch_id, role, purpose, provider_id, model,
+                     reasoning_effort, self.clock(), json.dumps(estimate), max(0, int(output_tokens)),
+                     None if held is None else max(0, int(held))))
+                if job_id:
+                    await self._reopen_settled_reservation_in_transaction(job_id)
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
         return call_id
 
     async def end_model_call(self, call_id, *, status, usage=None, output_estimate_tokens=None, error_type=None):
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("Invalid model call completion status")
         async with self._write_lock:
-            cursor = await self._db.execute("""UPDATE model_calls SET ended_at=?,status=?,usage_json=?,
-                output_estimate_tokens=?,error_type=? WHERE id=? AND ended_at IS NULL""",
-                (self.clock(), status, json.dumps(usage) if usage is not None else None,
-                 output_estimate_tokens, error_type, call_id))
-            if cursor.rowcount != 1:
-                raise ValueError("Model call is missing or already ended")
-            await self._db.commit()
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                cursor = await self._db.execute("""UPDATE model_calls SET ended_at=?,status=?,usage_json=?,
+                    output_estimate_tokens=?,held_tokens=NULL,error_type=? WHERE id=? AND ended_at IS NULL""",
+                    (self.clock(), status, json.dumps(usage) if usage is not None else None,
+                     output_estimate_tokens, error_type, call_id))
+                if cursor.rowcount != 1:
+                    raise ValueError("Model call is missing or already ended")
+                # This request's receipt may be the last one a work that was
+                # already ended is waiting for.  The check is keyed by the
+                # work and does nothing unless its account is still settling,
+                # so it closes exactly once however many requests end.
+                row = await (await self._db.execute(
+                    "SELECT job_id FROM model_calls WHERE id=?", (call_id,))).fetchone()
+                if row and row[0] and await self.in_flight_model_calls(row[0]) == 0:
+                    await self._settle_if_open_in_transaction(row[0])
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def _reopen_settled_reservation_in_transaction(self, job_id: str) -> None:
+        """Keep a finished work occupying its original ceiling while later calls run.
+
+        Skill maintenance and a late receipt still belong to the founding
+        work.  If the business result already settled the hold, this takes the
+        recorded ceiling back until the last in-flight request ends.
+        """
+        row = await (await self._db.execute(
+            "SELECT status,limit_tokens,reserved_tokens FROM usage_reservations WHERE job_id=?",
+            (job_id,))).fetchone()
+        if row is None or row[0] != 'settled':
+            return
+        _status, limit_tokens, reserved_tokens = row
+        ceiling = int(limit_tokens) if limit_tokens is not None else int(reserved_tokens or 0)
+        await self._db.execute(
+            """UPDATE usage_reservations SET status='settling',reserved_tokens=?,settled_at=NULL
+               WHERE job_id=? AND status='settled'""", (ceiling, job_id))
+
+    async def _settle_if_open_in_transaction(self, job_id: str) -> bool:
+        row = await (await self._db.execute(
+            "SELECT status FROM usage_reservations WHERE job_id=?", (job_id,))).fetchone()
+        if row is None or row[0] not in {'settling', 'settled'}:
+            return False
+        await self.settle_reservation_in_transaction(job_id, conservative_output_tokens=0)
+        return True
+
+    async def settle_reservation_in_transaction(self, job_id, *, conservative_output_tokens: int):
+        """Replace a hold with what the work actually spent, keeping the split.
+
+        Every model call carrying this job id counts here, including
+        compression, skill maintenance and plugin sub-agents, so one work has
+        one account.  A provider that returned no usage is recorded from that
+        call's own estimate and output ceiling instead of being charged as
+        zero, and the work's recorded ceiling is left untouched so a later
+        continuation still knows what it was granted.
+
+        Idempotent by construction: the totals are a function of the current
+        call rows, so running this again after a late receipt recomputes the
+        same account from the same facts rather than adding anything twice.
+        A settle that lands while a request is still in flight leaves that
+        request's own hold in place inside the total.
+
+        A work whose account was already settled is re-settled rather than
+        skipped: skill maintenance spends the founding work's allowance after
+        its business result is stored, and the day's account has to show those
+        tokens too.  A released hold is not reopened — that work never spent
+        anything and has no account to refresh.
+        """
+        usage_tokens, estimated_tokens = await self.job_measured_tokens(
+            job_id, conservative_output_tokens=conservative_output_tokens)
+        await self._db.execute("""UPDATE usage_reservations SET status='settled',usage_tokens=?,
+            estimated_tokens=?,reserved_tokens=?,settled_at=? WHERE job_id=?
+            AND status IN ('held','settling','settled')""",
+            (usage_tokens, estimated_tokens, usage_tokens + estimated_tokens, self.clock(), job_id))
+
+
 
     async def set_model_call_disposition(self, episode_id, disposition):
         if disposition not in {"silence", "expression", "rejected"}:

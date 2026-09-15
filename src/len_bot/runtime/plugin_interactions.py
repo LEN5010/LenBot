@@ -14,7 +14,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.mailbox import EpisodeMailbox
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome
 from len_bot.cognition.jobs import JobResult
-from len_bot.cognition.budget import AgentBudget, count_remaining, tightest
+from len_bot.cognition.budget import AgentBudget, count_remaining, tightest, work_call_admission
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.models import ConversationResume
 from len_bot.cognition.providers import ModelProfile
@@ -388,10 +388,12 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
 
 async def _dedicated_agent(runtime, call, request, output_model, parent):
     execution=call.execution
+    work_job=None
     if call.job_id and request.model_role=='work':
         job=await runtime.event_store.get_job(call.job_id,call.scene_id)
         if not job or not job['model_binding']:
             raise ValueError('Plugin work Agent requires its existing job model binding')
+        work_job=job
         binding=runtime.provider_registry.resolve_profile(ModelProfile.model_validate(job['model_binding']),role='work')
     else:
         binding=runtime.provider_registry.resolve(request.model_role)
@@ -532,8 +534,17 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
             execution.audit['references']=context.refs.snapshot()
         if runtime.evaluation_hook:await runtime.evaluation_hook(stage,payload)
 
+    # A plugin agent running as a work's model role is a further request on
+    # that work's account: it is admitted like the main loop and compression
+    # are, so a sub-agent cannot spend tokens its parent's ceiling never
+    # reserved.  An agent running for the conversation has no work account and
+    # is admitted by its own conversation budget instead.
+    admission=None
+    if work_job is not None:
+        admission=work_call_admission(runtime.event_store,work_job['id'],now=runtime.clock)
     return await AgentLoop(ModelGateway(binding,max_output_tokens=request.output_tokens,
-        call_store=runtime.event_store,scene_id=call.scene_id,episode_id=call.origin.run_id,job_id=call.job_id,purpose='plugin_agent')).run(
+        call_store=runtime.event_store,scene_id=call.scene_id,episode_id=call.origin.run_id,job_id=call.job_id,purpose='plugin_agent',
+        admission=admission)).run(
             messages=messages,tool_definitions=definitions,execute_tool=execute,terminal=terminal,finish=finish,
             after_finish=after_finish,proposal_tool_names=set(TOOLS)|runtime.plugin_host.proposal_tool_names() if nested_respond else set(),
             max_steps=steps,max_tool_calls=request.max_tool_calls,budget=execution.budget,

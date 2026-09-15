@@ -44,15 +44,31 @@ def terminal_seconds_reserve(seconds_limit: float | None) -> float:
 
 
 def window_deadline(seconds_limit: float | None, elapsed: float) -> float | None:
-    """The absolute instant one window closes, or None when it has no window.
+    """The absolute monotonic instant one window closes, or None when it has none.
 
     A window is absolute from the run's first model call, so a resume passes
     the time already spent and keeps counting down from the same instant
-    instead of receiving a fresh one.
+    instead of receiving a fresh one.  The number returned is a
+    `time.monotonic()` reading and is only meaningful inside one process; a
+    deadline that has to outlive the process is stored as wall-clock seconds
+    instead, the same basis every other persisted timestamp uses.
     """
     if seconds_limit is None:
         return None
     return time.monotonic() + max(0.0, seconds_limit - max(0.0, elapsed))
+
+
+def seconds_left_to(deadline_at: float | None, now: float | None = None) -> float | None:
+    """Seconds until one absolute wall-clock deadline, or None when there is none.
+
+    A work stores the instant its window closes so the grant survives a queue
+    wait, a restart or a wait for a reply.  Reading it against the current
+    time is the whole computation; the deadline is one fact, not a duration
+    that gets re-derived from accumulated counters.
+    """
+    if deadline_at is None:
+        return None
+    return deadline_at - (time.time() if now is None else now)
 
 
 class ReservationPolicy(BaseModel):
@@ -77,9 +93,9 @@ class ReservationPolicy(BaseModel):
     """
     model_config = ConfigDict(extra='forbid', strict=True)
 
-    work_token_limit: int | None = Field(default=10_000_000, gt=0,
+    work_token_limit: int | None = Field(default=None, gt=0,
         description='单个工作累计模型 token 上限；null 表示不设 token 维度上限')
-    daily_user_token_limit: int | None = Field(default=30_000_000, ge=0,
+    daily_user_token_limit: int | None = Field(default=None, ge=0,
         description='同一真实账号在账务日内的全局上限；null 表示不设该维度上限')
     daily_scene_token_limit: int | None = Field(default=None, ge=0,
         description='同一场景在账务日内的合计上限；null 表示本场景未配置该维度')
@@ -95,26 +111,94 @@ class ReservationPolicy(BaseModel):
         zone = ZoneInfo(timezone) if timezone else UTC
         return datetime.fromtimestamp(timestamp, zone).date().isoformat()
 
-    def work_reservation(self, *, model_steps: int | None, context_tokens: int, output_tokens: int) -> int:
-        """What one work may hold — and therefore the most it may ever spend.
+    def work_reservation(self, *, model_steps: int | None, context_tokens: int, output_tokens: int) -> int | None:
+        """What one work may hold, and therefore the most it may ever spend.
 
-        The amount is the work's own existing hard limits multiplied out —
-        every model step can at most fill the work context and the work output
-        — so the hold is an upper bound of the configuration the work actually
-        runs under rather than a second number that could disagree with it.
+        The amount is the work's own configured limits multiplied out — every
+        model step can at most fill the work context and the work output — so
+        the hold is an upper bound of the configuration the work actually runs
+        under rather than a second number that could disagree with it.  When
+        the policy sets a smaller per-work ceiling, that ceiling is the hold.
 
-        When the count dimension is not limited (`model_steps is None`) the
-        ceiling cannot be multiplied out, so the hold is the policy's own
-        per-work number.  Only when the policy does not set one either is the
-        hold zero, which means this work holds no token budget at all: the
-        deadline and the message limits are then its whole stopping condition.
+        `None` means this work holds no token dimension: the deadline and the
+        message limits are then its whole stopping condition.  That is only an
+        honest answer when the day has no finite balance for it to overspend —
+        a finite daily quota with no per-work ceiling has nothing to reserve
+        against it, and is refused here rather than promised.  `None` is never
+        zero: zero would read as "granted no tokens at all".
         """
         if model_steps is None:
-            return self.work_token_limit or 0
+            if self.work_token_limit is None and (self.daily_user_token_limit is not None
+                                                 or self.daily_scene_token_limit is not None):
+                raise ValueError(
+                    '有限日额度要求有限单工作预占：请在额度策略中设置 work_token_limit，或为工作设置 job_max_steps；'
+                    '否则该工作的消费无法在创建时计入日账')
+            return self.work_token_limit
         ceiling = max(0, model_steps) * (max(0, context_tokens) + max(0, output_tokens))
         if self.work_token_limit is None:
             return ceiling
         return min(self.work_token_limit, ceiling)
+
+
+def work_call_admission(store, job_id: str, *, now: Callable[[], float] | None = None):
+    """The admission one work's model request passes before it is sent.
+
+    Called from inside the call store's write transaction, so the account it
+    reads already contains every earlier request's hold and this decision is
+    what the next request will see.  It returns the amount to hold for the
+    request, or refuses with `AgentBudgetExhausted` when the request cannot be
+    paid for.
+
+    Ceiling and deadline are read from the work's own snapshot at admit time,
+    not captured when the gateway was constructed: the absolute deadline is
+    written on first start, which can be after the gateway exists.
+    """
+    clock = now or time.time
+
+    async def admit(input_estimate: dict, output_tokens: int) -> int | None:
+        from len_bot.cognition.agent_loop import AgentBudgetExhausted
+        ceiling, deadline_at = await store.work_budget_facts(job_id)
+        if deadline_at is not None and deadline_at - clock() <= 0:
+            raise AgentBudgetExhausted('The work reached its absolute deadline', budget_kind='elapsed_time')
+        request_tokens = max(0, int(input_estimate.get('input_tokens') or 0)) + max(0, int(output_tokens))
+        if ceiling is None:
+            return None
+        spent_usage, spent_estimate = await store.job_measured_tokens(
+            job_id, conservative_output_tokens=output_tokens)
+        spent = spent_usage + spent_estimate
+        if spent + request_tokens > ceiling:
+            raise AgentBudgetExhausted(
+                f'本工作的累计 token 额度不足：已计入 {spent}，本次请求需要 {request_tokens}，上限 {ceiling}；'
+                '已有结果和未完成项按原样保留，不再追加调用', budget_kind='tokens')
+        return request_tokens
+
+    return admit
+
+
+class WorkBudgetSnapshot(BaseModel):
+    """The creation facts a work keeps even after its hold is settled.
+
+    A settled hold is what the work spent, not what it may spend.  These are
+    the numbers it was actually granted: the cumulative ceiling, the execution
+    limits the ceiling was derived from, and — once it first starts — the
+    absolute instant its window closes.  The deadline is stored as a
+    wall-clock instant because it has to survive the process.
+    """
+    model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
+
+    job_max_steps: int | None = Field(default=None, ge=1)
+    job_max_tool_calls: int | None = Field(default=None, ge=1)
+    job_max_seconds: float = Field(gt=0)
+    job_context_tokens: int = Field(gt=0)
+    work_output_tokens: int = Field(gt=0)
+    maintenance_context_tokens: int = Field(gt=0)
+    maintenance_output_tokens: int = Field(gt=0)
+    token_limit: int | None = Field(default=None, ge=0)
+    deadline_at: float | None = Field(default=None, gt=0)
+
+    def runtime_values(self) -> dict:
+        """The subset the work's own execution limits are rebuilt from."""
+        return self.model_dump(exclude={'token_limit', 'deadline_at'})
 
 
 @dataclass
@@ -167,11 +251,13 @@ class AgentBudget:
     def _seconds_left(self, state: dict) -> float | None:
         """Seconds left before this run's own stop, or None when time is not one.
 
-        A work reports its absolute deadline through the state snapshot; a
-        conversation run has only the account's own deadline.  Whichever
-        exists is the one checked, so both loops stop on the same fact rather
-        than on two different notions of "time left".
+        A work reports the absolute instant its window closes; a conversation
+        run has only the account's own deadline.  Whichever exists is the one
+        checked, so both loops stop on the same fact rather than on two
+        different notions of "time left".
         """
+        if state.get('deadline_at') is not None:
+            return seconds_left_to(state.get('deadline_at'))
         if 'elapsed_seconds_limit' in state:
             return state['elapsed_seconds_limit'] - state['elapsed_seconds_used']
         return self.deadline_seconds()
@@ -200,6 +286,11 @@ class AgentBudget:
         bare stop: the deadline and the token allowance are its stopping
         conditions, and the last of that allowance is spent on submitting what
         was already established instead of on one more read.
+
+        The token side answers only for a ceiling that exists.  A work with no
+        token dimension at all is not "nearly out of tokens"; its deadline and
+        message limits are what end it, and reporting that it has no room left
+        would end it early for a limit nobody set.
         """
         if self.terminal_seconds_reserve:
             seconds_left = self._seconds_left(state)
@@ -231,6 +322,9 @@ class AgentBudget:
         from len_bot.cognition.agent_loop import AgentBudgetExhausted
         async with self._lock:
             state = await self.state()
+            seconds_left = self._seconds_left(state)
+            if seconds_left is not None and seconds_left <= 0:
+                raise AgentBudgetExhausted('The run reached its absolute deadline', budget_kind='elapsed_time')
             if count_remaining(state.get('tool_calls_limit'), state['tool_calls_used']) == 0:
                 raise AgentBudgetExhausted('The shared tool budget is exhausted', budget_kind='tool_calls')
             if self.on_tool:
