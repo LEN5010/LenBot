@@ -170,10 +170,18 @@ class RuntimeQueryService:
 
         Read-only: the numbers come from the same rows the reservation
         transaction wrote, so what the panel shows is what the next work will
-        actually be checked against.  An account whose day ran entirely under
-        one grant-named policy is therefore shown that policy's daily limit —
-        the number admission actually used — and only an account with no named
-        policy (or a mixed day) falls back to the default's numbers.
+        actually be checked against.
+
+        Two different questions are kept apart.  How much of the day is already
+        spoken for is an *account* fact, and it is what the held/used columns
+        report.  What a new work may still be granted is an *admission* result:
+        it depends on the subject, the capability, the scope and the policy in
+        force for that request, not on the account alone.  So a day that ran
+        under one named policy shows that policy's numbers as a resolved
+        admission; a day with several cannot be reduced to one free balance,
+        and the panel says which scopes to choose instead of showing a single
+        number — which, with an unlimited default, would read as "unlimited"
+        for an account that is in fact bounded by a finite grant.
         """
         store = self.runtime.event_store
         policy = store.reservation_policy or ReservationPolicy()
@@ -182,14 +190,17 @@ class RuntimeQueryService:
         items = await store.list_job_reservations(scene_id, subject=subject, day_key=day_key, limit=100)
         authority = getattr(store, 'capability_authority', None)
 
-        def named_policy(grant_id):
-            if not grant_id or authority is None:
-                return None
-            grant = next((item for item in authority.grants() if item.grant_id == grant_id), None)
+        def named_policy(grant_reference):
+            """Resolve a stored grant reference to the policy it points at."""
+            if not grant_reference or authority is None:
+                return None, False
+            grant = next((item for item in authority.grants() if item.grant_id == grant_reference), None)
             try:
-                return authority.policy_for_grant(grant)
+                return authority.policy_for_grant(grant), grant is not None
             except ValueError:
-                return None
+                # A reference whose policy no longer resolves is a refusal,
+                # never a quiet fall back to the default's numbers.
+                return None, True
 
         named_by_subject: dict[str, set] = {}
         rows = await self._rows(
@@ -203,17 +214,37 @@ class RuntimeQueryService:
         for row in await store.account_reservation_totals(day_key, subject=subject):
             names = named_by_subject.get(row['subject'], set())
             distinct = {name for name in names if name}
-            resolved, policy_name = policy, None
+            unresolvable = False
+            resolved = None
             if len(distinct) == 1 and names == distinct:
-                candidate = named_policy(next(iter(distinct)))
-                if candidate is not None:
-                    resolved, policy_name = candidate, next(iter(distinct))
-            limit = resolved.daily_user_token_limit
+                resolved, known = named_policy(next(iter(distinct)))
+                unresolvable = known and resolved is None
+            admission = {'state': 'mixed_scope_required' if len(distinct) > 1
+                         else 'policy_unresolved' if unresolvable
+                         else 'resolved' if resolved is not None
+                         else 'default_policy',
+                         'scope_required': sorted(distinct),
+                         'detail': None}
+            if admission['state'] == 'mixed_scope_required':
+                admission['detail'] = ('本账户当日跨多个授予／策略，单一可用余量不能代表准入结果；'
+                                       '请按主体、能力与范围分别查看，或明确选择要核对的范围')
+            elif admission['state'] == 'policy_unresolved':
+                admission['detail'] = '本账户引用的具名策略已不存在或失效，不能改用默认策略的数字'
+            limit = None
+            available = None
+            if admission['state'] in {'resolved', 'default_policy'}:
+                limit = (resolved.daily_user_token_limit if resolved is not None
+                         else policy.daily_user_token_limit)
+                available = None if limit is None else max(0, limit - row['held'] - row['used'])
             accounts[row['subject']] = {
+                # Account facts: how much of the day is already spoken for.
                 'subject': row['subject'], 'held': row['held'], 'used': row['used'],
-                'daily_limit': limit, 'policy_name': policy_name,
-                'policy_names': sorted(distinct),
-                'available': None if limit is None else max(0, limit - row['held'] - row['used']),
+                # Admission facts: which policy applies and what it leaves.
+                'admission': admission,
+                'daily_limit': limit,
+                'grant_reference': next(iter(distinct)) if len(distinct) == 1 else None,
+                'policy_reference_names': sorted(distinct),
+                'available': available,
             }
         scene_subtotals = None
         if scene_id is not None:
@@ -313,13 +344,38 @@ class RuntimeQueryService:
             WHERE v.skill_id=? AND (s.scene_id=? OR v.scope='global-safe') ORDER BY v.version DESC""",[skill_id,scene_id])
         return self._public(result)
 
-    def job_budget(self):
+    def job_budget(self, job=None):
+        """The run's published limits, plus what this work was actually granted.
+
+        The published values describe a work created now; they are not what an
+        older work was admitted under.  The work's own frozen snapshot is
+        reported beside them, and a work with no recorded ceiling is shown as
+        "未记录" rather than as "不设上限" — the two are different facts and
+        only one of them is a grant.
+        """
         config = self.runtime.config
-        return {"max_model_steps": config.job_max_steps, "max_tool_calls": config.job_max_tool_calls,
+        published = {"max_model_steps": config.job_max_steps, "max_tool_calls": config.job_max_tool_calls,
                 "max_seconds": config.job_max_seconds, "context_tokens": config.job_context_tokens,
                 "output_tokens": config.work_output_tokens,
                 "effective_input_tokens": config.job_context_tokens - config.work_output_tokens,
                 "compression_trigger": config.job_compress_trigger, "compression_target": config.job_compress_target}
+        snapshot = (job or {}).get('budget') if job else None
+        if snapshot is None:
+            published['work_snapshot'] = None
+            published['work_snapshot_note'] = (
+                '该工作没有记录创建时的执行快照，其原上限无法还原；以上为当前发布值，不构成该工作的既有额度')
+            return published
+        has_ceiling = 'token_limit' in snapshot
+        published['work_snapshot'] = {
+            'token_limit': snapshot.get('token_limit'),
+            'token_limit_state': 'recorded' if has_ceiling else 'unrecorded',
+            'max_model_steps': snapshot.get('job_max_steps'),
+            'max_tool_calls': snapshot.get('job_max_tool_calls'),
+            'max_seconds': snapshot.get('job_max_seconds'),
+            'context_tokens': snapshot.get('job_context_tokens'),
+            'output_tokens': snapshot.get('work_output_tokens'),
+            'deadline_at': snapshot.get('deadline_at')}
+        return published
 
     async def jobs(self, scene_id=None, *, status=None, execution_status=None, query="", page=1, page_size=30):
         source = """FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE (? IS NULL OR j.scene_id=?)
@@ -337,7 +393,7 @@ class RuntimeQueryService:
             if job['can_resume']:
                 job['resume_issue']=self.runtime.job_resume_issue(job)
                 job['can_resume']=job['resume_issue'] is None
-            items.append({**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget()})
+            items.append({**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job)})
         result["items"]=items
         return result
 
@@ -347,7 +403,7 @@ class RuntimeQueryService:
         if job and job['can_resume']:
             job['resume_issue']=self.runtime.job_resume_issue(job)
             job['can_resume']=job['resume_issue'] is None
-        return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget()} if job else None
+        return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job)} if job else None
 
     @staticmethod
     def public_asset(asset):
@@ -1061,6 +1117,17 @@ class RuntimeQueryService:
         return self.runtime.metrics.snapshot()
 
     def plugins(self) -> list[dict]:
+        """Every declared plugin with a credential-free configuration.
+
+        The credential scan follows the declared schema at every depth, not
+        just the first level: a service token nested inside a backend object is
+        the same secret as a top-level ``sessdata``, and a list or save
+        response that carried it would be an authenticated-interface
+        disclosure.  The response says only whether each credential is set;
+        the value itself never leaves the root file.
+        """
+        from len_bot.plugins.credentials import public_config, schema_secret_fields, secret_values
+
         result = []
         root = self.runtime.config_store.current
         for active in self.runtime.plugin_host.status_snapshot():
@@ -1070,30 +1137,36 @@ class RuntimeQueryService:
             item['active_enabled'] = bool(item['enabled'] and item['state'] == 'enabled')
             item['enabled'] = bool(saved and saved.enabled)
             item['configured'] = bool(saved and saved.config is not None)
-            item['open_scenes'] = [{'scene_id': scene_id, 'enabled': scene.enabled and scene.plugins[plugin_id].enabled,
-                                  'config': scene.plugins[plugin_id].config}
+            scene_schema = item.get("scene_config_schema") or {}
+            item['open_scenes'] = [
+                {'scene_id': scene_id,
+                 'enabled': scene.enabled and scene.plugins[plugin_id].enabled,
+                 # A per-scene plugin config is read through the same
+                 # credential path as the global one: a scene-scoped model may
+                 # gain a token field later, and it must not start leaking just
+                 # because it was added to the scene schema instead.
+                 'config': public_config(scene.plugins[plugin_id].config, scene_schema)[0]}
                 for scene_id, scene in root.scenes.items() if plugin_id in scene.plugins]
             result.append(item)
-        credential_names={"sessdata","bili_jct","api_key","access_token","refresh_token","token","password","secret","cookie","authorization"}
         for item in result:
-            config = item["config"]
-            properties=item["config_schema"].get("properties",{})
-            secrets={name for name,field in properties.items() if name.lower() in credential_names
-                     or field.get("writeOnly") or field.get("format")=="password"}
-            secrets.update(name for name in (config or {}) if name.lower() in credential_names)
-            item["secret_fields"]=sorted(secrets)
-            item["config_set"]={name:bool(config and config.get(name)) for name in secrets}
-            hidden_values=[]
-            if secrets:
-                for key in ("default","example","examples"):item["config_schema"].pop(key,None)
-            for name in secrets:
-                value = config.pop(name, None) if config is not None else None
-                if isinstance(value,str) and value:hidden_values.append(value)
-                if name in properties:
-                    properties[name]["writeOnly"]=True
-                    for key in ("default","example","examples"):properties[name].pop(key,None)
+            schema = item.get("config_schema") or {}
+            raw = item.get("config")
+            config, config_set, secret_paths = public_config(raw, schema)
+            item["config"] = config
+            item["config_set"] = config_set
+            item["secret_paths"] = secret_paths
+            # Top-level names keep the existing field-level rendering; a nested
+            # path is reported only as "set", since a compound field is edited
+            # as one JSON value.
+            item["secret_fields"] = sorted({path for path in config_set if "." not in path})
+            hidden_values = secret_values(raw, schema)
+            for field in schema_secret_fields(schema, set(secret_paths)):
+                field["writeOnly"] = True
+                for key in ("default", "example", "examples"):
+                    field.pop(key, None)
             if item.get("last_error"):
-                for value in hidden_values:item["last_error"]=item["last_error"].replace(value,"[已隐藏凭据]")
+                for value in hidden_values:
+                    item["last_error"] = item["last_error"].replace(value, "[已隐藏凭据]")
             source = item["source_status"]
             if source.get("last_error"):
                 for value in hidden_values:
