@@ -1,6 +1,7 @@
 """The only social cognition entry: raw conversation, native tools, one terminal."""
 from __future__ import annotations
 
+import asyncio
 import json
 import copy
 import time
@@ -35,7 +36,13 @@ class SocialCognitionCore:
         if resume:
             config=config.model_copy(update={'conversation_max_steps':resume.model_calls_limit,
                 'conversation_max_tool_calls':resume.tool_calls_limit,'conversation_context_tokens':resume.context_tokens,
-                'conversation_output_tokens':resume.output_tokens})
+                'conversation_output_tokens':resume.output_tokens,
+                # The window a waiting turn is measured against is the one it
+                # was granted, not whichever value the root configuration
+                # happens to carry by the time the reply arrives.  A turn that
+                # waited does not get a re-derived window out of a policy edit.
+                **({'conversation_window_seconds':resume.elapsed_seconds_limit}
+                   if resume.elapsed_seconds_limit is not None else {})})
         role=plugin_request.model_role if plugin_request else 'conversation'
         binding=(runtime.provider_registry.resolve_profile(resume.model_profile,role) if resume
                  else runtime.provider_registry.resolve(role))
@@ -321,7 +328,7 @@ class SocialCognitionCore:
 
         execution.finish, execution.after_finish = finish, after_finish
         try:
-            return await AgentLoop(ModelGateway(binding,max_output_tokens=config.conversation_output_tokens,
+            run = AgentLoop(ModelGateway(binding,max_output_tokens=config.conversation_output_tokens,
                 call_store=runtime.event_store, scene_id=session.scene_id,
                 episode_id=plugin_call.origin.run_id if plugin_call else episode_id,
                 purpose='plugin_agent' if plugin_call else 'conversation')).run(
@@ -331,6 +338,11 @@ class SocialCognitionCore:
                 observe=incorporate,finalize_request=finalize_request,record_tool_result=record_tool_result,prepare_tool_results=prepare_tool_results,
                 checkpoint=checkpoint,trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools,
                 hooks=hooks,budget=execution.budget,external_outcome=lambda:execution.suspended_outcome)
+            remaining = execution.budget.deadline_seconds()
+            if remaining is None:
+                return await run
+            async with asyncio.timeout(remaining):
+                return await run
         except Exception:
             audit['staged_proposals']=[item.model_dump(mode='json') for item in [*ledger.jobs,*ledger.tasks,*ledger.memories]]
             raise
