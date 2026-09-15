@@ -138,7 +138,7 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 ### 更新当前实例
 
-更新前记录实际代码版本、数据库结构、根配置及未结束调用/工作，按上文停机和普通备份后再更新同批代码、文档与前端产物。本分支已新增 usage_reservations 与 execution_runs/execution_events；若使用独立 Gateway，它另有自己的日志库和 execution_artifacts。不能继续套用旧阶段“没有新增表、不需要迁移”的结论。
+更新前记录实际代码版本、数据库结构、根配置及未结束调用/工作，按上文停机和普通备份后再更新同批代码、文档与前端产物。当前库包含 usage_reservations、execution_runs/execution_events 与预占账；若使用独立 Gateway，它另有自己的日志库和 execution_artifacts，都要一并备份。旧阶段“没有新增表、不需要迁移”的结论不再适用。
 
 旧配置中的插件列表、群顶层业务字段与当前描述符结构不兼容时，先按其实际版本核对并离线转换。这需要辨认旧结构时，用 Git 提交 `141ec2e` 的 `docs/archive/operations-before-doc-cleanup.md` 对照，不是所有版本通用的升级命令。不得从样例补生产模型、人格、Shadow 或群名单；新增本地插件用法见 [业务时钟](../local_plugins/local_clock/README.md)。
 

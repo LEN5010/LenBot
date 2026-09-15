@@ -36,7 +36,7 @@ ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig�
 
 插件配置保存按 Schema 路径处理凭据：面板投影删除任意深度的凭据字段，只回可显示值与“该路径是否已配置”；保存时“省略／空串”保持原值、“非空值”替换、显式 `null` 清除，显示占位值永不作为真实密钥回写。凭据只存在于根文件，不进 localStorage、URL 或长期草稿，不写入日志，也不进入模型上下文。根文件本身不挂载进执行容器，网关闭包字段（同一份 token）同样不交给执行容器。
 
-SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 `request_source_event_id` 缺失保留未知，旧 `observation_reads` 缺省为空，不补造真实阅读或人类身份。本分支已新增 usage_reservations、execution_runs/execution_events，不能再笼统描述为“没有新增表”。
+SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 `request_source_event_id` 缺失保留未知，旧 `observation_reads` 缺省为空，不补造真实阅读或人类身份。
 
 ### 发起者与能力检查
 

@@ -37,8 +37,25 @@ export function configFields(schema, definitions) {
     const nested = field.type === 'object' && !!field.properties
     const list = field.type === 'array' && SIMPLE.includes(field.items?.type)
     const json = !nested && !list && (['object', 'array'].includes(field.type) || (!field.type && !field.enum && field.const === undefined))
-    return {key, schema: field, definitions: defs, nullable, nested, list, json, required: (schema.required || []).includes(key)}
+    return {key, schema: field, definitions: defs, nullable, nested, list, json, required: (schema.required || []).includes(key),
+      choices: listChoices(schema, key)}
   })
+}
+
+// A closed list of values a schema can name in full (the link parser's
+// platforms) is offered as checkboxes: the operator should not have to recall
+// that the only accepted spelling today is `bilibili`.  The declaration lives
+// beside the field, and an undeclared list stays free-form rows rather than
+// being guessed at.
+export function listChoices(schema, key) {
+  return (schema && schema['x-lenbot-list-choices'] && schema['x-lenbot-list-choices'][key]) || null
+}
+
+// Enum values are stored as the schema's own strings; only what is shown is a
+// name.  Labels come from the model that declares the values, so there is no
+// second vocabulary to keep in step.
+export function enumLabels(schema, key) {
+  return (schema && schema['x-lenbot-enum-labels'] && schema['x-lenbot-enum-labels'][key]) || null
 }
 
 export function fieldPath(prefix, key) {

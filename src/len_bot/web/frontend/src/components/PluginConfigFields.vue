@@ -1,6 +1,6 @@
 <script setup>
 import {computed,nextTick,ref} from 'vue'
-import {blankConfigDraft, configFields, exclusiveGroups, groupFor, selectedBranch, chooseBranch} from '../lib/pluginConfig.js'
+import {blankConfigDraft, configFields, enumLabels, exclusiveGroups, groupFor, listChoices, selectedBranch, chooseBranch} from '../lib/pluginConfig.js'
 
 const props=defineProps({modelValue:{type:Object,required:true},schema:{type:Object,required:true},
   secrets:{type:Array,default:()=>[]},configSet:{type:Object,default:()=>({})},
@@ -73,6 +73,18 @@ const moveRow=(key,value,index,delta)=>{
   update(key,next)
 }
 const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
+// Enum values stay the schema's own strings; the display name comes from the
+// model that declares them.  An unlabelled value falls back to itself, so a
+// new member is readable rather than missing from the list.
+const enumItems=(field,{nullable=false}={})=>[...field.schema.enum.map(value=>({
+  title:(enumLabels(props.schema,field.key)||{})[value]||value, value})),
+  ...(nullable?[{title:'未设置',value:null}]:[])]
+const choicesFor=field=>listChoices(props.schema,field.key)
+const choiceTitle=(field,choice)=>(enumLabels(props.schema,field.key)||{})[choice]||choice
+const toggleChoice=(field,value,choice)=>{
+  const current=rows(field.key,value)
+  update(field.key,current.includes(choice)?current.filter(item=>item!==choice):[...current,choice])
+}
 </script>
 
 <template>
@@ -83,7 +95,7 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
         <p class="exclusive-hint muted">{{ group.hint }}</p>
         <v-btn-toggle :model-value="branch(group)" mandatory divided color="primary" variant="outlined"
           @update:model-value="value=>value&&pick(group,value)">
-          <v-btn v-for="key in group.fields" :key="key" :value="key">{{ key }}</v-btn>
+          <v-btn v-for="key in group.fields" :key="key" :value="key">{{ (fields.find(item=>item.key===key)?.schema.title) || key }}</v-btn>
         </v-btn-toggle>
         <p v-if="!branch(group)" class="muted mt-2">尚未选择；未选中的分支不会写入配置。</p>
       </div>
@@ -95,7 +107,7 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
         :hint="field.schema.description" :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       <v-text-field v-else-if="field.schema.const!==undefined" :model-value="field.schema.const" :label="label(field)" readonly />
       <v-select v-else-if="field.schema.enum" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
-        :items="field.nullable?[...field.schema.enum,null]:field.schema.enum" :label="label(field)" :hint="field.schema.description"
+        :items="enumItems(field,{nullable:field.nullable})" :label="label(field)" :hint="field.schema.description"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       <v-select v-else-if="field.schema.type==='boolean'" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :items="[{title:'是',value:true},{title:'否',value:false},...(field.nullable?[{title:'未指定',value:null}]:[])]" :label="label(field)" :hint="field.schema.description"
@@ -114,6 +126,12 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
       <section v-else-if="field.list" class="list-field">
         <p class="nested-title">{{ label(field) }}</p>
         <p v-if="field.schema.description" class="muted mb-2">{{ field.schema.description }}</p>
+        <div v-if="choicesFor(field)" class="list-choices">
+          <v-checkbox v-for="choice in choicesFor(field)" :key="choice" :model-value="rows(field.key,modelValue[field.key]).includes(choice)"
+            :label="choiceTitle(field,choice)" hide-details density="compact" @update:model-value="()=>toggleChoice(field,modelValue[field.key],choice)" />
+          <p class="muted">当前可选项来自插件声明；取消全部勾选即提交空列表。</p>
+        </div>
+        <template v-else>
         <div v-for="(row,index) in rows(field.key,modelValue[field.key])" :key="index" class="list-row">
           <v-select v-if="field.schema.items?.enum" :model-value="row" :items="field.schema.items.enum" :label="`第 ${index+1} 项`" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value)" />
           <v-text-field v-else-if="['number','integer'].includes(field.schema.items?.type)" :model-value="row" :label="`第 ${index+1} 项`" type="number" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value===''?null:Number(value))" />
@@ -122,6 +140,7 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
         </div>
         <p v-if="!rows(field.key,modelValue[field.key]).length" class="muted mb-2">当前为空列表。</p>
         <v-btn size="small" variant="tonal" @click="addRow(field.key,modelValue[field.key],field)">添加一项</v-btn>
+        </template>
         <p class="muted mt-2">保存的是这里的实际行数；删掉全部行即提交空列表，与“未填写”不是同一件事。</p>
       </section>
       <v-textarea v-else-if="field.json" :ref="setAnchor(field.key)" class="compound-field" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
@@ -142,6 +161,8 @@ const label=field=>`${field.schema.title||field.key}${field.required?' *':''}`
 .nested-field,.list-field{grid-column:1/-1;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
 .nested-title{margin:0 0 6px;font-weight:600}
 .list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;margin-bottom:10px}
+.list-choices{display:flex;flex-wrap:wrap;gap:4px 18px;margin-bottom:6px}
+.list-choices .muted{flex-basis:100%;margin:0 0 4px;font-size:13px}
 .list-actions{display:flex;gap:4px;flex-wrap:wrap}
 .actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 @media(max-width:650px){.config-fields{grid-template-columns:minmax(0,1fr)}.list-row{grid-template-columns:minmax(0,1fr)}}
