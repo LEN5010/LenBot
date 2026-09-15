@@ -28,6 +28,21 @@ const budgetText = (value, unit) => value===undefined ? '未提供'
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
+const capabilities = ref([]), plugins = ref([]), scopeOptions = ref([])
+// An operator picks a name; the panel never asks for a capability enum, an
+// absolute Unix time or a version number.  Those stay server-side facts.
+const capabilityItems = computed(()=>capabilities.value.map(item=>({...item,
+  title:item.implemented?item.title:`${item.title}`,subtitle:item.value})))
+const grantCapabilities = grant => (grant.capabilityText||'').split(/[,，\s]+/).filter(Boolean)
+const setGrantCapabilities = (grant,values) => { grant.capabilityText=values.join(', ') }
+const toLocalInput = seconds => {
+  if (!seconds) return ''
+  const date = new Date(seconds*1000)
+  const pad = value => String(value).padStart(2,'0')
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+const fromLocalInput = value => value ? Math.floor(new Date(value).getTime()/1000) : null
+const grantExpiryError = computed(()=>grants.value.some(grant=>grant.expiresInput&&Number.isNaN(new Date(grant.expiresInput).getTime())) ? '有效期不是有效时间' : '')
 const timeDraft = ref(null), timeOriginal = ref(''), timeConfigured = ref(false), timeLoaded = ref(false), timeRestart = ref(false)
 const quotaText = ref(null), quotaOriginal = ref('')
 const quotaDirty = computed(()=>quotaText.value!==null&&quotaText.value!==quotaOriginal.value)
@@ -69,10 +84,13 @@ async function load() {
       const settings = await api('/api/settings/attention'); if (request!==requestId) return
       if (!attentionDirty.value) { const {attention_keywords,...rest}=settings; attention.value={...rest,keywords:attention_keywords.join('\n')}; attentionOriginal.value=JSON.stringify(attention.value) }
     } else if (currentTab==='access') {
-      const settings = await api('/api/settings/access'); if (request!==requestId) return
+      const [settings, vocabulary] = await Promise.all([api('/api/settings/access'),api('/api/settings/capabilities')])
+      if (request!==requestId) return
+      capabilities.value = vocabulary.items
       if (!accessDirty.value) {
         accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
-        grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', ')}))
+        grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', '),
+          expiresInput:toLocalInput(grant.expires_at)}))
         grantsOriginal.value=JSON.stringify(grants.value)
       }
     } else if (currentTab==='resources') {
@@ -146,19 +164,24 @@ async function saveAccess() {
       principal_type:grant.principal_type,principal_id:grant.principal_id,
       scene_id:grant.principal_type==='system'?null:(grant.scene_id||null),
       system_scope:grant.principal_type==='system'?(grant.system_scope||null):null,
-      capabilities:grant.capabilityText.split(/[,，\s]+/).filter(Boolean),
-      expires_at:grant.expires_at||null,resource_policy:grant.resource_policy||null,
+      capabilities:grantCapabilities(grant),
+      expires_at:fromLocalInput(grant.expiresInput),resource_policy:grant.resource_policy||null,
       concurrency:grant.concurrency||null,enabled:!!grant.enabled}))})})
     const settings=result.settings
     accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
-    grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', ')}))
+    grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', '),
+      expiresInput:toLocalInput(grant.expires_at)}))
     grantsOriginal.value=JSON.stringify(grants.value); message.value=result.message
   } catch(e) { error.value=e.message } finally { busy.value='' }
 }
 function addGrant() {
   grants.value.push({grant_id:'',revision:1,operator_id:'',principal_type:'human',principal_id:'',
-    scene_id:'',system_scope:'',capabilityText:'',expires_at:null,resource_policy:'',concurrency:null,enabled:false})
+    scene_id:'',system_scope:'',capabilityText:'',expiresInput:'',resource_policy:'',concurrency:null,enabled:false})
 }
+// Saving only decides permission for future operations; it never rewrites
+// another grant and cannot withdraw a message that was already sent.
+const grantImpact = computed(()=>grants.value.filter(grant=>grant.enabled&&grantCapabilities(grant).length)
+  .map(grant=>`${grant.principal_type==='system'?grant.system_scope:grant.scene_id||'未指定范围'} · ${grant.principal_id} · ${grantCapabilities(grant).join('、')}`))
 async function saveQuota() {
   if (busy.value) return
   busy.value='resources'; error.value=''; message.value=''
@@ -381,30 +404,35 @@ watch(tab,load,{immediate:true})
         <v-divider class="my-5" />
         <div class="section-header"><div><h2>能力授予</h2><p class="muted mt-2">只影响本计划新增的自主能力；普通聊天不需要这里的任何一条。未配置、已停用或已过期的授予一律不放行，撤销只阻止后续操作，已发出的字节无法撤回。</p></div><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addGrant">添加授予</v-btn></div>
         <p v-if="!grants.length" class="muted py-4">当前没有任何能力授予；新增自主能力保持关闭。</p>
-        <article v-for="(grant,index) in grants" :key="index" class="mb-5">
+        <section v-for="(grant,index) in grants" :key="index" class="grant-card">
+          <h3>{{ index+1 }}. 谁 · 什么范围 · 允许什么</h3>
           <div class="form-grid">
-            <v-text-field v-model="grant.grant_id" label="授予 ID" required />
-            <v-text-field v-model.number="grant.revision" type="number" min="1" label="版本号" required />
-            <v-text-field v-model="grant.operator_id" label="签发运营者" hint="保存时由服务端写入当前登录账号；新建时留空。" persistent-hint readonly />
-            <v-select v-model="grant.principal_type" label="主体类型" :items="[{title:'人类',value:'human'},{title:'系统',value:'system'},{title:'插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
-            <v-text-field v-model="grant.principal_id" label="主体标识" hint="人类填 QQ 账号，系统填 runtime/scheduler/operator:账号，插件填插件 ID；不是显示名。" persistent-hint required />
-            <v-text-field v-if="grant.principal_type!=='system'" v-model="grant.scene_id" label="生效场景" placeholder="group:123" required />
-            <v-text-field v-else v-model="grant.system_scope" label="系统范围" hint="明确的系统用途，例如 heartbeat。" required />
-            <v-text-field v-model="grant.capabilityText" label="能力" hint="用逗号分隔：long_work、public_research、network_python、proactive_chat、interest_share、send_file、bilibili_authenticated_read、bilibili_like、bilibili_favorite。" persistent-hint required />
-            <v-text-field v-model.number="grant.expires_at" type="number" label="有效期（绝对 Unix 时间）" hint="留空表示长期有效。" />
-            <v-text-field v-model="grant.resource_policy" label="资源策略引用" hint="引用下方“额度策略”里的名称，不在这里填写额度数值；留空使用默认策略。" />
-            <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限" />
-            <v-switch v-model="grant.enabled" label="启用" color="primary" /></div>
+            <v-select v-model="grant.principal_type" label="谁" :items="[{title:'一个群友（人类）',value:'human'},{title:'系统用途',value:'system'},{title:'一个插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
+            <v-text-field v-model="grant.principal_id" label="主体标识" :hint="grant.principal_type==='human'?'填 QQ 账号；不是昵称或群名片。':grant.principal_type==='plugin'?'填插件 ID。':'填明确的系统用途标识，例如 heartbeat。'" persistent-hint required />
+            <v-text-field v-if="grant.principal_type!=='system'" v-model="grant.scene_id" label="在哪个场景生效" placeholder="group:123" required />
+            <v-text-field v-else v-model="grant.system_scope" label="系统用途" hint="明确的系统范围，例如 heartbeat。" persistent-hint required />
+            <v-select v-model="grant.capabilityText" multiple chips :items="capabilityItems" label="允许什么" class="wide" required />
+            <v-text-field v-model="grant.expiresInput" type="datetime-local" label="有效期（业务时区）" hint="留空表示长期有效；保存时换算为绝对时间。" persistent-hint />
+            <v-text-field v-model="grant.resource_policy" label="使用哪项额度策略" hint="引用“额度策略”里的名称；留空使用默认策略。引用失效的名称会被拒绝。" persistent-hint />
+            <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
+            <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>
+          <p class="muted mt-2">授予 ID 与版本由服务端负责：保存时按内容自动递增，签发者取当前登录账号。{{ grant.grant_id?`当前 ID ${grant.grant_id} · 第 ${grant.revision} 版；修改内容后版本自动加一。`:'新建的授予由服务端生成 ID。' }}</p>
           <v-btn variant="text" color="error" :disabled="!!busy" @click="grants.splice(index,1)">删除这条授予</v-btn>
-        </article>
-        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!accessDirty">保存白名单与能力授予</v-btn>
+        </section>
+        <v-alert v-if="grantExpiryError" type="error" variant="tonal" class="my-3">{{ grantExpiryError }}</v-alert>
+        <div v-if="grantImpact.length" class="impact-summary">
+          <p><strong>保存后的影响</strong>：这些主体在各自范围内将获准下列能力，下一次执行按新授予判断。</p>
+          <p v-for="line in grantImpact" :key="line" class="muted">{{ line }}</p>
+          <p class="muted">撤销或停用只阻止后续操作；已经发出的消息无法撤回，也不会改动其他未编辑的授予。</p>
+        </div>
+        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!accessDirty||!!grantExpiryError">保存白名单与能力授予</v-btn>
       </v-form>
     </v-card>
     <v-card v-if="tab==='resources'&&quotaText!==null" class="pa-5 form-card">
       <h2>额度策略</h2>
-      <p class="muted my-3">这里定义命名的额度策略；能力授予的“资源策略引用”填写这里的名称，不在授予里复制额度数值。未配置策略时各维度不设 token 上限，由期限和消息上限结束。null 表示该维度不设上限。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。</p>
+      <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；null 表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
       <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
-        <v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}' persistent-hint />
+        <v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}' persistent-hint />
         <v-btn type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
         <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>
@@ -498,5 +526,5 @@ watch(tab,load,{immediate:true})
 <style scoped>
 .budget-table-wrap{overflow-x:auto}.budget-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}.budget-table caption{text-align:left;font-weight:600;padding:8px 0 12px}.budget-table th,.budget-table td{padding:12px;border-bottom:1px solid var(--line);white-space:nowrap}.budget-table thead{background:rgb(var(--v-theme-surface-variant))}.budget-table tbody th{font-weight:500}.preset-field{margin-bottom:12px}.runtime-json :deep(textarea){font-family:monospace;font-size:13px;line-height:1.6}
 
-.form-card{max-width:1000px;width:100%}.section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.section-header h2,.form-card>h2{font-size:20px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.wide{grid-column:1/-1}.form-grid>.v-btn{justify-self:start}.actions,.meta,.delivery-state,.saved-scenes{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}.meta{font-size:13px;color:#64748b}.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}.example-row:last-child{border:0;padding-bottom:0}.example-main{min-width:0;flex:1}.example-row>.actions{max-width:220px;justify-content:flex-end}.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}.example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}.example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}.example-body img{max-width:180px;max-height:180px;object-fit:contain}.part-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}.part-toolbar>.v-input{flex:1;min-width:140px;max-width:180px}.part-image{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.part-image img{max-width:100%;height:170px;object-fit:contain}.media-filter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.media-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.media-picker img{width:100%;height:150px;object-fit:contain;background:#f4f6f9}.media-picker p{overflow-wrap:anywhere;min-height:3em}.danger-zone{max-width:1000px;margin-top:12px}.settings-view p{line-height:1.7}@media(max-width:650px){.form-grid{grid-template-columns:minmax(0,1fr)}.example-row{flex-direction:column}.example-row>.actions{max-width:none;justify-content:flex-start}.section-header{align-items:flex-start}.media-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.part-toolbar>.actions{width:100%}.example-body img{max-width:140px;max-height:140px}}
+.form-card{max-width:1000px;width:100%}.grant-card{border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:18px}.grant-card h3{font-size:14px;font-weight:650;margin-bottom:12px}.impact-summary{border-left:3px solid rgb(var(--v-theme-primary));padding:12px 14px;margin:16px 0;background:rgb(var(--v-theme-surface-variant));max-width:1000px}.impact-summary p{margin:4px 0;font-size:13px;line-height:1.7}.section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.section-header h2,.form-card>h2{font-size:20px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.wide{grid-column:1/-1}.form-grid>.v-btn{justify-self:start}.actions,.meta,.delivery-state,.saved-scenes{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}.meta{font-size:13px;color:#64748b}.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}.example-row:last-child{border:0;padding-bottom:0}.example-main{min-width:0;flex:1}.example-row>.actions{max-width:220px;justify-content:flex-end}.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}.example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}.example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}.example-body img{max-width:180px;max-height:180px;object-fit:contain}.part-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}.part-toolbar>.v-input{flex:1;min-width:140px;max-width:180px}.part-image{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.part-image img{max-width:100%;height:170px;object-fit:contain}.media-filter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.media-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.media-picker img{width:100%;height:150px;object-fit:contain;background:#f4f6f9}.media-picker p{overflow-wrap:anywhere;min-height:3em}.danger-zone{max-width:1000px;margin-top:12px}.settings-view p{line-height:1.7}@media(max-width:650px){.form-grid{grid-template-columns:minmax(0,1fr)}.example-row{flex-direction:column}.example-row>.actions{max-width:none;justify-content:flex-start}.section-header{align-items:flex-start}.media-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.part-toolbar>.actions{width:100%}.example-body img{max-width:140px;max-height:140px}}
 </style>

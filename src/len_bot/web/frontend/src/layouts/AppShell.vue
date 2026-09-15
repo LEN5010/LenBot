@@ -10,11 +10,15 @@ import markUrl from '../assets/lenbot-mark.svg'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const groups=[
-  {label:'运行',items:[['overview','运行概览',mdiViewDashboardOutline],['scenes','场景消息',mdiForumOutline],['jobs','信息工作',mdiBriefcaseSearchOutline],['tasks','提醒与等待',mdiCalendarClockOutline]]},
+  {label:'概览',items:[['overview','运行概览',mdiViewDashboardOutline]]},
+  {label:'日常',items:[['scenes','群聊与播报',mdiForumOutline],['jobs','工作与文件',mdiBriefcaseSearchOutline],['tasks','提醒与等待',mdiCalendarClockOutline],['plugins','插件',mdiPuzzleOutline],['models','模型与额度',mdiChip]]},
   {label:'资料',items:[['memories','认识与记忆',mdiBookOpenPageVariantOutline],['skills','程序性技能',mdiLightbulbOutline],['media','图片与表情',mdiImageOutline]]},
-  {label:'配置',items:[['models','模型',mdiChip],['plugins','插件与能力',mdiPuzzleOutline],['settings','系统设置',mdiCogOutline]]},
+  {label:'系统',items:[['settings','系统设置',mdiCogOutline]]},
   {label:'排查',items:[['activity','运行记录',mdiChartTimelineVariant]]},
 ]
+// Each entry keeps its existing route and deep links; only the group labels
+// follow the daily tasks. Diagnostics live under 排查 and in each page's own
+// diagnostic tabs, so nothing was removed to make the menu shorter.
 const active=computed(()=>route.name==='scene'?'scenes':route.name==='job'?'jobs':route.name)
 const statusText=computed(()=>app.error?'状态读取失败':!app.status?'读取状态中':app.status.running?'运行时已启动':'运行时已停止')
 watch(mobile,value=>drawer.value=!value)
