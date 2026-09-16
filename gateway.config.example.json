@@ -1,0 +1,33 @@
+{
+  "host": "127.0.0.1",
+  "port": 8790,
+  "token": "replace-with-16+-char-token",
+  "database_path": "/var/lib/lenbot-gateway/gateway.db",
+  "workspaces_root": "/var/lib/lenbot-gateway/workspaces",
+  "runtime_path": "/usr/bin/docker",
+  "egress_bind_host": "172.31.9.1",
+  "images": {
+    "python": {
+      "worker_type": "python",
+      "image": "lenbot-workspace:local",
+      "container_user": "65532:65532"
+    }
+  },
+  "network_policies": {
+    "offline": {
+      "mode": "none"
+    },
+    "public": {
+      "mode": "proxy",
+      "network": "lenbot-egress",
+      "proxy_address": "172.31.9.1",
+      "proxy_port": 8799,
+      "deployment_verified": false,
+      "hosts": {
+        "business": ["www.bilibili.com", "api.bilibili.com"],
+        "resource": ["*.hdslb.com", "*.biliapi.net"]
+      },
+      "deny_hosts": []
+    }
+  }
+}

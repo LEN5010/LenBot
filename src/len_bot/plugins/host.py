@@ -473,12 +473,15 @@ class PluginHost:
         """Public membership lookup for lifecycle and configuration callers."""
         return plugin_id in self._plugins
 
-    async def read_workspace_artifact(self, scene_id: str, job_id: str, path: str, offset: int, limit: int):
+    async def read_workspace_artifact(self, scene_id: str, job_id: str, path: str, offset: int, limit: int,
+                                      execution_id: str | None = None):
         plugin = self._plugins.get('workspace')
         if plugin is not None and hasattr(plugin, 'artifact_for_job'):
-            return await plugin.artifact_for_job(scene_id, job_id, path, offset, limit)
+            return await plugin.artifact_for_job(scene_id, job_id, path, offset, limit,
+                                                 execution_id=execution_id)
         async with self._workspace_service_for_panel() as service:
-            return await service.read_for_job(scene_id, job_id, path, offset, limit) if service else None
+            return await service.read_for_job(scene_id, job_id, path, offset, limit,
+                                              execution_id=execution_id) if service else None
 
     async def list_workspace_artifacts(self, scene_id: str, job_id: str):
         plugin = self._plugins.get('workspace')
@@ -487,12 +490,15 @@ class PluginHost:
         async with self._workspace_service_for_panel() as service:
             return await service.list_for_job(scene_id, job_id) if service else None
 
-    async def read_workspace_artifact_bytes(self, scene_id: str, job_id: str, path: str):
+    async def read_workspace_artifact_bytes(self, scene_id: str, job_id: str, path: str,
+                                           execution_id: str | None = None):
         plugin = self._plugins.get('workspace')
         if plugin is not None and hasattr(plugin, 'artifact_bytes_for_job'):
-            return await plugin.artifact_bytes_for_job(scene_id, job_id, path)
+            return await plugin.artifact_bytes_for_job(scene_id, job_id, path,
+                                                       execution_id=execution_id)
         async with self._workspace_service_for_panel() as service:
-            return await service.read_bytes_for_job(scene_id, job_id, path) if service else None
+            return await service.read_bytes_for_job(scene_id, job_id, path,
+                                                    execution_id=execution_id) if service else None
 
     async def close_job_resources(self, job: dict):
         for plugin in tuple(self._plugins.values()):
@@ -514,6 +520,11 @@ class PluginHost:
         read-only entries of this service are used.  A gateway client opened
         here owns its connection, so it is closed when the read ends instead of
         leaking one per panel request.
+
+        This reader is built without the deployment's media reader on purpose:
+        a panel read never imports an attachment, and a service that cannot
+        read media refuses such an import instead of exporting less than the
+        caller asked for.
         """
         setting = self.runtime.config_store.current.plugins.get('workspace')
         if not setting or setting.config is None or setting.parsed_config is None:

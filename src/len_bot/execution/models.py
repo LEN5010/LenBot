@@ -1,13 +1,28 @@
 """Public, task-scoped execution request and artifact models."""
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Observations and attachments share one admission count: the container's
+# read-only input area is sized for this many files plus its manifest.
+MAX_INPUT_ITEMS = 8
 
 
 class RunPythonInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     script: str = Field(min_length=1, max_length=100_000)
-    input_result_ids: list[str] = Field(default_factory=list, max_length=8)
+    input_result_ids: list[str] = Field(default_factory=list, max_length=MAX_INPUT_ITEMS,
+        title='文本资料', description='已保存资料（观察）的 result_id；正文作为文本输入导出')
+    input_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_INPUT_ITEMS,
+        title='图片附件', description='本工作来源中已登记媒体资产的 asset_id；真实字节作为文件输入导出，'
+                    '面板或发送动作不会因此发生')
+
+    @model_validator(mode='after')
+    def one_input_budget(self):
+        total = len(set(self.input_result_ids)) + len(set(self.input_asset_ids))
+        if total > MAX_INPUT_ITEMS:
+            raise ValueError(f'一次执行的输入（资料与媒体资产合计）不能超过 {MAX_INPUT_ITEMS} 份')
+        return self
 
 
 class WorkspaceFileInput(BaseModel):

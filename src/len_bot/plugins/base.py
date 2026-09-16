@@ -99,6 +99,15 @@ class PluginContext:
         """Built-in data readers use the store's scene-scoped query methods."""
         return self._runtime.event_store
 
+    @property
+    def media_service(self):
+        """The deployment's scoped media reader, for registered assets only.
+
+        A tool that hands pictures to another component reads them here by
+        asset id; nothing reachable from a tool takes a host path.
+        """
+        return self._runtime.media_service
+
     def has_permission(self, perm: PluginPermission) -> bool:
         return perm in self.manifest.permissions
 

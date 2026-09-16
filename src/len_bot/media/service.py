@@ -228,6 +228,33 @@ class MediaService:
         await self.runtime.commit_tool_observation(event)
         return await self.runtime.event_store.get_media(asset_id, [scene_id], include_disabled=True)
 
+    async def read_image_bytes(self, asset_id: str, scene_id: str):
+        """One referenced picture's real bytes, read only when asked for by id.
+
+        A message that arrived with a picture registers an asset whose bytes are
+        not on disk yet: only the locator is.  Handing those bytes to an
+        execution therefore means fetching and validating them here — through
+        ``get_bytes``, the same scoped read the model's own image input uses —
+        and never letting a caller name a path.
+
+        The bytes are then opened as an image before they leave.  The cache
+        path hands back whatever file it stored, so "the row says image/png" is
+        not the same fact as "Pillow can decode this"; an execution that was
+        told it received a picture must not receive an undecodable blob with
+        that name.
+        """
+        if not self.runtime.config.media_enabled:
+            raise ValueError("媒体能力已停用，不能把图片导入执行")
+        asset, data = await self.get_bytes(asset_id, scene_id)
+        try:
+            mime = await asyncio.to_thread(validate_image, data,
+                max_bytes=self.runtime.config.media_max_image_bytes,
+                max_pixels=self.runtime.config.media_max_image_pixels)
+        except (OSError, Image.DecompressionBombError) as error:
+            raise ValueError("图片内容无法验证") from error
+        asset["mime_type"] = mime
+        return asset, data
+
     async def upload(self, data, scope, description, tags):
         if scope != "global-safe" and not scope.startswith(("group:", "private:")):
             raise ValueError("请选择群聊、私聊或global-safe素材范围")

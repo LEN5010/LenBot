@@ -18,6 +18,7 @@ into the Bot process:
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 import os
 import re
@@ -26,11 +27,14 @@ import stat
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from len_bot.execution.protocol import (
     OCCUPYING_STATES, ExecutionRecord, ExecutionRequest, ExecutionState, TerminationReport,
 )
 from len_bot.services.worker_gateway.config import GatewayConfig, WorkerImage
+from len_bot.services.worker_gateway.egress_control import CONTROL_RELATIVE_PATH, control_document
+from len_bot.services.worker_gateway.egress_proxy import credential_for
 from len_bot.services.worker_gateway.store import GatewayStore
 
 _CONTAINER_PREFIX = 'lenbot-x-'
@@ -44,13 +48,17 @@ class GatewayRefusal(ValueError):
 class ExecutionRunner:
     def __init__(self, config: GatewayConfig, store: GatewayStore,
                  workspaces_root: Path, controls_root: Path, clock=time.time,
-                 runtime_path: str | None = None):
+                 runtime_path: str | None = None, egress_proxies: dict | None = None):
         self.config = config
         self.store = store
         self.workspaces = workspaces_root
         self.controls = controls_root
         self.clock = clock
         self.runtime_path = runtime_path or config.runtime_path
+        # One proxy per proxy policy, started by the service before it serves.
+        # A policy whose proxy is absent is refused at acceptance rather than
+        # run on a network where the only route out is unchecked.
+        self.egress_proxies = dict(egress_proxies or {})
         self._tasks: dict[str, asyncio.Task] = {}
         self._accept_lock = asyncio.Lock()
 
@@ -110,22 +118,46 @@ class ExecutionRunner:
                     '请稍后以同一执行 ID 重试')
             try:
                 self.config.worker_for(request.image_ref, request.worker_type)
-                self.config.policy_for(request.network_policy)
+                policy = self.config.policy_for(request.network_policy)
             except KeyError as error:
                 raise GatewayRefusal(str(error.args[0])) from None
-            if request.input_assets:
+            if policy.mode == 'proxy':
+                # Two independent answers are required before a networked run
+                # starts.  The deployment must have built the policy *and*
+                # started its proxy; the host must have said this execution is
+                # authorized to egress.  Either one missing and the request is
+                # refused rather than run offline under a networked policy or
+                # run networked because a reference happened to exist.
+                if not policy.deployment_verified:
+                    raise GatewayRefusal(
+                        f'网络策略 {request.network_policy} 尚未完成部署核验；'
+                        '未确认 worker 只能到达出口代理前，本次不启动联网执行')
+                if request.network_policy not in self.egress_proxies:
+                    raise GatewayRefusal(
+                        f'网络策略 {request.network_policy} 需要出口代理，但本进程没有为它启动代理；'
+                        '本次不启动')
+                if not request.egress_authorized:
+                    raise GatewayRefusal(
+                        f'本次执行选择了需要出口的网络策略 {request.network_policy}，'
+                        '但宿主没有给出联网授权；本次不启动')
+            if request.input_assets and not request.input_files:
                 # Asset ids are provenance only.  The host is the side that
-                # reads observations and assets; bytes reach this Gateway as
-                # ``input_files``, and a request expecting the Gateway itself
-                # to fetch assets is refused rather than silently run without
-                # its inputs.
+                # reads observations and assets; its exported bytes reach this
+                # Gateway as ``input_files``, and a request that names assets
+                # without exporting anything is refused rather than silently
+                # run with its inputs missing.  When both are present the ids
+                # are recorded and never fetched — this Gateway has no media
+                # client and no route to one.
                 raise GatewayRefusal('本网关不按资产 ID 拉取输入；请由宿主经 input_files 传输字节')
             if request.input_files:
                 # Written before the row exists: a refused input never
                 # occupies an execution identity, and a duplicate submit finds
                 # the same files already on disk.
                 self._write_input_files(request)
-            record, created = await self.store.record_execution(request)
+            try:
+                record, created = await self.store.record_execution(request)
+            except ValueError as error:
+                raise GatewayRefusal(str(error)) from None
             if not created:
                 return record, False
             await self.store.append_execution_event(request.execution_id, 'accepted',
@@ -236,6 +268,7 @@ class ExecutionRunner:
             policy = self.config.policy_for(request.network_policy)
             control = self.control_directory(execution_id)
             self._write_control(control / 'task.py', request.script)
+            egress = self._write_egress_control(control, policy, execution_id, request.network_policy)
             denied = self._apply_worker_access(control, workspace, worker)
             if denied:
                 # The run cannot read its own script, inputs or workspace, and
@@ -245,7 +278,7 @@ class ExecutionRunner:
                 await self._fail(execution_id, 'permissions_insufficient',
                                  '目录权限未生效，无法启动执行：' + '; '.join(denied)[:1800])
                 return
-            command = self._command(container_name, worker, policy.mode, control, workspace)
+            command = self._command(container_name, worker, policy, control, workspace, egress)
             try:
                 process = await asyncio.create_subprocess_exec(
                     *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -265,7 +298,7 @@ class ExecutionRunner:
             await self.store.append_execution_event(
                 execution_id, 'starting', f'容器 {container_name} 已创建，等待运行确认',
                 state=ExecutionState.STARTING)
-            await self._confirm_started(execution_id, container_name, process)
+            await self._confirm_started(execution_id, container_name, process, record.deadline_at)
             # Confirmed or not, the run is watched the same way: an unconfirmed
             # start may only mean the runtime was slow to create the container,
             # and the deadline, an external cancellation and the workspace
@@ -309,6 +342,20 @@ class ExecutionRunner:
             for stream in streams:
                 if not stream.done():
                     stream.cancel()
+            # The run's egress allowance ends with the run.  It is dropped
+            # here — a deterministic point that does not depend on how the run
+            # ended — so the next execution in this process always starts from
+            # its own allowance instead of inheriting bytes it never spent.
+            spent = await self.release_egress(request)
+            if spent is not None:
+                try:
+                    await self.store.append_execution_event(
+                        execution_id, 'egress_released',
+                        f'本次执行的出口用量已释放：上传 {spent.get("bytes_up", 0)} 字节，'
+                        f'下载 {spent.get("bytes_down", 0)} 字节，'
+                        f'合计 {spent.get("bytes_total", 0)} 字节')
+                except ValueError:
+                    pass
             self._tasks.pop(execution_id, None)
 
     async def shutdown(self) -> None:
@@ -328,6 +375,35 @@ class ExecutionRunner:
             await self._stop(execution_id, self.container_name(execution_id), None,
                              reason='网关正在停止，按本地期限停止该执行')
 
+    async def admit_egress(self, policy_name: str, execution_id: str):
+        """Whether this execution may still open connections on this policy."""
+        record = await self.store.get_execution(execution_id)
+        if record is None or record.network_policy != policy_name:
+            return None
+        request = await self.store.execution_request_of(execution_id)
+        if request is None or not request.egress_authorized:
+            return None
+        if record.state not in {
+                ExecutionState.ACCEPTED, ExecutionState.STARTING,
+                ExecutionState.RUNNING, ExecutionState.CANCEL_REQUESTED}:
+            return None
+        return record
+
+    async def release_egress(self, request: ExecutionRequest) -> dict | None:
+        """Revoke this execution's new connections and keep the spent count.
+
+        Called once per run from the runner's own cleanup.  The proxy does not
+        mint a fresh budget for the same credential afterwards.
+        """
+        proxy = self.egress_proxies.get(request.network_policy)
+        if proxy is None:
+            return None
+        budget = proxy.revoke(request.execution_id)
+        if budget is None:
+            return None
+        return {'bytes_up': budget.used_request, 'bytes_down': budget.used_response,
+                'bytes_total': budget.used_total}
+
     async def _fail(self, execution_id: str, kind: str, detail: str) -> None:
         await self.store.append_execution_event(execution_id, kind, detail,
                                                 state=ExecutionState.FAILED, error=detail)
@@ -337,8 +413,8 @@ class ExecutionRunner:
         value = results[index]
         return value if isinstance(value, tuple) else ('', False)
 
-    def _command(self, container_name: str, worker: WorkerImage, mode: str,
-                 control: Path, workspace: Path) -> list[str]:
+    def _command(self, container_name: str, worker: WorkerImage, policy,
+                 control: Path, workspace: Path, egress: dict | None) -> list[str]:
         command = [self.runtime_path, 'run', '--rm', '--name', container_name,
                    '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                    '--user', worker.container_user, '--pids-limit', str(worker.pids_limit),
@@ -346,22 +422,72 @@ class ExecutionRunner:
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m']
         # The egress rule comes from the deployment's policy entry, never from
         # the caller: a request names a policy, and an unbuilt policy is
-        # refused before this point.
-        command += ['--network', mode]
+        # refused before this point.  A proxied policy joins the internal
+        # network the policy names, where the egress proxy is the address the
+        # container is pointed at and the port is the only one it may reach;
+        # whether anything else is reachable there is the operator's network
+        # to establish, not something this command line decides.
+        network = policy.network if policy.mode == 'proxy' else 'none'
+        command += ['--network', network]
+        if egress:
+            for name, value in egress['env'].items():
+                command += ['--env', f'{name}={value}']
         command += ['-v', f'{workspace}:/workspace:rw', '-v', f'{control}:/lenbot-control:ro',
                     '-w', '/workspace', worker.image, 'python', '/lenbot-control/task.py']
         return command
 
-    async def _confirm_started(self, execution_id: str, container_name: str, process) -> bool:
+    def egress_environment(self, policy, execution_id: str, policy_name: str) -> dict[str, str] | None:
+        """The container's proxy environment, as a mapping with no host paths.
+
+        The proxy URL carries this execution's credential as ``user:password``,
+        which urllib / requests / httpx send as ``Proxy-Authorization: Basic``.
+        A separate custom header is not a client default and is not used here.
+        """
+        if policy.mode != 'proxy':
+            return None
+        credential = credential_for(self.config.token, execution_id, policy_name)
+        execution_id, _, mac = credential.partition('.')
+        user = quote(execution_id, safe='')
+        proxy_url = f'http://{user}:{mac}@{policy.proxy_address}:{policy.proxy_port}'
+        bypass = '127.0.0.1,localhost'
+        return {'HTTP_PROXY': proxy_url, 'HTTPS_PROXY': proxy_url,
+                'http_proxy': proxy_url, 'https_proxy': proxy_url,
+                'NO_PROXY': bypass, 'no_proxy': bypass}
+
+    def _write_egress_control(self, control: Path, policy, execution_id: str,
+                              policy_name: str) -> dict | None:
+        """The read-only egress file, and the environment that points at the proxy.
+
+        An offline policy writes nothing and sets nothing: there is no egress
+        rule to describe, and a proxy variable pointing at nothing would be a
+        misleading hint rather than a limit.  A proxied policy writes rules
+        that are the policy's own, and an HTTP_PROXY URL that already carries
+        this execution's credential so ordinary clients authenticate.
+        """
+        if policy.mode != 'proxy':
+            return None
+        env = self.egress_environment(policy, execution_id, policy_name)
+        document = control_document(policy.rules(), execution_id=execution_id,
+                                    proxy_url=env['HTTPS_PROXY'], bypass=env['NO_PROXY'])
+        self._write_control(control / CONTROL_RELATIVE_PATH,
+                            json.dumps(document, ensure_ascii=False, indent=2))
+        return {'env': env}
+
+    async def _confirm_started(self, execution_id: str, container_name: str, process,
+                               deadline_at: float) -> bool:
         """Wait until the runtime reports the container actually running.
 
         "Not found" alone does not mean gone: the runtime may simply not have
         created the container yet.  Only an absent container whose own client
-        process has already exited is really over; anything else keeps being
-        checked here and is then watched under the run's own deadline either
-        way, so a slow creation is never mistaken for a finished run.
+        process has already exited is really over.  Confirmation does not get
+        a second time budget: cancel and the original deadline stop this loop.
         """
         for _ in range(self.config.start_confirm_attempts):
+            if self.clock() >= deadline_at:
+                return False
+            current = await self.store.get_execution(execution_id)
+            if current is not None and current.state is ExecutionState.CANCEL_REQUESTED:
+                return False
             running = await self._inspect_running(container_name)
             if running is True:
                 await self.store.append_execution_event(execution_id, 'running',
@@ -369,7 +495,8 @@ class ExecutionRunner:
                 return True
             if running is False and process.returncode is not None:
                 return False
-            await asyncio.sleep(self.config.start_confirm_interval_seconds)
+            await asyncio.sleep(min(self.config.start_confirm_interval_seconds,
+                                    max(0.05, deadline_at - self.clock())))
         return False
 
     # ---- watching and stopping --------------------------------------------
@@ -683,9 +810,12 @@ class ExecutionRunner:
         _uid, gid = (int(part) for part in worker.container_user.split(':'))
         script = control / 'task.py'
         targets: list[tuple[Path, int]] = [(control, 0o750), (workspace, 0o770), (script, 0o640)]
-        manifest = control / 'manifest.json'
-        if manifest.exists():
-            targets.append((manifest, 0o640))
+        # The egress file is written before this point, because the run's
+        # command line carries the proxy address that file describes.
+        for name in ('manifest.json', CONTROL_RELATIVE_PATH):
+            extra = control / name
+            if extra.exists():
+                targets.append((extra, 0o640))
         inputs = control / 'input'
         if inputs.is_dir():
             targets.append((inputs, 0o750))

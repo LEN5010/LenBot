@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Request, Depends, HTTPException, Body
 from typing import Optional
 
@@ -36,7 +38,7 @@ async def access_settings(request: Request, user: str = Depends(get_current_user
 CAPABILITY_TITLES = {
     'long_work': '后台工作与恢复',
     'public_research': '系统公共研究（只读 global-safe）',
-    'network_python': '联网 Python（尚未实现）',
+    'network_python': '联网 Python（需 gateway、已核验的出口策略；群资料工作不会因没有图片而放行）',
     'proactive_chat': '主动聊天（尚未实现）',
     'interest_share': '公共兴趣分享（尚未实现）',
     'send_file': '发送文件（尚未实现）',
@@ -53,8 +55,14 @@ async def capability_vocabulary(user: str = Depends(get_current_user)):
     The panel offers these names as a choice and states the ones that are
     only vocabulary; naming a capability was never the same as implementing
     it, and a grant for an unimplemented capability still permits nothing.
+
+    ``network_python`` is implemented in the sense that it is checked where an
+    execution is admitted — but only the Gateway backend can carry egress at
+    all (the local trial worker runs ``--network none``), and only for a
+    deployment that built a proxy policy.  The title says so, because a grant
+    on its own still permits nothing.
     """
-    implemented = {'long_work', 'public_research'}
+    implemented = {'long_work', 'public_research', 'network_python'}
     return {'items': [{'value': capability.value,
                        'title': CAPABILITY_TITLES.get(capability.value, capability.value),
                        'implemented': capability.value in implemented}
@@ -64,8 +72,9 @@ async def capability_vocabulary(user: str = Depends(get_current_user)):
 class CapabilityGrantEdit(BaseModel):
     """Fields an operator may submit; the issuer is bound after authentication."""
     model_config = ConfigDict(extra='forbid')
-    grant_id: str = Field(min_length=1)
-    revision: int = Field(ge=1)
+    grant_id: str = Field(default='', max_length=64,
+        description='已有授予的 ID；新建留空，由服务端生成')
+    revision: int = Field(default=1, ge=1)
     principal_type: str
     principal_id: str = Field(min_length=1)
     scene_id: str | None = None
@@ -124,14 +133,22 @@ async def update_access_settings(values: AccessSettingsRequest, request: Request
     else:
         previous = {grant.grant_id: grant for grant in current.capability_grants}
         grants = []
-        for edit in values.capability_grants:
+        for index, edit in enumerate(values.capability_grants):
+            if not edit.grant_id:
+                created = edit.model_copy(update={'grant_id': 'g' + uuid.uuid4().hex})
+                grants.append(_grant_from_edit(created, operator_id=user, revision=1))
+                continue
             stored = previous.get(edit.grant_id)
+            if stored is None:
+                raise HTTPException(422, [{
+                    'loc': ['body', 'capability_grants', index, 'grant_id'],
+                    'msg': '不能用未知 ID 新建授予；新建请留空，由服务端生成 ID',
+                    'type': 'value_error'}])
             candidate = _grant_from_edit(edit, operator_id=user, revision=edit.revision)
-            if stored is not None and _grant_content(stored) == _grant_content(candidate):
+            if _grant_content(stored) == _grant_content(candidate):
                 grants.append(stored)
             else:
-                revision = (stored.revision + 1) if stored is not None else max(1, edit.revision)
-                grants.append(_grant_from_edit(edit, operator_id=user, revision=revision))
+                grants.append(_grant_from_edit(edit, operator_id=user, revision=stored.revision + 1))
     merged = AccessSettings(
         qq_reply_whitelist=values.qq_reply_whitelist,
         capability_grants=grants,

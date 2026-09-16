@@ -1,6 +1,7 @@
 from typing import Optional, Literal
 import json
 import uuid
+from urllib.parse import quote
 from fastapi import APIRouter, Request, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
@@ -122,9 +123,11 @@ async def job_detail(job_id: str, request: Request, scene_id: str | None = None,
 @router.get("/jobs/{job_id}/workspace-artifact")
 async def workspace_artifact(job_id: str, scene_id: str, path: str, request: Request,
                              offset: int = Query(0, ge=0), limit: int = Query(12000, ge=1, le=100000),
+                             execution_id: str | None = Query(default=None),
                              user: str = Depends(get_current_user)):
     try:
-        result = await _service(request).workspace_artifact(scene_id, job_id, path, offset, limit)
+        result = await _service(request).workspace_artifact(
+            scene_id, job_id, path, offset, limit, execution_id=execution_id)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     if result is None:
@@ -142,16 +145,27 @@ async def workspace_artifacts(job_id: str, scene_id: str, request: Request,
 
 @router.get("/jobs/{job_id}/workspace-artifact/download")
 async def workspace_artifact_download(job_id: str, scene_id: str, path: str, request: Request,
+                                      execution_id: str | None = Query(default=None),
                                       user: str = Depends(get_current_user)):
     try:
-        result = await _service(request).workspace_artifact_bytes(scene_id, job_id, path)
+        result = await _service(request).workspace_artifact_bytes(
+            scene_id, job_id, path, execution_id=execution_id)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作产物')
     data, media_type = result
+    # The header has to stay latin-1 encodable, so a Chinese filename travels
+    # in RFC 5987 ``filename*=`` with an ASCII fallback, exactly as the
+    # Gateway's own artifact download does.  The fallback is derived from the
+    # real name rather than fixed, so two downloads of different files are
+    # still distinguishable even in a client that ignores ``filename*``.
+    filename = path.rsplit('/', 1)[-1]
+    fallback = filename.encode('ascii', 'ignore').decode().replace('"', '_') or 'workspace-artifact'
     return Response(content=data, media_type=media_type,
-                    headers={'Content-Disposition': 'attachment; filename="workspace-artifact"'})
+                    headers={'Content-Disposition':
+                             f'attachment; filename="{fallback}"; '
+                             f"filename*=UTF-8''{quote(filename, safe='')}"})
 
 
 

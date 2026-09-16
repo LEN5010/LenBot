@@ -88,16 +88,19 @@ class RuntimeQueryService:
             page["source_next_call_note"] = "源端下一批，仅位置未取得"
         return page
 
-    async def workspace_artifact(self, scene_id, job_id, path, offset=0, limit=12000):
+    async def workspace_artifact(self, scene_id, job_id, path, offset=0, limit=12000,
+                                 execution_id=None):
         if offset < 0 or limit < 1 or limit > 100000:
             raise ValueError('invalid workspace artifact range')
-        return await self.runtime.plugin_host.read_workspace_artifact(scene_id, job_id, path, offset, limit)
+        return await self.runtime.plugin_host.read_workspace_artifact(
+            scene_id, job_id, path, offset, limit, execution_id=execution_id)
 
     async def workspace_artifacts(self, scene_id, job_id):
         return await self.runtime.plugin_host.list_workspace_artifacts(scene_id, job_id)
 
-    async def workspace_artifact_bytes(self, scene_id, job_id, path):
-        return await self.runtime.plugin_host.read_workspace_artifact_bytes(scene_id, job_id, path)
+    async def workspace_artifact_bytes(self, scene_id, job_id, path, execution_id=None):
+        return await self.runtime.plugin_host.read_workspace_artifact_bytes(
+            scene_id, job_id, path, execution_id=execution_id)
 
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (

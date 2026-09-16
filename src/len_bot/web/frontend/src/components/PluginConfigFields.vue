@@ -4,18 +4,19 @@ import {blankConfigDraft, configFields, enumLabels, exclusiveGroups, groupFor, l
 
 const props=defineProps({modelValue:{type:Object,required:true},schema:{type:Object,required:true},
   secrets:{type:Array,default:()=>[]},configSet:{type:Object,default:()=>({})},
-  problems:{type:Array,default:()=>[]},prefix:{type:String,default:''}})
+  problems:{type:Array,default:()=>[]},prefix:{type:String,default:''},
+  definitions:{type:Object,default:null}})
 const emit=defineEmits(['update:modelValue'])
 const path=key=>props.prefix?`${props.prefix}.${key}`:key
-const fields=computed(()=>configFields(props.schema))
+const fields=computed(()=>configFields(props.schema, props.definitions || props.schema?.$defs))
 const groups=computed(()=>exclusiveGroups(props.schema))
 // A nested object with declared properties is edited as its own subfields —
 // the workspace worker/gateway backends are the case that exists today.
 // Anything compound that the schema does not describe property-by-property
 // stays an explicit JSON value instead of being guessed at.
-const nestedSecrets=field=>props.secrets.filter(path=>path.startsWith(field.key+'.')).map(path=>path.slice(field.key.length+1))
+const nestedSecrets=field=>props.secrets.filter(item=>item===path(field.key)||item.startsWith(path(field.key)+'.'))
 const nestedConfigSet=field=>Object.fromEntries(Object.entries(props.configSet)
-  .filter(([path])=>path.startsWith(field.key+'.')).map(([path,value])=>[path.slice(field.key.length+1),value]))
+  .filter(([item])=>item===path(field.key)||item.startsWith(path(field.key)+'.')))
 const childValue=(field,value)=>{
   const branch=typeof value==='object'&&value!==null&&!Array.isArray(value)?value:{}
   emit('update:modelValue',{...props.modelValue,[field.key]:branch})
@@ -30,14 +31,12 @@ const hasProblem=key=>messages(key).length>0
 async function focus(target) {
   const name=String(target||'')
   const [head,...rest]=name.split('.')
+  const nested=nestedRefs[head]
+  // Nested sections have no top-level input anchor; go through the child
+  // renderer that actually owns the field before requiring a local element.
+  if (rest.length&&nested) { await nested.focus(rest.join('.')); return }
   const element=anchors[head]
   if (!element) return
-  const nested=nestedRefs[head]
-  // A nested field is reached through its own branch: the summary names the
-  // full path, the renderer that owns that field is one level down.
-  if (rest.length&&nested) { await nested.focus(rest.join('.')); return }
-  // v-input components expose focus(); the DOM fallback covers a field whose
-  // component has not rendered an input of its own yet.
   if (typeof element.focus==='function') element.focus()
   else element.$el?.querySelector?.('input,textarea,select,button')?.focus?.()
   await nextTick()
@@ -63,8 +62,15 @@ const pick=(group,key)=>{
 }
 const rows=(key,value)=>Array.isArray(value)?value:[]
 const setRow=(key,value,index,row)=>{const next=[...rows(key,value)];next[index]=row;update(key,next)}
-const addRow=(key,value,declaration)=>update(key,[...rows(key,value),
-  declaration.schema.items?.enum?declaration.schema.items.enum[0]:0])
+const emptyItem=declaration=>{
+  const items=declaration.schema.items||{}
+  if (items.enum?.length) return items.enum[0]
+  if (items.type==='string') return ''
+  if (items.type==='boolean') return false
+  if (items.type==='integer'||items.type==='number') return 0
+  return ''
+}
+const addRow=(key,value,declaration)=>update(key,[...rows(key,value),emptyItem(declaration)])
 const removeRow=(key,value,index)=>update(key,rows(key,value).filter((_,position)=>position!==index))
 const moveRow=(key,value,index,delta)=>{
   const next=[...rows(key,value)],target=index+delta
@@ -120,6 +126,7 @@ const toggleChoice=(field,value,choice)=>{
         <p v-if="field.schema.description" class="muted mb-3">{{ field.schema.description }}</p>
         <PluginConfigFields v-if="modelValue[field.key]" :ref="setNestedRef(field.key)" :model-value="modelValue[field.key]" :schema="field.schema"
           :secrets="nestedSecrets(field)" :config-set="nestedConfigSet(field)" :problems="problems" :prefix="path(field.key)"
+          :definitions="field.definitions || definitions || schema.$defs"
           @update:model-value="value=>update(field.key,value)" />
         <div v-else class="actions"><v-btn size="small" variant="tonal" @click="childValue(field,modelValue[field.key])">填写此分支</v-btn><span class="muted">尚未选择；不填写就不会写入配置。</span></div>
       </section>

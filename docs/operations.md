@@ -98,7 +98,27 @@ workspace 插件在根配置 `plugins.workspace.config` 里二选一：`worker`�
 uv run python -m len_bot.services.worker_gateway --config /绝对路径/gateway.config.json
 ```
 
-`image_ref` 与 `network_policy` 必须能在网关自己的表里解析，否则请求被拒绝而不是换成默认镜像。本版网络策略只实现离线 `none`。Linux 部署需让 Gateway 进程能把控制目录/工作目录的组拥有者设为 worker GID，否则非 root worker 读不到脚本。停机后若使用该后端，普通备份还要包含网关的 `database_path` 与 `workspaces_root`；LenBot 进程退出不代表网关容器已停止。
+`image_ref` 与 `network_policy` 必须能在网关自己的表里解析，否则请求被拒绝而不是换成默认镜像。`mode` 只有 `none` 和 `proxy`；`proxy` 须已核验部署、代理在跑且宿主授权联网，否则拒绝，不会改成离线跑完。Linux 部署需让 Gateway 把控制目录组拥有者设为 worker GID。停机后备份还要包含网关库、工作卷与出口记录。
+
+出口网络（C13）由运营者在目标 Linux 上自建，样例 `gateway.config.example.json` 只供抄写，不参与运行合并。建议：
+
+```sh
+docker network create --internal --subnet 172.31.9.0/24 lenbot-egress
+```
+
+`--internal` 让 worker 没有默认外网路由。网关进程跑在宿主上，出口代理监听该网桥地址（常见为 `172.31.9.1:8799`），worker 只加入 `lenbot-egress`，`HTTP_PROXY` 指向该地址。核对后再把对应策略的 `deployment_verified` 改为 true。未核验前不要改真实根配置。worker 不得加入 LenBot/OneBot 所在控制网络，也不能用 `host`/`bridge`/`none` 当 proxy 网络名。环境变量代理不是限制：实际隔离看网络与代理。
+
+执行输入由宿主导出，网关只落盘。各层上限针对不同事实，不是同一数字再写一遍：
+
+| 上限 | 针对 | 超限 |
+|---|---|---|
+| 观察+附件合计 8 份 | 一次 `run_python` 导入条目 | 拒绝该次调用，不截断后继续 |
+| 导出合计 24 MB | 宿主导出的真实字节 | 同上；不删原始资料 |
+| 网关 `input_files` 字段 | 线上传输的文本/base64 | 协议拒绝，不落半成品 |
+| 工作目录字节/文件数 | 执行中的可写产物 | 停止并标记超限，保留已有文件 |
+| Pillow 可解码 | 导入图片的内容 | 按内容拒绝，不把非图片当附件 |
+
+图片附件必须是本工作来源已登记媒体，且媒体能力已启用。目标镜像需包含 Pillow。`manifest.json` 是输入事实，不授予网络、发送或跨群访问。控制目录按 worker GID 只读。
 
 工作进展冷却由 runtime.job_progress_interval_seconds 决定，正常等待回应的存续时间由 runtime.open_loop_ttl_seconds 决定。原话和工具资料共用现有字符页参数；消息检索、原文邻居、待处理目录、工具发现、摘要／发送事实候选与媒体检索的条数也从 runtime 读取。Schema 展示与实际查询使用同一组值，越界请求明确失败；具体参数和分页坐标见[架构](architecture.md)。
 
