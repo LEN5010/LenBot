@@ -194,7 +194,8 @@ loadScopes()
 
 <template>
   <div class="page-stack">
-    <PageHeader title="插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn></PageHeader>
+    <v-card class="pa-4 mb-4"><h2>系统能力</h2><p class="my-3">群 Agent、预算、权限、工作、记忆与发送由系统管理。各入口分别显示保存配置、运行状态和真实回执。</p><div class="actions"><RouterLink :to="{name:'scenes'}">群 Agent 与发送范围</RouterLink><RouterLink :to="{name:'models'}">模型与预算</RouterLink><RouterLink :to="{name:'settings'}">权限与运行配置</RouterLink><RouterLink :to="{name:'jobs'}">工作与交付</RouterLink><RouterLink :to="{name:'memories'}">认识与公共兴趣</RouterLink><RouterLink :to="{name:'tasks',query:{tab:'system'}}">心跳与分享周期</RouterLink></div></v-card>
+    <PageHeader title="能力与插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
     <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <div class="plugin-toolbar">
@@ -256,9 +257,15 @@ loadScopes()
               <dl class="facts"><dt>最近成功</dt><dd>{{ fmtTime(selected.source_status.last_success_at) }}</dd><dt>最近失败</dt><dd>{{ fmtTime(selected.source_status.last_error_at) }}</dd><dt v-if="selected.source_status.source_url">来源</dt><dd v-if="selected.source_status.source_url" class="full-text">{{ selected.source_status.source_url }}</dd><dt v-if="selected.source_status.source_updated_at">源更新时间</dt><dd v-if="selected.source_status.source_updated_at">{{ selected.source_status.source_updated_at }}</dd></dl>
               <v-alert v-if="selected.source_status.last_error" type="error" variant="tonal" class="mt-4">{{ selected.source_status.last_error }}<div>这是最近一次失败记录，当前新鲜度须结合成功取得时间判断。</div></v-alert>
               <ResourceViewer v-if="selected.source_status.data_scope" title="已取得资料范围" :content="selected.source_status.data_scope" class="mt-4" />
-              <h3 class="mt-5 mb-3">已注册入口</h3>
+              <section v-if="selected.source_status.support_matrix" class="mt-5">
+                <h3>Core 支持矩阵</h3><p class="muted my-3">{{ selected.source_status.verification }}</p>
+                <p>连接：{{ selected.source_status.connected ? '已连接' : '未连接' }} · Core 版本：{{ selected.source_status.core_version || '未确认' }} · OneBot 身份：{{ selected.source_status.identity_matches ? '一致' : '不一致，不能转发' }}</p>
+                <div class="entry-list mt-3"><div v-for="item in selected.source_status.support_matrix" :key="item.type" class="entry-row"><strong>{{ item.type }}</strong><p>{{ item.status === 'unsupported' ? '未支持' : '代码已接入，待现场联调' }} · {{ item.detail }}</p></div></div>
+                <p v-if="selected.source_status.last_error_code" class="mt-3">最近连接失败：{{ selected.source_status.last_error_code }}</p>
+              </section>
+              <h3 class="mt-5 mb-3">已注册入口（功能项）</h3>
               <div class="entry-list">
-                <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p></div>
+                <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p><p>所需授权：{{ tool.required_capabilities?.join('、') || '沿入口现有权限' }} · 副作用：{{ tool.side_effect === 'account_write' ? '账号写入提案' : '无账号写入' }}</p><p>输入范围 {{ tool.input_scope }} · 输出范围 {{ tool.output_scope }}</p></div>
                 <div v-for="handler in selected.handlers" :key="handler.id" class="entry-row"><strong>{{ handler.description }}</strong><p class="entity-id">{{ handler.id }} · 优先级 {{ handler.priority }} · {{ handler.consume?'消费消息':'继续传播' }} · {{ handler.require_to_me?'需要提及':'无需提及' }}</p><p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}</p><ResourceViewer title="匹配规则" :content="handler.match" /></div>
                 <div v-for="hook in selected.hooks" :key="'hook:'+hook.id" class="entry-row"><strong>{{ hook.phase }}</strong><p>{{ hook.id }} · 作用范围 {{ hook.scope }} · 优先级 {{ hook.priority }}</p></div>
                 <p v-if="!selected.tools.length&&!selected.handlers.length&&!selected.hooks.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>

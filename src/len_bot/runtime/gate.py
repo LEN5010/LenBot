@@ -488,6 +488,8 @@ class RuntimeGate:
                 if scene_id.startswith("private:")
                 else ActionType.SEND_GROUP_MESSAGE
             )
+            if msg.file_asset_id:
+                action_type = ActionType.UPLOAD_GROUP_FILE
             action_origin = "shadow" if (committed.origin_mode == "shadow" or getattr(mailbox, "origin_mode", "live") == "shadow") else "live"
             if msg.fulfils_task_id and task_rows[msg.fulfils_task_id]["origin_mode"] == "shadow":
                 action_origin = "shadow"
@@ -512,6 +514,7 @@ class RuntimeGate:
                 acknowledges_task_id=acknowledged_task_id,
                 operation_ref=msg.operation_ref,
                 action_type=action_type,
+                file_asset_id=msg.file_asset_id,
                 scene_id=scene_id,
                 segments=segments,
                 output_kind='plugin' if msg.plugin_origin or mailbox.plugin_origin else mailbox.output_kind,

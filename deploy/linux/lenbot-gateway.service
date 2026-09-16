@@ -1,0 +1,23 @@
+[Unit]
+Description=LenBot Worker Gateway
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lenbot-gateway/release
+ExecStart=/opt/lenbot-gateway/release/.venv/bin/python -m len_bot.services.worker_gateway --config /etc/lenbot-gateway/gateway.config.json
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=90
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+# Gateway uses its own config, journal, controls and workspace tree. It does
+# not need the Bot's platform/model credentials or its conversation database.
+InaccessiblePaths=-/srv/lenbot/control -/var/lib/lenbot
+
+[Install]
+WantedBy=multi-user.target

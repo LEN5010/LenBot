@@ -5,6 +5,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from len_bot.runtime.capabilities import Capability
 import httpx
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Awaitable, Literal
@@ -114,7 +115,7 @@ class PluginHost:
         return PluginRunHooks(self, call, audit)
 
     def notify_delivery(self, event, cutoff):
-        if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
+        if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED}:
             return
         encoded = event.payload.get('plugin_origin')
         origin = PluginOrigin.model_validate(encoded) if encoded else None
@@ -341,10 +342,19 @@ class PluginHost:
         keywords: tuple[str, ...] = (),
         kind: Literal["read", "proposal"],
         roles: tuple[Literal["conversation", "work"], ...],
+        required_capabilities: tuple[str, ...] = (),
+        side_effect: Literal['none', 'account_write'] = 'none',
+        input_scope: Literal['current_scene', 'current_work'] = 'current_scene',
+        output_scope: Literal['current_scene', 'current_work', 'account'] = 'current_scene',
         deferred: bool = False,
         available: Callable[[PluginCallContext], bool] | None = None,
         page_chars: int | None = None,
     ) -> None:
+        for capability in required_capabilities:
+            Capability(capability)
+        if side_effect == 'account_write' and (kind != 'proposal' or roles != ('work',)
+                or not required_capabilities or input_scope != 'current_work' or output_scope != 'account'):
+            raise ValueError('账号写工具必须声明工作提案、独立权限和账号数据范围')
         existing = self._tools.get(name)
         source = _registration_source(plugin_id, handler)
         existing_source = (_registration_source(existing.plugin_id, existing.handler)
@@ -358,6 +368,8 @@ class PluginHost:
             parameter_model=parameter_model,
             purpose=purpose, aliases=aliases, keywords=keywords,
             handler=handler,
+            required_capabilities=required_capabilities, side_effect=side_effect,
+            input_scope=input_scope, output_scope=output_scope,
             timeout_seconds=timeout_seconds, kind=kind, roles=roles, deferred=deferred, available=available,page_chars=page_chars,
         )
         self._plugins[plugin_id].manifest.registered_tools.append(name)
@@ -621,7 +633,8 @@ class PluginHost:
                 'emitted_events': [name for name, _ in spec.event_models],
                 'registered_tools': [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id],
                 'tools': [{'name': tool.name, 'description': tool.description, 'purpose': tool.purpose,
-                           'kind': tool.kind, 'roles': list(tool.roles)} for tool in self._tools.values()
+                           'kind': tool.kind, 'roles': list(tool.roles), 'required_capabilities': list(tool.required_capabilities),
+                           'side_effect': tool.side_effect, 'input_scope': tool.input_scope, 'output_scope': tool.output_scope} for tool in self._tools.values()
                           if tool.plugin_id == plugin_id],
                 'handlers': [handler.record() for handler in self._handlers.values() if handler.plugin_id == plugin_id],
                 'hooks': [hook.record() for hook in self._hooks.values() if hook.plugin_id == plugin_id],
@@ -654,9 +667,19 @@ class PluginHost:
             return 'scene_not_enabled'
         return 'callable'
 
-    @staticmethod
-    def _tool_applies(tool: PluginToolDefinition, call_context: PluginCallContext) -> bool:
-        return (call_context.role in tool.roles and (tool.kind == 'read' or call_context.ledger is not None)
+    def _tool_applies(self, tool: PluginToolDefinition, call_context: PluginCallContext) -> bool:
+        if tool.input_scope == 'current_work' and not call_context.job_id:
+            return False
+        if tool.required_capabilities:
+            from len_bot.runtime.capabilities import CapabilitySubject
+            if not call_context.requester_qq_uid or call_context.public_research:
+                return False
+            subject = CapabilitySubject('human', call_context.requester_qq_uid, call_context.scene_id, None)
+            if any(not self.runtime.runtime_gate.capability_authority.check(Capability(cap), subject,
+                    now=self.runtime.clock()).allowed for cap in tool.required_capabilities):
+                return False
+        return (call_context.role in tool.roles and (tool.kind == 'read' or call_context.ledger is not None
+                or call_context.role == 'work' and tool.side_effect == 'account_write')
                 and (tool.available is None or tool.available(call_context)))
 
     def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
@@ -709,7 +732,7 @@ class PluginHost:
 
     def tool_capabilities(self, name: str) -> dict:
         tool = self._tools[name]
-        return {"kind": tool.kind, "roles": tool.roles, "deferred": tool.deferred,'page_chars':tool.page_chars}
+        return tool.model_dump(include={'kind', 'roles', 'deferred', 'page_chars', 'required_capabilities', 'side_effect', 'input_scope', 'output_scope'})
 
     def work_spec(self, encoded, operation):
         if encoded is None:
@@ -762,10 +785,10 @@ class PluginHost:
             view['work_progress_schema']=work.progress_model.model_json_schema()
         return view
 
-    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] = "read") -> tuple[list[dict[str, Any]], list[str]]:
+    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] | None = "read") -> tuple[list[dict[str, Any]], list[str]]:
         """Rank the same scoped candidates used for model definitions/execution."""
         candidates = [tool for name, tool in self._tools.items()
-                      if self.has_tool(name, call_context) and tool.kind == kind]
+                      if self.has_tool(name, call_context) and (kind is None or tool.kind == kind)]
         matches = []
         for tool in candidates:
             plugin_name = self._plugins[tool.plugin_id].manifest.name
@@ -829,18 +852,8 @@ class PluginHost:
         except ValidationError as error:
             return ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id).model_copy(update={'plugin_origin':origin})
         try:
-            from len_bot.cognition.action_review import TOOL_ACTION_TYPES
             if call_context.public_research:
                 await self._validate_public_call(call_context)
-            action_type = TOOL_ACTION_TYPES.get(tool_name)
-            if action_type:
-                job = await self.runtime.event_store.get_job(call_context.job_id, call_context.scene_id)
-                if job is None or job['revision'] != call_context.job_revision:
-                    raise ValueError('动作不属于当前工作修订')
-                action = await self.runtime.action_reviewer.request(job=job, native_call_id=call_context.tool_call_id,
-                    action_type=action_type, target=tool_name, parameters=parsed.model_dump(mode='json'))
-                await self.runtime.action_reviewer.approve(action)
-                parsed = ptool.parameter_model.model_validate(action.parameters)
             self.record_plugin_run(ptool.plugin_id)
             bound_call = replace(call_context, origin=origin, plugin=self._plugin_contexts[ptool.plugin_id])
             task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call),

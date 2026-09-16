@@ -12,6 +12,14 @@
       "image": "lenbot-workspace:local",
       "container_user": "65532:65532"
     },
+    "media": {
+      "worker_type": "media",
+      "image": "lenbot-media:local",
+      "container_user": "65532:65532",
+      "memory": "512m",
+      "cpus": "1.0",
+      "pids_limit": 128
+    },
     "browser": {
       "worker_type": "browser",
       "image": "lenbot-browser:local",
@@ -34,7 +42,7 @@
       "deployment_verified": false,
       "hosts": {
         "business": ["www.bilibili.com", "api.bilibili.com"],
-        "resource": ["*.hdslb.com", "*.biliapi.net"]
+        "resource": ["*.hdslb.com", "*.biliapi.net", "*.bilivideo.com", "*.bilivideo.cn", "*.bilivideo.net"]
       },
       "deny_hosts": []
     }

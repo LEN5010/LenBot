@@ -95,9 +95,23 @@ async def pending_wakes(scene_id: str, request: Request, page: int = Query(1,ge=
 
 
 @router.get("/tasks")
-async def list_tasks(request: Request, status: str | None = None, scene_id: str | None = None, kind: Literal["reminder","agent_job"] = "reminder",
+async def list_tasks(request: Request, status: str | None = None, scene_id: str | None = None, kind: Literal["reminder","agent_job","system"] = "reminder",
                      page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
     return await _service(request).list_tasks(status=status,scene_id=scene_id,kind=kind,page=page,page_size=page_size)
+
+
+@router.get('/public-interests')
+async def public_interests(request: Request, query: str = '', page: int = Query(1, ge=1),
+                           page_size: int = Query(30, ge=1, le=100), user: str = Depends(get_current_user)):
+    return await _service(request).public_interests(query=query, page=page, page_size=page_size)
+
+
+@router.get('/public-interests/{interest_id}')
+async def public_interest(interest_id: str, request: Request, user: str = Depends(get_current_user)):
+    result = await _service(request).public_interest(interest_id)
+    if result is None:
+        raise HTTPException(404, '公共兴趣不存在')
+    return result
 
 
 @router.get("/tasks/{task_id}")
@@ -118,6 +132,18 @@ async def job_detail(job_id: str, request: Request, scene_id: str | None = None,
     result=await _service(request).job(job_id,scene_id)
     if result is None:raise HTTPException(404,"工作不存在")
     return result
+
+
+@router.get("/jobs/{job_id}/files/{asset_id}/download")
+async def download_file_asset(job_id: str, asset_id: str, scene_id: str, request: Request,
+                              user: str = Depends(get_current_user)):
+    try:
+        data, asset = await _service(request).file_asset_bytes(scene_id, job_id, asset_id)
+    except (ValueError, OSError) as error:
+        raise HTTPException(404, '文件资产不可读或不属于此工作') from error
+    return Response(data, media_type=asset.mime_type, headers={
+        'Content-Disposition': "attachment; filename*=UTF-8''" + quote(asset.display_name),
+        'X-Content-Type-Options': 'nosniff'})
 
 
 @router.get("/jobs/{job_id}/workspace-artifact")
@@ -233,6 +259,8 @@ async def _edit_task(request, task_id, proposal, operator, *, trigger_now=False)
         raise HTTPException(status_code=404, detail="未找到这个任务")
     if task["payload"].get("kind") == "agent_job":
         raise HTTPException(409, "信息工作需要通过带版本号的工作控制接口修改")
+    if task['payload'].get('kind') in {'heartbeat', 'heartbeat_occupancy', 'interest_share'}:
+        raise HTTPException(409, '系统调度槽由心跳或兴趣分享配置管理，不能当作提醒修改')
     if trigger_now and task["status"] != "pending":
         raise HTTPException(409, "只有待执行任务可以立即触发")
     event = await runtime.record_operator_event(task["scene_id"], "task_trigger_now" if trigger_now else f"task_{proposal.operation}", operator,

@@ -8,15 +8,17 @@ PUBLIC_TOOL_OWNERS = {
     'get_video_info': 'bilibili_content', 'search_bilibili': 'bilibili_content',
     'get_video_pages': 'bilibili_content', 'get_video_comments': 'bilibili_content',
     'get_video_subtitles': 'bilibili_content',
+    'get_video_segment': 'media_analysis', 'transcribe_video_segment': 'media_analysis',
     'browser_open': 'browser_agent', 'browser_snapshot': 'browser_agent',
     'browser_interact': 'browser_agent', 'browser_capture': 'browser_agent',
     'run_python': 'workspace', 'list_workspace_files': 'workspace',
     'read_workspace_file': 'workspace', 'export_workspace_artifact': 'workspace',
 }
 PUBLIC_LOCAL_TOOLS = frozenset({'tool_search', 'read_tool_result', 'calculate', 'finite_check',
-    'list_public_interests', 'read_web_media'})
+    'list_public_interests', 'read_web_media', 'read_media'})
 PUBLIC_WORK_TOOLS = PUBLIC_LOCAL_TOOLS | PUBLIC_TOOL_OWNERS.keys() | {'update_work_state', 'report_progress'}
-ANONYMOUS_TOOLS = frozenset(name for name, owner in PUBLIC_TOOL_OWNERS.items() if owner != 'workspace')
+ANONYMOUS_TOOLS = frozenset(name for name, owner in PUBLIC_TOOL_OWNERS.items()
+    if owner != 'workspace' and name != 'transcribe_video_segment')
 
 
 def has_public_context(job) -> bool:

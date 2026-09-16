@@ -40,11 +40,11 @@ CAPABILITY_TITLES = {
     'public_research': '系统公共研究（只读 global-safe）',
     'network_python': '联网 Python（需 gateway、已核验的出口策略；群资料工作不会因没有图片而放行）',
     'proactive_chat': '主动聊天（尚未实现）',
-    'interest_share': '公共兴趣分享（尚未实现）',
-    'send_file': '发送文件（尚未实现）',
-    'bilibili_authenticated_read': 'B 站登录态读取（尚未实现）',
-    'bilibili_like': 'B 站点赞（尚未实现）',
-    'bilibili_favorite': 'B 站收藏（尚未实现）',
+    'interest_share': '公共兴趣分享（须启用插件与本群配置）',
+    'send_file': '发送文件（须配置文件交付及已核对的 OneBot 上传能力）',
+    'bilibili_authenticated_read': 'B 站登录态动态读取（人类工作、已配置账号与审查）',
+    'bilibili_like': 'B 站点赞（专用账号、额度和动作审查）',
+    'bilibili_favorite': 'B 站收藏（专用账号、指定收藏夹和动作审查）',
 }
 
 
@@ -62,7 +62,7 @@ async def capability_vocabulary(user: str = Depends(get_current_user)):
     deployment that built a proxy policy.  The title says so, because a grant
     on its own still permits nothing.
     """
-    implemented = {'long_work', 'public_research', 'network_python'}
+    implemented = {'long_work', 'public_research', 'network_python', 'interest_share', 'send_file', 'bilibili_authenticated_read', 'bilibili_like', 'bilibili_favorite'}
     return {'items': [{'value': capability.value,
                        'title': CAPABILITY_TITLES.get(capability.value, capability.value),
                        'implemented': capability.value in implemented}

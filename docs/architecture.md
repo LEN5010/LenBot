@@ -92,7 +92,7 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 
 心跳以 bot/plan/30 分钟 slot 唯一认领，来源从真正的 Scheduler TASK_DUE 读取，在群资格分支之前路由。根配置 heartbeat_topics 和有限的有效公共兴趣组成种子；无种子允许零研究，错过、睡眠、容量不足或未授权明确跳过。建工作、预占、周期占用与槽结果在原事务内提交，保留至少一个人类工作位置，系统工作使用 purpose=heartbeat，原期限最多 1800 秒。占用依据实际 job 与 accepted/starting/running/cancel_requested/termination_unconfirmed 执行，不按槽时间自动释放。
 
-公共研究只开放明确的匿名工具集合，不读群史、成员认识或场景技能。ToolResult.provenance 来自宿主/连接器的取得事实，区分 anonymous_public、account、scene、derived 和 unknown；派生来源须递归核对原始观察，system 场景名不证明公开。来源未知的计算/文件结果不能直接用作公共兴趣依据。PublicInterestCandidate 随工作结果提交，宿主在原完成事务核对当前修订、本工作已登记资料、实际展示的 ResultSpan 与匿名来源，再写 public_interests；修订/撤回保留前后状态及原因事件。兴趣摘要只能作研究线索。公共工作完成后直接保存成果，不进入群交付；C21 发布未实现。
+公共研究只开放明确的匿名工具集合及具有匿名来源的派生读取，不读群史、成员认识或场景技能。ToolResult.provenance 来自宿主/连接器的取得事实，区分 anonymous_public、account、scene、derived 和 unknown；派生来源须递归核对原始观察，system 场景名不证明公开。来源未知的计算/文件结果不能直接用作公共兴趣依据。PublicInterestCandidate 随工作结果提交，宿主在原完成事务核对当前修订、本工作已登记资料、实际展示的 ResultSpan 与匿名来源，再写 public_interests；修订/撤回保留前后状态及原因事件。兴趣摘要只能作研究线索。公共工作完成后直接保存成果，不进入群交付；后续逐群分享由独立兴趣分享机会判断。
 
 ### 睡眠与延期交付
 
@@ -236,3 +236,55 @@ ModelGateway 在真实请求前创建唯一 model_calls；真实 usage 与估算
 本群主动分享每日次数与冷却是显式插件场景配置。ActionQueue 在原发送尝试事务内复核授权、当前候选和次数，再保存尝试；实际日期使用根业务时区，unknown 保留占用，明确未发送释放占用。按已送达或未确认尝试关联的兴趣版本及原资源 URL 去重，普通人类明确要求重发仍走原聊天路径。Shadow 不形成已送达证据。睡眠中不开始候选表达，发送途中入睡仍沿原延期链；过期时段的旧表达拒绝发送。重启不补跑已领取的机会。
 
 日程确定性卡片、直播文案加同场次事实卡、群报告分页与动态渲染继续沿原业务插件及共享卡片组件交付，兴趣分享不另造卡片管线。
+
+### 公开媒体片段与转写（C22）
+
+可选 `media_analysis` 插件只在已有 work 中调用。`get_video_segment` 接受 bvid/cid、start_ms/end_ms、帧数与是否取音轨；宿主匿名核对分P元信息，通过 Wbi 取得轨道，审查绑定明确资源、区间和字节限制。临时 URL 不交给模型，不携带 Cookie。受限下载不是完整视频下载承诺，单段最长300秒、最多12帧，索引/关键帧超取计入实际响应体。
+
+`media` 是 Gateway 的固定 worker 类型，不接受自由脚本、工作文件或输入资产；复用原 execution_runs、工作修订、期限、产物与取消回执。非 root 媒体容器通过已核验代理读取 HTTPS 平台 CDN，ffprobe/ffmpeg 在容器内验证和解码。片段清单带原 execution_id、视频与分P、源时间戳、真实下载量、采样策略和未覆盖范围；宿主只采用与原请求匹配的产物并登记为场景媒体。失败或取消不称分析完成；同一原生调用重复读取只查询原执行。
+
+`supports_vision` 是模型绑定中的明确能力事实，默认 false，随工作冻结；缺少确认时采样帧保留但不装配图片，read_media 返回 capability_missing，续读与检查点恢复也执行同一条件。现有 work 支持视觉时沿原图片装配和预算读取帧；采样不能声称看完所有画面。
+
+`transcribe_video_segment` 必须引用同工作修订的已取得音轨及片段观察。可选转写绑定使用同一 ProviderRegistry，默认 null；没有新增 Agent 角色。verbose_json 和分段时间戳协议必须显式配置，ASR 结果以原视频时间坐标保存为 derived，不能当作精确原话。转写调用在原工作账预占并计入模型步数，原始 duration usage 与配置的 token 估算分别保留，取消/失败不证明零费用。同一调用已有请求但没有结论时不自动再次购买。
+
+### 普通文件资产与交付提案（C23）
+
+`prepare_workspace_file` 从当前工作修订的 Gateway 不可变产物读取实际字节，保存 `file_assets` 身份及数据库同级专用目录中的文件。资产保存原群、请求者、工作/修订、执行/产物、大小、MIME、展示名和有效期，不向模型提供宿主路径。首版仅支持 UTF-8 TXT/CSV/JSON、PDF、PNG/JPEG/WEBP/GIF、ZIP；独立脚本、可执行文件和 Office 均 unsupported。ZIP 不解包到宿主；检查路径、链接/特殊文件、加密、嵌套（最多 3 层）、文件数（1000）、展开字节（100MB）、不可检查压缩格式及敏感名称。名称筛查不是任意秘密内容检测；凭据、根配置、数据库和控制目录本来就不得进入工作输入。
+
+`for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 以 `file_asset_id` 加 `delivery_ref/work_ref` 单独提出文件行动，Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。C23 阶段适配器明确返回 capability_missing，C24 接入已确认协议。
+
+### OneBot 文件上传协议（C24）
+
+当前适配器只实现显式配置的 NapCat `upload_group_file_data_file_id`：上传参数 `group_id/file/name`，文件路径只能由宿主已登记资产映射为 `/lenbot-files/<asset_id>`。HTTP 和 WebSocket 复用原连接和发送队列，传输前已有 `DELIVERY_ATTEMPTED`。仅 `status=ok`、整数 `retcode=0` 且 `data.file_id` 非空才产生 `FILE_UPLOADED`；不会伪造 `message_id`。空返回、异步返回、格式变化或传输中断记 unknown，保留额度与文件且不重放；明确失败或连接未建立分别记录 rejected/not_sent。文字通知必须读取这条回执后沿原对话另行提出，通知失败不重传文件。协议来自 [NapCat 上传文档](https://napcat.apifox.cn/226658753e0)，生产实现/版本及挂载仍需现场核对，不能用该文档宣称现场已联调。
+
+### B 站登录态读取（C25）
+
+`bilibili_content.get_dynamic_feed` 现在只在当前人类工作可用：明确 `account_uid`、SESSDATA、`authenticated_read_enabled`、本群真实请求者的 `bilibili_authenticated_read` grant 以及原工作不可变动作审查。账号 connector 仅允许固定 nav/动态端点，先核对平台实际登录 UID，再读指定 UP 主的一页动态正文；不把完整返回、Cookie 或 HTTP 异常原文带入模型。分页由真实 offset 明确续读，转发原文/文章/附件未读会标明。结果 provenance 为 account，不能写为公共兴趣证据。原公开读取客户端始终匿名；凭据不提供给浏览器、media 或自由代码 worker。
+
+### C26 账号状态动作
+
+`set_bilibili_like` 与 `set_bilibili_favorite` 只作为当前人类工作的提案开放，声明独立 required_capabilities、account_write 副作用和账号输出范围。发现、schema 与执行共用 PluginHost 可用性检查；工作 Agent 将这些提案串行执行。专用 connector 固定请求端点，绑定运营账号 UID、AV、收藏夹、desired_state、原 job/revision/native call 与动作审查；Cookie 不进入提案或工作资料。
+
+`platform_actions` 保存平台动作的持久身份、请求尝试和结果，解决重启后未知写入不可重复的业务缺口。相同账号和资源串行；首次 POST 前在原写事务中检查当前工作与授权、原始动作、按配置时区计算的账号/能力额度，先记 unknown 占用。平台 code=0、明确拒绝、确认未建立连接及未知结果分别记录。原生调用重放只读原结果；新动作也须先核对同资源的未知项。核对时状态已满足目标可确认“当前目标状态成立”，不把它写成未知请求执行成功；状态相反不证明请求没发生，仍保留未知。点赞 recent-state 的 0 不证明取消；收藏只核对当前账号允许的指定收藏夹。
+
+平台回执事件和 QQ 发送事件分开；不从平台成功推导群消息已发送。工作结束/取消/授权撤销不回滚收藏，也不重放 POST。
+
+### C27 可选 Core 桥接身份
+
+Core 命令、下行帧与回传分属三个持久尝试身份，复用事件库与原插件生命周期。精确前缀消费规则沿用现有 handler，发送前核对真实 OneBot 身份；同源命令不重放。逐帧 echo 绑定持久插件事件及原发送动作，after_delivery 从事件恢复关系，进程内字典不再决定回执是否存在。无 echo 帧缺少可复用的协议身份，当前明确 unsupported；不增加内容指纹。工具声明的权限、副作用和数据范围随现有插件面板出口呈现。
+
+
+### 面板事实展示（C28）
+
+RuntimeQueryService 从原业务记录提供工作发起人、实际预占账户、创建时预算快照、正文/图像呈现事实，以及外部 execution 的修订、期限、占用与停止回执。执行列表只返回所需字段，不把控制目录、临时 CDN URL 或进程输出送入此概览。工作取消、容器停止、资源释放、文件上传、平台写操作和 QQ 消息送达仍是各自边界上的事实。
+
+公共兴趣是独立于社会认识的只读分页视图，保留原始状态并计算读取时是否过期；详情检查原匿名来源链，展示证据范围与最近 50 条原修订事件。来源链接使用资料实际 scene_id，不从兴趣的“public”属性推导原场景，也不从采用/链接推导后续模型已经看过。超过修订展示范围时明确标注。系统场景事件直接链接运行记录，普通群/私聊事件仍进入原会话页。
+
+任务查询的 system 分类包含 heartbeat、heartbeat_occupancy 与 interest_share，普通提醒列表排除这三类。普通提醒修改/取消/立即触发接口拒绝系统调度槽，周期页只读其原 payload、触发事件及最近调度观察。系统能力入口与可安装插件分开展示；供应商 duration 秒数独立于 token 汇总，价格未核实状态保留。
+
+
+### Linux 发布布局（C29）
+
+发布材料位于 [deploy/linux](../deploy/linux/README.md)：LenBot 镜像安装本批锁定依赖和前端产物，以非 root 用户运行，只挂根配置父目录、原数据目录和只读外部插件。Gateway 是独立 systemd 服务，使用原 ExecutionJournal 和固定镜像/策略引用，管理其自己的数据库、controls 和工作卷。OneBot 只读 file_assets，不能挂 LenBot 数据库或自由工作目录；具体版本仍由运营确认。
+
+Compose 与 service 是部署静态事实，不覆盖根配置中的业务参数。服务端 Gateway 配置与执行控制投影各自保持现有边界。联网放行仍依赖目标 Linux 的真实网络/UID/seccomp 证据，不能因添加部署文件就把 C13/C14 标记为已通过。

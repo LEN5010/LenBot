@@ -122,3 +122,31 @@ B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端�
 内置 `interest_share` 插件在全局未配置时为 unconfigured。全局参数为 `max_steps`、`context_tokens`、`output_tokens`；模型使用现有 conversation 绑定。本群参数为 `topics`（空表示所有有效主题）、`daily_limit`（0 不发）、`cooldown_seconds`。还需通过原能力授予向 `principal_type=plugin`、`principal_id=interest_share`、具体 `scene_id` 授予 `interest_share`，不使用 system 公共研究 grant 代替。场景表单按插件 Schema 呈现这些字段。
 
 插件只接受原 Scheduler 的真实槽及自己声明的 candidate 事件，不消费人类普通消息。社会表达复用 `run_agent(..., input_mode='conversation', output_mode='respond')`；仅能读取当前材料、提交至多一条短文字或沉默。此入口不授权文件上传、B 站账号写入或全体提及。候选表达和发送过程均复核当前版本与权限；发出的记录保留兴趣来源，候选被采用不等于消息已送达。
+
+### 媒体片段
+
+内置 `media_analysis` 注册 `get_video_segment` 和 `transcribe_video_segment`，均只在 work 中开放。前者参数为明确 bvid/cid、毫秒 start/end、frames（0—12）和 audio；后者使用前次实际 execution_id 与 result_id，不接受任意音频 URL 或宿主路径。结果附件引用真实媒体资产，像素是否装配以模型上下文清单为准，不能从工具完成状态推断已看完视频。
+
+Gateway 的固定 media worker 与 Python/browser 共用原执行协议，但分支互斥，不混入脚本或凭据。新下载动作使用原 ActionReviewer，转写使用同一 ProviderRegistry 的能力绑定并计入原工作，不引入第二个 Agent。前者来源为 anonymous_public，后者保留 derived 及原片段 source_result_ids；宿主不会把 ASR 强制标成匿名原始事实。插件关闭与工作结束回收原执行，结果未知不重新提交同一调用。
+
+### 文件产物（C23）
+
+workspace 新增 `prepare_workspace_file(path, execution_id, display_name, for_upload=false)`；只用于人类当前工作。返回持久 `file_asset`，不增加媒体 I 引用，也不直接发送。`for_upload` 审查消耗原工作预算。保存的资产 ID 经原对话提案/Gate 才能进入上传队列；通知文字须是另一条行动，不能在上传失败后直接声称成功。支持格式由工具 Schema 明列，不以任意扩展名开放新格式。
+
+C24 文件回执会进入原 `after_delivery`，事件类型是 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，字段使用 `file_asset_id/file_id/file_receipt`。插件不得将其 `file_id` 当成 QQ `message_id`。上传适配默认缺失，失败应保留资产供下载。
+
+### 登录资料工具（C25）
+
+`get_dynamic_feed(mid, offset="")` 只在已配置并获准的人类工作可发现/执行。connector 按工作工具预算及原动作审查执行，返回 account 范围的动态正文观察和显式下一页调用。公共研究没有此工具；没有 `desc` 的动态保留其真实身份并说明未读附件，不伪装成已读完整动态。
+
+### 工作中的账号提案
+
+工具声明增量包括 required_capabilities、side_effect、input_scope、output_scope。当前账号写入组合限定为 kind=proposal、roles=(work,)、side_effect=account_write、current_work 输入和 account 输出，并声明独立能力；PluginHost 的发现/schema/执行复用同一权限检查。数据范围声明描述所属边界，不能代替 handler 的真实来源、工作修订、具体资源和审查校验。账号写工具在工作循环中串行执行，返回持久平台动作的 ToolResult；不能调用 QQ 适配器冒充平台回执。B站 connector 独占凭据并执行固定点赞/收藏端点，无 URL、任意 Cookie、任意请求或 toggle 入口。
+
+### C27 Core 支持范围
+
+沿现有 GSUID Core 插件与连接锁，只匹配完整前缀词（默认 `/gs`），上行包含该条命令与直接引用，保留 `onebot` 和与当前适配器一致的实际 `bot_self_id`。命令首次发送前以原消息登记持久身份；WebSocket 提交只表示已转发，不能当游戏业务完成。断线和重启不重放已有命令。
+
+下行首版支持已配置群的文字、at、URL/base64 图片，经过原资产/Gate/发送队列。必须携带 echo 作为稳定帧身份；同 echo 不再次提交群消息。无 echo、语音/视频、普通文件、合并转发、按钮、撤回控制、私聊/频道和私聊登录均明确未支持，整帧拒绝。图片文字形式的登录提示没有独立登录能力，不自动执行账号流程。`after_delivery` 从持久源事件恢复 echo，只有 sent 且有真实 message_id 才回填 ID；unknown/失败/Shadow 不伪造 ID。回传本身先登记尝试，未知回传不自动重放。
+
+Core 可选，未配置不加载、不建立连接。面板列出代码支持矩阵、现场版本与身份状态；所有已接入项仍标记待现场联调，不能仅填写版本便宣称已验证。

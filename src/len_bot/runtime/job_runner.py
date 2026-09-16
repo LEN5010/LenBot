@@ -73,7 +73,7 @@ class WorkToolPresentation:
     """Use the existing whole-group page packer with work pixels and budget."""
     pack_tool_pages = ConversationContext.pack_tool_pages
 
-    def __init__(self, runtime, scene_id, config=None):
+    def __init__(self, runtime, scene_id, config=None, *, supports_segment_vision=False):
         self.runtime = runtime
         self.scene_id = scene_id
         cfg = config if config is not None else runtime.config
@@ -81,6 +81,7 @@ class WorkToolPresentation:
         self.attached = set()
         self.omissions = []
         self._image_limit = cfg.max_context_images
+        self.supports_segment_vision = supports_segment_vision
 
     def omit(self,section,reason,**details):
         item={'section':section,'reason':reason,**details}
@@ -110,7 +111,8 @@ class WorkToolPresentation:
         if not pending:
             return []
         prepared = await self.runtime.media_service.prepare_context_images(
-            self.scene_id, pending, limit=self._image_limit, read_cache=read_cache)
+            self.scene_id, pending, limit=self._image_limit, read_cache=read_cache,
+            supports_segment_vision=self.supports_segment_vision)
         self.attached.update(item["asset_id"] for item in prepared["manifest"] if item["status"] == "included")
         return [{"role":"user", "content":[
             {"type":"text", "text":"工具读取的原始图片：" + json.dumps(prepared["manifest"], ensure_ascii=False)},
@@ -310,7 +312,8 @@ class InformationJobRunner:
                                      'source_next_call':continuation.model_dump(mode='json') if continuation else None,
                                      'attachments':result.attachments,'pixels':'read_on_demand'})
         prepared = await self.runtime.media_service.prepare_context_images(job["scene_id"], assets,
-            limit=self.runtime.config.max_context_images)
+            limit=self.runtime.config.max_context_images,
+            supports_segment_vision=bool((job.get('model_binding') or {}).get('supports_vision')))
         facts = {"current_time": datetime.fromtimestamp(store.clock(), timezone.utc).isoformat(),
                  "job_id": job["id"], "revision": job["revision"], "goal": job["goal"], "constraints": job["constraints"],
                  "work_operation":job["work_operation"], "requester_qq_uid":job["requester_qq_uid"],
@@ -360,7 +363,8 @@ class InformationJobRunner:
                 '不选择发布群，不发消息，不把兴趣摘要当作新的来源证据。')
         if checkpoint:
             messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service,
-                job["scene_id"], image_limit=self.runtime.config.max_context_images)
+                job["scene_id"], image_limit=self.runtime.config.max_context_images,
+                supports_segment_vision=bool((job.get('model_binding') or {}).get('supports_vision')))
             if checkpoint["goal_revision"] != job["revision"]:
                 note=(f'这是原工作的显式继续，当前版本 {job["revision"]}；目标与范围未改，已有结果、阅读范围和已用预算保留。'
                       '从resume_from中的未完成项及当前observation_catalog给出的续页位置继续；旧版终结不代表本版再次完成。'
@@ -817,7 +821,9 @@ class InformationJobRunner:
                             if job["model_steps"]:
                                 raise LookupError("旧工作缺少已确认的模型绑定，不能用当前默认型号猜测恢复；原进度、资料和预算已保留。")
                             binding = runtime.provider_registry.resolve("work")
-                            await store.bind_job_model(job_id, scene_id, revision, {"provider_id": binding.provider_id, "model": binding.model, "reasoning_effort": binding.reasoning_effort})
+                            await store.bind_job_model(job_id, scene_id, revision, {"provider_id": binding.provider_id,
+                                "model": binding.model, "reasoning_effort": binding.reasoning_effort,
+                                "supports_vision": binding.supports_vision})
                         gateway = WorkGateway(binding, config.job_context_tokens, config.work_output_tokens,
                                               call_store=store, scene_id=scene_id, job_id=job_id, purpose='heartbeat' if public_research else 'work',
                                               admission=work_admission)
@@ -874,7 +880,7 @@ class InformationJobRunner:
 
                         compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config,
                             admission=work_admission)
-                        presentation = WorkToolPresentation(runtime, scene_id, config)
+                        presentation = WorkToolPresentation(runtime, scene_id, config, supports_segment_vision=binding.supports_vision)
 
                         def work_definitions():
                             reads = toolkit.get_tool_definitions()
@@ -960,7 +966,7 @@ class InformationJobRunner:
                         result = await AgentLoop(gateway).run(messages=messages,
                             tool_definitions=work_definitions,
                             execute_tool=execute_tool, terminal=FINISH_WORK, finish=finish,
-                            proposal_tool_names={"report_progress", "update_work_state"},
+                            proposal_tool_names={"report_progress", "update_work_state"} | self.runtime.plugin_host.proposal_tool_names(),
                             max_steps=count_remaining(config.job_max_steps, job["model_steps"]),
                             max_tool_calls=count_remaining(config.job_max_tool_calls, job["tool_calls"]),
                             before_model=before_model,

@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import logging
-import uuid
 from typing import Any
 
 from len_bot.events.models import EventType
@@ -35,8 +34,9 @@ class GscoreAdapterPlugin(BasePlugin):
         self.client = GscoreClient(self.config)
         self._receiver: asyncio.Task | None = None
         self._commands_sent = 0
-        # Core echo -> LenBot source event whose action will be delivered.
-        self._delivery_echoes: dict[str, str] = {}
+        # Counters are process-local; attempt and receipt identities live in the event store.
+        self._last_error: str | None = None
+        self._frames_received = 0
 
     async def on_load(self, context: PluginContext):
         context.register_handler(id='gscore_command', description='明确 /gs 命令交给独立 GSUID Core',
@@ -70,7 +70,6 @@ class GscoreAdapterPlugin(BasePlugin):
             await asyncio.gather(self._receiver, return_exceptions=True)
             self._receiver = None
         await self.client.close()
-        self._delivery_echoes.clear()
 
     async def on_unload(self):
         await self.on_disable()
@@ -91,23 +90,64 @@ class GscoreAdapterPlugin(BasePlugin):
             user_pm=3, content=content)
 
     async def on_command(self, call: PluginCallContext):
-        prefix, _, command = call.event.raw_text.strip().partition(' ')
+        parts = call.event.raw_text.strip().split(maxsplit=1)
+        prefix, command = parts[0], parts[1] if len(parts) > 1 else ''
         scene = call.scene_config
         effective_prefix = scene.command_prefix if scene and scene.command_prefix else self.config.command_prefix
         if prefix != effective_prefix or not command.strip():
             raise ValueError(f'GSUID Core 命令格式为 {effective_prefix} <命令>')
         if scene is None or not scene.command_enabled:
             raise ValueError('本群未启用 GSUID Core 命令')
+        await self.context._host.validate_call(call)
+        if self.config.bot_self_id != str(self.context._runtime.config.bot_qq):
+            raise ValueError('Core bot_self_id 与当前 OneBot 实际身份不一致')
         message = self._command_message(call, command.strip())
-        await self.client.send_frame(message.model_dump(exclude_none=True))
+        if not await self._claim('command', call.event.id, call.scene_id, {'source_event_id': call.event.id,
+                'bot_self_id': self.config.bot_self_id, 'state': 'attempted_unknown'}):
+            raise ValueError('该原始消息已经尝试交给 Core；恢复和重连不重放命令')
+        try:
+            await self.client.send_frame(message.model_dump(exclude_none=True))
+        except Exception as error:
+            await self._trace('command', call.event.id, call.scene_id, state='unknown', error_code=type(error).__name__)
+            raise ValueError('Core 命令发送结果未知；不自动重试') from None
         self._commands_sent += 1
+        await self._trace('command', call.event.id, call.scene_id, state='forwarded',
+            note='WebSocket 已提交；不表示游戏命令业务完成')
         return None
+
+    def source_status(self):
+        return {'connected': self.client._socket is not None, 'core_version': self.config.core_version,
+            'commands_sent_this_process': self._commands_sent, 'frames_received_this_process': self._frames_received,
+            'last_error_code': self._last_error, 'identity_matches': self.config.bot_self_id == str(self.context._runtime.config.bot_qq),
+            'support_matrix': [
+                {'type': '群文字 / at / 图片', 'status': 'implemented_unverified', 'detail': '需要逐帧 echo；图片登记到原媒体资产链'},
+                {'type': '语音 / 视频 / 普通文件', 'status': 'unsupported', 'detail': '整帧拒绝，不扁平化或借用工作文件权限'},
+                {'type': '合并转发 / 按钮 / 撤回控制', 'status': 'unsupported', 'detail': '整帧拒绝'},
+                {'type': '私聊 / 频道 / 私聊登录', 'status': 'unsupported', 'detail': '仅接受配置的 QQ 群目标'},
+                {'type': '无 echo 帧', 'status': 'unsupported', 'detail': '缺少逐帧稳定身份，不猜 msg_id 为帧身份'}],
+            'verification': '源码支持范围；实际 Core 版本及逐帧 OneBot 回执仍须现场核对'}
 
     async def status(self, arguments, call_context: PluginCallContext):
         return ToolResult(status='ok', evidence_kind='retrieval', coverage='gscore_adapter_status',
-            content=json.dumps({'configured': bool(self.config.ws_url), 'connected': self.client._socket is not None,
-                'commands_sent': self._commands_sent, 'pending_delivery_receipts': len(self._delivery_echoes),
-                'scope': '仅明确 /gs 命令；不监听普通群聊；Core 输出只接受配置场景群目标'}, ensure_ascii=False))
+            content=json.dumps(self.source_status(), ensure_ascii=False))
+
+    async def _trace(self, kind, ref_id, scene_id, **payload):
+        await self.context.event_store.save_trace(kind='gscore_' + kind, ref_id=ref_id,
+            scene_id=scene_id, payload=payload)
+
+    async def _claim(self, kind, identity, scene_id, payload):
+        store = self.context.event_store
+        async with store._write_lock:
+            try:
+                key = 'gscore:' + json.dumps([self.config.bot_self_id, kind, identity], ensure_ascii=False)
+                cursor = await store._db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?)',
+                    (key, 'CORE_BRIDGE_ATTEMPTED', scene_id, 'plugin:gscore_adapter', store.clock(),
+                     json.dumps({'kind': kind, **payload}, ensure_ascii=False), '{"conversation_excluded":true}'))
+                await store._db.commit()
+                return cursor.rowcount == 1
+            except BaseException:
+                await store._db.rollback()
+                raise
 
     async def _receive_loop(self):
         while True:
@@ -117,7 +157,8 @@ class GscoreAdapterPlugin(BasePlugin):
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                logger.warning('GSUID Core receive failed: %s', error)
+                self._last_error = type(error).__name__
+                logger.warning('GSUID Core receive failed: %s', self._last_error)
                 await self.client.close()
                 await asyncio.sleep(self.config.reconnect_seconds)
 
@@ -138,13 +179,11 @@ class GscoreAdapterPlugin(BasePlugin):
         message = CoreMessageSend.model_validate(frame)
         if message.bot_id == self.config.core_bot_id:
             return
-        if message.bot_id and message.bot_id != self.config.platform_bot_id:
-            logger.warning('Ignoring Core frame for unconfigured platform bot_id %s', message.bot_id)
-            await self._send_receipt(message.echo, None)
+        if message.bot_id != self.config.platform_bot_id:
+            logger.warning('Ignoring Core frame for unconfigured platform identity')
             return
-        if message.bot_self_id and message.bot_self_id != self.config.bot_self_id:
-            logger.warning('Ignoring Core frame for unconfigured bot_self_id %s', message.bot_self_id)
-            await self._send_receipt(message.echo, None)
+        if message.bot_self_id != self.config.bot_self_id or self.config.bot_self_id != str(self.context._runtime.config.bot_qq):
+            logger.warning('Ignoring Core frame for unconfigured OneBot identity')
             return
         scene_id = self._target_scene(message)
         if scene_id is None:
@@ -156,8 +195,16 @@ class GscoreAdapterPlugin(BasePlugin):
             logger.warning('Ignoring Core push for disabled scene %s', scene_id)
             await self._send_receipt(message.echo, None)
             return
+        if not message.echo:
+            await self._trace('frame', message.msg_id, scene_id, state='unsupported', reason='frame_echo_missing')
+            return
+        event_id = 'gscore:send:' + json.dumps([self.config.bot_self_id, message.echo], ensure_ascii=False)
+        if not await self._claim('frame', message.echo, scene_id,
+                {'source_event_id': event_id, 'echo': message.echo, 'state': 'received'}):
+            return
+        self._frames_received += 1
         await self.context.emit_event('core_message_send', message, scene_id=scene_id,
-            event_id=f'gscore:send:{message.echo or uuid.uuid4().hex}', timestamp=self.context.now())
+            event_id=event_id, timestamp=self.context.now())
 
     async def _segments(self, message: CoreMessageSend, call: PluginCallContext) -> tuple[list[MessageSegment], list[str]]:
         segments: list[MessageSegment] = []
@@ -201,41 +248,47 @@ class GscoreAdapterPlugin(BasePlugin):
         segments, unsupported = await self._segments(message, call)
         if unsupported:
             logger.warning('Core frame contains unsupported message segments: %s', sorted(set(unsupported)))
+            await self._trace('frame', call.event.id, call.scene_id, state='unsupported', types=sorted(set(unsupported)))
             await self._send_receipt(message.echo, None)
             return
         if not segments:
             await self._send_receipt(message.echo, None)
             return
-        source_event_id = call.source_event_id or call.event.id
-        if message.echo:
-            self._delivery_echoes[source_event_id] = message.echo
         try:
             await call.submit_message(segments)
         except Exception:
-            self._delivery_echoes.pop(source_event_id, None)
             await self._send_receipt(message.echo, None)
             raise
 
     async def after_delivery(self, view, call: PluginCallContext):
-        receipt = view.receipt
-        payload = receipt.get('payload') or {}
+        payload = view.receipt.get('payload') or {}
         source_event_id = payload.get('origin_event_id')
         if not source_event_id:
             return view
-        echo = self._delivery_echoes.pop(source_event_id, None)
-        if not echo:
+        events = await self.context.event_store.events_by_ids(call.scene_id, [source_event_id], call.cutoff_rowid)
+        if not events:
             return view
+        source = events[0]
+        if source.payload.get('plugin_id') != self.manifest.id or source.payload.get('name') != 'core_message_send':
+            return view
+        message = CoreMessageSend.model_validate(source.payload['data'])
         status = payload.get('delivery_status')
         message_id = payload.get('message_id') if status == 'sent' else None
-        await self._send_receipt(echo, message_id)
+        await self._trace('delivery', source_event_id, call.scene_id, status=status, message_id=message_id,
+            action_id=payload.get('action_id'), receipt_event_id=view.receipt.get('id'))
+        await self._send_receipt(message.echo, message_id)
         return view
 
     async def _send_receipt(self, echo: str | None, message_id: str | None):
         if not echo:
             return
+        if not await self._claim('receipt', echo, 'system:gscore', {'echo': echo, 'message_id': message_id, 'state': 'attempted_unknown'}):
+            return
         receipt = {'bot_id': self.config.platform_bot_id, 'bot_self_id': self.config.bot_self_id,
             'user_id': '', 'content': [{'type': 'recall_message_id', 'data': {'echo': echo, 'id': message_id}}]}
         try:
             await self.client.send_frame(receipt)
+            await self._trace('receipt', echo, 'system:gscore', state='forwarded', message_id=message_id)
         except Exception as error:
-            logger.warning('Could not send Core recall_message_id receipt: %s', error)
+            await self._trace('receipt', echo, 'system:gscore', state='unknown', error_code=type(error).__name__)
+            logger.warning('Could not send Core recall_message_id receipt: %s', type(error).__name__)

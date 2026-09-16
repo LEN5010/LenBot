@@ -1,0 +1,54 @@
+name: lenbot
+services:
+  lenbot:
+    image: lenbot:release
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: deploy/linux/Dockerfile
+    user: "10000:10000"
+    working_dir: /srv/lenbot
+    init: true
+    restart: "no"
+    stop_signal: SIGTERM
+    stop_grace_period: 90s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=128m,mode=1777
+    ports:
+      - "127.0.0.1:11307:11307"
+    volumes:
+      - type: bind
+        source: /srv/lenbot/control
+        target: /srv/lenbot
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/lenbot
+        target: /var/lib/lenbot
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/lenbot/local_plugins
+        target: /srv/lenbot/local_plugins
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [control]
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+# A host-side Gateway can listen on this network's gateway address.
+# Worker containers must never join it. Create it before starting services.
+networks:
+  control:
+    name: lenbot-control
+    external: true

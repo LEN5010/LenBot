@@ -9,6 +9,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
 import ScopeSelect from '../components/ScopeSelect.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
+import PublicInterestsPanel from '../components/PublicInterestsPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const scalar = value => typeof value === 'string' ? value : ''
@@ -37,6 +38,7 @@ function close() { router.push({ name: 'memories', query: listQuery() }) }
 function applyFilters() { router.push({ name: 'memories', query: { ...clean({ scene: filters.value.scene, subject: (filters.value.subject || '').trim(), kind: filters.value.kind, query: (filters.value.query || '').trim() }), status: filters.value.status, page: 1 } }) }
 function changePage(value) { router.push({ name: 'memories', query: { ...route.query, page: value } }) }
 async function loadList() {
+  if (route.query.tab === 'interests') return
   const request = ++listRequest
   loading.value = true; listError.value = ''
   const params = new URLSearchParams(clean({ scope: scalar(route.query.scene), subject: scalar(route.query.subject), status: route.query.status === undefined ? 'active' : scalar(route.query.status), kind: scalar(route.query.kind), query: scalar(route.query.query), page: page.value, page_size: 30 }))
@@ -51,6 +53,7 @@ async function loadList() {
   finally { if (request === listRequest) loading.value = false }
 }
 async function loadDetail({ reset = false } = {}) {
+  if (route.query.tab === 'interests') return
   if (!id.value) return
   const current = id.value, request = ++detailRequest, scope = scalar(route.query.scene)
   detailLoading.value = true; detailError.value = ''; detailMissing.value = false
@@ -92,12 +95,12 @@ async function rebuildIndex() {
 function onVisible() { if (document.visibilityState === 'visible') refresh() }
 onMounted(() => document.addEventListener('visibilitychange', onVisible))
 onBeforeUnmount(() => { ++listRequest; ++detailRequest; document.removeEventListener('visibilitychange', onVisible) })
-onBeforeRouteUpdate((to, from) => to.query.id !== from.query.id || to.query.scene !== from.query.scene ? confirmLeave() : true)
-watch(() => [route.query.id, route.query.scene], () => {
+onBeforeRouteUpdate((to, from) => to.query.id !== from.query.id || to.query.scene !== from.query.scene || to.query.tab !== from.query.tab ? confirmLeave() : true)
+watch(() => [route.query.tab, route.query.id, route.query.scene], () => {
   ++listRequest; ++detailRequest; refuteOpen.value = false; reason.value = ''; actionError.value = ''; feedback.value = ''
   if (id.value) loadDetail({ reset: true })
 }, { immediate: true })
-watch(() => [route.query.id, route.query.scene, route.query.subject, route.query.status, route.query.kind, route.query.query, route.query.page], () => {
+watch(() => [route.query.tab, route.query.id, route.query.scene, route.query.subject, route.query.status, route.query.kind, route.query.query, route.query.page], () => {
   filters.value = { scene: scalar(route.query.scene), subject: scalar(route.query.subject), status: route.query.status === undefined ? 'active' : scalar(route.query.status), kind: scalar(route.query.kind), query: scalar(route.query.query) }
   if (!id.value) { rows.value = []; total.value = 0; listLoaded.value = false; readAt.value = null; indexStatus.value = null; loadList() }
 }, { immediate: true })
@@ -105,6 +108,9 @@ watch(() => [route.query.id, route.query.scene, route.query.subject, route.query
 
 <template>
   <section class="memories-page">
+    <v-tabs :model-value="route.query.tab === 'interests' ? 'interests' : 'social'" class="mb-5" @update:model-value="value => router.push({name:'memories',query:value === 'interests' ? {tab:'interests'} : {}})"><v-tab value="social">认识与记忆</v-tab><v-tab value="interests">公共兴趣</v-tab></v-tabs>
+    <PublicInterestsPanel v-if="route.query.tab === 'interests'" />
+    <template v-else>
     <PageHeader :title="id ? '认识详情' : '认识与记忆'" description="查看原话报告、有据推断与修订；认识不是原始事实的替代品。">
       <v-btn v-if="id" variant="text" :prepend-icon="mdiArrowLeft" @click="close">返回认识列表</v-btn>
       <v-btn variant="outlined" :prepend-icon="mdiRefresh" :loading="id ? detailLoading : loading" @click="refresh">刷新</v-btn>
@@ -126,6 +132,7 @@ watch(() => [route.query.id, route.query.scene, route.query.subject, route.query
         <v-card class="section-gap"><v-card-title>原始证据</v-card-title><v-card-text><div class="link-list"><EntityLink v-for="eventId in memory.evidence" :key="eventId" type="event" :id="eventId" :scene-id="memory.scope" /></div><p v-if="!memory.evidence.length" class="auxiliary">此记录没有附原始证据。</p></v-card-text></v-card>
         <v-card class="section-gap"><v-card-title>修订时间线</v-card-title><v-card-text><ol class="revision-list"><li v-for="item in chain" :key="item.id" class="revision-item"><div class="revision-heading"><time>{{ fmtTime(item.created_at) }}</time><StatusBadge domain="memory" :status="item.status" /><StatusBadge domain="basis" :status="item.basis" /><EntityLink type="memory" :id="item.id" :scene-id="item.scope" /></div><p class="full-copy">{{ item.statement }}</p><p v-if="item.revision_reason" class="full-copy">修订依据：{{ item.revision_reason }}</p><v-expansion-panels variant="accordion"><v-expansion-panel title="原始证据与修订关联"><v-expansion-panel-text><h3>原始证据</h3><div class="link-list"><EntityLink v-for="eventId in item.evidence" :key="eventId" type="event" :id="eventId" :scene-id="item.scope" /></div><h3 v-if="item.revision_evidence.length">修订证据</h3><div class="link-list"><EntityLink v-for="eventId in item.revision_evidence" :key="eventId" type="event" :id="eventId" :scene-id="item.scope" /></div><h3 v-if="item.supersedes_ids.length || item.superseded_by">替代关系</h3><div class="link-list"><EntityLink v-for="memoryId in item.supersedes_ids" :key="memoryId" type="memory" :id="memoryId" :scene-id="item.scope" /><EntityLink v-if="item.superseded_by" type="memory" :id="item.superseded_by" :scene-id="item.scope" /></div></v-expansion-panel-text></v-expansion-panel></v-expansion-panels></li></ol><p v-if="!chain.length" class="auxiliary">没有找到修订记录。</p></v-card-text></v-card>
       </template>
+    </template>
     </template>
   </section>
 </template>

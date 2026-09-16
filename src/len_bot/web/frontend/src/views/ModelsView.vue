@@ -45,7 +45,7 @@ const roles = [
   { key: 'work', name: '工作', description: '后台查询、计算和核实，形成带来源的结果。' },
   { key: 'maintenance', name: '维护', description: '增量整理历史与认识，压缩工作上下文和整理方法技能。' },
 ]
-const emptyProfile = () => ({ provider_id: '', model: '', reasoning_effort: '' })
+const emptyProfile = () => ({ provider_id: '', model: '', reasoning_effort: '', supports_vision: false })
 const providerDirty = computed(() => providerOpen.value && JSON.stringify(providerForm.value) !== providerOriginal.value)
 const routingSnapshot = () => JSON.stringify({ profiles: routingForm.value, enabled: roleEnabled.value })
 const routingDirty = computed(() => routesOpen.value && routingSnapshot() !== routingOriginal.value)
@@ -162,7 +162,7 @@ async function saveModels(provider) {
 }
 function profile(key) {
   const value = routingForm.value[key]
-  return { provider_id: value.provider_id, model: value.model.trim(), reasoning_effort: value.reasoning_effort?.trim() || null }
+  return { provider_id: value.provider_id, model: value.model.trim(), reasoning_effort: value.reasoning_effort?.trim() || null, supports_vision: !!value.supports_vision }
 }
 const canSaveRouting = computed(() => routingForm.value && roles.every(({key}) =>
   !roleEnabled.value[key] || routingForm.value[key].provider_id && routingForm.value[key].model?.trim()))
@@ -250,6 +250,7 @@ watch(() => route.name, load, { immediate: true })
                   <v-select v-model="routingForm[role.key].provider_id" :items="data.providers.map(p=>({title:`${p.id}${p.enabled?'':'（停用）'}`,value:p.id}))" label="供应商" @update:model-value="routingForm[role.key].model=''" />
                   <v-combobox v-model="routingForm[role.key].model" :items="choicesFor(routingForm[role.key].provider_id)" label="模型名称" />
                   <v-text-field v-model="routingForm[role.key].reasoning_effort" label="推理强度（留空使用模型默认）" />
+                  <v-switch v-model="routingForm[role.key].supports_vision" label="已确认此绑定支持图片输入" hint="视频采样帧只装配给已确认支持视觉的绑定；默认关闭。" persistent-hint />
                 </div>
                 <v-btn variant="text" color="primary" :disabled="!!busy||!providerById(routingForm[role.key].provider_id)?.enabled||!routingForm[role.key].model?.trim()" @click="testConfirm={name:role.name,profile:profile(role.key)}">检查当前选择（不保存）</v-btn>
               </template>

@@ -56,7 +56,7 @@ def _is_shadow_input(event: Event) -> bool:
         EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED,
         EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
         EventType.AGENT_JOB_PROGRESS, EventType.REFLECTION_RECORDED,
-        EventType.MESSAGE_SEND_FAILED, EventType.LIVE_STARTED, EventType.LIVE_ENDED,
+        EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOAD_FAILED, EventType.FILE_UPLOADED, EventType.LIVE_STARTED, EventType.LIVE_ENDED,
         EventType.TOOL_COMPLETED, EventType.USER_JOINED,
     }
     if event.event_type not in source_types:
@@ -145,6 +145,8 @@ class AgentRuntime:
         self.action_reviewer = ActionReviewer(self)
         self.job_runner = InformationJobRunner(self)
         self.media_service = MediaService(self)
+        from len_bot.media.files import FileAssetService
+        self.file_assets = FileAssetService(self)
         self._cognition_semaphore = asyncio.Semaphore(config.conversation_max_concurrent)
         self._last_gate_decision: GateDecision | None = None
         self._started_at = self.clock()
@@ -641,6 +643,8 @@ class AgentRuntime:
             await self.action_queue._reject(action, f'延期直播重核失败：{error}', status='rejected', cancelled=True)
 
     async def prepare_outbound_action(self, action: ActionItem) -> ActionItem:
+        if action.file_asset_id:
+            return await self.file_assets.prepare_action(action)
         if action.plugin_origin and action.plugin_origin.plugin_id == 'interest_share':
             from len_bot.runtime.interest_publication import publication_for
             from len_bot.plugins.builtin.interest_share.config import Candidate
@@ -653,6 +657,9 @@ class AgentRuntime:
         return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
+        if action.file_asset_id:
+            from len_bot.media.files import validate_file_action
+            await validate_file_action(self.event_store, action)
         if action.job_id and not action.operation_ref:
             job=await self.event_store.get_job(action.job_id,action.scene_id)
             if job:

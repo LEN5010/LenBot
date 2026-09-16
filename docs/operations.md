@@ -41,7 +41,7 @@ cp lenbot.config.example.json lenbot.config.json
 
 Embedding 客户端显式要求浮点响应格式。每次检索操作在记账等待后、实际发起 embedding 或 rerank 请求前复核本群语义开关；关闭后的操作返回明确中断，不回退成成功的词面结果。向量候选先应用与词面查询相同的人物、类别、建立时间、状态和有效期条件，摘要检索还受本轮读取截点限制并保留词面与语义候选的并集，其日期范围在向量 top-k 前筛选；摘要批次 ID 不伪装成工具资料引用。
 
-媒体下载必须通过已保存的 `parse_link` 结果和明确下载入口。解析链接只读取 metadata；下载阶段校验响应容器字节，HTML、JSON 或无法识别的内容不会登记为视频/音频资产。内部 `audio` 发送到 OneBot 11 时映射为 `record`，出站请求仍需等待原有真实回执。
+链接解析插件的媒体下载必须通过已保存的 `parse_link` 结果和明确下载入口。解析链接只读取 metadata；下载阶段校验响应容器字节，HTML、JSON 或无法识别的内容不会登记为视频/音频资产。工作中的公开片段读取另走 C22 的明确 bvid/cid、时间区间与媒体 Gateway，不借用完整视频下载入口。内部 `audio` 发送到 OneBot 11 时映射为 `record`，出站请求仍需等待原有真实回执。
 
 确认配置和结构就绪，并取得当次生产启动授权后，在根目录执行：
 
@@ -242,3 +242,61 @@ time.sleep_start/sleep_end 成对设置。具备聊天资格的人类叫醒时�
 通过面板填写并启用 `interest_share` 全局插件，再为明确目标群填写主题、每日次数与冷却并启用该插件；在全局能力授予中向插件主体 `interest_share` 授予该群的 `interest_share` 能力。普通聊天、公共研究与发送文件各自授权，任何一个开关都不替代此 grant。不要手工修改运行中的根文件。
 
 TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的“公共兴趣分享机会”给出候选/跳过原因，“公共兴趣表达”记录模型用量。实际是否发送以原 ActionQueue 的消息回执为准；发送尝试的 `interest_publication` 保存候选版本与公共资源 URL。未知结果不重发，也不释放当日次数；明确未发送不计入已用次数。默认每半小时一个机会，睡眠、连续消息上限、冷却、额度或无相关内容均可零发布。停用插件会取消其未领取槽，重启不重新执行已领取机会。
+
+### 配置媒体片段（C22）
+
+按 [media worker 部署说明](../containers/media/README.md) 构建固定镜像，Gateway 登记 `media` 类型及已核验公共出口策略，再通过面板配置 `media_analysis` 的 `image_ref`、`network_policy`、`max_download_bytes`、`timeout_seconds`。它使用同根配置的 `workspace.gateway` 连接，不会回落到宿主解码。此插件默认未配置；运行中继续只通过面板保存。
+
+模型配置页新增“已确认此绑定支持图片输入”，默认关闭。确认真实模型能力后才打开；已有工作保持原冻结值，不用当前配置覆盖。转写在媒体插件的 `transcription` 字段单独绑定同一供应商，默认 null，填写已核对的 model、`protocol=openai_verbose_json`、`estimated_tokens_per_second` 和 `max_text_chars`。估算只用于工作预算，不是价格。缺字幕时 Agent 可显式选择转写，也可提交部分结果；不自动猜模型或切换型号。
+
+片段的工具资料保留 execution_id、实际帧坐标与音轨范围；运行轨迹中的 media_segment 保存回收记录，audio_transcription 保存转写调用关联，模型账的“音频片段转写”保存实际供应商 usage。失败或超时后查看原执行与清单，过期 URL 需要新的显式片段读取，不自动重跑整项工作。目标环境的镜像、流量与时间轴、取消终止和真实模型协议尚未完成运行核对，状态见当前任务。
+
+### 持久文件资产（C23）
+
+根配置 `runtime.file_delivery` 默认 `enabled=false`，`max_file_bytes=50000000`、`daily_group_limit=10` 可调低，`retention_seconds=604800`。配置运行中通过面板运行参数保存，需重启生效；本轮未改生产根文件。授权 `send_file` 不自动启用上传后端。普通产物仍可下载；工作页另列持久资产、有效期、尝试和独立上传回执。
+
+停机备份数据库和数据库同级 `file_assets/`，保留文件权限。资产采用宿主生成身份，目录 0750、文件 0440；待发送和 unknown 文件不因工作结束或有效期到达而自动删除，有效期仅阻止新上传。首版保留所有登记资产供运营核对后按现有备份/留存流程处理。跨群、工作修订变化、权限撤销和超限均拒绝上传；不能把面板下载当成已发群。
+
+### 配置 OneBot 文件上传（C24）
+
+面板运行参数新增 `onebot_file_upload`（默认 null）。当前支持配置示意如下，版本必须替换为现场值，核对前保留 false：
+
+```json
+{"implementation":"napcat","version":"填写实际版本","protocol":"upload_group_file_data_file_id","deployment_verified":false,"export_mount_path":"/lenbot-files"}
+```
+
+只将数据库同级 `file_assets/` 只读挂入 OneBot 的 `/lenbot-files`，不得共享完整工作区、控制目录、配置或数据库。宿主运行账号应能创建资产，OneBot 账号通过部署文件组获得 0750/0440 读取权限；核对挂载确实只读。授权人工操作一份指定群的小文件，核对真实 `data.file_id` 后才修改部署确认项。现有 HTTP/WS 连接模式不变。不同实现或无 file_id 的旧版本明确不可用，不自动猜测返回字段或改用 URL。
+
+生产开启须同时具备 `file_delivery.enabled`、当前用户与群的 `send_file`、资产审查以及已核对协议。unknown 保留原尝试、资产及额度供现场核对，不提供再次发送按钮或强制标成功；面板下载仍可用。
+
+### B 站账号配置与动态读取（C25）
+
+现有 bilibili_content 插件增加 `account_uid`（默认 null）和 `authenticated_read_enabled`（默认 false）。即使旧配置有 SESSDATA，升级也不会自动开放登录资料；须按原插件表单保存 UID/开关，并为人类请求者和群独立授予登录读取能力。SESSDATA/bili_jct 仍只在原根配置，面板出口遮蔽并仅显示设置状态；本轮未移动或替换实际 Cookie。根配置须 0600，备份同级保护；权限不符时 connector 明确拒绝，请先停机按运行手册修改。账号配置变化后重载插件，运行调用不能继续借用旧配置。
+
+首次请求会读取 nav 核对实际 UID；未登录、身份不符、重定向、超出 2MB、格式变化和平台错误码明确失败，不自动登录或修参数。账号错误记录只保留阶段和错误码，不记录 Cookie 或上游原始响应。
+
+### C26 专用账号写入开通与未知状态
+
+`bilibili_content` 的 `daily_like_limit`、`daily_favorite_limit` 默认 0；`allowed_collection_ids` 默认空。运营停机配置真实账号 UID、SESSDATA、bili_jct，并为点赞提供文档要求的真实 buvid3；保持根配置和备份 0600。仅在根配置 access 中分别授权 bilibili_like/bilibili_favorite 后，当前人类工作才可发现对应提案。额度按账号和能力聚合，不能靠切群或换请求者绕开；一天以 time.timezone 为准。未取得现场账号与协议证据前保持关闭。
+
+工作页平台动作显示 confirmed/not_sent/rejected/unknown、账号、资源、收藏夹、期望状态、修订、尝试时间和原因。unknown 保留额度；原调用不重试，下一次新提案先通过相应窄状态接口核对。点赞状态 0 不证明取消成功，不能据此解除占用；相反状态也不证明原请求未执行。没有“强制成功”或自动重试按钮。撤销权限只阻止未来请求，不删除已有收藏。备份数据库时包含 platform_actions 和 PLATFORM_ACTION_* 原始事件。
+
+### C27 Core 现场核对
+
+地址使用无 query、fragment、userinfo 的 ws/wss 端点；认证令牌只填 writeOnly 的 access_token，由客户端按明确 token_query_parameter 注入。`core_version` 记录现场核对的版本/提交，默认空；`platform_bot_id` 固定 onebot，bot_self_id 必须与当前 OneBot QQ 身份一致。保持 Core 默认可选，不自动安装游戏插件。
+
+首版下行必须有逐帧 echo。部分上游普通回复默认不带 echo，这类帧在 LenBot 明确不支持，须先核对实际 Core 游戏命令的输出模式，再开放对应群。不要为解决此差异把 msg_id 当帧 ID，也不使用内容指纹去猜重复。原消息命令、下行帧和 recall_message_id 回传分别登记 CORE_BRIDGE_ATTEMPTED 与 gscore_* 观察；已转发不等于已完成，回传中断不触发命令重放。现场仍需逐项观察支持矩阵和真实 OneBot 回执，未取得前不标记运行通过。
+
+
+### 跨模块核对入口（C28）
+
+“能力与插件”上方可进入系统能力页面。“认识与记忆 → 公共兴趣”按主题/内容查找，核对事实/评价/意图、版本、有效期、匿名来源证明、采用工作与修订原因；查看记录不会抓取来源或调用模型。“提醒、等待与周期 → 心跳与兴趣分享”显示预定槽、真实触发、关联研究及跳过原因，不能在普通提醒入口手动取消/提前系统槽；启停仍走所属心跳/插件配置。
+
+工作详情页首显示真实发起主体与预占账户，“预算与压缩”显示原工作快照和结算，“进度与资料”显示已持久化呈现范围，“执行记录”显示外部执行仍否占用及停止回执。termination_unconfirmed 需要核对原执行服务，面板没有“强制清零”占用入口。文件上传、B 站状态和 QQ 回执分别查看原记录。调用页将供应商报告的音频秒数单列；token 缺失仍标记未知，不把音频秒数当 token 或价格。
+
+
+### Linux 发布材料（C29）
+
+具体部署配方、目录/权限、配置映射、起停顺序、普通备份与恢复见 [deploy/linux](../deploy/linux/README.md)。LenBot 使用无 Docker socket 的 Compose，Gateway 保留独立宿主服务和日志库；配置挂整个父目录，支持原面板原子保存。离线 Python 与尚未核验的 public 网络分别准备，模板不改现场根配置，不自动启动或登录平台。
+
+升级记录要同时保存源码/镜像、LenBot 与 Gateway 库、完整媒体/文件资产/插件数据/任务卷以及实际配置。发布时使用 [现场记录模板](../deploy/linux/release-evidence.template.md) 在本地运维目录记录真实聊天群、播报群及可选项，阶段结果归纳到本轮状态；模板存在、构建通过均不能写成部署或实群通过。

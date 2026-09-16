@@ -143,6 +143,14 @@ class OneBotAdapter:
 
     async def send_action(self, action: ActionItem) -> DeliveryResult:
         """Sends action to connected OneBot client via JSON-RPC."""
+        if action.file_asset_id:
+            settings = self.config.onebot_file_upload
+            if settings is None or not settings.deployment_verified:
+                return DeliveryResult(status=DeliveryStatus.NOT_SENT, transport='none', error_code='capability_missing',
+                    error='实际 OneBot 文件协议未核对；资产保留在工作面板')
+            if not action.resolved_file or not action.file_name:
+                return DeliveryResult(status=DeliveryStatus.NOT_SENT, transport='none', error_code='asset_unresolved',
+                    error='文件资产未由宿主解析')
         if self.config.onebot_action_transport == "http":
             return await self._send_http_action(action)
         if not self._active_ws:
@@ -165,7 +173,7 @@ class OneBotAdapter:
         try:
             await self._active_ws.send(json.dumps(payload))
             res = await asyncio.wait_for(fut, timeout=self.config.onebot_request_timeout_seconds)
-            return self._delivery_response(res, "websocket")
+            return self._delivery_response(res, "websocket", action)
         except Exception as e:
             return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="websocket",
                                   error_code=type(e).__name__, error="请求已进入发送阶段，但未取得可靠确认")
@@ -182,7 +190,7 @@ class OneBotAdapter:
                     return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="http",
                                           error_code=str(response.status_code), error="HTTP 返回异常状态，无法确认消息是否发送")
                 data = response.json()
-            return self._delivery_response(data, "http")
+            return self._delivery_response(data, "http", action)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:
             return DeliveryResult(status=DeliveryStatus.NOT_SENT, transport="http",
                                   error_code=type(error).__name__, error="HTTP 连接未建立，请求未发出")
@@ -190,7 +198,10 @@ class OneBotAdapter:
             return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="http",
                                   error_code=type(error).__name__, error="HTTP 请求未取得可靠发送确认")
 
-    def _delivery_response(self, data: dict, transport: str) -> DeliveryResult:
+    def _delivery_response(self, data: dict, transport: str, action: ActionItem) -> DeliveryResult:
+        if action.file_asset_id:
+            from len_bot.adapters.file_upload import upload_response
+            return upload_response(data, transport)
         if self._response_ok(data):
             self._remember_own_message(data)
             message_id = (data.get("data") or {}).get("message_id")
@@ -233,6 +244,15 @@ class OneBotAdapter:
             }
 
     def _action_payload(self, action: ActionItem) -> tuple[str, dict]:
+        if action.action_type == ActionType.UPLOAD_GROUP_FILE:
+            from pathlib import PurePosixPath
+            settings = self.config.onebot_file_upload
+            expected = str(PurePosixPath(settings.export_mount_path) / action.file_asset_id) if settings else None
+            if (not settings or not settings.deployment_verified or not action.file_name
+                    or action.resolved_file != expected):
+                raise ValueError('文件没有受限资产路径或已确认的协议能力')
+            return 'upload_group_file', {'group_id': int(action.scene_id.removeprefix('group:')),
+                'file': action.resolved_file, 'name': action.file_name}
         endpoint = "send_group_msg" if action.action_type == ActionType.SEND_GROUP_MESSAGE else "send_private_msg"
         parts = [{"type": "reply", "data": {"id": str(action.reply_to)}}] if action.reply_to else []
         for segment in action.segments:

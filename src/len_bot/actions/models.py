@@ -26,8 +26,11 @@ class DeliveryResult(BaseModel):
     error_code: str | None = None
     error: str = ""
     message_id: str | None = None
+    file_id: str | None = None
+    file_receipt: dict | None = None
 
 class ActionType(StrEnum):
+    UPLOAD_GROUP_FILE = "UPLOAD_GROUP_FILE"
     SEND_GROUP_MESSAGE = "SEND_GROUP_MESSAGE"
     SEND_PRIVATE_MESSAGE = "SEND_PRIVATE_MESSAGE"
 
@@ -39,6 +42,9 @@ class AllMentionSegment(BaseModel):
 
 class ActionItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    file_asset_id: str | None = None
+    resolved_file: str | None = Field(default=None, exclude=True)
+    file_name: str | None = None
     interest_publication: InterestPublication | None = None
     source_started_at: float | None = None
     planned_at: float | None = None
@@ -49,7 +55,7 @@ class ActionItem(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     action_type: ActionType
     scene_id: str
-    segments: list[MessageSegment | AllMentionSegment] = Field(min_length=1)
+    segments: list[MessageSegment | AllMentionSegment] = Field(default_factory=list)
     output_kind: Literal['chat', 'plugin', 'command', 'announcement'] = 'chat'
     plugin_origin: PluginOrigin | None = None
     requester_qq_uid: str | None = None
@@ -76,6 +82,13 @@ class ActionItem(BaseModel):
 
     @model_validator(mode="after")
     def operation_confirmation(self):
+        if self.action_type == ActionType.UPLOAD_GROUP_FILE:
+            if (not self.file_asset_id or self.segments or not self.job_id or self.job_revision is None
+                    or not self.scene_id.startswith('group:') or self.reply_to or self.associated_open_loop
+                    or self.operation_ref or self.acknowledges_task_id or self.interest_publication):
+                raise ValueError('文件上传须有本群工作资产，不能混入消息、操作确认或互动关系')
+        elif self.file_asset_id or not self.segments:
+            raise ValueError('普通消息必须有片段，不能附带文件上传')
         if self.operation_ref and (self.acknowledges_task_id or self.fulfils_task_id
                                    or not self.batch_id or not self.origin_event_id or self.output_kind != 'chat'):
             raise ValueError("An operation confirmation needs its own committed turn and human source, without creation or fulfilment relations")
@@ -84,4 +97,6 @@ class ActionItem(BaseModel):
     @computed_field
     @property
     def content(self) -> str:
+        if self.file_asset_id:
+            return '[文件资产 ' + self.file_asset_id + ']'
         return ''.join('[全体成员]' if item.type == 'at_all' else segment_text([item]) for item in self.segments)

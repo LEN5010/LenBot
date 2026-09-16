@@ -80,6 +80,7 @@ class ActionQueue:
                 "deferred_task_id": action.deferred_task_id, "planned_at": action.planned_at,
                 "original_due_at": action.original_due_at, "delivery_late_seconds": action.delivery_late_seconds,
                 "wake_confirmation_request_id": action.wake_confirmation_request_id,
+                "file_asset_id": action.file_asset_id, "file_name": action.file_name,
                 "interest_publication": action.interest_publication.model_dump() if action.interest_publication else None,
                 "segments": [segment.model_dump() for segment in action.segments],
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
@@ -104,7 +105,7 @@ class ActionQueue:
         fact = await self.event_store.delivery_fact(action.id, action.scene_id)
         if fact and fact[1] is not None:
             return False
-        await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
+        await self._emit(Event(event_type=EventType.FILE_UPLOAD_FAILED if action.file_asset_id else EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
             actor_id=self.bot_actor_id, timestamp=self.event_store.clock(), metadata={"simulated": self.simulated},
             payload={**self._payload(action), "error": reason, "delivery_unknown": unknown,
                      "cancelled": cancelled,
@@ -191,7 +192,8 @@ class ActionQueue:
                 delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter", error_code=type(error).__name__, error="发送适配器异常，结果不确定")
         send_ms = round((time.monotonic()-send_started)*1000, 2)
         success = delivery.status == DeliveryStatus.SENT
-        event = Event(event_type=EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED,
+        event = Event(event_type=(EventType.FILE_UPLOADED if success else EventType.FILE_UPLOAD_FAILED) if action.file_asset_id
+            else (EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED),
             scene_id=action.scene_id, actor_id=self.bot_actor_id, timestamp=self.event_store.clock(),
             metadata={"simulated": self.simulated, "media": [{"asset_id": segment.asset_id, "type": segment.type} for segment in action.segments if segment.type in {"image", "video", "audio"}]},
             payload={**self._payload(action), "origin_mode": "simulated" if self.simulated else action.origin_mode,
@@ -199,6 +201,7 @@ class ActionQueue:
                 "delivery_status": delivery.status.value, "transport": delivery.transport,
                 "queue_ms": queue_ms, "send_ms": send_ms,
                 "error_code": delivery.error_code, "message_id": delivery.message_id,
+                "file_id": delivery.file_id, "file_receipt": delivery.file_receipt,
                 "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
                     if action.source_started_at is not None else None})
         if success and action.associated_open_loop:

@@ -134,7 +134,7 @@ def archive_trajectory(messages):
     return archived
 
 
-async def restore_trajectory(messages, media_service, scene_id, *, image_limit):
+async def restore_trajectory(messages, media_service, scene_id, *, image_limit, supports_segment_vision=False):
     restored = copy.deepcopy(messages)
     current_assets = synchronize_image_window(restored, image_limit)
     for content, manifest_block, prefix, facts, manifest in _image_contexts(restored):
@@ -148,7 +148,8 @@ async def restore_trajectory(messages, media_service, scene_id, *, image_limit):
                 if asset in current_assets:
                     content[index] = {"type": "text", "text": f"此处保留原图 {asset} 定位；当前像素覆盖见图片清单。"}
                     continue
-                prepared = await media_service.prepare_context_images(scene_id, [asset], limit=min(1, max(0, image_limit-len(current_assets))))
+                prepared = await media_service.prepare_context_images(scene_id, [asset],
+                    limit=min(1, max(0, image_limit-len(current_assets))), supports_segment_vision=supports_segment_vision)
                 image_metadata.update({item["asset_id"]: item for item in prepared["manifest"]})
                 if prepared["blocks"]:
                     image_indices[asset] = len(image_indices)

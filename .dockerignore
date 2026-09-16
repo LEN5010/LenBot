@@ -1,0 +1,16 @@
+# Build context contains only release source and the fixed worker recipes.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/len_bot/
+!src/len_bot/**
+src/len_bot/**/__pycache__/
+src/len_bot/**/*.pyc
+src/len_bot/web/frontend/
+!containers/
+!containers/**
+!deploy/
+!deploy/linux/
+!deploy/linux/Dockerfile

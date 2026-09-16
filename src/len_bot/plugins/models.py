@@ -172,6 +172,10 @@ class PluginToolDefinition(BaseModel):
     timeout_seconds: float
     kind: Literal["read", "proposal"]
     roles: tuple[Literal["conversation", "work"], ...]
+    required_capabilities: tuple[str, ...] = ()
+    side_effect: Literal['none', 'account_write'] = 'none'
+    input_scope: Literal['current_scene', 'current_work'] = 'current_scene'
+    output_scope: Literal['current_scene', 'current_work', 'account'] = 'current_scene'
     deferred: bool = False
     available: Callable[[PluginCallContext], bool] | None = None
     page_chars: int | None = Field(default=None,ge=1)

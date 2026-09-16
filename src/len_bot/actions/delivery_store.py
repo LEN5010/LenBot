@@ -26,18 +26,18 @@ class DeferredDelivery(BaseModel):
 
 
 def stored_action(action: ActionItem) -> dict:
-    return action.model_dump(mode='json', exclude={'content', 'resolved_images', 'resolved_sticker_ids'})
+    return action.model_dump(mode='json', exclude={'content', 'resolved_images', 'resolved_sticker_ids', 'resolved_file'})
 
 
 class DeliveryStoreMixin:
     async def delivery_fact(self, action_id, scene_id):
         row = await (await self._db.execute("""SELECT id,event_type,payload FROM events
             WHERE scene_id=? AND json_extract(payload,'$.action_id')=?
-              AND event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+              AND event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED')
             ORDER BY rowid DESC LIMIT 1""", (scene_id, action_id))).fetchone()
         if row:
             data = json.loads(row[2])
-            status = ('sent' if row[1] == 'MESSAGE_SENT' else 'shadow' if row[1] == 'ACTION_SHADOWED'
+            status = ('sent' if row[1] in {'MESSAGE_SENT', 'FILE_UPLOADED'} else 'shadow' if row[1] == 'ACTION_SHADOWED'
                       else 'unknown' if data.get('delivery_unknown') else data.get('delivery_status', 'not_sent'))
             return status, row[0], data.get('error', '')
         attempted = await (await self._db.execute('SELECT 1 FROM events WHERE id=? AND scene_id=?',
@@ -113,13 +113,16 @@ class DeliveryStoreMixin:
             try:
                 if await self.delivery_fact(action.id, action.scene_id):
                     return False
+                if action.file_asset_id:
+                    from len_bot.media.files import validate_file_action
+                    await validate_file_action(self, action, quota=True)
                 if action.interest_publication:
                     from len_bot.runtime.interest_publication import check_publication
                     await check_publication(self, action.scene_id, action.interest_publication, action_id=action.id)
                 await self._db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?)',
                     ('send-attempt:' + action.id, EventType.DELIVERY_ATTEMPTED.value, action.scene_id,
                      'system:action_queue', self.clock(), json.dumps({'action_id': action.id,
-                     'deferred_task_id': action.deferred_task_id, 'fulfils_task_id': action.fulfils_task_id,
+                     'file_asset_id': action.file_asset_id, 'deferred_task_id': action.deferred_task_id, 'fulfils_task_id': action.fulfils_task_id,
                      'interest_publication': action.interest_publication.model_dump() if action.interest_publication else None}),
                      '{"conversation_excluded":true}'))
                 if action.deferred_task_id:
@@ -136,9 +139,9 @@ class DeliveryStoreMixin:
                 raise
 
     async def finish_deferred_in_transaction(self, event):
-        if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
+        if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED}:
             return
-        status = ('sent' if event.event_type == EventType.MESSAGE_SENT else
+        status = ('sent' if event.event_type in {EventType.MESSAGE_SENT, EventType.FILE_UPLOADED} else
                   'shadow' if event.event_type == EventType.ACTION_SHADOWED else
                   'unknown' if event.payload.get('delivery_unknown') else event.payload.get('delivery_status', 'not_sent'))
         task_status = {'sent': 'completed', 'shadow': 'shadow_observed', 'unknown': 'delivery_unknown'}.get(status, 'failed')

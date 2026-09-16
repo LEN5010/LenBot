@@ -16,7 +16,7 @@ from len_bot.tools.results import ToolResult
 
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
 CUE_TYPES = {EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
-             EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.REFLECTION_RECORDED,
+             EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOAD_FAILED, EventType.FILE_UPLOADED, EventType.REFLECTION_RECORDED,
              EventType.LIVE_STARTED, EventType.LIVE_ENDED, EventType.PLUGIN_EVENT, EventType.USER_JOINED, EventType.TOOL_COMPLETED}
 
 
@@ -176,6 +176,7 @@ class ConversationContext:
         self.attached = set()
         self.loaded_media = set()
         self.media_manifest = []
+        self.supports_segment_vision = False
         self.event_records = {}
         self.text_tokens = 0
         self._facts = {}
@@ -777,7 +778,8 @@ class ConversationContext:
             else:
                 image_pending.append(asset_id)
         prepared = await self.runtime.media_service.prepare_context_images(self.session.scene_id, image_pending,
-            limit=self.config.max_context_images, read_cache=read_cache)
+            limit=self.config.max_context_images, read_cache=read_cache,
+            supports_segment_vision=self.supports_segment_vision)
         self.media_manifest.extend(prepared['manifest'])
         parts = []
         for asset_id, mime_type in non_image:
