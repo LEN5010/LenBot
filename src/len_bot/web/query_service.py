@@ -298,6 +298,7 @@ class RuntimeQueryService:
         items = []
         for item in result["items"]:
             item = self.runtime.event_store._history_row(item)
+            item['candidate_review'] = await self.history_candidate_review(item['id'], scene_id)
             if item.get("status") == "failed":
                 traces = await self._rows("SELECT payload FROM traces WHERE ref_id=? AND kind='history_maintenance_error' ORDER BY created_at DESC LIMIT 1", [item["id"]])
                 if traces:
@@ -314,6 +315,7 @@ class RuntimeQueryService:
         if not rows:
             return None
         item = self.runtime.event_store._history_row(rows[0])
+        item['candidate_review'] = await self.history_candidate_review(batch_id, item['scene_id'])
         if item.get("status") == "failed":
             traces = await self._rows("SELECT payload FROM traces WHERE ref_id=? AND kind='history_maintenance_error' ORDER BY created_at DESC LIMIT 1", [item["id"]])
             if traces:
@@ -322,6 +324,17 @@ class RuntimeQueryService:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     pass
         return item
+
+    async def history_candidate_review(self, batch_id, scene_id):
+        rows = await self._rows("""SELECT id,payload FROM events WHERE scene_id=?
+            AND event_type='REFLECTION_RECORDED' AND json_extract(payload,'$.batch_id')=?
+            ORDER BY rowid DESC LIMIT 1""", [scene_id, batch_id])
+        if not rows:
+            return None
+        payload = json.loads(rows[0]['payload'])
+        candidates = payload.get('stale_memory_candidates', [])
+        return {'event_id': rows[0]['id'], 'candidates': candidates,
+                'status': 'needs_review' if candidates else 'none'}
 
     async def skills(self, scene_id=None, *, query="", page=1, page_size=30):
         source = """FROM skills s JOIN skill_versions v ON v.skill_id=s.id AND v.version=(

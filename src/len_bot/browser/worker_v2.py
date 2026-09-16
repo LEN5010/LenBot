@@ -96,13 +96,15 @@ class BrowserWorkerV2:
             return
         await route.continue_()
 
-    async def _new_page(self, scope_key: str, url: str) -> _Page:
+    async def _new_page(self, scope_key: str, url: str, admission=None) -> _Page:
         await self.validate_network(url)
         try:
             from playwright.async_api import async_playwright
         except ImportError:
             raise RuntimeError('Playwright is not installed for the browser worker') from None
         async with self._lock:
+            if admission is not None:
+                await admission()
             if scope_key in self._closing_scopes:
                 raise ValueError('本工作浏览器会话已经结束')
             if self._browser is None:
@@ -131,6 +133,8 @@ class BrowserWorkerV2:
             page = await context.new_page()
             # Popups cannot create an uncounted page outside the tool contract.
             context.on('page', lambda extra: asyncio.create_task(extra.close()) if extra is not page else None)
+            if admission is not None:
+                await admission()
             await page.goto(url, wait_until='domcontentloaded', timeout=int(self.config.timeout_seconds * 1000))
             if scope_key in self._closing_scopes:
                 raise ValueError('本工作在页面打开期间已经结束')
@@ -199,15 +203,19 @@ class BrowserWorkerV2:
         handle.revision += 1
         return self._page_view(handle, page_ref)
 
-    async def open(self, scope_key: str, request: BrowserOpenInput) -> dict:
+    async def open(self, scope_key: str, request: BrowserOpenInput, *, admission=None) -> dict:
         async with self._lock:
+            if admission is not None:
+                await admission()
             opened = sum(1 for handle in self._pages.values() if handle.scope_key == scope_key)
             if scope_key in self._closing_scopes or opened + self._opening.get(scope_key, 0) >= self.config.max_open_pages:
                 raise ValueError(f'会话已结束或页面额度已达 {self.config.max_open_pages}')
             self._opening[scope_key] = self._opening.get(scope_key, 0) + 1
         handle, ref = None, 'page_' + uuid.uuid4().hex[:20]
         try:
-            handle = await self._new_page(scope_key, request.url)
+            handle = await self._new_page(scope_key, request.url, admission)
+            if admission is not None:
+                await admission()
             value = await self._snapshot(handle, ref)
             if scope_key in self._closing_scopes:
                 raise ValueError('本工作在页面采集期间已经结束')
@@ -222,9 +230,11 @@ class BrowserWorkerV2:
             async with self._lock:
                 self._opening[scope_key] -= 1
 
-    async def snapshot(self, scope_key: str, request: BrowserPageInput) -> dict:
+    async def snapshot(self, scope_key: str, request: BrowserPageInput, *, admission=None) -> dict:
         handle = self._get(scope_key, request.page_ref)
         async with handle.lock:
+            if admission is not None:
+                await admission()
             return await self._snapshot_request(handle, request)
 
     async def _snapshot_request(self, handle, request):
@@ -234,11 +244,13 @@ class BrowserWorkerV2:
             return await self._snapshot(handle, request.page_ref)
         return self._page_view(handle, request.page_ref)
 
-    async def interact(self, scope_key: str, request: BrowserInteractInput) -> dict:
+    async def interact(self, scope_key: str, request: BrowserInteractInput, *, admission=None) -> dict:
         if not self.config.allow_interactions:
             raise PermissionError('browser interactions are disabled by configuration')
         handle = self._get(scope_key, request.page_ref)
         async with handle.lock:
+            if admission is not None:
+                await admission()
             return await self._interact(handle, request)
 
     async def _interact(self, handle, request):
@@ -260,9 +272,11 @@ class BrowserWorkerV2:
                 timeout=int(self.config.timeout_seconds * 1000))
         return await self._snapshot(handle, request.page_ref)
 
-    async def capture(self, scope_key: str, request: BrowserCaptureInput) -> bytes:
+    async def capture(self, scope_key: str, request: BrowserCaptureInput, *, admission=None) -> bytes:
         handle = self._get(scope_key, request.page_ref)
         async with handle.lock:
+            if admission is not None:
+                await admission()
             return await self._capture(handle, request)
 
     async def _capture(self, handle, request):

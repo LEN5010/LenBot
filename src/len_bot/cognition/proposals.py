@@ -11,6 +11,7 @@ from len_bot.cognition.jobs import JobProposal
 from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal
 from len_bot.memory.models import MemoryProposal
 from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
+from len_bot.scheduler.models import task_delivery_available
 
 
 class StrictModel(BaseModel):
@@ -38,10 +39,10 @@ class TurnMessage(StrictModel):
     segments:list[TurnPart]=Field(default_factory=list,max_length=12)
     file_asset_id:str|None=Field(default=None,description="prepare_workspace_file 返回且已审查的资产 ID；必须独占此条并以 delivery_ref/work_ref 绑定原工作，不含文字通知")
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    source: str|None=Field(default=None,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话，插件系统来源保留原类型，与显示引用reply_to分别表达')
+    source: str|None=Field(default=None,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话。delivery_ref交付可省略，沿用事项原始委托；不要填写到期或工作完成的系统事件。插件系统来源保留原类型，与显示引用reply_to分别表达')
     ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
     operation_ref: str|None=Field(default=None,description='复制本轮控制工作、提醒或记忆操作返回的proposal_ref；只确认这项操作实际提交后的结果')
-    delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；工作只接受completed/partial执行结果，失败通知不用此字段')
+    delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；可省略消息source沿用已读的原始人类委托，并在sources中处理本次到期或完成事件M。工作只接受completed/partial执行结果，失败通知不用此字段')
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
     addressed_to:list[str]=Field(default_factory=list,description='实际对谁说话的成员U引用；与source、reply_to和期待回答者分别填写')
@@ -178,7 +179,7 @@ RESPOND={
                                'at':{'type':'string','minLength':1,'description':'真实成员提及，填写本轮人物U引用'}}),
                     'description':'恰好一个字段：text、image、video、audio或at；按顺序混排。'}},
                 'reply_to':{'type':'string','description':'可选的已读消息M引用'},
-                'source':{'type':'string','description':'本条回应对应的已读来源M；普通聊天和操作确认须来自人类原话，插件系统来源保留原类型'},
+                'source':{'type':'string','description':'本条回应对应的已读来源M；普通聊天和操作确认须来自人类原话。delivery_ref交付可省略，沿用事项原始委托；不要填写到期或工作完成的系统事件。插件系统来源保留原类型'},
                 'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
                                 'description':'本条实际回应的成员U；请求者和引用作者不自动成为回应对象'},
                 'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
@@ -304,12 +305,14 @@ class ProposalLedger:
         if job_refs:
             props['work_ref']={'type':'string','enum':job_refs,
                 'description':'本条状态说明或按需引用的实际工作J；旧事项不因此重开。首次待交付结果用delivery_ref，暂存回执S只填ack_ref'}
-        delivery_refs=sorted(list(refs.tasks)
+        controlled_tasks={proposal.task_id for proposal in self.tasks if proposal.operation!='create'}
+        delivery_refs=sorted([ref for ref, task_id in refs.tasks.items()
+                             if task_id in refs.deliverable_tasks and task_id not in controlled_tasks]
             + [ref for ref,job in refs.jobs.items() if job['id'] not in controlled_jobs and job['status']=='result_ready'
                and job['execution_status'] in {'completed','partial'} and job['delivery_action_id'] is None])
         if delivery_refs:
             props['delivery_ref']={'type':'string','enum':delivery_refs,
-                'description':'本条真实送达后完成的实际工作J或提醒T；暂存回执S只能填ack_ref'}
+                'description':'本条真实送达后完成的实际工作J或提醒T；可省略消息source沿用已读的原始人类委托，在sources中把本次到期或完成事件M标为replied。暂存回执S只能填ack_ref'}
         relations=[name for name in ('ack_ref','operation_ref','work_ref','delivery_ref') if name in props]
         if len(relations)>1:
             message['allOf']=[{'not':{'required':[left,right]}}
@@ -486,7 +489,13 @@ class ProposalLedger:
                      else refs.job(item.work_ref) if item.work_ref else None)
                 delivery=None
                 if item.delivery_ref:
-                    if item.delivery_ref in refs.tasks or item.delivery_ref in refs.tasks.values():delivery=refs.task_id(item.delivery_ref)
+                    if item.delivery_ref in refs.tasks or item.delivery_ref in refs.tasks.values():
+                        delivery=refs.task_id(item.delivery_ref)
+                        task=await self.context.runtime.event_store.get_task(delivery)
+                        if (delivery not in refs.deliverable_tasks or task is None or task.scene_id != refs.scene_id
+                                or not task_delivery_available(task.status, task.payload)):
+                            state=task.status.value if task is not None and task.scene_id == refs.scene_id else 'unavailable'
+                            raise ValueError(f'提醒{item.delivery_ref}当前不可交付（{state}）；不能填写delivery_ref。待核对事项保留未完成原因，有明确人类要求时重新安排或取消；其他独立请求可继续提交')
                     else:
                         target=refs.job(item.delivery_ref)
                         if job and job['id']!=target['id']:raise ValueError('履约与工作引用不一致')
@@ -582,7 +591,7 @@ class ProposalLedger:
                     if (kind=='memories' and ident in proposal.evidence
                         or kind in {'jobs','tasks'} and (proposal.request_source_event_id==ident or ident in proposal.source_event_ids))]
                 if item.status=='replied' and not related_messages:
-                    raise ValueError('replied必须关联本checkpoint对应来源的消息')
+                    raise ValueError(f'sources中的{item.source}标为replied，但没有关联本checkpoint对应来源的消息；普通原话须与消息source一致，到期或完成事件须与消息delivery_ref对应')
                 if item.status=='delegated' and not any(ref in related_proposals for ref,(kind,_) in self.staged.items() if kind in {'jobs','tasks'}):
                     raise ValueError('delegated必须关联本checkpoint实际暂存的工作或提醒')
                 if item.status=='waiting' and (result.next!='wait' or not any(message.expect_reply for message in related_messages)):
@@ -590,7 +599,7 @@ class ProposalLedger:
                 if item.status in {'incomplete','silent'} and not (item.reason.strip() or item.unfinished):
                     raise ValueError('未完成或旁听须说明原因或未完成范围')
                 if item.status=='silent' and (related_messages or related_proposals):
-                    raise ValueError('已有消息或实际操作的来源不能标为silent')
+                    raise ValueError(f'sources中的{item.source}已关联消息或实际操作，不能标为silent；到期或完成事件也会通过delivery_ref关联交付消息')
                 outcomes.append(SourceOutcome(source_event_id=ident,status=item.status,reason=item.reason,
                     unfinished=item.unfinished,proposal_refs=related_proposals,message_indices=related_indices))
             if result.next=='wait' and (sum(message.expect_reply for message in messages)!=1

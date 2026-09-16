@@ -166,7 +166,7 @@ READ_MESSAGE_RANGE = read_tool('read_message_range',
 READ_WEB_MEDIA = read_tool('read_web_media',
     '查看公开网页中的原图或PDF的一页，直接向模型提供像素。使用已知图片/PDF链接；不读取HTML页面。PDF页码从1开始，省略默认第1页。')
 TOOL_SEARCH = read_tool('tool_search',
-    '按名称、中文别名或用途发现当前群和职责可用的读取工具；结果含用途与关键参数提示。下一次请求获得选中工具的完整Schema，目录满时移除较早展开项，可再次发现。')
+    '按名称、中文别名或用途发现当前群和职责可直接调用的工具；对话中仅供工作调用的能力看runtime_facts.capabilities中的delegable_purposes，按需通过start_work委托。结果含用途与关键参数提示。下一次请求获得选中工具的完整Schema，目录满时移除较早展开项，可再次发现。')
 CORE_READ_TOOLS = [*LOCAL_TOOLS, READ_PENDING_WAKES, READ_MESSAGE_RANGE, READ_WEB_MEDIA,
                    TOOL_SEARCH, CALCULATE_TOOL, FINITE_CHECK_TOOL]
 
@@ -388,7 +388,7 @@ class RetrievalToolkit:
             result = ToolResult(status='ok' if selected else 'no_results',
                 content=json.dumps({'tools': selected, 'available_categories': categories if not selected else [],
                     'expanded_catalog_limit': self.config.tool_discovery_limit,
-                    'note': '下次请求提供选中工具的完整Schema；较早展开项可再次搜索。' if selected else '未匹配当前允许的能力；可用所列类别换一种表达。'}, ensure_ascii=False),
+                    'note': '下次请求提供选中工具的完整Schema；较早展开项可再次搜索。' if selected else '未匹配本轮可直接调用的工具；此结果不包括委托工作的能力。对话中请同时查看runtime_facts.capabilities的delegable_purposes，按需用start_work委托；工作中可用所列类别换一种表达。'}, ensure_ascii=False),
                 coverage='tool_catalog',evidence_kind='retrieval')
             return await self.store_observation(name,args,result,tool_call_id=tool_call_id)
         if self.checkpoint:

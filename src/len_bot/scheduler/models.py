@@ -16,6 +16,14 @@ class TaskStatus(StrEnum):
     REVIEW_REQUIRED = "review_required"
     CANCELLED = "cancelled"
 
+
+def task_delivery_available(status: TaskStatus | str, payload: dict[str, Any]) -> bool:
+    """Mirror the existing delivery claim; seeing a task never makes it ready."""
+    return (status in {TaskStatus.PROCESSING, TaskStatus.RESULT_READY}
+            and payload.get('delivery_action_id') is None
+            and (payload.get('kind') != 'query' or payload.get('result') is not None))
+
+
 class TaskItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
