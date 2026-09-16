@@ -35,7 +35,9 @@ class WorkerGatewayConfig(BaseModel):
     image_ref: str = Field(pattern=REFERENCE_PATTERN, title='镜像引用名',
         description='网关自己 images 表里的引用名，不是镜像名或 Docker 参数')
     network_policy: str = Field(pattern=REFERENCE_PATTERN, title='网络策略引用名',
-        description='网关自己 network_policies 表里的引用名；本版只实现离线 none')
+        description='网关自己 network_policies 表里的引用名；联网需单独授权、审查与部署核验')
+    network_python_enabled: bool = Field(default=False, title='允许申请联网 Python',
+        description='默认关闭；开启仍须独立公共研究、network_python 授权及逐动作审查')
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=300, title='单次 HTTP 超时（秒）',
         description='提交与查询各自的 HTTP 超时')
     execution_timeout_seconds: float = Field(default=30.0, gt=0, le=3600, title='单次执行期限（秒）',
@@ -157,6 +159,23 @@ class WorkerGatewayClient:
 
     async def get(self, execution_id: str) -> ExecutionRecord:
         return self._record(await self._request('GET', f'/v1/executions/{execution_id}'))
+
+    async def browser_command(self, execution_id, command):
+        from len_bot.browser.protocol import BrowserCommandRecord
+        payload = await self._request('POST', f'/v1/executions/{execution_id}/commands',
+            json=command.model_dump(mode='json'))
+        try:
+            return BrowserCommandRecord.model_validate(payload)
+        except ValueError as error:
+            raise GatewayResultUnknown(f'浏览器命令记录无法解析：{error}') from None
+
+    async def browser_command_status(self, execution_id, command_id):
+        from len_bot.browser.protocol import BrowserCommandRecord
+        payload = await self._request('GET', f'/v1/executions/{execution_id}/commands/{command_id}')
+        try:
+            return BrowserCommandRecord.model_validate(payload)
+        except ValueError as error:
+            raise GatewayResultUnknown(f'浏览器命令记录无法解析：{error}') from None
 
     async def cancel(self, execution_id: str, reason: str) -> CancellationOutcome:
         payload = await self._request('POST', f'/v1/executions/{execution_id}/cancel',

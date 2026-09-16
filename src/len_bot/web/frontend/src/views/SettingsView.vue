@@ -40,6 +40,15 @@ const setRuntimeBudget = (key, value) => {
   runtimeText.value=JSON.stringify(obj,null,2)
 }
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
+const heartbeatDraft = computed(() => {
+  try { return JSON.parse(runtimeText.value || '{}') } catch { return {} }
+})
+function setHeartbeat(key, value) {
+  let draft
+  try { draft = JSON.parse(runtimeText.value || '{}') } catch { return }
+  draft[key] = value
+  runtimeText.value = JSON.stringify(draft, null, 2)
+}
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
 const capabilities = ref([]), plugins = ref([]), scopeOptions = ref([])
@@ -244,7 +253,7 @@ async function saveAttention() {
   }catch(e){error.value=e.message}finally{busy.value=''}
 }
 function beginTimeConfiguration() {
-  timeDraft.value = {timezone:'',week_start:null,afternoon_start:'',afternoon_end:''}
+  timeDraft.value = {timezone:'',week_start:null,afternoon_start:'',afternoon_end:'',sleep_start:null,sleep_end:null}
 }
 function addMember() {
   members.value.push({name:'',aliases:[],aliasText:'',bilibili_uid:null,room_id:null})
@@ -347,7 +356,10 @@ async function saveTime() {
   if (busy.value || !timeDraft.value) return
   busy.value='time'; error.value=''; message.value=''
   try {
-    const result = await api('/api/settings/time',{method:'PUT',body:JSON.stringify(timeDraft.value)})
+    const payload = {...timeDraft.value,
+      sleep_start: timeDraft.value.sleep_start || null,
+      sleep_end: timeDraft.value.sleep_end || null}
+    const result = await api('/api/settings/time',{method:'PUT',body:JSON.stringify(payload)})
     timeDraft.value=result.settings; timeOriginal.value=JSON.stringify(result.settings); timeConfigured.value=true; timeRestart.value=result.requires_restart; message.value=result.message
   } catch(e) { error.value=e.message } finally { busy.value='' }
 }
@@ -618,7 +630,7 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='time'&&timeLoaded" class="pa-5 form-card">
       <h2>业务时间口径</h2>
-      <p class="muted my-3">日程与群总结按照这里填写的时区、自然周和下午范围解释日期，不自动选择时区或补全天段。</p>
+      <p class="muted my-3">日程与群总结按照这里填写的时区、自然周和下午范围解释日期，不自动选择时区或补全天段。睡眠窗口成对填写；留空表示不启用睡眠。</p>
       <v-alert v-if="!timeConfigured" type="info" variant="tonal" class="mb-4">尚未保存业务时间；需要时间口径的新插件不能启用。</v-alert>
       <v-alert v-if="timeRestart" type="info" variant="tonal" class="mb-4">已保存，需手动重启后用于新查询。</v-alert>
       <v-btn v-if="!timeDraft&&!loading" variant="tonal" color="primary" :disabled="!!busy" @click="beginTimeConfiguration">填写业务时间</v-btn>
@@ -627,6 +639,8 @@ watch(tab,load,{immediate:true})
         <v-select v-model="timeDraft.week_start" label="自然周第一天" :items="weekdays" required />
         <v-text-field v-model="timeDraft.afternoon_start" label="下午开始" type="time" required />
         <v-text-field v-model="timeDraft.afternoon_end" label="下午结束（不含）" type="time" required />
+        <v-text-field v-model="timeDraft.sleep_start" label="睡眠开始（可选）" type="time" clearable hint="与睡眠结束成对；跨日窗口允许开始晚于结束。" persistent-hint />
+        <v-text-field v-model="timeDraft.sleep_end" label="睡眠结束（可选）" type="time" clearable hint="到点后各群按叫醒状态决定是否恢复普通发送。" persistent-hint />
         <v-btn type="submit" color="primary" :loading="busy==='time'" :disabled="!!busy||!timeDirty">保存业务时间</v-btn>
       </v-form>
     </v-card>
@@ -654,10 +668,12 @@ watch(tab,load,{immediate:true})
       <h2>运行参数</h2>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
       <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
-      <p class="muted my-4">新对话与新的工作执行段采用当前发布预算；已开始的一轮使用其预算快照。工作恢复保留累计用量，改变上限不会自动重开已有结果或失败工作。</p>
+      <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>
       <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表单独显示这五项预算的当前发布值。</v-alert>
       <p class="muted my-3">常用执行预算用下面的数字框改；其余字段仍通过完整 JSON。留空表示该维度不设限。改这里会写进同一份草稿。</p>
       <v-form :disabled="!!busy" @submit.prevent="saveRuntime">
+        <v-switch :model-value="heartbeatDraft.heartbeat_enabled || false" label="启用公共研究心跳" color="primary" @update:model-value="value=>setHeartbeat('heartbeat_enabled',value)" />
+        <v-textarea :model-value="(heartbeatDraft.heartbeat_topics || []).join('\n')" label="公共研究主题（每行一项）" rows="3" hint="最多 20 项，每项 200 字；没有主题或有效兴趣时允许零研究。只保存研究结果与兴趣，不发布群消息。保存后需手动重启。" persistent-hint @update:model-value="value=>setHeartbeat('heartbeat_topics',value.split('\n').map(item=>item.trim()).filter(Boolean))" />
         <div class="form-grid mb-4">
           <v-text-field v-for="item in executionBudgets" :key="item.key" :model-value="runtimeBudgetValue(item.key)"
             :label="item.label+'（'+item.unit+'）'" type="number" :hint="'留空即不设限'" persistent-hint

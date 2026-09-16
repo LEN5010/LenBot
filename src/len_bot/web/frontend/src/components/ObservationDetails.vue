@@ -10,6 +10,7 @@ const props = defineProps({ observation: { type: Object, required: true }, scene
 const unit = computed(() => ({ characters: '字符', records: '记录' }[props.observation.coordinate_unit] || props.observation.coordinate_unit || '单位未记录'))
 const localLabel = computed(() => props.observation.coordinate_unit === 'records' ? '本地记录续读参数' : '本地正文续读参数')
 const failed = computed(() => ['error', 'unsupported'].includes(props.observation.status))
+const provenanceLabels = {anonymous_public:'匿名公开资料',account:'账号态资料',scene:'场景资料',derived:'派生资料，沿原始来源核对',unknown:'来源可见性未确认'}
 const stages = { availability: '当前能力检查', arguments: '参数解析', references: '来源引用', execution: '工具执行', presentation: '正文展示', commit: '事务提交' }
 const copied = ref(false), copyError = ref('')
 watch(()=>props.observation.evidence_span,()=>{copied.value=false;copyError.value=''})
@@ -30,6 +31,7 @@ async function copySpan() {
     <div v-if="observation.error_details?.length" class="field-errors"><h4>具体字段错误</h4><dl><template v-for="(detail,index) in observation.error_details" :key="index"><dt><code>{{ fieldPath(detail.loc) }}</code><span>{{ detail.type }}</span></dt><dd>{{ detail.message }}</dd></template></dl></div>
     <ResourceViewer v-if="observation.correction" title="未提交候选的可纠正范围与续读位置" :content="observation.correction" />
     <p v-if="observation.coverage" class="coverage">覆盖记录：{{ observation.coverage }}</p>
+    <p v-if="observation.provenance">资料范围：{{ provenanceLabels[observation.provenance.access] || '未确认' }}<span v-if="observation.provenance.source_result_ids?.length"> · 来源 {{ observation.provenance.source_result_ids.join('、') }}</span></p>
     <p v-if="observation.displayed_range">{{ rangeLabel }}：{{ observation.displayed_range.start }}–{{ observation.displayed_range.end }} / {{ observation.displayed_range.total }} {{ unit }}（起含止不含）。</p>
     <p v-if="observation.source_truncated" class="text-warning">源端资料有未取得的部分，当前保存正文不代表源全文。</p>
     <p v-else-if="observation.truncated && observation.source_truncated===undefined" class="muted">原记录带截断标记，未分别记录源端和本地正文覆盖。</p>

@@ -137,7 +137,7 @@ class PluginHost:
         for owner in owners:
             self.start_task(owner, observe(owner), name=f'after_delivery:{event.id}',scene_id=event.scene_id)
 
-    def start_task(self, plugin_id, coroutine, *, name, scene_id=None):
+    def start_task(self, plugin_id, coroutine, *, name, scene_id=None, record_error=True):
         plugin = self._plugins.get(plugin_id)
         if not plugin or not plugin.manifest.enabled:
             coroutine.close()
@@ -149,7 +149,7 @@ class PluginHost:
         def finished(done):
             owned.discard(done)
             self._task_scenes.pop(done,None)
-            if not done.cancelled() and done.exception() is not None:
+            if not done.cancelled() and done.exception() is not None and record_error:
                 self.record_plugin_error(plugin_id, f'{name}: {done.exception()}')
         task.add_done_callback(finished)
         return task
@@ -246,12 +246,15 @@ class PluginHost:
         return routes
 
     async def validate_call(self, call, *, mention_all=False):
+        if call.public_research:
+            await self._validate_public_call(call)
         origin = call.entry_origin or call.origin
         if origin is None or not call.source_event_id or origin.source_event_id != call.source_event_id:
             raise ValueError('Plugin call needs its real source and owner')
         plugin = self._plugins.get(origin.plugin_id)
         if (not plugin or not plugin.manifest.enabled or plugin.manifest.version != origin.plugin_version
-                or not self.runtime.scene_policy.plugin_allowed(call.scene_id, origin.plugin_id, call.entry)):
+                or (self._plugin_availability(origin.plugin_id, call) != 'callable' if call.public_research
+                    else not self.runtime.scene_policy.plugin_allowed(call.scene_id, origin.plugin_id, call.entry))):
             raise ValueError('Plugin is disabled, unavailable in this scene, or its version changed')
         if call.origin and call.origin != origin:
             owner=self._plugins.get(call.origin.plugin_id)
@@ -282,6 +285,15 @@ class PluginHost:
         if mention_all and not (definition.allow_mention_all and definition.allow_mention_all(current)):
             raise ValueError('This plugin entry has no current all-member mention setting')
 
+    async def _validate_public_call(self, call):
+        from len_bot.runtime.public_research import verify_public_job
+        job = await self.runtime.event_store.get_job(call.job_id, call.scene_id) if call.job_id else None
+        if (not job or not await verify_public_job(self.runtime.event_store, job)
+                or call.job_revision != job['revision'] or job['status'] != 'processing'
+                or call.initiator is None or call.initiator.model_dump(mode='json') != job['initiator']
+                or call.source_event_id != job['public_research']['seed_event_id']):
+            raise ValueError('公共工具调用不属于当前真实心跳工作')
+
     def dispatch_event(self, event, cutoff):
         from len_bot.runtime.plugin_interactions import dispatch_handler, resume_agent
         resume=event.metadata.get('conversation_resume',{}).get('state',{})
@@ -302,6 +314,12 @@ class PluginHost:
                 continue
             self.start_task(origin.plugin_id, dispatch_handler(self.runtime, event, route, cutoff),
                 name=f'handler:{origin.entry_id}:{origin.run_id}',scene_id=event.scene_id)
+
+    def deterministic_service(self, origin) -> bool:
+        if origin is None or origin.entry_kind != 'handler':
+            return False
+        definition = self._handlers.get((origin.plugin_id, origin.entry_id))
+        return bool(definition and definition.deterministic_read_only)
 
     async def execute_handler(self, call):
         await self.validate_call(call)
@@ -619,6 +637,15 @@ class PluginHost:
             return 'unconfigured'
         if not configured.enabled or plugin is None or not plugin.manifest.enabled:
             return 'plugin_disabled'
+        if call_context.public_research:
+            from len_bot.runtime.capabilities import Capability, subject_for
+            from len_bot.events.models import SystemInitiator
+            if (call_context.role != 'work' or not call_context.job_id or call_context.scene_id != 'system:heartbeat'
+                    or not isinstance(call_context.initiator, SystemInitiator)
+                    or call_context.initiator.purpose != 'heartbeat'):
+                return 'invalid_system_source'
+            return ('callable' if self.runtime.runtime_gate.capability_authority.check(Capability.PUBLIC_RESEARCH,
+                subject_for(call_context.initiator, call_context.scene_id), now=self.runtime.clock()).allowed else 'capability_denied')
         origin = call_context.entry_origin or call_context.origin
         own_handler = call_context.entry == 'handler' and origin and origin.plugin_id == plugin_id
         requesters = call_context.requester_qq_uids or (call_context.requester_qq_uid,)
@@ -634,6 +661,10 @@ class PluginHost:
 
     def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
         tool = self._tools.get(name)
+        if call_context.public_research:
+            from len_bot.runtime.public_research import PUBLIC_TOOL_OWNERS
+            if tool is None or PUBLIC_TOOL_OWNERS.get(name) != tool.plugin_id:
+                return False
         return bool(tool and self._plugin_availability(tool.plugin_id, call_context) == 'callable'
                     and self._tool_applies(tool, call_context))
 
@@ -798,9 +829,22 @@ class PluginHost:
         except ValidationError as error:
             return ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id).model_copy(update={'plugin_origin':origin})
         try:
+            from len_bot.cognition.action_review import TOOL_ACTION_TYPES
+            if call_context.public_research:
+                await self._validate_public_call(call_context)
+            action_type = TOOL_ACTION_TYPES.get(tool_name)
+            if action_type:
+                job = await self.runtime.event_store.get_job(call_context.job_id, call_context.scene_id)
+                if job is None or job['revision'] != call_context.job_revision:
+                    raise ValueError('动作不属于当前工作修订')
+                action = await self.runtime.action_reviewer.request(job=job, native_call_id=call_context.tool_call_id,
+                    action_type=action_type, target=tool_name, parameters=parsed.model_dump(mode='json'))
+                await self.runtime.action_reviewer.approve(action)
+                parsed = ptool.parameter_model.model_validate(action.parameters)
             self.record_plugin_run(ptool.plugin_id)
             bound_call = replace(call_context, origin=origin, plugin=self._plugin_contexts[ptool.plugin_id])
-            task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call), name=f'tool:{tool_name}',scene_id=call_context.scene_id)
+            task = self.start_task(ptool.plugin_id, ptool.handler(parsed, bound_call),
+                name=f'tool:{tool_name}', scene_id=call_context.scene_id, record_error=False)
             # wait_for only rewrites a CancelledError into TimeoutError when its
             # own deadline expires; a cancellation raised by the handler itself
             # keeps its identity, so the worker's termination stays readable.
@@ -812,6 +856,10 @@ class PluginHost:
                 return {**result,'plugin_origin':origin.model_dump()}
             if not isinstance(result, ToolResult):
                 raise TypeError(f"Plugin tool '{tool_name}' must return ToolResult")
+            from len_bot.runtime.public_research import ANONYMOUS_TOOLS, PUBLIC_TOOL_OWNERS
+            if tool_name in ANONYMOUS_TOOLS and PUBLIC_TOOL_OWNERS.get(tool_name) == ptool.plugin_id:
+                from len_bot.tools.results import ObservationProvenance
+                result.provenance = ObservationProvenance(access='anonymous_public')
             result.plugin_origin = origin
             return result.error_context(tool_name, call_context.tool_call_id)
         except httpx.TimeoutException as error:
@@ -840,6 +888,8 @@ class PluginHost:
         except ValidationError as error:
             result = ToolResult.validation_failure(error, tool_name=tool_name, tool_call_id=call_context.tool_call_id,
                 stage='execution', code='invalid_result')
+        except PermissionError as error:
+            result = ToolResult.failure(str(error), "review_denied", stage='availability')
         except ValueError as error:
             result = ToolResult.failure(f"{type(error).__name__}: {error}", "request_failed", stage='execution')
         except Exception as e:

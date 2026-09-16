@@ -10,6 +10,7 @@ from len_bot.cognition.models import EpisodeOutcome, FinalDisposition
 from len_bot.cognition.agent_loop import FreshInputConflict
 from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.history import HistoryConflictError
+from len_bot.memory.models import MemoryItem
 from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
 from len_bot.scenes.models import SceneSession
 from len_bot.scenes.reducer import SceneReducer
@@ -20,6 +21,17 @@ logger = logging.getLogger(__name__)
 
 class SceneCommitConflict(RuntimeError):
     pass
+
+
+class HistoryCommitDeferred(RuntimeError):
+    """An active conversation owns this revision; wait outside the Actor."""
+
+
+@dataclass
+class EpisodeLeaseCommand:
+    episode_id: str
+    mailbox: Any
+    future: asyncio.Future
 
 
 @dataclass
@@ -52,6 +64,8 @@ class SceneActor:
         self._queue = asyncio.Queue()
         self._worker_task = None
         self._active_mailbox = None
+        self._episode_idle = asyncio.Event()
+        self._episode_idle.set()
 
     async def start(self):
         if self._worker_task:
@@ -76,15 +90,23 @@ class SceneActor:
     def post_event(self, event):
         self._queue.put_nowait(event)
 
-    def acquire_episode_lease(self, episode_id, mailbox):
-        if self._active_mailbox is not None:
-            return False
-        self._active_mailbox = mailbox
-        return True
+    async def acquire_episode_lease(self, episode_id, mailbox) -> bool:
+        future = asyncio.get_running_loop().create_future()
+        self._queue.put_nowait(EpisodeLeaseCommand(episode_id, mailbox, future))
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if await asyncio.shield(future):
+                self.release_episode_lease(episode_id)
+            raise
 
     def release_episode_lease(self, episode_id):
         if self._active_mailbox and self._active_mailbox.episode_id == episode_id:
             self._active_mailbox = None
+            self._episode_idle.set()
+
+    async def wait_episode_idle(self) -> None:
+        await self._episode_idle.wait()
 
     def has_active_episode(self):
         return self._active_mailbox is not None
@@ -110,16 +132,22 @@ class SceneActor:
             # propagates cancellation without preparing or enqueueing actions.
             return decision
 
-    async def commit_history(self, **kwargs):
+    async def commit_history(self, **kwargs) -> list[MemoryItem]:
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(HistoryCommand(kwargs, future))
-        return await future
+        return await asyncio.shield(future)
 
     async def _process_loop(self):
         while True:
             item = await self._queue.get()
             try:
-                if isinstance(item, CommitCommand):
+                if isinstance(item, EpisodeLeaseCommand):
+                    acquired = self._active_mailbox is None
+                    if acquired:
+                        self._active_mailbox = item.mailbox
+                        self._episode_idle.clear()
+                    if not item.future.done(): item.future.set_result(acquired)
+                elif isinstance(item, CommitCommand):
                     result = await self._commit_turn(item)
                     if not item.future.done(): item.future.set_result(result)
                 elif isinstance(item, HistoryCommand):
@@ -442,7 +470,9 @@ class SceneActor:
                 related.append(event.id)
         return related
 
-    async def _commit_history(self, kwargs):
+    async def _commit_history(self, kwargs) -> list[MemoryItem]:
+        if self.has_active_episode():
+            raise HistoryCommitDeferred(self._active_mailbox.episode_id)
         if self.session.knowledge_revision != kwargs['expected_revision']:
             raise HistoryConflictError('Knowledge changed before reflection commit')
         event = kwargs['review_event']
@@ -457,5 +487,19 @@ class SceneActor:
             candidate.last_observed_event_rowid = rowid
         self.session = candidate
         event.metadata['_rowid'] = rowid
-        if self.on_state_updated: await self.on_state_updated(candidate, event)
+        if self.on_state_updated:
+            try:
+                await self.on_state_updated(candidate, event)
+            except Exception as error:
+                # The fact transaction and adopted session are already final.
+                logger.exception('History post-commit dispatch failed: batch=%s revision=%s',
+                                 kwargs['batch_id'], candidate.knowledge_revision)
+                try:
+                    await self.event_store.save_trace(kind='history_maintenance_projection_error',
+                        scene_id=self.scene_id, ref_id=kwargs['batch_id'],
+                        payload={'committed': True, 'stage': 'post_commit_dispatch',
+                                 'knowledge_revision': candidate.knowledge_revision,
+                                 'error_type': type(error).__name__, 'error': str(error)})
+                except Exception:
+                    logger.exception('Could not record history post-commit dispatch error')
         return result

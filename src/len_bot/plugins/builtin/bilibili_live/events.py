@@ -13,6 +13,7 @@ class LiveSample(BaseModel):
     is_live: bool
     started_at: str | None
     sampled_at: float
+    supersedes_action_id: str | None = None
 
 
 class LiveEndedSample(LiveSample):

@@ -52,11 +52,11 @@ class PluginContext:
     def register_handler(self, *, id: str, description: str, match, handler,
                          event_types=(EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED),
                          sources=('human',), priority=100, consume=False, require_to_me=False,
-                         available=None, validate=None, allow_mention_all=None):
+                         available=None, validate=None, allow_mention_all=None, deterministic_read_only=False):
         self._host.register_handler(self.spec.id, id=id, description=description, match=match,
             handler=handler, event_types=event_types, sources=sources, priority=priority,
             consume=consume, require_to_me=require_to_me, available=available,
-            validate=validate, allow_mention_all=allow_mention_all)
+            validate=validate, allow_mention_all=allow_mention_all, deterministic_read_only=deterministic_read_only)
 
     async def invoke_tool(self, call: PluginCallContext, name: str, arguments: BaseModel | dict) -> ToolResult:
         from len_bot.runtime.plugin_interactions import invoke_tool

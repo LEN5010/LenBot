@@ -37,7 +37,7 @@ class WorkspaceService:
         self.media_service = media_service
 
     async def scope_for(self, call, *, allow_terminal: bool = False) -> WorkspaceScope:
-        if call.role != 'work' or not call.job_id or not call.requester_qq_uid:
+        if call.role != 'work' or not call.job_id:
             raise ValueError('工作空间只允许在已有 work 工作中使用')
         job = await self.event_store.get_job(call.job_id, call.scene_id)
         if not job or job['requester_qq_uid'] != call.requester_qq_uid:
@@ -52,7 +52,12 @@ class WorkspaceService:
             allowed |= {'completed', 'failed', 'review_required', 'cancelled', 'delivery_unknown', 'shadow_observed'}
         if job['status'] not in allowed:
             raise ValueError('当前工作已结束，不能继续使用其执行目录')
-        return WorkspaceScope(scene_id=call.scene_id, requester_qq_uid=call.requester_qq_uid, job_id=call.job_id)
+        if call.requester_qq_uid:
+            return WorkspaceScope(scene_id=call.scene_id, requester_qq_uid=call.requester_qq_uid, job_id=call.job_id)
+        from len_bot.runtime.public_research import verify_public_job
+        if not await verify_public_job(self.event_store, job):
+            raise ValueError('系统工作区没有已验证的公共研究归属')
+        return WorkspaceScope(scene_id=call.scene_id, system_subject=job['initiator']['agent_id'], job_id=call.job_id)
 
     async def _export_inputs(self, scope: WorkspaceScope, request: RunPythonInput, scene_id: str) -> dict:
         """Write this request's inputs into the read-only control area.
@@ -173,13 +178,14 @@ class WorkspaceService:
             'media_status': media_status,
             'note': '普通文件保留在当前工作目录，由授权工作面板按工作归属读取；本工具不自动发送。'}
 
-    async def read_for_job(self, scene_id: str, job_id: str, path: str, offset: int, limit: int) -> dict | None:
+    async def read_for_job(self, scene_id: str, job_id: str, path: str, offset: int, limit: int,
+                           execution_id: str | None = None) -> dict | None:
+        if execution_id is not None:
+            raise ValueError('宿主 worker 文件不接受 Gateway execution_id')
         job = await self.event_store.get_job(job_id, scene_id)
         if job is None:
             return None
         requester = job.get('requester_qq_uid')
-        if not requester:
-            return None
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': requester, 'scene_id': scene_id})()
         scope = await self.scope_for(panel_call, allow_terminal=True)
@@ -193,9 +199,12 @@ class WorkspaceService:
         return {'scene_id': scene_id, 'job_id': job_id, 'path': path, 'content': content,
             'offset': offset, 'next_offset': next_offset, 'truncated': next_offset is not None}
 
-    async def read_bytes_for_job(self, scene_id: str, job_id: str, path: str) -> tuple[bytes, str] | None:
+    async def read_bytes_for_job(self, scene_id: str, job_id: str, path: str,
+                                execution_id: str | None = None) -> tuple[bytes, str] | None:
+        if execution_id is not None:
+            raise ValueError('宿主 worker 文件不接受 Gateway execution_id')
         job = await self.event_store.get_job(job_id, scene_id)
-        if job is None or not job.get('requester_qq_uid'):
+        if job is None:
             return None
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': job['requester_qq_uid'], 'scene_id': scene_id})()
@@ -207,9 +216,11 @@ class WorkspaceService:
 
     async def list_for_job(self, scene_id: str, job_id: str) -> dict | None:
         job = await self.event_store.get_job(job_id, scene_id)
-        if job is None or not job.get('requester_qq_uid'):
+        if job is None:
             return None
-        scope = WorkspaceScope(scene_id=scene_id, requester_qq_uid=job['requester_qq_uid'], job_id=job_id)
+        panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
+            'requester_qq_uid': job['requester_qq_uid'], 'scene_id': scene_id})()
+        scope = await self.scope_for(panel_call, allow_terminal=True)
         artifacts = self._artifacts(scope)
         return {'scene_id': scene_id, 'job_id': job_id,
             'artifacts': [item.model_dump(mode='json') for item in artifacts],
@@ -231,12 +242,13 @@ class GatewayWorkspaceService:
     scope_for = WorkspaceService.scope_for
     _read_asset = WorkspaceService._read_asset
 
-    def __init__(self, client, config, event_store, plugin_id: str, media_service=None):
+    def __init__(self, client, config, event_store, plugin_id: str, media_service=None, action_reviewer=None):
         self.client = client
         self.config = config
         self.event_store = event_store
         self.plugin_id = plugin_id
         self.media_service = media_service
+        self.action_reviewer = action_reviewer
         self._run_locks: dict[str, asyncio.Lock] = {}
 
     def run_lock(self, workspace_id: str) -> asyncio.Lock:
@@ -273,8 +285,8 @@ class GatewayWorkspaceService:
             # The Gateway refuses a forwarding policy without this answer, so
             # a deployment that has built egress cannot start a run the host
             # did not authorize.
-            egress_authorized = await self._egress_authorized(
-                job, call.scene_id, initiator, input_assets, request.input_result_ids)
+            reviewed = await self._egress_authorized(job, call, initiator, request, input_assets)
+            job = await self._require_current_admission(scope.job_id, call.scene_id, expected_revision)
             execution = ExecutionRequest(
                 execution_id='x' + uuid.uuid4().hex,
                 scene_id=call.scene_id, job_id=scope.job_id, job_revision=job['revision'],
@@ -282,7 +294,8 @@ class GatewayWorkspaceService:
                 initiator=initiator,
                 worker_type='python', script=request.script,
                 image_ref=self.config.image_ref, network_policy=self.config.network_policy,
-                egress_authorized=egress_authorized,
+                egress_authorized=reviewed is not None,
+                review_action_id=reviewed.action_id if reviewed else None,
                 input_assets=input_assets,
                 input_files=input_files,
                 deadline_seconds=self._deadline_seconds(job),
@@ -341,34 +354,37 @@ class GatewayWorkspaceService:
                 self._cancel_execution(execution.execution_id, scope))
             raise WorkspaceCancelled(termination) from None
 
-    async def _egress_authorized(self, job, scene_id: str, initiator, input_assets,
-                                 input_result_ids=()) -> bool:
-        """Whether this execution may be started under an egress policy.
-
-        False unless the work is a current ``network_python`` grant *and* we
-        can prove it carries no group material.  An empty picture list is not
-        that proof: text observations, the work's own source events, and a
-        human or plugin initiator are private.  When the existing record cannot
-        show public-only, the work stays offline.
-        """
+    async def _egress_authorized(self, job, call, initiator, request, input_assets):
+        if not self.config.network_python_enabled:
+            return None
         from len_bot.events.models import SystemInitiator
-        if input_assets or input_result_ids:
-            return False
-        if not isinstance(initiator, SystemInitiator):
-            return False
-        if job.get('source_event_ids'):
-            return False
-        authority = getattr(self.event_store, 'capability_authority', None)
-        if authority is None:
-            return False
+        from len_bot.runtime.public_research import verify_public_job
+        from len_bot.memory.interests import InterestStore
         from len_bot.runtime.capabilities import Capability, subject_for
-        try:
-            subject = subject_for(initiator, scene_id)
-        except ValueError:
-            return False
-        decision = authority.check(Capability.NETWORK_PYTHON, subject,
-                                   now=self.event_store.clock())
-        return bool(decision.allowed)
+        if not isinstance(initiator, SystemInitiator) or not await verify_public_job(self.event_store, job):
+            raise ValueError('联网 Python 只接受已验证的独立公共研究工作')
+        if input_assets or request.input_asset_ids:
+            raise ValueError('联网 Python 不接受附件或账号资料')
+        ids = set(request.input_result_ids)
+        if ids != await InterestStore(self.event_store).public_observation_ids(list(ids)):
+            raise ValueError('联网 Python 的全部输入必须有可追溯的匿名公共来源')
+        authority = getattr(self.event_store, 'capability_authority', None)
+        if authority is None or self.action_reviewer is None:
+            raise ValueError('联网 Python 缺少当前授权或动作审查入口')
+        subject = subject_for(initiator, call.scene_id)
+        def require_grant():
+            decision = authority.check(Capability.NETWORK_PYTHON, subject, now=self.event_store.clock())
+            if not decision.allowed:
+                raise ValueError('当前系统主体没有联网 Python 授权')
+        require_grant()
+        parameters = {**request.model_dump(mode='json'), 'image_ref': self.config.image_ref,
+            'network_policy': self.config.network_policy}
+        action = await self.action_reviewer.request(job=job, native_call_id=call.tool_call_id,
+            action_type='network_python', target=self.config.network_policy,
+            parameters=parameters, result_ids=request.input_result_ids)
+        await self.action_reviewer.approve(action)
+        require_grant()
+        return action
 
     async def _input_files(self, job, request: RunPythonInput, scene_id):
         """This request's inputs as wire files, its manifest, and its provenance.
@@ -471,8 +487,7 @@ class GatewayWorkspaceService:
             raise ValueError(
                 f'该工具调用属于工作版本 {expected_revision}，当前工作已是版本 {job["revision"]}；'
                 '不能把旧脚本贴到新修订的身份上，请按当前目标重新发起')
-        if job.get('status') in {'cancelled', 'completed', 'awaiting_delivery',
-                                 'delivery_unknown', 'shadow_observed'}:
+        if job.get('status') != 'processing':
             raise ValueError(f'当前工作状态 {job["status"]} 不能开始新的执行')
         return job
 
@@ -792,7 +807,7 @@ class GatewayWorkspaceService:
     # ---- panel entries -------------------------------------------------------
     async def _panel_scope(self, scene_id: str, job_id: str):
         job = await self.event_store.get_job(job_id, scene_id)
-        if job is None or not job.get('requester_qq_uid'):
+        if job is None:
             return None
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': job['requester_qq_uid'], 'scene_id': scene_id})()
@@ -822,7 +837,7 @@ class GatewayWorkspaceService:
 
     async def list_for_job(self, scene_id: str, job_id: str) -> dict | None:
         job = await self.event_store.get_job(job_id, scene_id)
-        if job is None or not job.get('requester_qq_uid'):
+        if job is None:
             return None
         host, listing = await self._snapshot_execution(scene_id, job_id)
         if listing is None:
