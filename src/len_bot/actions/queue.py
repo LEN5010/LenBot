@@ -5,6 +5,7 @@ from typing import Optional, Callable, Awaitable
 from len_bot.actions.models import ActionItem, DeliveryResult, DeliveryStatus
 from len_bot.events.models import Event, EventType
 from len_bot.events.store import EventStore
+from len_bot.runtime.sleep_policy import DeliveryDeferred
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class ActionQueue:
         return True
 
     async def _validate(self, action):
+        await self.event_store.validate_delivery_dependencies(action)
         if action.operation_ref:
             await self.event_store.validate_operation_message(action)
         elif action.job_id:
@@ -145,8 +147,9 @@ class ActionQueue:
         if self.checkpoint:
             await self.checkpoint("before_send", {"scene_id": action.scene_id, "action": action.model_dump(mode="json")})
         original = action
-        if await self.event_store.delivery_fact(action.id, action.scene_id):
-            return True
+        fact = await self.event_store.delivery_fact(action.id, action.scene_id)
+        if fact:
+            return fact[0] == 'sent' or (fact[0] == 'shadow' and self._shadow(action))
         if self._request_failed(action):
             return await self._reject(action, "同一请求与事项的前条消息未确认送达，停止其后续消息")
         try:
@@ -154,7 +157,6 @@ class ActionQueue:
                 action = await self.prepare_action(action)
             await self._validate(action)
         except Exception as error:
-            from len_bot.runtime.sleep_policy import DeliveryDeferred
             if isinstance(error, DeliveryDeferred):
                 if self.defer_action:
                     await self.defer_action(original, error)
@@ -166,7 +168,6 @@ class ActionQueue:
             try:
                 await self._validate(action)
             except Exception as error:
-                from len_bot.runtime.sleep_policy import DeliveryDeferred
                 if isinstance(error, DeliveryDeferred):
                     if self.defer_action:
                         await self.defer_action(action, error)
@@ -180,10 +181,16 @@ class ActionQueue:
                 if self.send_adapter:
                     try:
                         admitted = await self.event_store.begin_delivery_attempt(action)
+                    except DeliveryDeferred as error:
+                        if self.defer_action:
+                            await self.defer_action(action, error)
+                            return True
+                        return await self._reject(action, str(error), status='rejected')
                     except ValueError as error:
                         return await self._reject(action, str(error), status='rejected')
                     if not admitted:
-                        return True
+                        fact = await self.event_store.delivery_fact(action.id, action.scene_id)
+                        return bool(fact and fact[0] == 'sent')
                     self._attempted.add(action.id)
                     delivery = await self.send_adapter(action)
                 else:

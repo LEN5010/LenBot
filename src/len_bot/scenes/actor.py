@@ -473,15 +473,14 @@ class SceneActor:
     async def _commit_history(self, kwargs) -> list[MemoryItem]:
         if self.has_active_episode():
             raise HistoryCommitDeferred(self._active_mailbox.episode_id)
-        if self.session.knowledge_revision != kwargs['expected_revision']:
-            raise HistoryConflictError('Knowledge changed before reflection commit')
         event = kwargs['review_event']
         candidate = SceneReducer.reduce(self.session, event, self.bot_actor_id)
-        if kwargs['proposals']: candidate.knowledge_revision += 1
         if self.attention_policy:
             self.attention_policy.apply(candidate, event, self.bot_actor_id)
         result, rowid = await self.event_store.commit_history_batch(self.scene_id, **kwargs,
             scene_state_data=candidate.model_dump(), bot_actor_id=self.bot_actor_id)
+        if result:
+            candidate.knowledge_revision += 1
         record_scanned_event(candidate, event.id, rowid)
         if event.payload.get('review_items'):
             candidate.last_observed_event_rowid = rowid

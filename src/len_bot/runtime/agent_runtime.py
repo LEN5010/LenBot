@@ -139,7 +139,7 @@ class AgentRuntime:
         self.scene_manager = SceneManager(self.bot_actor_id, self.event_store, self._on_scene_event_committed,
                                           attention_policy=self.attention_policy,
                                           classify_event=lambda event, cutoff: classify_event(self, event, cutoff))
-        self.burst_assembler = BurstAssembler(config, self._on_burst, clock=clock)
+        self.burst_assembler = BurstAssembler(config, self._on_burst)
         self.social_core = SocialCognitionCore(self)
         from len_bot.cognition.action_review import ActionReviewer
         self.action_reviewer = ActionReviewer(self)
@@ -394,7 +394,7 @@ class AgentRuntime:
             raise ValueError('Unknown settings section')
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            data[section] = values
+            data[section] = values(data[section]) if callable(values) else values
             self.config_store.save(self.config_store.parse(data))
             if section in {'time', 'members'}:
                 self.restart_required = True
@@ -827,6 +827,7 @@ class AgentRuntime:
                 if batch is None:
                     return
                 revision = actor.session.knowledge_revision
+                memory_versions = await self.event_store.history_memory_versions(scene_id)
                 stage = 'candidate'
                 context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
                 result = await self.history_engine.maintain_batch(scene_id, batch, context)
@@ -843,7 +844,8 @@ class AgentRuntime:
                         committed_memories = await actor.commit_history(
                             batch_id=batch.id, proposals=result.memory_proposals,
                             summary=result.summary, key_event_ids=result.key_event_ids,
-                            review_event=review_event, expected_revision=revision)
+                            review_event=review_event, expected_revision=revision,
+                            expected_memories=memory_versions)
                         break
                     except HistoryCommitDeferred as deferred:
                         await self.event_store.save_trace(kind='history_maintenance_deferred',

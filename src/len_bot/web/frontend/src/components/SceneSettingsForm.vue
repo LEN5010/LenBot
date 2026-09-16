@@ -5,12 +5,13 @@ import { api, fmtTime } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import PluginConfigFields from './PluginConfigFields.vue'
 import ResourceViewer from './ResourceViewer.vue'
-import {blankConfigDraft,configDraft,configValue} from '../lib/pluginConfig.js'
+import {blankConfigDraft,configDraft,configValue,draftProblems} from '../lib/pluginConfig.js'
 
 const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved'])
 const record = ref(null), draft = ref(null), original = ref('null')
 const loading = ref(false), saving = ref(false), error = ref(''), message = ref(''), readAt = ref(null)
+const pluginProblems = ref({})
 let requestId = 0
 const dirty = computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==original.value)
 const {confirmLeave} = useUnsavedChanges(dirty)
@@ -24,10 +25,11 @@ const isGroup = computed(()=>/^group:[1-9]\d*$/.test(props.sceneId))
 const pluginFact = plugin => !plugin.configured ? '全局参数尚未填写，本群开关保存后也不会装载'
   : !plugin.enabled ? '全局已停用，本群开关保存后不会生效'
   : '全局已配置并启用；这里决定本群是否使用'
-// Readiness is the plugin's own declared requirements, not a second list of
-// "ready" plugins: a scene config with required fields is not usable until
-// those fields are filled.
-const readyToAdd = plugin => plugin.configured && Object.keys((plugin.scene_config_schema||{}).properties||{}).length
+// Adding a scene record and making it runnable are separate facts.  An empty
+// scene schema is a valid `{}` configuration, so its property count cannot be
+// used as an "is ready" gate.  Required fields remain the server's validation
+// responsibility when the operator saves the draft.
+const readyToAdd = plugin => Boolean(plugin.configured)
 function makeDraft(settings) {
   if (!settings) return null
   return {...settings,plugins:Object.fromEntries(Object.entries(settings.plugins).map(([id,item])=>[id,
@@ -63,6 +65,12 @@ function setChat(enabled) {
 }
 async function save() {
   if (saving.value||!draft.value) return
+  pluginProblems.value=Object.fromEntries(Object.entries(draft.value.plugins).map(([id,item])=>[id,
+    draftProblems(record.value.plugins.find(plugin=>plugin.id===id).scene_config_schema,item.config,{requirePresent:true})]))
+  if (Object.values(pluginProblems.value).some(items=>items.length)) {
+    error.value='本群插件参数尚未填写完整，请修正对应字段后保存。'
+    return
+  }
   const id=props.sceneId
   saving.value=true; error.value=''; message.value=''
   try {
@@ -75,7 +83,7 @@ async function save() {
   } catch(e) { if (id===props.sceneId) error.value=e.message }
   finally { saving.value=false }
 }
-watch(()=>props.sceneId,()=>{++requestId;record.value=null;draft.value=null;original.value='null';message.value='';readAt.value=null;load()},{immediate:true})
+watch(()=>props.sceneId,()=>{++requestId;record.value=null;draft.value=null;original.value='null';message.value='';pluginProblems.value={};readAt.value=null;load()},{immediate:true})
 onBeforeUnmount(()=>{++requestId})
 </script>
 
@@ -106,7 +114,8 @@ onBeforeUnmount(()=>{++requestId})
             <p v-if="plugin.id==='interest_share'" class="muted-copy mb-3">公共兴趣分享还需在全局能力授予中，向插件主体 interest_share 授予本群的 interest_share 能力。每日上限和冷却在下方设置；研究、聊天、文件上传分别授权。候选可以不发，未知发送结果保留额度。</p>
             <template v-if="draft.plugins[plugin.id]">
               <v-switch v-model="draft.plugins[plugin.id].enabled" label="在本群启用此插件" color="primary" />
-              <PluginConfigFields v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" />
+              <p v-if="!Object.keys(plugin.scene_config_schema.properties||{}).length" class="muted-copy">此插件没有额外群参数。添加后默认关闭，启用并保存才开放本群使用。</p>
+              <PluginConfigFields v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" :problems="pluginProblems[plugin.id]||[]" />
               <v-expansion-panels class="mt-3"><v-expansion-panel title="插件场景参数说明"><v-expansion-panel-text><ResourceViewer title="场景配置 Schema" :content="plugin.scene_config_schema" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
             </template>
           </div>

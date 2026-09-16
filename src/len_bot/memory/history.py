@@ -55,6 +55,13 @@ _HISTORY_TYPES = [EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RE
 
 
 class HistoryStoreMixin:
+    async def history_memory_versions(self, scene_id):
+        """Versions used to detect changes to a candidate's subject and kind."""
+        rows = await (await self._db.execute(
+            'SELECT id,subject,kind,revision,status FROM memories WHERE scope=?', (scene_id,))).fetchall()
+        return {row[0]: {'subject': row[1], 'kind': row[2], 'revision': row[3], 'status': row[4]}
+                for row in rows}
+
     async def initialize_history(self):
         await self._db.execute("""CREATE TABLE IF NOT EXISTS history_origins (
             scene_id TEXT PRIMARY KEY, initial_history_boundary INTEGER NOT NULL)""")
@@ -217,8 +224,9 @@ class HistoryStoreMixin:
         return batch
 
     async def commit_history_batch(self, scene_id, batch_id, proposals, summary, key_event_ids,
-                                   review_event, expected_revision, scene_state_data, *, bot_actor_id):
-        """Only SceneActor calls this; summary, memory and receipt succeed together."""
+                                   review_event, expected_revision, scene_state_data, *, bot_actor_id,
+                                   expected_memories):
+        """Atomically save coverage, adopted memories and any stale candidates."""
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("History summary must be nonempty")
         async with self._write_lock:
@@ -232,8 +240,10 @@ class HistoryStoreMixin:
                 current = await (await self._db.execute(
                     "SELECT json_extract(state_json,'$.knowledge_revision') FROM scene_sessions WHERE scene_id=?",
                     (scene_id,))).fetchone()
-                if (current[0] if current else 0) != expected_revision:
-                    raise HistoryConflictError("Knowledge revision changed")
+                current_revision = current[0] if current else 0
+                if scene_state_data['knowledge_revision'] != current_revision:
+                    raise HistoryConflictError('Actor knowledge state changed before history commit')
+                current_memories = await self.history_memory_versions(scene_id)
                 if not await self.references_belong_to_scene(sources, scene_id, cutoff):
                     raise ValueError("History sources must belong to this scene")
                 if not set(key_event_ids).issubset(sources):
@@ -244,14 +254,38 @@ class HistoryStoreMixin:
                     if not item.get("source_event_ids") or not set(item["source_event_ids"]).issubset(readable):
                         raise ValueError("Review evidence requires completely read original events")
                 committed = []
+                adopted = []
+                stale = []
                 for proposal in proposals:
                     if not set(proposal.evidence).issubset(readable):
                         raise ValueError("Memory evidence requires completely read original events")
+                    # A new correction may create a record rather than revise a
+                    # target. Compare the subject/category as well as explicit
+                    # targets; unrelated people do not invalidate this candidate.
+                    target = next((expected_memories.get(ident) for ident in proposal.target_memory_ids
+                                   if expected_memories.get(ident)), None)
+                    subject = proposal.subject or (target or {}).get('subject')
+                    kind = (target or {}).get('kind') if proposal.operation == 'refute' else proposal.kind.value
+                    def relevant(versions):
+                        return {ident: value for ident, value in versions.items()
+                                if ident in proposal.target_memory_ids
+                                or value['subject'] == subject and value['kind'] == kind}
+                    if relevant(expected_memories) != relevant(current_memories):
+                        stale.append({'proposal': proposal.model_dump(mode='json'),
+                                      'reason': '生成期间相关认识已改变，候选未采用',
+                                      'expected': relevant(expected_memories),
+                                      'current': relevant(current_memories)})
+                        continue
                     await validate_memory_proposal(self._db, proposal, scene_id, cutoff, bot_actor_id=bot_actor_id)
                     committed.append(await commit_memory_proposal_core(
                         self._db, proposal, scene_id, now=self.clock(), revision_event_id=review_event.id))
+                    adopted.append(proposal)
+                review_event.payload['stale_memory_candidates'] = stale
+                review_event.payload['knowledge_revision_before_generation'] = expected_revision
+                review_event.payload['knowledge_revision_at_commit'] = current_revision
                 review_event.payload["memory_receipts"] = [
-                    await self._memory_receipt(proposal, item) for proposal, item in zip(proposals, committed)]
+                    await self._memory_receipt(proposal, item) for proposal, item in zip(adopted, committed)]
+                scene_state_data['knowledge_revision'] = current_revision + bool(committed)
                 rowid = await self._write_scene_event(review_event, scene_state_data,
                     advance_session_observation=bool(review_event.payload.get("review_items")))
                 await self._db.execute("""UPDATE history_batches SET status='completed',summary=?,

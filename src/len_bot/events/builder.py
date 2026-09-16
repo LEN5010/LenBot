@@ -38,7 +38,7 @@ class BurstAssembler:
         self,
         config: RuntimeConfig,
         on_burst: Callable[[Stimulus], Awaitable[None]],
-        clock=time.time,
+        clock=time.monotonic,
     ):
         self.clock = clock
         self.config = config
@@ -80,9 +80,10 @@ class BurstAssembler:
                 else:
                     if buffer.timer_task:
                         buffer.timer_task.cancel()
-                    delay = self.config.debounce_idle_ms / 1000.0
+                    deadline = min(now + self.config.debounce_idle_ms / 1000.0,
+                                   buffer.first_arrived_at + self.config.debounce_max_ms / 1000.0)
                     buffer.timer_task = asyncio.create_task(
-                        self._wait_and_flush(event.scene_id, delay)
+                        self._wait_and_flush(buffer, deadline)
                     )
             else:
                 return
@@ -106,12 +107,15 @@ class BurstAssembler:
                     buffer.timer_task.cancel()
             self._buffers.clear()
 
-    async def _wait_and_flush(self, scene_id: str, delay: float) -> None:
+    async def _wait_and_flush(self, expected: BurstBuffer, deadline: float) -> None:
         try:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(max(0, deadline - self.clock()))
             burst: Stimulus | None = None
             async with self._lock:
-                buffer = self._take_buffer(scene_id)
+                if (self._buffers.get(expected.scene_id) is not expected
+                        or expected.timer_task is not asyncio.current_task()):
+                    return
+                buffer = self._take_buffer(expected.scene_id)
                 if buffer:
                     burst = self._create_burst(buffer.events)
             if burst:

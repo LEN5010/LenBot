@@ -5,12 +5,14 @@ import asyncio
 import codecs
 import json
 import mimetypes
+import shutil
 import uuid
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
 from len_bot.events.models import Initiator
+from len_bot.execution.admission import require_execution_job
 from len_bot.execution.client import (
     GatewayConflict, GatewayRefused, GatewayResultUnknown, GatewayUnavailable,
 )
@@ -59,7 +61,7 @@ class WorkspaceService:
             raise ValueError('系统工作区没有已验证的公共研究归属')
         return WorkspaceScope(scene_id=call.scene_id, system_subject=job['initiator']['agent_id'], job_id=call.job_id)
 
-    async def _export_inputs(self, scope: WorkspaceScope, request: RunPythonInput, scene_id: str) -> dict:
+    async def _export_inputs(self, scope: WorkspaceScope, request: RunPythonInput, scene_id: str, control: Path) -> dict:
         """Write this request's inputs into the read-only control area.
 
         The manifest is a statement about *this* export: which observation or
@@ -68,7 +70,7 @@ class WorkspaceService:
         to, and a named input that cannot be read aborts the export instead of
         leaving a partial input directory behind.
         """
-        directory = self.worker.control_directory(scope.workspace_id) / 'input'
+        directory = control / 'input'
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         job = await self.event_store.get_job(scope.job_id, scene_id)
         entries = await collect_input_entries(self.event_store, job or {}, scope.job_id, scene_id,
@@ -80,7 +82,7 @@ class WorkspaceService:
             else:
                 self.worker._write_control_bytes(path, entry['data'])
         manifest = manifest_of(entries, scope.job_id, scene_id)
-        self.worker._write_control(self.worker.control_directory(scope.workspace_id) / 'manifest.json',
+        self.worker._write_control(control / 'manifest.json',
             json.dumps(manifest, ensure_ascii=False, indent=2))
         return manifest
 
@@ -119,9 +121,22 @@ class WorkspaceService:
     async def run_python(self, call, request: RunPythonInput) -> dict:
         scope = await self.scope_for(call)
         async with self.worker.run_lock(scope.workspace_id):
+            await require_execution_job(self.event_store, call, self.plugin_id)
             self.worker.ensure_workspace_available(scope.workspace_id)
-            manifest = await self._export_inputs(scope, request, call.scene_id)
-            result = await self.worker._run_python_locked(RunPythonRequest(workspace_id=scope.workspace_id, script=request.script))
+            control = self.worker.control_directory(scope.workspace_id) / ('input-' + uuid.uuid4().hex)
+            control.mkdir(mode=0o700)
+            try:
+                manifest = await self._export_inputs(scope, request, call.scene_id, control)
+                async def admit():
+                    return await require_execution_job(self.event_store, call, self.plugin_id)
+                result = await self.worker._run_python_locked(
+                    RunPythonRequest(workspace_id=scope.workspace_id, script=request.script),
+                    control=control, admission=admit, clock=self.event_store.clock)
+            finally:
+                # An unknown surviving container may still own its mount.
+                # Keep that input snapshot until termination is confirmed.
+                if not (self.worker.control_root / scope.workspace_id / '.termination_unconfirmed').exists():
+                    shutil.rmtree(control)
             artifacts = self._artifacts(scope)
         result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
             'input_manifest': manifest, 'artifacts': [item.model_dump(mode='json') for item in artifacts],
@@ -266,13 +281,12 @@ class GatewayWorkspaceService:
             # itself.  A tool call that waited on the run lock while the work
             # was revised must not have its old script filed under the new
             # revision: the two are different executions of different goals.
-            expected_revision = getattr(call, 'job_revision', None)
-            await self._require_current_admission(scope.job_id, call.scene_id, expected_revision)
+            await require_execution_job(self.event_store, call, self.plugin_id)
             conclusion, detail = await self._reconcile_workspace(scope.workspace_id)
             if conclusion != 'available':
                 raise ValueError(detail)
             input_files, manifest, input_assets = await self._input_files(job, request, call.scene_id)
-            job = await self._require_current_admission(scope.job_id, call.scene_id, expected_revision)
+            job = await require_execution_job(self.event_store, call, self.plugin_id)
             stored_initiator = job.get('initiator')
             initiator = TypeAdapter(Initiator).validate_python(stored_initiator)
             # Egress is authorized here, by the host, and travels as a plain
@@ -286,7 +300,7 @@ class GatewayWorkspaceService:
             # a deployment that has built egress cannot start a run the host
             # did not authorize.
             reviewed = await self._egress_authorized(job, call, initiator, request, input_assets)
-            job = await self._require_current_admission(scope.job_id, call.scene_id, expected_revision)
+            job = await require_execution_job(self.event_store, call, self.plugin_id)
             execution = ExecutionRequest(
                 execution_id='x' + uuid.uuid4().hex,
                 scene_id=call.scene_id, job_id=scope.job_id, job_revision=job['revision'],
@@ -478,19 +492,6 @@ class GatewayWorkspaceService:
                 **({'termination': termination} if termination else {})}
 
     # ---- host journal mirroring ---------------------------------------------
-    async def _require_current_admission(self, job_id: str, scene_id: str, expected_revision):
-        """Re-read the work after any await; the original check is not still valid."""
-        job = await self.event_store.get_job(job_id, scene_id)
-        if not job or job.get('initiator') is None:
-            raise ValueError('该工作没有类型化发起者，不能通过网关执行')
-        if expected_revision is not None and job['revision'] != expected_revision:
-            raise ValueError(
-                f'该工具调用属于工作版本 {expected_revision}，当前工作已是版本 {job["revision"]}；'
-                '不能把旧脚本贴到新修订的身份上，请按当前目标重新发起')
-        if job.get('status') != 'processing':
-            raise ValueError(f'当前工作状态 {job["status"]} 不能开始新的执行')
-        return job
-
     async def _mirror_terminal(self, record) -> None:
         host = await self.event_store.get_execution(record.execution_id)
         if host is None or not is_terminal(record.state):

@@ -106,7 +106,7 @@ class AccessSettingsRequest(BaseModel):
     authorization.
     """
     model_config = ConfigDict(extra="forbid")
-    qq_reply_whitelist: list[int]
+    qq_reply_whitelist: list[int] | None = None
     capability_grants: list[CapabilityGrantEdit] | None = None
 
 
@@ -127,34 +127,44 @@ def _grant_content(grant: CapabilityGrant) -> dict:
 @router.put("/access")
 async def update_access_settings(values: AccessSettingsRequest, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    current = runtime.config_store.current.access
-    if values.capability_grants is None:
-        grants = list(current.capability_grants)
-    else:
-        previous = {grant.grant_id: grant for grant in current.capability_grants}
-        grants = []
-        for index, edit in enumerate(values.capability_grants):
-            if not edit.grant_id:
-                created = edit.model_copy(update={'grant_id': 'g' + uuid.uuid4().hex})
-                grants.append(_grant_from_edit(created, operator_id=user, revision=1))
-                continue
-            stored = previous.get(edit.grant_id)
-            if stored is None:
-                raise HTTPException(422, [{
-                    'loc': ['body', 'capability_grants', index, 'grant_id'],
-                    'msg': '不能用未知 ID 新建授予；新建请留空，由服务端生成 ID',
-                    'type': 'value_error'}])
-            candidate = _grant_from_edit(edit, operator_id=user, revision=edit.revision)
-            if _grant_content(stored) == _grant_content(candidate):
-                grants.append(stored)
-            else:
-                grants.append(_grant_from_edit(edit, operator_id=user, revision=stored.revision + 1))
-    merged = AccessSettings(
-        qq_reply_whitelist=values.qq_reply_whitelist,
-        capability_grants=grants,
-    ).model_dump()
-    changed = merged['capability_grants'] != current.model_dump()['capability_grants']
-    await save_root_section(runtime, "access", merged)
+    changed = False
+    merged = None
+
+    def merge_current(saved):
+        nonlocal changed, merged
+        current = AccessSettings.model_validate(saved)
+        if values.capability_grants is None:
+            grants = list(current.capability_grants)
+        else:
+            previous = {grant.grant_id: grant for grant in current.capability_grants}
+            grants = []
+            for index, edit in enumerate(values.capability_grants):
+                if not edit.grant_id:
+                    created = edit.model_copy(update={'grant_id': 'g' + uuid.uuid4().hex})
+                    grants.append(_grant_from_edit(created, operator_id=user, revision=1))
+                    continue
+                stored = previous.get(edit.grant_id)
+                if stored is None:
+                    raise HTTPException(422, [{
+                        'loc': ['body', 'capability_grants', index, 'grant_id'],
+                        'msg': '不能用未知 ID 新建授予；新建请留空，由服务端生成 ID',
+                        'type': 'value_error'}])
+                if edit.revision != stored.revision:
+                    raise HTTPException(409, '授予已被其他操作更新，请保留草稿并刷新已保存值后重试')
+                candidate = _grant_from_edit(edit, operator_id=user, revision=edit.revision)
+                if _grant_content(stored) == _grant_content(candidate):
+                    grants.append(stored)
+                else:
+                    grants.append(_grant_from_edit(edit, operator_id=user, revision=stored.revision + 1))
+        merged = AccessSettings(
+            qq_reply_whitelist=(values.qq_reply_whitelist if values.qq_reply_whitelist is not None
+                                else current.qq_reply_whitelist),
+            capability_grants=grants,
+        ).model_dump()
+        changed = merged['capability_grants'] != current.model_dump()['capability_grants']
+        return merged
+
+    await save_root_section(runtime, "access", merge_current)
     if changed:
         # A grant revision is an operator action; the saved file is the
         # effective version from this point, and an already-sent message

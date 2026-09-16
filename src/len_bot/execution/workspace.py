@@ -11,6 +11,7 @@ import os
 import re
 import signal
 import stat
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -244,10 +245,10 @@ class WorkspaceWorker:
         async with self.run_lock(request.workspace_id):
             return await self._run_python_locked(request)
 
-    async def _run_python_locked(self, request: RunPythonRequest) -> dict:
+    async def _run_python_locked(self, request: RunPythonRequest, *, control=None, admission=None, clock=time.time) -> dict:
         self.ensure_workspace_available(request.workspace_id)
         directory = self.directory(request.workspace_id)
-        control = self.control_directory(request.workspace_id)
+        control = control or self.control_directory(request.workspace_id)
         script = control / "task.py"
         self._write_control(script, request.script)
         container_name = f"lenbot-{request.workspace_id[:35]}-{uuid.uuid4().hex[:12]}"
@@ -261,6 +262,15 @@ class WorkspaceWorker:
         process = None
         termination = None
         try:
+            timeout = self.config.timeout_seconds
+            if admission is not None:
+                job = await admission()
+                job_deadline = (job.get('budget') or {}).get('deadline_at')
+                if job_deadline is not None:
+                    timeout = min(timeout, job_deadline - clock())
+                    if timeout <= 0:
+                        raise ValueError('原工作执行期限已到')
+            deadline = asyncio.get_running_loop().time() + timeout
             process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, start_new_session=True)
             stdout_task = asyncio.create_task(self._read_limited(process.stdout))
@@ -268,7 +278,6 @@ class WorkspaceWorker:
             timed_out = False
             exceeded = False
             try:
-                deadline = asyncio.get_running_loop().time() + self.config.timeout_seconds
                 while process.returncode is None:
                     usage_bytes, usage_files = self._usage(directory)
                     if usage_bytes > self.config.max_artifact_bytes or usage_files > self.config.max_artifact_files:

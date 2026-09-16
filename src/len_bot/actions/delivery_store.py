@@ -30,6 +30,46 @@ def stored_action(action: ActionItem) -> dict:
 
 
 class DeliveryStoreMixin:
+    async def validate_delivery_dependencies(self, action):
+        """Only earlier actions in this batch and request can constrain delivery."""
+        if not action.batch_id or action.batch_index < 1:
+            return
+        rows = await (await self._db.execute("""SELECT payload FROM events
+            WHERE scene_id=? AND json_extract(payload,'$.batch_id')=?
+              AND json_extract(payload,'$.batch_index')<?
+              AND event_type IN ('DELIVERY_ATTEMPTED','MESSAGE_SENT','MESSAGE_SEND_FAILED',
+                'FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED')""",
+            (action.scene_id, action.batch_id, action.batch_index))).fetchall()
+        predecessors = {data['action_id']: (data, None, None) for row in rows
+                        if (data := json.loads(row[0])).get('action_id')}
+        deferred = await (await self._db.execute("""SELECT payload,status,due_at FROM tasks
+            WHERE scene_id=? AND json_extract(payload,'$.kind')='deferred_delivery'
+              AND json_extract(payload,'$.action.batch_id')=?
+              AND json_extract(payload,'$.action.batch_index')<? ORDER BY created_at""",
+            (action.scene_id, action.batch_id, action.batch_index))).fetchall()
+        for raw, status, due_at in deferred:
+            data = json.loads(raw)
+            predecessors[data['action_id']] = (data['action'], status, due_at)
+        request = (action.origin_event_id,
+                   action.job_id or action.fulfils_task_id or action.acknowledges_task_id or action.operation_ref)
+        waiting_until = None
+        for ident, (data, task_status, due_at) in predecessors.items():
+            previous_request = (data.get('origin_event_id'), data.get('job_id') or data.get('fulfils_task_id')
+                                or data.get('acknowledges_task_id') or data.get('operation_ref'))
+            if previous_request != request:
+                continue
+            fact = await self.delivery_fact(ident, action.scene_id)
+            if fact and fact[0] == 'sent':
+                continue
+            if fact and fact[0] == 'shadow' and action.origin_mode == 'shadow':
+                continue
+            if fact or task_status not in {'pending', 'claimed', 'processing'}:
+                raise ValueError(f'前序行动 {ident} 未确认送达，停止同一请求的后续表达')
+            waiting_until = max(waiting_until or 0, due_at or 0, self.clock() + 1)
+        if waiting_until is not None:
+            from len_bot.runtime.sleep_policy import DeliveryDeferred
+            raise DeliveryDeferred(waiting_until, '等待同一请求的前序延期行动取得真实回执')
+
     async def delivery_fact(self, action_id, scene_id):
         row = await (await self._db.execute("""SELECT id,event_type,payload FROM events
             WHERE scene_id=? AND json_extract(payload,'$.action_id')=?
@@ -113,6 +153,7 @@ class DeliveryStoreMixin:
             try:
                 if await self.delivery_fact(action.id, action.scene_id):
                     return False
+                await self.validate_delivery_dependencies(action)
                 if action.file_asset_id:
                     from len_bot.media.files import validate_file_action
                     await validate_file_action(self, action, quota=True)
@@ -122,6 +163,9 @@ class DeliveryStoreMixin:
                 await self._db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?)',
                     ('send-attempt:' + action.id, EventType.DELIVERY_ATTEMPTED.value, action.scene_id,
                      'system:action_queue', self.clock(), json.dumps({'action_id': action.id,
+                     'batch_id': action.batch_id, 'batch_index': action.batch_index,
+                     'origin_event_id': action.origin_event_id, 'job_id': action.job_id,
+                     'acknowledges_task_id': action.acknowledges_task_id, 'operation_ref': action.operation_ref,
                      'file_asset_id': action.file_asset_id, 'deferred_task_id': action.deferred_task_id, 'fulfils_task_id': action.fulfils_task_id,
                      'interest_publication': action.interest_publication.model_dump() if action.interest_publication else None}),
                      '{"conversation_excluded":true}'))

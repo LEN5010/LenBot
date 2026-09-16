@@ -83,17 +83,19 @@ const capabilityItems = computed(()=>capabilities.value.map(item=>({...item,
   title:item.implemented?item.title:`${item.title}`,subtitle:item.value})))
 const grantCapabilities = grant => Array.isArray(grant.capabilities) ? grant.capabilities.filter(Boolean) : []
 const toLocalInput = seconds => {
-  if (!seconds) return ''
+  if (seconds === null || seconds === undefined) return ''
   const date = new Date(seconds*1000)
   const pad = value => String(value).padStart(2,'0')
-  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
-const fromLocalInput = value => value ? Math.floor(new Date(value).getTime()/1000) : null
+const fromLocalInput = value => value ? new Date(value).getTime()/1000 : null
+const grantExpiry = grant => grant.expiresInput === toLocalInput(grant.expires_at)
+  ? (grant.expires_at ?? null) : fromLocalInput(grant.expiresInput)
 // The picker holds wall-clock time in the browser's own zone, but the stored
 // value is absolute.  The hint says both, so an operator in a different zone
 // than the business one can see what the saved instant actually is.
 const expiryPreview = index => {
-  const seconds = fromLocalInput(grants.value[index]?.expiresInput)
+  const seconds = grantExpiry(grants.value[index] || {})
   if (!seconds) return '长期有效'
   return `保存后为 ${new Date(seconds*1000).toISOString()}（UTC）`
 }
@@ -287,14 +289,16 @@ async function saveAccess() {
   busy.value='access'; error.value=''; message.value=''
   try {
     const values = accessText.value.split(/[,，\s]+/).filter(Boolean).map(value=>positiveInteger(value,'QQ 账号'))
-    const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({qq_reply_whitelist:values,capability_grants:grants.value.map(grant=>({
+    const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({
+      ...(accessText.value!==accessOriginal.value ? {qq_reply_whitelist:values} : {}),
+      ...(JSON.stringify(grants.value)!==grantsOriginal.value ? {capability_grants:grants.value.map(grant=>({
       grant_id:grant.grant_id||'',revision:grant.revision||1,
       principal_type:grant.principal_type,principal_id:qqUid(grant.principal_id && typeof grant.principal_id==='object'?grant.principal_id.value:grant.principal_id),
       scene_id:grant.principal_type==='system'?null:(grant.scene_id||null),
       system_scope:grant.principal_type==='system'?(grant.system_scope||null):null,
       capabilities:grantCapabilities(grant),
-      expires_at:fromLocalInput(grant.expiresInput),resource_policy:grant.resource_policy||null,
-      concurrency:grant.concurrency||null,enabled:!!grant.enabled}))})})
+      expires_at:grantExpiry(grant),resource_policy:grant.resource_policy||null,
+      concurrency:grant.concurrency||null,enabled:!!grant.enabled}))} : {})})})
     const settings=result.settings
     accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
     grants.value=(settings.capability_grants||[]).map(grant=>({...grant,
@@ -582,7 +586,7 @@ watch(tab,load,{immediate:true})
             <v-select v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" :items="scopeOptions" label="在哪个场景生效" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`scene_id:${index}`).map(item=>item.message)" hint="从已保存的场景中选择；这里不新建群。" persistent-hint required @update:model-value="loadParticipants($event)" />
             <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`system_scope:${index}`).map(item=>item.message)" hint="明确的系统范围，例如 heartbeat；该词表不是登记表，需要人工填写。" persistent-hint required />
             <v-select v-model="grant.capabilities" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" item-title="title" item-value="value" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
-            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（本机时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" :hint="`留空表示长期有效。这里按你这台机器的时区填写，保存时换算成绝对时间：${expiryPreview(index)}`" persistent-hint />
+            <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" step="1" label="有效期（本机时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" :hint="`留空表示长期有效。这里按你这台机器的时区填写，保存时换算成绝对时间：${expiryPreview(index)}`" persistent-hint />
             <v-select v-model="grant.resource_policy" :items="policyOptions" label="使用哪项额度策略" clearable hint="从已保存的策略中选择；留空使用默认策略。没有可选策略时先去“额度策略”页保存。" persistent-hint />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
             <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>

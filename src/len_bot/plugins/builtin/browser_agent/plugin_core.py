@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 from len_bot.browser.models import BrowserCaptureInput, BrowserInteractInput, BrowserOpenInput, BrowserPageInput
 from len_bot.browser.worker_v2 import BrowserWorkerV2
 from len_bot.execution.models import WorkspaceScope
+from len_bot.execution.admission import require_execution_job
 from len_bot.execution.client import WorkerGatewayConfig
 from len_bot.browser.gateway_service import GatewayBrowserService
 from len_bot.plugins.api import BasePlugin, PluginCallContext, PluginContext, ToolResult, ToolSource
@@ -21,6 +23,7 @@ class BrowserAgentPlugin(BasePlugin):
         gateway = (getattr(workspace, 'config', None) or {}).get('gateway')
         self.gateway = GatewayBrowserService(context, self.config, WorkerGatewayConfig.model_validate(gateway)) if gateway else None
         self.worker = None if self.gateway else BrowserWorkerV2(self.config.browser)
+        self._local_scopes = {}
 
     async def on_load(self, context: PluginContext):
         context.register_tool('browser_open', '在当前信息工作中打开白名单公开网页并返回可见 DOM 文本与临时元素引用。',
@@ -46,7 +49,8 @@ class BrowserAgentPlugin(BasePlugin):
         requester = job.get('requester_qq_uid')
         if requester:
             scope = WorkspaceScope(scene_id=job['scene_id'], requester_qq_uid=requester, job_id=job['id'])
-            await self.worker.close_scope(scope.workspace_id)
+            for key in self._local_scopes.pop(scope.workspace_id, set()):
+                await self.worker.close_scope(key)
 
     def _refuse_host_when_gateway(self):
         workspace = self.context._runtime.config_store.current.plugins.get('workspace')
@@ -62,19 +66,22 @@ class BrowserAgentPlugin(BasePlugin):
                 raise ValueError('执行后端配置已变化，请重新加载浏览器插件')
             return await self.gateway.execute(operation, values, call)
         scope = await self._scope(call)
-        return await getattr(self.worker, operation)(scope.workspace_id, values)
+        key = f'{scope.workspace_id}:r{call.job_revision}'
+        self._local_scopes.setdefault(scope.workspace_id, set()).add(key)
+        async def admit():
+            self._refuse_host_when_gateway()
+            return await require_execution_job(self.context.event_store, call, self.manifest.id)
+        job = await admit()
+        deadline = (job.get('budget') or {}).get('deadline_at')
+        remaining = None if deadline is None else max(0, deadline - self.context.now())
+        async with asyncio.timeout(remaining):
+            return await getattr(self.worker, operation)(key, values, admission=admit)
 
     async def _scope(self, call):
         self._refuse_host_when_gateway()
         if call.role != 'work' or not call.job_id or not call.requester_qq_uid:
             raise ValueError('浏览器只允许在已有 work 工作中使用')
-        job = await self.context.event_store.get_job(call.job_id, call.scene_id)
-        if not job or job.get('requester_qq_uid') != call.requester_qq_uid:
-            raise ValueError('浏览器归属与当前工作不一致')
-        if job['status'] not in {'pending', 'claimed', 'processing', 'result_ready'}:
-            scope = WorkspaceScope(scene_id=call.scene_id, requester_qq_uid=call.requester_qq_uid, job_id=call.job_id)
-            await self.worker.close_scope(scope.workspace_id)
-            raise ValueError('当前工作已结束，浏览器页面已关闭')
+        await require_execution_job(self.context.event_store, call, self.manifest.id)
         return WorkspaceScope(scene_id=call.scene_id, requester_qq_uid=call.requester_qq_uid, job_id=call.job_id)
 
     async def open(self, values: BrowserOpenInput, call: PluginCallContext):
