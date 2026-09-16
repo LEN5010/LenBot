@@ -69,3 +69,4 @@ node_modules/
 /.runtime/
 /lenbot.config.json
 /.lenbot-config-*.json
+/gateway.config.json

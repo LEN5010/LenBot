@@ -135,7 +135,7 @@ class ModelCallStoreMixin:
         # and is refused by the re-hold instead of being silently re-created
         # from the current default policy.
         await self._db.execute("""UPDATE usage_reservations SET limit_tokens=reserved_tokens
-            WHERE limit_tokens IS NULL AND status='held'""")
+            WHERE limit_tokens IS NULL AND status='held' AND reserved_tokens > 0""")
         # A request that was in flight when the process last stopped has no
         # receipt and can never get one: nothing will call end_model_call for
         # it.  Left open, it keeps its work settling forever and its hold
@@ -192,7 +192,13 @@ class ModelCallStoreMixin:
         """
         if tokens < 0:
             raise ValueError('A work reservation cannot be negative')
-        ceiling = tokens if limit_tokens is None else limit_tokens
+        # tokens=0 with omitted ceiling is the recorded "no token dimension".
+        # Substituting tokens into limit_tokens would write 0 and later read
+        # as a real ceiling of nothing.
+        if limit_tokens is None:
+            ceiling = None if tokens == 0 else tokens
+        else:
+            ceiling = limit_tokens
         if daily_limit is not None:
             used = await self.account_used_tokens_in_transaction(subject, day_key)
             if used + tokens > daily_limit:

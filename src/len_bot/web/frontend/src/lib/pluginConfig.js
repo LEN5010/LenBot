@@ -84,16 +84,17 @@ export function chooseBranch(draft, group, key, seed = '{}') {
   return next
 }
 
-export function configDraft(config, schema, secrets = [], prefix = '') {
+export function configDraft(config, schema, secrets = [], prefix = '', definitions) {
+  const defs = definitions || definitionsOf(schema)
   const draft = {}
   const source = config && typeof config === 'object' ? config : {}
-  for (const field of configFields(schema)) {
+  for (const field of configFields(schema, defs)) {
     const path = fieldPath(prefix, field.key)
     if (field.nested) {
       const nested = source[field.key]
       // The stored object is kept so its siblings survive an edit; an absent
       // one stays absent instead of becoming an empty backend.
-      if (nested && typeof nested === 'object') draft[field.key] = configDraft(nested, field.schema, secrets, path)
+      if (nested && typeof nested === 'object') draft[field.key] = configDraft(nested, field.schema, secrets, path, defs)
       continue
     }
     if (secrets.includes(path)) { draft[field.key] = ''; continue }
@@ -118,15 +119,16 @@ export function groupGaps(schema, draft) {
     .map(group => ({key: group.fields[0], message: `${group.title}：必须选择其中一项`}))
 }
 
-export function blankConfigDraft(schema, secrets = [], prefix = '') {
+export function blankConfigDraft(schema, secrets = [], prefix = '', definitions) {
+  const defs = definitions || definitionsOf(schema)
   const draft = {}
-  for (const field of configFields(schema)) {
+  for (const field of configFields(schema, defs)) {
     const path = fieldPath(prefix, field.key)
     if (field.nested) {
       // A required sub-object is part of the first configuration, so it starts
       // from its own defaults; an optional one is left for the operator to
       // choose, and is never seeded as an empty object.
-      if (field.required) draft[field.key] = blankConfigDraft(field.schema, secrets, path)
+      if (field.required) draft[field.key] = blankConfigDraft(field.schema, secrets, path, defs)
       continue
     }
     if (secrets.includes(path)) { draft[field.key] = ''; continue }
@@ -142,14 +144,15 @@ export function blankConfigDraft(schema, secrets = [], prefix = '') {
   return draft
 }
 
-export function configValue(draft, schema, {secrets = [], preserveSecrets = false} = {}, prefix = '') {
+export function configValue(draft, schema, {secrets = [], preserveSecrets = false} = {}, prefix = '', definitions) {
+  const defs = definitions || definitionsOf(schema)
   const config = {}
-  for (const field of configFields(schema)) {
+  for (const field of configFields(schema, defs)) {
     const path = fieldPath(prefix, field.key)
     if (field.nested) {
       const branch = draft[field.key]
       if (!branch || typeof branch !== 'object') continue
-      const value = configValue(branch, field.schema, {secrets, preserveSecrets}, path)
+      const value = configValue(branch, field.schema, {secrets, preserveSecrets}, path, defs)
       // An exclusive branch the operator has not filled in yet is not an empty
       // object to submit; it is an unfilled choice.
       if (!Object.keys(value).length && (groupFor(schema, field.key) || !Object.keys(branch).length)) continue
@@ -174,6 +177,15 @@ export function configValue(draft, schema, {secrets = [], preserveSecrets = fals
       catch { throw new Error(`${field.schema.title || path} 需要合法 JSON`) }
     } else config[field.key] = value
   }
+  // Unselected exclusive branches are an explicit clear, not an omitted
+  // field that merge_config would keep from the stored configuration.
+  for (const group of exclusiveGroups(schema)) {
+    const selected = selectedBranch(draft, group)
+    if (!selected) continue
+    for (const field of group.fields) {
+      if (field !== selected) config[field] = null
+    }
+  }
   return config
 }
 
@@ -185,17 +197,18 @@ export function configValue(draft, schema, {secrets = [], preserveSecrets = fals
 // write a value the operator never touched.  Inside a branch that is present
 // (a chosen backend, a saved sub-object) that reasoning does not hold — the
 // branch is being submitted — so its required fields are checked.
-export function draftProblems(schema, draft, {secrets = [], configSet = {}, requirePresent = false} = {}, prefix = '') {
+export function draftProblems(schema, draft, {secrets = [], configSet = {}, requirePresent = false} = {}, prefix = '', definitions) {
+  const defs = definitions || definitionsOf(schema)
   const problems = []
   for (const gap of groupGaps(schema, draft)) problems.push({key: fieldPath(prefix, gap.key), message: gap.message})
-  for (const field of configFields(schema)) {
+  for (const field of configFields(schema, defs)) {
     const path = fieldPath(prefix, field.key)
     const title = field.schema.title || field.key
     const present = Object.hasOwn(draft, field.key)
     if (field.nested) {
       const branch = draft[field.key]
       if (branch && typeof branch === 'object') {
-        problems.push(...draftProblems(field.schema, branch, {secrets, configSet, requirePresent: true}, path))
+        problems.push(...draftProblems(field.schema, branch, {secrets, configSet, requirePresent: true}, path, defs))
       }
       continue
     }

@@ -174,6 +174,26 @@ class WorkspaceWorker:
             temporary.unlink(missing_ok=True)
             raise
 
+    @staticmethod
+    def _write_control_bytes(path: Path, content: bytes) -> None:
+        """One exported input's bytes, written the same all-or-nothing way.
+
+        Media imported into an execution is not text, so it cannot go through
+        the text writer; the temp-then-rename step and the refusal to follow a
+        link are kept identical so a half-written input is never left in the
+        read-only area a container is about to mount.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
     def file_path(self, workspace_id: str, relative: str) -> Path:
         _validate_relative_path(relative)
         directory = self.directory(workspace_id)

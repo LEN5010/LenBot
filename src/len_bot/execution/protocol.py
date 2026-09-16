@@ -163,12 +163,16 @@ class ExecutionRequest(BaseModel):
                            description='固定镜像配置引用，由 Gateway 解析为实际镜像')
     network_policy: str = Field(min_length=1, max_length=64,
                                description='网络策略引用，由 Gateway 解析为实际出口规则')
+    egress_authorized: bool = Field(default=False,
+        description='宿主对本次执行是否具备联网授权的结论；网关只在策略实际转发时要求它为真')
     input_assets: list[str] = Field(default_factory=list, max_length=8,
                                     description='仅作来源登记的资产 ID；实际字节经 input_files 传输')
     input_files: list[ExecutionInputFile] = Field(default_factory=list, max_length=9,
                                                   description='宿主导出的输入文件；网关只落盘，不自行读取资料')
     deadline_seconds: float = Field(gt=0, le=3600,
-                                    description='宿主愿意为本次执行支付的绝对时间；从被接受时起算')
+                                    description='宿主愿意为本次执行支付的最长秒数；从被接受时起算，且不得晚于 deadline_at')
+    deadline_at: float | None = Field(default=None,
+        description='原工作的绝对截止时刻；网关不得把用户代码跑过这个时刻')
 
     @model_validator(mode='after')
     def unique_input_names(self):

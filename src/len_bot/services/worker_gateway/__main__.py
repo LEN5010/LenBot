@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from len_bot.services.worker_gateway.app import create_app
 from len_bot.services.worker_gateway.config import GatewayConfig
+from len_bot.services.worker_gateway.egress_proxy import EgressProxy
 from len_bot.services.worker_gateway.runner import ExecutionRunner
 from len_bot.services.worker_gateway.store import GatewayStore
 
@@ -54,9 +55,23 @@ async def serve(config: GatewayConfig) -> None:
     store = GatewayStore(config.database_path)
     await store.initialize()
     root = Path(config.database_path).resolve().parent
+    # Every policy whose mode forwards through the egress proxy gets its own
+    # proxy, started here so a run is never accepted onto a network whose only
+    # admitted route is not listening.  An offline policy gets none.
+    proxies: dict = {}
+    for name, policy in config.proxy_policies().items():
+        log_path = policy.log_path or str(root / f'egress-{name}.jsonl')
+        proxy = EgressProxy(policy.rules(), config.token, policy_name=name,
+                            log_path=log_path,
+                            listen_host=config.egress_bind_host, listen_port=policy.proxy_port)
+        await proxy.start()
+        proxies[name] = proxy
+        logger.info('网络策略 %s 的出口代理已监听 %s:%s', name, config.egress_bind_host, policy.proxy_port)
     runner = ExecutionRunner(config, store,
                              workspaces_root=Path(config.workspaces_root).expanduser(),
-                             controls_root=root / 'controls')
+                             controls_root=root / 'controls', egress_proxies=proxies)
+    for name, proxy in proxies.items():
+        proxy.admit = lambda execution_id, policy=name: runner.admit_egress(policy, execution_id)
     # The app's own startup hook reconciles and its shutdown hook stops the
     # runs, so the same behaviour applies however the ASGI app is served.
     app = create_app(config, store, runner)
@@ -71,6 +86,8 @@ async def serve(config: GatewayConfig) -> None:
         sweeper.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sweeper
+        for proxy in proxies.values():
+            await proxy.stop()
         await store.close()
 
 
