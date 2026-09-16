@@ -49,7 +49,7 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
 # to push the absolute deadline out, and the stored ``deadline_at`` is what a
 # later read — and a Gateway restarting on its own — both use.
 _RESUBMIT_FIELDS = ('scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
-                    'image_ref', 'network_policy', 'script')
+                    'image_ref', 'network_policy', 'script', 'egress_authorized')
 
 _RECORD_NAMES = ('execution_id', 'scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
                  'image_ref', 'network_policy', 'state', 'accepted_at', 'deadline_at', 'started_at',
@@ -139,6 +139,11 @@ class ExecutionJournalMixin:
                     await self._db.commit()
                     return _decode_execution(existing[:len(_RECORD_NAMES)]), False
                 accepted_at = self.clock()
+                deadline_at = accepted_at + request.deadline_seconds
+                if request.deadline_at is not None:
+                    deadline_at = min(deadline_at, request.deadline_at)
+                if deadline_at <= accepted_at + 1:
+                    raise ValueError('原工作剩余期限不足，不能接受新的执行')
                 await self._db.execute("""INSERT INTO execution_runs
                     (execution_id,scene_id,job_id,job_revision,workspace_id,worker_type,image_ref,
                      network_policy,request_json,state,accepted_at,deadline_at,last_sequence)
@@ -146,8 +151,7 @@ class ExecutionJournalMixin:
                     (request.execution_id, request.scene_id, request.job_id, request.job_revision,
                      request.workspace_id, request.worker_type, request.image_ref,
                      request.network_policy, request.model_dump_json(),
-                     ExecutionState.ACCEPTED.value, accepted_at,
-                     accepted_at + request.deadline_seconds))
+                     ExecutionState.ACCEPTED.value, accepted_at, deadline_at))
                 await self._db.commit()
             except BaseException:
                 await self._db.rollback()

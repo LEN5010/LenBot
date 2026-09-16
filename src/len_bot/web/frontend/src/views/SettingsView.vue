@@ -10,7 +10,7 @@ import EntityLink from '../components/EntityLink.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 
 const route = useRoute(), router = useRouter()
-const tabs = [{value:'persona',title:'人格与表达'},{value:'attention',title:'注意力'},{value:'access',title:'QQ 回复资格'},{value:'resources',title:'额度策略'},{value:'time',title:'业务时间'},{value:'members',title:'成员'},{value:'connection',title:'连接'},{value:'delivery',title:'发送'},{value:'runtime',title:'运行参数'},{value:'account',title:'账户'}]
+const tabs = [{value:'persona',title:'人格与表达'},{value:'attention',title:'注意力'},{value:'access',title:'QQ 回复资格'},{value:'resources',title:'额度策略'},{value:'time',title:'业务时间'},{value:'members',title:'主播与订阅对象'},{value:'connection',title:'连接'},{value:'delivery',title:'发送'},{value:'runtime',title:'运行参数'},{value:'account',title:'账户'}]
 const tab = computed(() => tabs.some(item=>item.value===route.query.tab) ? route.query.tab : 'persona')
 const loading = ref(false), error = ref(''), message = ref(''), readAt = ref({}), busy = ref('')
 const persona = ref(null), personaOriginal = ref(''), attention = ref(null), attentionOriginal = ref('')
@@ -25,6 +25,20 @@ const executionBudgets = [{key:'conversation_max_steps',label:'每轮对话模�
   {key:'maintenance_max_tool_calls',label:'一次历史维护工具调用',unit:'次'}]
 const budgetText = (value, unit) => value===undefined ? '未提供'
   : value===null ? '不设限（由其他维度停止）' : `${value} ${unit}`
+const runtimeBudgetValue = key => {
+  try { const obj=JSON.parse(runtimeText.value||'{}'); return obj[key] ?? '' } catch { return '' }
+}
+const setRuntimeBudget = (key, value) => {
+  let obj
+  try { obj=JSON.parse(runtimeText.value||'{}') } catch { return }
+  if (value==='' || value===null || value===undefined) obj[key]=null
+  else {
+    const text=String(value).trim()
+    if (!/^-?\d+(\.\d+)?$/.test(text)) return
+    obj[key]=Number(text)
+  }
+  runtimeText.value=JSON.stringify(obj,null,2)
+}
 const onebot = ref(null), connection = ref(null), connectionOriginal = ref(''), shadow = ref(null)
 const accessText = ref(null), accessOriginal = ref('')
 const grants = ref([]), grantsOriginal = ref('')
@@ -34,7 +48,7 @@ const capabilities = ref([]), plugins = ref([]), scopeOptions = ref([])
 // ids seen in this scene, and the named quota policies.  These are the
 // registered objects the panel can list; "系统用途" stays a written value
 // because its vocabulary is not a registry.
-const policyOptions = ref([]), referenceError = ref(''), participantOptions = ref([])
+const policyOptions = ref([]), referenceError = ref(''), participantCache = ref({}), participantRequests = {}
 async function loadReferences() {
   try {
     const [scenes, catalog, policies] = await Promise.all([
@@ -44,21 +58,21 @@ async function loadReferences() {
     policyOptions.value = Object.keys(policies.policies || {}).map(name=>({title:name,value:name}))
   } catch(e) { referenceError.value=e.message }
 }
+const qqUid = id => String(id||'').startsWith('user:') ? String(id).slice(5) : String(id||'')
+const participantsFor = grant => participantCache.value[grant.scene_id] || []
 async function loadParticipants(sceneId) {
-  participantOptions.value = []
   if (!/^group:[1-9]\d*$/.test(sceneId || '')) return
+  const request = (participantRequests[sceneId] = (participantRequests[sceneId] || 0) + 1)
   try {
     const detail = await api(`/api/cockpit/scenes/${encodeURIComponent(sceneId)}`)
-    participantOptions.value = Object.entries(detail.session.participants || {})
-      .map(([id,item])=>({title:`${item.card || item.nickname || id} · ${id}`,value:id}))
-  } catch(e) { referenceError.value=e.message }
+    if (request !== participantRequests[sceneId]) return
+    participantCache.value = {...participantCache.value, [sceneId]: Object.entries(detail.session.participants || {})
+      .map(([id,item])=>{ const uid=qqUid(id); return {title:`${item.card || item.nickname || uid} · ${uid}`,value:uid} })}
+  } catch(e) { if (request === participantRequests[sceneId]) referenceError.value=e.message }
 }
-// An operator picks a name; the panel never asks for a capability enum, an
-// absolute Unix time or a version number.  Those stay server-side facts.
 const capabilityItems = computed(()=>capabilities.value.map(item=>({...item,
   title:item.implemented?item.title:`${item.title}`,subtitle:item.value})))
-const grantCapabilities = grant => (grant.capabilityText||'').split(/[,，\s]+/).filter(Boolean)
-const setGrantCapabilities = (grant,values) => { grant.capabilityText=values.join(', ') }
+const grantCapabilities = grant => Array.isArray(grant.capabilities) ? grant.capabilities.filter(Boolean) : []
 const toLocalInput = seconds => {
   if (!seconds) return ''
   const date = new Date(seconds*1000)
@@ -106,22 +120,24 @@ const focusPolicy = key => document.querySelector(`[data-policy="${key}"]`)?.scr
 // The JSON pane is a read-only view of what is saved, not a second editor: it
 // has no save action and leaving it rebuilds the rows from the stored record,
 // so a value typed there can never be silently half-submitted.
-const toggleQuotaRaw = () => {
-  if (quotaRaw.value) { quotaRows.value=policyRows(quotaRecord.value); quotaOriginal.value=JSON.stringify(quotaRows.value) }
-  quotaRaw.value=!quotaRaw.value
-}
+const toggleQuotaRaw = () => { quotaRaw.value=!quotaRaw.value }
 // An empty box means "not limited", which the backend writes as null.  The
 // bounds mirror the model rather than being stricter or looser: a single
 // work's ceiling must be at least one token (a ceiling of zero would mean the
 // work was granted nothing), while a day's balance may legitimately be zero.
 const quotaNumber = (value,label,key,{minimum=0}={}) => {
   if (value===null || value===undefined || value==='') return null
-  const number = Math.trunc(Number(value))
-  if (!Number.isFinite(number) || number<minimum) {
+  const text = String(value).trim()
+  if (!/^-?\d+$/.test(text)) {
+    quotaProblems.value=[...quotaProblems.value,{key, message:`${label}：请填写整数，不能截断小数或改写非法值`}]
+    return undefined
+  }
+  const number = Number(text)
+  if (!Number.isSafeInteger(number) || number<minimum) {
     quotaProblems.value=[...quotaProblems.value,{key,
       message:minimum>0?`${label}：请填 ${minimum} 或更大的整数；不设该维度上限请留空`
         :`${label}：请填 0 或更大的整数；留空表示不设该维度上限`}]
-    return null
+    return undefined
   }
   return number
 }
@@ -168,11 +184,12 @@ async function load() {
       capabilities.value = vocabulary.items
       if (!accessDirty.value) {
         accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
-        grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', '),
-          expiresInput:toLocalInput(grant.expires_at)}))
+        grants.value=(settings.capability_grants||[]).map(grant=>({...grant,
+          capabilities:[...grant.capabilities], expiresInput:toLocalInput(grant.expires_at)}))
         grantsOriginal.value=JSON.stringify(grants.value)
       }
-      await loadParticipants(grants.value.find(grant=>grant.principal_type!=='system')?.scene_id)
+      await Promise.all([...new Set(grants.value.filter(grant=>grant.principal_type!=='system').map(grant=>grant.scene_id))]
+        .map(sceneId=>loadParticipants(sceneId)))
     } else if (currentTab==='resources') {
       const settings = await api('/api/settings/resources'); if (request!==requestId) return
       quotaRecord.value=settings.policies||{}
@@ -262,8 +279,8 @@ async function saveAccess() {
   try {
     const values = accessText.value.split(/[,，\s]+/).filter(Boolean).map(value=>positiveInteger(value,'QQ 账号'))
     const result = await api('/api/settings/access',{method:'PUT',body:JSON.stringify({qq_reply_whitelist:values,capability_grants:grants.value.map(grant=>({
-      grant_id:grant.grant_id,revision:grant.revision,
-      principal_type:grant.principal_type,principal_id:grant.principal_id,
+      grant_id:grant.grant_id||'',revision:grant.revision||1,
+      principal_type:grant.principal_type,principal_id:qqUid(grant.principal_id && typeof grant.principal_id==='object'?grant.principal_id.value:grant.principal_id),
       scene_id:grant.principal_type==='system'?null:(grant.scene_id||null),
       system_scope:grant.principal_type==='system'?(grant.system_scope||null):null,
       capabilities:grantCapabilities(grant),
@@ -271,14 +288,16 @@ async function saveAccess() {
       concurrency:grant.concurrency||null,enabled:!!grant.enabled}))})})
     const settings=result.settings
     accessText.value=settings.qq_reply_whitelist.join('\n'); accessOriginal.value=accessText.value
-    grants.value=(settings.capability_grants||[]).map(grant=>({...grant,capabilityText:grant.capabilities.join(', '),
-      expiresInput:toLocalInput(grant.expires_at)}))
+    grants.value=(settings.capability_grants||[]).map(grant=>({...grant,
+      capabilities:[...grant.capabilities], expiresInput:toLocalInput(grant.expires_at)}))
     grantsOriginal.value=JSON.stringify(grants.value); message.value=result.message; accessProblems.value=[]
   } catch(e) {
-    // The list position is what an operator can act on; a bare JSON index is not.
     accessProblems.value=(Array.isArray(e.details)?e.details:[]).map(item=>{
       const parts=(item.loc||[]).filter(part=>part!=='body'&&part!=='capability_grants')
-      if (typeof parts[1]==='number') return {key:`grant:${parts[1]}`,message:`第 ${parts[1]+1} 条授予 · ${parts.slice(2).join(' → ')||'字段'}：${item.msg}`}
+      if (typeof parts[0]==='number') {
+        const field=parts[1]==='capabilities'?'capability':(parts[1]||'grant')
+        return {key:`${field}:${parts[0]}`,message:`第 ${parts[0]+1} 条授予 · ${parts.slice(1).join(' → ')||'字段'}：${item.msg}`}
+      }
       return {key:parts[0]==='qq_reply_whitelist'?'whitelist':'',message:`${parts.join(' → ')||'提交内容'}：${item.msg}`}
     })
     error.value=e.message
@@ -286,7 +305,7 @@ async function saveAccess() {
 }
 function addGrant() {
   grants.value.push({grant_id:'',revision:1,operator_id:'',principal_type:'human',principal_id:'',
-    scene_id:'',system_scope:'',capabilityText:'',expiresInput:'',resource_policy:'',concurrency:null,enabled:false})
+    scene_id:'',system_scope:'',capabilities:[],expiresInput:'',resource_policy:'',concurrency:null,enabled:false})
 }
 // Saving only decides permission for future operations; it never rewrites
 // another grant and cannot withdraw a message that was already sent.
@@ -301,11 +320,11 @@ async function saveQuota() {
       const name=row.name.trim()
       if (!name) { quotaProblems.value=[{key:`policy:${index}`,message:`第 ${index+1} 项：策略名不能为空`}]; return }
       if (name in policies) { quotaProblems.value=[{key:`policy:${index}`,message:`第 ${index+1} 项：策略名“${name}”已有同名策略`}]; return }
-      policies[name]={
-        work_token_limit:quotaNumber(row.work,'单工作累计 token',`policy:${index}`,{minimum:1}),
-        daily_user_token_limit:quotaNumber(row.user,'主体日额度',`policy:${index}`),
-        daily_scene_token_limit:quotaNumber(row.scene,'群日额度',`policy:${index}`)}
-      if (quotaProblems.value.length) return
+      const work=quotaNumber(row.work,'单工作累计 token',`policy:${index}`,{minimum:1})
+      const user=quotaNumber(row.user,'主体日额度',`policy:${index}`)
+      const scene=quotaNumber(row.scene,'群日额度',`policy:${index}`)
+      if (quotaProblems.value.length || work===undefined || user===undefined || scene===undefined) return
+      policies[name]={work_token_limit:work, daily_user_token_limit:user, daily_scene_token_limit:scene}
     }
     quotaProblems.value=[]
     const result = await api('/api/settings/resources',{method:'PUT',body:JSON.stringify({policies})})
@@ -545,12 +564,12 @@ watch(tab,load,{immediate:true})
           </v-alert>
           <div class="form-grid">
             <v-select v-model="grant.principal_type" label="谁" :items="[{title:'一个群友（人类）',value:'human'},{title:'系统用途',value:'system'},{title:'一个插件',value:'plugin'}]" @update:model-value="value=>{grant.principal_type=value; if(value==='system') grant.scene_id=''; else grant.system_scope=''}" />
-            <v-combobox v-if="grant.principal_type==='human'" v-model="grant.principal_id" :data-field="`principal_id:${index}`" :items="participantOptions" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="从本群已记录成员中选择，或直接填 QQ 账号；昵称与群名片不是账号。" persistent-hint required />
+            <v-combobox v-if="grant.principal_type==='human'" v-model="grant.principal_id" :data-field="`principal_id:${index}`" :items="participantsFor(grant)" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="从本群已记录成员中选择，或直接填 QQ 账号；保存的是 QQ 账号，不是 actor ID。" persistent-hint required />
             <v-select v-else-if="grant.principal_type==='plugin'" v-model="grant.principal_id" :data-field="`principal_id:${index}`" :items="plugins" label="哪个插件" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="从当前已声明插件中选择。" persistent-hint required />
             <v-text-field v-else v-model="grant.principal_id" :data-field="`principal_id:${index}`" label="主体标识" :error="accessProblems.some(item=>item.key===`principal_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)" hint="填明确的系统用途标识，例如 heartbeat。" persistent-hint required />
             <v-select v-if="grant.principal_type!=='system'" v-model="grant.scene_id" :data-field="`scene_id:${index}`" :items="scopeOptions" label="在哪个场景生效" :error="accessProblems.some(item=>item.key===`scene_id:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`scene_id:${index}`).map(item=>item.message)" hint="从已保存的场景中选择；这里不新建群。" persistent-hint required @update:model-value="loadParticipants($event)" />
             <v-text-field v-else v-model="grant.system_scope" :data-field="`system_scope:${index}`" label="系统用途" :error="accessProblems.some(item=>item.key===`system_scope:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`system_scope:${index}`).map(item=>item.message)" hint="明确的系统范围，例如 heartbeat；该词表不是登记表，需要人工填写。" persistent-hint required />
-            <v-select v-model="grant.capabilityText" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
+            <v-select v-model="grant.capabilities" :data-field="`capability:${index}`" multiple chips :items="capabilityItems" item-title="title" item-value="value" label="允许什么" class="wide" :error="accessProblems.some(item=>item.key===`capability:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`capability:${index}`).map(item=>item.message)" required />
             <v-text-field v-model="grant.expiresInput" :data-field="`expires:${index}`" type="datetime-local" label="有效期（本机时区）" :error="accessProblems.some(item=>item.key===`expires:${index}`)" :error-messages="accessProblems.filter(item=>item.key===`expires:${index}`).map(item=>item.message)" :hint="`留空表示长期有效。这里按你这台机器的时区填写，保存时换算成绝对时间：${expiryPreview(index)}`" persistent-hint />
             <v-select v-model="grant.resource_policy" :items="policyOptions" label="使用哪项额度策略" clearable hint="从已保存的策略中选择；留空使用默认策略。没有可选策略时先去“额度策略”页保存。" persistent-hint />
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
@@ -589,10 +608,10 @@ watch(tab,load,{immediate:true})
             <li v-for="problem in quotaProblems" :key="problem.message"><button class="error-link" type="button" @click="focusPolicy(problem.key)">{{ problem.message }}</button></li>
           </ul>
         </template>
-        <template v-if="quotaRaw"><v-textarea v-model="quotaText" label="策略（JSON）" rows="10" class="wide runtime-json" hint='每项三个维度：work_token_limit（单工作累计 token）、daily_user_token_limit（主体日额度，跨群聚合）、daily_scene_token_limit（可选群日额度）。例如 {"default": {"work_token_limit": 10000000, "daily_user_token_limit": 30000000, "daily_scene_token_limit": null}}。' persistent-hint /><p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p></template>
+        <template v-if="quotaRaw"><v-textarea :model-value="quotaText" readonly label="策略（JSON）" rows="10" class="wide runtime-json" hint="已保存取值的只读对照，没有保存入口；改数值请返回表单。切换视图不会丢掉未保存的表单草稿。" persistent-hint /><p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p></template>
         <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略的形状不是这三个字段（{{ Object.keys(rawPolicies).join('、') }}），表单原样保留它们，只在保存时一起写回。</p>
         <ResourceViewer v-if="!quotaRaw" class="wide" title="已保存的精确取值（只读对照）" :content="quotaText" />
-        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'按 JSON 编辑' }}</v-btn>
+        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'查看已保存 JSON' }}</v-btn>
         <v-btn v-if="!quotaRaw" type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!quotaDirty">保存额度策略</v-btn>
         <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>
@@ -612,17 +631,17 @@ watch(tab,load,{immediate:true})
       </v-form>
     </v-card>
     <v-card v-if="tab==='members'&&members!==null" class="pa-5 form-card">
-      <div class="section-header"><h2>成员与 B 站身份</h2><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addMember">添加成员</v-btn></div>
-      <p class="muted my-3">成员名称与别名用于查询，B 站 UID 和直播间号用于确认实际对象。团体署名保持团体含义，不在这里自动展开成员。</p>
-      <v-alert v-if="membersRestart" type="info" variant="tonal" class="mb-4">成员已保存，需手动重启后用于查询与采集。</v-alert>
-      <p v-if="!members.length" class="muted py-4">尚未填写成员；动态与开播插件保持未就绪。</p>
+      <div class="section-header"><h2>主播与订阅对象</h2><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addMember">添加对象</v-btn></div>
+      <p class="muted my-3">这里登记的是 B 站主播与订阅对象，不是群详情里的 QQ 参与者。名称与别名用于查询，B 站 UID 和直播间号确认实际对象。团体署名保持团体含义，不在这里自动展开。</p>
+      <v-alert v-if="membersRestart" type="info" variant="tonal" class="mb-4">主播与订阅对象已保存，需手动重启后用于查询与采集。</v-alert>
+      <p v-if="!members.length" class="muted py-4">尚未填写主播与订阅对象；动态与开播插件保持未就绪。</p>
       <v-form :disabled="!!busy" @submit.prevent="saveMembers">
         <v-card v-for="(member,index) in members" :key="index" variant="outlined" class="pa-4 mb-4">
-          <div class="section-header mb-3"><h3>成员 {{ index+1 }}</h3><v-btn variant="text" color="error" :disabled="!!busy" @click="members.splice(index,1)">移除</v-btn></div>
-          <div class="form-grid"><v-text-field v-model="member.name" label="成员名称" required /><v-text-field v-model="member.aliasText" label="别名（逗号或顿号分隔）" /><v-text-field v-model="member.bilibili_uid" label="B 站 UID" inputmode="numeric" required /><v-text-field v-model="member.room_id" label="直播间号" inputmode="numeric" required /></div>
+          <div class="section-header mb-3"><h3>对象 {{ index+1 }}</h3><v-btn variant="text" color="error" :disabled="!!busy" @click="members.splice(index,1)">移除</v-btn></div>
+          <div class="form-grid"><v-text-field v-model="member.name" label="显示名称" required /><v-text-field v-model="member.aliasText" label="别名（逗号或顿号分隔）" /><v-text-field v-model="member.bilibili_uid" label="B 站 UID" inputmode="numeric" required /><v-text-field v-model="member.room_id" label="直播间号" inputmode="numeric" required /></div>
         </v-card>
-        <p class="muted mb-4">已被群订阅的成员需先在相应群中取消订阅，再移除或改名。</p>
-        <v-btn type="submit" color="primary" :loading="busy==='members'" :disabled="!!busy||!membersDirty">保存成员</v-btn>
+        <p class="muted mb-4">已被群订阅的对象需先在相应群中取消订阅，再移除或改名。</p>
+        <v-btn type="submit" color="primary" :loading="busy==='members'" :disabled="!!busy||!membersDirty">保存主播与订阅对象</v-btn>
       </v-form>
     </v-card>
     <v-card v-if="tab==='delivery'&&shadow" class="pa-5 form-card">
@@ -637,9 +656,14 @@ watch(tab,load,{immediate:true})
       <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新的工作执行段采用当前发布预算；已开始的一轮使用其预算快照。工作恢复保留累计用量，改变上限不会自动重开已有结果或失败工作。</p>
       <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表单独显示这五项预算的当前发布值。</v-alert>
-      <p class="muted my-3">预算、并发、媒体和维护等参数仍通过下方完整 JSON 保存。</p>
+      <p class="muted my-3">常用执行预算用下面的数字框改；其余字段仍通过完整 JSON。留空表示该维度不设限。改这里会写进同一份草稿。</p>
       <v-form :disabled="!!busy" @submit.prevent="saveRuntime">
-        <v-textarea v-model="runtimeText" label="运行参数 JSON" rows="24" spellcheck="false" class="runtime-json" />
+        <div class="form-grid mb-4">
+          <v-text-field v-for="item in executionBudgets" :key="item.key" :model-value="runtimeBudgetValue(item.key)"
+            :label="item.label+'（'+item.unit+'）'" type="number" :hint="'留空即不设限'" persistent-hint
+            @update:model-value="value=>setRuntimeBudget(item.key,value)" />
+        </div>
+        <v-textarea v-model="runtimeText" label="运行参数 JSON（含其余字段）" rows="16" spellcheck="false" class="runtime-json" />
         <div class="actions"><v-btn type="submit" color="primary" :loading="busy==='runtime'" :disabled="!!busy||!runtimeDirty">保存运行参数</v-btn><span v-if="runtimeDirty" class="muted">有未保存修改</span></div>
       </v-form>
     </v-card>
