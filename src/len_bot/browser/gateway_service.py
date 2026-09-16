@@ -10,6 +10,7 @@ from len_bot.events.models import Initiator
 from len_bot.execution.client import WorkerGatewayClient, GatewayUnavailable, GatewayResultUnknown, GatewayConflict, GatewayRefused
 from len_bot.execution.protocol import ExecutionRequest, ExecutionState, is_terminal
 from len_bot.execution.service import GatewayWorkspaceService
+from len_bot.execution.admission import require_execution_job
 from len_bot.runtime.public_research import verify_public_job
 
 
@@ -49,17 +50,9 @@ class GatewayBrowserService:
             self._live_sessions.discard(ident)
 
     async def _job(self, call):
-        await self.context._host.validate_call(call)
-        if call.role != 'work' or not call.job_id or not call.tool_call_id:
+        if not call.tool_call_id:
             raise ValueError('浏览器需要已有工作及原生工具调用身份')
-        job = await self.store.get_job(call.job_id, call.scene_id)
-        if not job or job['revision'] != call.job_revision or job['status'] != 'processing':
-            raise ValueError('浏览器调用不属于当前运行工作修订')
-        if job['requester_qq_uid'] != call.requester_qq_uid:
-            raise ValueError('浏览器调用发起人与工作不一致')
-        if not call.requester_qq_uid and not await verify_public_job(self.store, job):
-            raise ValueError('系统浏览器只接受已验证的公共研究工作')
-        return job
+        return await require_execution_job(self.store, call, 'browser_agent')
 
     async def _session(self, job, operation):
         existing = [record for record in await self.store.executions_for_job(job['scene_id'], job['id'])

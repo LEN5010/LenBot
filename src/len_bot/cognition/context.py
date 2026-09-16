@@ -12,6 +12,7 @@ from len_bot.cognition.input_window import prefix_end, original_prefix
 from len_bot.cognition.call_store import estimate_request
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.work_context import exchange_spans
+from len_bot.scheduler.models import task_delivery_available
 from len_bot.tools.results import ToolResult
 
 CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED, EventType.MESSAGE_SENT}
@@ -42,6 +43,7 @@ class TurnReferences:
         self.jobs = {}
         self.tasks = {}
         self.editable_tasks = set()
+        self.deliverable_tasks = set()
         self.loops = {}
         self.active_loops = set()
 
@@ -128,7 +130,14 @@ class TurnReferences:
         return ref
 
     def register_task(self, task):
-        self.editable_tasks.add(task['id'])
+        if task['status'] in {'pending', 'claimed', 'processing', 'review_required', 'result_ready'}:
+            self.editable_tasks.add(task['id'])
+        else:
+            self.editable_tasks.discard(task['id'])
+        if task_delivery_available(task['status'], task['payload']):
+            self.deliverable_tasks.add(task['id'])
+        else:
+            self.deliverable_tasks.discard(task['id'])
         return self._register(self.tasks, task['id'], 'T')
 
     def register_loop(self, loop):
@@ -849,6 +858,7 @@ class ConversationContext:
         active_jobs = [job for job in jobs if job['status'] not in {'cancelled', 'completed', 'shadow_observed'}
                        or job['id'] in self.current_job_ids]
         tasks = [task for task in await store.scene_tasks(scene) if task['id'] not in job_ids
+                 and task['payload'].get('kind') not in {'heartbeat', 'heartbeat_occupancy', 'interest_share', 'deferred_delivery'}
                  and task['status'] in {'pending','claimed','processing','review_required','result_ready','awaiting_delivery'}]
         loops = await store.get_active_open_loops(scene)
         outbound = await store.outbound_message_facts(scene, self.refs.cutoff, bot_actor_id=self.runtime.bot_actor_id,
@@ -922,15 +932,20 @@ class ConversationContext:
         if unrelated_jobs:
             self.omit('work', 'not_related_to_current_sources', count=unrelated_jobs)
         self.refs.editable_tasks.clear()
+        self.refs.deliverable_tasks.clear()
         tasks.sort(key=lambda task: task['id'] not in self.current_task_ids)
         for task in tasks:
             if (task['id'] not in self.current_task_ids
                     and 'user:' + str(task['payload'].get('requester_qq_uid')) not in self.relevant_actor_ids):
                 continue
             append_view('tasks', lambda: {'ref': self.refs.register_task(task), 'description': task['description'],
-                'status': task['status'], 'due_at': task['due_at'], 'details': task['payload']},
+                'status': task['status'], 'due_at': task['due_at'], 'details': task['payload'],
+                'can_deliver': task['id'] in self.refs.deliverable_tasks,
+                'request_source': self.refs.register_event_locator(task['payload']['request_source_event_id'])
+                    if task['payload'].get('request_source_event_id') else None},
                 lambda: {'ref': self.refs.register_task(task), 'description_preview': task['description'][:160],
                     'status': task['status'], 'due_at': task['due_at'], 'details_not_provided': True,
+                    'can_deliver': task['id'] in self.refs.deliverable_tasks,
                     'request_source': self.refs.register_event_locator(task['payload']['request_source_event_id'])
                         if task['payload'].get('request_source_event_id') else None})
         self.refs.active_loops.clear()
@@ -942,7 +957,8 @@ class ConversationContext:
             append_view('outbound', lambda: {**item, 'segments': self.model_segments(item['segments'])})
         if any(counts.values()):
             self.omit('runtime_facts', 'unrelated_or_over_capacity', counts=dict(counts))
-        if not any(facts[key] for key in ('work', 'tasks', 'open_loops', 'outbound')) and not any(counts.values()) and not self._facts:
+        if (not any(facts[key] for key in ('work', 'tasks', 'open_loops', 'outbound'))
+                and not facts.get('capabilities') and not any(counts.values()) and not self._facts):
             return None
         message = rendered()
         if self.request_tokens([*base, message]) > self.input_budget:
@@ -1019,6 +1035,8 @@ class ConversationContext:
 用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；每个segments片段只填text、image、video、audio或at，媒体引用本轮已保存资产，at使用成员U，文字@称呼不是真实提及。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
 
 工具回执staged只表示暂存；新工作和提醒的确认用本轮ack_ref，恢复/修订/取消及认识变更的确认用对应operation_ref，均在同一事务提交后才成立。旧工作状态引用用work_ref，首次完整或部分结果交付用delivery_ref；每条消息只选一种关系。runtime_facts替代旧状态，first_result=true是原请求的首次交付机会，无需对方再问；普通旧结果目录不是重发理由。partial保留缺口，符合can_resume且有明确新要求时才继续原工作，保留已用预算；完整完成不因发送失败重跑。
+提醒到期或工作完成的M是系统触发事件，不是人类请求。交付消息填写对应delivery_ref，可省略source以沿用已读的原始委托（runtime_facts里的request_source）；sources则把本次到期或完成事件M标为replied，关联由delivery_ref确定。原委托未完整读取时先回读，不能借用新的无关群消息；不要把有交付消息关联的到期事件标为silent。
+提醒目录can_deliver=false时不能交付。review_required表示重启后需要核对，旧TASK_DUE不恢复交付资格；有明确人类要求时可重新安排或取消，否则保留未完成原因，不通过普通消息补发。awaiting_delivery表示已经提交，等待真实回执，不重复发送。处理这些事项不妨碍提交本轮其他独立请求。
 prepared_delivery=true表示插件已经准备好交付成品，原工作入口会提交保存的片段；当前对话处理新原话及控制要求，不重写成品或填delivery_ref重复交付。
 
 未调用只说明尚未查询；HTTP失败不是来源未发布，no_results只限本次来源与范围。提交、入队和sent分别说明；unknown不能说已经收到，也不自动重发。等待只在真实sent后激活，只有相关真实回复才能说明对方回应了；没有响应不编造查询结果。committed=false的候选按具体错误在剩余预算中修正，已提交阶段不能事后撤销；最后一步根据实际已做、未做和资料覆盖结束。
