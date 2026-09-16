@@ -130,6 +130,8 @@ class ExecutionRunner(BrowserCommands):
                     raise GatewayRefusal('浏览器必须通过已核验的出口代理策略')
                 if not Path(worker.browser_seccomp_profile).is_file():
                     raise GatewayRefusal('浏览器 seccomp 部署文件不存在')
+            if request.worker_type == 'media' and policy.mode != 'proxy':
+                raise GatewayRefusal('媒体片段读取必须通过已核验的出口代理')
             if policy.mode == 'proxy':
                 # Two independent answers are required before a networked run
                 # starts.  The deployment must have built the policy *and*
@@ -278,6 +280,8 @@ class ExecutionRunner(BrowserCommands):
             control = self.control_directory(execution_id)
             if request.worker_type == 'browser':
                 self._write_control(control / 'browser.json', request.model_dump_json())
+            elif request.worker_type == 'media':
+                self._write_control(control / 'media.json', request.model_dump_json())
             else:
                 self._write_control(control / 'task.py', request.script)
             egress = self._write_egress_control(control, policy, execution_id, request.network_policy)
@@ -457,7 +461,7 @@ class ExecutionRunner(BrowserCommands):
         # to establish, not something this command line decides.
         network = policy.network if policy.mode == 'proxy' else 'none'
         command += ['--network', network]
-        if egress and worker.worker_type != 'browser':
+        if egress and worker.worker_type == 'python':
             for name, value in egress['env'].items():
                 command += ['--env', f'{name}={value}']
         if worker.worker_type == 'browser':
@@ -465,6 +469,7 @@ class ExecutionRunner(BrowserCommands):
                         '--security-opt', f'seccomp={worker.browser_seccomp_profile}']
         command += ['-v', f'{workspace}:/workspace:rw', '-v', f'{control}:/lenbot-control:ro', '-w', '/workspace', worker.image]
         command += (['python', '-m', 'len_bot.browser.container_worker'] if worker.worker_type == 'browser'
+                    else ['python', '-m', 'len_bot.media.segment_worker'] if worker.worker_type == 'media'
                     else ['python', '/lenbot-control/task.py'])
         return command
 
@@ -849,7 +854,7 @@ class ExecutionRunner(BrowserCommands):
         targets: list[tuple[Path, int]] = [(control, 0o750), (workspace, 0o770), (script, 0o640)]
         # The egress file is written before this point, because the run's
         # command line carries the proxy address that file describes.
-        for name in ('manifest.json', CONTROL_RELATIVE_PATH):
+        for name in ('manifest.json', 'browser.json', 'media.json', CONTROL_RELATIVE_PATH):
             extra = control / name
             if extra.exists():
                 targets.append((extra, 0o640))

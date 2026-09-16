@@ -61,6 +61,9 @@ def project_event(event: Event, bot_qq: int | str) -> str:
             f"{quote['actor_id']} EventID={quote['event_id']}: {project_onebot_text(quote['text'])}")
         if quote.get("media"):
             text += "\n引用图片：" + json.dumps(quote["media"], ensure_ascii=False)
+    if event.event_type in {EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED}:
+        text += '\n文件上传回执（不是群文字通知）：' + json.dumps({key: event.payload.get(key) for key in
+            ('file_asset_id', 'file_id', 'delivery_status', 'error')}, ensure_ascii=False)
     if event.event_type == EventType.MESSAGE_SEND_FAILED:
         text += "\n发送未确认：" + event.payload.get("error", "旧记录缺少详细原因")
     if event.metadata.get("reflection_stale"):

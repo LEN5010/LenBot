@@ -220,7 +220,8 @@ class MediaService:
             raise ValueError("媒体来源必须是公开HTTP(S)地址")
         # Validate and persist bytes before creating the catalog row. A failed
         # HTML/JSON response must not leave behind a sendable-looking asset.
-        mime, path = await self._store_file(data, mime_type, expected_type=expected_type)
+        mime, path = (await self._store_bytes(data) if expected_type == 'image'
+                      else await self._store_file(data, mime_type, expected_type=expected_type))
         asset = await self.runtime.event_store.get_media(asset_id, [scene_id, "global-safe"], include_disabled=True)
         if asset is None:
             await self.runtime.event_store.register_external_media(asset_id, scene_id, source_url, source_event_id=source_event_id)
@@ -314,13 +315,18 @@ class MediaService:
                 "reason": error_message(f'{error_type}: {reason}')}
 
     async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int,
-                                     read_cache: dict[str, PreparedMediaContext] | None = None) -> PreparedMediaContext:
+                                     read_cache: dict[str, PreparedMediaContext] | None = None,
+                                     supports_segment_vision: bool = False) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= self.runtime.config.max_context_images:
             raise ValueError("Image limit must be within the configured image window")
         result: PreparedMediaContext = {"blocks": [], "manifest": []}
         reads = read_cache if read_cache is not None else {}
         for asset_id in dict.fromkeys(asset_ids):
+            if asset_id.startswith('segment_') and not supports_segment_vision:
+                result['manifest'].append({'asset_id': asset_id, 'status': 'omitted', 'reason': 'capability_missing',
+                    'note': '当前模型绑定尚未确认视觉能力；采样帧已保存但未向模型装配图片'})
+                continue
             if not self.runtime.config.media_enabled:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "media_disabled"})
                 continue

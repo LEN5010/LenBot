@@ -255,7 +255,7 @@ class RetrievalToolkit:
         if self.call_context().role in {'conversation','work'}:
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
             definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
-        plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind='read') if self.plugin_host else []
+        plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind=None if self.call_context().role == 'work' else 'read') if self.plugin_host else []
         available_names = {item['function']['name'] for item in plugin_tools}
         self.discovered_tools = {name: None for name in self.discovered_tools if name in available_names}
         if plugin_tools:
@@ -376,7 +376,7 @@ class RetrievalToolkit:
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
             matches, categories = self.plugin_host.search_tools(args['query'], self.call_context(),
-                kind='read') if self.plugin_host else ([], [])
+                kind=None if self.call_context().role == 'work' else 'read') if self.plugin_host else ([], [])
             selected = matches[:self.config.tool_discovery_limit]
             for item in selected:
                 tool_name = item['name']
@@ -865,7 +865,16 @@ class RetrievalToolkit:
                 truncated=end < total, next_offset=end if end < total else None,
                 coverage='original_message_range; next_offset is a raw-text character offset for read_message_range',
                 evidence_kind='retrieval')
-        if name=='read_media':return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
+        if name=='read_media':
+            if args['asset_id'].startswith('segment_'):
+                call = self.call_context()
+                job = await store.get_job(call.job_id, call.scene_id) if call.job_id else None
+                capable = bool((job.get('model_binding') or {}).get('supports_vision')) if job else bool(
+                    self.context and self.context.supports_segment_vision)
+                if not capable:
+                    return ToolResult(status='unsupported', error_code='capability_missing',
+                        content='当前绑定未确认视觉能力，采样帧已保存但不能装配给模型；不能从标题推测画面。')
+            return await self.media_service.read_media(args.get('asset_id',''),self.default_scene_id)
         if name=='search_media':
             rows=await store.list_media([self.default_scene_id,'global-safe'],query=args['query'],
                 curated_only=args['curated_only'], limit=self.config.media_search_limit)

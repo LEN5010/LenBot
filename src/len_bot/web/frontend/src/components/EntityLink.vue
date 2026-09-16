@@ -9,13 +9,15 @@ const to = computed(() => {
   if(props.sceneId)query.scene=props.sceneId
   if(props.id)query.id=props.id
   if(props.version)query.version=String(props.version)
-  if(props.type==='scene')return {name:'scene',params:{sceneId:props.id}}
+  if(props.type==='scene')return /^(group|private):/.test(props.id||'')
+    ? {name:'scene',params:{sceneId:props.id}}
+    : {name:'activity',query:{scene:props.id,tab:'events'}}
   if(props.type==='job')return {name:'job',params:{jobId:props.id},query:props.sceneId?{scene:props.sceneId}:{}}
   if(props.type==='task')return {name:'tasks',query:{...query,tab:'reminders'}}
   if(props.type==='memory')return {name:'memories',query}
   if(props.type==='skill')return {name:'skills',query}
   if(props.type==='media')return {name:'media',query}
-  if(props.type==='event' && props.sceneId)return {name:'scene',params:{sceneId:props.sceneId},query:{event:props.id}}
+  if(props.type==='event' && /^(group|private):/.test(props.sceneId||''))return {name:'scene',params:{sceneId:props.sceneId},query:{event:props.id}}
   if(props.type==='event')return {name:'activity',query:{...query,tab:'events'}}
   if(props.type==='call')return {name:'activity',query:{...query,tab:'calls'}}
   if(props.type==='episode')return {name:'activity',query:{...query,tab:'turns',episode:props.id,id:undefined}}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from len_bot.media.files import PrepareFileInput
 from len_bot.execution.client import WorkerGatewayClient
 from len_bot.execution.models import ListWorkspaceInput, RunPythonInput, WorkspaceFileInput
 from len_bot.execution.service import GatewayWorkspaceService, WorkspaceService
@@ -38,6 +39,7 @@ def build_workspace_service(config: WorkspacePluginConfig, data_directory, event
 class WorkspacePlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
+        self.context = context
         self.config: WorkspacePluginConfig = context.config
         self.service = build_workspace_service(
             self.config, context.data_directory, context.event_store, self.manifest.id,
@@ -57,6 +59,12 @@ class WorkspacePlugin(BasePlugin):
         context.register_tool('export_workspace_artifact', '导出当前工作的文件产物。支持的图片登记为 attachments 中的场景媒体引用，普通文件可在授权面板下载；不自动发送。',
             WorkspaceFileInput, self.export_file, purpose='导出工作区产物', aliases=('导出文件',),
             keywords=('工作区', '文件', '导出', '产物'), kind='read', roles=('work',))
+
+        context.register_tool('prepare_workspace_file', '将当前工作 Gateway 产物登记为持久文件资产。支持 TXT/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP；不接受宿主路径。for_upload 需要本群 send_file 授权及原工作审查；工具不发群。',
+            PrepareFileInput, self.prepare_file, purpose='登记普通文件交付', keywords=('文件', 'ZIP', '交付'), kind='read', roles=('work',))
+
+    async def prepare_file(self, values: PrepareFileInput, call: PluginCallContext):
+        return await self._run(lambda: self.context._runtime.file_assets.prepare(self.service, call, values))
 
     async def on_unload(self):
         service = getattr(self, 'service', None)

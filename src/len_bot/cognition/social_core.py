@@ -58,6 +58,7 @@ class SocialCognitionCore:
                                          'elapsed_seconds_limit':config.conversation_window_seconds,
                                          'resumed_elapsed_seconds':resume.elapsed_seconds if resume else 0}})
         context=ConversationContext(runtime,session,through_rowid)
+        context.supports_segment_vision = binding.supports_vision
         context.config=config
         context.input_budget=config.conversation_context_tokens-config.conversation_output_tokens
         context.add_current_sources(events,source_event_ids)
@@ -300,7 +301,8 @@ class SocialCognitionCore:
                 raise TerminalArgumentError('分阶段执行必须使用真实提交与发布服务')
             if outcome.next_action=='wait':
                 outcome.resume_state=ConversationResume(episode_id=episode_id,runtime_started_at=runtime._started_at,
-                    model_profile=ModelProfile(provider_id=owner_binding.provider_id,model=owner_binding.model,reasoning_effort=owner_binding.reasoning_effort),
+                    model_profile=ModelProfile(provider_id=owner_binding.provider_id,model=owner_binding.model,
+                        reasoning_effort=owner_binding.reasoning_effort, supports_vision=owner_binding.supports_vision),
                     model_calls_limit=config.conversation_max_steps,tool_calls_limit=config.conversation_max_tool_calls,
                     model_calls_used=execution.budget.model_used,tool_calls_used=execution.budget.tool_used,
                     context_tokens=config.conversation_context_tokens,output_tokens=config.conversation_output_tokens,

@@ -10,8 +10,14 @@ EXECUTION_BUDGET_FIELDS = frozenset({
     'job_max_steps', 'job_max_tool_calls', 'job_max_seconds', 'maintenance_max_tool_calls',
 })
 
+from len_bot.media.file_config import FileDeliveryConfig
+from len_bot.adapters.file_upload import FileUploadConfig
+
+
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
+    onebot_file_upload: FileUploadConfig | None = None
+    file_delivery: FileDeliveryConfig = Field(default_factory=FileDeliveryConfig)
     bot_qq: int = Field(gt=0, description="The Bot's QQ account ID")
     ws_host: str = Field(description='Reverse WebSocket host')
     ws_port: int = Field(description='Reverse WebSocket port')

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.events.models import Initiator
 from len_bot.browser.worker import BrowserConfig
+from len_bot.media.segment_protocol import MediaSegmentRequest
 
 # A worker type is a name the Gateway resolves in its own registry.  The
 # pattern only keeps the value a plain identifier; whether the name exists is
@@ -158,9 +159,10 @@ class ExecutionRequest(BaseModel):
     workspace_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
     initiator: Initiator
     worker_type: str = Field(pattern=WORKER_TYPE_PATTERN,
-                            description='python 或 browser；类型必须与部署登记镜像一致')
+                            description='python、browser 或 media；类型必须与部署登记镜像一致')
     script: str | None = Field(default=None, min_length=1, max_length=100_000)
     browser: BrowserConfig | None = None
+    media: MediaSegmentRequest | None = None
     review_action_id: str | None = Field(default=None, max_length=80)
     image_ref: str = Field(min_length=1, max_length=64,
                            description='固定镜像配置引用，由 Gateway 解析为实际镜像')
@@ -180,11 +182,15 @@ class ExecutionRequest(BaseModel):
     @model_validator(mode='after')
     def unique_input_names(self):
         if self.worker_type == 'browser':
-            if self.browser is None or self.script is not None or self.input_files or self.input_assets:
+            if self.browser is None or self.media is not None or self.script is not None or self.input_files or self.input_assets:
                 raise ValueError('浏览器执行只能携带类型化页面配置，不能提交脚本、文件或账号资料')
         elif self.worker_type == 'python':
-            if self.script is None or self.browser is not None:
+            if self.script is None or self.browser is not None or self.media is not None:
                 raise ValueError('Python 执行需要脚本且不能混入浏览器配置')
+        elif self.worker_type == 'media':
+            if (self.media is None or self.browser is not None or self.script is not None
+                    or self.input_files or self.input_assets):
+                raise ValueError('媒体执行只接受类型化公开片段，不接受脚本、工作文件或凭据')
         else:
             raise ValueError('未实现的 worker 类型')
         names = [item.name for item in self.input_files]

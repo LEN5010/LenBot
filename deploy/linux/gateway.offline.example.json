@@ -1,0 +1,21 @@
+{
+  "host": "172.31.8.1",
+  "port": 8790,
+  "token": "replace-with-a-private-service-token",
+  "database_path": "/var/lib/lenbot-gateway/gateway.db",
+  "workspaces_root": "/var/lib/lenbot-gateway/workspaces",
+  "runtime_path": "/usr/bin/docker",
+  "images": {
+    "python": {
+      "worker_type": "python",
+      "image": "lenbot-workspace:local",
+      "container_user": "65532:65532",
+      "memory": "512m",
+      "cpus": "1.0",
+      "pids_limit": 128
+    }
+  },
+  "network_policies": {
+    "offline": {"mode": "none"}
+  }
+}

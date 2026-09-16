@@ -196,6 +196,8 @@ class ExecutionJournalMixin:
                                 if stored.get(field) != getattr(request, field)]
                     if stored.get('browser') != (request.browser.model_dump(mode='json') if request.browser else None):
                         mismatch.append('browser')
+                    if stored.get('media') != (request.media.model_dump(mode='json') if request.media else None):
+                        mismatch.append('media')
                     if stored.get('initiator') != request.initiator.model_dump(mode='json'):
                         mismatch.append('initiator')
                     if stored.get('input_assets') != request.input_assets:

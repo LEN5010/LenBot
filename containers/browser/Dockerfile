@@ -12,6 +12,7 @@ COPY src/len_bot/__init__.py ./len_bot/__init__.py
 COPY src/len_bot/browser ./len_bot/browser
 COPY src/len_bot/events/models.py ./len_bot/events/models.py
 COPY src/len_bot/execution/protocol.py ./len_bot/execution/protocol.py
+COPY src/len_bot/media/segment_protocol.py ./len_bot/media/segment_protocol.py
 RUN python -m compileall -q /opt/lenbot/len_bot
 ENV PYTHONPATH=/opt/lenbot
 WORKDIR /workspace

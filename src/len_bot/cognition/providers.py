@@ -29,6 +29,7 @@ class ModelProfile(BaseModel):
     provider_id: str
     model: str
     reasoning_effort: str | None
+    supports_vision: bool = Field(default=False, description='运营者已确认此绑定支持图片输入')
 
     @field_validator("provider_id", "model")
     @classmethod
@@ -41,6 +42,15 @@ class ModelProfile(BaseModel):
     @classmethod
     def normalize_effort(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+
+class TranscriptionProfile(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
+    provider_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    protocol: Literal['openai_verbose_json']
+    estimated_tokens_per_second: float = Field(gt=0, description='工作额度估算；不是供应商实际计费')
+    max_text_chars: int = Field(ge=100, le=50000)
 
 
 class RetrievalProfile(BaseModel):
@@ -80,6 +90,7 @@ class RouteResolution:
     client: AsyncOpenAI
     reasoning_effort: str | None = None
     role: ModelRole = "conversation"
+    supports_vision: bool = False
 
 
 def connection_key(provider: ProviderConfig) -> tuple:
@@ -156,7 +167,7 @@ class ProviderRegistry:
             raise LookupError(f"Bound model {profile.model!r} is unavailable on {provider.id!r}")
         return RouteResolution(provider_id=profile.provider_id, model=profile.model,
                                reasoning_effort=profile.reasoning_effort, role=role,
-                               client=self._client_for(profile.provider_id))
+                               client=self._client_for(profile.provider_id), supports_vision=profile.supports_vision)
 
     async def list_models(self, provider_id: str) -> list[str]:
         response = await self._client_for(provider_id).models.list()
@@ -184,6 +195,10 @@ class ProviderRegistry:
     def export(self) -> dict:
         return {"providers": [provider.model_dump() for provider in self._providers.values()],
                 "routing": self._routing.model_dump() if self._routing else None}
+
+    def resolve_transcription(self, profile: TranscriptionProfile) -> RouteResolution:
+        binding = ModelProfile(provider_id=profile.provider_id, model=profile.model, reasoning_effort=None)
+        return self.resolve_profile(binding, role='work')
 
     def snapshot(self) -> dict:
         providers = []

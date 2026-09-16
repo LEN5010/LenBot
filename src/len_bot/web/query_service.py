@@ -10,12 +10,15 @@ import json
 import copy
 import time
 import re
+from len_bot.runtime.platform_actions import actions_for
 from len_bot.cognition.budget import ReservationPolicy
 from len_bot.events.models import Event, EventType
 from len_bot.tools.results import ToolResult
 from typing import Optional
 from len_bot.scenes.models import SceneSession
 from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
+from len_bot.memory.interests import InterestStore
+from len_bot.execution.protocol import OCCUPYING_STATES
 
 
 class RuntimeQueryService:
@@ -280,6 +283,7 @@ class RuntimeQueryService:
                           ("cached_tokens","prompt_tokens_details.cached_tokens"),("reasoning_tokens","completion_tokens_details.reasoning_tokens")):
             fields.append(f"SUM(CASE WHEN json_type(usage_json,'$.{path}') IN ('integer','real') THEN json_extract(usage_json,'$.{path}') ELSE 0 END) AS {name}")
         fields.append("SUM(json_extract(estimate_json,'$.input_tokens')) AS estimated_input_tokens")
+        fields.append("SUM(CASE WHEN json_extract(usage_json,'$.type')='duration' AND json_type(usage_json,'$.seconds') IN ('integer','real') THEN json_extract(usage_json,'$.seconds') ELSE 0 END) AS audio_seconds")
         result["totals"] = await self._rows("SELECT " + ",".join(fields) + " " + source + " GROUP BY purpose,disposition ORDER BY purpose,disposition", params)
         result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status}
         result["cost"] = {"status":"unverified","amount":None,"reason":"尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}
@@ -406,7 +410,26 @@ class RuntimeQueryService:
         if job and job['can_resume']:
             job['resume_issue']=self.runtime.job_resume_issue(job)
             job['can_resume']=job['resume_issue'] is None
-        return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job)} if job else None
+        if not job:
+            return None
+        executions = []
+        for record in await self.runtime.event_store.executions_for_job(job['scene_id'], job_id):
+            view = record.model_dump(mode='json', include={
+                'execution_id', 'job_revision', 'worker_type', 'network_policy', 'state',
+                'accepted_at', 'deadline_at', 'started_at', 'ended_at', 'returncode', 'last_sequence'})
+            view['occupies_capacity'] = record.state in OCCUPYING_STATES
+            view['termination_status'] = record.termination.status if record.termination else None
+            executions.append(view)
+        reservations = await self._rows(
+            'SELECT subject,day_key,status,reserved_tokens,usage_tokens,estimated_tokens FROM usage_reservations WHERE job_id=? AND scene_id=?',
+            [job_id, job['scene_id']])
+        return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job),
+                "executions": executions, "reservation": reservations[0] if reservations else None,
+                "file_assets": await self.runtime.file_assets.for_job(job["scene_id"], job["id"]),
+                "platform_actions": await actions_for(self.runtime.event_store, scene_id=job["scene_id"], job_id=job["id"])}
+
+    async def file_asset_bytes(self, scene_id, job_id, asset_id):
+        return await self.runtime.file_assets.bytes_for_job(scene_id, job_id, asset_id)
 
     @staticmethod
     def public_asset(asset):
@@ -509,7 +532,7 @@ class RuntimeQueryService:
                     "conversation_style", "dashboard_secret_key", "dashboard_default_admin_password"}
         values = self.runtime.config_store.current.runtime.model_dump()
         settings = {key:value for key,value in values.items()
-                    if key not in excluded and not key.startswith(("identity_", "onebot_"))}
+                    if key not in excluded and (key == "onebot_file_upload" or not key.startswith(("identity_", "onebot_")))}
         return {"settings":settings, "requires_restart":self.runtime.restart_required,
                 "effective_budgets":{key:getattr(self.runtime.config,key) for key in sorted(EXECUTION_BUDGET_FIELDS)}}
 
@@ -661,15 +684,59 @@ class RuntimeQueryService:
 
     async def list_tasks(self, status=None, *, scene_id=None, kind="reminder", page=1, page_size=30):
         source="FROM tasks WHERE (? IS NULL OR status=?) AND (? IS NULL OR scene_id=?)";params=[status,status,scene_id,scene_id]
-        if kind=="reminder":source+=" AND COALESCE(json_extract(payload,'$.kind'),'reminder')!='agent_job'"
+        if kind=="reminder":source+=" AND COALESCE(json_extract(payload,'$.kind'),'reminder') NOT IN ('agent_job','heartbeat','heartbeat_occupancy','interest_share')"
         elif kind=="agent_job":source+=" AND json_extract(payload,'$.kind')='agent_job'"
+        elif kind=="system":source+=" AND json_extract(payload,'$.kind') IN ('heartbeat','heartbeat_occupancy','interest_share')"
+        else:raise ValueError('未知任务分类')
         result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
         result["items"]=[self._task(item) for item in result["items"]]
         return result
 
     async def get_task(self, task_id, scene_id=None):
         rows=await self._rows("SELECT * FROM tasks WHERE id=? AND (? IS NULL OR scene_id=?)",[task_id,scene_id,scene_id])
-        return self._task(rows[0]) if rows else None
+        if not rows:
+            return None
+        task = self._task(rows[0])
+        if task['payload'].get('kind') in {'heartbeat', 'heartbeat_occupancy', 'interest_share'}:
+            traces = await self._rows("SELECT * FROM traces WHERE scene_id=? AND ref_id=? AND kind IN ('heartbeat','interest_share') ORDER BY created_at DESC LIMIT 30",
+                                     [task['scene_id'], task_id])
+            task['scheduler_observations'] = [self._trace(row, detail=True) for row in traces]
+        return task
+
+    async def public_interests(self, *, query='', page=1, page_size=30):
+        result = await self._page('SELECT *',
+            "FROM public_interests WHERE visibility='public' AND (?='' OR instr(lower(topic || ' ' || statement),lower(?))>0)",
+            [query, query], 'observed_at DESC,id DESC', page, page_size)
+        now = self.current_time()
+        for item in result['items']:
+            item['source_observation_ids'] = json.loads(item.pop('source_json'))
+            item['evidence_spans'] = json.loads(item.pop('evidence_json'))
+            item['expired'] = item['valid_until'] is not None and item['valid_until'] <= now
+        result['read_at'] = now
+        return result
+
+    async def public_interest(self, ident):
+        store = InterestStore(self.runtime.event_store)
+        item = await store.get(ident)
+        if item is None:
+            return None
+        sources = []
+        for source_id in item.source_observation_ids:
+            rows = await self._rows('SELECT id,scene_id,event_id,result_json FROM tool_observations WHERE id=?', [source_id])
+            if rows:
+                row = rows[0]
+                row['result'] = self._observation_view(ToolResult.model_validate_json(row.pop('result_json')))
+                sources.append(row)
+        changes = await self._rows("""SELECT id,scene_id,timestamp,payload FROM events WHERE event_type='PUBLIC_INTEREST_CHANGED'
+            AND (json_extract(payload,'$.after.id')=? OR json_extract(payload,'$.before.id')=?)
+            ORDER BY timestamp DESC,id DESC LIMIT 51""", [ident, ident])
+        for change in changes:
+            change['payload'] = self._public(json.loads(change['payload']))
+        proven = await store.public_observation_ids(item.source_observation_ids)
+        return {**item.model_dump(mode='json'), 'sources': sources,
+                'public_sources_confirmed': set(item.source_observation_ids) == proven,
+                'expired': item.valid_until is not None and item.valid_until <= self.current_time(),
+                'changes': changes[:50], 'more_changes': len(changes) > 50}
 
     async def open_loop(self, loop_id, scene_id=None):
         rows=await self._rows("SELECT * FROM open_loops WHERE id=? AND (? IS NULL OR scene_id=?)",[loop_id,scene_id,scene_id])
