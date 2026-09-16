@@ -4,7 +4,7 @@
 
 ## 社会 Agent 计划与当前实现
 
-完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本文不复制计划对象与未来拓扑。公共兴趣、心跳与睡眠、文件上传及点赞收藏尚未形成当前可用链路。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker，浏览器仍在本进程内。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
+完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本文不复制计划对象与未来拓扑。C14—C20 已补充独立浏览器命令链、逐动作模型审查、B 站匿名原语、公共兴趣采用、实际心跳工作、自然语言叫醒确认与持久延期交付。心跳和睡眠默认关闭；已有 B 站只读工具不受这两个开关控制。C13/C14 未取得部署放行。文件上传与点赞收藏尚未开始。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker。Gateway 已选时浏览器工具使用独立 browser worker，宿主不创建 Chromium；部署与真实运行仍待验收。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
 
 ## 主链与所有权
 
@@ -17,7 +17,7 @@
 | `cognition` | 临时上下文、原生循环、短引用和暂存提案；SocialCognitionCore 是唯一社会判断入口 |
 | `runtime` | 生命周期、Gate、信息工作、预算与调用账；工作和维护不能直接发送 |
 | `scheduler/actions` | 持久认领、到期事件、队列、显式传输与回执 |
-| `memory` | 单一认识账本与增量历史；当前没有公共兴趣存储 |
+| `memory` | 单一认识账本与增量历史；公共兴趣在 `public_interests`，不进入群认识 |
 | `skills` | 有来源、场景与版本的方法文档；没有额外执行权 |
 | `plugins/tools` | 注册工具与事件处理器、读取资料、调用公共 Agent 和提交入口；模型与发送仍由现有运行时执行 |
 | `media` | 原图读取、解码与窗口装配，运营素材及其来源；不调用独立视觉模型 |
@@ -50,15 +50,15 @@ CapabilityGrant 保存在 `access.capability_grants`，默认空。Gate 对非�
 
 ### 工作与对话的恢复限制
 
-工作保存累计 model_steps、tool_calls 和 elapsed_seconds，并在首次真正开始时写入绝对 `deadline_at`。运行段 timeout 和对话循环 timeout 都对着该持久期限（或对话已存窗口）的剩余时间；排队未开始不计时。没有 `deadline_at` 的旧工作仍按累计活动时长换算，不能补造首次开始时刻。
+工作保存累计 model_steps、tool_calls 和 elapsed_seconds，并在首次真正开始时写入绝对 `deadline_at`。运行段 timeout、恢复准入和对话循环 timeout 都对着该持久期限（或对话已存窗口）的剩余时间；恢复按钮与执行器使用原工作快照，不用后来保存的默认次数拒绝旧工作。排队未开始不计时。没有 `deadline_at` 的旧工作仍按累计活动时长换算，不能补造首次开始时刻。
 
-resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照；重开 settled/released 预占时使用原 `limit_tokens`，排除本工作后再检查日账。没有存档上限的旧已结算行拒绝自动恢复，不能按当前默认策略补造。无预占的旧工作仍没有 token 维度。
+resume/revise 保留原 ID、资料、模型绑定、累计计数和创建快照；重开 settled/released 预占时使用原累计上限，排除本工作后再检查日账。快照明确 `token_limit:null` 与没有存档上限不同：前者在当前没有有限日额度时可继续；有限日额度无法为其预占时明确拒绝。历史缺记录的已结算行拒绝自动恢复，不能按当前默认策略补造。
 
 对话可配置 conversation_window_seconds；ConversationResume 保存绝对截止时刻 `deadline_at` 与原窗口值（含明确的 `null`），恢复时按该时刻继续，等待时间计入窗口。人格候选与人工样例仍分别经根配置和数据库接口保存。
 
 ## 执行后端与边界
 
-workspace 插件按根配置选择唯一后端：`worker` 由 LenBot 进程调用宿主容器运行时，`gateway` 把 `run_python` 交给独立 Worker Gateway，宿主不再启动容器。两者互斥，网关失败不会回落宿主 `docker run`，一次调用里也没有第二条执行路径；切换是运营者改根配置的操作。工具为 run_python、list_workspace_files、read_workspace_file 和 export_workspace_artifact。WorkspaceService 从已有 work 的 scene、真实请求者和 job 取得工作区归属，不接受模型自填 owner；当前入口仍要求人类请求者。
+workspace 插件按根配置选择唯一后端：`worker` 由 LenBot 进程调用宿主容器运行时，`gateway` 把 `run_python` 交给独立 Worker Gateway，宿主不再启动容器。两者互斥，网关失败不会回落宿主 `docker run`，一次调用里也没有第二条执行路径；切换是运营者改根配置的操作。工具为 run_python、list_workspace_files、read_workspace_file 和 export_workspace_artifact。WorkspaceService 从已有 work 的 scene、真实请求者和 job 取得工作区归属，不接受模型自填 owner；人类工作保留原请求者归属；系统工作必须通过真实心跳来源与占用关系核验，使用明确系统主体，不借用 QQ 身份。面板读取使用同一归属检查，宿主 worker 明确拒绝 Gateway execution_id。
 
 ### 宿主 worker
 
@@ -76,13 +76,31 @@ workspace 插件按根配置选择唯一后端：`worker` 由 LenBot 进程调�
 
 当前产物快照只取**最新一次** EXITED / FAILED / TERMINATION_CONFIRMED 且清单可读的执行；占用中或未确认终止不回退到旧文件。历史读取/导出/下载必须带同一 `execution_id`。文本页丢弃前缀，只保留请求页。
 
-出口：`none` 无网；`proxy` 须 `deployment_verified`、代理在跑、宿主 `egress_authorized`。授权只给无群来源的 SystemInitiator 且本次无文本/图片导入。凭据绑定策略与当前执行；撤销后不发新预算。未核验部署不得放行联网。
+出口：`none` 无网；`proxy` 须 `deployment_verified`、代理在跑、宿主 `egress_authorized`。联网 Python 须显式开启 network_python_enabled，工作须是通过真实 TASK_DUE、周期占用与 SystemInitiator 核验的独立公共研究；附件拒绝导入，文本必须是本工作已取得且可追溯至匿名公共原始观察的资料。NETWORK_PYTHON 当前 grant 与具体脚本/输入/镜像/网络策略的动作审查都通过后才提交；审查不增加权限。凭据绑定策略与当前执行；撤销后不发新预算。未核验部署不得放行联网。
 
 ### 浏览器
 
-`browser_agent` 样例默认停用，工具只在已有 work 下使用。当前 worker 在 LenBot 进程内运行 Playwright；Chromium sandbox 已启用，页面使用独立 BrowserContext 并禁用 Service Worker，但这不等于浏览器已具备独立 OS/网络隔离。HTTP(S) 主机按配置白名单检查；`*` 表示允许任意公网主机，代码仍检查回环、私网、链路本地、保留和未指定地址。应用层 DNS/路由检查不能替代部署出口隔离；缺少 Playwright 或页面被网络规则拒绝时保留错误，不能推定完整网络边界已验收。
+`browser_agent` 只在已有 work 下使用。workspace 选 Gateway 时，browser 类型执行按工作修订保持一个容器，复用执行、取消、期限与产物接口；新建 `execution_commands` 是为了逐条保存 open/snapshot/interact/capture 的原生调用身份、执行阶段及结果。命令登记后才能送入容器 stdio；running 已落盘但没有回执时为 unknown，不重放点击。Gateway/宿主重启后 page_ref 失效，继续只读已保存 R，重新浏览需人工继续工作形成新修订。旧 worker 配置保留显式同进程试运行入口，不因此具备独立隔离；系统公共研究不走该宿主浏览器入口。
 
-临时 page_ref 按工作作用域隔离，snapshot_revision 用于当前元素引用。DOM 返回的是文字覆盖；当前 snapshot 支持 text_offset/text_limit，但重新读取仍会取得页面快照，不能当作已实现持久、不可变快照续读。截图登记为场景媒体后返回 asset_registered=true、pixels_loaded=false，只有后续请求确实装入图片才计为像素已读。交互默认关闭；启用后支持滚动及当前元素引用点击。工具没有提供专用登录凭据或点赞/收藏等账号动作入口，但通用 click 本身不是对任意网站副作用的完整识别与拦截。独立 worker、出口和账号动作边界尚未完成前，不以功能使用记录代替生产隔离验收；同进程插件代码的宿主可达性不能仅靠接口说明排除。
+容器使用固定引用镜像、非 root、Chromium sandbox、seccomp、只读根及控制目录、独立 IPC 和有界资源；页面无账号登录态，禁用 Service Worker 和下载，所有网络走已核验代理。域名白名单不替代部署隔离。构建及 seccomp 安装见 [浏览器部署](../containers/browser/README.md)。
+
+页面名额在异步创建前预留，Context 创建后即登记并在失败/取消/关闭时清理；操作按页面串行。DOM 采集使用受限遍历，max_snapshot_chars 限制取得的正文，collection_truncated 表示仍有未采集内容。Gateway 快照把受限完整正文随 R 保存，refresh=false 只续读同次观察；元素引用还必须匹配 snapshot_revision。截图受高度、字节、数量限制，先经产物接口回收，再登记场景媒体，pixels_loaded=false。交互默认关闭；C13/C14 部署未验收前不启用正式浏览器。
+
+### 审查、公共研究和兴趣
+
+ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、参数、来源和预算保存为不可变事件。同一身份参数变化被拒绝。ActionReviewer 只使用原 work 绑定做一次无工具调用，purpose=action_review，与主工作共享 token 预占、模型步骤和绝对期限。调用前落审查开始事实；失败、取消或未知不自动再购买一次审查。allow 只适用于该动作，执行时仍核当前授权和工作修订。
+
+心跳以 bot/plan/30 分钟 slot 唯一认领，来源从真正的 Scheduler TASK_DUE 读取，在群资格分支之前路由。根配置 heartbeat_topics 和有限的有效公共兴趣组成种子；无种子允许零研究，错过、睡眠、容量不足或未授权明确跳过。建工作、预占、周期占用与槽结果在原事务内提交，保留至少一个人类工作位置，系统工作使用 purpose=heartbeat，原期限最多 1800 秒。占用依据实际 job 与 accepted/starting/running/cancel_requested/termination_unconfirmed 执行，不按槽时间自动释放。
+
+公共研究只开放明确的匿名工具集合，不读群史、成员认识或场景技能。ToolResult.provenance 来自宿主/连接器的取得事实，区分 anonymous_public、account、scene、derived 和 unknown；派生来源须递归核对原始观察，system 场景名不证明公开。来源未知的计算/文件结果不能直接用作公共兴趣依据。PublicInterestCandidate 随工作结果提交，宿主在原完成事务核对当前修订、本工作已登记资料、实际展示的 ResultSpan 与匿名来源，再写 public_interests；修订/撤回保留前后状态及原因事件。兴趣摘要只能作研究线索。公共工作完成后直接保存成果，不进入群交付；C21 发布未实现。
+
+### 睡眠与延期交付
+
+睡眠窗口仍保存消息与运行维护。只有注册为 deterministic_read_only 的确定性服务卡片可豁免；当前为精确日程命令，announcement、一般 command、handler 或其中的模型调用均不自动豁免。出站判断前加载实际场景状态。
+
+具备当前聊天资格的人类 @/称呼/私聊建立五分钟确认请求；原 conversation 模型仅判断确认并提出必要表达，不执行普通工作或调用研究工具。Gate 核对同一请求者在实际提问送达后的新答复。确认只叫醒本群 30 分钟，持续直接互动续期；重复请求合并，Shadow 不作为提问实际送达。确认事件唤醒本群到期条件任务，重启时也核对已清醒场景。
+
+每个原 action 仅保留一个 Scheduler deferred_delivery 意图。waiting/queued 阶段才可在重启恢复，发送适配器调用前持久记 DELIVERY_ATTEMPTED，结果未知不重放。原任务与延期任务在同一发送回执事务进入 sent/shadow/not_sent/rejected/unknown 对应终态。原 due/planned_at 保留，唤醒时间单独调度，回执记录迟到秒数；旧 claimed/processing 缺少未尝试证据时保留未知。旧闲聊过期；工作成果复用；直播重新读取原场次，经原插件/Gate 生成当前邀请，场次结束则过期，不发送旧字节。
 
 ## 输入、注意力与实际阅读
 
@@ -102,11 +120,11 @@ MESSAGE_SENT 仅为该条 origin_event_id 的明确 @／回复、真实受托事
 
 ScenePolicy 直接读取当前根文件中的群字段与全局 QQ 回复白名单。群停用时继续保存接入的原话，但不进入认知或发送；chat 关闭群只有白名单请求者获得普通对话资格。发送层保留已提交的文字原样：指定照发只发送要求的文字、标点和换行，不追加角色评论，也不自动把字面反斜线解释成转义；只有用户明确要求显示转义写法时才发送反斜线文本。新工作、群总结和提醒从明确的已读人类 request_source 取得 request_source_event_id 与 requester_qq_uid；控制既有事项保留原请求者，修订原话加入来源集合。每条普通 MessageProposal 单独保存 source_event_id 与 requester_qq_uid，Gate 核验人类原话、场景、实际阅读及当前资格，不再以整轮一个请求人代替多人身份。插件可用性在定义和执行处均检查当前场景、角色与插件状态。
 
-插件路由记录 plugin_routes、plugin_consumed 与 conversation_excluded；日历插件自己认领精确命令及通过真实 reply message_id 找到的日程评论。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。日程交互不进入普通对话的确定唤醒，也不构成未读控制阻塞。没有引用证据时不作语义评论分类。
+插件路由记录 plugin_routes、plugin_consumed 与 conversation_excluded；日历插件消费精确命令；通过真实引用找到的日程评论只记录路由，仍可进入普通聊天。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。已消费的精确日程命令不进入普通对话的确定唤醒，也不构成未读控制阻塞。没有引用证据时不作语义评论分类。
 
 ## 对话循环与提案
 
-ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固定提供商、型号、推理强度与客户端；对话同时固定配置快照，循环上限、终结定义、上下文装配和新输入使用同一份预算。工作执行段或显式恢复采用当时生效上限并继续累计原账目；三角色分别配置，没有继承、同轮切换、跨型号 fallback 或独立视觉路由。新配置用于新轮次，已启动工作保留原绑定。原生 assistant 续接、供应商扩展与工具调用顺序保留在私有运行数据中。
+ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固定提供商、型号、推理强度与客户端；对话同时固定配置快照，循环上限、终结定义、上下文装配和新输入使用同一份预算。工作执行段及显式恢复沿用原创建快照、绝对期限与累计账目；三角色分别配置，没有继承、同轮切换、跨型号 fallback 或独立视觉路由。新配置用于新轮次，已启动工作保留原绑定。原生 assistant 续接、供应商扩展与工具调用顺序保留在私有运行数据中。
 
 调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。插件调用不写普通对话的 disposition：供应商是否完成由 status 表示，结果与运行失败见插件 Trace，表达和送达分别以提交、行动回执为准；work 路由也通过相同调用身份关联。
 
@@ -156,7 +174,7 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 认识账本保存主体、陈述、reported/inferred、原话证据、有效期与修订链。查询先按允许场景、主体、类型、认识创建时间和有效状态筛选，再复用确定性中文片段与别名排序；昵称、群名片和有效 reported 称呼只作同一主体的检索线索，不合并身份或新增认识。当前互动投影限有关参与者与本群的有效明确偏好，其他认识按需读。角色资料、模型摘要和 Bot 自己的发言不能独立证明群友事实或现实能力。要求忘掉昵称时先查看有效认识，有记录则撤销或替代；未保存为长期认识时停止采用该称呼，不声称清空历史。撤销或替代保留旧陈述及理由。
 
-历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。LLMReflector 的认识读取按当前请求余量装入完整记录；装不下时保留原 offset，不把截断正文当作已读认识。
+历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围，同批生成摘要与稀疏认识提案，由 Actor 原子保存摘要、认识和覆盖。提交返回已保存事件列表。对话租约获取经 Actor 串行处理；已有对话期间维护候选在 Actor 队列外等待，只重试提交，不重新生成候选，认识版本变化仍明确冲突。提交后的索引/回调错误另记投影失败，不改写已完成事实。长事件使用稳定字符分段，文本维护中的图片只记定位和未解读范围。失败、中断或认识冲突不推进覆盖，失败范围由显式操作重试，不因下一条新消息自动重做。LLMReflector 的认识读取按当前请求余量装入完整记录；装不下时保留原 offset，不把截断正文当作已读认识。
 
 技能目录按用途、适用及排除条件确定性检索，返回版本；正文沿普通观察分页，工作首次读取时固定版本。有实际工作观察或明确纠正的候选才触发一次 maintenance，同一次模型调用只接受 save_skill 或 skip_skill 中的一条终结。重复、没有方法价值、来源不足或仅有暂时故障可正常 skipped，原因保存在既有候选结果字段；保存和跳过均核对候选状态与来源工作版本。有效纠正形成新版本并保留前版与依据，人工内容不能自动覆盖，公开针对指定版本。
 
@@ -208,3 +226,13 @@ ModelGateway 在真实请求前创建唯一 model_calls；真实 usage 与估算
 插件自定义来源使用 PLUGIN_EVENT 封套，plugin_id、版本、事件名与 payload 类型属于描述符；旧 LIVE_STARTED/LIVE_ENDED 记录保留。提交与行动保存 PluginOrigin，出站重新检查来源、入口、启用状态、版本及插件业务校验。开播的当前场次、订阅与全体提及许可由直播插件校验。宿主记录并取消插件的轮询、工具与 handler 任务；加载失败清理注册和资源，保留元数据与错误。开发接口见[插件开发](plugins.md)。
 
 插件的 before_model、after_model、before_tool、after_tool、before_commit 与 after_delivery 钩子按声明范围及稳定顺序执行。模型原 usage、原调用身份、观察与回执不改写；参数和提交前片段经过原类型边界，附加资料进入 user 投影，实际变化或停止写入 Trace。消息片段钩子在 Actor 提交前调用，送达钩子在回执保存后由宿主任务执行。AgentLoop 的调用计数通过同一个 AgentBudget 账户收口；工作账户继续委托原 JobStore 计费与时间检查，不另建存储。调用者的 plugin_material 是本次任务输入；plugin_hook_instructions/plugin_hook_material 仅属于当前请求的钩子补充，下一步只清理后两类。输入资料仍参与统一容量与实际阅读范围核对。
+
+### 公共兴趣的逐群表达（C21）
+
+`interest_share` 是可选功能插件，使用原 Scheduler 的 `interest_share` 槽任务，每 30 分钟提供至多一个当前候选。插件全局配置、本群插件开关、`plugin:interest_share` 主体对该群的 `interest_share` grant 必须分别存在。公共研究与群发布没有隐式授权关系，群 `chat` 关闭也不替代发布授权。插件未配置时不调度、不调用模型。
+
+候选来自有效且有匿名来源证明的公共兴趣，研究意向不直接分享。每群单独使用 SocialCognitionCore 的本群语境、近期消息和原 conversation 绑定，提交一条简短文字或沉默，不建立工作、提醒、人物认识或关注窗口。原角色与群资料不会反写公共兴趣。模型账保留 `interest_share` 用途和插件 run；来源事件、候选 ID/版本、实际公共资源 URL 随真实发送记录保留。
+
+本群主动分享每日次数与冷却是显式插件场景配置。ActionQueue 在原发送尝试事务内复核授权、当前候选和次数，再保存尝试；实际日期使用根业务时区，unknown 保留占用，明确未发送释放占用。按已送达或未确认尝试关联的兴趣版本及原资源 URL 去重，普通人类明确要求重发仍走原聊天路径。Shadow 不形成已送达证据。睡眠中不开始候选表达，发送途中入睡仍沿原延期链；过期时段的旧表达拒绝发送。重启不补跑已领取的机会。
+
+日程确定性卡片、直播文案加同场次事实卡、群报告分页与动态渲染继续沿原业务插件及共享卡片组件交付，兴趣分享不另造卡片管线。

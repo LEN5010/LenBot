@@ -23,6 +23,17 @@ class PendingWake(BaseModel):
     certain: bool
 
 
+class WakeConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_event_id: str
+    actor_id: str
+    created_at: float
+    expires_at: float
+    prompt_commit_id: str | None = None
+    prompt_event_id: str | None = None
+    prompted_at: float | None = None
+
+
 class SceneSession(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scene_id: str
@@ -40,3 +51,7 @@ class SceneSession(BaseModel):
     last_bot_message_event_id: str | None = None
     consecutive_bot_messages: int = 0
     human_messages_since_bot: int = 0
+    awake_until: float | None = None
+    wake_source_event_id: str | None = None
+    last_direct_human_at: float | None = None
+    wake_confirmation: WakeConfirmationRequest | None = None

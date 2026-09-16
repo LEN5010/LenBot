@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from len_bot.execution.journal import ExecutionIdentityConflict
 from len_bot.execution.protocol import ExecutionRequest
+from len_bot.browser.protocol import BrowserCommand
 from len_bot.services.worker_gateway.config import GatewayConfig
 from len_bot.services.worker_gateway.runner import ExecutionRunner, GatewayRefusal
 from len_bot.services.worker_gateway.store import GatewayStore
@@ -68,6 +69,25 @@ def create_app(config: GatewayConfig, store: GatewayStore, runner: ExecutionRunn
         record = await store.get_execution(execution_id)
         if record is None:
             raise HTTPException(status_code=404, detail='执行不在日志中')
+        return record.model_dump(mode='json')
+
+    @app.post('/v1/executions/{execution_id}/commands')
+    async def browser_command(execution_id: str, request: BrowserCommand,
+                              authorization: str | None = Header(default=None)):
+        authorize(authorization)
+        try:
+            record = await runner.accept_browser_command(execution_id, request)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        return record.model_dump(mode='json')
+
+    @app.get('/v1/executions/{execution_id}/commands/{command_id}')
+    async def browser_command_status(execution_id: str, command_id: str,
+                                     authorization: str | None = Header(default=None)):
+        authorize(authorization)
+        record = await store.browser_command(execution_id, command_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail='命令未登记；不据此重放可能已送达的命令')
         return record.model_dump(mode='json')
 
     @app.post('/v1/executions/{execution_id}/cancel')

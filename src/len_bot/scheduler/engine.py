@@ -52,6 +52,12 @@ class TaskScheduler:
             heapq.heappush(self._heap, task)
             self._wake_event.set()
 
+    def reschedule_task(self, task: TaskItem) -> None:
+        self._heap = [existing for existing in self._heap if existing.id != task.id]
+        heapq.heapify(self._heap)
+        self._known_task_ids.discard(task.id)
+        self.schedule_task(task)
+
     async def _sync_from_db(self) -> None:
         pending = await self.event_store.get_pending_tasks()
         self._heap.clear()

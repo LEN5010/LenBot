@@ -15,7 +15,11 @@ class BrowserConfig(BaseModel):
     timeout_seconds: float = Field(default=20.0, gt=0, le=120, title="单次读取超时（秒）",
         description="单次页面读取的期限，不超过 120 秒")
     max_text_chars: int = Field(default=12000, ge=100, le=100000, title="正文保留字符数",
-        description="保留的页面正文字符数，100—100000")
+        description="每次呈现的页面正文字符数，100—100000；续读使用固定观察")
+    max_snapshot_chars: int = Field(default=1_000_000, ge=1000, le=2_000_000, title='单次 DOM 采集字符上限',
+        description='采集阶段即限制正文；达到上限标记部分观察，不先搬回无限长 innerText')
+    max_open_pages: int = Field(default=4, ge=1, le=8, title="同一工作同时打开的页面数",
+        description="同工作可保留多个 page_ref 的上限；超出须先关闭或结束工作")
     allow_interactions: bool = Field(default=False, title="允许页面交互",
         description="默认关闭；开启后仍只在获准的功能范围内操作，不替代隔离验收")
 

@@ -47,6 +47,19 @@ class WorkerImage(BaseModel):
     memory: str = Field(default='512m', pattern=r'^[0-9]+[kmgKMG]?$')
     cpus: str = Field(default='1.0', pattern=r'^[0-9]+(\.[0-9]+)?$')
     pids_limit: int = Field(default=128, ge=1, le=4096)
+    browser_seccomp_profile: str | None = Field(default=None,
+        description='浏览器专用 seccomp 文件绝对路径，允许 Chromium 用户命名空间；不能填 unconfined')
+
+    @model_validator(mode='after')
+    def browser_sandbox(self):
+        if self.worker_type == 'browser':
+            if self.container_user.split(':')[0] == '0':
+                raise ValueError('浏览器容器必须使用非 root 用户')
+            if not self.browser_seccomp_profile or not Path(self.browser_seccomp_profile).is_absolute():
+                raise ValueError('浏览器镜像需要独立的绝对路径 seccomp 文件')
+        elif self.browser_seccomp_profile is not None:
+            raise ValueError('仅浏览器镜像可声明 browser_seccomp_profile')
+        return self
 
 
 class NetworkPolicy(BaseModel):

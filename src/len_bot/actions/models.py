@@ -5,6 +5,14 @@ import uuid
 from len_bot.media.models import MessageSegment, segment_text
 from len_bot.events.models import PluginOrigin
 
+
+class InterestPublication(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    interest_id: str
+    revision: int = Field(ge=1)
+    source_result_ids: list[str]
+    resource_urls: list[str]
+
 class DeliveryStatus(StrEnum):
     SENT = "sent"
     NOT_SENT = "not_sent"
@@ -31,7 +39,13 @@ class AllMentionSegment(BaseModel):
 
 class ActionItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    interest_publication: InterestPublication | None = None
     source_started_at: float | None = None
+    planned_at: float | None = None
+    original_due_at: float | None = None
+    delivery_late_seconds: float | None = None
+    deferred_task_id: str | None = None
+    wake_confirmation_request_id: str | None = None
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     action_type: ActionType
     scene_id: str

@@ -11,6 +11,15 @@
       "worker_type": "python",
       "image": "lenbot-workspace:local",
       "container_user": "65532:65532"
+    },
+    "browser": {
+      "worker_type": "browser",
+      "image": "lenbot-browser:local",
+      "container_user": "65532:65532",
+      "memory": "1g",
+      "cpus": "1.0",
+      "pids_limit": 512,
+      "browser_seccomp_profile": "/etc/lenbot-gateway/browser-seccomp.json"
     }
   },
   "network_policies": {

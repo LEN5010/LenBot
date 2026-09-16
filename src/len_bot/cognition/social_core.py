@@ -342,7 +342,8 @@ class SocialCognitionCore:
             run = AgentLoop(ModelGateway(binding,max_output_tokens=config.conversation_output_tokens,
                 call_store=runtime.event_store, scene_id=session.scene_id,
                 episode_id=plugin_call.origin.run_id if plugin_call else episode_id,
-                purpose='plugin_agent' if plugin_call else 'conversation')).run(
+                purpose=('interest_share' if plugin_call and plugin_call.origin.plugin_id == 'interest_share'
+                         else 'plugin_agent' if plugin_call else 'conversation'))).run(
                 messages=messages,tool_definitions=definitions,
                 execute_tool=execute,terminal=terminal_definition,finish=finish,after_finish=after_finish,proposal_tool_names=set(TOOLS) | plugin_proposals,
                 max_steps=config.conversation_max_steps,max_tool_calls=config.conversation_max_tool_calls,

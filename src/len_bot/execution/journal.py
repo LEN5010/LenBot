@@ -49,7 +49,7 @@ ALLOWED_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
 # to push the absolute deadline out, and the stored ``deadline_at`` is what a
 # later read — and a Gateway restarting on its own — both use.
 _RESUBMIT_FIELDS = ('scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
-                    'image_ref', 'network_policy', 'script', 'egress_authorized')
+                    'image_ref', 'network_policy', 'script', 'egress_authorized', 'review_action_id')
 
 _RECORD_NAMES = ('execution_id', 'scene_id', 'job_id', 'job_revision', 'workspace_id', 'worker_type',
                  'image_ref', 'network_policy', 'state', 'accepted_at', 'deadline_at', 'started_at',
@@ -105,6 +105,75 @@ class ExecutionJournalMixin:
         await self._db.execute("""CREATE TABLE IF NOT EXISTS execution_events (
             execution_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
             at REAL NOT NULL, detail TEXT NOT NULL, PRIMARY KEY(execution_id,sequence))""")
+        # A browser stays alive across tool calls. Each command therefore needs
+        # its own once-only admission and outcome inside the existing journal.
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS execution_commands (
+            command_id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, native_call_id TEXT NOT NULL,
+            record_json TEXT NOT NULL, UNIQUE(execution_id,native_call_id))""")
+
+    async def browser_command(self, execution_id, command_id=None, *, native_call_id=None):
+        from len_bot.browser.protocol import BrowserCommandRecord
+        field, value = ('command_id', command_id) if command_id else ('native_call_id', native_call_id)
+        row = await (await self._db.execute(
+            f'SELECT record_json FROM execution_commands WHERE execution_id=? AND {field}=?',
+            (execution_id, value))).fetchone()
+        return BrowserCommandRecord.model_validate_json(row[0]) if row else None
+
+    async def record_browser_command(self, execution_id, command):
+        from len_bot.browser.protocol import BrowserCommandRecord
+        async with self._write_lock:
+            try:
+                execution = await self.get_execution(execution_id)
+                if not execution or execution.worker_type != 'browser' or (
+                    execution.scene_id, execution.job_id, execution.job_revision) != (
+                    command.scene_id, command.job_id, command.job_revision):
+                    raise ValueError('浏览器命令与执行归属不一致')
+                existing = await self.browser_command(execution_id, native_call_id=command.native_call_id)
+                if existing:
+                    if existing.request != command:
+                        raise ExecutionIdentityConflict('同一浏览器调用身份的命令内容不同')
+                    return existing, False
+                if is_terminal(execution.state) or execution.state is ExecutionState.CANCEL_REQUESTED:
+                    raise ValueError('浏览器执行已结束或正在停止，原页面引用已失效')
+                now = self.clock()
+                record = BrowserCommandRecord(execution_id=execution_id, request=command,
+                    status='accepted', accepted_at=now, updated_at=now)
+                await self._db.execute('INSERT INTO execution_commands VALUES(?,?,?,?)',
+                    (command.command_id, execution_id, command.native_call_id, record.model_dump_json()))
+                await self._db.commit()
+                return record, True
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def update_browser_command(self, execution_id, command_id, status, *, result=None, error=None):
+        async with self._write_lock:
+            try:
+                record = await self.browser_command(execution_id, command_id)
+                if record is None:
+                    raise ValueError('浏览器命令未登记')
+                if record.status in {'completed', 'failed', 'unknown'}:
+                    return record
+                record.status, record.result = status, result
+                record.error, record.updated_at = error[:2000] if error else None, self.clock()
+                # Validate the whole record before writing the terminal fact.
+                record = type(record).model_validate(record.model_dump())
+                await self._db.execute('UPDATE execution_commands SET record_json=? WHERE command_id=?',
+                    (record.model_dump_json(), command_id))
+                await self._db.commit()
+                return record
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def interrupt_browser_commands(self, execution_id, reason):
+        rows = await (await self._db.execute(
+            'SELECT command_id FROM execution_commands WHERE execution_id=?', (execution_id,))).fetchall()
+        for row in rows:
+            record = await self.browser_command(execution_id, row[0])
+            if record.status in {'accepted', 'running'}:
+                await self.update_browser_command(execution_id, row[0],
+                    'unknown' if record.status == 'running' else 'failed', error=reason)
 
     async def record_execution(self, request: ExecutionRequest) -> tuple[ExecutionRecord, bool]:
         """Store one admitted execution; return it and whether it is new.
@@ -125,6 +194,8 @@ class ExecutionJournalMixin:
                     stored = json.loads(existing[-1])
                     mismatch = [field for field in _RESUBMIT_FIELDS
                                 if stored.get(field) != getattr(request, field)]
+                    if stored.get('browser') != (request.browser.model_dump(mode='json') if request.browser else None):
+                        mismatch.append('browser')
                     if stored.get('initiator') != request.initiator.model_dump(mode='json'):
                         mismatch.append('initiator')
                     if stored.get('input_assets') != request.input_assets:

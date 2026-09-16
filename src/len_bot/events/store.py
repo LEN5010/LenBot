@@ -10,6 +10,7 @@ from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
+from len_bot.actions.delivery_store import DeliveryStoreMixin
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.execution.journal import ExecutionJournalMixin
 from len_bot.media.store import MediaStoreMixin
@@ -20,7 +21,7 @@ from len_bot.scheduler.models import TaskItem, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCallStoreMixin, HistoryStoreMixin, ExecutionJournalMixin):
+class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCallStoreMixin, HistoryStoreMixin, ExecutionJournalMixin):
     def __init__(self, db_path: str = "len_bot.db", clock=time.time):
         self.clock = clock
         self.db_path = db_path
@@ -60,6 +61,8 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         await self.initialize_media()
         await self.initialize_model_calls()
         await self.initialize_history()
+        from len_bot.memory.interests import InterestStore
+        await InterestStore(self).initialize()
         
         # 1. Raw Event Store
         await self._db.execute("""
@@ -762,12 +765,16 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED):
             status = ("shadow_observed" if event.event_type == EventType.ACTION_SHADOWED else "completed" if event.event_type == EventType.MESSAGE_SENT
                       else "delivery_unknown" if event.payload.get("delivery_unknown") else "failed")
+            if event.payload.get('cancelled'):
+                status = 'cancelled'
             await self._db.execute(
                 """UPDATE tasks SET status=?,payload=json_set(payload,'$.delivery_event_id',?,'$.error',?) WHERE id=? AND scene_id=?
                    AND status='awaiting_delivery'
                    AND json_extract(payload, '$.delivery_action_id')=?""",
                 (status, event.id, event.payload.get("error", ""), task_id, event.scene_id, event.payload.get("action_id")),
             )
+
+        await self.finish_deferred_in_transaction(event)
 
         # 4. Item 3: If message sent event has associated open loop, activate it atomically in the same transaction!
         if associated_open_loop:
@@ -1059,6 +1066,28 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
             return (-hits, 0 if item["scene_id"] == scene_id else 1, item["scene_id"], item["id"])
         return sorted(candidates, key=rank)
 
+    async def has_task(self, task_id: str) -> bool:
+        row = await (await self._db.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,))).fetchone()
+        return row is not None
+
+    def _task_from_row(self, row) -> TaskItem:
+        return TaskItem(
+            id=row[0], scene_id=row[1], description=row[2], due_at=row[3],
+            status=TaskStatus(row[4]), source_event_id=row[5], payload=json.loads(row[6]),
+            created_at=row[7], wake_event_type=row[8],
+            wake_match=json.loads(row[9]) if row[9] is not None else None,
+            origin_episode_id=row[10], origin_stimulus_id=row[11],
+            trigger_event_id=row[12], origin_mode=row[13],
+        )
+
+    async def get_task(self, task_id: str) -> TaskItem | None:
+        row = await (await self._db.execute(
+            """SELECT id, scene_id, description, due_at, status, source_event_id,
+                      payload, created_at, wake_event_type, wake_match_json,
+                      origin_episode_id, origin_stimulus_id, trigger_event_id, origin_mode
+               FROM tasks WHERE id=?""", (task_id,))).fetchone()
+        return self._task_from_row(row) if row else None
+
     async def save_task(self, task: TaskItem) -> None:
         """Persist one task using the current task contract."""
         async with self._write_lock:
@@ -1125,18 +1154,7 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
         
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
-
-        return [
-            TaskItem(
-                id=r[0], scene_id=r[1], description=r[2], due_at=r[3],
-                status=TaskStatus(r[4]), source_event_id=r[5], payload=json.loads(r[6]),
-                created_at=r[7], wake_event_type=r[8],
-                wake_match=json.loads(r[9]) if r[9] is not None else None,
-                origin_episode_id=r[10], origin_stimulus_id=r[11],
-                trigger_event_id=r[12], origin_mode=r[13],
-            )
-            for r in rows
-        ]
+        return [self._task_from_row(row) for row in rows]
 
 
     async def mark_task_status(self, task_id: str, status: TaskStatus, trigger_event_id: Optional[str] = None) -> None:
@@ -1613,13 +1631,30 @@ class EventStore(ObservationStoreMixin, JobStoreMixin, MediaStoreMixin, ModelCal
     async def recover_task_execution(self) -> None:
         async with self._write_lock:
             try:
-                await self._db.execute("UPDATE tasks SET status='delivery_unknown' WHERE status='awaiting_delivery'")
+                await self._db.execute("""UPDATE tasks SET status='delivery_unknown' WHERE status='awaiting_delivery'
+                    AND NOT EXISTS (SELECT 1 FROM tasks d WHERE d.scene_id=tasks.scene_id
+                        AND json_extract(d.payload,'$.kind')='deferred_delivery'
+                        AND json_extract(d.payload,'$.action_id')=json_extract(tasks.payload,'$.delivery_action_id')
+                        AND d.status IN ('pending','claimed','processing')
+                        AND json_extract(d.payload,'$.delivery_phase') IN ('waiting','queued'))""")
                 cursor = await self._db.execute(
-                    """SELECT t.id,t.scene_id,t.description,t.status,t.origin_mode,t.trigger_event_id,j.result_json
+                    """SELECT t.id,t.scene_id,t.description,t.status,t.origin_mode,t.trigger_event_id,j.result_json,
+                              t.payload
                        FROM tasks t LEFT JOIN agent_jobs j ON j.id=t.id AND j.scene_id=t.scene_id
                        WHERE t.status IN ('processing','claimed','result_ready','review_required')"""
                 )
-                for task_id, scene_id, description, status, origin_mode, trigger_event_id, work_result in await cursor.fetchall():
+                for task_id, scene_id, description, status, origin_mode, trigger_event_id, work_result, payload_json in await cursor.fetchall():
+                    try:
+                        kind = (json.loads(payload_json) or {}).get('kind') if payload_json else None
+                    except ValueError:
+                        kind = None
+                    if kind == 'interest_share':
+                        await self._db.execute("""UPDATE tasks SET status='completed',
+                            payload=json_set(payload,'$.outcome','interrupted_no_replay') WHERE id=? AND scene_id=?""",
+                            (task_id, scene_id))
+                        continue
+                    if kind in {'heartbeat', 'heartbeat_occupancy', 'deferred_delivery'}:
+                        continue
                     if status == 'claimed':
                         pending_due = await self._db.execute(
                             """SELECT 1 FROM pending_runtime_events

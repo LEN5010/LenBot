@@ -116,6 +116,7 @@ class RuntimeGate:
         self.validate_plugin_origin = None
         self.scene_policy = None
         self.capability_authority = None
+        self.time_settings = lambda: None
         self._publication_locks: dict[str, asyncio.Lock] = {}
 
     def _capability_refusal(self, proposal, scene_id: str, *, on_behalf_of=None) -> str | None:
@@ -215,6 +216,42 @@ class RuntimeGate:
             if self.metrics:
                 self.metrics.inc_social("cancellations_honored")
             return GateDecision(FinalDisposition.SILENCE, f"Gate rejected stale response: {reason}", accepted=False)
+
+        if mailbox.plugin_origin and mailbox.plugin_origin.plugin_id == 'interest_share':
+            if (outcome.next_action != 'end' or len(outcome.message_proposals) > 1
+                    or outcome.task_proposals or outcome.job_proposals or outcome.memory_proposals
+                    or outcome.resolve_open_loop_ids or outcome.release_focus_actor_ids
+                    or any(message.source_event_id != mailbox.plugin_origin.source_event_id or message.expect_reply
+                           for message in outcome.message_proposals)):
+                return GateDecision(FinalDisposition.SILENCE, '兴趣候选只提交一条表达或沉默，不创建群内义务', accepted=False)
+            if current_scene_state.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
+                return GateDecision(FinalDisposition.SILENCE, '本群连续 Bot 消息已达上限', accepted=False)
+
+        from len_bot.runtime.sleep_policy import is_asleep
+        wake = outcome.wake_decision
+        if wake:
+            pending = current_scene_state.wake_confirmation
+            source = source_events.get(wake.source_event_id)
+            if (operator_control or mailbox.plugin_origin or pending is None
+                    or pending.request_event_id != wake.request_event_id or pending.expires_at <= self.event_store.clock()
+                    or source is None or source.id not in read_ids or source.event_type.value not in {'GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED'}
+                    or source.actor_id != pending.actor_id or source.actor_id == self.bot_actor_id
+                    or not self.scene_policy.chat_allowed(current_scene_state.scene_id, source.actor_id.removeprefix('user:'))
+                    or outcome.task_proposals or outcome.job_proposals or outcome.memory_proposals or outcome.resolve_open_loop_ids
+                    or outcome.next_action != 'end' or len(outcome.message_proposals) > 1):
+                return GateDecision(FinalDisposition.SILENCE, '叫醒确认关系、资格或受限输出无效', accepted=False)
+            if wake.decision == 'ask' and (pending.prompt_commit_id or not outcome.message_proposals):
+                return GateDecision(FinalDisposition.SILENCE, '本群已经提交确认提问，不重复发送', accepted=False)
+            if wake.decision in {'confirm', 'decline'} and (not pending.prompt_event_id or pending.prompted_at is None
+                    or source.id == pending.request_event_id or source.timestamp <= pending.prompted_at):
+                return GateDecision(FinalDisposition.SILENCE, '叫醒需要确认提问送达后的真实人类答复', accepted=False)
+            if wake.decision in {'decline', 'uncertain'} and outcome.message_proposals:
+                return GateDecision(FinalDisposition.SILENCE, '未确认叫醒时不附带普通表达', accepted=False)
+        elif (not operator_control and not mailbox.plugin_origin
+                and is_asleep(current_scene_state, self.time_settings(), self.event_store.clock())
+                and (outcome.task_proposals or outcome.job_proposals or outcome.memory_proposals
+                     or any(not message.fulfils_task_id for message in outcome.message_proposals))):
+            return GateDecision(FinalDisposition.SILENCE, '睡眠期间只接受叫醒确认或已有成果交付', accepted=False)
 
         if outcome.disposition == FinalDisposition.ACTION:
             if len(outcome.message_proposals)+mailbox.messages_committed > MAX_MESSAGES_PER_OUTCOME:
@@ -466,6 +503,9 @@ class RuntimeGate:
             if mailbox.plugin_origin and mailbox.mention_all:
                 segments.insert(0, AllMentionSegment())
             action = ActionItem(
+                planned_at=self.event_store.clock(),
+                wake_confirmation_request_id=(outcome.wake_decision.request_event_id
+                    if outcome.wake_decision and outcome.wake_decision.decision == 'ask' else None),
                 source_started_at=committed.source_started_at[index],
                 id=action_ids[index],
                 fulfils_task_id=msg.fulfils_task_id,

@@ -80,6 +80,16 @@ class GatewayStore(ExecutionJournalMixin):
 
     async def register_artifact(self, execution_id: str, path: str, size_bytes: int,
                                 media_type: str, *, artifact_id: str | None = None) -> dict:
+        async with self._write_lock:
+            try:
+                return await self._register_artifact(execution_id, path, size_bytes, media_type,
+                    artifact_id=artifact_id)
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+    async def _register_artifact(self, execution_id: str, path: str, size_bytes: int,
+                                 media_type: str, *, artifact_id: str | None = None) -> dict:
         """Record one listed output file under a stable id of its own.
 
         The caller passes the id it already stored the bytes under, so a row

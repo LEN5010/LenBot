@@ -8,7 +8,7 @@
 
 启用 `gscore_adapter` 前确认 Core 的 WebSocket 端点、认证方式、bot id 和 Core 版本协议；连接身份 `core_bot_id`、上行平台身份 `platform_bot_id` 与 `bot_self_id` 分开配置。该适配器只桥接明确 `/gs <命令>` 到独立 Core，未知消息段保留在观察中但不假定为可发送内容；它没有搬运 AstrBot 插件运行时，也不会自动安装游戏插件。
 
-启用 `workspace` 前先确定唯一执行后端：`worker` 需确认宿主容器运行时、镜像、无网络和工作目录权限（本地默认镜像是 `python:3.13-slim`，目标主机上必须已能取得或已构建，否则第一次执行就失败），`gateway` 需另外部署网关进程（见下文）；两者不能同时配置。`browser_agent` 需先填写域名白名单并核对执行隔离：当前浏览器是同进程能力，仅可在明确获准的功能使用范围内操作，不能以白名单检查替代独立隔离验收。三个插件都不是已验收的生产隔离。
+启用 `workspace` 前先确定唯一执行后端：`worker` 需确认宿主容器运行时、镜像、无网络和工作目录权限（本地默认镜像是 `python:3.13-slim`，目标主机上必须已能取得或已构建，否则第一次执行就失败），`gateway` 需另外部署网关进程（见下文）；两者不能同时配置。`browser_agent` 需先填写域名白名单并核对执行隔离：旧 worker 配置保留同进程试运行；workspace 选 Gateway 后只走独立 browser worker，构建和 seccomp 安装见[浏览器部署](../containers/browser/README.md)，实际部署仍待验收。不能以白名单检查替代独立隔离验收。三个插件都不是已验收的生产隔离。`runtime.heartbeat_enabled` 与 `time.sleep_start`/`sleep_end` 默认关闭，改后需重启。
 
 ## 初始化与启动
 
@@ -26,7 +26,7 @@ cp lenbot.config.example.json lenbot.config.json
 | `models` | 提供商连接、各角色 routing 与可选 retrieval embedding/rerank；未配置能力明确为 null |
 | `delivery` | 全局 shadow |
 | `access` | 全局 QQ 回复白名单，仅用于已启用群的普通对话资格；`capability_grants` 是自主能力的唯一可编辑授权来源，默认空列表 |
-| `resources` | 具名额度策略；空或失效引用当前回退到代码默认值，具体限制见下文 |
+| `resources` | 具名额度策略；未配置额度维度为 null，明确引用不存在的策略拒绝保存／使用 |
 | `scenes` | 每群 enabled、chat、semantic_retrieval 与按 plugin_id 保存的插件 enabled/config；命令和订阅由各插件 Schema 定义 |
 | `time` | IANA 业务时区、自然周起点与下午范围；尚未填写为 null |
 | `members` | 成员名称与别名、bilibili_uid、房间号；与 QQ UID 分开 |
@@ -63,7 +63,7 @@ OneBot 显式选择主动／反向 WebSocket 与发送通道，保存后需正�
 
 ### 执行预算、恢复与 Gateway
 
-运行参数页分别显示已保存配置和当前进程发布值，EXECUTION_BUDGET_FIELDS 包含对话次数、工具次数、对话窗口、工作次数、工作工具次数、工作时长和维护工具次数。热更新会同步 EventStore.budget_config，新工作预占和新执行段读同一份已发布值；已有工作仍使用创建时写入的快照。已有模型绑定不会因保存默认路由而改变。
+运行参数页分别显示已保存配置和当前进程发布值，EXECUTION_BUDGET_FIELDS 包含对话次数、工具次数、对话窗口、工作次数、工作工具次数、工作时长和维护工具次数。热更新会同步 EventStore.budget_config，新工作预占读取已发布值；已有工作的执行段与恢复仍使用创建时写入的快照。已有模型绑定不会因保存默认路由而改变。
 
 | 根 runtime 字段 | 当前样例初始值 |
 |---|---:|
@@ -88,6 +88,7 @@ workspace 插件在根配置 `plugins.workspace.config` 里二选一：`worker`�
 | `base_url` | 网关 HTTP 地址 |
 | `token` | 服务间认证密钥，至少 16 字符，不交给执行容器 |
 | `image_ref` / `network_policy` | 网关部署配置里已有的引用名，不是镜像或 Docker 参数 |
+| `network_python_enabled` | 默认 false；明确开启后仍需公共研究来源、当前授权与逐动作审查 |
 | `request_timeout_seconds` | 单次 HTTP 超时，默认 30 |
 | `execution_timeout_seconds` | 单次执行期限，实际提交时不超过该工作剩余期限，默认 30 |
 | `poll_interval_seconds` | 查询终态间隔，默认 1 |
@@ -158,7 +159,7 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 ### 更新当前实例
 
-更新前记录实际代码版本、数据库结构、根配置及未结束调用/工作，按上文停机和普通备份后再更新同批代码、文档与前端产物。当前库包含 usage_reservations、execution_runs/execution_events 与预占账；若使用独立 Gateway，它另有自己的日志库和 execution_artifacts，都要一并备份。旧阶段“没有新增表、不需要迁移”的结论不再适用。
+更新前记录实际代码版本、数据库结构、根配置及未结束调用/工作，按上文停机和普通备份后再更新同批代码、文档与前端产物。当前库包含 usage_reservations、execution_runs/execution_events/execution_commands、public_interests 与预占账；若使用独立 Gateway，它另有自己的日志库和 execution_artifacts，都要一并备份。旧阶段“没有新增表、不需要迁移”的结论不再适用。
 
 旧配置中的插件列表、群顶层业务字段与当前描述符结构不兼容时，先按其实际版本核对并离线转换。这需要辨认旧结构时，用 Git 提交 `141ec2e` 的 `docs/archive/operations-before-doc-cleanup.md` 对照，不是所有版本通用的升级命令。不得从样例补生产模型、人格、Shadow 或群名单；新增本地插件用法见 [业务时钟](../local_plugins/local_clock/README.md)。
 
@@ -184,7 +185,7 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 启用 `link_parser` 后，可在目标群单独开放 B 站原生链接解析。纯 BV/av 链接或明确的“解析链接 URL”命令会被确定性处理；`parse_link` 默认只返回 metadata，下载媒体时必须使用同一场景已保存的解析结果引用。下载完成仍需由正常 Agent/插件提案决定是否发送，视频或音频的 unknown 回执不自动重发。
 
-工作详情分别显示范围与快照、本工作实际已读、成功分析、复用和未完成数量；批次、JSON 和图片均可回读，结果页显示成品图片。渲染失败时先核对字体、图片限制及具体错误，再显式恢复原工作，只消费已保存 JSON；模型绑定和累计计数保留，仍需核对剩余执行时间及上文恢复额度缺口。发送失败或未知看交付行动与实际回执，不恢复分析来重发。工作已生成但等待原请求者的新话处理时仍保留 result_ready，原话处理后再核对首次交付。
+工作详情分别显示范围与快照、本工作实际已读、成功分析、复用和未完成数量；批次、JSON 和图片均可回读，结果页显示成品图片。渲染失败时先核对字体、图片限制及具体错误，再显式恢复原工作，只消费已保存 JSON；模型绑定和累计计数保留，仍需核对原绝对期限与原累计额度余量。发送失败或未知看交付行动与实际回执，不恢复分析来重发。工作已生成但等待原请求者的新话处理时仍保留 result_ready，原话处理后再核对首次交付。
 
 查询“已有日报／历史群总结”会读取本群精确范围内已经保存的报告，不新建分析、不渲染、不直接发送。修改焦点或附加要求会按新要求重选可复用批次；不同时间范围不能仅改日期标签来复用成品。旧 1.1 的分页工作保留原始结果和回执，只读查看，不能用 2.0 的类型猜测恢复。当前不提供定时广播。动态详情仍仅指源已提供的记录，不据图片链接声称看过像素。
 
@@ -223,3 +224,21 @@ npm run build
 ```
 
 产物位于 `src/len_bot/web/static/dist`，与同批 API 一起交付。按改动范围人工核对页面，检查方式遵循[工程约束](../AGENTS.md)。
+
+## 心跳、睡眠和本批升级
+
+heartbeat_enabled 默认 false，heartbeat_topics 默认空列表，在运行参数页保存，改后手动重启。每项主题最多 200 字、最多 20 项；种子还包含有限的当前有效公共兴趣，无种子可零研究。心跳使用 system:heartbeat 用途的系统授权与原 work 模型，必须开放 public_research、配置可用的公共工具，并留出至少两个工作位置。开关不授予网络 Python 或发布权限；每次联网脚本另需 network_python_enabled、network_python grant 和动作 allow。purpose=heartbeat/action_review 的请求均在原调用账可查，未知 usage 不当作零消费。
+
+time.sleep_start/sleep_end 成对设置。具备聊天资格的人类叫醒时先等待本群五分钟内的自然语言确认，提问实际送达后的答复才可确认；确认后 30 分钟的直接互动续期。场景事实页显示确认来源、提问阶段、到期与清醒截止。日程确定性卡片可以睡眠期间响应，直播/普通公告和其他模型表达仍延期。
+
+延期记录沿任务详情查看原 action、original_due_at、delivery_phase 和实际回执。旧闲聊过期，工作成果不重跑，直播重取原场次。不要将 queued 当作已发送；attempted 无可靠回执、旧领取不明或 Gateway 终止未确认均需人工核对，不自动重发/重开。当前已无服务监听时，不为了页面核对擅自启动生产。
+
+升级继续先停机和普通备份宿主/网关数据库、根配置与产物卷；新增命令表由现有初始化入口建立，不重编号历史事件。新延期阶段明确未尝试的记录可恢复，旧 claimed/processing 缺少依据保留未知；无 provenance 的旧兴趣不会自动变成公共证据。明确 token_limit:null 的工作可按原无限维度恢复，但当前有限日额度无法预占时仍拒绝；真正缺少原上限的记录不补造。
+
+本批没有授权真实模型调用、实发、生产启动、Reset 或更改生产模型/人格/人工样例/Shadow/群名单。实际执行与放行证据只写[当前任务](iteration.md)，C13/C14 保持未放行。
+
+### 配置公共兴趣分享（C21）
+
+通过面板填写并启用 `interest_share` 全局插件，再为明确目标群填写主题、每日次数与冷却并启用该插件；在全局能力授予中向插件主体 `interest_share` 授予该群的 `interest_share` 能力。普通聊天、公共研究与发送文件各自授权，任何一个开关都不替代此 grant。不要手工修改运行中的根文件。
+
+TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的“公共兴趣分享机会”给出候选/跳过原因，“公共兴趣表达”记录模型用量。实际是否发送以原 ActionQueue 的消息回执为准；发送尝试的 `interest_publication` 保存候选版本与公共资源 URL。未知结果不重发，也不释放当日次数；明确未发送不计入已用次数。默认每半小时一个机会，睡眠、连续消息上限、冷却、额度或无相关内容均可零发布。停用插件会取消其未领取槽，重启不重新执行已领取机会。

@@ -20,7 +20,7 @@
 
 在 `on_load(context)` 调用 `register_tool`，提供名称、用途、明确的 Pydantic 参数模型、handler、read/proposal 类别和可用角色。低频工具可声明 deferred，并提供业务别名和关键词；实际执行名保持唯一。参数模型同时用于校验与 Schema，handler 接收已解析参数和本次 `PluginCallContext`。
 
-调用字段包括当前场景、请求者、真实 source_event_id、时间、读取截点、episode/job、角色、工具调用 ID、PluginOrigin、可选 initiator 和当前提案 Ledger。initiator 未建立时保持 None，不等于系统授权；类型字段存在不代表所有系统工作路径已接通，见 FX05。长期插件实例不保存可变的“当前群”。只读服务返回 `ToolResult`，暂存操作复用 Ledger；原资料与视觉覆盖、提交和送达的含义继续由架构规定。
+调用字段包括当前场景、请求者、真实 source_event_id、时间、读取截点、episode/job、角色、工具调用 ID、PluginOrigin、可选 initiator 和当前提案 Ledger。initiator 未建立时保持 None，不等于系统授权；独立公共研究另有宿主核验的 public_research 标记；它只开放明确的公共工具，不能由插件用 system 场景名前缀取得权限。长期插件实例不保存可变的“当前群”。只读服务返回 `ToolResult`，暂存操作复用 Ledger；原资料与视觉覆盖、提交和送达的含义继续由架构规定。
 
 工具 timeout 可由描述符的 `call_timeout(config)` 从实际配置读取，也可在注册时明确传入。工具定义和调用时均检查当前角色、场景与启用状态；工具名冲突会报告实际注册双方，不覆盖前者。
 
@@ -38,7 +38,7 @@ request 由 command_request 使用原命令时间及业务时区计算。[on_com
 | ok 或 no_results | 解析 ScheduleResult，使用 ScheduleRenderer 生成正常或空日程卡，保存并提交图片 |
 | 其他错误 | 在该 handler 结束并保留错误，不转成空日程或普通对话 |
 
-上述确定性分支不新增模型调用，渲染失败与发送失败仍分别处理。自然语言读取取得同一 ToolResult，由当前 Agent 继续使用。业务时钟的“现在几点”直接提交文字，“时间简报”则显式调用 run_agent。所有提交均经原发送链，工具返回或图片登记不等于送达。
+未知成员返回 invalid_member 和配置内可选名称/别名，不记插件执行异常；未提供成员表示全部日程。上述确定性分支不新增模型调用，渲染失败与发送失败仍分别处理。自然语言读取取得同一 ToolResult，由当前 Agent 继续使用。业务时钟的“现在几点”直接提交文字，“时间简报”则显式调用 run_agent。所有提交均经原发送链，工具返回或图片登记不等于送达。
 
 ## 加载与停用
 
@@ -50,7 +50,7 @@ request 由 command_request 使用原命令时间及业务时区计算。[on_com
 
 ## 消息处理与公共调用
 
-在 on_load 中 register_handler，声明 id、description、match、handler、event_types、sources、priority、consume 和 require_to_me。ExactText、Command、RegexText 或本地同步函数返回 bool；数值优先级小者先匹配，同级按稳定注册顺序。冲突的独占精确命令在注册时报告双方，匹配不请求网络或模型。available(call) 检查插件群配置；validate(call) 只核对已保存资料与当前本地状态，它也会在提交边界调用，不能请求 HTTP/模型。原话与归属先保存，耗时读取和处理放在 handler 中，消费后失败不转普通聊天。
+在 on_load 中 register_handler，声明 id、description、match、handler、event_types、sources、priority、consume 和 require_to_me。deterministic_read_only 仅供无模型、确定性只读服务声明睡眠豁免，当前只用于日程精确命令；handler 或 announcement 本身不授予豁免。ExactText、Command、RegexText 或本地同步函数返回 bool；数值优先级小者先匹配，同级按稳定注册顺序。冲突的独占精确命令在注册时报告双方，匹配不请求网络或模型。available(call) 检查插件群配置；validate(call) 只核对已保存资料与当前本地状态，它也会在提交边界调用，不能请求 HTTP/模型。原话与归属先保存，耗时读取和处理放在 handler 中，消费后失败不转普通聊天。
 
 sources 默认 human；plugin_event 和 self_sent 要显式声明。self_sent 只认真实 MESSAGE_SENT，不认草稿、Shadow 或 unknown；同一插件自己的输出不会再次触发自己。引用关系在 call.event.metadata.quote_context 中读取，日历引用评论的消费规则见[日历实现](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py)，核心不统一消费所有插件评论。
 
@@ -58,7 +58,7 @@ call.invoke_tool(name, typed_arguments) 复用注册服务和原观察存储，�
 
 call.run_agent 接收 instructions、input_observations、tool_names、model_role、max_steps、max_tool_calls、context_tokens、output_tokens；参数由 PluginAgentRequest 在入口解析。模型路由和额度从插件的根配置取得。include_identity 决定是否带入当前身份；input_mode 可选 materials（仅资料）、source（真实触发和引用）、conversation（普通对话投影，含当前群史及参考）。外部资料保持带类型的 user 投影，不提升为指令。
 
-max_steps/max_tool_calls 的类型允许 None，但不能据此假定所有资源限制都已贯通。没有父预算的入口应显式提供有界模型次数；共享父账户的调用仍受 FX01—FX04 所述 token/期限缺口影响。插件不得绕过公共调用入口自建模型客户端，也不能通过新建账户解决剩余额度不足。
+max_steps/max_tool_calls 允许 None；没有父预算的入口应显式提供有界模型次数。共享父工作时使用原绑定、快照、累计账目与 work_call_admission；有限日额度无法计算预占时拒绝，不补造上限。插件不得绕过公共调用入口自建模型客户端，也不能通过新建账户解决剩余额度不足。
 
 output_mode=result_only 必须提供 output_model。Agent 调用 return_result 返回该 Pydantic 类型，不能使用提案工具或自动发送；[直播实现](../src/len_bot/plugins/builtin/bilibili_live/plugin.py)使用公告配置的既有模型路由，只带场次资料，随后明确提交一次邀请。
 
@@ -84,7 +84,7 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 
 需要插件安排完整执行顺序时，声明 `execute(context: PluginWorkContext) -> JobResult`。它在原工作运行器、取消关系与时限中执行；上下文提供 call、revision、parameters、goal、constraints、输入／输出窗口和 resume_from。`progress()` 读取当前版本，`save_progress(typed_progress)` 保存并核对版本，`save_result(operation, ToolResult)` 将长资料存入原观察库，`adopt_results(ids)` 复用本群已有资料。不要在进度里反复复制长正文。
 
-`context.run_agent(instructions=..., input_observations=..., output_model=...)` 使用该工作的原绑定和账户，每次只做一次 materials/result_only 的结构化调用，不开放工具、身份资料或直接发送。`input_tokens(...)` 使用公共请求估算器为批次分配容量，最终仍经过实际请求装配检查。`budget()` 返回当前记录中的已用与上限；累计计数保留，但恢复重算上限的缺口见 FX04。可选 `needs_model(job)` 是只读本地判断，用于允许仅剩渲染的工作在没有模型余量时继续；它不能增加预算。
+`context.run_agent(instructions=..., input_observations=..., output_model=...)` 使用该工作的原绑定和账户，每次只做一次 materials/result_only 的结构化调用，不开放工具、身份资料或直接发送。`input_tokens(...)` 使用公共请求估算器为批次分配容量，最终仍经过实际请求装配检查。`budget()` 返回当前记录中的已用与上限；恢复使用原创建快照、绝对期限与累计计数，不重算当前默认上限。可选 `needs_model(job)` 是只读本地判断，用于允许仅剩渲染的工作在没有模型余量时继续；它不能增加预算。
 
 成品使用 `JobResult.delivery = PreparedWorkDelivery(result_id=..., segments=...)`：result_id 必须属于本次成果，图片先通过 `call.save_image` 登记。本次 execute 返回后，由原完成事件和 Actor/Gate 交付保存的片段；插件不能从后台工作调用 submit_message。新相关输入先由原对话处理；已提交或发送未知不重复提交，渲染错误与送达错误分开。
 
@@ -108,3 +108,17 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 | after_delivery / AfterDelivery | 读取已保存的真实回执 | 不改写 sent、not_sent、unknown 或 Shadow；错误另记插件钩子 Trace |
 
 直播插件的公告指令通过 before_model 加入；其 before_commit 按当前插件合同核对邀请与卡片片段。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
+
+## 公共资料与外部执行
+
+B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端；既有账号动态接口使用自己的账号客户端，字幕资源 URL 不携带默认账号 Cookie。cid 必须属于指定视频；字幕范围为 [start_ms,end_ms)，end 必须大于 start。need_login_subtitle 返回 authentication_required，匿名空轨道只说明本次未取得。字幕 JSON 在下载时按 max_subtitle_bytes 限制，不截 80 条或 400 字后冒充完整；完整取得的匹配时间轴写 R，经已有本地分页续读，sources 保留视频/轨道。评论保留源分页计数及 source_next_call，不把评论者观点当视频事实。
+
+浏览器在 Gateway 模式复用独立 browser 执行与持久命令协议；page_ref 和 revision 不能跨工作/重启借用，截图只有回收并登记后才返回资产。workspace 的联网执行需 network_python_enabled、真实公共工作来源、匿名输入证明、当前 grant 与逐脚本动作审查；控制目录、网络策略和镜像只能由既有配置引用决定。
+
+工具获取产生的 provenance 是来源事实，不能让模型自填公开标记。未知来源的文件、计算或模型摘要不会因放在 system 场景成为公共证据。公共兴趣候选通过 finish_work.public_interests 交回宿主，在完成事务按实际读取范围采用；插件不直接写兴趣表或发布群消息。工具执行异常只由所属宿主边界记录一次，等待中的插件任务不再重复记同一错误。
+
+### 公共兴趣分享
+
+内置 `interest_share` 插件在全局未配置时为 unconfigured。全局参数为 `max_steps`、`context_tokens`、`output_tokens`；模型使用现有 conversation 绑定。本群参数为 `topics`（空表示所有有效主题）、`daily_limit`（0 不发）、`cooldown_seconds`。还需通过原能力授予向 `principal_type=plugin`、`principal_id=interest_share`、具体 `scene_id` 授予 `interest_share`，不使用 system 公共研究 grant 代替。场景表单按插件 Schema 呈现这些字段。
+
+插件只接受原 Scheduler 的真实槽及自己声明的 candidate 事件，不消费人类普通消息。社会表达复用 `run_agent(..., input_mode='conversation', output_mode='respond')`；仅能读取当前材料、提交至多一条短文字或沉默。此入口不授权文件上传、B 站账号写入或全体提及。候选表达和发送过程均复核当前版本与权限；发出的记录保留兴趣来源，候选被采用不等于消息已送达。

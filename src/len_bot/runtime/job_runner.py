@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan
+from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, ResultSpan, PublicInterestCandidate
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
 from len_bot.events.models import Event, EventType, Initiator, PluginOrigin
@@ -125,6 +125,7 @@ class WorkConclusion(BaseModel):
     unresolved: list[str]
     work_state: WorkState | None = None
     skill_candidate: SkillCandidate | None = None
+    public_interests: list[PublicInterestCandidate] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode='after')
     def cited_ranges(self):
@@ -350,6 +351,13 @@ class InformationJobRunner:
             "committed=false表示候选尚未生效；在原剩余预算内依照具体错误缩小引用或续读，再用新调用ID提交。"
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
+        from len_bot.runtime.public_research import has_public_context
+        if has_public_context(job):
+            messages[0]['content'] += ('\n本次是干净的系统公共研究，仅按配置主题、当前公共兴趣与未决项研究。'
+                '不读取群史、成员资料或既有场景技能，不学习群资料。没有可核实结果可零成果结束。'
+                '可以在finish_work.public_interests提交有实际读取证据的公共兴趣候选；'
+                '区分public_fact事实、agent_evaluation评价和research_intent意向，修订或撤回说明原因。'
+                '不选择发布群，不发消息，不把兴趣摘要当作新的来源证据。')
         if checkpoint:
             messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service,
                 job["scene_id"], image_limit=self.runtime.config.max_context_images)
@@ -394,7 +402,9 @@ class InformationJobRunner:
         job = await store.get_job(job_id, scene_id)
         config = self.work_config(job)
         initiator = job_initiator(job)
-        if initiator is not None and initiator.principal_type == 'system':
+        from len_bot.runtime.public_research import verify_public_job, PUBLIC_WORK_TOOLS
+        public_research = await verify_public_job(store, job)
+        if initiator is not None and initiator.principal_type == 'system' and not public_research:
             read_scopes = ['global-safe']
         else:
             read_scopes = [scene_id, 'global-safe']
@@ -415,6 +425,7 @@ class InformationJobRunner:
                 origin=origin,entry_origin=origin.handler_origin or origin if origin else None,
                 entry=origin.scene_entry if origin else 'work',execution=execution,
                 initiator=job_initiator(job),
+                public_research=public_research,
                 plugin=runtime.plugin_host.context_for(origin.plugin_id) if origin else None)
 
         toolkit = RetrievalToolkit(store, read_scopes, scene_id, memory_store=runtime.memory_store,
@@ -541,6 +552,8 @@ class InformationJobRunner:
             await charge(revision, tool_calls=1)
 
         async def execute_tool(name, arguments, *, tool_call_id=None) -> ToolResult | ObservationPage:
+            if public_research and name not in PUBLIC_WORK_TOOLS:
+                raise PermissionError('公共研究没有本场景资料或技能入口')
             if name == "find_skills":
                 try:values=find_arguments.model_validate(arguments)
                 except ValueError as error:raise ToolArgumentError(str(error)) from error
@@ -625,7 +638,8 @@ class InformationJobRunner:
             deadline_at = work_deadline(current)
             if deadline_at is not None:
                 return seconds_left_to(deadline_at, runtime.clock())
-            return config.job_max_seconds - current['elapsed_seconds'] - (time.monotonic()-last_charge)
+            return (None if config.job_max_seconds is None else
+                    config.job_max_seconds - current['elapsed_seconds'] - (time.monotonic()-last_charge))
 
         def work_deadline(state):
             """The absolute instant this work's window closes, if it has one."""
@@ -687,6 +701,8 @@ class InformationJobRunner:
                 conclusion = WorkConclusion.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
             except ValidationError as error:
                 raise TerminalArgumentError(str(error)) from error
+            if public_research and conclusion.skill_candidate is not None:
+                raise TerminalArgumentError('本轮公共研究不写场景技能')
             try:
                 toolkit.validate_conclusion_sources(conclusion.result_ids,conclusion.unresolved)
             except ValueError as error:
@@ -782,7 +798,7 @@ class InformationJobRunner:
                 # first began, which is what the operator granted.  A work from
                 # before this record keeps the elapsed-counting rule it had:
                 # its first start is not recoverable, so one cannot be invented.
-                if job.get('budget') and job['budget'].get('deadline_at') is None:
+                if job.get('budget') and job['budget'].get('deadline_at') is None and config.job_max_seconds is not None:
                     await store.record_job_deadline(job_id, scene_id, runtime.clock() + config.job_max_seconds)
                 try:
                     require_current_access()
@@ -803,8 +819,16 @@ class InformationJobRunner:
                             binding = runtime.provider_registry.resolve("work")
                             await store.bind_job_model(job_id, scene_id, revision, {"provider_id": binding.provider_id, "model": binding.model, "reasoning_effort": binding.reasoning_effort})
                         gateway = WorkGateway(binding, config.job_context_tokens, config.work_output_tokens,
-                                              call_store=store, scene_id=scene_id, job_id=job_id, purpose="work",
+                                              call_store=store, scene_id=scene_id, job_id=job_id, purpose='heartbeat' if public_research else 'work',
                                               admission=work_admission)
+                    if public_research:
+                        current_job = await store.get_job(job_id, scene_id)
+                        request = await runtime.action_reviewer.request(job=current_job,
+                            native_call_id='heartbeat-start:' + current_job['public_research']['cycle_id'],
+                            action_type='public_research_start', target='public_research',
+                            parameters={'goal': current_job['goal'], 'constraints': current_job['constraints'],
+                                'seed_event_id': current_job['request_source_event_id']})
+                        await runtime.action_reviewer.approve(request)
                     await toolkit.import_results(job["result_ids"])
                     toolkit.restore_presentations(job['observation_reads'])
                     await charge(revision, enforce=False)
@@ -857,6 +881,8 @@ class InformationJobRunner:
                             skills=copy.deepcopy(SKILL_TOOLS)
                             skills[0]['function']['parameters']=find_arguments.model_json_schema()
                             available=[*reads,*skills,REPORT_PROGRESS,UPDATE_WORK_STATE]
+                            if public_research:
+                                available = [item for item in available if item['function']['name'] in PUBLIC_WORK_TOOLS]
                             return [item for item in available if item['function']['name'] in work.allowed_tools] if work else available
 
                         def request_definitions():

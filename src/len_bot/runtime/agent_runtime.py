@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
+import json
 import logging
 import time
 from typing import Any
@@ -25,6 +26,7 @@ from len_bot.events.models import Event, EventType, Stimulus, StimulusType
 from len_bot.events.store import EventStore
 from len_bot.memory.history import HistoryConflictError
 from len_bot.media.service import MediaService
+from len_bot.memory.interests import InterestStore
 from len_bot.memory.reflection import ReflectionEngine
 from len_bot.memory.reflector import LLMReflector
 from len_bot.memory.store import MemoryStore
@@ -37,10 +39,13 @@ from len_bot.runtime.metrics import RuntimeMetrics
 from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
 from len_bot.runtime.scene_policy import ScenePolicy, conversation_visible
 from len_bot.runtime.plugin_interactions import classify_event, validate_plugin_origin
-from len_bot.scenes.actor import SceneCommitConflict
+from len_bot.runtime.heartbeat import Heartbeat
+from len_bot.runtime.sleep_policy import DeliveryDeferred, should_defer_send, should_ingest_social
+from len_bot.scenes.actor import HistoryCommitDeferred, SceneCommitConflict
 from len_bot.scenes.manager import SceneManager
 from len_bot.scenes.models import SceneSession
 from len_bot.scheduler.engine import TaskScheduler
+from len_bot.scheduler.models import TaskItem, TaskStatus
 from len_bot.state.open_loops import OpenLoopManager
 
 logger = logging.getLogger(__name__)
@@ -85,6 +90,7 @@ class AgentRuntime:
         self.bot_actor_id = f"user:{config.bot_qq}"
         self.event_store = EventStore(config.db_path, clock=clock)
         self.memory_store: MemoryStore | None = None
+        self.interest_store: InterestStore | None = None
         self.history_engine: ReflectionEngine | None = None
         self.provider_registry = ProviderRegistry()
         self.retrieval_models: RetrievalModels | None = None
@@ -105,6 +111,8 @@ class AgentRuntime:
         )
         self.action_queue.pacing = config.message_pacing
         self.action_queue.validate_before_send = self.validate_outbound_action
+        self.action_queue.defer_action = self._defer_delivery
+        self.heartbeat = Heartbeat(self)
         self.scheduler = TaskScheduler(self.event_store, self.receive_event, sweep_interval=config.scheduler_interval_seconds, metrics=self.metrics)
         self.scheduler.jobs_enabled_probe = self._work_enabled
         self.open_loop_manager = OpenLoopManager(self.event_store)
@@ -117,6 +125,7 @@ class AgentRuntime:
         self.runtime_gate.jobs_enabled_probe = self._work_enabled
         self.runtime_gate.validate_job_resume = self._validate_job_resume
         self.runtime_gate.scene_policy = self.scene_policy
+        self.runtime_gate.time_settings = lambda: self.config_store.current.time
         self.runtime_gate.capability_authority = CapabilityAuthority(config_store, self.scene_policy)
         # The store reserves from the same numbers the runner enforces, so a
         # hold cannot disagree with the limits the work actually runs under.
@@ -125,11 +134,15 @@ class AgentRuntime:
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
             self.attention_policy.random_source = attention_random
+        self.attention_policy.chat_allowed = self.scene_policy.chat_allowed
+        self.attention_policy.time_settings = lambda: self.config_store.current.time
         self.scene_manager = SceneManager(self.bot_actor_id, self.event_store, self._on_scene_event_committed,
                                           attention_policy=self.attention_policy,
                                           classify_event=lambda event, cutoff: classify_event(self, event, cutoff))
         self.burst_assembler = BurstAssembler(config, self._on_burst, clock=clock)
         self.social_core = SocialCognitionCore(self)
+        from len_bot.cognition.action_review import ActionReviewer
+        self.action_reviewer = ActionReviewer(self)
         self.job_runner = InformationJobRunner(self)
         self.media_service = MediaService(self)
         self._cognition_semaphore = asyncio.Semaphore(config.conversation_max_concurrent)
@@ -209,15 +222,22 @@ class AgentRuntime:
         if issue:return issue
         work=self.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
         needs_model=not work or work.needs_model is None or work.needs_model(job)
+        from len_bot.cognition.budget import WorkBudgetSnapshot
+        stored = job.get('budget')
+        limits = (self.config.model_copy(update=WorkBudgetSnapshot.model_validate(stored).runtime_values())
+                  if stored else self.config)
+        deadline = (stored or {}).get('deadline_at')
+        if deadline is not None and self.clock() >= deadline:
+            return 'This work has passed its original deadline; resume cannot extend it'
         # A dimension the operator left unlimited cannot be the reason a work
         # may not resume; only a limit that actually carries a number can.
-        if (needs_model and self.config.job_max_steps is not None
-                and job['model_steps']>=self.config.job_max_steps):
+        if (needs_model and limits.job_max_steps is not None
+                and job['model_steps']>=limits.job_max_steps):
             return 'This work has no remaining model steps; its spent budget is not reset by resume'
-        if self.config.job_max_seconds is not None and job['elapsed_seconds']>=self.config.job_max_seconds:
+        if limits.job_max_seconds is not None and job['elapsed_seconds']>=limits.job_max_seconds:
             return 'This work has no remaining execution time; its spent budget is not reset by resume'
-        if (job['execution_status']=='partial' and self.config.job_max_tool_calls is not None
-                and job['tool_calls']>=self.config.job_max_tool_calls and (not work or work.execute is None)):
+        if (job['execution_status']=='partial' and limits.job_max_tool_calls is not None
+                and job['tool_calls']>=limits.job_max_tool_calls and (not work or work.execute is None)):
             return 'This partial work has no remaining read-tool budget; continuing does not reset its counters'
         if not needs_model:return None
         try:
@@ -246,6 +266,7 @@ class AgentRuntime:
         await self.event_store.mark_suspended_conversations_for_review()
         self.memory_store = MemoryStore(self.event_store._db, self.event_store._write_lock, clock=self.clock)
         await self.memory_store.initialize()
+        self.interest_store = InterestStore(self.event_store)
         await self._load_configuration()
         self.memory_index = MemoryIndex(self.event_store._db, self.event_store._write_lock,
                                         self.retrieval_models, self.retrieval_profiles.embedding, self.clock)
@@ -296,7 +317,11 @@ class AgentRuntime:
         await self._load_plugins()
         await self.job_runner.reconcile_plugins()
         self._ingestion_ready.set()
+        self._delivery_run_id = uuid.uuid4().hex
+        await self._recover_deferred_deliveries()
         await self.scheduler.start()
+        await self._reevaluate_awake_deliveries()
+        await self.heartbeat.ensure_next()
         await self.job_runner.resume_skill_candidates()
         for scene_id in restored:
             actor = await self.scene_manager.get_or_create_actor(scene_id)
@@ -398,6 +423,9 @@ class AgentRuntime:
                 if timer:
                     timer.cancel()
             await self.record_operator_event(scene_id, 'scene_settings', 'panel', {'policy_changed': True})
+        interest_share = self.plugin_host.get_plugin('interest_share')
+        if interest_share and interest_share.manifest.enabled:
+            await interest_share.ensure_next()
 
     async def _record_shadow_action(self, action: ActionItem) -> None:
         self.metrics.inc_social("would_send")
@@ -549,7 +577,79 @@ class AgentRuntime:
                              'gate': self._gate_record(decision)})
         return decision
 
+    async def _defer_delivery(self, action: ActionItem, deferred: DeliveryDeferred) -> None:
+        task = await self.event_store.defer_delivery(action, deferred.due_at, deferred.detail)
+        if task is None:
+            return
+        self.scheduler.reschedule_task(task)
+        await self.receive_event(Event(
+            event_type=EventType.OPERATOR_ACTION, scene_id=action.scene_id,
+            actor_id='system:sleep', timestamp=self.event_store.clock(),
+            payload={'kind': 'deferred_delivery', 'action_id': action.id,
+                     'due_at': deferred.due_at, 'detail': deferred.detail, 'task_id': task.id},
+            metadata={'conversation_excluded': True}), _internal=True)
+
+    async def _delivery_terminal(self, action_id: str, scene_id: str) -> str | None:
+        fact = await self.event_store.delivery_fact(action_id, scene_id)
+        return fact[0] if fact else None
+
+    async def _recover_deferred_deliveries(self) -> None:
+        await self.event_store.recover_deferred_delivery_tasks()
+
+    async def _reevaluate_awake_deliveries(self) -> None:
+        from len_bot.runtime.sleep_policy import is_asleep
+        for task in await self.event_store.get_pending_tasks():
+            if task.payload.get('kind') != 'deferred_delivery':
+                continue
+            actor = await self.scene_manager.get_or_create_actor(task.scene_id)
+            if not is_asleep(actor.session, self.config_store.current.time, self.clock()):
+                await self.scheduler.trigger_task_now(task.id)
+
+    async def _release_deferred(self, event: Event) -> None:
+        if event.metadata.get('obsolete_task_wake'):
+            return
+        action = await self.event_store.claim_deferred_delivery(
+            event.payload['task_id'], event.scene_id, self._delivery_run_id)
+        if action is None:
+            return
+        actor = await self.scene_manager.get_or_create_actor(action.scene_id)
+        deferred = should_defer_send(action, actor.session, self.config_store.current.time, self.clock(),
+            deterministic_service=self.plugin_host.deterministic_service(action.plugin_origin))
+        if deferred:
+            await self._defer_delivery(action, deferred)
+            return
+        if action.output_kind == 'chat' and not (action.job_id or action.fulfils_task_id):
+            self._spawn_background_task(self.action_queue._reject(action,
+                '睡眠期间的旧闲聊已过期，等待新的真实人类上下文', status='rejected', cancelled=True))
+            return
+        if (action.plugin_origin and action.plugin_origin.plugin_id == 'bilibili_live_sensor'
+                and action.plugin_origin.entry_id == 'live_started'):
+            self._spawn_background_task(self._refresh_deferred_live(action))
+            return
+        self.action_queue.enqueue(action)
+
+    async def _refresh_deferred_live(self, action):
+        plugin = self.plugin_host._plugins.get(action.plugin_origin.plugin_id)
+        try:
+            if plugin is None or not plugin.manifest.enabled:
+                raise ValueError('原直播插件已停用')
+            replacement = await plugin.refresh_deferred(action)
+            await self.action_queue._reject(action,
+                '已按当前直播场次重新提交：' + replacement if replacement else '原直播场次已结束，延期邀请过期',
+                status='rejected', cancelled=True)
+        except Exception as error:
+            await self.action_queue._reject(action, f'延期直播重核失败：{error}', status='rejected', cancelled=True)
+
     async def prepare_outbound_action(self, action: ActionItem) -> ActionItem:
+        if action.plugin_origin and action.plugin_origin.plugin_id == 'interest_share':
+            from len_bot.runtime.interest_publication import publication_for
+            from len_bot.plugins.builtin.interest_share.config import Candidate
+            rows = await self.event_store.events_by_ids(action.scene_id, [action.plugin_origin.source_event_id], 2**63-1)
+            if len(rows) != 1:
+                raise ValueError('兴趣分享来源不存在')
+            candidate = Candidate.model_validate(rows[0].payload['data'])
+            _, publication = await publication_for(self.event_store, candidate.interest_id, candidate.revision)
+            action = action.model_copy(update={'interest_publication': publication})
         return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
@@ -574,11 +674,23 @@ class AgentRuntime:
                 or await self.event_store.get_media(segment.asset_id, [action.scene_id, "global-safe"]) is None
             ):
                 raise ValueError("媒体已停用或不在本场景中")
+        actor = await self.scene_manager.get_or_create_actor(action.scene_id)
+        from len_bot.runtime.gate import MAX_CONSECUTIVE_BOT_MESSAGES
+        if action.interest_publication and actor.session.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
+            raise ValueError('本群连续 Bot 消息已达上限，停止主动分享')
+        deferred = should_defer_send(action, actor.session, self.config_store.current.time,
+            self.event_store.clock(), deterministic_service=self.plugin_host.deterministic_service(action.plugin_origin))
+        if deferred is not None:
+            raise deferred
 
     async def _on_action_event(self, event: Event) -> None:
         if event.event_type == EventType.MESSAGE_SENT:
             self.metrics.inc_social("simulated_messages" if event.metadata.get("simulated") else "visible_messages")
         await self.receive_event(event, _internal=True)
+        actor = await self.scene_manager.get_or_create_actor(event.scene_id)
+        await actor._queue.join()
+        if not await self.event_store.event_exists(event.id, event.scene_id):
+            raise RuntimeError('发送回执尚未提交；保留发送尝试为未知，不重发')
 
     async def _on_scene_event_committed(self, session: SceneSession, event: Event) -> None:
         if not self._running:
@@ -588,11 +700,40 @@ class AgentRuntime:
             self.metrics.inc_social("human_messages")
         self.plugin_host.dispatch_event(event, session.last_observed_event_rowid)
         self.plugin_host.notify_delivery(event, session.last_observed_event_rowid)
+        kind = (event.payload.get("payload") or {}).get("kind")
+        if event.event_type == EventType.TASK_DUE and kind == 'interest_share':
+            plugin = self.plugin_host.get_plugin('interest_share')
+            if plugin and plugin.manifest.enabled:
+                await plugin.run_slot(event)
+            else:
+                from len_bot.scheduler.models import TaskStatus
+                await self.event_store.mark_task_status(event.payload['task_id'], TaskStatus.CANCELLED)
+            return
+        if event.event_type == EventType.TASK_DUE and kind == 'heartbeat':
+            await self.heartbeat.run_slot(event)
+            return
+        if event.scene_id == 'system:heartbeat':
+            job_id = event.payload.get('job_id') or event.payload.get('task_id')
+            job = await self.event_store.get_job(job_id, event.scene_id) if job_id else None
+            from len_bot.runtime.public_research import verify_public_job
+            if job and await verify_public_job(self.event_store, job):
+                await self.job_runner.on_event(event)
+                if event.event_type == EventType.AGENT_JOB_FINISHED:
+                    await self.heartbeat.occupied()
+            return
+        if event.event_type == EventType.TASK_DUE and kind == 'deferred_delivery':
+            await self._release_deferred(event)
+            return
         if not self.scene_policy.enabled(event.scene_id):
             return
         await self.job_runner.on_event(event)
-        job_due = event.event_type == EventType.TASK_DUE and event.payload.get("payload", {}).get("kind") == "agent_job"
-        if not event.metadata.get('plugin_consumed') and not job_due and event.metadata.get("attention_reasons"):
+        job_due = event.event_type == EventType.TASK_DUE and kind == "agent_job"
+        heartbeat_due = kind in {"heartbeat", "deferred_delivery"}
+        if (not event.metadata.get('plugin_consumed') and not job_due and not heartbeat_due
+                and event.metadata.get("attention_reasons")
+                and should_ingest_social(session, self.config_store.current.time,
+                                         self.event_store.clock(),
+                                         event.metadata.get("attention_reasons") or [])):
             await self.burst_assembler.ingest(event)
         await self.scheduler.on_event(event)
         if (human or event.event_type == EventType.MESSAGE_SENT) and conversation_visible(event):
@@ -660,6 +801,8 @@ class AgentRuntime:
             return
         self._maintaining_history_scenes.add(scene_id)
         batch = retry_batch
+        stage = 'candidate'
+        revision = None
         try:
             while self._running and self._can_maintain_history() and self.scene_policy.maintenance_allowed(scene_id):
                 actor = await self.scene_manager.get_or_create_actor(scene_id)
@@ -677,6 +820,7 @@ class AgentRuntime:
                 if batch is None:
                     return
                 revision = actor.session.knowledge_revision
+                stage = 'candidate'
                 context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
                 result = await self.history_engine.maintain_batch(scene_id, batch, context)
                 review_event = Event(
@@ -686,9 +830,22 @@ class AgentRuntime:
                         'review_items':[item.model_dump() for item in result.review_items],
                         'raw_text':'历史核对：'+'；'.join(item.summary for item in result.review_items) if result.review_items else '',
                         'origin_mode':'shadow' if self.shadow_mode else 'live'})
-                committed_memories, _ = await actor.commit_history(batch_id=batch.id, proposals=result.memory_proposals,
-                    summary=result.summary, key_event_ids=result.key_event_ids,
-                    review_event=review_event, expected_revision=revision)
+                stage = 'commit'
+                while True:
+                    try:
+                        committed_memories = await actor.commit_history(
+                            batch_id=batch.id, proposals=result.memory_proposals,
+                            summary=result.summary, key_event_ids=result.key_event_ids,
+                            review_event=review_event, expected_revision=revision)
+                        break
+                    except HistoryCommitDeferred as deferred:
+                        await self.event_store.save_trace(kind='history_maintenance_deferred',
+                            scene_id=scene_id, ref_id=batch.id,
+                            payload={'episode_id': str(deferred), 'knowledge_revision': revision})
+                        await actor.wait_episode_idle()
+                        if not self._running:
+                            return
+                stage = 'post_commit'
                 if self.memory_index and committed_memories:
                     self._spawn_background_task(self._index_memories(
                         committed_memories, scene_id=scene_id))
@@ -697,7 +854,9 @@ class AgentRuntime:
                         batch.id, result.summary, batch.generation_version, scene_id))
                 await self.event_store.save_trace(kind='history_maintenance', scene_id=scene_id, ref_id=batch.id,
                     payload={'cognition':result.trace, 'source_event_ids':batch.source_event_ids,
-                             'result':result.model_dump(mode='json')})
+                             'result':result.model_dump(mode='json'), 'committed': True,
+                             'knowledge_revision_before': revision,
+                             'knowledge_revision_after': actor.session.knowledge_revision})
                 batch = None
                 # A caught-up small tail only runs after the actual quiet window.
                 quiet = False
@@ -705,13 +864,15 @@ class AgentRuntime:
             # A pending batch remains unconfirmed across interruption.
             raise
         except Exception as error:
-            if batch is not None:
+            if batch is not None and stage != 'post_commit':
                 await self.event_store.fail_history_batch(batch.id, type(error).__name__)
-            logger.exception('History maintenance failed in %s', scene_id)
+            logger.exception('History maintenance %s failed: scene=%s batch=%s revision=%s committed=%s',
+                             stage, scene_id, batch.id if batch else None, revision, stage == 'post_commit')
             await self.event_store.save_trace(kind='history_maintenance_error', scene_id=scene_id,
                 ref_id=batch.id if batch else 'history:'+uuid.uuid4().hex,
                 payload={'error':str(error),'error_type':type(error).__name__,
-                         'cognition':getattr(error,'trace',{})})
+                         'stage': stage, 'committed': stage == 'post_commit',
+                         'knowledge_revision': revision, 'cognition':getattr(error,'trace',{})})
         finally:
             self._maintaining_history_scenes.discard(scene_id)
 
@@ -813,7 +974,7 @@ class AgentRuntime:
             mailbox.messages_committed=resume.messages_committed
             mailbox.next_checkpoint=resume.next_checkpoint
             mailbox.handled_source_ids.update(resume.source_event_ids)
-        if not actor.acquire_episode_lease(episode_id, mailbox):
+        if not await actor.acquire_episode_lease(episode_id, mailbox):
             raise SceneCommitConflict(f"Concurrent conversation in {scene_id}")
         started = time.monotonic()
         trace: dict[str, Any] = {'checkpoints':[]}
@@ -906,8 +1067,20 @@ class AgentRuntime:
                 if checkpoint_decision.actions_enqueued:self.metrics.inc_social('gate_action')
                 if checkpoint_decision.committed_proposal.outcome.handled_source_event_ids:
                     await self.job_runner.on_input_handled(scene_id)
+                wake = checkpoint_decision.committed_proposal.outcome.wake_decision
+                if wake and wake.decision == 'confirm':
+                    await self.receive_event(Event(id='wake:' + checkpoint_decision.commit_event_id,
+                        event_type=EventType.SCENE_WAKE_CONFIRMED, scene_id=scene_id, actor_id='system:sleep',
+                        timestamp=self.clock(), payload={'request_event_id': wake.request_event_id,
+                            'source_event_id': wake.source_event_id, 'commit_event_id': checkpoint_decision.commit_event_id},
+                        metadata={'conversation_excluded': True}), _internal=True)
 
-            if self.mock_turn_handler is not None:
+            from len_bot.runtime.sleep_policy import is_asleep
+            if is_asleep(session, self.config_store.current.time, self.clock()):
+                from len_bot.runtime.wake_confirmation import run_wake_confirmation
+                outcome = await run_wake_confirmation(self, session, events, episode_id,
+                    commit=commit, publish=publish, input_prepared=input_prepared, trace=trace)
+            elif self.mock_turn_handler is not None:
                 input_prepared({event.id for event in events},{event.id for event in events})
                 outcome = await self.mock_turn_handler(session, events)
                 if not isinstance(outcome, EpisodeOutcome):

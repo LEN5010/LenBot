@@ -24,6 +24,7 @@ class ObservationStoreMixin:
                           "tool_call_id": result.tool_call_id,
                           "plugin_origin": result.plugin_origin.model_dump() if result.plugin_origin else None,
                           "status": result.status, "sources": [s.model_dump() for s in result.sources],
+                          'provenance': result.provenance.model_dump(),
                           **({'error_code': result.error_code, 'error_stage': result.error_stage,
                               'http_status': result.http_status} if result.status in {'error','unsupported'} else {}),
                           "independent_evidence": result.evidence_kind == "external" and result.status in {"ok", "partial"},

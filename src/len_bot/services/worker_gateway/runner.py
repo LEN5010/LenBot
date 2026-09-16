@@ -36,6 +36,7 @@ from len_bot.services.worker_gateway.config import GatewayConfig, WorkerImage
 from len_bot.services.worker_gateway.egress_control import CONTROL_RELATIVE_PATH, control_document
 from len_bot.services.worker_gateway.egress_proxy import credential_for
 from len_bot.services.worker_gateway.store import GatewayStore
+from len_bot.services.worker_gateway.browser_commands import BrowserCommands
 
 _CONTAINER_PREFIX = 'lenbot-x-'
 _SAFE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
@@ -45,7 +46,7 @@ class GatewayRefusal(ValueError):
     """A request the Gateway refuses before anything is started."""
 
 
-class ExecutionRunner:
+class ExecutionRunner(BrowserCommands):
     def __init__(self, config: GatewayConfig, store: GatewayStore,
                  workspaces_root: Path, controls_root: Path, clock=time.time,
                  runtime_path: str | None = None, egress_proxies: dict | None = None):
@@ -61,6 +62,9 @@ class ExecutionRunner:
         self.egress_proxies = dict(egress_proxies or {})
         self._tasks: dict[str, asyncio.Task] = {}
         self._accept_lock = asyncio.Lock()
+        self._browser_processes = {}
+        self._browser_locks = {}
+        self._command_tasks = {}
 
     # ---- workspace and control directories ---------------------------------
     def workspace_directory(self, workspace_id: str) -> Path:
@@ -117,10 +121,15 @@ class ExecutionRunner:
                     f'网关已有 {self.config.max_concurrent} 个未释放执行；本次不排队、不启动，'
                     '请稍后以同一执行 ID 重试')
             try:
-                self.config.worker_for(request.image_ref, request.worker_type)
+                worker = self.config.worker_for(request.image_ref, request.worker_type)
                 policy = self.config.policy_for(request.network_policy)
             except KeyError as error:
                 raise GatewayRefusal(str(error.args[0])) from None
+            if request.worker_type == 'browser':
+                if policy.mode != 'proxy':
+                    raise GatewayRefusal('浏览器必须通过已核验的出口代理策略')
+                if not Path(worker.browser_seccomp_profile).is_file():
+                    raise GatewayRefusal('浏览器 seccomp 部署文件不存在')
             if policy.mode == 'proxy':
                 # Two independent answers are required before a networked run
                 # starts.  The deployment must have built the policy *and*
@@ -267,7 +276,10 @@ class ExecutionRunner:
             worker = self.config.worker_for(request.image_ref, request.worker_type)
             policy = self.config.policy_for(request.network_policy)
             control = self.control_directory(execution_id)
-            self._write_control(control / 'task.py', request.script)
+            if request.worker_type == 'browser':
+                self._write_control(control / 'browser.json', request.model_dump_json())
+            else:
+                self._write_control(control / 'task.py', request.script)
             egress = self._write_egress_control(control, policy, execution_id, request.network_policy)
             denied = self._apply_worker_access(control, workspace, worker)
             if denied:
@@ -282,6 +294,8 @@ class ExecutionRunner:
             try:
                 process = await asyncio.create_subprocess_exec(
                     *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE if request.worker_type == 'browser' else None,
+                    limit=16_000_000 if request.worker_type == 'browser' else 65536,
                     start_new_session=True)
             except OSError as error:
                 await self._fail(execution_id, 'start_failed', f'容器运行时不可用：{error}')
@@ -289,8 +303,12 @@ class ExecutionRunner:
             # The readers start with the process: a container that writes a
             # burst of output before its start is confirmed must not fill the
             # pipe and stall against readers that do not exist yet.
-            streams = [asyncio.create_task(self._read_limited(process.stdout)),
-                       asyncio.create_task(self._read_limited(process.stderr))]
+            if request.worker_type == 'browser':
+                self._browser_processes[execution_id] = process
+                streams = [asyncio.create_task(self._read_limited(process.stderr))]
+            else:
+                streams = [asyncio.create_task(self._read_limited(process.stdout)),
+                           asyncio.create_task(self._read_limited(process.stderr))]
             current = await self._stored(execution_id)
             if current.state is ExecutionState.CANCEL_REQUESTED:
                 await self._stop(execution_id, container_name, process, reason='启动过程中已取消')
@@ -313,6 +331,8 @@ class ExecutionRunner:
                 if not stream.done():
                     stream.cancel()
             results = await asyncio.gather(*streams, return_exceptions=True)
+            if request.worker_type == 'browser':
+                results.insert(0, ('', False))
             current = await self.store.get_execution(execution_id)
             if stopped or current is None or current.state not in {
                     ExecutionState.STARTING, ExecutionState.RUNNING}:
@@ -339,6 +359,9 @@ class ExecutionRunner:
                 except ValueError:
                     pass
         finally:
+            if request.worker_type == 'browser':
+                self._browser_processes.pop(execution_id, None)
+                await self.store.interrupt_browser_commands(execution_id, '浏览器进程已结束；原页面引用失效')
             for stream in streams:
                 if not stream.done():
                     stream.cancel()
@@ -369,6 +392,11 @@ class ExecutionRunner:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        command_tasks = list(self._command_tasks.values())
+        for task in command_tasks:
+            task.cancel()
+        if command_tasks:
+            await asyncio.gather(*command_tasks, return_exceptions=True)
         # A run with no live task (accepted but never started, or an older
         # record this process re-read) still owes an outcome; stop it by name.
         for execution_id in await self.store.unfinished():
@@ -429,11 +457,15 @@ class ExecutionRunner:
         # to establish, not something this command line decides.
         network = policy.network if policy.mode == 'proxy' else 'none'
         command += ['--network', network]
-        if egress:
+        if egress and worker.worker_type != 'browser':
             for name, value in egress['env'].items():
                 command += ['--env', f'{name}={value}']
-        command += ['-v', f'{workspace}:/workspace:rw', '-v', f'{control}:/lenbot-control:ro',
-                    '-w', '/workspace', worker.image, 'python', '/lenbot-control/task.py']
+        if worker.worker_type == 'browser':
+            command += ['-i', '--init', '--shm-size', '256m',
+                        '--security-opt', f'seccomp={worker.browser_seccomp_profile}']
+        command += ['-v', f'{workspace}:/workspace:rw', '-v', f'{control}:/lenbot-control:ro', '-w', '/workspace', worker.image]
+        command += (['python', '-m', 'len_bot.browser.container_worker'] if worker.worker_type == 'browser'
+                    else ['python', '/lenbot-control/task.py'])
         return command
 
     def egress_environment(self, policy, execution_id: str, policy_name: str) -> dict[str, str] | None:
@@ -620,6 +652,11 @@ class ExecutionRunner:
         confirm is recorded as unconfirmed, which keeps its workspace blocked
         until an operator looks at it.
         """
+        command_owners = await (await self.store._db.execute(
+            'SELECT DISTINCT execution_id FROM execution_commands')).fetchall()
+        for (execution_id,) in command_owners:
+            if execution_id not in self._tasks:
+                await self.store.interrupt_browser_commands(execution_id, 'Gateway 重启，命令不重放；原页面引用失效')
         for execution_id in await self.store.unfinished():
             try:
                 record = await self.store.get_execution(execution_id)

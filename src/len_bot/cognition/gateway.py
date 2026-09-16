@@ -62,7 +62,7 @@ class ModelGateway:
         self.batch_id = batch_id
         self.admission = admission
         self.purpose = purpose or binding.role
-        if self.purpose not in {"conversation", "plugin_agent", "announcement", "work", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
+        if self.purpose not in {"conversation", "plugin_agent", "announcement", "interest_share", "work", "heartbeat", "action_review", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
             raise ValueError(f"Unsupported model-call accounting purpose: {self.purpose}")
 
     async def complete(

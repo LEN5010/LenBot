@@ -140,6 +140,13 @@ CONDITION_TASK_DEFAULT_DEADLINE_SECONDS = 604800.0
 
 from len_bot.memory.models import MemoryProposal
 
+class WakeDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_event_id: str
+    source_event_id: str
+    decision: Literal['ask', 'confirm', 'decline', 'uncertain']
+
+
 class EpisodeOutcome(BaseModel):
     disposition: FinalDisposition = Field(
         default=FinalDisposition.SILENCE,
@@ -156,6 +163,7 @@ class EpisodeOutcome(BaseModel):
     checkpoint_index: int = Field(default=0,ge=0)
     next_action: Literal['end','continue','wait'] = 'end'
     resume_state: ConversationResume | None = None
+    wake_decision: WakeDecision | None = None
 
     @property
     def handled_source_event_ids(self):

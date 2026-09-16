@@ -11,7 +11,7 @@ from len_bot.plugins.models import ExactText, PluginCallContext
 from len_bot.media.models import MessageSegment
 from len_bot.tools.results import ToolResult, ToolSource
 
-from .calendar import CalendarService, ScheduleRequest, ScheduleResult, ScheduleSourceUnavailable
+from .calendar import CalendarService, InvalidCalendarMember, ScheduleRequest, ScheduleResult, ScheduleSourceUnavailable
 from .config import CalendarCommand, CalendarConfig
 from .render import ScheduleRenderer, StatusCardRenderer
 
@@ -41,7 +41,7 @@ class AsoulCalendarPlugin(BasePlugin):
             roles=("conversation", "work"), deferred=False)
         for command, words in self.config.commands.items():
             if words:
-                context.register_handler(id=command, description='精确日程命令：' + ' / '.join(words),
+                context.register_handler(id=command, description='精确日程命令：' + ' / '.join(words), deterministic_read_only=True,
                     match=ExactText(tuple(words)), handler=self.on_command, priority=10, consume=True,
                     available=lambda call, command=command: bool(call.scene_config and command in call.scene_config.commands))
         context.register_handler(id='calendar_comment', description='记录引用本插件日程结果的评论并继续普通聊天处理',
@@ -53,6 +53,11 @@ class AsoulCalendarPlugin(BasePlugin):
     async def get_live_schedule(self, request: ScheduleRequest, call_context: PluginCallContext) -> ToolResult:
         try:
             schedule = await self.service.query(request)
+        except InvalidCalendarMember as error:
+            return ToolResult.failure(str(error), 'invalid_member', stage='arguments').model_copy(update={
+                'correction': {'member': [{'name': member.name, 'aliases': list(member.aliases)}
+                                          for member in self.service.members],
+                               'null_means': '全部日程，团体署名不展开'}})
         except ScheduleSourceUnavailable as error:
             failure = ToolResult.failure(
                 f'日程来源本次未取得：{error}；这不表示今天没有直播，也不表示整个能力永久不可用。',
@@ -74,7 +79,7 @@ class AsoulCalendarPlugin(BasePlugin):
             )
 
     async def on_comment(self, call: PluginCallContext):
-        # A comment is saved and consumed; this plugin defines no reply to it.
+        # The original comment remains eligible for ordinary conversation.
         return None
 
     def command_request(self, command: CalendarCommand, now: float) -> tuple[ScheduleRequest, str]:

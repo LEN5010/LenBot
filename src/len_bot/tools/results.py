@@ -51,6 +51,14 @@ class ToolSource(BaseModel):
     event_id: str | None = None
 
 
+class ObservationProvenance(BaseModel):
+    """Connector-owned acquisition facts, never a model's publication claim."""
+    model_config = ConfigDict(extra='forbid', strict=True)
+    access: Literal['anonymous_public', 'account', 'scene', 'derived', 'unknown'] = 'unknown'
+    source_result_ids: list[str] = Field(default_factory=list)
+    source_event_ids: list[str] = Field(default_factory=list)
+
+
 class ToolNextCall(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1)
@@ -97,6 +105,7 @@ class ToolResult(BaseModel):
     http_status: int | None = None
     correction: dict[str, Any] | None = None
     evidence_kind: Literal["external", "retrieval", "model", "unknown"] = "unknown"
+    provenance: ObservationProvenance = Field(default_factory=ObservationProvenance)
 
     @computed_field
     @property

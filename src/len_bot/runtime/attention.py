@@ -30,6 +30,8 @@ def is_real_send(event, bot_actor_id):
 class AttentionPolicy:
     def __init__(self, config, clock, random_source=random.random):
         self.config, self.clock, self.random_source = config, clock, random_source
+        self.chat_allowed = None
+        self.time_settings = None
 
     def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=(),
               awaiting_response=(), focus_renewal_actors=()):
@@ -85,14 +87,23 @@ class AttentionPolicy:
                         reasons.append('sample_opportunity')
         elif event.event_type in RUNTIME_INPUTS:
             stale = event.metadata.get('obsolete_task_wake') or event.metadata.get('obsolete_job_result')
+            due_kind = event.payload.get('payload', {}).get('kind')
             bookkeeping = (event.event_type == EventType.TASK_DUE
-                           and event.payload.get('payload', {}).get('kind') == 'agent_job')
+                           and due_kind in {'agent_job', 'heartbeat', 'heartbeat_occupancy', 'interest_share', 'deferred_delivery'})
             review = event.event_type != EventType.REFLECTION_RECORDED or event.metadata.get('needs_review')
             if not stale and not bookkeeping and review:
                 reasons.append('runtime:' + event.event_type.value.lower())
                 certain = True
         event.metadata['attention_reasons'] = reasons
         event.metadata['attention_certain'] = certain
+        if event.event_type in HUMAN_INPUTS and event.actor_id != bot_actor_id:
+            from len_bot.runtime.sleep_policy import note_human
+            uid = event.actor_id[5:] if event.actor_id.startswith('user:') else None
+            allowed = True if self.chat_allowed is None else self.chat_allowed(event.scene_id, uid)
+            note_human(state, event, now, reasons, allowed, self.time_settings() if self.time_settings else None)
+            if 'wake_confirmation_reply' in reasons:
+                certain = True
+                event.metadata['attention_certain'] = True
         if reasons:
             state.pending_wakes.append(PendingWake(event_id=event.id, actor_id=event.actor_id,
                                                   reasons=reasons, certain=certain))

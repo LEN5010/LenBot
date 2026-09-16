@@ -69,7 +69,9 @@ async def classify_event(runtime, event, cutoff):
     consumed = any(route['consume'] for route in routes)
     output = event.payload.get('output_kind', 'chat')
     interaction = 'plugin_handler' if consumed else output if output != 'chat' else 'chat'
-    eligible = not consumed and not work_issue and not prepared_work and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
+    system_slot = (event.event_type == EventType.TASK_DUE
+        and (event.payload.get('payload') or {}).get('kind') in {'heartbeat', 'interest_share', 'deferred_delivery'})
+    eligible = not system_slot and not consumed and not work_issue and not prepared_work and output == 'chat' and runtime.scene_policy.chat_allowed(event.scene_id, requester)
     event.metadata.update(interaction=interaction, plugin_consumed=consumed,
         conversation_excluded=not eligible,
         interaction_reason='plugin_work_unavailable' if work_issue else 'prepared_work_delivery' if prepared_work else 'plugin_consumed' if consumed else 'chat_eligible' if eligible else 'scene_entry_closed')

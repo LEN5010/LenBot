@@ -80,6 +80,8 @@ class TimeSettings(BaseModel):
     week_start: int = Field(ge=0, le=6, description="0=周一，6=周日")
     afternoon_start: ClockTime
     afternoon_end: ClockTime
+    sleep_start: ClockTime | None = Field(default=None, description='全局睡眠开始；与 sleep_end 成对，空表示不启用睡眠')
+    sleep_end: ClockTime | None = Field(default=None, description='全局睡眠结束；空表示不启用睡眠')
 
     @field_validator("timezone")
     @classmethod
@@ -94,6 +96,8 @@ class TimeSettings(BaseModel):
     def afternoon_range(self):
         if self.afternoon_start >= self.afternoon_end:
             raise ValueError("time.afternoon_end must be later than afternoon_start")
+        if (self.sleep_start is None) != (self.sleep_end is None):
+            raise ValueError("time.sleep_start 与 sleep_end 必须成对填写或都留空")
         return self
 
 

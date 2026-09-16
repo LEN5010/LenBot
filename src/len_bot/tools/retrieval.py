@@ -69,6 +69,11 @@ class MemoryArguments(ReadArguments):
     start_time: float | None = Field(default=None,allow_inf_nan=False,description='认识建立时间起点，包含；不是原话事件时间')
     end_time: float | None = Field(default=None,allow_inf_nan=False,description='认识建立时间终点，不包含')
 
+
+class PublicInterestArguments(ReadArguments):
+    topic: str | None = Field(default=None, min_length=1, max_length=200)
+    limit: int = Field(ge=1)
+
 class SearchHistorySummariesArguments(ReadArguments):
     query: str = Field(min_length=1, pattern=r"\S")
     limit: int = Field(ge=1)
@@ -125,7 +130,8 @@ class ToolResultArguments(ReadArguments):
 READ_ARGUMENT_MODELS = {
     'search_messages': SearchMessagesArguments, 'read_context': ReadContextArguments,
     'query_timeline': TimelineArguments, 'query_person_history': PersonHistoryArguments,
-    'query_memory': MemoryArguments, 'query_jobs': JobsArguments,
+    'query_memory': MemoryArguments, 'list_public_interests': PublicInterestArguments,
+    'query_jobs': JobsArguments,
     'read_tool_result': ToolResultArguments, 'search_media': SearchMediaArguments,
     'read_media': ReadMediaArguments, 'read_message_range': MessageRangeArguments,
     'read_pending_wakes': PendingWakeArguments, 'read_web_media': WebMediaArguments,
@@ -146,6 +152,7 @@ LOCAL_TOOLS = [
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
     read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
     read_tool('query_memory', '按需读取本群认识及其来源；已撤销的认识不是当前事实。'),
+    read_tool('list_public_interests', '读取已允许公共发布的兴趣；与本群认识分开，不含群成员或私聊资料。'),
     read_tool('search_history_summaries', '按需定位较早的已完成历史摘要；结果只是定位，精确原话仍需回读。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
     read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
@@ -214,7 +221,8 @@ class RetrievalToolkit:
         models = dict(READ_ARGUMENT_MODELS)
         bounds = {
             **{name: (self.config.retrieval_default_limit, self.config.retrieval_max_limit)
-               for name in ('search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries')},
+               for name in ('search_messages', 'query_timeline', 'query_person_history',
+                            'search_history_summaries', 'list_public_interests')},
             **{name: (self.page_chars, self.max_chars)
                for name in ('read_tool_result', 'read_message_range')},
             'read_pending_wakes': (self.config.pending_wakes_default_limit, self.config.pending_wakes_max_limit),
@@ -257,6 +265,9 @@ class RetrievalToolkit:
             capabilities = self.plugin_host.tool_capabilities(name)
             if not capabilities['deferred'] or name in self.discovered_tools:
                 definitions.append(copy.deepcopy(definition))
+        if self.call_context().public_research:
+            from len_bot.runtime.public_research import PUBLIC_WORK_TOOLS
+            definitions = [item for item in definitions if item['function']['name'] in PUBLIC_WORK_TOOLS]
         return definitions
 
     def _discover_continuation(self,result):
@@ -271,7 +282,7 @@ class RetrievalToolkit:
                 self.discovered_tools.pop(next(iter(self.discovered_tools)))
 
     def is_read_only(self,name):
-        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes'}: return True
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes','list_public_interests'}: return True
         return bool(self.plugin_host and self.plugin_host.has_tool(name, self.call_context())
                     and self.plugin_host.tool_capabilities(name)['kind'] == 'read')
 
@@ -433,6 +444,12 @@ class RetrievalToolkit:
 
     async def store_observation(self,name,args,result,*,media_files=(),tool_call_id=None):
         invocation = self.call_context()
+        from len_bot.tools.results import ObservationProvenance
+        if result.provenance.access == 'unknown' and name in {'search_messages', 'query_memory', 'query_person_history',
+                'query_timeline', 'search_history_summaries', 'read_context', 'read_message_range', 'read_pending_wakes'}:
+            result.provenance = ObservationProvenance(access='scene')
+        if name == 'read_web_media' and result.evidence_kind == 'external':
+            result.provenance = ObservationProvenance(access='anonymous_public')
         result = result.error_context(name,tool_call_id)
         if result.tool_name is None or result.tool_call_id is None:
             result = result.model_copy(update={'tool_name': result.tool_name or name,
@@ -929,6 +946,20 @@ class RetrievalToolkit:
                 row['key_event_ids'] = json.loads(row.pop('key_event_ids_json'))
             return ToolResult(status='partial' if summary_partial else ('ok' if rows else 'no_results'), content=json.dumps(rows, ensure_ascii=False),
                               coverage='history_summary_locator+semantic' if semantic_summary else 'history_summary_locator', evidence_kind='retrieval')
+        elif name=='list_public_interests':
+            from len_bot.memory.interests import InterestStore
+            items = await InterestStore(self.event_store).list_public(topic=args.get('topic'), limit=args['limit'])
+            records = [{
+                'id': item.id, 'topic': item.topic, 'record_type': item.record_type,
+                'statement': item.statement, 'source_observation_ids': item.source_observation_ids,
+                'observed_at': item.observed_at, 'published_at': item.published_at,
+                'valid_until': item.valid_until, 'revision': item.revision,
+                'visibility': 'public',
+                'note': '公共兴趣，不是本群认识或成员资料',
+            } for item in items]
+            return ToolResult(status='ok' if records else 'no_results',
+                content=json.dumps(records, ensure_ascii=False),
+                coverage='public_interests', evidence_kind='retrieval')
         elif name=='query_memory':
             if not self.memory_store:return ToolResult(status='unsupported',content='未配置认识账本')
             aliases = {(self.default_scene_id,actor_id):tuple(value for value in (person.nickname,person.card) if value)
