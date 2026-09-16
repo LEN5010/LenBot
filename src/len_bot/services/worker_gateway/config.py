@@ -52,6 +52,8 @@ class WorkerImage(BaseModel):
 
     @model_validator(mode='after')
     def browser_sandbox(self):
+        if self.worker_type == 'media' and self.container_user.split(':')[0] == '0':
+            raise ValueError('媒体容器必须使用非 root 用户')
         if self.worker_type == 'browser':
             if self.container_user.split(':')[0] == '0':
                 raise ValueError('浏览器容器必须使用非 root 用户')

@@ -32,7 +32,7 @@ async def classify_event(runtime, event, cutoff):
     requester = event.actor_id[5:] if event.event_type in HUMAN_INPUTS and event.actor_id.startswith('user:') and event.actor_id != runtime.bot_actor_id else None
     work_issue=None
     prepared_work=False
-    if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED}:
+    if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED}:
         requester = event.payload.get('requester_qq_uid')
         if event.metadata.get('associated_open_loop') and event.payload.get('plugin_origin'):
             issue=runtime.plugin_host.origin_issue(event.payload['plugin_origin'],event.scene_id)

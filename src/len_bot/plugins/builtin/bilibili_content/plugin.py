@@ -15,6 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.plugins.base import BasePlugin, PluginContext
 from .config import BilibiliPluginConfig
+from .account import AccountConnector
+from .actions import AccountActions, LikeInput, FavoriteInput
+from len_bot.runtime.capabilities import Capability
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.net_policy import validate_url
 from ..bilibili_client import public_json
@@ -52,6 +55,7 @@ class BilibiliSearchArguments(BaseModel):
 class DynamicFeedArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     mid: int = Field(gt=0, description="UP 主的正整数 UID")
+    offset: str = Field(default="", max_length=100, description="仅使用上次 source_next_call 返回的分页游标")
 
 
 class VideoPagesArguments(VideoInfoArguments):
@@ -137,23 +141,23 @@ class BilibiliContentPlugin(BasePlugin):
     def __init__(self, context: PluginContext):
         super().__init__(context.manifest)
         self.config: BilibiliPluginConfig = context.config
-        self._client: Optional[httpx.AsyncClient] = None
+        self.account = AccountConnector(context, self.config)
+        self.account_actions = AccountActions(self.account)
         self._public_client: Optional[httpx.AsyncClient] = None
 
     async def on_load(self, context: PluginContext) -> None:
+        for name, model, handler, capability, purpose in (
+            ('set_bilibili_like', LikeInput, self.account_actions.like, Capability.BILIBILI_LIKE, '明确设置 B 站视频点赞状态'),
+            ('set_bilibili_favorite', FavoriteInput, self.account_actions.favorite, Capability.BILIBILI_FAVORITE, '明确设置 B 站收藏夹内的视频收藏状态')):
+            context.register_tool(name=name, parameter_model=model, handler=handler, purpose=purpose,
+                description='仅限当前真实用户工作；独立授权、账号额度和动作审查。结果未知时先读取平台状态，绝不直接重试写入。',
+                keywords=('B站', '点赞', '收藏', '取消'), kind='proposal', roles=('work',), deferred=True,
+                required_capabilities=(capability.value,), side_effect='account_write',
+                input_scope='current_work', output_scope='account',
+                available=lambda call, cap=capability: self.account_actions.available(call, cap))
         headers = {"User-Agent": USER_AGENT, "Referer": "https://www.bilibili.com/"}
         self._public_client = httpx.AsyncClient(timeout=self.config.request_timeout_seconds,
             trust_env=False, headers=headers.copy(), follow_redirects=False)
-        sessdata = self.config.sessdata
-        if sessdata:
-            headers["Cookie"] = f"SESSDATA={sessdata};"
-
-        self._client = httpx.AsyncClient(
-            timeout=self.config.request_timeout_seconds, trust_env=False,
-            headers=headers,
-            follow_redirects=False,
-        )
-
         context.register_tool(
             name="get_video_info",
             description="通过完整 bvid（如 BV17x411w7KC）或 aid 查询标题、简介、UP 主及播放互动数据；两个标识只能提供一个。",
@@ -170,11 +174,13 @@ class BilibiliContentPlugin(BasePlugin):
             kind="read", roles=("conversation", "work"), deferred=True,
         )
         context.register_tool(
-            name="get_dynamic_feed", description="按 UP 主 UID 查询平台动态接口；需要已配置有效 SESSDATA。",
+            name="get_dynamic_feed", description="在当前人类工作中按 UP 主 UID 分页读取登录态动态正文；需要账号 UID、SESSDATA、独立登录资料授权和动作审查，不自动读取转发原文或媒体。",
             parameter_model=DynamicFeedArguments, handler=self._get_dynamic_feed,
             purpose="读取 B 站 UP 主最新动态", aliases=("UP主动态", "B站动态"),
             keywords=("动态", "UP主", "最新", "B站", "UID"),
-            kind="read", roles=("conversation", "work"), deferred=True,
+            kind="read", roles=("work",), deferred=True, available=self.account.available,
+            required_capabilities=(Capability.BILIBILI_AUTHENTICATED_READ.value,),
+            input_scope='current_work', output_scope='account',
         )
         context.register_tool(
             name="get_video_pages", description="读取 B 站视频分 P 与 cid 时间轴，不下载视频。",
@@ -199,27 +205,23 @@ class BilibiliContentPlugin(BasePlugin):
         )
 
     async def on_unload(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        await self.account.close()
         if self._public_client:
             await self._public_client.aclose()
             self._public_client = None
 
     async def _query(self, url: str, params: dict[str, Any], *, content_key: str | None = None,
-                     account: bool = False) -> ToolResult:
-        if account and url != 'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space':
-            raise ValueError('账号客户端不能访问未登记的 API 目的地')
+                     ) -> ToolResult:
         source = ToolSource(url=url + "?" + urlencode(params))
         try:
-            data = await public_json(self._client if account else self._public_client, url, params)
+            data = await public_json(self._public_client, url, params)
         except ValueError as error:
             return ToolResult.failure(str(error), "upstream_error")
         payload = data["data"]
         records = payload[content_key] if content_key else payload
         return ToolResult(status='ok' if records else 'no_results',
             content=json.dumps(payload, ensure_ascii=False), sources=[source], evidence_kind="external",
-            coverage="api_response", provenance=ObservationProvenance(access='account' if account else 'anonymous_public'))
+            coverage="api_response", provenance=ObservationProvenance(access='anonymous_public'))
 
     async def _get_video_info(self, args: VideoInfoArguments, call_context: PluginCallContext) -> ToolResult:
         params = args.model_dump(exclude_none=True)
@@ -233,10 +235,7 @@ class BilibiliContentPlugin(BasePlugin):
         }, content_key="result")
 
     async def _get_dynamic_feed(self, args: DynamicFeedArguments, call_context: PluginCallContext) -> ToolResult:
-        if not self.config.sessdata:
-            return ToolResult(status="unsupported", content="查询动态需要配置有效 SESSDATA；当前未查询。", error_code="credentials_missing")
-        return await self._query("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
-                                 {"host_mid": args.mid}, content_key="items", account=True)
+        return await self.account.dynamic(args, call_context)
 
     async def _view(self, args: VideoInfoArguments) -> VideoView:
         params = {'bvid': args.bvid} if args.bvid is not None else {'aid': args.aid}

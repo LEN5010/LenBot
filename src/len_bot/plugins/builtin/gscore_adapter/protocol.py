@@ -20,7 +20,7 @@ class CoreMessageSend(BaseModel):
     target_id: str | None = None
     content: list[CoreMessageSegment] | None = None
     # Core only asks for this when it wants a recall_message_id receipt.
-    echo: str | None = None
+    echo: str | None = Field(default=None, max_length=240)
 
 
 class CoreMessageReceive(BaseModel):

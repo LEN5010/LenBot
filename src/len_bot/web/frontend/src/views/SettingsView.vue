@@ -666,6 +666,7 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='runtime'&&runtimeText!==null" class="pa-5 form-card">
       <h2>运行参数</h2>
+      <p class="muted mt-2">普通文件交付由 file_delivery 和独立 send_file 授权控制。onebot_file_upload 默认为 null；当前仅提供 NapCat 的 upload_group_file_data_file_id 协议。填写实际版本，并核对仅文件资产目录挂到 /lenbot-files 的只读权限及真实 file_id 回执后，才能开启 deployment_verified。保存后需重启。</p>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
       <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>

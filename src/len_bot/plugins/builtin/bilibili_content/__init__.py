@@ -8,7 +8,7 @@ def create(context):
 
 
 PLUGIN = PluginSpec(id='bilibili_content', name='哔哩哔哩内容查询工具', version='1.0.0',
-    description='读取哔哩哔哩公开视频、搜索结果和用户动态。',
+    description='读取公开视频与已授权账号动态；当前工作可提案设置独立授权的点赞和收藏状态。',
     config_model=BilibiliPluginConfig, create=create, private_tools=True,
     plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),
     call_timeout=lambda config: config.tool_timeout_seconds)

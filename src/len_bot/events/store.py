@@ -59,6 +59,10 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         await self.initialize_jobs()
         await self.initialize_executions()
         await self.initialize_media()
+        from len_bot.media.files import initialize_files
+        await initialize_files(self)
+        from len_bot.runtime.platform_actions import initialize_platform_actions
+        await initialize_platform_actions(self)
         await self.initialize_model_calls()
         await self.initialize_history()
         from len_bot.memory.interests import InterestStore
@@ -403,12 +407,12 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             LEFT JOIN events r ON r.rowid=(
                 SELECT receipt.rowid FROM events receipt
                 WHERE receipt.scene_id=? AND receipt.actor_id=?
-                  AND receipt.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+                  AND receipt.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED')
                   AND json_extract(receipt.payload,'$.batch_id')=a.batch_id
                   AND COALESCE(json_extract(receipt.payload,'$.batch_index'),0)=CAST(m.key AS INTEGER)
                 ORDER BY receipt.rowid DESC LIMIT 1
             )
-            WHERE r.rowid IS NULL OR r.event_type!='MESSAGE_SENT' OR r.rowid>?
+            WHERE r.rowid IS NULL OR r.event_type NOT IN ('MESSAGE_SENT','FILE_UPLOADED') OR r.rowid>?
             ORDER BY a.approval_rowid,CAST(m.key AS INTEGER)""",
             (scene_id, limit, scene_id, bot_actor_id, through_rowid),
         )).fetchall()
@@ -421,7 +425,7 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                 status = "pending"
             elif kind == "ACTION_SHADOWED":
                 status = "shadow"
-            elif kind == "MESSAGE_SENT":
+            elif kind in {"MESSAGE_SENT", "FILE_UPLOADED"}:
                 status = "simulated_sent" if simulated else "sent"
             elif receipt.get("delivery_unknown") or receipt.get("delivery_status") == "unknown":
                 status = "unknown"
@@ -434,6 +438,7 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                 "batch_id": batch_id, "batch_index": int(index),
                 "approval_mode": json.loads(approval_metadata).get("mode"),
                 "segments": receipt.get("segments", message.get("segments", [])), "status": status,
+                "file_asset_id": message.get("file_asset_id"), "file_id": receipt.get("file_id"),
                 "body_source": "receipt" if "segments" in receipt else "approval",
                 "receipt_event_id": receipt_id, "receipt_at": receipt_at,
                 "receipt_after_cutoff": receipt_rowid is not None and receipt_rowid > through_rowid,
@@ -640,7 +645,7 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
               AND json_extract(c.metadata,'$.mode')='live'
               AND COALESCE(json_extract(c.payload,'$.output_kind'),'chat')='chat'
               AND NOT EXISTS (SELECT 1 FROM events r WHERE r.scene_id=c.scene_id AND r.actor_id=?
-                AND r.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+                AND r.event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED')
                 AND c.id='turn:'||json_extract(r.payload,'$.batch_id')
                 AND json_extract(r.payload,'$.batch_index')=CAST(message.key AS INTEGER))""",
             (scene_id, after_timestamp, bot_actor_id))).fetchall()
@@ -762,8 +767,8 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             if changed.rowcount!=1:
                 raise ValueError('The sent wait was already consumed, expired or changed')
         task_id = event.payload.get("fulfils_task_id")
-        if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.ACTION_SHADOWED):
-            status = ("shadow_observed" if event.event_type == EventType.ACTION_SHADOWED else "completed" if event.event_type == EventType.MESSAGE_SENT
+        if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED):
+            status = ("shadow_observed" if event.event_type == EventType.ACTION_SHADOWED else "completed" if event.event_type in {EventType.MESSAGE_SENT, EventType.FILE_UPLOADED}
                       else "delivery_unknown" if event.payload.get("delivery_unknown") else "failed")
             if event.payload.get('cancelled'):
                 status = 'cancelled'
@@ -1313,6 +1318,12 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                     if mp.operation != "refute" and mp.expires_at is not None and mp.expires_at <= now:
                         raise ValueError("An already expired preference or belief cannot become active")
                 for message in job_messages:
+                    if message.file_asset_id:
+                        from len_bot.media.files import validate_file_action
+                        from len_bot.actions.models import ActionItem, ActionType
+                        await validate_file_action(self, ActionItem(action_type=ActionType.UPLOAD_GROUP_FILE,
+                            scene_id=scene_id, file_asset_id=message.file_asset_id, job_id=message.job_id,
+                            job_revision=message.job_revision, requester_qq_uid=message.requester_qq_uid))
                     for segment in message.segments:
                         if segment.type in {"image", "video", "audio"} and await self.get_media(segment.asset_id, [scene_id, "global-safe"]) is None:
                             raise ValueError("Message media is disabled or outside the scene")

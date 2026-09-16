@@ -80,7 +80,8 @@ class OperationReceipt(BaseModel):
 
 class MessageProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    segments: list[MessageSegment] = Field(min_length=1)
+    segments: list[MessageSegment] = Field(default_factory=list)
+    file_asset_id: str | None = None
     reply_to: Optional[str] = Field(default=None, description="OneBot message_id to quote-reply")
     expect_reply: bool = Field(default=False, description="Whether this message expects an answer from a specific user")
     reply_target: Optional[str] = Field(default=None, description="Actor ID expected to respond (e.g. user:123)")
@@ -97,6 +98,9 @@ class MessageProposal(BaseModel):
 
     @model_validator(mode="after")
     def validate_body(self):
+        if self.file_asset_id and (self.segments or not self.job_id or self.reply_to or self.expect_reply
+                or self.task_ref or self.operation_ref or self.addressed_to):
+            raise ValueError('文件须单独作为本群工作交付，不混入消息片段或互动关系')
         if not self.content.strip():
             raise ValueError("A message needs nonempty text or image segments")
         if sum(value is not None for value in (self.task_ref, self.operation_ref, self.fulfils_task_id)) > 1:
@@ -107,7 +111,7 @@ class MessageProposal(BaseModel):
 
     @property
     def content(self) -> str:
-        return segment_text(self.segments)
+        return "[文件资产 " + self.file_asset_id + "]" if self.file_asset_id else segment_text(self.segments)
 
 class TaskProposal(BaseModel):
     operation: str = "create"

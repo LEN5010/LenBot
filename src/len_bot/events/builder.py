@@ -31,7 +31,7 @@ class BurstAssembler:
         EventType.AGENT_JOB_FINISHED,
         EventType.AGENT_JOB_PROGRESS,
         EventType.USER_JOINED,
-        EventType.MESSAGE_SEND_FAILED,
+        EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOAD_FAILED, EventType.FILE_UPLOADED,
     }
 
     def __init__(

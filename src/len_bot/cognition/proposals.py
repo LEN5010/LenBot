@@ -35,7 +35,8 @@ class ReplyExpectation(StrictModel):
     intent: str=Field(min_length=1)
 
 class TurnMessage(StrictModel):
-    segments:list[TurnPart]=Field(min_length=1,max_length=12)
+    segments:list[TurnPart]=Field(default_factory=list,max_length=12)
+    file_asset_id:str|None=Field(default=None,description="prepare_workspace_file 返回且已审查的资产 ID；必须独占此条并以 delivery_ref/work_ref 绑定原工作，不含文字通知")
     reply_to: str|None=Field(default=None,description='可选消息M引用')
     source: str|None=Field(default=None,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话，插件系统来源保留原类型，与显示引用reply_to分别表达')
     ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
@@ -47,6 +48,12 @@ class TurnMessage(StrictModel):
 
     @model_validator(mode='after')
     def one_message_relation(self):
+        if self.file_asset_id:
+            if (self.segments or not (self.delivery_ref or self.work_ref) or self.reply_to
+                    or self.expect_reply or self.addressed_to):
+                raise ValueError('文件上传独占一条行动并绑定原工作；文字通知另行提交')
+        elif not self.segments:
+            raise ValueError('普通消息需要至少一个片段')
         if sum(value is not None for value in (self.ack_ref,self.operation_ref,self.delivery_ref,self.work_ref)) > 1:
             raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
         return self
@@ -550,7 +557,7 @@ class ProposalLedger:
                             if row['id']==delivery),None)
                         if delivered_task and delivered_task['payload'].get('plugin_origin'):
                             message_owner=PluginOrigin.model_validate(delivered_task['payload']['plugin_origin'])
-                messages.append(MessageProposal(segments=parts,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
+                messages.append(MessageProposal(segments=parts,file_asset_id=item.file_asset_id,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
                     plugin_origin=message_owner,
                     addressed_to=addressed,
