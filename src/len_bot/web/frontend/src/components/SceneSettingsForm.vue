@@ -103,6 +103,7 @@ onBeforeUnmount(()=>{++requestId})
           <div v-for="plugin in record.plugins" :key="plugin.id" class="plugin-setting">
             <div class="settings-heading"><h4>{{ plugin.name }}</h4><v-btn v-if="!draft.plugins[plugin.id]" variant="tonal" :disabled="!readyToAdd(plugin)" @click="addPlugin(plugin)">{{ readyToAdd(plugin)?'添加本群设置':'需先填全局参数' }}</v-btn></div>
             <p class="muted-copy mb-3">{{ pluginFact(plugin) }}</p>
+            <p v-if="plugin.id==='interest_share'" class="muted-copy mb-3">公共兴趣分享还需在全局能力授予中，向插件主体 interest_share 授予本群的 interest_share 能力。每日上限和冷却在下方设置；研究、聊天、文件上传分别授权。候选可以不发，未知发送结果保留额度。</p>
             <template v-if="draft.plugins[plugin.id]">
               <v-switch v-model="draft.plugins[plugin.id].enabled" label="在本群启用此插件" color="primary" />
               <PluginConfigFields v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" />

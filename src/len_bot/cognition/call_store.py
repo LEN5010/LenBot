@@ -135,7 +135,9 @@ class ModelCallStoreMixin:
         # and is refused by the re-hold instead of being silently re-created
         # from the current default policy.
         await self._db.execute("""UPDATE usage_reservations SET limit_tokens=reserved_tokens
-            WHERE limit_tokens IS NULL AND status='held' AND reserved_tokens > 0""")
+            WHERE limit_tokens IS NULL AND status='held' AND reserved_tokens > 0
+            AND NOT EXISTS (SELECT 1 FROM agent_jobs j WHERE j.id=usage_reservations.job_id
+                AND json_type(j.budget_json,'$.token_limit') IS NOT NULL)""")
         # A request that was in flight when the process last stopped has no
         # receipt and can never get one: nothing will call end_model_call for
         # it.  Left open, it keeps its work settling forever and its hold
@@ -233,11 +235,22 @@ class ModelCallStoreMixin:
             return
         if status not in {'settled', 'released'}:
             raise ValueError('This work has no settlement to re-hold')
-        if limit_tokens is None:
+        recorded, original_ceiling = await self.recorded_work_ceiling(job_id)
+        if not recorded:
             raise ValueError(
                 '该工作没有记录创建时的累计上限（早于预占上限存档，或已被结算覆盖），'
                 '不能按当前默认策略补造一个额度；请保留原记录并交由运营者决定是否另立工作')
-        ceiling = int(limit_tokens)
+        if original_ceiling is None:
+            if daily_limit is not None or scene_limit is not None:
+                raise ValueError('该工作明确不设累计 token 上限，当前有限日额度无法为其预占；不能补造上限或按零预占绕过')
+            # Preserve already measured usage; a zero hold must not erase the
+            # released work's consumption from account totals while running.
+            actual, estimated = await self.job_measured_tokens(job_id)
+            await self._db.execute("""UPDATE usage_reservations SET reserved_tokens=?,
+                status='held',settled_at=NULL WHERE job_id=? AND status IN ('settled','released')""",
+                (actual + estimated, job_id))
+            return
+        ceiling = original_ceiling
         if daily_limit is not None:
             used = await self.account_used_tokens_in_transaction(subject, day_key, exclude_job_id=job_id)
             if used + ceiling > daily_limit:

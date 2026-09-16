@@ -44,6 +44,7 @@ class PluginCallContext:
     # missing QQ number.  `None` means the initiator was not established for
     # this call, which is not the same as a system call.
     initiator: Initiator | None = None
+    public_research: bool = False
     plugin: PluginContext | None = field(default=None, repr=False, compare=False)
     execution: PluginExecution | None = field(default=None, repr=False, compare=False)
     read_slot_owned: bool = field(default=False, repr=False, compare=False)
@@ -117,6 +118,7 @@ class PluginHandlerDefinition:
     available: Callable[[PluginCallContext], bool] | None = None
     validate: Callable[[PluginCallContext], Awaitable[None]] | None = None
     allow_mention_all: Callable[[PluginCallContext], bool] | None = None
+    deterministic_read_only: bool = False
 
     def record(self) -> dict:
         if isinstance(self.match, ExactText):
@@ -130,7 +132,8 @@ class PluginHandlerDefinition:
         return {'id': self.id, 'description': self.description, 'match': matcher,
                 'event_types': [value.value for value in self.event_types],
                 'sources': list(self.sources), 'priority': self.priority,
-                'consume': self.consume, 'require_to_me': self.require_to_me}
+                'consume': self.consume, 'require_to_me': self.require_to_me,
+                'deterministic_read_only': self.deterministic_read_only}
 
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"

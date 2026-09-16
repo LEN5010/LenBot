@@ -42,6 +42,8 @@ class WorkspacePlugin(BasePlugin):
         self.service = build_workspace_service(
             self.config, context.data_directory, context.event_store, self.manifest.id,
             context.media_service)
+        if isinstance(self.service, GatewayWorkspaceService):
+            self.service.action_reviewer = context._runtime.action_reviewer
 
     async def on_load(self, context: PluginContext):
         context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，输入文件在与它同级的 input/ 下；产物写入当前目录 /workspace；依赖由已配置镜像提供。可导入本工作已保存的文本资料（input_result_ids）与本工作来源里已登记的图片（input_asset_ids）；每个文件的来源身份记在清单的 inputs 里，面板与发送都不会因导入而被触发。',

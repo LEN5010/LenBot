@@ -28,11 +28,13 @@ class ActionQueue:
         self._failed_requests: dict[tuple[str, str], set[tuple[str | None, str | None]]] = {}
         self._attempted = set()
         self._enqueued_at = {}
+        self._queued_action_ids = set()
         self.checkpoint = None
         self.simulated = False
         self.pacing = False
         self.sleep = asyncio.sleep
         self.validate_before_send = None
+        self.defer_action = None
 
     async def start(self):
         self._running = True
@@ -57,8 +59,12 @@ class ActionQueue:
         self._scene_workers.clear()
         self._scene_queues.clear()
         self._enqueued_at.clear()
+        self._queued_action_ids.clear()
 
     def enqueue(self, action):
+        if action.id in self._queued_action_ids:
+            return
+        self._queued_action_ids.add(action.id)
         self._enqueued_at[action.id] = time.monotonic()
         self._queue.put_nowait(action)
 
@@ -71,6 +77,10 @@ class ActionQueue:
     @staticmethod
     def _payload(action):
         return {"action_id": action.id, "raw_text": action.content, "content": action.content,
+                "deferred_task_id": action.deferred_task_id, "planned_at": action.planned_at,
+                "original_due_at": action.original_due_at, "delivery_late_seconds": action.delivery_late_seconds,
+                "wake_confirmation_request_id": action.wake_confirmation_request_id,
+                "interest_publication": action.interest_publication.model_dump() if action.interest_publication else None,
                 "segments": [segment.model_dump() for segment in action.segments],
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
                 "episode_id":action.episode_id,"checkpoint_index":action.checkpoint_index,
@@ -90,11 +100,15 @@ class ActionQueue:
         return (action.origin_mode == "shadow" or action.scene_id.startswith('private:')
                 or bool(self.shadow_probe and self.shadow_probe()))
 
-    async def _reject(self, action, reason, *, unknown=False):
+    async def _reject(self, action, reason, *, unknown=False, status='not_sent', cancelled=False):
+        fact = await self.event_store.delivery_fact(action.id, action.scene_id)
+        if fact and fact[1] is not None:
+            return False
         await self._emit(Event(event_type=EventType.MESSAGE_SEND_FAILED, scene_id=action.scene_id,
             actor_id=self.bot_actor_id, timestamp=self.event_store.clock(), metadata={"simulated": self.simulated},
             payload={**self._payload(action), "error": reason, "delivery_unknown": unknown,
-                     "delivery_status": "unknown" if unknown else "not_sent"}))
+                     "cancelled": cancelled,
+                     "delivery_status": "unknown" if unknown else status}))
         return False
 
     async def _record_shadow(self, action):
@@ -130,6 +144,8 @@ class ActionQueue:
         if self.checkpoint:
             await self.checkpoint("before_send", {"scene_id": action.scene_id, "action": action.model_dump(mode="json")})
         original = action
+        if await self.event_store.delivery_fact(action.id, action.scene_id):
+            return True
         if self._request_failed(action):
             return await self._reject(action, "同一请求与事项的前条消息未确认送达，停止其后续消息")
         try:
@@ -137,20 +153,36 @@ class ActionQueue:
                 action = await self.prepare_action(action)
             await self._validate(action)
         except Exception as error:
-            return await self._reject(original, f"发送检查失败：{error}")
+            from len_bot.runtime.sleep_policy import DeliveryDeferred
+            if isinstance(error, DeliveryDeferred):
+                if self.defer_action:
+                    await self.defer_action(original, error)
+                    return True
+            return await self._reject(original, f"发送检查失败：{error}", status='rejected')
         if self._shadow(action):
             return await self._record_shadow(action)
         async with self._delivery_slots:
             try:
                 await self._validate(action)
             except Exception as error:
-                return await self._reject(action, str(error))
+                from len_bot.runtime.sleep_policy import DeliveryDeferred
+                if isinstance(error, DeliveryDeferred):
+                    if self.defer_action:
+                        await self.defer_action(action, error)
+                        return True
+                return await self._reject(action, str(error), status='rejected')
             if self._shadow(action):
                 return await self._record_shadow(action)
             send_started = time.monotonic()
             queue_ms = round((send_started-self._enqueued_at.get(action.id, send_started))*1000, 2)
             try:
                 if self.send_adapter:
+                    try:
+                        admitted = await self.event_store.begin_delivery_attempt(action)
+                    except ValueError as error:
+                        return await self._reject(action, str(error), status='rejected')
+                    if not admitted:
+                        return True
                     self._attempted.add(action.id)
                     delivery = await self.send_adapter(action)
                 else:
@@ -207,6 +239,7 @@ class ActionQueue:
             finally:
                 self._attempted.discard(action.id)
                 self._enqueued_at.pop(action.id, None)
+                self._queued_action_ids.discard(action.id)
                 if action.batch_id and action.batch_index == action.batch_size-1:
                     self._failed_requests.pop((action.scene_id, action.batch_id), None)
                 queue.task_done()

@@ -41,15 +41,22 @@ class ListWorkspaceInput(BaseModel):
 class WorkspaceScope(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
     scene_id: str
-    requester_qq_uid: str
+    requester_qq_uid: str | None = None
+    system_subject: str | None = None
     job_id: str
+
+    @model_validator(mode='after')
+    def owner(self):
+        if bool(self.requester_qq_uid) == bool(self.system_subject):
+            raise ValueError('工作区必须恰好属于一名真实用户或一个类型化系统主体')
+        return self
 
     @property
     def workspace_id(self) -> str:
         # These identifiers are already constrained by the job/event contracts;
         # preserve ownership without a content hash or model-selected owner.
         scene = self.scene_id.replace(':', '_')
-        user = self.requester_qq_uid.replace(':', '_')
+        user = (self.requester_qq_uid or ('system_' + self.system_subject)).replace(':', '_')
         return f'{scene}__{user}__{self.job_id}'
 
 

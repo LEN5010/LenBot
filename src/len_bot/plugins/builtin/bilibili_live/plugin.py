@@ -108,6 +108,30 @@ class BilibiliLiveSensor(BasePlugin):
     async def on_live_ended(self, call):
         return None
 
+    async def refresh_deferred(self, action):
+        """Re-read the original public session; replacement still enters Actor/Gate."""
+        actor = await self.context._runtime.scene_manager.get_or_create_actor(action.scene_id)
+        rows = await self.context.event_store.events_by_ids(action.scene_id,
+            [action.plugin_origin.source_event_id], actor.session.last_observed_event_rowid)
+        if len(rows) != 1:
+            raise ValueError('延期邀请的原始来源不存在')
+        original = LiveSample.model_validate(rows[0].payload['data'])
+        member = next((item for item in self.monitored_members() if item.name == original.member), None)
+        if member is None or not self.announcement_allowed(action.scene_id, original.member):
+            raise ValueError('原场次的订阅已取消')
+        sample = await self.client.sample(member, self.context.now)
+        self.samples[member.name] = sample
+        if not sample.is_live or sample.room_id != original.room_id or sample.started_at != original.started_at:
+            return None
+        replacement = 'live-refresh:' + action.id
+        sample = sample.model_copy(update={'supersedes_action_id': action.id})
+        await self.context.emit_event('live_started', sample, scene_id=action.scene_id,
+            event_id=replacement, timestamp=sample.sampled_at)
+        await actor._queue.join()
+        if not await self.context.event_store.event_exists(replacement, action.scene_id):
+            raise RuntimeError('更新直播来源未提交')
+        return replacement
+
     async def on_live_started(self, call):
         sample = LiveSample.model_validate(call.event.payload['data'])
         material = ToolResult(content=sample.model_dump_json(), evidence_kind='external',

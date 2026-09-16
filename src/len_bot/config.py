@@ -40,6 +40,9 @@ class RuntimeConfig(BaseModel):
     max_context_images: int = Field(ge=1, le=6)
     work_output_tokens: int = Field(ge=256)
     jobs_enabled: bool
+    heartbeat_enabled: bool = Field(default=False, description='系统心跳；默认关闭，不补跑错过的槽')
+    heartbeat_topics: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=20, description='明确的公共研究主题；空且无公共兴趣时允许零研究，不从群史生成主题')
     job_max_steps: int | None = Field(ge=1,
         description='同一工作累计模型调用上限；null 表示该维度不设限，由期限与 token 上限停止')
     job_max_tool_calls: int | None = Field(ge=1,

@@ -130,6 +130,32 @@ class PreparedWorkDelivery(BaseModel):
     segments: list[MessageSegment] = Field(min_length=1)
 
 
+class PublicInterestCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    candidate_id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,40}$')
+    operation: Literal['create', 'revise', 'withdraw'] = 'create'
+    interest_id: str | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
+    topic: str = Field(min_length=1, max_length=200)
+    record_type: Literal['public_fact', 'agent_evaluation', 'research_intent']
+    statement: str = Field(min_length=1, max_length=4000)
+    evidence_spans: list[ResultSpan] = Field(min_length=1, max_length=16)
+    published_at: float | None = None
+    valid_until: float | None = None
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode='after')
+    def revision_identity(self):
+        if self.operation == 'create':
+            if self.interest_id is not None or self.expected_revision is not None:
+                raise ValueError('新兴趣的身份由宿主建立')
+        elif self.interest_id is None or self.expected_revision is None:
+            raise ValueError('修订或撤回需要原兴趣与实际修订')
+        if any(span.end <= span.start for span in self.evidence_spans):
+            raise ValueError('公共兴趣需要非空的实际读取证据')
+        return self
+
+
 class JobResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["completed", "partial", "failed", "interrupted", "cancelled"]
@@ -140,6 +166,7 @@ class JobResult(BaseModel):
     work_state: WorkState | None = None
     reason: str | None = None
     delivery: PreparedWorkDelivery | None = None
+    public_interests: list[PublicInterestCandidate] = Field(default_factory=list, max_length=8)
 
 
 class SkillCandidate(BaseModel):

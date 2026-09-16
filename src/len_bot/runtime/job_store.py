@@ -44,6 +44,7 @@ def _decode_job(row):
     data['delivery_action_id'] = task_payload.get('delivery_action_id')
     data['delivery_event_id'] = task_payload.get('delivery_event_id')
     data['observation_reads'] = task_payload.get('observation_reads', {})
+    data['public_research'] = task_payload.get('public_research')
     data['resume_from'] = task_payload.get('resume_from')
     # Older work keeps its exact requester and request anchor; convert those
     # two fields into the typed human initiator rather than guessing one.
@@ -503,7 +504,10 @@ class JobStoreMixin(SkillStoreMixin):
                         raise ValueError('This work already has a committed confirmation; inspect its existing action')
                     continue
                 progress=await self._new_work_progress(scene_id,proposal)
+                from len_bot.runtime.heartbeat import admit_cycle_in_transaction
+                public_research = await admit_cycle_in_transaction(self, proposal, scene_id, job_id)
                 payload = {"kind": "agent_job", "proposal_id": proposal.proposal_id, "source_event_ids": sources,
+                           'public_research': public_research,
                            "work_operation":proposal.work_operation, "requester_qq_uid":proposal.requester_qq_uid,
                            "request_source_event_id":proposal.request_source_event_id,
                            "initiator":proposal.initiator.model_dump(mode='json') if proposal.initiator else None,
@@ -528,6 +532,10 @@ class JobStoreMixin(SkillStoreMixin):
                 tokens = await self.reserve_job_budget_in_transaction(
                     job_id, scene_id, proposal.initiator, work_operation=proposal.work_operation)
                 snapshot = self.budget_snapshot(token_limit=tokens)
+                if public_research:
+                    seconds = 1800 if snapshot.job_max_seconds is None else min(1800, snapshot.job_max_seconds)
+                    snapshot = snapshot.model_copy(update={'job_max_seconds': seconds,
+                        'deadline_at': self.clock() + seconds})
                 await self._db.execute("UPDATE agent_jobs SET budget_json=? WHERE id=? AND scene_id=?",
                     (snapshot.model_dump_json(), job_id, scene_id))
                 await self._queue_job_event(EventType.AGENT_JOB_CONTROL, job_id, scene_id, 1, {"operation": "create"})
@@ -771,6 +779,11 @@ class JobStoreMixin(SkillStoreMixin):
                             if segment.type in {'image', 'video', 'audio'} and await self.get_media(segment.asset_id,[scene_id]) is None:
                                 raise ValueError('Prepared work media is not registered in this scene')
                     await self._validate_evidence_spans(job, result.evidence_spans, result.result_ids)
+                    if result.public_interests:
+                        if result.status not in {'completed', 'partial'}:
+                            raise ValueError('未形成成果的工作不能采用公共兴趣')
+                        from len_bot.memory.interests import InterestStore
+                        await InterestStore(self).adopt_in_transaction(job, result.public_interests)
                     if result.work_state is not None:
                         await self._validate_work_state(job, result.work_state)
                     if work_state is not None:
@@ -779,6 +792,8 @@ class JobStoreMixin(SkillStoreMixin):
                         await self._validate_work_state(job, work_state)
                         await self._db.execute("UPDATE agent_jobs SET work_state_json=? WHERE id=? AND scene_id=?", (work_state.model_dump_json(), job_id, scene_id))
                     if skill_candidate is not None:
+                        if job.get('public_research'):
+                            raise ValueError('公共研究不从此入口生成场景技能')
                         if spec and not spec.allow_learning:
                             raise ValueError('This plugin work does not create procedural skills')
                         await self.add_skill_candidate_in_transaction(job, skill_candidate)
@@ -786,8 +801,10 @@ class JobStoreMixin(SkillStoreMixin):
                     raise JobResultRejected(str(error)) from error
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (result.model_dump_json(), self.clock(), job_id, scene_id))
-                await self._db.execute("UPDATE tasks SET status='result_ready',payload=json_set(payload,'$.result',?) WHERE id=? AND scene_id=?",
-                    (result.summary, job_id, scene_id))
+                from len_bot.runtime.public_research import has_public_context
+                result_status = ('completed' if result.status in {'completed', 'partial'} else 'failed') if has_public_context(job) else 'result_ready'
+                await self._db.execute("UPDATE tasks SET status=?,payload=json_set(payload,'$.result',?) WHERE id=? AND scene_id=?",
+                    (result_status, result.summary, job_id, scene_id))
                 event = await self._queue_job_event(EventType.AGENT_JOB_FINISHED, job_id, scene_id, revision,
                     {"raw_text": "信息工作已有结果，结合最新要求核对后决定如何回应。", "result": result.model_dump(), "origin_mode": job["origin_mode"]})
                 # A skill candidate committed above is admitted consumption of
@@ -826,6 +843,9 @@ class JobStoreMixin(SkillStoreMixin):
                     raise ValueError('Work state belongs to an obsolete goal')
                 await self._validate_work_state(job, state)
                 if skill_candidate is not None:
+                    from len_bot.runtime.public_research import has_public_context
+                    if has_public_context(job):
+                        raise ValueError('公共研究不读写场景技能候选')
                     spec=self.plugin_work(job)
                     if spec and not spec.allow_learning:
                         raise ValueError('This plugin work does not create procedural skills')

@@ -35,6 +35,10 @@ class ScheduleRequest(BaseModel):
         return self
 
 
+class InvalidCalendarMember(ValueError):
+    """The request did not select exactly one configured member."""
+
+
 class CalendarEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
     source_uid: str
@@ -277,7 +281,7 @@ class CalendarService:
         matches = [member for member in self.members
                    if query in {member.name.casefold(), *(alias.casefold() for alias in member.aliases)}]
         if len(matches) != 1:
-            raise ValueError("Unknown or ambiguous configured calendar member")
+            raise InvalidCalendarMember("Unknown or ambiguous configured calendar member")
         member = matches[0]
         return tuple(value.casefold() for value in (member.name, *member.aliases))
 
