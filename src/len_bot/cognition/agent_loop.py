@@ -11,6 +11,7 @@ from itertools import count as unbounded_steps
 from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
+from openai import APIConnectionError
 
 from len_bot.cognition.gateway import ModelGateway, ToolCall
 from len_bot.tools.results import ToolResult, error_message
@@ -131,6 +132,11 @@ def _error_text(exc: BaseException) -> str:
     source = ('; '.join('.'.join(map(str,item['loc']))+': '+item['msg']
                        for item in validation.errors(include_input=False,include_context=False,include_url=False))
               if isinstance(validation,ValidationError) else str(exc))
+    if isinstance(exc, APIConnectionError) and exc.__cause__ is not None:
+        # The SDK's generic "Connection error" hides the transport failure.
+        # Reuse the existing redaction below; never log request headers/body.
+        cause = exc.__cause__
+        source += f"; transport cause: {type(cause).__name__}: {cause}"
     message = re.sub(r"data:[^\s]+;base64,[A-Za-z0-9+/=]+", "[media payload omitted]", source)
     message = re.sub(r"[A-Za-z0-9+/=]{256,}", "[encoded payload omitted]", message)
     message = re.sub(

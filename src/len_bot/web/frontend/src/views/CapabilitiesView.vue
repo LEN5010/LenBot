@@ -2,18 +2,19 @@
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, fmtTime, queryString } from '../api.js'
+import { useRequestGuard } from '../composables/useRequestGuard.js'
 import PageHeader from '../components/PageHeader.vue'
 import ScopeSelect from '../components/ScopeSelect.vue'
 import CapabilityCards from '../components/CapabilityCards.vue'
 const route=useRoute(),router=useRouter()
 const data=ref(null),loading=ref(false),error=ref(''),participants=ref([]),participantError=ref('')
-let sequence=0
+const guard=useRequestGuard()
 async function load(){
-  const own=++sequence;loading.value=true;error.value=''
+  const fresh=guard();loading.value=true;error.value=''
   try{
     const result=await api('/api/overview/capabilities?'+queryString({scene_id:route.query.scene,requester:route.query.requester}))
-    if(own===sequence)data.value=result
-  }catch(e){if(own===sequence)error.value=e.message}finally{if(own===sequence)loading.value=false}
+    if(fresh())data.value=result
+  }catch(e){if(fresh())error.value=e.message}finally{if(fresh())loading.value=false}
 }
 async function loadParticipants(scene){
   participants.value=[];participantError.value=''
@@ -30,7 +31,9 @@ watch(()=>[route.query.scene,route.query.requester],load,{immediate:true})
 </script>
 <template>
   <div class="page-stack">
-    <PageHeader title="工具能力" description="分别核对部署、保存值、当前运行、使用资格和真实记录。"><v-btn variant="outlined" :loading="loading" @click="load">刷新事实</v-btn></PageHeader>
+    <PageHeader title="工具能力" description="分别核对部署、保存值、当前运行、使用资格和真实记录。">
+      <v-btn variant="outlined" :loading="loading" @click="load">刷新事实</v-btn>
+    </PageHeader>
     <div class="filters"><ScopeSelect :model-value="route.query.scene||''" label="查看哪个群的能力" @update:model-value="selectScene" /><v-select :model-value="route.query.requester||null" :items="participants" label="本群实际发起者（可选）" clearable :disabled="!route.query.scene" :error-messages="participantError" @update:model-value="selectRequester" /></div>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="data"> · 下方保留 {{ fmtTime(data.sampled_at) }} 的结果</span></v-alert>
     <v-progress-linear v-if="loading" indeterminate />

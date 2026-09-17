@@ -17,32 +17,32 @@ CARDS = (
         ('link_parser', ('parse_link',)),
         ('bilibili_content', ('search_bilibili', 'get_video_info', 'get_video_pages',
                               'get_video_comments', 'get_video_subtitles')),
-    ), ('web_search', 'read_page'), '直接对话或委托工作', None),
+    ), ('web_search', 'read_page'), '直接对话或委托工作'),
     ('python', 'Python 与文件分析', (
         ('workspace', ('run_python', 'export_workspace_artifact')),
         ('python_workspace', ('run_python', 'export_workspace_artifact')),
-    ), ('run_python', 'export_workspace_artifact'), '明确委托的信息工作', 'python'),
+    ), ('run_python', 'export_workspace_artifact'), '明确委托的信息工作'),
     ('browser', '浏览器', (
         ('browser_agent', ('browser_open', 'browser_capture', 'browser_snapshot')),
-    ), ('browser_open', 'browser_capture'), '委托工作；按当前后端与工具限制执行', None),
+    ), ('browser_open', 'browser_capture'), '委托工作；按当前后端与工具限制执行'),
     ('broadcast', '直播日历与播报', (
         ('asoul_calendar', ()),
         ('asoul_dynamics', ()),
         ('bilibili_live_sensor', ()),
-    ), (), '群命令、订阅与来源事件', 'broadcast'),
-    ('reports', '群报告', (('group_summary', ()),), (), '本群委托工作', None),
-    ('research', '公共研究与分享', (('interest_share', ()),), (), '系统研究周期；各群独立分享机会', 'research'),
+    ), (), '群命令、订阅与来源事件'),
+    ('reports', '群报告', (('group_summary', ()),), (), '本群委托工作'),
+    ('research', '公共研究与分享', (('interest_share', ()),), (), '系统研究周期；各群独立分享机会'),
     ('media', '媒体片段', (
         ('media_analysis', ('get_video_segment', 'transcribe_video_segment')),
-    ), ('get_video_segment', 'transcribe_video_segment'), '委托工作', None),
+    ), ('get_video_segment', 'transcribe_video_segment'), '委托工作'),
     ('files', '文件交付', (
         ('workspace', ('prepare_workspace_file',)),
         ('python_workspace', ('prepare_workspace_file',)),
-    ), ('prepare_workspace_file',), '工作成果的独立文件行动', None),
+    ), ('prepare_workspace_file',), '工作成果的独立文件行动'),
     ('account', '账号操作', (
         ('bilibili_content', ('get_dynamic_feed', 'set_bilibili_like', 'set_bilibili_favorite')),
-    ), (), '另获授权的工作与逐动作审查', None),
-    ('core', '可选 Core', (('gscore_adapter', ()),), (), '已配置的专用适配入口', None),
+    ), (), '另获授权的工作与逐动作审查'),
+    ('core', '可选 Core', (('gscore_adapter', ()),), (), '已配置的专用适配入口'),
 )
 
 
@@ -62,8 +62,8 @@ async def capability_status(query, scene_id=None, requester=None):
                'local' if workspace_config and workspace_config.worker else None)
     items = []
     catalog = rt.config_store.catalog.entries
-    for ident, title, implementations, evidence_tools, entry, wizard in CARDS:
-        item = {'id': ident, 'title': title, 'entry': entry, 'wizard': wizard, 'plugins': [],
+    for ident, title, implementations, evidence_tools, entry in CARDS:
+        item = {'id': ident, 'title': title, 'entry': entry, 'plugins': [],
                 'actions': [], 'missing_owners': [],
                 'deployment': [], 'authorization': [], 'recent_observation': None,
                 'recent_execution': None, 'recent_delivery': None}

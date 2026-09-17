@@ -9,7 +9,14 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import PluginConfigFields from '../components/PluginConfigFields.vue'
 import ConfigConflictBanner from '../components/ConfigConflictBanner.vue'
+import HelpHint from '../components/HelpHint.vue'
 import {blankConfigDraft,configDraft,draftProblems,configValue} from '../lib/pluginConfig.js'
+
+const SCENE_SCOPE_HELP = `全局启用只是让插件可用，还要在目标群单独加入它才会生效。
+
+本群开关与业务参数保存在「本群设置」里，与这里的全局参数分开。这一页不维护第二份本群开关——上面的链接指向的就是同一个群设置表单。
+
+全局条件未就绪时也可以先保存一份停用草稿，但那不会让它变得可用。`
 
 const route=useRoute(), router=useRouter()
 const appState=useAppState()
@@ -215,7 +222,6 @@ loadScopes()
 
 <template>
   <div class="page-stack">
-    <v-card class="pa-4 mb-4"><h2>系统能力</h2><p class="my-3">群 Agent、预算、权限、工作、记忆与发送由系统管理。各入口分别显示保存配置、运行状态和真实回执。</p><div class="actions"><RouterLink :to="{name:'scenes'}">群 Agent 与发送范围</RouterLink><RouterLink :to="{name:'models'}">模型与预算</RouterLink><RouterLink :to="{name:'settings'}">权限与运行配置</RouterLink><RouterLink :to="{name:'jobs'}">工作与交付</RouterLink><RouterLink :to="{name:'memories'}">认识与公共兴趣</RouterLink><RouterLink :to="{name:'tasks',query:{tab:'system'}}">心跳与分享周期</RouterLink></div></v-card>
     <PageHeader title="能力与插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
     <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
@@ -266,9 +272,9 @@ loadScopes()
               </v-form>
             </template>
             <template v-else-if="detailTab==='scenes'">
-              <h3 class="my-4">配置开放的群</h3>
+              <h3 class="my-4 heading-with-hint">配置开放的群<HelpHint :text="SCENE_SCOPE_HELP" /></h3>
               <div class="open-scenes"><v-btn v-for="scene in selected.open_scenes" :key="scene.scene_id" variant="text" :to="{name:'scene',params:{sceneId:scene.scene_id},query:{tab:'settings'}}">{{ sceneName(scene.scene_id)||scene.scene_id }}<span v-if="sceneName(scene.scene_id)" class="scene-id">{{ scene.scene_id }}</span> · {{ scene.enabled?'群已启用':'群已停用' }}</v-btn><p v-if="!selected.open_scenes.length" class="muted">尚未向任何群开放此插件。</p></div>
-              <p class="muted mt-3">本群的开关与业务参数在“本群设置”里保存，与全局参数分开；全局启用后仍需在目标群加入该插件。全局未就绪时可以保存停用草稿，但那不会让它变得可用。这里不维护第二份本群开关，链接到的是同一个群设置表单。</p>
+              <p class="muted mt-3">本群开关与业务参数在“本群设置”里保存。</p>
               <RouterLink :to="{name:'scenes'}">打开群列表</RouterLink>
             </template>
             <template v-else>
@@ -305,6 +311,7 @@ loadScopes()
 
 <style scoped>
 .plugin-toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.toolbar-search{max-width:320px;min-width:200px}
+.heading-with-hint{display:flex;align-items:center;gap:2px}
 .scene-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#64748b;margin-left:6px}
 .entry-list{display:grid;gap:12px}.entry-row{border:1px solid #e2e8f0;border-radius:8px;padding:14px;overflow-wrap:anywhere}.entry-row p{margin-top:6px;line-height:1.6}
 .state-list{list-style:none;display:grid;gap:6px;margin:14px 0;padding:0;font-size:13px}.state-list li{display:flex;gap:12px}.state-label{color:#64748b;min-width:64px}.state-ok{color:#16845c}.state-warn{color:#9a5514}
