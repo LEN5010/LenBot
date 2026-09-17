@@ -35,8 +35,10 @@ request 由 command_request 使用原命令时间及业务时区计算。[on_com
 | 工具结果 | 处理路径 |
 |---|---|
 | error_code=source_unavailable | 取得本次来源失败信息，StatusCardRenderer 生成“日程暂未取得”，save_image 后 submit_message |
-| ok 或 no_results | 解析 ScheduleResult，使用 ScheduleRenderer 生成正常或空日程卡，保存并提交图片 |
+| ok 或 no_results | 解析 ScheduleResult，使用共享 HTML 日历模板生成正常或空日程卡，保存并提交图片 |
 | 其他错误 | 在该 handler 结束并保留错误，不转成空日程或普通对话 |
+
+今日、明日与本周直播共用粉色详细日历模板，按日期分组，展示头像、源标题与非链接描述；直播间、动态等含 HTTP(S) 链接的说明行和独立 URL 不进入图片，时间块含开始、日期与结束时刻；跨日结束显示日期。图片不再展示查询区间、抓取时刻、来源地址与重复免责声明，这些事实仍保留在 ScheduleResult 观察中。空日程只表述源日历未收录。现有 HTML 渲染失败路径仍记录原错误并使用 Pillow 卡片，后者也删除同样的页脚说明。
 
 未知成员返回 invalid_member 和配置内可选名称/别名，不记插件执行异常；未提供成员表示全部日程。上述确定性分支不新增模型调用，渲染失败与发送失败仍分别处理。自然语言读取取得同一 ToolResult，由当前 Agent 继续使用。业务时钟的“现在几点”直接提交文字，“时间简报”则显式调用 run_agent。所有提交均经原发送链，工具返回或图片登记不等于送达。
 

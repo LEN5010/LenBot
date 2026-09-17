@@ -430,32 +430,6 @@ class AgentRuntime:
             # reserved work keeps the policy named on its own reservation.
             self._apply_budget_configuration()
 
-    async def apply_setup_wizard(self, wizard: str, values: dict, *, operator_id: str) -> dict:
-        from len_bot.web import setup_wizards
-        async with self.config_update_lock:
-            data = self.config_store.current.model_dump()
-            now = self.clock()
-            preview = setup_wizards.preview(self.config_store.current, wizard, values, now)
-            if preview.get('blocked'):
-                raise ValueError(preview['blocked'])
-            candidate_data = setup_wizards.apply_values(data, wizard, values, now, operator_id=operator_id)
-            candidate = self.config_store.parse(candidate_data)
-            self.config_store.save(candidate)
-        if wizard == 'research':
-            self.restart_required = True
-            plugin = self.plugin_host.get_plugin('interest_share')
-            if plugin and plugin.manifest.enabled:
-                await plugin.ensure_next()
-        elif wizard in {'python', 'broadcast'} and preview.get('plugin_id'):
-            plugin_id = preview['plugin_id']
-            setting = self.config_store.current.plugins.get(plugin_id)
-            if setting and setting.enabled:
-                try:
-                    await self.plugin_host.enable_plugin(plugin_id)
-                except Exception as error:
-                    raise PluginConfigurationApplyError('根配置已保存，但插件运行更新失败：'+_error_text(error)) from error
-        return preview
-
     async def update_scene_settings(self, scene_id: str, values: dict, *, baseline) -> None:
         from len_bot.config_edit import merge_edit
         was_enabled = self.semantic_retrieval_enabled(scene_id)

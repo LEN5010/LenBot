@@ -37,7 +37,6 @@ const requestStatus = value => ({callable:'请求资格通过，执行仍需当�
         </template>
         <div class="actions mt-4">
           <v-btn v-if="data.scene_id" size="small" variant="tonal" :to="{name:'scene',params:{sceneId:data.scene_id},query:{tab:'settings'}}">本群设置</v-btn>
-          <v-btn v-if="item.wizard" size="small" variant="tonal" :to="{name:'setup',query:{wizard:item.wizard,scene:data.scene_id}}">启用向导</v-btn>
         </div>
       </v-card-text>
     </v-card>

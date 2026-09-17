@@ -2,9 +2,12 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from len_bot.cards.bilibili import CardNotification, fetch_profile, render_notification
+from len_bot.cards.html_render import HtmlCardRenderer
 from len_bot.events.models import EventType
 from len_bot.media.models import MessageSegment
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -39,6 +42,7 @@ class BilibiliLiveSensor(BasePlugin):
         self.config: LivePluginConfig = context.config
         self.client = LiveClient(self.config)
         self._poll_task = None
+        self._card_renderer = None
         self.samples: dict[str, LiveSample] = {}
         self._last_success_at = None
         self._last_error_at = None
@@ -89,6 +93,9 @@ class BilibiliLiveSensor(BasePlugin):
 
     async def on_unload(self):
         await self.client.close()
+        if self._card_renderer is not None:
+            await self._card_renderer.close()
+            self._card_renderer = None
 
     def monitored_members(self):
         names = {name for _, config in self.context.scene_configs() for name in config.live_subscriptions}
@@ -147,14 +154,48 @@ class BilibiliLiveSensor(BasePlugin):
         # The poller may have observed a new sample while the announcement
         # model was running; never send a stale session after that transition.
         self.validate_session(sample.member, sample.room_id, sample.started_at)
-        font_path = self.context.directory.parent / 'asoul_calendar' / 'resources' / 'font.ttf'
-        if not font_path.is_file():
-            raise ValueError('直播卡片字体文件不存在')
-        png = await asyncio.to_thread(render_live, sample, font_path=font_path,
-            timezone=self.context.time_settings.timezone)
+        png = await self._render_card(sample)
         asset_id = await call.save_image(png, '真实开播场次卡片')
         await call.submit_message([MessageSegment(type='text', text=result.text), MessageSegment(type='image', asset_id=asset_id)],
             mention_all=call.scene_config.mention_all)
+
+    def _started_epoch(self, sample):
+        if not sample.started_at:
+            return None
+        try:
+            return datetime.fromisoformat(sample.started_at).timestamp()
+        except ValueError:
+            return None
+
+    async def _render_card(self, sample):
+        """The rich card, or the plain one rather than no announcement at all.
+
+        Profile numbers come from the public `x/web-interface/card` endpoint,
+        so an unreachable profile still yields a card -- the footer just prints
+        `--` instead of a count it cannot stand behind.
+        """
+        try:
+            if self._card_renderer is None:
+                self._card_renderer = HtmlCardRenderer()
+            notification = CardNotification(
+                kind='live', uid=str(sample.bilibili_uid), author_name=sample.member,
+                title=sample.title, url=sample.url, cover_url=sample.cover_url,
+                content_id=str(sample.room_id),
+                published_at=self._started_epoch(sample) or sample.sampled_at,
+                author_profile=await fetch_profile(str(sample.bilibili_uid)))
+            return await render_notification(notification, self._card_renderer,
+                                             generated_at=sample.sampled_at)
+        except Exception as error:
+            # Every failure here is a rendering failure, never a source one:
+            # the session is already confirmed, so fall back loudly instead of
+            # dropping a live announcement the group is waiting for.
+            logger.warning('Rich live card failed (%s: %s); using the plain card',
+                           type(error).__name__, error)
+        font_path = self.context.directory.parent / 'asoul_calendar' / 'resources' / 'font.ttf'
+        if not font_path.is_file():
+            raise ValueError('直播卡片字体文件不存在')
+        return await asyncio.to_thread(render_live, sample, font_path=font_path,
+                                       timezone=self.context.time_settings.timezone)
 
     def source_status(self):
         return {'last_success_at': self._last_success_at, 'last_error_at': self._last_error_at,

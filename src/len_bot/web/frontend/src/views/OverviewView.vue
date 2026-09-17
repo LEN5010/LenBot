@@ -3,6 +3,7 @@ import { computed,onMounted,onBeforeUnmount,ref } from 'vue'
 import { mdiRefresh,mdiArrowRight,mdiForumOutline,mdiDatabaseOutline,mdiClockOutline } from '@mdi/js'
 import { api,fmtTime,sceneName } from '../api.js'
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
+import { roleNames } from '../domain/roles.js'
 import PageHeader from '../components/PageHeader.vue'
 import EntityLink from '../components/EntityLink.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -11,7 +12,6 @@ const app=useAppState(),data=ref(null),review=ref(null),unknown=ref(null),unknow
 let sequence=0
 async function load(){const own=++sequence;loading.value=true;try{const result=await Promise.all([api('/api/overview/stats'),api('/api/cockpit/jobs?status=review_required&page_size=4'),api('/api/cockpit/tasks?status=delivery_unknown&page_size=4'),api('/api/cockpit/jobs?status=delivery_unknown&page_size=4'),api('/api/models/usage?status=failed&page_size=4')]);if(own===sequence){[data.value,review.value,unknown.value,unknownJobs.value,failed.value]=result;app.scenes=data.value.scenes;app.loadedScenes=true;error.value=''}}catch(e){if(own===sequence)error.value=e.message}finally{if(own===sequence)loading.value=false}}
 async function refresh(){await Promise.all([load(),loadPlugins(),refreshStatus()])}
-const roleNames={conversation:'对话',work:'后台工作',maintenance:'维护整理'}
 const hasIssues=computed(()=>review.value.total+unknown.value.total+unknownJobs.value.total+failed.value.total>0)
 const unknownCount=computed(()=>unknown.value.total+unknownJobs.value.total)
 const unknownItems=computed(()=>[...unknown.value.items.map(item=>({...item,entityType:'task'})),...unknownJobs.value.items.map(item=>({...item,description:item.goal,entityType:'job'}))])
@@ -27,11 +27,12 @@ async function loadPlugins(){
   try{capabilities.value=await api('/api/overview/capabilities');pluginError.value=''}
   catch(e){pluginError.value=e.message}
 }
+const plugins=computed(()=>[...new Map((capabilities.value?.items||[])
+  .flatMap(card=>card.plugins).filter(plugin=>plugin.state!=='absent')
+  .map(plugin=>[plugin.id,plugin])).values()])
 const pluginGaps=computed(()=>{
-  const seen=new Set(),rows=[]
-  for(const card of capabilities.value?.items||[])for(const plugin of card.plugins){
-    if(seen.has(plugin.id))continue
-    seen.add(plugin.id)
+  const rows=[]
+  for(const plugin of plugins.value){
     const reason=!plugin.configured?'尚未填写全局参数':plugin.last_error?'加载或运行报错':plugin.enabled&&!plugin.active_enabled?'已保存启用，但尚未装载':null
     if(reason)rows.push({id:plugin.id,name:plugin.name,reason})
   }
@@ -56,15 +57,16 @@ const readiness=computed(()=>{
     text:stats.websocket_connected?'连接已建立；每条消息是否送达仍看真实回执':'没有可确认的连接，消息不会进入认知',
     to:{name:'settings',query:{tab:'connection'}}})
   const gaps=pluginGaps.value
-  rows.push({key:'plugins',label:'插件参数',ok:!gaps.length,
+  rows.push({key:'plugins',label:'插件参数',ok:!!capabilities.value&&!pluginError.value&&plugins.value.length>0&&!gaps.length,
     text:pluginError.value?`插件清单读取失败：${pluginError.value}`
-      :!plugins.value.length?'没有发现任何插件目录'
+      :!capabilities.value?'正在读取插件状态'
+      :!plugins.value.length?'当前能力清单没有已装入的插件'
       :gaps.length?`${gaps.length} 个插件需要处理：${gaps.slice(0,3).map(item=>`${item.name}（${item.reason}）`).join('、')}${gaps.length>3?` 等 ${gaps.length} 项`:''}`
-      :`${plugins.value.length} 个已声明插件都没有待处理项`,
+      :`${plugins.value.length} 个能力相关插件都没有待处理项`,
     to:{name:'plugins'}})
   return rows
 })
-onMounted(load)
+onMounted(refresh)
 onBeforeUnmount(()=>sequence++)
 </script>
 <template>

@@ -11,9 +11,10 @@ const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay(
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const sections=[
   {id:'overview',label:'总览',icon:mdiViewDashboardOutline,to:{name:'overview'},items:[]},
-  {id:'scenes',label:'群聊',icon:mdiForumOutline,to:{name:'scenes'},items:[]},
+  {id:'scenes',label:'群聊',icon:mdiForumOutline,to:{name:'groups'},items:[
+    ['群与权限',{name:'groups'}],['群聊消息',{name:'scenes'}]]},
   {id:'agent',label:'Agent',icon:mdiChip,to:{name:'capabilities'},items:[
-    ['工具能力',{name:'capabilities'}],['启用向导',{name:'setup'}],['人格与表达',{name:'agent-settings',query:{tab:'persona'}}],
+    ['工具能力',{name:'capabilities'}],['人格与表达',{name:'agent-settings',query:{tab:'persona'}}],
     ['参与方式',{name:'agent-settings',query:{tab:'attention'}}],['睡眠与时间',{name:'agent-settings',query:{tab:'time'}}]]},
   {id:'work',label:'工作与交付',icon:mdiBriefcaseSearchOutline,to:{name:'jobs'},items:[
     ['信息工作与文件',{name:'jobs'}],['提醒与等待',{name:'tasks'}]]},
@@ -25,8 +26,8 @@ const sections=[
 ]
 const activeSection=computed(()=>{
   if(route.name==='overview')return 'overview'
-  if(['scenes','scene'].includes(route.name))return 'scenes'
-  if(['capabilities','agent-settings','setup'].includes(route.name))return 'agent'
+  if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
+  if(['capabilities','agent-settings'].includes(route.name))return 'agent'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
   if(['memories','skills','media'].includes(route.name))return 'memory'
   return 'system'

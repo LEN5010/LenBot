@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -14,6 +16,8 @@ from len_bot.tools.results import ToolResult, ToolSource
 from .calendar import CalendarService, InvalidCalendarMember, ScheduleRequest, ScheduleResult, ScheduleSourceUnavailable
 from .config import CalendarCommand, CalendarConfig
 from .render import ScheduleRenderer, StatusCardRenderer
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from len_bot.config_store import MemberSettings, TimeSettings
@@ -29,6 +33,32 @@ class AsoulCalendarPlugin(BasePlugin):
         self.service = CalendarService(self.config, self.time_settings.timezone, members)
         self.renderer = ScheduleRenderer(self.config, resource_directory=context.directory)
         self.status_renderer = StatusCardRenderer(self.config, resource_directory=context.directory)
+        self._resource_directory = context.directory
+        self._card_renderer = None
+        self._avatar_rotation = None
+
+    async def _render_schedule(self, schedule, title):
+        """The shared card, or the plain one rather than no schedule at all."""
+        from len_bot.cards.html_render import HtmlCardRenderer
+        from len_bot.cards.schedule import render_schedule
+        from len_bot.cards.schedule.avatars import AvatarRotation
+        try:
+            if self._card_renderer is None:
+                self._card_renderer = HtmlCardRenderer()
+            root = self._resource_directory
+            resolve = lambda path: str(path if Path(path).is_absolute() else root / path)
+            if self._avatar_rotation is None:
+                # Built once so the rotation carries across cards, not just
+                # within one image.
+                self._avatar_rotation = AvatarRotation(
+                    {name: resolve(path) for name, path in self.config.avatar_directories.items()})
+            avatars = {name: resolve(path) for name, path in self.config.avatar_paths.items()}
+            return await render_schedule(schedule, title, self._card_renderer,
+                                         avatar_paths=avatars, rotation=self._avatar_rotation)
+        except Exception as error:
+            logger.warning('Rich schedule card failed (%s: %s); using the plain card',
+                           type(error).__name__, error)
+        return await asyncio.to_thread(self.renderer.render, schedule, title)
 
     async def on_load(self, context: PluginContext):
         context.register_tool(name="get_live_schedule",
@@ -49,6 +79,9 @@ class AsoulCalendarPlugin(BasePlugin):
 
     async def on_unload(self):
         await self.service.close()
+        if self._card_renderer is not None:
+            await self._card_renderer.close()
+            self._card_renderer = None
 
     async def get_live_schedule(self, request: ScheduleRequest, call_context: PluginCallContext) -> ToolResult:
         try:
@@ -125,7 +158,7 @@ class AsoulCalendarPlugin(BasePlugin):
         if observed.status not in {'ok', 'no_results'}:
             raise ValueError(f'日程来源未完整取得：{observed.content}')
         schedule = ScheduleResult.model_validate_json(observed.content)
-        png = await asyncio.to_thread(self.renderer.render, schedule, title)
+        png = await self._render_schedule(schedule, title)
         asset_id = await call.save_image(png, '日程命令生成图片')
         await call.submit_message([MessageSegment(type='image', asset_id=asset_id)])
 

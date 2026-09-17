@@ -28,6 +28,10 @@ class CalendarConfig(BaseModel):
     font_path: str = Field(min_length=1)
     image_width: int = Field(ge=640)
     avatar_paths: dict[str, str]
+    avatar_directories: dict[str, str] = Field(default_factory=dict,
+        title='成员表情素材目录',
+        description='成员名 → 表情目录；卡片每次从该成员尚未用过的素材里取一张，用尽才重来。'
+                    '留空则退回 avatar_paths 的单张头像。路径可为绝对路径或相对插件目录。')
 
     @field_validator("source_url")
     @classmethod

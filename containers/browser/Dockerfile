@@ -2,8 +2,14 @@ FROM python:3.13-slim
 
 # Only the shared typed protocol and browser entrypoint are copied. No Bot
 # configuration, credentials, database, login state or runtime socket enters.
+# fonts-noto-cjk is required for Chinese: the base image ships no CJK face, so
+# without it every Chinese glyph screenshots as a tofu box -- both for pages the
+# worker browses and for cards rendered from our own templates.
 RUN python -m pip install --no-cache-dir playwright==1.62.0 pydantic==2.13.5 \
     && PLAYWRIGHT_BROWSERS_PATH=/opt/playwright python -m playwright install --with-deps chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 65532 --create-home --shell /usr/sbin/nologin browser \
     && chmod -R a+rX /opt/playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright

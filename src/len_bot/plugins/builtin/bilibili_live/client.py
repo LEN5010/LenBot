@@ -18,6 +18,8 @@ class RoomInfo(BaseModel):
     live_status: Literal[0, 1, 2]
     title: str
     live_time: str
+    user_cover: str = ''
+    keyframe: str = ''
 
 
 class RoomResponse(BaseModel):
@@ -51,4 +53,4 @@ class LiveClient:
                 tzinfo=ZoneInfo(self.config.source_timezone)).isoformat()
         return LiveSample(member=member.name, bilibili_uid=data.uid, room_id=data.room_id, requested_room_id=member.room_id,
             title=data.title, url=f'https://live.bilibili.com/{data.room_id}', is_live=data.live_status == 1,
-            started_at=started_at, sampled_at=now())
+            started_at=started_at, sampled_at=now(), cover_url=data.user_cover or data.keyframe)

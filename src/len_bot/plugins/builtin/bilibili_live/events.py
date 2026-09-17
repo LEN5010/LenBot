@@ -13,6 +13,9 @@ class LiveSample(BaseModel):
     is_live: bool
     started_at: str | None
     sampled_at: float
+    # The room endpoint already returns these; the card shows one of them and
+    # falls back to the keyframe when the room has no custom cover.
+    cover_url: str = ''
     supersedes_action_id: str | None = None
 
 

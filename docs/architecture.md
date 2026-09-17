@@ -36,7 +36,7 @@ ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig�
 
 插件配置保存按 Schema 路径处理凭据：面板投影删除任意深度的凭据字段，只回可显示值与“该路径是否已配置”；保存时“省略／空串”保持原值（keep，始终保留当前实际密钥）、“非空值”替换、显式 `null` 清除。replace/clear 必须携带服务端 `credential_revision`，与当前世代不一致则拒绝并保留草稿；keep 不因他人刚替换密钥而把新值改回去。同一世代机制覆盖插件嵌套秘密、模型 `api_key` 和 OneBot token。显示占位值永不作为真实密钥回写。凭据只存在于根文件，不进 localStorage、URL 或长期草稿，不写入日志，也不进入模型上下文。根文件本身不挂载进执行容器，网关闭包字段（同一份 token）同样不交给执行容器。
 
-能力页是只读投影，按 catalog 插件 ID 分组，不另建权限库。网页卡绑定 `web_search_tool`，不把不存在的 `web_search` 别名静默丢掉。多实现分别列出状态和配置入口。三条启用向导（本群 Python、公开研究与指定群分享、群播报）在同一把配置锁内预览并一次保存根文件。
+能力页是只读投影，按 catalog 插件 ID 分组，不另建权限库。网页卡绑定 `web_search_tool`，不把不存在的 `web_search` 别名静默丢掉。多实现分别列出状态和配置入口。启用向导的页面、路由、专用接口与运行时保存方法已移除；群快速配置继续使用原配置锁和冲突检查。
 
 SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 `request_source_event_id` 缺失保留未知，旧 `observation_reads` 缺省为空，不补造真实阅读或人类身份。
 
@@ -44,7 +44,7 @@ SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点
 
 工作 payload 可以保存 HumanInitiator、SystemInitiator 或 PluginInitiator；旧人类工作仅由其明确 requester/source 字段转换。JobStore 在提案事务内核验对应真实来源。普通 start_work 与插件 stage_work 仍以已读人类请求为入口。
 
-CapabilityGrant 保存在 `access.capability_grants`，默认空。Gate 对非人类 create/revise/resume 复核当前授予，主体取自原工作；cancel 不另开执行。JobRunner 在每次模型/工具前对非人类再查当前 grant，人类仍走 chat_allowed。information 使用 public_research 授予及其绑定策略；策略名称失效直接拒绝。系统工作的检索范围只有 `global-safe`。并发上限计入创建准入。面板提交可编辑授予字段，认证后再绑定签发者；只改白名单保留原授予。类型中出现 system/plugin 仍不表示计划中的全部自主能力已经开放。主体、能力、范围与到期的匹配只有 `capabilities.grant_allows` 一处实现：`CapabilityAuthority.grant_for` 与启用向导的授予查找都调用它，因此已停用或已过期的授予在任何界面都不读作“已授权”；向导据此提议补发并注明原授予已过有效期，不新增第二套授权判断。
+CapabilityGrant 保存在 `access.capability_grants`，默认空。Gate 对非人类 create/revise/resume 复核当前授予，主体取自原工作；cancel 不另开执行。JobRunner 在每次模型/工具前对非人类再查当前 grant，人类仍走 chat_allowed。information 使用 public_research 授予及其绑定策略；策略名称失效直接拒绝。系统工作的检索范围只有 `global-safe`。并发上限计入创建准入。面板提交可编辑授予字段，认证后再绑定签发者；只改白名单保留原授予。类型中出现 system/plugin 仍不表示计划中的全部自主能力已经开放。主体、能力、范围与到期的匹配只有 `capabilities.grant_allows` 一处实现：`CapabilityAuthority.grant_for` 调用它，已停用或已过期的授予不读作“已授权”。
 
 ### 预占、调用与结算
 

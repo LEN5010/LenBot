@@ -1,18 +1,27 @@
 """Specific site reads returned through LenBot's existing observation pipeline."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import logging
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from len_bot.cards.bilibili import AuthorProfile, render_notification
+from len_bot.cards.bilibili.source import ProfileCache
+from len_bot.cards.html_render import HtmlCardRenderer
 from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
 
+from .card import notification_from_record
 from .client import DynamicsClient, DynamicsLookupError, SourceSnapshot
 from .config import DynamicsConfig
+
+logger = logging.getLogger(__name__)
 from .models import CardRequest, DetailRequest, FanartCardRequest, FanartSearchRequest, LatestRequest, OnThisDayRequest, RandomFanartRequest, SearchRequest
 
 if TYPE_CHECKING:
@@ -27,6 +36,8 @@ class AsoulDynamicsPlugin(BasePlugin):
         self.zone = ZoneInfo(context.time_settings.timezone)
         self.member_keywords = tuple(value for member in context.members for value in (member.name, *member.aliases))
         self.client = DynamicsClient(self.config, context.members)
+        self._card_renderer = None
+        self._profiles = ProfileCache()
 
     async def on_load(self, context: PluginContext):
         definitions = [
@@ -65,6 +76,28 @@ class AsoulDynamicsPlugin(BasePlugin):
 
     async def on_unload(self):
         await self.client.close()
+        if self._card_renderer is not None:
+            await self._card_renderer.close()
+            self._card_renderer = None
+
+    async def _render_source_card(self, data: dict, *, fallback_kind: str) -> bytes:
+        """The shared rich card, or the plain one rather than no card at all."""
+        member = data.get('member') if isinstance(data.get('member'), dict) else {}
+        uid = str(member.get('bilibiliUid') or '')
+        try:
+            if self._card_renderer is None:
+                self._card_renderer = HtmlCardRenderer()
+            profile = await self._profiles.get(uid, now=self.context.now()) if uid else None
+            notification = notification_from_record(data, profile or AuthorProfile(uid=uid))
+            return await render_notification(notification, self._card_renderer)
+        except Exception as error:
+            logger.warning('Rich dynamic card failed (%s: %s); using the plain card',
+                           type(error).__name__, error)
+        from .render import render_dynamic_card
+        font = Path(self.context.directory).parent / 'asoul_calendar' / 'resources' / 'font.ttf'
+        if not font.is_file():
+            font = Path(self.context.directory) / 'resources' / 'font.ttf'
+        return await asyncio.to_thread(render_dynamic_card, data, font, kind=fallback_kind)
 
     def _result(self, snapshot: SourceSnapshot, *, cached: bool, coverage: str, data: dict | None = None,
                 source_next_call: ToolNextCall | None = None) -> ToolResult:
@@ -123,14 +156,8 @@ class AsoulDynamicsPlugin(BasePlugin):
     async def render_card(self, request: CardRequest, call_context: PluginCallContext) -> ToolResult:
         try:
             snapshot = await self._card_snapshot(request.result_id, request.item_id, request.dynamic_id, call_context)
-            from .render import render_dynamic_card
-            from pathlib import Path
-            import asyncio
-            font = Path(self.context.directory).parent / "asoul_calendar" / "resources" / "font.ttf"
-            if not font.is_file():
-                font = Path(self.context.directory) / "resources" / "font.ttf"
-            png = await asyncio.to_thread(render_dynamic_card, snapshot.data, font)
-            asset_id = await call_context.save_image(png, "A-SOUL 动态亮色卡片")
+            png = await self._render_source_card(snapshot.data, fallback_kind="动态")
+            asset_id = await call_context.save_image(png, "A-SOUL 动态卡片")
         except DynamicsLookupError as error:
             return ToolResult.failure(str(error), error.code)
         except (OSError, ValueError) as error:
@@ -146,14 +173,8 @@ class AsoulDynamicsPlugin(BasePlugin):
     async def render_fanart_card(self, request: FanartCardRequest, call_context: PluginCallContext) -> ToolResult:
         try:
             snapshot = await self._card_snapshot(request.result_id, request.item_id, request.source_dynamic_id, call_context)
-            from .render import render_dynamic_card
-            from pathlib import Path
-            import asyncio
-            font = Path(self.context.directory).parent / "asoul_calendar" / "resources" / "font.ttf"
-            if not font.is_file():
-                font = Path(self.context.directory) / "resources" / "font.ttf"
-            png = await asyncio.to_thread(render_dynamic_card, snapshot.data, font, kind="二创来源")
-            asset_id = await call_context.save_image(png, "A-SOUL 二创亮色卡片")
+            png = await self._render_source_card(snapshot.data, fallback_kind="二创来源")
+            asset_id = await call_context.save_image(png, "A-SOUL 二创卡片")
         except DynamicsLookupError as error:
             return ToolResult.failure(str(error), error.code)
         except (OSError, ValueError) as error:
