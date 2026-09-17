@@ -334,7 +334,12 @@ class SceneActor:
             raise SceneCommitConflict('Proposal evidence was located but not read in this turn')
         if not await self.event_store.references_belong_to_scene(read, self.scene_id, item.through_rowid):
             raise SceneCommitConflict('Evidence is outside the scene or read cutoff')
-        if not item.operator and item.outcome.requires_fresh_input():
+        # Deterministic service cards have no model loop to absorb a related
+        # unread wake. Interrupting them only fails the command; they do not
+        # fall through to ordinary chat.
+        deterministic = (native_output and callable(getattr(item.gate, 'deterministic_service', None))
+                         and item.gate.deterministic_service(item.mailbox.plugin_origin))
+        if not item.operator and not deterministic and item.outcome.requires_fresh_input():
             related = await self._related_unread_wakes(item.outcome, read, state, item.gate.scene_policy)
             if related:
                 raise FreshInputConflict('Control or fulfilment has unread related input: ' + ', '.join(related))

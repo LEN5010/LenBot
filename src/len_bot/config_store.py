@@ -137,6 +137,9 @@ class SceneSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
     chat: bool
+    listen: bool = Field(default=False, description=(
+        '不闲聊但持续跟读本群：仍做历史总结与记忆，只是不主动回话。'
+        'chat 为真时本就包含跟读，此开关只在 chat 为假时改变行为'))
     semantic_retrieval: bool = Field(default=False, description='允许本群文本发送给已配置的语义检索提供方')
     plugins: dict[str, ScenePluginSettings]
     attention: SceneAttentionSettings | None = Field(default=None, description='本群旁听覆盖；缺省继承全局')

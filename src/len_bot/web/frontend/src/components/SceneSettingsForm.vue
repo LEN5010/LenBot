@@ -38,7 +38,8 @@ const readyToAdd = plugin => Boolean(plugin?.configured)
 function makeDraft(settings) {
   if (!settings) return null
   return {
-    enabled: settings.enabled, chat: settings.chat, semantic_retrieval: settings.semantic_retrieval,
+    enabled: settings.enabled, chat: settings.chat, listen: settings.listen,
+    semantic_retrieval: settings.semantic_retrieval,
     attention: settings.attention ? {...settings.attention} : null,
     expression: settings.expression ? {...settings.expression} : null,
     plugins: Object.fromEntries(Object.entries(settings.plugins||{}).map(([id,item])=>[id,
@@ -52,14 +53,19 @@ function setPluginEnabled(plugin, enabled) {
   if (!draft.value.plugins[plugin.id]) addPlugin(plugin, enabled)
   else draft.value.plugins[plugin.id].enabled = enabled
 }
-function setChat(enabled) {
+// 聊天 / 跟读 / 仅播报是三档，不是两个独立开关；按钮一次填全，避免出现
+// 「不聊天也不跟读却以为在跟读」这种看不出来的中间态。
+function setMode(mode) {
   draft.value.enabled=true
-  draft.value.chat=enabled
+  draft.value.chat=mode==='chat'
+  draft.value.listen=mode==='listen'
 }
 const draftEffect = computed(()=>{
   if (!draft.value) return record.value?.effect||''
   if (!draft.value.enabled) return '本群停用，不产生新认知、命令回复或公告；历史记录保留。'
-  return draft.value.chat?'普通成员可正常互动，命令与公告按下方选项执行。':'普通成员闲聊仅保存；QQ 白名单可正常提问，命令与公告按下方选项执行。'
+  if (draft.value.chat) return '普通成员可正常互动，命令与公告按下方选项执行。'
+  if (draft.value.listen) return '本群只跟读：闲聊不回话，但持续总结成历史与记忆；白名单可正常提问，命令与公告照常。'
+  return '普通成员闲聊仅保存原话，不总结也不形成记忆；白名单可正常提问，命令与公告照常。'
 })
 const attentionPreview = computed(()=>{
   const effective = record.value?.attention?.effective
@@ -107,7 +113,7 @@ function addUid() {
 const changeList = computed(()=>{
   if (!dirty.value) return []
   const items = []
-  if (JSON.stringify(draft.value)!==original.value) items.push('本群启用、聊天、插件、旁听或表情')
+  if (JSON.stringify(draft.value)!==original.value) items.push('本群启用、聊天、跟读、插件、旁听或表情')
   if (JSON.stringify(sendFile.value)!==sendFileOriginal.value) items.push('本群文件申请者')
   return items
 })
@@ -130,7 +136,7 @@ async function load() {
   finally { if (own===requestId) loading.value=false }
 }
 function beginConfiguration() {
-  draft.value={enabled:false,chat:false,semantic_retrieval:false,attention:null,expression:null,plugins:{}}
+  draft.value={enabled:false,chat:false,listen:false,semantic_retrieval:false,attention:null,expression:null,plugins:{}}
   sendFile.value=[]
 }
 async function save() {
@@ -200,10 +206,11 @@ onBeforeUnmount(()=>{++requestId})
         <v-form v-if="draft" :disabled="saving" @submit.prevent="save">
           <section class="config-block">
             <h4>本群参与</h4>
-            <div class="settings-actions mb-3"><v-btn variant="tonal" :disabled="saving" @click="setChat(true)">填为聊天群</v-btn><v-btn variant="tonal" :disabled="saving" @click="setChat(false)">填为仅播报群</v-btn></div>
+            <div class="settings-actions mb-3"><v-btn variant="tonal" :disabled="saving" @click="setMode('chat')">填为聊天群</v-btn><v-btn variant="tonal" :disabled="saving" @click="setMode('listen')">填为跟读群</v-btn><v-btn variant="tonal" :disabled="saving" @click="setMode('broadcast')">填为仅播报群</v-btn></div>
             <div class="settings-grid">
               <v-switch v-model="draft.enabled" label="启用本群" color="primary" />
               <v-switch v-model="draft.chat" label="允许普通成员聊天" color="primary" />
+              <v-switch v-model="draft.listen" :disabled="draft.chat" label="不聊天时仍跟读本群" color="primary" :hint="draft.chat?'聊天已包含跟读':'不回话，但持续总结成历史与记忆'" persistent-hint />
               <v-switch v-model="draft.semantic_retrieval" label="允许语义检索本群认识" color="primary" />
             </div>
             <p class="muted-copy">开启聊天不会自动开放外发、文件或账号动作。白名单例外：{{ (record.whitelist||[]).join('、') || '未设置' }}。</p>

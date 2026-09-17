@@ -5,15 +5,13 @@ every avatar is inlined as a data: URI before the page is rendered.
 """
 from __future__ import annotations
 
-import base64
 import html
-import mimetypes
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from len_bot.cards.theme import THEME_CSS
 
-from .avatars import AvatarRotation
+from .avatars import AvatarRotation, as_data_uri
 
 # Carried over from the reference plugin's schedule highlighting, recoloured
 # only where it clashed with the shared palette.
@@ -36,15 +34,7 @@ def _avatar_data_uri(path) -> str:
     """Operator-configured local avatars only; nothing here fetches a URL."""
     if not path:
         return ''
-    try:
-        file = Path(path)
-        payload = file.read_bytes()
-    except OSError:
-        return ''
-    if not payload:
-        return ''
-    kind = mimetypes.guess_type(file.name)[0] or 'image/png'
-    return f'data:{kind};base64,' + base64.b64encode(payload).decode('ascii')
+    return as_data_uri(Path(path))
 
 
 def _escaped(value) -> str:

@@ -159,7 +159,8 @@ class RuntimeQueryService:
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
             "attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",
-            "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens")}
+            "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens",
+            "scene_hourly_message_limit", "user_hourly_message_limit")}
 
     def access_settings(self):
         return self.runtime.config_store.current.access.model_dump()
@@ -184,8 +185,11 @@ class RuntimeQueryService:
             effect = "本群已停用，不产生新认知、命令回复或公告；已有原话保留。"
         elif settings.chat:
             effect = "普通成员可正常互动，命令与公告按本群选项执行。"
+        elif settings.listen:
+            effect = ("本群只跟读：普通成员闲聊不回话，但持续总结成历史与记忆；"
+                      "QQ 白名单仍可正常提问，命令与公告按本群选项执行。")
         else:
-            effect = "普通成员闲聊仅保存；QQ 白名单仍可正常提问，命令与公告按本群选项执行。"
+            effect = "普通成员闲聊仅保存原话，不总结也不形成记忆；QQ 白名单仍可正常提问，命令与公告按本群选项执行。"
         if settings and settings.semantic_retrieval:
             effect += " 本群已允许向已配置的语义检索供应方发送认识与摘要文本。"
         if self.runtime.shadow_mode:

@@ -492,6 +492,28 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         return [Event(id=r[1],event_type=r[2],scene_id=r[3],actor_id=r[4],timestamp=r[5],
             payload=json.loads(r[6]),metadata={**json.loads(r[7]),'_rowid':r[0]}) for r in await cursor.fetchall()]
 
+    async def sent_message_counts(self, scene_id: str, since: float) -> tuple[int, dict[str, int]]:
+        """Real messages this scene delivered since `since`, in total and per requester.
+
+        Only live sends that the platform accepted are counted: a shadow
+        candidate, a deferred plan and a failed send never consumed anyone's
+        allowance.  Both numbers come from one scan so the scene total and the
+        per-requester tally can never disagree with each other.
+        """
+        cursor = await self._db.execute("""
+            SELECT json_extract(payload,'$.requester_qq_uid'), COUNT(*) FROM events
+            WHERE scene_id=? AND timestamp>=? AND event_type='MESSAGE_SENT'
+              AND json_extract(payload,'$.delivery_status')='sent'
+              AND json_extract(payload,'$.origin_mode')='live'
+              AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
+            GROUP BY 1""", (scene_id, since))
+        total, per_user = 0, {}
+        for uid, count in await cursor.fetchall():
+            total += count
+            if uid is not None:
+                per_user[str(uid)] = count
+        return total, per_user
+
     async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200, event_types: list[EventType] | None = None, *, conversation_only=False) -> list[Event]:
         """ADR-0019 §10.4: events after a reflection cursor, in immutable write order.
         Each event's metadata carries its `_rowid` so callers can advance the cursor."""
