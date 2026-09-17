@@ -201,7 +201,8 @@ class OneBotAdapter:
     def _delivery_response(self, data: dict, transport: str, action: ActionItem) -> DeliveryResult:
         if action.file_asset_id:
             from len_bot.adapters.file_upload import upload_response
-            return upload_response(data, transport)
+            upload = self.config.onebot_file_upload
+            return upload_response(data, transport, upload.protocol if upload else 'upload_group_file')
         if self._response_ok(data):
             self._remember_own_message(data)
             message_id = (data.get("data") or {}).get("message_id")
@@ -222,6 +223,34 @@ class OneBotAdapter:
         self._last_error = result.error
         logger.warning("OneBot delivery %s: %s", result.status.value, result.error)
         return result
+
+    async def call_api(self, action: str, params: dict | None = None) -> dict:
+        """A request-response OneBot call. Not a group message send."""
+        params = params or {}
+        if self.config.onebot_action_transport == "http":
+            url = f"{self.config.onebot_http_url.rstrip('/')}/{action}"
+            async with httpx.AsyncClient(timeout=self.config.onebot_request_timeout_seconds,
+                                         headers=self._auth_headers(), trust_env=False) as client:
+                response = await client.post(url, json=params)
+                response.raise_for_status()
+                data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError('OneBot 返回不是对象')
+            return data
+        if not self._active_ws:
+            raise ConnectionError("OneBot 未连接")
+        self._echo_counter += 1
+        echo = f"echo_{self._echo_counter}"
+        fut = asyncio.get_running_loop().create_future()
+        self._pending_requests[echo] = fut
+        try:
+            await self._active_ws.send(json.dumps({"action": action, "params": params, "echo": echo}))
+            data = await asyncio.wait_for(fut, timeout=self.config.onebot_request_timeout_seconds)
+            if not isinstance(data, dict):
+                raise ValueError('OneBot 返回不是对象')
+            return data
+        finally:
+            self._pending_requests.pop(echo, None)
 
     async def test_http_connection(self) -> dict:
         url = f"{self.config.onebot_http_url.rstrip('/')}/get_status"

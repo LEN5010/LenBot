@@ -120,12 +120,27 @@ class ScenePluginSettings(BaseModel):
         return self._parsed_config
 
 
+class SceneAttentionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sample_probability: float | None = Field(default=None, ge=0, le=1, description='本群抽样概率；缺省继承全局')
+    sample_window_seconds: float | None = Field(default=None, gt=0, description='本群抽样窗口秒数；缺省继承全局')
+    keyword_cooldown_seconds: float | None = Field(default=None, ge=0, description='本群关键词冷却秒数；缺省继承全局')
+
+
+class SceneExpressionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sticker_preference: Literal['natural', 'slightly_more'] | None = Field(
+        default=None, description='本群表情倾向；缺省继承自然')
+
+
 class SceneSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
     chat: bool
     semantic_retrieval: bool = Field(default=False, description='允许本群文本发送给已配置的语义检索提供方')
     plugins: dict[str, ScenePluginSettings]
+    attention: SceneAttentionSettings | None = Field(default=None, description='本群旁听覆盖；缺省继承全局')
+    expression: SceneExpressionSettings | None = Field(default=None, description='本群表达覆盖；缺省继承自然')
 
 
 class PluginSettings(BaseModel):

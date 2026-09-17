@@ -51,22 +51,22 @@ class TurnMessage(StrictModel):
 
     @model_validator(mode='after')
     def one_message_relation(self):
-        if self.file_asset_id:
-            if (self.segments or not (self.delivery_ref or self.work_ref) or self.reply_to
-                    or self.expect_reply or self.addressed_to):
-                raise ValueError('文件上传独占一条行动并绑定原工作；文字通知另行提交')
-        elif not self.segments:
-            raise ValueError('普通消息需要至少一个片段')
         selected=[name for name,value in (('ack',self.ack_ref),('operation',self.operation_ref),
             ('delivery',self.delivery_ref),('work',self.work_ref)) if value is not None]
         if self.file_asset_id:
+            if self.segments or self.reply_to or self.expect_reply or self.addressed_to:
+                raise ValueError('文件上传独占一条行动并绑定原工作；文字通知另行提交')
+            if self.ack_ref or self.operation_ref:
+                raise ValueError('文件行动不能同时确认创建或操作')
+            if selected not in (['delivery'], ['work']):
+                raise ValueError('文件行动必须且只能绑定一个 delivery_ref 或 work_ref')
             inferred='file'
-        elif len(selected)>1:
-            raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
-        elif selected:
-            inferred=selected[0]
         else:
-            inferred='reply'
+            if not self.segments:
+                raise ValueError('普通消息需要至少一个片段')
+            if len(selected)>1:
+                raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
+            inferred=selected[0] if selected else 'reply'
         if self.intent and self.intent!=inferred:
             raise ValueError(f'intent={self.intent} 与当前引用字段不一致；普通回复不填工作句柄，交付只填当前可交付句柄')
         object.__setattr__(self,'intent',inferred)
@@ -181,7 +181,7 @@ RESPOND={
     'type':'function',
     'function':{
         'name':'respond',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。每条消息用intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。宿主从已登记句柄派生工作修订、原请求者与回执关系。未准备好交付的旧任务没有delivery句柄。片段只填text、image、video、audio或at，不填type。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。每条消息用intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。文件形状只在本轮列出可交付 file_asset_id 时出现，且不得带 segments。宿主从已登记句柄派生工作修订、原请求者与回执关系。未准备好交付的旧任务没有delivery句柄。普通片段只填text、image、video、audio或at，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
                 'intent':{'type':'string','enum':['reply','ack','operation','delivery','work','file'],
@@ -339,6 +339,34 @@ class ProposalLedger:
         if len(relations)>1:
             message['allOf']=[{'not':{'required':[left,right]}}
                 for index,left in enumerate(relations) for right in relations[index+1:]]
+        file_ids=sorted(refs.deliverable_file_ids())
+        if file_ids:
+            intents.append('file')
+            props['intent']={'type':'string','enum':intents,
+                'description':'本轮实际可提交的业务形状；file 只用于当前可见且尚未上传的文件资产'}
+            text_message=copy.deepcopy(message)
+            text_message['properties']['intent']={'type':'string','enum':[name for name in intents if name!='file'],
+                'description':'普通文字或确认形状；不要填写 file_asset_id'}
+            file_props={'intent':{'type':'string','enum':['file'],
+                    'description':'上传本轮可见文件；不填 segments、图片、提及或等待回应'},
+                'file_asset_id':{'type':'string','enum':file_ids,
+                    'description':'runtime_facts.files 中当前可交付资产；不能发明路径或其它工作的文件'},
+                'source':props.get('source',{'type':'string'})}
+            if 'delivery_ref' in props:
+                file_props['delivery_ref']=props['delivery_ref']
+            if 'work_ref' in props:
+                file_props['work_ref']=copy.deepcopy(props['work_ref'])
+                file_props['work_ref']['description']='非首次最终履约时绑定原工作；与 delivery_ref 二选一'
+            file_required=['intent','file_asset_id']
+            file_one_of=[]
+            if 'delivery_ref' in file_props:
+                file_one_of.append({'required':[*file_required,'delivery_ref']})
+            if 'work_ref' in file_props:
+                file_one_of.append({'required':[*file_required,'work_ref']})
+            file_message=_object(file_props, file_required)
+            if file_one_of:
+                file_message['oneOf']=file_one_of
+            parameters['messages']['items']={'oneOf':[text_message,file_message]}
         return result
 
     def definitions(self):
@@ -522,6 +550,14 @@ class ProposalLedger:
                         target=refs.job(item.delivery_ref)
                         if job and job['id']!=target['id']:raise ValueError('履约与工作引用不一致')
                         job=target;delivery=job['id']
+                if item.file_asset_id:
+                    if not refs.scene_id.startswith('group:'):
+                        raise ValueError('文件上传只用于群聊')
+                    info=refs.file_assets.get(item.file_asset_id)
+                    if info is None or item.file_asset_id not in refs.deliverable_file_ids():
+                        raise ValueError('file_asset_id 不是本轮可见、未过期且尚未上传的文件')
+                    if job is None or job['id']!=info['job_id'] or job['revision']!=info['job_revision']:
+                        raise ValueError('文件必须绑定其所属工作的当前修订')
                 if job and job['id'] in controlled_jobs and not item.operation_ref:
                     raise ValueError('该工作在本轮有未提交控制；状态确认用对应operation_ref，不能同时按旧work_ref或delivery_ref发送旧版本内容')
                 if delivery and delivery in controlled_tasks:

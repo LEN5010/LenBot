@@ -158,6 +158,37 @@ def subject_for(initiator, scene_id: str | None) -> CapabilitySubject:
     raise ValueError('能力检查需要明确的发起者类型，不接受空主体或未声明的来源')
 
 
+def grant_allows(grant: CapabilityGrant, subject: CapabilitySubject, capability: Capability, now: float) -> bool:
+    """The single grant-matching rule: principal, capability, scope and expiry.
+
+    Operator previews and runtime admission must ask the same question, so a
+    grant that has lapsed or been disabled never reads as "already granted".
+    """
+    if not grant.enabled or grant.principal_type != subject.principal_type:
+        return False
+    if grant.principal_id != subject.principal_id:
+        return False
+    if capability not in grant.capabilities:
+        return False
+    if grant.scene_id is not None and grant.scene_id != subject.scene_id:
+        return False
+    if grant.system_scope is not None and grant.system_scope != subject.system_scope:
+        return False
+    if grant.expires_at is not None and grant.expires_at <= now:
+        return False
+    return True
+
+
+def first_allowing_grant(grants, subject: CapabilitySubject, capability: Capability,
+                         now: float) -> CapabilityGrant | None:
+    """The same judgement over a candidate grant list, including an unsaved draft."""
+    for item in grants:
+        grant = item if isinstance(item, CapabilityGrant) else CapabilityGrant.model_validate(item)
+        if grant_allows(grant, subject, capability, now):
+            return grant
+    return None
+
+
 class CapabilityAuthority:
     """Reads the current grant set from the one editable source: root config."""
 
@@ -169,21 +200,7 @@ class CapabilityAuthority:
         return list(self.config_store.current.access.capability_grants)
 
     def grant_for(self, subject: CapabilitySubject, capability: Capability, now: float) -> CapabilityGrant | None:
-        for grant in self.grants():
-            if not grant.enabled or grant.principal_type != subject.principal_type:
-                continue
-            if grant.principal_id != subject.principal_id:
-                continue
-            if capability not in grant.capabilities:
-                continue
-            if grant.scene_id is not None and grant.scene_id != subject.scene_id:
-                continue
-            if grant.system_scope is not None and grant.system_scope != subject.system_scope:
-                continue
-            if grant.expires_at is not None and grant.expires_at <= now:
-                continue
-            return grant
-        return None
+        return first_allowing_grant(self.grants(), subject, capability, now)
 
     def check(self, capability: Capability, subject: CapabilitySubject, *, now: float) -> CapabilityDecision:
         """The current grant is the whole of this decision; absence denies."""

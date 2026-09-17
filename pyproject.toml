@@ -33,6 +33,15 @@ browser = [
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
 
+# The wheel ships the built control panel (web/static/dist) as module data, but
+# never the toolchain that produces it.  Without these excludes uv_build packs
+# the whole frontend directory -- measured at 47.7 MB and 3,291 node_modules
+# files -- and the only thing keeping that out of the image was .dockerignore,
+# which is not a packaging boundary.
+[tool.uv.build-backend]
+source-exclude = ["src/len_bot/web/frontend"]
+wheel-exclude = ["web/frontend"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

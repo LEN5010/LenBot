@@ -44,6 +44,7 @@ class SceneSession(BaseModel):
     pending_wakes: list[PendingWake] = Field(default_factory=list)
     focused_participants: dict[str, float] = Field(default_factory=dict)
     attention_sample_window: int = -1
+    attention_sample_at: float | None = None
     attention_keyword_at: float | None = None
     participants: dict[str, ParticipantFacts] = Field(default_factory=dict)
     last_event_at: float = 0

@@ -46,6 +46,7 @@ const setRuntimeBudget = (key, value) => {
   runtimeText.value=JSON.stringify(obj,null,2)
 }
 const onebot = ref(null)
+const platform = ref(null)
 const connection = ref(null)
 const connectionOriginal = ref('')
 const shadow = ref(null)
@@ -368,6 +369,20 @@ async function checkHttp() {
     busy.value = ''
   }
 }
+async function readVersion() {
+  if (busy.value) return
+  busy.value = 'version'
+  error.value = ''
+  message.value = ''
+  platform.value = null
+  try {
+    platform.value = await api('/api/websocket/read-version', {method:'POST'})
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = ''
+  }
+}
 async function toggleShadow() {
   if(busy.value||!shadow.value)return
   const enabled=!shadow.value.enabled
@@ -403,7 +418,7 @@ watch(tab,load,{immediate:true})
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt[tab]"> · 上次读取 {{ fmtTime(readAt[tab]) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}</v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
-    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.connection_mode==='forward_ws'?'当前未连接，请查看端点与最近错误。':'等待 OneBot 主动接入。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!busy||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。</p></v-form></v-card>
+    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.connection_mode==='forward_ws'?'当前未连接，请查看端点与最近错误。':'等待 OneBot 主动接入。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!busy||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn><v-btn variant="outlined" :loading="busy==='version'" :disabled="!!busy" @click="readVersion">读取平台实现与版本</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p><div v-if="platform" class="wide"><v-alert type="info" variant="tonal"><p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p><p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；填写前先以这里读到的实现与版本为准。</p><template v-else><p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · {{ platform.configured_upload.version }} · {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}</p><p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要用另一种实现的协议上传。</p><p v-else-if="!platform.configured_upload.version_matches" class="mt-2">版本与现场报告不一致，请按实际版本更新后再核验挂载。</p><p v-else class="mt-2">实现与版本一致；只读挂载仍需在主机侧另行核对。</p></template><p class="mt-2">{{ platform.message }}</p></v-alert></div></v-form></v-card>
     <v-card v-if="tab==='access'&&accessText!==null" class="pa-5 form-card">
       <h2>QQ 回复白名单</h2>
       <p class="muted my-3">在已启用但关闭普通聊天的群中，白名单成员仍可正常提问和继续互动。白名单不会强制每条消息回复，也不授予管理员、跨群读取或 @全体权限；日程命令及引用评论仍保持安静。</p>
@@ -497,7 +512,7 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='runtime'&&runtimeText!==null" class="pa-5 form-card">
       <h2>运行参数</h2>
-      <p class="muted mt-2">普通文件交付由 file_delivery 和独立 send_file 授权控制。onebot_file_upload 默认为 null；当前仅提供 NapCat 的 upload_group_file_data_file_id 协议。填写实际版本，并核对仅文件资产目录挂到 /lenbot-files 的只读权限及真实 file_id 回执后，才能开启 deployment_verified。保存后需重启。</p>
+      <p class="muted mt-2">普通文件交付由 file_delivery 和独立 send_file 授权控制。onebot_file_upload 默认为 null；implementation 可选 napcat（protocol=upload_group_file_data_file_id）或 snowluma（protocol=upload_group_file）。填写现场版本，并核对仅文件资产目录挂到 /lenbot-files 的只读权限后，才能把 deployment_verified 设为 true。该标记表示版本与挂载已人工核对，不要求先有一次成功上传；真实 file_id 只从 FILE_UPLOADED 回执派生。不会自动改用另一种协议。保存后需重启。</p>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
       <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>
