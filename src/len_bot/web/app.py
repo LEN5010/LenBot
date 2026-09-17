@@ -17,6 +17,9 @@ from len_bot.web.routes.plugins import router as plugins_router
 from len_bot.web.routes.cockpit import router as cockpit_router
 from len_bot.web.routes.voice import router as voice_router
 from len_bot.web.routes.media import router as media_router
+from len_bot.web.routes.setup import router as setup_router
+from len_bot.config_edit import ConfigEditConflict
+from pydantic import ValidationError
 
 def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     app = FastAPI(
@@ -28,6 +31,16 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     # Attach runtime + read facade (ADR-0022: routes only read via the service)
     app.state.runtime = runtime
     runtime.query_service = RuntimeQueryService(runtime)
+
+    @app.exception_handler(ConfigEditConflict)
+    async def configuration_conflict(request, error):
+        return JSONResponse(status_code=409, content={'detail': {
+            'message': str(error), 'path': error.path, 'config_saved': False}})
+
+    @app.exception_handler(ValidationError)
+    async def invalid_configuration(request, error):
+        return JSONResponse(status_code=422, content={'detail':
+            error.errors(include_input=False, include_context=False)})
 
     @app.middleware("http")
     async def serialize_data_controls(request, call_next):
@@ -65,6 +78,7 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     app.include_router(cockpit_router)
     app.include_router(voice_router)
     app.include_router(media_router)
+    app.include_router(setup_router)
 
     @app.get("/api/logs")
     async def get_logs(level: str | None = None, limit: int = 200, user: str = Depends(get_current_user)):

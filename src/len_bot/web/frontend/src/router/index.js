@@ -20,7 +20,10 @@ const router = createRouter({
     {path:'/skills',name:'skills',component:()=>import('../views/SkillsView.vue'),meta:{title:'程序性技能'}},
     {path:'/media',name:'media',component:()=>import('../views/MediaView.vue'),meta:{title:'图片与表情'}},
     {path:'/models',name:'models',component:()=>import('../views/ModelsView.vue'),meta:{title:'模型配置'}},
+    {path:'/agent/capabilities',name:'capabilities',component:()=>import('../views/CapabilitiesView.vue'),meta:{title:'工具能力'}},
+    {path:'/agent/setup',name:'setup',component:()=>import('../views/SetupWizardsView.vue'),meta:{title:'能力启用向导'}},
     {path:'/plugins',name:'plugins',component:()=>import('../views/PluginsView.vue'),meta:{title:'插件与能力'}},
+    {path:'/agent/settings',name:'agent-settings',component:()=>import('../views/AgentSettingsView.vue'),meta:{title:'Agent 设置'}},
     {path:'/settings',name:'settings',component:()=>import('../views/SettingsView.vue'),meta:{title:'系统设置'}},
     {path:'/activity',name:'activity',component:()=>import('../views/ActivityView.vue'),meta:{title:'运行记录'}},
     {path:'/:pathMatch(.*)*',name:'not-found',component:()=>import('../views/NotFoundView.vue'),meta:{title:'页面未找到'}},
@@ -33,6 +36,7 @@ const router = createRouter({
   },
 })
 router.beforeEach(async to=>{
+  if(to.name==='settings'&&['persona','attention','time'].includes(to.query.tab))return {name:'agent-settings',query:to.query}
   await ensureAuth()
   const auth=useAuth()
   if(auth.status==='error')return true

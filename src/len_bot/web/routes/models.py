@@ -5,6 +5,7 @@ import io
 import json
 import secrets
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
@@ -15,6 +16,7 @@ from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.providers import ModelProfile, ProviderConfig, ProviderRegistry, RouteResolution, RoutingConfig, RetrievalRouting
 from len_bot.web.auth import get_current_user
 from len_bot.config_store import RootConfig
+from len_bot.config_edit import ConfigEdit, ConfigEditConflict, merge_edit
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -24,6 +26,7 @@ class ProviderUpsertRequest(BaseModel):
     base_url: str
     api_style: str = "openai"
     api_key: str | None = None
+    api_key_action: Literal['keep', 'replace', 'clear'] = 'keep'
     enabled: bool
     timeout_seconds: float = Field(gt=0)
     models: list[str]
@@ -36,15 +39,36 @@ class ProviderUpsertRequest(BaseModel):
         return value.strip()
 
 
-async def _persist_and_apply(runtime, providers: list[ProviderConfig], routing: RoutingConfig | None, retrieval=None) -> None:
+def _public_provider(provider):
+    data = dict(provider)
+    data['api_key_masked'] = '已设置' if data.pop('api_key', '') else ''
+    return data
+
+
+async def _edit_models(runtime, mutate):
     async with runtime.config_update_lock:
         data = runtime.config_store.current.model_dump()
-        current = runtime.config_store.current.models
-        data["models"] = {"providers": [provider.model_dump() for provider in providers],
-                          "routing": routing.model_dump() if routing else None,
-                          "retrieval": (retrieval or current.retrieval).model_dump()}
-        runtime.config_store.save(runtime.config_store.parse(data))
-        await runtime.provider_registry.apply_update(providers, routing)
+        mutate(data['models'])
+        try:
+            candidate = runtime.config_store.parse(data)
+            runtime.config_store.save(candidate)
+        except ConfigEditConflict:
+            raise
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except OSError as error:
+            raise HTTPException(500, '模型配置保存失败') from error
+        try:
+            await runtime.provider_registry.apply_update(candidate.models.providers, candidate.models.routing)
+            runtime.retrieval_profiles = candidate.models.retrieval
+            if runtime.retrieval_models:
+                runtime.retrieval_models.profile = candidate.models.retrieval.embedding
+            if runtime.memory_index:
+                runtime.memory_index.profile = candidate.models.retrieval.embedding
+        except Exception as error:
+            raise HTTPException(409, {'message': '模型配置已保存，但运行应用失败：' + type(error).__name__,
+                                      'config_saved': True}) from error
+        return candidate.models
 
 
 def _configuration(runtime):
@@ -63,37 +87,55 @@ def _public_error(error, api_key=""):
 
 @router.get("/providers")
 async def list_providers(request: Request, user: str = Depends(get_current_user)):
-    return request.app.state.runtime.query_service.providers()
+    return request.app.state.runtime.query_service.model_settings_draft()
 
 
 @router.post("/providers")
-async def upsert_provider(req: ProviderUpsertRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    existing_providers, routing, retrieval = _configuration(runtime)
-    providers = {provider.id: provider for provider in existing_providers}
-    existing = providers.get(req.id)
-    providers[req.id] = ProviderConfig(id=req.id, base_url=req.base_url, api_style=req.api_style,
-        api_key=req.api_key.strip() if req.api_key and req.api_key.strip() else (existing.api_key if existing else ""),
-        enabled=req.enabled, timeout_seconds=req.timeout_seconds,
-        models=sorted({model.strip() for model in req.models if model.strip()}) if req.models is not None else (existing.models if existing else []))
-    try:
-        await _persist_and_apply(runtime, list(providers.values()), routing, retrieval)
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-    return {"success": True, "message": f"供应商“{req.id}”已保存"}
+async def upsert_provider(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    req = ProviderUpsertRequest.model_validate(edit.values)
+
+    def mutate(models):
+        providers = {item['id']: item for item in models['providers']}
+        existing = providers.get(req.id)
+        public = _public_provider(existing) if existing else None
+        desired = req.model_dump(exclude={'api_key', 'api_key_action'})
+        desired['models'] = sorted({model.strip() for model in req.models if model.strip()})
+        desired['api_key_masked'] = edit.baseline.get('api_key_masked', '') if isinstance(edit.baseline, dict) else ''
+        merged = merge_edit(public, edit.baseline, desired, ('models', 'providers', req.id))
+        merged.pop('api_key_masked', None)
+        key = existing['api_key'] if existing else ''
+        revision = int((existing or {}).get('credential_revision') or 1)
+        if req.api_key_action != 'keep':
+            expected = int((edit.baseline or {}).get('credential_revision') or 1) if existing else 1
+            if existing and revision != expected:
+                raise ConfigEditConflict(('models', 'providers', req.id, 'api_key'))
+            if req.api_key_action == 'replace' and not (req.api_key or '').strip():
+                raise HTTPException(422, '替换密钥时必须填写新值')
+            replacement = req.api_key.strip() if req.api_key_action == 'replace' else ''
+            if replacement != key:
+                revision += 1
+            key = replacement
+        merged.pop('api_key', None)
+        providers[req.id] = {**merged, 'api_key': key, 'credential_revision': revision}
+        models['providers'] = list(providers.values())
+
+    await _edit_models(request.app.state.runtime, mutate)
+    return {'success': True, 'message': f'供应商“{req.id}”已保存'}
 
 
 @router.delete("/providers/{provider_id}")
-async def delete_provider(provider_id: str, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    providers, routing, retrieval = _configuration(runtime)
-    if not any(provider.id == provider_id for provider in providers):
-        raise HTTPException(404, "供应商不存在")
-    if (routing and any(profile is not None and profile.provider_id == provider_id for profile in (routing.conversation, routing.work, routing.maintenance))) or any(
-        profile is not None and profile.provider_id == provider_id for profile in (retrieval.embedding, retrieval.rerank)):
-        raise HTTPException(409, "请先将引用此供应商的模型配置改到其他供应商")
-    await _persist_and_apply(runtime, [provider for provider in providers if provider.id != provider_id], routing, retrieval)
-    return {"success": True, "message": "供应商已删除"}
+async def delete_provider(provider_id: str, edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    def mutate(models):
+        existing = next((item for item in models['providers'] if item['id'] == provider_id), None)
+        if existing is None:
+            raise HTTPException(404, '供应商不存在')
+        if edit.values is not None:
+            raise HTTPException(422, '删除供应商的目标值必须为 null')
+        merge_edit(_public_provider(existing), edit.baseline, None, ('models', 'providers', provider_id))
+        # RootConfig validates all role and retrieval references before save.
+        models['providers'] = [item for item in models['providers'] if item['id'] != provider_id]
+    await _edit_models(request.app.state.runtime, mutate)
+    return {'success': True, 'message': '供应商已删除'}
 
 
 @router.get("/providers/{provider_id}/models")
@@ -113,19 +155,21 @@ class ProviderModelsUpdateRequest(BaseModel):
 
 
 @router.post("/providers/{provider_id}/models")
-async def save_provider_models(provider_id: str, req: ProviderModelsUpdateRequest, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    providers, routing, retrieval = _configuration(runtime)
-    provider = next((item for item in providers if item.id == provider_id), None)
-    if provider is None:
-        raise HTTPException(404, "供应商不存在")
-    selected = {model.strip() for model in req.models if model.strip()}
-    active = {profile.model for profile in (routing.conversation, routing.work, routing.maintenance) if profile is not None and profile.provider_id == provider_id} if routing else set()
-    active.update(profile.model for profile in (retrieval.embedding, retrieval.rerank) if profile is not None and profile.provider_id == provider_id)
-    provider.models = sorted(selected | active)
-    await _persist_and_apply(runtime, providers, routing, retrieval)
-    message = "可选模型已保存" + ("；当前路由使用的模型已保留" if active - selected else "")
-    return {"success": True, "message": message, "models": provider.models}
+async def save_provider_models(provider_id: str, edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    req = ProviderModelsUpdateRequest.model_validate(edit.values)
+    def mutate(models):
+        provider = next((item for item in models['providers'] if item['id'] == provider_id), None)
+        if provider is None:
+            raise HTTPException(404, '供应商不存在')
+        selected = {model.strip() for model in req.models if model.strip()}
+        chosen = merge_edit(provider['models'], edit.baseline, sorted(selected),
+                            ('models', 'providers', provider_id, 'models'))
+        profiles = [*(models['routing'] or {}).values(), *models['retrieval'].values()]
+        active = {profile['model'] for profile in profiles if profile and profile['provider_id'] == provider_id}
+        provider['models'] = sorted(set(chosen) | active)
+    saved = await _edit_models(request.app.state.runtime, mutate)
+    provider = next(item for item in saved.providers if item.id == provider_id)
+    return {'success': True, 'message': '可选模型已保存；当前路由引用的模型保持在目录中', 'models': provider.models}
 
 
 @router.get("/routing")
@@ -134,33 +178,26 @@ async def get_routing(request: Request, user: str = Depends(get_current_user)):
 
 
 @router.post("/routing")
-async def update_routing(req: RoutingConfig, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    providers, _, retrieval = _configuration(runtime)
-    try:
-        await _persist_and_apply(runtime, providers, req, retrieval)
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-    return {"success": True, "message": "对话、工作与维护模型配置已保存，从下一次运行开始生效"}
+async def update_routing(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    desired = RoutingConfig.model_validate(edit.values).model_dump()
+    def mutate(models):
+        models['routing'] = merge_edit(models['routing'], edit.baseline, desired, ('models', 'routing'))
+    await _edit_models(request.app.state.runtime, mutate)
+    return {'success': True, 'message': '模型职责已保存，从下一次运行开始生效'}
+
 
 @router.get("/retrieval")
 async def get_retrieval(request: Request, user: str = Depends(get_current_user)):
-    return request.app.state.runtime.query_service.providers().get("retrieval", {"embedding": None, "rerank": None})
+    return request.app.state.runtime.query_service.providers().get('retrieval', {'embedding': None, 'rerank': None})
+
 
 @router.post("/retrieval")
-async def update_retrieval(req: RetrievalRouting, request: Request, user: str = Depends(get_current_user)):
-    runtime = request.app.state.runtime
-    providers, routing, _ = _configuration(runtime)
-    try:
-        await _persist_and_apply(runtime, providers, routing, req)
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-    runtime.retrieval_profiles = req
-    if runtime.retrieval_models:
-        runtime.retrieval_models.profile = req.embedding
-    if runtime.memory_index:
-        runtime.memory_index.profile = req.embedding
-    return {"success": True, "message": "语义检索模型配置已保存；未绑定时不会发起检索请求"}
+async def update_retrieval(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    desired = RetrievalRouting.model_validate(edit.values).model_dump()
+    def mutate(models):
+        models['retrieval'] = merge_edit(models['retrieval'], edit.baseline, desired, ('models', 'retrieval'))
+    await _edit_models(request.app.state.runtime, mutate)
+    return {'success': True, 'message': '语义检索模型配置已保存；未绑定时不会发起检索请求'}
 
 
 def _probe_tool(name, properties):

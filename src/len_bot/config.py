@@ -26,6 +26,7 @@ class RuntimeConfig(BaseModel):
     onebot_ws_url: str
     onebot_http_url: str
     onebot_access_token: str
+    onebot_credential_revision: int = Field(default=1, ge=1, description='服务端令牌世代；replace/clear 必须与当前值一致')
     db_path: str = Field(description='Path to SQLite database')
     debounce_idle_ms: int = Field(description='Sliding idle window (ms)')
     debounce_max_ms: int = Field(description='Max debounce wait cap (ms)')

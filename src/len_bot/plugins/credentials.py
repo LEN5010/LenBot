@@ -229,3 +229,68 @@ def schema_of(spec) -> dict:
 def paths_of(paths: Iterable[str]) -> set[tuple[str, ...]]:
     """Rebuild path tuples from their dotted form."""
     return {tuple(path.split('.')) for path in paths}
+
+
+def credentials_changed(existing, desired, schema) -> bool:
+    """Whether any credential leaf actually differs between two configurations."""
+    secrets = set(sensitive_paths(schema))
+
+    def walk(old, new, path=()):
+        if path in secrets:
+            return old != new
+        if isinstance(old, dict) or isinstance(new, dict):
+            old = old if isinstance(old, dict) else {}
+            new = new if isinstance(new, dict) else {}
+            return any(walk(old.get(name), new.get(name), (*path, name)) for name in set(old) | set(new))
+        if isinstance(old, list) or isinstance(new, list):
+            old = old if isinstance(old, list) else []
+            new = new if isinstance(new, list) else []
+            if len(old) != len(new):
+                return True
+            return any(walk(left, right, path) for left, right in zip(old, new))
+        return False
+
+    return walk(existing, desired)
+
+
+def merge_config_edit(existing, incoming, schema, baseline, baseline_set, *,
+                      current_revision=1, baseline_revision=1):
+    """Merge the public draft while retained credentials never leave the lock."""
+    from copy import deepcopy
+    from len_bot.config_edit import ConfigEditConflict, merge_edit
+    secrets = set(sensitive_paths(schema))
+
+    def restore(public, actual, path=()):
+        if isinstance(public, dict) and isinstance(actual, dict):
+            restored = deepcopy(public)
+            for name, value in actual.items():
+                child = (*path, name)
+                if child in secrets:
+                    restored[name] = value
+                elif name in restored:
+                    restored[name] = restore(restored[name], value, child)
+            return restored
+        if isinstance(public, list) and isinstance(actual, list):
+            return [restore(value, actual[index] if index < len(actual) else None, path)
+                    for index, value in enumerate(public)]
+        return deepcopy(public)
+
+    def check_credentials(value, path=()):
+        if isinstance(value, dict):
+            for name, child_value in value.items():
+                child = (*path, name)
+                if child in secrets:
+                    if child_value == '':
+                        continue
+                    if int(current_revision or 1) != int(baseline_revision or 1):
+                        raise ConfigEditConflict(('plugins', *child))
+                else:
+                    check_credentials(child_value, child)
+        elif isinstance(value, list):
+            for child in value:
+                check_credentials(child, path)
+
+    check_credentials(incoming)
+    original = restore(baseline, existing)
+    desired = merge_config(original, incoming, schema)
+    return merge_edit(existing, original, desired, ('plugins', 'config'))

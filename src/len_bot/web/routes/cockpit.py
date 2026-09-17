@@ -9,6 +9,7 @@ from len_bot.memory.models import MemoryProposal
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.jobs import JobProposal
 from len_bot.config_store import SceneSettings
+from len_bot.config_edit import ConfigEdit, ConfigEditConflict
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -66,12 +67,14 @@ async def get_scene_settings(scene_id: str, request: Request, user: str = Depend
 
 
 @router.put("/scenes/{scene_id}/settings")
-async def update_scene_settings(scene_id: str, values: SceneSettings, request: Request, user: str = Depends(get_current_user)):
+async def update_scene_settings(scene_id: str, edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     try:
-        await runtime.update_scene_settings(scene_id, values.model_dump())
+        await runtime.update_scene_settings(scene_id, SceneSettings.model_validate(edit.values).model_dump(), baseline=edit.baseline)
     except ValidationError as error:
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except ConfigEditConflict:
+        raise
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except OSError as error:

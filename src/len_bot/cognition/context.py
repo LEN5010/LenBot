@@ -239,6 +239,30 @@ class ConversationContext:
         if record not in self.context_plan['omitted']:
             self.context_plan['omitted'].append(record)
 
+    async def seed_history_recall(self, events, source_ids):
+        """At most one local recall on an already admitted turn with a history cue."""
+        if getattr(self, '_seeded_recall', False) or self.session.scene_id.startswith('system:'):
+            return []
+        selected = [event for event in events if event.id in set(source_ids) and event.event_type in CHAT_TYPES]
+        if not selected:
+            return []
+        texts = ' '.join(event.raw_text for event in selected)
+        compact = re.sub(r'\s+', '', texts)
+        if re.fullmatch(r'[你好嗨哈喽早在吗!！。.?？]*', compact) or not re.search(
+                r'上午|下午|昨天|刚才|上次|那天|记得|那件事|三点|四点', texts):
+            return []
+        self._seeded_recall = True
+        query = re.sub(r'\s+', ' ', texts).strip()[:80]
+        rows = await self.runtime.event_store.search_messages(
+            query, [self.session.scene_id], min(5, self.config.retrieval_default_limit),
+            through_rowid=self.refs.cutoff)
+        wanted = [row['id'] for row in rows if row['id'] not in set(source_ids)]
+        found = await self.runtime.event_store.events_by_ids(self.session.scene_id, wanted, self.refs.cutoff)
+        self.context_plan['seed_recall'] = {
+            'query': query, 'event_ids': [event.id for event in found],
+            'presented': True, 'mode': 'local_literal'}
+        return found
+
     async def associated_originals(self, events, source_ids):
         """Read saved requests behind runtime stimuli or explicitly quoted receipts."""
         store, scene = self.runtime.event_store, self.session.scene_id
@@ -1056,8 +1080,11 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             self.trajectory = messages
             return messages
         originals = await self.associated_originals(events, current_ids)
+        recalled = await self.seed_history_recall(events, current_ids)
         by_id = {event.id: event for event in events}
         for event in originals:
+            by_id[event.id] = event
+        for event in recalled:
             by_id[event.id] = event
         chat = sorted((event for event in events if event.event_type in CHAT_TYPES),key=lambda event:event.metadata['_rowid'])
         neighbors=[]
@@ -1065,7 +1092,8 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             if event.id in current_ids:
                 width=config.read_context_default_neighbors
                 neighbors.extend(item.id for item in chat[max(0,index-width):index+width+1])
-        mandatory_ids = list(dict.fromkeys([*current_ids, *(event.id for event in originals), *neighbors]))
+        mandatory_ids = list(dict.fromkeys([*current_ids, *(event.id for event in originals), *neighbors,
+                                            *(event.id for event in recalled)]))
         business_time = self.runtime.config_store.current.time
         clock_zone = ZoneInfo(business_time.timezone) if business_time else timezone.utc
         messages.append({'role':'developer','_context_section':'current_time','content':json.dumps({

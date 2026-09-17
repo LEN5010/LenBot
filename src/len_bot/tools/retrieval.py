@@ -74,6 +74,20 @@ class PublicInterestArguments(ReadArguments):
     topic: str | None = Field(default=None, min_length=1, max_length=200)
     limit: int = Field(ge=1)
 
+class RecallChatArguments(ReadArguments):
+    query: str = Field(min_length=1, pattern=r'\S', description='要找的事项或关键词；不当作 SQL 或 FTS 语法执行')
+    start_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间起点，业务时区的 Unix 秒')
+    end_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间终点，不含')
+    speaker_ref: str | None = Field(default=None, min_length=1, description='可选本群人物 U 引用；同名分别列出，不自动认定唯一身份')
+    limit: int = Field(ge=1)
+
+    @model_validator(mode='after')
+    def ordered_range(self):
+        if self.start_time is not None and self.end_time is not None and self.start_time >= self.end_time:
+            raise ValueError('end_time must be later than start_time')
+        return self
+
+
 class SearchHistorySummariesArguments(ReadArguments):
     query: str = Field(min_length=1, pattern=r"\S")
     limit: int = Field(ge=1)
@@ -128,6 +142,7 @@ class ToolResultArguments(ReadArguments):
 
 
 READ_ARGUMENT_MODELS = {
+    'recall_chat': RecallChatArguments,
     'search_messages': SearchMessagesArguments, 'read_context': ReadContextArguments,
     'query_timeline': TimelineArguments, 'query_person_history': PersonHistoryArguments,
     'query_memory': MemoryArguments, 'list_public_interests': PublicInterestArguments,
@@ -146,6 +161,7 @@ def read_tool(name, description):
 
 
 LOCAL_TOOLS = [
+    read_tool('recall_chat', '同群复合回忆：按关键词、可选时间范围和人物定位原话与摘要索引，再回读真实片段。摘要只定位，原句才是精确证据。默认仅本群；没有历史指向时不要查一整天。'),
     read_tool('search_messages', '按文字查找本群已读截点之前的原话；只查询群消息，不检索外部网站或账号发布记录。'),
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
@@ -221,7 +237,7 @@ class RetrievalToolkit:
         models = dict(READ_ARGUMENT_MODELS)
         bounds = {
             **{name: (self.config.retrieval_default_limit, self.config.retrieval_max_limit)
-               for name in ('search_messages', 'query_timeline', 'query_person_history',
+               for name in ('recall_chat', 'search_messages', 'query_timeline', 'query_person_history',
                             'search_history_summaries', 'list_public_interests')},
             **{name: (self.page_chars, self.max_chars)
                for name in ('read_tool_result', 'read_message_range')},
@@ -241,6 +257,10 @@ class RetrievalToolkit:
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
+        deferred_local = {'search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries'}
+        if self.call_context().role == 'conversation':
+            definitions = [item for item in definitions if item['function']['name'] not in deferred_local
+                           or item['function']['name'] in self.discovered_tools]
         if self.context and self.context.pending_wakes():
             definitions.append(copy.deepcopy(READ_PENDING_WAKES))
         if self.context and (self.references.partial_events
@@ -257,7 +277,11 @@ class RetrievalToolkit:
             definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
         plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind=None if self.call_context().role == 'work' else 'read') if self.plugin_host else []
         available_names = {item['function']['name'] for item in plugin_tools}
+        local_discovered = {name: None for name in self.discovered_tools
+                            if name in {'search_messages', 'query_timeline', 'query_person_history',
+                                        'search_history_summaries'}}
         self.discovered_tools = {name: None for name in self.discovered_tools if name in available_names}
+        self.discovered_tools.update(local_discovered)
         if plugin_tools:
             definitions.append(copy.deepcopy(TOOL_SEARCH))
         for definition in plugin_tools:
@@ -282,7 +306,7 @@ class RetrievalToolkit:
                 self.discovered_tools.pop(next(iter(self.discovered_tools)))
 
     def is_read_only(self,name):
-        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes','list_public_interests'}: return True
+        if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes','list_public_interests','recall_chat'}: return True
         return bool(self.plugin_host and self.plugin_host.has_tool(name, self.call_context())
                     and self.plugin_host.tool_capabilities(name)['kind'] == 'read')
 
@@ -299,7 +323,7 @@ class RetrievalToolkit:
         if not self.references:return args
         refs=self.references
         for key,resolve in [('event_id',refs.locate_event),('message_ref',refs.locate_event),('actor_id',refs.actor_id),('asset_id',refs.media_id),
-                            ('subject',refs.actor_id),('result_id',refs.result_id)]:
+                            ('subject',refs.actor_id),('result_id',refs.result_id),('speaker_ref',refs.actor_id)]:
             if args.get(key):
                 try:
                     args[key]=resolve(args[key])
@@ -445,7 +469,7 @@ class RetrievalToolkit:
     async def store_observation(self,name,args,result,*,media_files=(),tool_call_id=None):
         invocation = self.call_context()
         from len_bot.tools.results import ObservationProvenance
-        if result.provenance.access == 'unknown' and name in {'search_messages', 'query_memory', 'query_person_history',
+        if result.provenance.access == 'unknown' and name in {'recall_chat', 'search_messages', 'query_memory', 'query_person_history',
                 'query_timeline', 'search_history_summaries', 'read_context', 'read_message_range', 'read_pending_wakes'}:
             result.provenance = ObservationProvenance(access='scene')
         if name == 'read_web_media' and result.evidence_kind == 'external':
@@ -467,7 +491,7 @@ class RetrievalToolkit:
         if self.plugin_host and self.plugin_host.has_registered_tool(name):
             requested=self.plugin_host.tool_capabilities(name)['page_chars']
             if requested is not None:page_chars=min(requested,self.max_chars)
-        local_records = {'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes','search_history_summaries'}
+        local_records = {'recall_chat','search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','read_pending_wakes','search_history_summaries'}
         records = self.context and name in local_records and result.status != 'error'
         if name == 'query_jobs' and args.get('job_id'):
             records = False
@@ -659,7 +683,7 @@ class RetrievalToolkit:
             shown.next_call = ToolNextCall(name='read_message_range',arguments={
                 'message_ref':refs.register_event_locator(event.id),'offset':end,'limit':limit}) if end < total else None
             return shown
-        local={'search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','search_history_summaries'}
+        local={'recall_chat','search_messages','read_context','query_timeline','query_person_history','find_person','search_media','query_memory','query_jobs','search_history_summaries'}
         if name not in local or shown.status not in {'ok', 'partial', 'no_results'}:
             return shown.page(offset,limit)
         # Work history observations contain projected text; conversation
@@ -821,6 +845,72 @@ class RetrievalToolkit:
         self.adopt_presentations([{'result_id':ident,'coordinate_unit':unit,'start':start,'end':end}
             for ident,units in reads.items() for unit,record in units.items() for start,end in record['ranges']])
 
+    async def _recall_chat(self, args) -> ToolResult:
+        store = self.event_store
+        scopes = self.allowed_scopes
+        limit = args['limit']
+        query = args['query']
+        speaker = args.get('speaker_ref')
+        rows = await store.search_messages(query, scopes, limit, through_rowid=self.cutoff)
+        if speaker:
+            rows = [row for row in rows if row.get('actor_id') == speaker]
+        if args.get('start_time') is not None:
+            rows = [row for row in rows if row.get('timestamp', 0) >= args['start_time']]
+        if args.get('end_time') is not None:
+            rows = [row for row in rows if row.get('timestamp', 0) < args['end_time']]
+        candidates = []
+        for row in rows[:limit]:
+            event_id = row['id'] if isinstance(row, dict) else row.id
+            actor_id = row.get('actor_id') if isinstance(row, dict) else row.actor_id
+            timestamp = row.get('timestamp') if isinstance(row, dict) else row.timestamp
+            text = ''
+            if isinstance(row, dict):
+                payload = row.get('payload') or {}
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except ValueError:
+                        payload = {}
+                text = payload.get('raw_text') or payload.get('content') or ''
+            else:
+                text = row.raw_text
+            locator = None
+            presented = False
+            if self.references:
+                locator = self.references.register_event_locator(event_id)
+                presented = event_id in self.references.read_events
+            snippet = text[:240]
+            candidates.append({
+                'event_id': event_id, 'locator': locator, 'actor_id': actor_id, 'timestamp': timestamp,
+                'snippet': snippet, 'match': 'literal_message', 'verbatim': True,
+                'presented_this_turn': presented,
+                'unread_hint': None if presented else '用 read_context 读取完整原话后才能作为精确证据',
+            })
+        summaries = []
+        summary_sql = ("SELECT id,start_rowid,end_rowid,summary,key_event_ids_json FROM history_batches "
+                       "WHERE scene_id=? AND status='completed' AND end_rowid<=? AND instr(lower(summary),lower(?))>0 "
+                       "ORDER BY end_rowid DESC LIMIT ?")
+        cursor = await store._db.execute(summary_sql, [self.default_scene_id, self.cutoff, query, limit])
+        for row in await cursor.fetchall():
+            item = dict(zip([column[0] for column in cursor.description], row))
+            summaries.append({'batch_id': item['id'], 'summary': item['summary'][:240],
+                              'match': 'history_summary', 'verbatim': False,
+                              'note': '摘要只定位，精确原话仍需回读'})
+        semantic_note = None
+        if self.context and not self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
+            semantic_note = '本群未开放语义检索；本次仅为本地词面与摘要索引。'
+        for name in ('search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries'):
+            self.discovered_tools[name] = None
+        payload = {'query': query, 'scene_id': self.default_scene_id, 'candidates': candidates,
+                   'summary_locators': summaries, 'ambiguity': len(candidates) > 1,
+                   'semantic': semantic_note,
+                   'coverage': 'local_literal_and_summary_index; original unread until presented'}
+        status = 'ok' if candidates or summaries else 'no_results'
+        if status == 'no_results':
+            payload['note'] = '没有查到同群原话或摘要定位；不能把角色设定或 Bot 旧回复补成群友说过的话。'
+        return ToolResult(status=status, content=json.dumps(payload, ensure_ascii=False),
+                          coverage=payload['coverage'], evidence_kind='retrieval')
+
     async def _execute_raw(self, name, args) -> ToolResult:
         store=self.event_store;scopes=self.allowed_scopes
         if name=='find_person':
@@ -843,6 +933,8 @@ class RetrievalToolkit:
             return ToolResult(status='ok' if matches else 'no_results',content=json.dumps(matches,ensure_ascii=False),
                 coverage=f'saved_scene_member_locators; matched={total}; returned={len(matches)}; original evidence unread',
                 truncated=total>len(matches),evidence_kind='retrieval')
+        if name=='recall_chat':
+            return await self._recall_chat(args)
         if name == 'read_pending_wakes':
             if not self.context:
                 return ToolResult.failure('Pending sources require a conversation snapshot','invalid_context')

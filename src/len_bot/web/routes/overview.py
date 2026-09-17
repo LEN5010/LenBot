@@ -15,3 +15,11 @@ async def get_recent_events(request: Request, limit: int = Query(25,ge=1,le=100)
 @router.get("/status")
 async def runtime_status(request: Request, user: str = Depends(get_current_user)):
     return request.app.state.runtime.query_service.status()
+
+
+@router.get("/capabilities")
+async def capability_status(request: Request,
+                            scene_id: str | None = Query(None, pattern=r'^(group|private):[1-9][0-9]*$'),
+                            requester: str | None = Query(None, pattern=r'^[1-9][0-9]*$'),
+                            user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.capability_status(scene_id, requester)

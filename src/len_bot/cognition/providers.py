@@ -18,6 +18,7 @@ class ProviderConfig(BaseModel):
     api_style: Literal["openai"]
     base_url: str
     api_key: str = Field(description="Write-only; never echoed back by the API")
+    credential_revision: int = Field(default=1, ge=1, description='服务端凭据世代；replace/clear 必须与当前值一致')
     enabled: bool
     timeout_seconds: float = Field(gt=0)
     models: list[str]

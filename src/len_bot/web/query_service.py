@@ -28,6 +28,32 @@ class RuntimeQueryService:
     def current_time(self) -> float:
         return self.runtime.event_store.clock()
 
+    async def capability_status(self, scene_id=None, requester=None):
+        from len_bot.web.capability_status import capability_status
+        return await capability_status(self, scene_id, requester)
+
+    def settings_draft(self, domain):
+        root = self.runtime.config_store.current
+        runtime_fields = {
+            'persona': ('character_context', 'identity_name', 'identity_core', 'identity_persona',
+                        'conversation_style', 'address_names'),
+            'attention': tuple(self.attention_settings()),
+            'runtime': tuple(self.runtime_settings()['settings']),
+        }
+        if domain in runtime_fields:
+            keys = runtime_fields[domain]
+            saved = {key: root.runtime.model_dump()[key] for key in keys}
+            effective = {key: self.runtime.config.model_dump()[key] for key in keys}
+            apply = 'live' if domain in {'persona', 'attention'} else 'field_dependent'
+        elif domain in {'access', 'resources', 'time', 'members'}:
+            saved = root.model_dump()[domain]
+            effective = saved if domain in {'access', 'resources'} else None
+            apply = 'live' if domain in {'access', 'resources'} else 'restart_consumers'
+        else:
+            raise KeyError(domain)
+        return {'saved': saved, 'baseline': copy.deepcopy(saved), 'effective': effective,
+                'apply': apply, 'requires_restart': self.runtime.restart_required}
+
     async def list_voice_examples(self, scene_id=None):
         return await self.runtime.event_store.list_voice_examples(scene_id)
 
@@ -536,7 +562,9 @@ class RuntimeQueryService:
         status.update(connection_mode=configured.onebot_connection_mode,
             action_transport=configured.onebot_action_transport, ws_url=configured.onebot_ws_url,
             http_url=configured.onebot_http_url, host=configured.ws_host, port=configured.ws_port,
-            access_token_set=bool(configured.onebot_access_token), requires_restart=self.runtime.restart_required)
+            access_token_set=bool(configured.onebot_access_token),
+            credential_revision=int(configured.onebot_credential_revision or 1),
+            requires_restart=self.runtime.restart_required)
         return status
 
     def runtime_settings(self):
@@ -646,7 +674,8 @@ class RuntimeQueryService:
                         if part.get('type')=='at'))
                 views[event.id]={"id":event.id,"rowid":metadata["_rowid"],"event_type":event.event_type.value,"scene_id":scene,
                     "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
-                    "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain") if key in metadata},
+                    "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain","attention_lane") if key in metadata},
+                    "participation": self._participation(event, metadata, delivery),
                     "interaction": {key:metadata[key] for key in ("interaction", "interaction_reason", "requester_qq_uid",
                                        "command_id", "calendar_parent_event_id", "conversation_excluded",
                                        'plugin_routes','plugin_consumed','plugin_work_issue') if key in metadata}
@@ -1196,6 +1225,24 @@ class RuntimeQueryService:
                 "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches","operation_receipts")},
                 "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
 
+    @staticmethod
+    def _participation(event, metadata, delivery):
+        reasons = list(metadata.get('attention_reasons') or [])
+        lane = metadata.get('attention_lane') or ('fast' if metadata.get('attention_certain') else 'slow' if reasons else 'none')
+        if metadata.get('conversation_excluded'):
+            stage, title = 'excluded', '交互已排除出普通聊天'
+        elif not reasons:
+            stage, title = 'no_opportunity', '没有观察机会'
+        elif delivery == 'unknown':
+            stage, title = 'attempted_unknown', '已尝试未知'
+        elif delivery in {'sent', 'shadow'}:
+            stage, title = 'delivered', '实际送达' if delivery == 'sent' else 'Shadow 记录'
+        elif metadata.get('attention_certain'):
+            stage, title = 'waiting_resource', '等待资源或尚未提交'
+        else:
+            stage, title = 'slow_opportunity', '普通观察机会，可以沉默'
+        return {'lane': lane, 'stage': stage, 'title': title, 'reasons': reasons}
+
     def metrics(self) -> dict:
         return self.runtime.metrics.snapshot()
 
@@ -1238,6 +1285,8 @@ class RuntimeQueryService:
             item["config"] = config
             item["config_set"] = config_set
             item["secret_paths"] = secret_paths
+            stored = root.plugins.get(item['id'])
+            item["credential_revision"] = int(stored.credential_revision) if stored else 1
             # Top-level names keep the existing field-level rendering; a nested
             # path is reported only as "set", since a compound field is edited
             # as one JSON value.
@@ -1264,6 +1313,16 @@ class RuntimeQueryService:
         data = self.runtime.provider_registry.export()
         data["retrieval"] = self.runtime.config_store.current.models.retrieval.model_dump()
         return data
+
+    def model_settings_draft(self):
+        saved = self.runtime.config_store.current.models.model_dump()
+        for provider in saved['providers']:
+            provider['api_key_masked'] = '已设置' if provider.pop('api_key', '') else ''
+        effective = self.providers()
+        effective['retrieval'] = self.runtime.retrieval_profiles.model_dump() if self.runtime.retrieval_profiles else None
+        for provider in effective['providers']:
+            provider['api_key_masked'] = '已设置' if provider['api_key_masked'] else ''
+        return {**saved, 'effective': effective, 'apply': 'next_run'}
 
     def providers(self) -> dict:
         data = self.runtime.provider_registry.snapshot()
