@@ -58,6 +58,82 @@ class FileAsset(BaseModel):
     review_action_id: str | None = None
 
 
+def public_file_candidate(record):
+    """Model-visible file handle; never includes host paths or bytes."""
+    receipts = record.get('upload_receipts') or []
+    attempts = record.get('upload_attempts') or []
+    uploaded = any(item.get('event_type') == 'FILE_UPLOADED' or item.get('delivery_status') == 'sent'
+                   for item in receipts)
+    unknown = (not uploaded and (
+        any(item.get('delivery_status') == 'unknown' for item in receipts)
+        or (attempts and not receipts)))
+    return {
+        'file_asset_id': record['asset_id'],
+        'display_name': record['display_name'],
+        'size_bytes': record['size_bytes'],
+        'mime_type': record['mime_type'],
+        'job_id': record['job_id'],
+        'job_revision': record['job_revision'],
+        'execution_id': record.get('execution_id'),
+        'expires_at': record['expires_at'],
+        'expired': bool(record.get('expired')),
+        'reviewed_for_upload': bool(record.get('review_action_id')),
+        'uploaded': uploaded,
+        'upload_unknown': unknown,
+        'delivery_status': 'uploaded' if uploaded else 'unknown' if unknown else 'prepared',
+    }
+
+
+def file_delivery_facts(runtime, scene_id=None, requester=None):
+    """Read-only projection of generate / prepare / upload conditions."""
+    root = runtime.config_store.current
+    delivery = runtime.config.file_delivery
+    upload = runtime.config.onebot_file_upload
+    # Either workspace implementation may be the enabled one, and a scene may
+    # have enabled the other; ask whether any globally enabled one is also on
+    # here rather than picking the first and reporting the wrong scene.
+    enabled_globally = [name for name in ('workspace', 'python_workspace')
+                        if name in root.plugins and root.plugins[name].enabled]
+    scene = root.scenes.get(scene_id) if scene_id else None
+    if scene_id:
+        can_generate = bool(scene and scene.enabled and any(
+            name in scene.plugins and scene.plugins[name].enabled for name in enabled_globally))
+    else:
+        can_generate = bool(enabled_globally)
+    can_prepare_asset = can_generate
+    blocked = []
+    if not can_generate:
+        blocked.append('本群未开放可生成文件的工作空间')
+    if not delivery.enabled:
+        blocked.append('runtime.file_delivery.enabled=false，仅可在工作面板下载')
+    if upload is None:
+        blocked.append('onebot_file_upload 未配置')
+    elif not upload.deployment_verified:
+        blocked.append(f'onebot_file_upload.deployment_verified=false（{upload.implementation} {upload.version} 的版本与只读挂载尚未人工核对）')
+    grant_allowed = None
+    if scene_id and requester:
+        authority = runtime.runtime_gate.capability_authority
+        decision = authority.check(Capability.SEND_FILE, CapabilitySubject('human', requester, scene_id, None),
+                                   now=runtime.clock())
+        grant_allowed = decision.allowed
+        if not decision.allowed:
+            blocked.append(decision.reason)
+    # Without a named requester this answers "is the platform side ready"; with
+    # one it also carries that person's current SEND_FILE grant.
+    can_upload = bool(delivery.enabled and upload and upload.deployment_verified
+                      and (grant_allowed is None or grant_allowed))
+    return {
+        'can_generate': can_generate,
+        'can_prepare_asset': can_prepare_asset,
+        'can_upload_to_target': can_upload,
+        'blocked_reason': '；'.join(blocked) if blocked else None,
+        'file_delivery_enabled': delivery.enabled,
+        'implementation': None if upload is None else upload.implementation,
+        'protocol': None if upload is None else upload.protocol,
+        'deployment_verified': None if upload is None else upload.deployment_verified,
+    }
+
+
 def inspect_zip(data: bytes, *, depth=0, totals=None):
     if depth > 3:
         raise ValueError('ZIP 嵌套超过 3 层')

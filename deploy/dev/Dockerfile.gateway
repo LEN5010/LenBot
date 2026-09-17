@@ -1,0 +1,15 @@
+FROM lenbot:release
+
+# The development Gateway is the trusted Docker API boundary. LenBot itself
+# stays native on macOS and never receives the Docker socket. The release
+# image runs as UID 10000; installing Docker CLI and talking to the host
+# socket need root, matching the Linux Gateway service.
+USER root
+# docker.io 只带 dockerd；真正向挂载的宿主 socket 发命令的是 docker-cli。
+# --no-install-recommends 会跳过 Recommends: docker-cli，run_python 就会报
+# /usr/bin/docker 不存在。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["/opt/lenbot/.venv/bin/python", "-m", "len_bot.services.worker_gateway"]

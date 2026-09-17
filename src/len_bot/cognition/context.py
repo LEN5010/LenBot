@@ -44,6 +44,7 @@ class TurnReferences:
         self.tasks = {}
         self.editable_tasks = set()
         self.deliverable_tasks = set()
+        self.file_assets = {}
         self.loops = {}
         self.active_loops = set()
 
@@ -168,12 +169,20 @@ class TurnReferences:
             if item['id'] == ref: return item
         raise ValueError(f'工作引用未出现在本轮已读资料中：{ref}')
 
+    def deliverable_file_ids(self):
+        job_ids = {item['id'] for item in self.jobs.values()}
+        return [asset_id for asset_id, item in self.file_assets.items()
+                if item['job_id'] in job_ids and not item.get('expired')
+                and not item.get('uploaded') and not item.get('upload_unknown')]
+
     def snapshot(self):
         return {'messages': dict(self.events), 'read_messages': sorted(self.read_events),
                 'read_ranges': copy.deepcopy(self.read_event_ranges), 'people': dict(self.actors), 'media': dict(self.media),
                 'beliefs': dict(self.memories), 'results': dict(self.results),
                 'jobs': {k: {'id': v['id'], 'revision': v['revision']} for k,v in self.jobs.items()},
-                'tasks': dict(self.tasks), 'open_loops': dict(self.loops)}
+                'tasks': dict(self.tasks), 'open_loops': dict(self.loops),
+                'files': {asset_id: {'job_id': item['job_id'], 'job_revision': item['job_revision']}
+                          for asset_id, item in self.file_assets.items()}}
 
 
 class ConversationContext:
@@ -893,6 +902,14 @@ class ConversationContext:
                                   'meaning': '未提供的事项不表示不存在；按关联来源和工作目录继续读取。'}}
         if self._delegable_hint:
             facts['capabilities'] = self.capabilities()
+        from len_bot.media.files import file_delivery_facts, public_file_candidate
+        self.refs.file_assets.clear()
+        requester = next(iter(self.requester_qq_uids), None)
+        facts['file_delivery'] = file_delivery_facts(self.runtime, scene, requester)
+        for job in active_jobs:
+            for record in await self.runtime.file_assets.for_job(scene, job['id']):
+                candidate = public_file_candidate(record)
+                self.refs.file_assets[candidate['file_asset_id']] = candidate
         base = [message for message in messages if message.get('_context_section') != 'runtime_facts']
 
         def rendered():
@@ -941,6 +958,9 @@ class ConversationContext:
                     view['result'] = {key: job['result'].get(key) for key in ('summary', 'unresolved', 'reason')}
                 if job['result_ids']:
                     view['result_refs'] = [self.refs.register_result(ident) for ident in job['result_ids']]
+                files=[item for item in self.refs.file_assets.values() if item['job_id']==job['id']]
+                if files:
+                    view['files']=files
             return view
 
         active_jobs.sort(key=lambda job: (job['id'] not in self.current_job_ids, job['updated_at']))
@@ -955,6 +975,9 @@ class ConversationContext:
                 unrelated_jobs += 1
         if unrelated_jobs:
             self.omit('work', 'not_related_to_current_sources', count=unrelated_jobs)
+        facts['files'] = [self.refs.file_assets[asset_id] for asset_id in self.refs.deliverable_file_ids()]
+        if not facts['files']:
+            facts['files_note'] = facts['file_delivery'].get('blocked_reason') or '本轮没有已准备、未过期且尚未上传的文件句柄；不要发明 file_asset_id 或声称已经发到群'
         self.refs.editable_tasks.clear()
         self.refs.deliverable_tasks.clear()
         tasks.sort(key=lambda task: task['id'] not in self.current_task_ids)
@@ -1054,9 +1077,9 @@ class ConversationContext:
 明确委托沿当前可用动作推进，已有线索就开始；仅缺少的信息决定下一步且无法从已给资料取得时才询问。短查询、计算和比对可直接用工具，无依赖读取可以并行；需要长时间、多页资料或保留进度时用start_work。已有专用范围或事件订阅按对应工具定义办理，不把固定范围改成无范围工作，也不用时间提醒冒充事件订阅。低频工具用tool_search发现；错误后可按具体回执调整参数或明确选择另一个已开放来源，不机械重复失败调用。
 明确指定来源时先使用该来源对应的能力；capabilities列出了用途但当前没有完整工具定义时，用tool_search发现后读取。capabilities里带delegable_purposes的模块属于长工作，本对话不能直接调用，需要时用start_work交给工作执行；它是可委托的能力说明，不是已授予的额度或权限。群原话、网页索引和账号发布记录是不同的检索范围；查过其中一种，不能声称另一种没有结果；能力说明里没有出现的模块就是当前不可用，不能凭名字推测它已启用。
 
-原话、资料取回、目录定位、实际展示与视觉读取分别计算。只读过片段不能作为整条原话的证据；read_pending_wakes定位，read_context/read_message_range读原话。next_call续读本地已存正文，source_next_call才是尚未取得的源端下一批；先读完本批。已登记获准且明确选定的图片可直接发送，分析画面或依据视觉内容选图须实际读取像素；更多素材用search_media。先判断表达形式：庆祝、吐槽、卖萌或接梗时，媒体目录已有语义匹配的运营表情就可以直接选用一张表情或图文混排，不必等用户明确说“发图”，也不必为了发图补长解释；需要判断画面具体内容时才read_media。没有合适素材、尚未读到像素或语境偏严肃时用文字；用户明确指定原图、张数或重复发送时，在现有额度与场景权限内按要求处理。
+原话、资料取回、目录定位、实际展示与视觉读取分别计算。只读过片段不能作为整条原话的证据；read_pending_wakes定位，read_context/read_message_range读原话。next_call续读本地已存正文，source_next_call才是尚未取得的源端下一批；先读完本批。已登记获准且明确选定的图片可直接发送，分析画面或依据视觉内容选图须实际读取像素；更多素材用search_media。先判断表达形式：庆祝、吐槽、卖萌或接梗时，媒体目录已有语义匹配的运营表情就可以直接选用一张表情或图文混排，不必等用户明确说“发图”，也不必为了发图补长解释；运营表情可按标签和短描述表达情绪，不需要为此先read_media。需要判断画面具体内容或声称图中有某个事实时才read_media。没有合适素材、尚未读到像素或语境偏严肃时用文字；用户明确指定原图、张数或重复发送时，在现有额度与场景权限内按要求处理。文件行动、指定照发、技术错误和准确数值不要额外塞表情。
 
-用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；每个segments片段只填text、image、video、audio或at，媒体引用本轮已保存资产，at使用成员U，文字@称呼不是真实提及。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
+用respond统一提交本阶段提案、messages、sources和next；普通模型正文不发送。next=end结束，continue提交后在原预算继续，wait提交一个真实等待关系并释放执行资源。可第一步直接回答或旁听，不强制先发确认。全部checkpoint共用三条消息及模型/工具预算；普通消息每个segments片段只填text、image、video、audio或at，媒体引用本轮已保存资产，at使用成员U，文字@称呼不是真实提及。intent=file 时只填本轮 files 列出的 file_asset_id 和唯一的 delivery_ref 或 work_ref，不填 segments；没有候选时不能发明资产，也不能把面板下载说成已经发到群。sources逐项给出source、status（replied/delegated/waiting/incomplete/silent）和必要原因；同一原话仍未完成的要求写unfinished。未处理的独立来源不列入，空sources时说明本次结束或等待原因。
 
 工具回执staged只表示暂存；新工作和提醒的确认用本轮ack_ref，恢复/修订/取消及认识变更的确认用对应operation_ref，均在同一事务提交后才成立。旧工作状态引用用work_ref，首次完整或部分结果交付用delivery_ref；每条消息只选一种关系。runtime_facts替代旧状态，first_result=true是原请求的首次交付机会，无需对方再问；普通旧结果目录不是重发理由。partial保留缺口，符合can_resume且有明确新要求时才继续原工作，保留已用预算；完整完成不因发送失败重跑。
 提醒到期或工作完成的M是系统触发事件，不是人类请求。交付消息填写对应delivery_ref，可省略source以沿用已读的原始委托（runtime_facts里的request_source）；sources则把本次到期或完成事件M标为replied，关联由delivery_ref确定。原委托未完整读取时先回读，不能借用新的无关群消息；不要把有交付消息关联的到期事件标为silent。
@@ -1067,6 +1090,10 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
 
 长期称呼、偏好和规则须有相应真实原话及对应认识操作。要求忘掉称呼时先查有效认识，已保存则撤销或替代并关联操作确认；仅临时纠正就停止采用，不声称清空历史。普通情绪、玩笑对象和临时话题判断留在本轮。角色表达随语境轻重变化，意思表达完即可停。
 '''
+        from len_bot.runtime.attention_config import effective_sticker_preference
+        if effective_sticker_preference(self.runtime.config_store.current, self.session.scene_id) == 'slightly_more':
+            system += ('本群表达偏好：庆祝、赞同、轻松吐槽、接梗和轻度安慰时，已有合适授权素材则更倾向发一张表情或短文字加表情，而不是默认长文字。'
+                       '指定照发、严肃求助、技术错误、准确数值和文件完成确认仍以清楚文字为准；没有合适素材时不要硬配图。\n')
         if plugin_request:
             if not plugin_request.include_identity:
                 system = system[system.index('先理解'):]
@@ -1167,10 +1194,14 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                 'usage_scope':'recent_sent_in_scene','items':legend},ensure_ascii=False)
         for row in palette['manifest']:
             snapshot = self._projection_snapshot()
-            legend.append({'ref': self.refs.register_media(row['asset_id'], row['ref']),
-                           'name': row.get('name', ''), 'description': row.get('description', '')[:80],
-                           'last_sent_at':row['last_sent_at'],'recent_send_count':row['recent_send_count'],
-                           'used_in_last_reply':row['used_in_last_reply']})
+            item={'ref': self.refs.register_media(row['asset_id'], row['ref']),
+                  'name': row.get('name', ''), 'description': row.get('description', ''),
+                  'tags': list(row.get('tags') or []),
+                  'last_sent_at':row['last_sent_at'],'recent_send_count':row['recent_send_count'],
+                  'used_in_last_reply':row['used_in_last_reply']}
+            if row.get('description_truncated'):
+                item['more_description']='search_media'
+            legend.append(item)
             candidate = {'role': 'user', '_context_section': 'reference',
                          'content': palette_content()}
             if self.request_tokens([*messages, candidate]) <= self.input_budget:

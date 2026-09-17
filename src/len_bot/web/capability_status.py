@@ -107,10 +107,17 @@ async def capability_status(query, scene_id=None, requester=None):
                 item['deployment'].append({'label': '缺失条件', 'value': '媒体片段需要 Gateway 媒体 worker'})
             item['deployment'].append({'label': '连接与隔离', 'value': '本页不探测外部服务；须结合下方真实执行记录核对'})
         if ident == 'files':
-            upload = rt.config.onebot_file_upload
+            from len_bot.media.files import file_delivery_facts
+            delivery = file_delivery_facts(rt, scene_id, requester)
             item['deployment'].append({'label': '文件交付', 'value': '已开启' if rt.config.file_delivery.enabled else '未开启'})
-            item['deployment'].append({'label': '平台协议', 'value': '未声明上传协议' if upload is None else
-                f'{upload.implementation} · 部署核验标记：{upload.deployment_verified}'})
+            item['deployment'].append({'label': '平台协议', 'value': '未声明上传协议' if delivery['implementation'] is None else
+                f"{delivery['implementation']} · {delivery['protocol']} · 部署核验标记：{delivery['deployment_verified']}"})
+            item['deployment'].append({'label': '可生成', 'value': '是' if delivery['can_generate'] else '否'})
+            item['deployment'].append({'label': '可登记资产', 'value': '是' if delivery['can_prepare_asset'] else '否'})
+            item['deployment'].append({'label': '可上传到当前目标', 'value': '是' if delivery['can_upload_to_target'] else '否'})
+            if delivery['blocked_reason']:
+                item['deployment'].append({'label': '缺失条件', 'value': delivery['blocked_reason']})
+            item['file_delivery'] = delivery
         if ident == 'research':
             item['deployment'].extend([
                 {'label': '系统研究', 'value': '运行中已开启' if rt.config.heartbeat_enabled else '运行中关闭'},

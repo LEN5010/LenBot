@@ -46,8 +46,12 @@ async def tool_result(result_id: str, scene_id: str, request: Request, offset: i
 
 @router.get("/scenes")
 async def list_scenes(request: Request, user: str = Depends(get_current_user)):
-    scenes = await _service(request).list_scenes()
-    return {"scenes": scenes, "total": len(scenes), "complete": True}
+    service = _service(request)
+    scenes = await service.list_scenes()
+    joined = service._joined_groups
+    return {"scenes": scenes, "total": len(scenes), "complete": True,
+            "discovery": {"sampled_at": joined.get("sampled_at"), "error": joined.get("error"),
+                          "complete": bool(joined.get("complete"))}}
 
 
 @router.get("/scenes/{scene_id}")
