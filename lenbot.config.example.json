@@ -22,6 +22,8 @@
     "attention_sample_probability": 0.2,
     "attention_keyword_cooldown_seconds": 60.0,
     "attention_focus_seconds": 120.0,
+    "scene_hourly_message_limit": 50,
+    "user_hourly_message_limit": 10,
     "max_context_images": 6,
     "work_output_tokens": 16384,
     "jobs_enabled": true,

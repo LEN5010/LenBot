@@ -39,10 +39,16 @@ class ScenePolicy:
         return self.chat_allowed(scene_id, requester_qq_uid)
 
     def maintenance_allowed(self, scene_id):
+        """Whether this group is followed closely enough to be summarised.
+
+        A listening group is read but not answered: it still forms history and
+        memory, which is the whole difference between following a room and
+        merely archiving it.  A broadcast-only group keeps raw events alone.
+        """
         if scene_id.startswith('private:'):
             return True
         scene = self.scene(scene_id)
-        return bool(scene and scene.enabled and scene.chat)
+        return bool(scene and scene.enabled and (scene.chat or scene.listen))
 
     def plugin_allowed(self, scene_id, plugin_id, role):
         scene = self.scene(scene_id)

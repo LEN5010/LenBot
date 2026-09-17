@@ -34,6 +34,7 @@ class AsoulCalendarPlugin(BasePlugin):
         self.renderer = ScheduleRenderer(self.config, resource_directory=context.directory)
         self.status_renderer = StatusCardRenderer(self.config, resource_directory=context.directory)
         self._resource_directory = context.directory
+        self.context = context
         self._card_renderer = None
         self._avatar_rotation = None
 
@@ -76,6 +77,19 @@ class AsoulCalendarPlugin(BasePlugin):
                     available=lambda call, command=command: bool(call.scene_config and command in call.scene_config.commands))
         context.register_handler(id='calendar_comment', description='记录引用本插件日程结果的评论并继续普通聊天处理',
             match=self.match_comment, handler=self.on_comment, priority=20, consume=False)
+
+    async def on_enable(self):
+        from len_bot.cards.html_render import HtmlCardRenderer
+        if self._card_renderer is None:
+            self._card_renderer = HtmlCardRenderer()
+        self.context.start_task(self._warmup_renderer(), name='schedule-card-warmup')
+
+    async def _warmup_renderer(self):
+        try:
+            await self._card_renderer.warmup()
+        except Exception as error:
+            logger.warning('Schedule card browser did not prewarm (%s: %s); first render will start it',
+                           type(error).__name__, error)
 
     async def on_unload(self):
         await self.service.close()
