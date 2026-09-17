@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, ValidationError
 from len_bot.web.auth import get_current_user
 from len_bot.plugins.host import PluginConfigurationApplyError
+from len_bot.config_edit import ConfigEditConflict
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
@@ -15,11 +16,19 @@ router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 class PluginToggleRequest(BaseModel):
     plugin_id: str
     enabled: bool
+    baseline: bool
+
+
+class PluginConfigBaseline(BaseModel):
+    config: dict | None
+    config_set: dict[str, bool]
+    credential_revision: int = 1
 
 
 class PluginConfigRequest(BaseModel):
     plugin_id: str
     config: dict
+    baseline: PluginConfigBaseline
 
 
 @router.get("/list")
@@ -34,7 +43,9 @@ async def toggle_plugin(req: PluginToggleRequest, request: Request, user: str = 
     if not any(item["id"] == req.plugin_id for item in runtime.query_service.plugins()):
         raise HTTPException(status_code=404, detail="Plugin not found")
     try:
-        await runtime.update_plugin_settings(req.plugin_id, enabled=req.enabled)
+        await runtime.update_plugin_settings(req.plugin_id, enabled=req.enabled, baseline=req.baseline)
+    except ConfigEditConflict:
+        raise
     except PluginConfigurationApplyError as error:
         raise HTTPException(409,{'message':str(error),'config_saved':True}) from error
     except ValidationError as error:
@@ -53,7 +64,9 @@ async def save_plugin_config(req: PluginConfigRequest, request: Request, user: s
     runtime = request.app.state.runtime
     try:
         # Omitted fields keep their existing values, including credentials.
-        await runtime.update_plugin_settings(req.plugin_id, values=req.config)
+        await runtime.update_plugin_settings(req.plugin_id, values=req.config, baseline=req.baseline.model_dump())
+    except ConfigEditConflict:
+        raise
     except PluginConfigurationApplyError as error:
         raise HTTPException(409,{'message':str(error),'config_saved':True}) from error
     except KeyError:

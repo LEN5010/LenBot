@@ -71,7 +71,10 @@ class BurstAssembler:
                     self._buffers[event.scene_id] = buffer
                 buffer.events.append(event)
 
-                if event.is_mention_bot or event.is_reply_bot:
+                fast_reasons = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response',
+                                'in_flight_follow_up', 'wake_confirmation_reply', 'private_message'}
+                reasons = set(event.metadata.get('attention_reasons') or [])
+                if event.is_mention_bot or event.is_reply_bot or reasons & fast_reasons:
                     self._take_buffer(event.scene_id)
                     bursts.append(self._create_burst(buffer.events))
                 elif (now - buffer.first_arrived_at) * 1000 >= self.config.debounce_max_ms:

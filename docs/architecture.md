@@ -4,7 +4,7 @@
 
 ## 社会 Agent 计划与当前实现
 
-完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本轮全链路审计与产品化施工合同见[全链路审计与产品化重构计划](LenBot_全链路审计与产品化重构计划_1683b8a.md)；该文件记录源码审计发现、建议和验收合同，不把建议或报告中的历史观察当作当前运行事实。当前先按 R0 固定事实、R1 确定性修复和 R2 四条基础旅程推进，再进入 R3—R6。本文不复制计划对象与未来拓扑。C14—C20 已补充独立浏览器命令链、逐动作模型审查、B 站匿名原语、公共兴趣采用、实际心跳工作、自然语言叫醒确认与持久延期交付。心跳和睡眠默认关闭；已有 B 站只读工具不受这两个开关控制。C13/C14 未取得部署放行。文件资产、已声明的 NapCat 上传协议、专用账号读取与点赞收藏已有源码；当前 SnowLuma 的上传兼容性及账号动作仍缺实际验收。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker。Gateway 已选时浏览器工具使用独立 browser worker，宿主不创建 Chromium；部署与真实运行仍待验收。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
+完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本轮全链路审计与产品化施工合同见[全链路审计与产品化重构计划](LenBot_全链路审计与产品化重构计划_1683b8a.md)；该文件记录源码审计发现、建议和验收合同，不把建议或报告中的历史观察当作当前运行事实。R0/R1 源码修复与 R3 产品化入口已有对应实现；R2 四条基础旅程和 R6 分项放行仍要真实运行证据。本文不复制计划对象与未来拓扑。C14—C20 已补充独立浏览器命令链、逐动作模型审查、B 站匿名原语、公共兴趣采用、实际心跳工作、自然语言叫醒确认与持久延期交付。心跳和睡眠默认关闭；已有 B 站只读工具不受这两个开关控制。C13/C14 未取得部署放行。文件资产、已声明的 NapCat 上传协议、专用账号读取与点赞收藏已有源码；当前 SnowLuma 的上传兼容性及账号动作仍缺实际验收。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker。Gateway 已选时浏览器工具使用独立 browser worker，宿主不创建 Chromium；部署与真实运行仍待验收。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
 
 ## 主链与所有权
 
@@ -34,7 +34,9 @@ ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig�
 
 面板保存持有 Runtime.config_update_lock，先校验完整候选并替换根文件，再发布内存设置。需要重建组件的参数记录需重启，不自动重启。运行参数热更新会同步 `EventStore.budget_config`，因此新工作预占与新执行段读同一份已发布上限；已有工作仍读自己的创建快照。文件保存失败不会改用数据库存配置。
 
-插件配置保存按 Schema 路径处理凭据：面板投影删除任意深度的凭据字段，只回可显示值与“该路径是否已配置”；保存时“省略／空串”保持原值、“非空值”替换、显式 `null` 清除，显示占位值永不作为真实密钥回写。凭据只存在于根文件，不进 localStorage、URL 或长期草稿，不写入日志，也不进入模型上下文。根文件本身不挂载进执行容器，网关闭包字段（同一份 token）同样不交给执行容器。
+插件配置保存按 Schema 路径处理凭据：面板投影删除任意深度的凭据字段，只回可显示值与“该路径是否已配置”；保存时“省略／空串”保持原值（keep，始终保留当前实际密钥）、“非空值”替换、显式 `null` 清除。replace/clear 必须携带服务端 `credential_revision`，与当前世代不一致则拒绝并保留草稿；keep 不因他人刚替换密钥而把新值改回去。同一世代机制覆盖插件嵌套秘密、模型 `api_key` 和 OneBot token。显示占位值永不作为真实密钥回写。凭据只存在于根文件，不进 localStorage、URL 或长期草稿，不写入日志，也不进入模型上下文。根文件本身不挂载进执行容器，网关闭包字段（同一份 token）同样不交给执行容器。
+
+能力页是只读投影，按 catalog 插件 ID 分组，不另建权限库。网页卡绑定 `web_search_tool`，不把不存在的 `web_search` 别名静默丢掉。多实现分别列出状态和配置入口。三条启用向导（本群 Python、公开研究与指定群分享、群播报）在同一把配置锁内预览并一次保存根文件。
 
 SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点、模型绑定、调用账、预占与运行结果。请求来源、逐来源处理、交付关联与阅读范围使用既有事件和 payload JSON；旧 `request_source_event_id` 缺失保留未知，旧 `observation_reads` 缺省为空，不补造真实阅读或人类身份。
 
@@ -136,7 +138,7 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。插件调用不写普通对话的 disposition：供应商是否完成由 status 表示，结果与运行失败见插件 Trace，表达和送达分别以提交、行动回执为准；work 路由也通过相同调用身份关联。
 
-模型通过窄原生工具读取与暂存。`respond` 接受本阶段消息、逐来源 sources 和 next=end/continue/wait，空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。
+对话默认展示 `recall_chat` 复合回忆入口，底层 `search_messages` / 时间线 / 人物历史在该次召回后按需展开。`recall_chat` 只查本群，摘要只定位，原句进入本轮窗口后才是精确证据。`respond` 用 `intent` 选择互斥形状：reply / ack / operation / delivery / work / file；宿主从已登记句柄派生工作修订、原请求者和回执关系。未准备好交付的旧任务不出现 delivery 句柄。空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。直接 @、回复 Bot、明确称呼、等待中的答案走快路径立即合并；普通抽样仍受 debounce 上限约束。
 
 无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。提交工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。每个 checkpoint 使用独立 CONVERSATION_COMMITTED 事件与 action_id，发送批次绑定该提交，episode_id 另保留原执行身份；重复提交只返回原记录，不再次发布。Actor 原子提交后更新会话/认识版本和累计消息数，Ledger 才清空该阶段；next=continue 在原 AgentLoop 中得到真实提交/发布回执再继续，步骤和工具额度不重置。发布失败不把 accepted 改成 rejected，后续失败仍保留所有已提交 checkpoint。
 
@@ -300,3 +302,9 @@ Compose 与 service 是部署静态事实，不覆盖根配置中的业务参数
 访问设置仅合并请求明确提供的白名单或授予字段，读取当前值、授予版本核对、根配置验证与保存均在原 config_update_lock 内。未改授予保留原签发者、修订和到期值；修改按原规则递增修订。
 
 群消息合并的本地间隔使用单调时钟，与事件业务时间分开。每次等待截止为最后到达时间加 idle 与首条到达时间加 max 的较早者；@ 和真实回复仍立即触发。旧计时任务须同时匹配当前缓冲和任务身份后才可取走消息；事件循环阻塞不计为可保证的准时调度。
+
+控制面一级导航按总览、群聊、Agent、工作与交付、记忆与资料、系统组织；既有资源深链仍指向原编辑器。总览与 Agent 工具能力页复用 RuntimeQueryService.capability_status：卡片只组合原 RootConfig、PluginHost、ScenePolicy、CapabilityAuthority 与 events/tool_observations/execution_runs。展示保存值、当前装载、群及主体资格和最近独立事实，不新增能力配置表，不在刷新时执行网络探测，不把工具 ok、进程退出或一条平台回执自动等同业务验收。
+
+配置草稿读取 `/api/settings/draft/{domain}` 返回 saved、effective、baseline 和 apply。对应表单写入携带 baseline 与 values，在原 config_update_lock 内只合并变化的叶字段；列表按整表意图核对，冲突返回 409 与字段路径，旧草稿不被当成新基线。RootConfig 仍一次校验与保存；插件保存后沿原装载流程应用，失败仍区分 config_saved。插件凭据只返回是否设置，保留操作在锁内使用当前秘密值；OneBot 令牌显式 keep/replace/clear，替换和清除核对原设置状态。没有新增配置签名、散列或数据库版本源。模型供应商、目录、职责路由与检索路由也使用原值基线，在同一锁内修改当前 models 并一次保存，随后发布给新执行段；正在执行的模型绑定保持不变。供应商密钥显式保留／替换／清除；面板对照已保存与当前运行值。
+
+人格与表达、参与方式、睡眠与时间归属 AgentSettingsView；系统设置保留连接、访问、额度、订阅对象、发送、运行参数和账户。旧人格／参与／时间深链一次映射到 Agent 编辑器，不保留两套写入页面；各领域沿相同草稿基线接口保存。

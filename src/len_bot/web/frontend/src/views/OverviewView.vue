@@ -6,6 +6,7 @@ import { useAppState,refreshStatus } from '../composables/useAppState.js'
 import PageHeader from '../components/PageHeader.vue'
 import EntityLink from '../components/EntityLink.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import CapabilityCards from '../components/CapabilityCards.vue'
 const app=useAppState(),data=ref(null),review=ref(null),unknown=ref(null),unknownJobs=ref(null),failed=ref(null),error=ref(''),loading=ref(false)
 let sequence=0
 async function load(){const own=++sequence;loading.value=true;try{const result=await Promise.all([api('/api/overview/stats'),api('/api/cockpit/jobs?status=review_required&page_size=4'),api('/api/cockpit/tasks?status=delivery_unknown&page_size=4'),api('/api/cockpit/jobs?status=delivery_unknown&page_size=4'),api('/api/models/usage?status=failed&page_size=4')]);if(own===sequence){[data.value,review.value,unknown.value,unknownJobs.value,failed.value]=result;app.scenes=data.value.scenes;app.loadedScenes=true;error.value=''}}catch(e){if(own===sequence)error.value=e.message}finally{if(own===sequence)loading.value=false}}
@@ -21,19 +22,21 @@ const unknownItems=computed(()=>[...unknown.value.items.map(item=>({...item,enti
 // never probes a source, sends a message or switches anything on.  The plugin
 // list is fetched separately from the overview stats so a plugin read failure
 // cannot blank the rest of the page.
-const plugins=ref([]),pluginError=ref('')
+const capabilities=ref(null),pluginError=ref('')
 async function loadPlugins(){
-  try{plugins.value=await api('/api/plugins/list');pluginError.value=''}
+  try{capabilities.value=await api('/api/overview/capabilities');pluginError.value=''}
   catch(e){pluginError.value=e.message}
 }
-// The three ways a declared plugin is not usable yet.  Whether it is open in
-// some group is a per-group decision made in that group's settings, so it is
-// deliberately not counted as a missing dependency here.
-const pluginGap=plugin=>!plugin.configured?'尚未填写全局参数'
-  :plugin.last_error?'加载或运行报错'
-  :plugin.enabled&&!plugin.active_enabled?'已保存为启用，但运行时没有装载':null
-const pluginGaps=computed(()=>plugins.value.map(plugin=>({id:plugin.id,name:plugin.name,reason:pluginGap(plugin)}))
-  .filter(item=>item.reason))
+const pluginGaps=computed(()=>{
+  const seen=new Set(),rows=[]
+  for(const card of capabilities.value?.items||[])for(const plugin of card.plugins){
+    if(seen.has(plugin.id))continue
+    seen.add(plugin.id)
+    const reason=!plugin.configured?'尚未填写全局参数':plugin.last_error?'加载或运行报错':plugin.enabled&&!plugin.active_enabled?'已保存启用，但尚未装载':null
+    if(reason)rows.push({id:plugin.id,name:plugin.name,reason})
+  }
+  return rows
+})
 const readiness=computed(()=>{
   const rows=[],status=app.status,stats=data.value?.stats
   if(status){
@@ -81,6 +84,7 @@ onBeforeUnmount(()=>sequence++)
         </ul>
       </v-card-text>
     </v-card>
+    <v-expansion-panels v-if="capabilities"><v-expansion-panel title="当前能力与验证记录"><v-expansion-panel-text><p class="muted mb-4">{{ capabilities.evidence_note }}</p><CapabilityCards :data="capabilities" compact /><v-btn class="mt-4" variant="tonal" :to="{name:'capabilities'}">选择群与发起者，查看完整能力状态</v-btn></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
     <template v-if="data">
       <div class="connection-grid">
         <v-card class="connection-card"><v-card-text><div class="eyebrow">ONEBOT 连接</div><div class="connection-value"><span class="connection-dot" :class="{connected:data.stats.websocket_connected}"></span>{{ data.stats.websocket_connected?'已连接':'未连接' }}</div><p class="muted">{{ data.stats.websocket_connected?'连接已建立；送达仍以每条回执为准。':'当前没有可确认的 OneBot 连接。' }}</p><v-btn variant="text" color="primary" size="small" :append-icon="mdiArrowRight" :to="{name:'settings',query:{tab:'connection'}}">连接设置</v-btn></v-card-text></v-card>

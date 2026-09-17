@@ -294,21 +294,36 @@ class AgentRuntime:
         self.memory_index = MemoryIndex(self.event_store._db, self.event_store._write_lock,
                                         self.retrieval_models, self.retrieval_profiles.embedding, self.clock)
 
-    async def update_runtime_settings(self, values: dict, *, live: bool) -> None:
+    async def update_runtime_settings(self, values: dict, *, live: bool, baseline: dict,
+                                      credential_change=None) -> None:
         from len_bot.config import EXECUTION_BUDGET_FIELDS
+        from len_bot.config_edit import merge_fields
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            data["runtime"].update(values)
+            before = data['runtime']
+            data["runtime"] = merge_fields(before, baseline, values, ('runtime',))
+            changed_keys = {key for key in values if before[key] != data['runtime'][key]}
+            if credential_change is not None:
+                from len_bot.config_edit import ConfigEditConflict
+                expected_revision, replacement = credential_change
+                current_revision = int(data['runtime'].get('onebot_credential_revision') or 1)
+                if current_revision != int(expected_revision or 1):
+                    raise ConfigEditConflict(('runtime', 'onebot_access_token'))
+                if data['runtime']['onebot_access_token'] != replacement:
+                    data['runtime']['onebot_access_token'] = replacement
+                    data['runtime']['onebot_credential_revision'] = current_revision + 1
             candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
-            live_keys = set(values) if live else set(values) & EXECUTION_BUDGET_FIELDS
+            live_keys = changed_keys if live else changed_keys & EXECUTION_BUDGET_FIELDS
             if live_keys:
                 self.config = self.config.model_copy(update={key: getattr(candidate.runtime, key) for key in live_keys})
                 self.event_store.budget_config = self.config
                 self.attention_policy.config = self.config
                 self.burst_assembler.config = self.config
             if not live and any(getattr(candidate.runtime, key) != getattr(self.config, key)
-                                for key in values if key not in live_keys):
+                                for key in changed_keys if key not in live_keys):
+                self.restart_required = True
+            if credential_change is not None:
                 self.restart_required = True
 
     async def _start_workers(self, *, recover: bool) -> None:
@@ -343,22 +358,30 @@ class AgentRuntime:
                 except Exception as error:
                     logger.error('Plugin %s could not be enabled: %s', plugin_id, _error_text(error))
 
-    async def update_plugin_settings(self, plugin_id, *, enabled=None, values=None):
+    async def update_plugin_settings(self, plugin_id, *, baseline, enabled=None, values=None):
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
             if plugin_id not in self.config_store.catalog.entries:
                 raise KeyError(plugin_id)
             state = data["plugins"].setdefault(plugin_id, {'enabled': False, 'config': None})
             if enabled is not None:
-                state["enabled"] = enabled
+                from len_bot.config_edit import merge_edit
+                state["enabled"] = merge_edit(state["enabled"], baseline, enabled, ('plugins', plugin_id, 'enabled'))
             if values is not None:
                 # Credentials have no readable form, so they cannot round trip
                 # through a form: a request that omits one, or sends it back
                 # empty, keeps the stored value instead of erasing it.  Only a
                 # non-empty value replaces it, and an explicit null clears it.
-                from len_bot.plugins.credentials import merge_config, schema_of
+                from len_bot.plugins.credentials import credentials_changed, merge_config_edit, schema_of
                 schema = schema_of(self.config_store.catalog.entries[plugin_id].spec)
-                state["config"] = merge_config(state["config"], values, schema)
+                previous = state.get("config")
+                current_revision = int(state.get("credential_revision") or 1)
+                state["config"] = merge_config_edit(
+                    previous, values, schema, baseline["config"], baseline["config_set"],
+                    current_revision=current_revision,
+                    baseline_revision=baseline.get("credential_revision", 1))
+                if credentials_changed(previous, state["config"], schema):
+                    state["credential_revision"] = current_revision + 1
             candidate = self.config_store.parse(data)
             self.config_store.save(candidate)
             try:
@@ -389,12 +412,14 @@ class AgentRuntime:
         self.event_store.reservation_policy = (
             self.config_store.current.resources.policies.get('default') or ReservationPolicy())
 
-    async def update_root_settings(self, section: str, values) -> None:
+    async def update_root_settings(self, section: str, values, *, baseline) -> None:
+        from len_bot.config_edit import merge_edit
         if section not in {'access', 'time', 'members', 'resources'}:
             raise ValueError('Unknown settings section')
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            data[section] = values(data[section]) if callable(values) else values
+            data[section] = (values(data[section], baseline) if callable(values)
+                             else merge_edit(data[section], baseline, values, (section,)))
             self.config_store.save(self.config_store.parse(data))
             if section in {'time', 'members'}:
                 self.restart_required = True
@@ -403,11 +428,37 @@ class AgentRuntime:
             # reserved work keeps the policy named on its own reservation.
             self._apply_budget_configuration()
 
-    async def update_scene_settings(self, scene_id: str, values: dict) -> None:
+    async def apply_setup_wizard(self, wizard: str, values: dict, *, operator_id: str) -> dict:
+        from len_bot.web import setup_wizards
+        async with self.config_update_lock:
+            data = self.config_store.current.model_dump()
+            preview = setup_wizards.preview(self.config_store.current, wizard, values)
+            if preview.get('blocked'):
+                raise ValueError(preview['blocked'])
+            candidate_data = setup_wizards.apply_values(data, wizard, values, operator_id=operator_id)
+            candidate = self.config_store.parse(candidate_data)
+            self.config_store.save(candidate)
+        if wizard == 'research':
+            self.restart_required = True
+            plugin = self.plugin_host.get_plugin('interest_share')
+            if plugin and plugin.manifest.enabled:
+                await plugin.ensure_next()
+        elif wizard in {'python', 'broadcast'} and preview.get('plugin_id'):
+            plugin_id = preview['plugin_id']
+            setting = self.config_store.current.plugins.get(plugin_id)
+            if setting and setting.enabled:
+                try:
+                    await self.plugin_host.enable_plugin(plugin_id)
+                except Exception as error:
+                    raise PluginConfigurationApplyError('根配置已保存，但插件运行更新失败：'+_error_text(error)) from error
+        return preview
+
+    async def update_scene_settings(self, scene_id: str, values: dict, *, baseline) -> None:
+        from len_bot.config_edit import merge_edit
         was_enabled = self.semantic_retrieval_enabled(scene_id)
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            data['scenes'][scene_id] = values
+            data['scenes'][scene_id] = merge_edit(data['scenes'].get(scene_id), baseline, values, ('scenes', scene_id))
             self.config_store.save(self.config_store.parse(data))
         if was_enabled != self.semantic_retrieval_enabled(scene_id):
             self._semantic_index_epochs[scene_id] = self._semantic_index_epochs.get(scene_id, 0) + 1

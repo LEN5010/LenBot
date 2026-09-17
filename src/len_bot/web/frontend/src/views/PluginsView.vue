@@ -8,6 +8,7 @@ import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import PluginConfigFields from '../components/PluginConfigFields.vue'
+import ConfigConflictBanner from '../components/ConfigConflictBanner.vue'
 import {blankConfigDraft,configDraft,draftProblems,configValue} from '../lib/pluginConfig.js'
 
 const route=useRoute(), router=useRouter()
@@ -18,6 +19,7 @@ const appState=useAppState()
 const sceneName=id=>appState.scenes.find(item=>item.scene_id===id)?.display_name||''
 const plugins=ref([]), loading=ref(false), loaded=ref(false), readAt=ref(null), error=ref(''), message=ref(''), busy=ref('')
 const selected=ref(null), draft=ref(null), original=ref('null')
+const baseline=ref(null), conflict=ref(null), currentSaved=ref(null)
 const search=ref(''), filter=ref('all')
 const detailTab=ref('config')
 const dirty=computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==original.value)
@@ -95,6 +97,7 @@ function locate(error) {
   return found
 }
 function setDraft(plugin) {
+  baseline.value={config:JSON.parse(JSON.stringify(plugin.config)),config_set:JSON.parse(JSON.stringify(plugin.config_set)),credential_revision:plugin.credential_revision||1}
   draft.value=plugin.config===null?null:configDraft(plugin.config,plugin.config_schema,plugin.secret_paths||[])
   original.value=JSON.stringify(draft.value)
 }
@@ -139,7 +142,7 @@ async function toggle(plugin,enabled=!plugin.enabled) {
   if (busy.value||!plugin.configured) return
   busy.value=`toggle:${plugin.id}`; error.value=''; message.value=''
   try {
-    await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled})})
+    await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled,baseline:plugin.enabled})})
     message.value=enabled?'启用状态已写入根配置并应用到运行时':'停用状态已写入根配置并从运行时卸下'
     await load()
   } catch(e) { await showApplyError(e) }
@@ -172,7 +175,7 @@ async function save() {
       focusField(problems[0].key)
       return
     }
-    await api('/api/plugins/config',{method:'POST',body:JSON.stringify({plugin_id:selected.value.id,config})})
+    await api('/api/plugins/config',{method:'POST',body:JSON.stringify({plugin_id:selected.value.id,config,baseline:baseline.value})})
     original.value=JSON.stringify(draft.value)
     // Reaching here means the file was written and the runtime apply did not
     // raise; whether the plugin is actually loaded still depends on the saved
@@ -184,8 +187,26 @@ async function save() {
         : '参数已写入根配置，该插件已原位应用新参数；加载结果见下方运行时一行'
     serverProblems.value=[]
     await load()
-  } catch(e) { await showApplyError(e) }
+    conflict.value=null
+  } catch(e) {
+    if (e.status===409 && e.details?.config_saved===false) {
+      conflict.value={message:e.message, path:e.details.path}
+      const latest=(await api('/api/plugins/list')).find(item=>item.id===selected.value?.id)
+      currentSaved.value=latest||null
+    }
+    await showApplyError(e)
+  }
   finally { busy.value='' }
+}
+function keepMine() {
+  if (!currentSaved.value) return
+  baseline.value={config:JSON.parse(JSON.stringify(currentSaved.value.config)),config_set:JSON.parse(JSON.stringify(currentSaved.value.config_set)),credential_revision:currentSaved.value.credential_revision||1}
+  conflict.value=null
+}
+function takeCurrent() {
+  if (!currentSaved.value) return
+  setDraft(currentSaved.value)
+  conflict.value=null
 }
 watch(()=>route.query.id,selectFromRoute)
 load()
@@ -198,6 +219,7 @@ loadScopes()
     <PageHeader title="能力与插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
     <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
+    <ConfigConflictBanner :conflict="conflict" :current="currentSaved" :path-label="conflict?.path?.join?.('.')" @keep="keepMine" @take="takeCurrent" />
     <div class="plugin-toolbar">
       <v-text-field v-model="search" label="查找插件" hide-details clearable density="comfortable" class="toolbar-search" />
       <v-chip-group v-model="filter" mandatory class="toolbar-filters">

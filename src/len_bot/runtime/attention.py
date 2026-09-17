@@ -96,6 +96,9 @@ class AttentionPolicy:
                 certain = True
         event.metadata['attention_reasons'] = reasons
         event.metadata['attention_certain'] = certain
+        fast = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response', 'in_flight_follow_up',
+                'wake_confirmation_reply', 'private_message'}
+        event.metadata['attention_lane'] = 'fast' if set(reasons) & fast else 'slow' if reasons else 'none'
         if event.event_type in HUMAN_INPUTS and event.actor_id != bot_actor_id:
             from len_bot.runtime.sleep_policy import note_human
             uid = event.actor_id[5:] if event.actor_id.startswith('user:') else None
@@ -104,6 +107,7 @@ class AttentionPolicy:
             if 'wake_confirmation_reply' in reasons:
                 certain = True
                 event.metadata['attention_certain'] = True
+                event.metadata['attention_lane'] = 'fast'
         if reasons:
             state.pending_wakes.append(PendingWake(event_id=event.id, actor_id=event.actor_id,
                                                   reasons=reasons, certain=certain))

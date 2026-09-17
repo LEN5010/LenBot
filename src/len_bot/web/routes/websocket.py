@@ -3,6 +3,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from len_bot.web.auth import get_current_user
+from len_bot.config_edit import ConfigEdit
 
 router = APIRouter(prefix="/api/websocket", tags=["websocket"])
 
@@ -20,6 +21,7 @@ class OneBotConfigRequest(BaseModel):
     host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
     access_token: Optional[str] = None
+    access_token_action: Literal['keep', 'replace', 'clear'] = 'keep'
 
     @model_validator(mode="after")
     def validate_selected_endpoints(self):
@@ -32,11 +34,12 @@ class OneBotConfigRequest(BaseModel):
 
 @router.post("/config")
 async def update_onebot_config(
-    req: OneBotConfigRequest,
+    edit: ConfigEdit,
     request: Request,
     user: str = Depends(get_current_user),
 ):
     runtime = request.app.state.runtime
+    req = OneBotConfigRequest.model_validate(edit.values)
     saved = {
         "onebot_connection_mode": req.connection_mode,
         "onebot_action_transport": req.action_transport,
@@ -45,9 +48,20 @@ async def update_onebot_config(
         "ws_host": req.host.strip(),
         "ws_port": req.port,
     }
-    if req.access_token is not None:
-        saved["onebot_access_token"] = req.access_token.strip()
-    await runtime.update_runtime_settings(saved, live=False)
+    fields = {'connection_mode':'onebot_connection_mode', 'action_transport':'onebot_action_transport',
+              'ws_url':'onebot_ws_url', 'http_url':'onebot_http_url', 'host':'ws_host', 'port':'ws_port'}
+    if not isinstance(edit.baseline, dict) or not all(key in edit.baseline for key in fields):
+        raise HTTPException(422, '缺少连接设置基线')
+    baseline = {field: edit.baseline[key] for key, field in fields.items()}
+    credential = None
+    if req.access_token_action != 'keep':
+        if req.access_token_action == 'replace' and not (req.access_token or '').strip():
+            raise HTTPException(422, '替换访问令牌时必须填写新值')
+        if 'credential_revision' not in (edit.baseline or {}):
+            raise HTTPException(422, '缺少访问令牌的原始修订')
+        credential = (edit.baseline['credential_revision'],
+                      req.access_token.strip() if req.access_token_action == 'replace' else '')
+    await runtime.update_runtime_settings(saved, live=False, baseline=baseline, credential_change=credential)
     return {"success": True, "requires_restart": True, "message": "OneBot 配置已写入根文件，重启后生效"}
 
 
