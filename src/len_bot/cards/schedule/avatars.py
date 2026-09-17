@@ -9,12 +9,18 @@ a random pick that repeats every few pushes.
 from __future__ import annotations
 
 import base64
-import mimetypes
+import io
 import random
 from pathlib import Path
 
+from PIL import Image
+
 IMAGE_SUFFIXES = frozenset({'.png', '.jpg', '.jpeg', '.webp', '.gif'})
 MAX_STICKER_BYTES = 2 * 1024 * 1024
+# The schedule template draws avatars at 46 CSS pixels; 2x is enough for the
+# screenshot and keeps the inlined HTML small. Original stickers are ~650KB.
+AVATAR_DISPLAY_PX = 46
+INLINE_PX = AVATAR_DISPLAY_PX * 2
 
 
 def sticker_candidates(directory) -> list[Path]:
@@ -30,14 +36,26 @@ def sticker_candidates(directory) -> list[Path]:
 
 
 def as_data_uri(path: Path) -> str:
+    """One sticker as a PNG data URI, already sized for the 46px avatar."""
     try:
-        payload = path.read_bytes()
-    except OSError:
+        payload = _inline_png_bytes(path)
+    except (OSError, Image.UnidentifiedImageError, ValueError):
         return ''
-    if not payload or len(payload) > MAX_STICKER_BYTES:
+    if not payload:
         return ''
-    kind = mimetypes.guess_type(path.name)[0] or 'image/png'
-    return f'data:{kind};base64,' + base64.b64encode(payload).decode('ascii')
+    return 'data:image/png;base64,' + base64.b64encode(payload).decode('ascii')
+
+
+def _inline_png_bytes(path: Path) -> bytes:
+    raw = path.read_bytes()
+    if not raw or len(raw) > MAX_STICKER_BYTES:
+        return b''
+    with Image.open(io.BytesIO(raw)) as image:
+        frame = image.convert('RGBA')
+        frame.thumbnail((INLINE_PX, INLINE_PX), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        frame.save(out, format='PNG', optimize=True)
+        return out.getvalue()
 
 
 class AvatarRotation:

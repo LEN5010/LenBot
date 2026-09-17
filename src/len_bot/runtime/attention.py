@@ -119,7 +119,7 @@ class AttentionPolicy:
                 certain = True
         event.metadata['attention_reasons'] = reasons
         event.metadata['attention_certain'] = certain
-        fast = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response', 'in_flight_follow_up',
+        fast = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response',
                 'wake_confirmation_reply', 'private_message'}
         event.metadata['attention_lane'] = 'fast' if set(reasons) & fast else 'slow' if reasons else 'none'
         if event.event_type in HUMAN_INPUTS and event.actor_id != bot_actor_id:

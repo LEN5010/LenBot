@@ -131,6 +131,12 @@ class AgentRuntime:
         # hold cannot disagree with the limits the work actually runs under.
         self._apply_budget_configuration()
         self.runtime_gate.validate_plugin_origin = lambda mailbox, scene: validate_plugin_origin(self, mailbox, scene)
+        self.runtime_gate.deterministic_service = self.plugin_host.deterministic_service
+        from len_bot.runtime.rate_limit import MessageRateLimiter
+        self.rate_limiter = MessageRateLimiter(self.event_store, lambda: self.config_store.current.runtime, clock)
+        # One notice per ceiling per scene or requester; a group full of people
+        # must not turn one exhausted allowance into a second flood.
+        self._limit_notice_at: dict[tuple[str, str], float] = {}
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
             self.attention_policy.random_source = attention_random
@@ -743,6 +749,7 @@ class AgentRuntime:
     async def _on_action_event(self, event: Event) -> None:
         if event.event_type == EventType.MESSAGE_SENT:
             self.metrics.inc_social("simulated_messages" if event.metadata.get("simulated") else "visible_messages")
+            self.rate_limiter.note_send(event.scene_id)
         await self.receive_event(event, _internal=True)
         actor = await self.scene_manager.get_or_create_actor(event.scene_id)
         await actor._queue.join()
@@ -760,7 +767,9 @@ class AgentRuntime:
         kind = (event.payload.get("payload") or {}).get("kind")
         if event.event_type == EventType.TASK_DUE and kind == 'interest_share':
             plugin = self.plugin_host.get_plugin('interest_share')
-            if plugin and plugin.manifest.enabled:
+            # An exhausted scene drops the slot rather than queueing it: a share
+            # is worth having now or not at all.
+            if plugin and plugin.manifest.enabled and not await self.rate_limiter.exhausted(event.scene_id):
                 await plugin.run_slot(event)
             else:
                 from len_bot.scheduler.models import TaskStatus
@@ -790,13 +799,60 @@ class AgentRuntime:
                 and event.metadata.get("attention_reasons")
                 and should_ingest_social(session, self.config_store.current.time,
                                          self.event_store.clock(),
-                                         event.metadata.get("attention_reasons") or [])):
+                                         event.metadata.get("attention_reasons") or [])
+                and await self._chat_within_allowance(event, session)):
             await self.burst_assembler.ingest(event)
         await self.scheduler.on_event(event)
         if (human or event.event_type == EventType.MESSAGE_SENT) and conversation_visible(event):
             self._schedule_history_maintenance(session)
             if self._can_maintain_history():
                 self._spawn_background_task(self._maintain_history(session.scene_id, quiet=False))
+
+    async def _chat_within_allowance(self, event: Event, session) -> bool:
+        """Whether ordinary chat may still start a turn in this scene.
+
+        The ceiling stops the turn, not the send.  A turn's input tokens are
+        spent the moment it starts, so refusing at the send would buy silence
+        without buying anything else.  Only human group messages are weighed:
+        work results, live events and plugin pushes carry an obligation the
+        ceiling was never meant to cancel.
+        """
+        if event.event_type != EventType.GROUP_MESSAGE_RECEIVED or event.actor_id == self.bot_actor_id:
+            return True
+        requester = event.actor_id.removeprefix('user:') if event.actor_id.startswith('user:') else None
+        state = await self.rate_limiter.status(event.scene_id, requester)
+        if not (state['scene_exhausted'] or state['user_exhausted']):
+            return True
+        if event.metadata.get('attention_lane') == 'fast':
+            # Being addressed directly earns an answer about the silence; being
+            # merely sampled earns the silence itself.
+            await self._send_limit_notice(event, session, state, requester)
+        return False
+
+    async def _send_limit_notice(self, event: Event, session, state: dict, requester) -> None:
+        from len_bot.actions.models import ActionType
+        from len_bot.media.models import MessageSegment
+        from len_bot.runtime.rate_limit import NOTICE_INTERVAL_SECONDS, limit_notice
+        from len_bot.runtime.sleep_policy import is_asleep
+        if is_asleep(session, self.config_store.current.time, self.event_store.clock()):
+            # Sleep already owns this silence and has its own wording for it.
+            return
+        key = (event.scene_id, 'scene' if state['scene_exhausted'] else str(requester))
+        now = self.event_store.clock()
+        if now - self._limit_notice_at.get(key, 0.0) < NOTICE_INTERVAL_SECONDS:
+            return
+        self._limit_notice_at[key] = now
+        try:
+            self.action_queue.enqueue(ActionItem(
+                action_type=ActionType.SEND_GROUP_MESSAGE, scene_id=event.scene_id,
+                segments=[MessageSegment(type='text', text=limit_notice(state))],
+                requester_qq_uid=requester, origin_event_id=event.id,
+                reply_to=str(event.payload['message_id']) if event.payload.get('message_id') is not None else None,
+                planned_at=now, source_started_at=event.timestamp,
+                origin_mode='shadow' if self.shadow_mode else 'live'))
+        except Exception as error:
+            logger.warning('Message ceiling notice was not enqueued (%s: %s)', type(error).__name__, error)
+            self._limit_notice_at.pop(key, None)
 
     def _can_maintain_history(self) -> bool:
         return bool(self.history_engine and self.mock_turn_handler is None and self.has_model_profile("maintenance"))
@@ -986,6 +1042,10 @@ class AgentRuntime:
         for original in events:
             if (original.metadata.get('interaction') != 'chat' or not self.scene_policy.chat_allowed(
                     original.scene_id, original.metadata.get('requester_qq_uid'))):
+                continue
+            # A ceiling reached while this burst waited still stops the turn.
+            if await self.rate_limiter.exhausted(original.scene_id,
+                                                 original.metadata.get('requester_qq_uid')):
                 continue
             event = original.model_copy(deep=True)
             event.metadata['conversation_excluded'] = False
@@ -1207,8 +1267,13 @@ class AgentRuntime:
         else:
             # An empty completion cannot repeatedly buy a fresh budget. Only
             # genuinely new input not supplied to this attempt may wake again.
+            # Wake confirmation only marks human sources as delivered; a
+            # TASK_REVIEW (or any other runtime wake) still counts as supplied.
             pending_ids = {wake.event_id for wake in session.pending_wakes}
-            remaining = [event for event in merged.events if event.id in pending_ids and event.id not in delivered_ids]
+            supplied = {event.id for event in current.events} | set(current.source_event_ids)
+            remaining = [event for event in merged.events
+                         if event.id in pending_ids and event.id not in delivered_ids
+                         and event.id not in supplied]
         remaining = await self._eligible_conversation_events(remaining, session.last_observed_event_rowid)
         if remaining:
             self._pending_bursts[current.scene_id] = self._burst_from_events(remaining, merged)

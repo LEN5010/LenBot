@@ -11,7 +11,11 @@ import SceneSettingsForm from '../components/SceneSettingsForm.vue'
 const WORK_PLUGINS = ['workspace', 'python_workspace']
 const PERMISSION_HELP = `聊天与工作是两种独立权限，不靠调参区分。
 
-聊天：普通成员能否与 Bot 正常互动。关掉后闲聊仍会保存，QQ 白名单成员依然能提问。
+聊天：普通成员能否与 Bot 正常互动。三档之中最高的一档。
+
+跟读：不回闲聊，但持续把群里发生的事总结成历史与记忆，之后用得上。
+
+仅播报：只保存原话，不总结也不形成记忆。三档都保留命令、公告与白名单提问。
 
 工作：本群是否开放可跑代码、产出文件的工作空间插件。
 
@@ -36,7 +40,8 @@ function permissions(item) {
   if (!settings.enabled) return { chat: 'disabled', work: 'off', enabled: false }
   const plugins = settings.plugins || {}
   const work = WORK_PLUGINS.some(name => plugins[name]?.enabled)
-  return { chat: settings.chat ? 'on' : 'off', work: work ? 'on' : 'off', enabled: true }
+  const chat = settings.chat ? 'on' : settings.listen ? 'listen' : 'off'
+  return { chat, work: work ? 'on' : 'off', enabled: true }
 }
 
 const groups = computed(() => rows.value
@@ -48,6 +53,7 @@ const shown = computed(() => {
   return groups.value.filter(item => {
     if (text && !`${item.display_name} ${item.scene_id}`.includes(text)) return false
     if (permission.value === 'chat') return item.perm.chat === 'on'
+    if (permission.value === 'listen') return item.perm.chat === 'listen'
     if (permission.value === 'work') return item.perm.work === 'on'
     if (permission.value === 'unconfigured') return item.perm.chat === 'unconfigured'
     return true
@@ -57,6 +63,7 @@ const shown = computed(() => {
 const counts = computed(() => ({
   total: groups.value.length,
   chat: groups.value.filter(item => item.perm.chat === 'on').length,
+  listen: groups.value.filter(item => item.perm.chat === 'listen').length,
   work: groups.value.filter(item => item.perm.work === 'on').length,
   unconfigured: groups.value.filter(item => item.perm.chat === 'unconfigured').length,
 }))
@@ -77,20 +84,23 @@ async function load() {
 
 // One group at a time, each with its own baseline: a batch is a convenience
 // over the same guarded save, never a way around the conflict check.
-async function applyBatch(value) {
+const MODE_LABELS = { chat:'开启聊天', listen:'改为只跟读', broadcast:'改为仅播报' }
+
+async function applyBatch(mode) {
   if (!picked.value.length) return
   busy.value = 'batch'
   error.value = ''
   message.value = ''
+  const target = { chat: mode === 'chat', listen: mode === 'listen' }
   const done = [], failed = []
   for (const id of picked.value) {
     const path = `/api/cockpit/scenes/${encodeURIComponent(id)}/settings`
     try {
       const record = await api(path)
       if (!record.settings) { failed.push(`${id}：尚未配置，先单独打开配置一次`); continue }
-      if (record.settings.chat === value) { done.push(id); continue }
+      if (record.settings.chat === target.chat && record.settings.listen === target.listen) { done.push(id); continue }
       await api(path, { method: 'PUT', body: JSON.stringify({
-        baseline: record.settings, values: { ...record.settings, chat: value } }) })
+        baseline: record.settings, values: { ...record.settings, ...target } }) })
       done.push(id)
     } catch (problem) {
       failed.push(`${id}：${problem.message}`)
@@ -98,7 +108,7 @@ async function applyBatch(value) {
   }
   busy.value = ''
   picked.value = []
-  message.value = `${done.length} 个群已${value ? '开启' : '关闭'}聊天`
+  message.value = `${done.length} 个群已${MODE_LABELS[mode]}`
   if (failed.length) error.value = failed.join('；')
   await load()
 }
@@ -121,6 +131,7 @@ load()
           <v-select v-model="permission" label="按权限筛选" :items="[
             {title:`全部（${counts.total}）`, value:'all'},
             {title:`可聊天（${counts.chat}）`, value:'chat'},
+            {title:`只跟读（${counts.listen}）`, value:'listen'},
             {title:`可工作（${counts.work}）`, value:'work'},
             {title:`未配置（${counts.unconfigured}）`, value:'unconfigured'}]" />
           <HelpHint :text="PERMISSION_HELP" />
@@ -129,9 +140,11 @@ load()
         <div v-if="picked.length" class="batch-bar">
           <span>已选 {{ picked.length }} 个群</span>
           <v-btn size="small" color="primary" variant="tonal" :loading="busy==='batch'"
-                 :disabled="!!busy" @click="applyBatch(true)">开启聊天</v-btn>
+                 :disabled="!!busy" @click="applyBatch('chat')">开启聊天</v-btn>
           <v-btn size="small" variant="outlined" :loading="busy==='batch'"
-                 :disabled="!!busy" @click="applyBatch(false)">关闭聊天</v-btn>
+                 :disabled="!!busy" @click="applyBatch('listen')">改为只跟读</v-btn>
+          <v-btn size="small" variant="outlined" :loading="busy==='batch'"
+                 :disabled="!!busy" @click="applyBatch('broadcast')">改为仅播报</v-btn>
           <v-btn size="small" variant="text" :disabled="!!busy" @click="picked=[]">取消选择</v-btn>
         </div>
 

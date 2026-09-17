@@ -114,6 +114,7 @@ class RuntimeGate:
         self.jobs_enabled_probe = lambda: True
         self.validate_job_resume = None
         self.validate_plugin_origin = None
+        self.deterministic_service = None
         self.scene_policy = None
         self.capability_authority = None
         self.time_settings = lambda: None

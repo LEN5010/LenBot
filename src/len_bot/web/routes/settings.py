@@ -284,6 +284,8 @@ class AttentionSettingsRequest(BaseModel):
     attention_keyword_cooldown_seconds: float | None = None
     attention_focus_seconds: float | None = None
     conversation_recent_tokens: int | None = None
+    scene_hourly_message_limit: int | None = None
+    user_hourly_message_limit: int | None = None
 
 
 @router.get("/attention")

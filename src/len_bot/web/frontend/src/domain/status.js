@@ -14,7 +14,7 @@ const states = {
   provider: { ready:['配置就绪','success'], enabled:['已启用','info'], disabled:['已停用','default'], missing:['未配置','warning'], unavailable:['配置未就绪','warning'] },
   plugin: { loaded:['已加载','default'], enabled:['运行中','success'], disabled:['已停用','default'], error:['运行异常','error'], unconfigured:['未配置','warning'], not_loaded:['尚未装载','default'] },
   // What a group is allowed to do, as the group list shows it at a glance.
-  scene_chat: { on:['聊天','success'], off:['不聊天','default'], unconfigured:['未配置','warning'], disabled:['已停用','default'] },
+  scene_chat: { on:['聊天','success'], listen:['跟读','info'], off:['仅播报','default'], unconfigured:['未配置','warning'], disabled:['已停用','default'] },
   scene_work: { on:['工作','info'], off:['无工作','default'], unconfigured:['未配置','warning'] },
 }
 export function statusInfo(domain, status) {

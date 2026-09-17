@@ -44,6 +44,10 @@ class RuntimeConfig(BaseModel):
     attention_sample_probability: float = Field(ge=0, le=1)
     attention_keyword_cooldown_seconds: float = Field(ge=0)
     attention_focus_seconds: float = Field(gt=0)
+    scene_hourly_message_limit: int = Field(default=0, ge=0,
+        description='同一群每滚动小时真实发出的消息上限；达到后闲聊与主动发言停止进入模型，插件命令与推送不受影响；0 表示不限')
+    user_hourly_message_limit: int = Field(default=0, ge=0,
+        description='同一发起者每滚动小时收到的消息上限；达到后该发起者的闲聊停止进入模型；0 表示不限')
     max_context_images: int = Field(ge=1, le=6)
     work_output_tokens: int = Field(ge=256)
     jobs_enabled: bool

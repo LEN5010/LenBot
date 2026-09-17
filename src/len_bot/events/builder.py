@@ -72,7 +72,7 @@ class BurstAssembler:
                 buffer.events.append(event)
 
                 fast_reasons = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response',
-                                'in_flight_follow_up', 'wake_confirmation_reply', 'private_message'}
+                                'wake_confirmation_reply', 'private_message'}
                 reasons = set(event.metadata.get('attention_reasons') or [])
                 if event.is_mention_bot or event.is_reply_bot or reasons & fast_reasons:
                     self._take_buffer(event.scene_id)

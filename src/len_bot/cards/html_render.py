@@ -59,6 +59,11 @@ class HtmlCardRenderer:
             raise
         return self._browser
 
+    async def warmup(self):
+        """Start Chromium now so the first card is not a cold launch."""
+        async with self._lock:
+            await self._ensure_browser()
+
     async def render(self, html: str) -> bytes:
         """One card's HTML in, one PNG out."""
         async with self._lock:

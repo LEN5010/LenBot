@@ -1,5 +1,94 @@
 # 当前任务
 
+## 2026-09-18：发言限额与跟读群
+
+用户要求：群 50 条/小时、单人 10 条/小时；达到后不闲聊、不主动发言，但继续观察记录，今日直播与直播推送不受影响，@ 给一条说明。另加一个「不闲聊但一直旁听」的群模式。
+
+### 先核对的两件事
+
+限额初稿数值 150/30 高于实测峰值（群 86、人 16），不会触发；用户改为 50/10 后两项都在峰值之下。真正的开销是 24 小时 773 次 `conversation`、23.0M 输入 token（均次 29.8k），加 129 次 `history_maintenance`／2.38M。因此限额触发时**停的是模型轮次而不是发送**——轮次一开始 token 就已付出，只掐发送等于白花。
+
+`chat=false` 原本已做到不闲聊、只记录、命令与推送照常，但 `scene_policy.maintenance_allowed()` 要求 `scene.chat`，于是历史总结与记忆也一并关掉。那是存档不是跟读，缺的第三档就是这个。
+
+### 改动
+
+限额计 Bot 自己真实发出的消息（`MESSAGE_SENT` 且 `delivery_status='sent'`、`origin_mode='live'`），滚动 60 分钟，直接查 `events`（复用 `idx_events_scene`），不加计数器表，重启自动正确。新 `runtime/rate_limit.py` + `EventStore.sent_message_counts()`。主闸门在 `agent_runtime.py` 的 `should_ingest_social` 旁边（事件是否进模型的唯一入口），第二道网在 `_eligible_conversation_events`，`interest_share` 槽超限直接取消。限额是独立谓词，**没有**并进 `ScenePolicy.chat_allowed`——后者还被 `plugins/host.py:666`、`job_runner.py:470` 和工作交付用着，混进去会连带掐掉成果交付。插件命令走 `plugin_consumed` 分支、推送 mailbox 是 `output_kind='plugin'`，两者本就不经过这条链，豁免是结构性的。
+
+@ 提示不进模型，直接 enqueue 一条 `output_kind='chat'`、无 plugin_origin 的 ActionItem，每群/每人 10 分钟一条；睡眠窗口内不发（睡眠自己有措辞）。私聊整体豁免。
+
+跟读群：`SceneSettings.listen`（默认 false，旧配置原样可读），`maintenance_allowed` 改为 `scene.enabled and (scene.chat or scene.listen)`。面板三档「聊天群／跟读群／仅播报群」，批量也是三档。面板里「旁听」已指抽样参数，故新模式称「跟读」，不复用该词。
+
+### 实测（重启 02:28:40 后 ~1 分钟）
+
+| 群 | 窗口内已发 | 重启后收到 | 重启后 conversation 轮次 |
+|---|---|---|---|
+| group:1078114081 | 136（>50） | 21 | **0** |
+| group:992584358 | 38（<50） | 11 | 1 |
+| group:1102823315 | 0 | 4 | 3 |
+
+超限的群收到 21 条消息、一次模型都没跑；未超限的两群照常。省的是轮次不是发送，这一行就是证据。
+
+日志里的 429 与连接错误来自上游模型供应商（`gemini-3.8-flash-high` 个人配额耗尽，约 2h19m 后恢复），与本批无关。
+
+### 未做
+
+跟读群尚未真实启用过（当前 6 个群都是 `chat=true`，`listen` 为空转）。`chat=false` 时 `attention.py:134` 仍在追加 `pending_wakes` 而消费端全被过滤，长期跟读群该列表可能持续增长，真正投用前要复查。`attention_sample_probability` 未动——那是降成本的另一个独立旋钮，等限额数据再说。
+
+## 2026-09-18：丢掉积压唤醒后重新启动
+
+用户认为上次没启动成功（后台 nohup，前台终端无输出；当时 CPU 约 96%，面板会像卡住）。授权：积压先不发，再启动。
+
+旧进程 20099 SIGKILL。停机后清掉 `group:1078114081` 176 条 `pending_wakes`；`task_4464650a5a`（起来活动一下）由 `review_required` 改为 `cancelled`，避免再发 `TASK_REVIEW`。未改根配置、未动心跳/兴趣分享已到期槽。
+
+新进程 20844，`uv run --no-sync len-bot`，日志 `/tmp/lenbot-runtime/len-bot-20260918-0131.log`。01:33:01 面板 `http://127.0.0.1:11307` 返回 200，OneBot 连上 13001。启动后各群 wakes=0，无 `TASK_REVIEW`。01:33:21 枝兴阁有一条对**新消息**的实发，不是种植园那 176 条旧唤醒。CPU 约 2%。
+
+## 2026-09-18：按用户授权停掉并重启
+
+旧进程 18773 处于 T 停止态；SIGTERM 15 秒未退，SIGKILL 18773/18772。11307 已空。未备份。随后 `uv run --no-sync len-bot` 后台启动，launcher 20097 / 主进程 20099，日志 `/tmp/lenbot-runtime/len-bot-20260918.log`。01:26:16 监听 `127.0.0.1:11307`，OneBot 连上 `127.0.0.1:13001`，self id 3684366985。启动后约 1 分钟：造密码 `CONVERSATION_COMMITTED` 仅 1 次（不再出现 174 次空转），CPU 约 1%。种植园 `pending_wakes` 仍有 171 条历史积压，会按新的合并窗口消化，不是空转。Gateway `:8790` 未动。
+
+## 2026-09-18：重启空转与跟进唤醒堆积
+
+用户问如何解决再次卡住。未重启、未改根配置。
+
+- **空转（已改代码，需重启才生效）**：睡眠窗内 `run_wake_confirmation` 只把人类消息标成已处理。重启恢复的 `TASK_REVIEW`（造密码 `task_4464650a5a`「起来活动一下」，`review_required`）不是人类消息，空提交后 `_preserve_unhandled_bursts` 又把它塞回队列。01:09 新进程对该来源 1 分钟内 174 次 SILENCE，间隔约 8ms，CPU 100%。现改为：空提交不把本轮已经交给这次尝试的来源再唤醒。
+- **种植园堆积（已改快路径，需重启）**：`in_flight_follow_up` 曾与 @ 一样立刻冲洗，群被叫醒后跟进消息各开一轮，109 条待处理里 92 条是跟进，并触发 `FreshInputConflict`。现跟进仍是确定唤醒，走合并窗口。@／回复／称呼／等待中的答案仍是快路径。
+- **运营可选项**：面板取消或完成那条「起来活动一下」提醒，避免下次启动再发 `TASK_REVIEW`。当前实例仍是旧代码，要停掉再拉起来才带上本改动。
+
+## 2026-09-18：按用户要求停掉卡住的实例
+
+用户授权停掉当前 LenBot。主进程 14947（`uv run len-bot` 子进程，00:29 起）先 SIGTERM，进程当时处于 T 停止态（此前 `sample` 采样留下的），CONT 后 TERM 仍不退出；30 秒后 SIGKILL 14947/14946。11307 已无监听，Playwright/Chromium 子进程一并消失。未重启。Gateway / OneBot `:13001` 未动。
+
+停前观察：北京时间已过 00:00 睡眠窗，但多个群因 @/点名处于 30 分钟清醒。`group:1078114081` 积压 52 条待处理唤醒（50 条确定，多为 mention / continuing_interaction），模型仍在跑（10 分钟内该群 32 次 conversation 调用）却几乎提交不出去，最近一次 `FreshInputConflict` 在 01:02:24。对话并发上限 2，进程 CPU 约 90%。这是积压把认知槽占满，不是面板无响应。
+
+## 2026-09-18：为三个新群填写配置（不开工作）
+
+用户授权通过运行中的面板保存本群设置。未停机、未改模型、未推送。保存走 `PUT /api/setup/group-quick` 与 `PUT /api/settings/access`，根文件已写入。
+
+三个新群：
+
+| 群 | 名称 | 聊天 | 工作（workspace / python_workspace） |
+|---|---|---|---|
+| `group:1042218062` | 枝兴阁 | 开 | 关（本群无这两项） |
+| `group:1078114081` | 羊驼精品种植园 | 开 | 关 |
+| `group:1102823315` | aakk巨龙友好群 | 开 | 关 |
+
+三群均：启用、允许聊天、语义检索开、表情 `slightly_more`、旁听继承全局。本群插件与两个旧群对齐，但不含 `workspace` / `python_workspace`：网页搜索、B 站资料、日历命令、动态、开播订阅、兴趣分享、媒体片段、群报告、浏览器、本地时钟。`link_parser` 全局仍停用，枝兴阁原先那条本群记录已去掉。文件申请者 `1649211052` 的 `send_file` 已授予；三群各有一条 `interest_share` 插件授予。`deployment_verified` 仍为 false，真实群文件上传仍未核验。
+
+随后用户再加入 `group:992584358`（ak相亲相爱联机群）。同样经面板保存：聊天开、工作关，插件与三个非工作群一致，`send_file` 申请者 `1649211052`，并补一条 `interest_share` 授予。
+
+旧群 `group:1014123451`、`group:126300994` 未改。
+
+## 2026-09-18：日程卡提交不被新输入打断，启动时预热浏览器
+
+接续 Claude 会话在 `46a4e71` 处中断的修复。用户授权追加一条提交并快速修复，未授权推送、改根配置或重启。
+
+- `46a4e71` 的说明只写了排期图去链接和页脚，实际还删除了启用向导（`setup_wizards.py` / `SetupWizardsView.vue`）并改了总览、能力卡入口、`agent_loop` / `agent_runtime` / `group_quick` / `routes/setup`。历史未重写；本条把那次混入记清楚，并带上本轮运行修复。
+- 日程精确命令（今日/明日/本周直播）提交时不再因有关未读确定唤醒而 `FreshInputConflict`。原先 Playwright 冷启动把窗口拉长，群里后续消息会把命令判失败，面板把最近一次错误显示成「加载失败」。插件三次加载本身是成功的。工作履约和开播公告仍走原检查。
+- 日历插件 `on_enable` 即启动 Chromium，不把第一次「今日直播」当成冷启动。预热失败只记警告，不把插件标成加载失败。
+- 表情内联前缩到 92×92 PNG（卡片显示 46px）。原素材约 648×648 / 640KB，四张塞进 HTML 约 3.4MB。
+
+未重启，未在群里复验「今日直播」。预热是否在本机成功、热渲染是否短到不再和群消息重叠，都要等获准重启后看。
+
 ## 2026-09-17：按用户授权重启并核对心跳
 
 用户本轮明确授权「先重启一下（别备份了）」；本次跳过备份，未改根配置、模型、权限和群名单。以下运行时刻注明时区。

@@ -100,7 +100,7 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 
 ### 睡眠与延期交付
 
-睡眠窗口仍保存消息与运行维护。只有注册为 deterministic_read_only 的确定性服务卡片可豁免；当前为精确日程命令，announcement、一般 command、handler 或其中的模型调用均不自动豁免。出站判断前加载实际场景状态。
+睡眠窗口仍保存消息与运行维护。只有注册为 deterministic_read_only 的确定性服务卡片可豁免；当前为精确日程命令，announcement、一般 command、handler 或其中的模型调用均不自动豁免。出站判断前加载实际场景状态。同一声明在提交边界也不因有关未读确定唤醒而 `FreshInputConflict`：这类 handler 没有模型循环可吸收新输入，打断后只会失败，不转普通聊天。工作履约、开播公告和普通对话仍走原检查。
 
 具备当前聊天资格的人类 @/称呼/私聊建立五分钟确认请求；原 conversation 模型仅判断确认并提出必要表达，不执行普通工作或调用研究工具。Gate 核对同一请求者在实际提问送达后的新答复。确认只叫醒本群 30 分钟，持续直接互动续期；重复请求合并，Shadow 不作为提问实际送达。确认事件唤醒本群到期条件任务，重启时也核对已清醒场景。
 
@@ -112,7 +112,7 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 
 AttentionPolicy 的抽样概率、窗口与关键词冷却经 `attention_config.effective_attention(scene_id)` 解析：`scenes[group].attention` 的缺省字段继承全局，API 预览、实际抽样与诊断共用这一个解析器。每个窗口仍最多一次机会，但下一次可抽样时刻按绝对时间保存在 SceneSession.attention_sample_at，不再用不能跨配置比较的窗口编号；窗口改短时把待定时刻收到 now+新窗口，改长不冻结抽样，也不因反复保存多掷一次骰子。旧会话首次进入时按已有窗口编号做一次性初始化，不回放历史输入。抽样只增加观察机会，不改变关注时长、预算、睡眠或直接 @ 的快入口。
 
-Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。
+Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。睡眠确认若本轮没有人类原话，也是空提交：本轮已经交给这次尝试的运行时唤醒（含重启后的 TASK_REVIEW）不能立刻再开一轮。跟进发言（in_flight_follow_up）仍是确定唤醒，但不走快路径立刻冲洗，与 @／回复／称呼／等待中的答案区分，由原有合并窗口收束。
 
 普通聊天按实际读过的快照提交。普通回应、认识修改、工作控制、提醒、履约与 OpenLoop 由 Actor 检查有关的未读确定唤醒：使用原请求者、回应及提及对象、认识主体与证据、真实事项 ID 和 reply 引用关系，不按全量群消息或关键词猜关联。有关追加须先读完，其他独立请求不因此阻塞本项提交。认识版本或租约失效结束提交，不进入通用重试循环。Gate 沿用 Actor 的检查结果；Runtime 从事件存储取得实际新输入，Mailbox 只保存轮次身份、互动参与者与显式取消。
 
@@ -126,7 +126,7 @@ MESSAGE_SENT 仅为该条 origin_event_id 的明确 @／回复、真实受托事
 
 ScenePolicy 直接读取当前根文件中的群字段与全局 QQ 回复白名单。群停用时继续保存接入的原话，但不进入认知或发送；chat 关闭群只有白名单请求者获得普通对话资格。发送层保留已提交的文字原样：指定照发只发送要求的文字、标点和换行，不追加角色评论，也不自动把字面反斜线解释成转义；只有用户明确要求显示转义写法时才发送反斜线文本。新工作、群总结和提醒从明确的已读人类 request_source 取得 request_source_event_id 与 requester_qq_uid；控制既有事项保留原请求者，修订原话加入来源集合。每条普通 MessageProposal 单独保存 source_event_id 与 requester_qq_uid，Gate 核验人类原话、场景、实际阅读及当前资格，不再以整轮一个请求人代替多人身份。插件可用性在定义和执行处均检查当前场景、角色与插件状态。
 
-插件路由记录 plugin_routes、plugin_consumed 与 conversation_excluded；日历插件消费精确命令；通过真实引用找到的日程评论只记录路由，仍可进入普通聊天。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。已消费的精确日程命令不进入普通对话的确定唤醒，也不构成未读控制阻塞。没有引用证据时不作语义评论分类。
+插件路由记录 plugin_routes、plugin_consumed 与 conversation_excluded；日历插件消费精确命令；通过真实引用找到的日程评论只记录路由，仍可进入普通聊天。同一归属用于注意力、默认近期原文、轮中新增原文、历史维护和回应关注；明确的总结查询仍可读取这些人类消息。已消费的精确日程命令不进入普通对话的确定唤醒，也不构成未读控制阻塞；其提交本身也不被随后到达的有关确定唤醒打断。没有引用证据时不作语义评论分类。
 
 ## 对话循环与提案
 
