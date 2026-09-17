@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, fmtTime } from '../api.js'
+import { roles } from '../domain/roles.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
@@ -42,11 +43,6 @@ const admissionReason = account => {
 }
 const emptyRetrievalProfile = () => ({provider_id:'', model:'', dimension:null, protocol:null})
 const retrievalOpen = ref(false), retrievalForm = ref({embedding:emptyRetrievalProfile(), rerank:emptyRetrievalProfile()}), retrievalOriginal = ref('')
-const roles = [
-  { key: 'conversation', name: '对话', description: '理解原话与图片，选择参与、文字、表情或沉默。' },
-  { key: 'work', name: '工作', description: '后台查询、计算和核实，形成带来源的结果。' },
-  { key: 'maintenance', name: '维护', description: '增量整理历史与认识，压缩工作上下文和整理方法技能。' },
-]
 const emptyProfile = () => ({ provider_id: '', model: '', reasoning_effort: '', supports_vision: false })
 const applicationPending = computed(()=>data.value.effective && ['providers','routing','retrieval'].some(key=>JSON.stringify(data.value[key])!==JSON.stringify(data.value.effective[key])))
 const providerDirty = computed(() => providerOpen.value && JSON.stringify(providerForm.value) !== providerOriginal.value)

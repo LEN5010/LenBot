@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1200, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 1200px; background: transparent; }
+    body {
+      color: #23232b;
+      font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .card {
+      position: relative;
+      width: 1200px;
+      min-height: 760px;
+      padding: 68px 72px 62px;
+      overflow: hidden;
+      border-radius: 68px;
+      background:
+        radial-gradient(circle at 92% 7%, rgba(255, 105, 150, .15), transparent 240px),
+        linear-gradient(180deg, #fff 0%, #fff 74%, #fff8fb 100%);
+      box-shadow: inset 0 0 0 1px rgba(255, 102, 150, .08);
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 14px;
+      background: linear-gradient(90deg, #ff75a5, #ff9fbd 48%, #ffd9e6);
+    }
+    .comment-card {
+      min-height: 0;
+      padding: 54px 62px 58px;
+      border-radius: 52px;
+      background:
+        radial-gradient(circle at 94% 4%, rgba(255, 105, 150, .13), transparent 220px),
+        linear-gradient(180deg, #fff 0%, #fff 78%, #fff8fb 100%);
+    }
+    .comment-card::before { height: 11px; }
+    .header { display: flex; align-items: center; min-height: 144px; }
+    .avatar-wrap { position: relative; width: 144px; height: 144px; flex: 0 0 144px; }
+    .avatar, .avatar-empty {
+      position: absolute; inset: 13px;
+      width: 118px; height: 118px; border-radius: 50%; object-fit: cover;
+      background: linear-gradient(135deg, #ffe1ec, #ff8eb3); border: 5px solid #fff;
+      box-shadow: 0 8px 24px rgba(255, 99, 148, .2);
+    }
+    .avatar-empty { display: grid; place-items: center; color: #fff; font-size: 50px; font-weight: 800; }
+    .pendant { position: absolute; inset: 0; width: 144px; height: 144px; object-fit: contain; }
+    .author-meta { margin-left: 26px; min-width: 0; }
+    .author-name { color: #ff5f91; font-size: 46px; line-height: 1.2; font-weight: 800; }
+    .publish-time { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: #858590; font-size: 25px; }
+    .clock { display: inline-grid; width: 29px; height: 29px; place-items: center; border-radius: 50%; color: #fff; background: #858590; font-size: 18px; }
+    .header-side { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }
+    .brand-lockup {
+      display: flex; align-items: center; gap: 11px; padding: 8px 15px 8px 9px;
+      border: 1px solid #ffe1eb; border-radius: 999px; color: #ec5f8c;
+      background: rgba(255, 247, 250, .92); font-size: 20px; font-weight: 800;
+    }
+    .brand-logo { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; }
+    .kind-pill {
+      padding: 11px 21px;
+      border-radius: 999px; color: #ff5f91; background: #fff0f5; font-size: 23px; font-weight: 700;
+    }
+    .content { margin-top: 56px; }
+    .comment-card .content { margin-top: 38px; }
+    .title { margin-bottom: 24px; font-size: 39px; line-height: 1.38; font-weight: 800; }
+    .body { font-size: 35px; line-height: 1.66; overflow-wrap: anywhere; }
+    .body:empty { display: none; }
+    .body a { color: #1388c5; text-decoration: none; }
+    .comment-context {
+      margin-bottom: 26px; padding: 20px 24px; border-radius: 22px;
+      color: #775e68; background: #fff5f8; border: 1px solid #ffe1eb;
+      font-size: 23px; line-height: 1.55;
+    }
+    .comment-card .comment-context { margin-bottom: 22px; }
+    .comment-action { color: #ff5f91; font-weight: 800; }
+    .comment-body-heading {
+      margin: 30px 0 12px; color: #9b7d88; font-size: 20px;
+      font-weight: 800; letter-spacing: 1px;
+    }
+    .inline-emoji { width: 54px; height: 54px; margin: 0 4px; object-fit: contain; vertical-align: -14px; }
+    .image-grid {
+      display: grid; gap: 12px; margin-top: 34px; overflow: hidden; border-radius: 28px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .image-grid.count-1 { grid-template-columns: 1fr; }
+    .image-grid.count-2, .image-grid.count-4 { grid-template-columns: repeat(2, 1fr); }
+    .content-image { width: 100%; height: 310px; display: block; object-fit: cover; background: #f3f3f5; }
+    /* A lone picture sizes to itself: forcing it full-width and then capping
+       the height letterboxes a square shot inside grey bars. */
+    .image-grid.count-1 .content-image {
+      width: auto; max-width: 100%; height: auto; max-height: 680px;
+      margin: 0 auto; object-fit: contain; background: transparent;
+    }
+    .forwarded {
+      position: relative; margin-top: 34px; padding: 30px 32px 34px 38px;
+      overflow: hidden; border-radius: 28px;
+      background: linear-gradient(145deg, #faf9fb 0%, #f6f5f8 100%);
+      border: 1px solid #eceaf0;
+    }
+    .forwarded::before {
+      content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 7px;
+      background: linear-gradient(180deg, #ff79a8, #ffc1d5);
+    }
+    .forward-kicker {
+      margin-bottom: 18px; color: #a68c96; font-size: 18px; font-weight: 800;
+      letter-spacing: 2px;
+    }
+    .forward-author { display: flex; align-items: center; gap: 13px; color: #ee5d8c; font-size: 25px; font-weight: 800; }
+    .forward-avatar { width: 46px; height: 46px; border: 2px solid #fff; border-radius: 50%; object-fit: cover; box-shadow: 0 4px 12px rgba(70, 54, 62, .08); }
+    .forward-title { margin-top: 20px; color: #34343d; font-size: 28px; line-height: 1.45; font-weight: 750; }
+    .forward-body { margin-top: 14px; color: #50505a; font-size: 27px; line-height: 1.62; overflow-wrap: anywhere; }
+    .forward-body:empty { display: none; }
+    .forward-body a { color: #1388c5; text-decoration: none; }
+    .forward-images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
+    .forward-images.count-1 { grid-template-columns: 1fr; }
+    .forward-images.count-2, .forward-images.count-4 { grid-template-columns: repeat(2, 1fr); }
+    .forward-images img { width: 100%; height: 220px; display: block; object-fit: cover; border-radius: 16px; background: #eeeef2; }
+    .forward-images.count-1 img {
+      width: auto; max-width: 100%; height: auto; max-height: 620px;
+      margin: 0 auto; object-fit: contain; background: transparent;
+    }
+    .additional {
+      display: flex; align-items: center; min-height: 132px; margin-top: 34px; padding: 21px 24px;
+      border-radius: 26px; background: #fff5f8; border: 1px solid #ffe1eb;
+    }
+    .additional-cover { width: 132px; height: 90px; margin-right: 22px; border-radius: 16px; object-fit: cover; }
+    .additional-text { flex: 1; min-width: 0; }
+    .additional-title { font-size: 28px; line-height: 1.4; font-weight: 700; }
+    .additional-subtitle { margin-top: 8px; color: #888893; font-size: 22px; }
+    .additional-badge { margin-left: 20px; padding: 13px 21px; border-radius: 16px; color: #fff; background: #ff6898; font-size: 24px; font-weight: 700; }
+    .section-heading {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 50px; color: #9b7d88; font-size: 20px; font-weight: 800;
+      letter-spacing: 1px;
+    }
+    .stats-note { color: #a1a1aa; font-size: 19px; font-weight: 500; letter-spacing: 0; }
+    .engagement {
+      display: flex; gap: 50px; margin-top: 16px; padding-bottom: 36px;
+      color: #686873; font-size: 26px; border-bottom: 1px solid #eeeef2;
+    }
+    .metric { display: flex; align-items: center; gap: 11px; }
+    .metric-icon { color: #62626c; font-size: 30px; font-weight: 800; }
+    .generated { margin-top: 25px; color: #8e8e98; font-size: 23px; }
+    .source-url { margin-top: 18px; color: #1285bd; font-size: 22px; word-break: break-all; }
+    .footer {
+      display: flex; align-items: flex-end; justify-content: space-between; gap: 44px;
+      margin-top: 48px; padding-top: 44px; border-top: 1px dashed #f0d5df;
+    }
+    .profile { display: flex; align-items: center; min-width: 0; }
+    .footer-avatar { width: 112px; height: 112px; border-radius: 50%; object-fit: cover; background: #ffe2ed; }
+    .footer-profile-meta { margin-left: 22px; }
+    .profile-heading { margin-bottom: 10px; color: #9b7d88; font-size: 18px; font-weight: 800; letter-spacing: 1px; }
+    .footer-name { color: #ff5f91; font-size: 34px; font-weight: 800; }
+    .uid { margin-top: 9px; color: #7f7f89; font-size: 21px; }
+    .profile-stats { display: flex; gap: 12px; margin-top: 20px; }
+    .profile-stat { min-width: 116px; padding: 12px 16px; border-radius: 15px; background: #fff; box-shadow: 0 5px 18px rgba(55, 38, 44, .06); }
+    .profile-stat-label { color: #83838d; font-size: 18px; }
+    .profile-stat-value { margin-top: 4px; color: #4e4e57; font-size: 24px; font-weight: 700; }
+    .qr { width: 210px; height: 210px; padding: 10px; border-radius: 23px; background: #fff; box-shadow: 0 6px 26px rgba(55, 38, 44, .08); }
+    .qr img { width: 100%; height: 100%; display: block; }
+    .brand { position: absolute; right: 56px; bottom: 24px; color: #d6c2ca; font-size: 14px; letter-spacing: 2px; }
+  </style>
+</head>
+<body>
+  <main class="card{% if is_comment %} comment-card{% endif %}">
+    <header class="header">
+      <div class="avatar-wrap">
+        {% if author.avatar_url %}<img class="avatar" src="{{ author.avatar_url | e }}">{% else %}<div class="avatar-empty">B</div>{% endif %}
+        {% if author.pendant_url %}<img class="pendant" src="{{ author.pendant_url | e }}">{% endif %}
+      </div>
+      <div class="author-meta">
+        <div class="author-name">{{ author.name | safe }}</div>
+        <div class="publish-time"><span class="clock">●</span>{{ published_at }}</div>
+      </div>
+      {% if not is_comment %}
+      <div class="header-side">
+        <div class="brand-lockup">
+          {% if brand_logo_data_uri %}<img class="brand-logo" src="{{ brand_logo_data_uri | e }}">{% endif %}
+          <span>{{ brand_name }}</span>
+        </div>
+        <div class="kind-pill">{{ kind_label }}</div>
+      </div>
+      {% endif %}
+    </header>
+
+    <section class="content">
+      {% if comment_context %}
+      <div class="comment-context">
+        <span class="comment-action">{{ comment_context.action | safe }}</span>
+        <span> · {{ comment_context.source | safe }}</span>
+      </div>
+      {% endif %}
+      {% if title %}<div class="title">{{ title | safe }}</div>{% endif %}
+      <div class="body">{{ body_html | safe }}</div>
+
+      {% if images %}
+      <div class="image-grid count-{{ image_count }}">
+        {% for image in images %}<img class="content-image" src="{{ image | e }}">{% endfor %}
+      </div>
+      {% endif %}
+
+      {% if forwarded %}
+      <section class="forwarded">
+        <div class="forward-kicker">转发内容</div>
+        <div class="forward-author">
+          {% if forwarded.avatar_url %}<img class="forward-avatar" src="{{ forwarded.avatar_url | e }}">{% endif %}
+          <span>@{{ forwarded.author_name | safe }}</span>
+        </div>
+        {% if forwarded.title %}<div class="forward-title">{{ forwarded.title | safe }}</div>{% endif %}
+        <div class="forward-body">{{ forwarded.body_html | safe }}</div>
+        {% if forwarded.images %}<div class="forward-images count-{{ forwarded.image_count }}">{% for image in forwarded.images %}<img src="{{ image | e }}">{% endfor %}</div>{% endif %}
+      </section>
+      {% endif %}
+
+      {% if additional %}
+      <section class="additional">
+        {% if additional.cover_url %}<img class="additional-cover" src="{{ additional.cover_url | e }}">{% endif %}
+        <div class="additional-text">
+          <div class="additional-title">{{ additional.title | safe }}</div>
+          {% if additional.subtitle %}<div class="additional-subtitle">{{ additional.subtitle | safe }}</div>{% endif %}
+        </div>
+        {% if additional.badge %}<div class="additional-badge">{{ additional.badge | safe }}</div>{% endif %}
+      </section>
+      {% endif %}
+    </section>
+
+    {% if show_engagement %}
+    <div class="section-heading">
+      <span>{{ content_heading }}</span>
+      {% if stats_note %}<span class="stats-note">{{ stats_note }}</span>{% endif %}
+    </div>
+    <div class="engagement">
+      <div class="metric"><span class="metric-icon">♥</span>{{ stats.like }} 点赞</div>
+      <div class="metric"><span class="metric-icon">●</span>{{ stats.comment }} 评论</div>
+      <div class="metric"><span class="metric-icon">↗</span>{{ stats.forward }} 分享</div>
+    </div>
+    {% endif %}
+    {% if not is_comment %}
+    <div class="generated">● 图片生成于：{{ generated_at }}</div>
+    {% if url %}<div class="source-url">🔗 {{ url | e }}</div>{% endif %}
+    <footer class="footer">
+      <div class="profile">
+        {% if author.avatar_url %}<img class="footer-avatar" src="{{ author.avatar_url | e }}">{% else %}<div class="footer-avatar"></div>{% endif %}
+        <div class="footer-profile-meta">
+          <div class="profile-heading">{{ profile_heading }}</div>
+          <div class="footer-name">{{ author.name | safe }}</div>
+          <div class="uid">UID: {{ author.uid | safe }}</div>
+          <div class="profile-stats">
+            <div class="profile-stat"><div class="profile-stat-label">获赞</div><div class="profile-stat-value">{{ author.likes }}</div></div>
+            <div class="profile-stat"><div class="profile-stat-label">关注</div><div class="profile-stat-value">{{ author.following }}</div></div>
+            <div class="profile-stat"><div class="profile-stat-label">粉丝</div><div class="profile-stat-value">{{ author.follower }}</div></div>
+          </div>
+        </div>
+      </div>
+      {% if qr_data_uri %}<div class="qr"><img src="{{ qr_data_uri | e }}"></div>{% endif %}
+    </footer>
+    <div class="brand">{{ brand_name }} / Generated by LEN</div>
+    {% endif %}
+  </main>
+</body>
+</html>

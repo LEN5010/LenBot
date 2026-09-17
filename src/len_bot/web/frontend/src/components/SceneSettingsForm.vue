@@ -5,7 +5,17 @@ import { api, fmtTime } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import PluginConfigFields from './PluginConfigFields.vue'
 import ConfigConflictBanner from './ConfigConflictBanner.vue'
+import AdvancedSection from './AdvancedSection.vue'
+import HelpHint from './HelpHint.vue'
 import {blankConfigDraft,configDraft,configValue,draftProblems} from '../lib/pluginConfig.js'
+
+const ATTENTION_HELP = `旁听决定 Bot 有多少次「可以接话」的机会，不决定它一定说话。
+
+p 是每个窗口抽中的概率，窗口是抽样周期，冷却是关键词两次触发之间的最小间隔。每个窗口最多抽一次，所以名义机会约等于 p ÷ 窗口。
+
+被 @、被回复、私聊和明确委托不走抽样，永远立即响应，不受这些参数影响。
+
+机会不等于额度：抽中只是进入一次判断，是否发言由模型决定，也不增加模型预算或关注时长。`
 
 const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved'])
@@ -198,14 +208,28 @@ onBeforeUnmount(()=>{++requestId})
             </div>
             <p class="muted-copy">开启聊天不会自动开放外发、文件或账号动作。白名单例外：{{ (record.whitelist||[]).join('、') || '未设置' }}。</p>
             <div class="attention-box">
-              <div class="settings-heading"><h5>旁听</h5>
-                <div class="settings-actions"><v-btn size="small" color="primary" variant="tonal" @click="applyRaise">旁听 +2 档</v-btn><v-btn size="small" variant="text" @click="inheritAttention">恢复继承全局</v-btn></div>
+              <div class="settings-heading">
+                <h5>旁听<HelpHint :text="ATTENTION_HELP" /></h5>
+                <v-chip size="small" :color="draft.attention ? 'warning' : undefined">
+                  {{ draft.attention ? '本群已覆盖' : '继承全局' }}
+                </v-chip>
               </div>
-              <p class="muted-copy">当前有效 p={{ record.attention.effective.sample_probability }}，窗口 {{ record.attention.effective.sample_window_seconds }} 秒，冷却 {{ record.attention.effective.keyword_cooldown_seconds }} 秒。名义机会约 {{ (record.attention.raise_two_steps.density.current_per_hour||0).toFixed(1) }} 次/小时；+2 后约 {{ (record.attention.raise_two_steps.density.raised_per_hour||0).toFixed(1) }} 次/小时。不增加模型额度或关注时长。</p>
-              <v-alert v-if="record.attention.raise_two_steps.enables_sampling" type="warning" variant="tonal" class="my-3">当前有效抽样为 0，保存 +2 将开启随机旁听。</v-alert>
-              <p v-for="note in record.attention.raise_two_steps.notes" :key="note" class="muted-copy">{{ note }}</p>
-              <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为 p={{ attentionPreview.p }}、窗口 {{ attentionPreview.w }} 秒（约 {{ attentionPreview.density.toFixed(1) }} 次/小时）。</p>
-              <p v-else class="muted-copy">草稿继承全局旁听参数。</p>
+              <p class="muted-copy">
+                有效 p={{ record.attention.effective.sample_probability }}，窗口
+                {{ record.attention.effective.sample_window_seconds }} 秒，冷却
+                {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 约
+                {{ (record.attention.raise_two_steps.density.current_per_hour||0).toFixed(1) }} 次/小时
+              </p>
+              <AdvancedSection title="仅本群覆盖旁听参数" note="会让本群偏离统一聊天参数">
+                <p class="muted-copy">聊天参数默认全局统一，新群自动继承。只有这个群确实需要不同节奏时才覆盖。</p>
+                <div class="settings-actions">
+                  <v-btn size="small" color="primary" variant="tonal" @click="applyRaise">旁听 +2 档</v-btn>
+                  <v-btn size="small" variant="text" @click="inheritAttention">恢复继承全局</v-btn>
+                </div>
+                <v-alert v-if="record.attention.raise_two_steps.enables_sampling" type="warning" variant="tonal">当前有效抽样为 0，保存 +2 将开启随机旁听。</v-alert>
+                <p v-for="note in record.attention.raise_two_steps.notes" :key="note" class="muted-copy">{{ note }}</p>
+                <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为 p={{ attentionPreview.p }}、窗口 {{ attentionPreview.w }} 秒（约 {{ attentionPreview.density.toFixed(1) }} 次/小时）。</p>
+              </AdvancedSection>
             </div>
             <v-select v-model="sticker" label="表情倾向" :items="[{title:'继承自然',value:'inherit'},{title:'自然',value:'natural'},{title:'稍多',value:'slightly_more'}]" />
             <p v-if="record.sleep" class="muted-copy">睡眠：{{ record.sleep.configured ? (record.sleep.in_window ? '当前处于全局睡眠窗口' : '当前不在睡眠窗口') : '未配置睡眠' }}。叫醒状态不在本页修改。</p>
@@ -263,6 +287,7 @@ onBeforeUnmount(()=>{++requestId})
 .plugin-setting{padding:12px 0}
 .plugin-row{padding:8px 0}
 .settings-heading,.settings-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.settings-actions{justify-content:flex-start}
+.settings-heading h5{display:flex;align-items:center;gap:2px}
 .settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .status-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .attention-box{margin:12px 0;padding:12px;border:1px solid rgba(var(--v-border-color),var(--v-border-opacity));border-radius:8px}

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200">
+<style>
+{{ theme_css | safe }}
+
+  /* Layout borrowed from the reference schedule: a tinted header panel, day
+     groups, and a time block on the left of every row. Only the palette moved. */
+  .head {
+    position: relative; padding: 34px 38px; margin-bottom: 40px;
+    border-radius: 40px; background: var(--tint); border: 1px solid var(--line);
+  }
+  .kicker { color: var(--brand); font-size: 22px; font-weight: 800; letter-spacing: 4px; }
+  .title { margin-top: 12px; color: var(--ink); font-size: 58px; font-weight: 800; line-height: 1.15; }
+  .subtitle { margin-top: 14px; color: var(--muted); font-size: 24px; }
+
+  .day { margin-top: 38px; }
+  .day-label { color: var(--ink-soft); font-size: 30px; font-weight: 750; margin-bottom: 18px; }
+
+  .event {
+    display: flex; gap: 26px; align-items: flex-start;
+    padding: 26px 30px; margin-bottom: 16px;
+    border-radius: var(--block-radius);
+    background: var(--surface); border: 1px solid var(--line-neutral);
+  }
+  .event.cancelled { background: var(--surface-muted); border-style: dashed; }
+  .event.marked { border-color: var(--mark-outline); background: var(--mark-fill); }
+
+  .when {
+    flex: none; width: 168px; padding: 16px 0; text-align: center;
+    border-radius: var(--pill-radius); background: var(--tint);
+  }
+  .event.cancelled .when { background: #f3f2f5; }
+  .event.marked .when { background: var(--mark-time); }
+  .start { color: var(--ink); font-size: 34px; font-weight: 800; letter-spacing: 1px; }
+  .date, .until { color: var(--faint); font-size: 19px; margin-top: 6px; }
+
+  .body { min-width: 0; flex: 1; }
+  .host { display: flex; align-items: center; gap: 12px; }
+  .avatar { width: 46px; height: 46px; border-radius: 50%; object-fit: cover; background: var(--line); flex: none; }
+  .host-name { color: var(--muted); font-size: 22px; font-weight: 700; }
+  .event.cancelled .host-name { color: var(--brand); }
+  .badge {
+    padding: 3px 12px; border-radius: 999px; font-size: 18px; font-weight: 700;
+    color: #fff; background: var(--mark-badge);
+  }
+  .event-title { margin-top: 12px; color: var(--ink); font-size: 30px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
+  .event.cancelled .event-title { text-decoration: line-through; color: #77777f; }
+  .desc { margin-top: 10px; color: var(--body); font-size: 24px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-line; }
+
+  .empty { padding: 50px 0; color: var(--muted); font-size: 27px; text-align: center; }
+  .footer { margin-top: 46px; padding-top: 28px; border-top: 1px dashed var(--line-dashed); }
+  .footer p { margin: 0 0 8px; color: var(--faint); font-size: 19px; line-height: 1.7; overflow-wrap: anywhere; }
+  .footer .limit { color: var(--muted); }
+  .brand { margin-top: 14px; color: var(--hairline); font-size: 18px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="topbar"></div>
+  <div class="bloom bloom--warm"></div>
+  <div class="bloom bloom--cool"></div>
+
+  <header class="head">
+    <div class="kicker">{{ kicker }}</div>
+    <div class="title">{{ title | e }}</div>
+    <div class="subtitle">{{ subtitle }}</div>
+  </header>
+
+  {% if not days %}<p class="empty">{{ empty_text }}</p>{% endif %}
+
+  {% for day in days %}
+  <section class="day">
+    <div class="day-label">{{ day.label }}</div>
+    {% for event in day.events %}
+    <article class="event{% if event.cancelled %} cancelled{% endif %}{% if event.mark %} marked{% endif %}"
+      {% if event.mark %}style="--mark-fill:{{ event.mark.fill }};--mark-outline:{{ event.mark.outline }};--mark-time:{{ event.mark.time_fill }};--mark-badge:{{ event.mark.badge }}"{% endif %}>
+      <div class="when">
+        <div class="start">{{ event.start }}</div>
+        <div class="date">{{ event.date }}</div>
+        {% if event.until %}<div class="until">{{ event.until }}</div>{% endif %}
+      </div>
+      <div class="body">
+        <div class="host">
+          {% if event.avatar %}<img class="avatar" src="{{ event.avatar | e }}" alt="">{% endif %}
+          <span class="host-name">{{ event.host | e }}</span>
+          {% if event.mark %}<span class="badge">{{ event.mark.label }}</span>{% endif %}
+        </div>
+        <div class="event-title">{{ event.title | safe }}</div>
+        {% if event.description %}<div class="desc">{{ event.description | safe }}</div>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  <footer class="footer">
+    <div class="brand">{{ brand_name }}</div>
+  </footer>
+</main>
+</body>
+</html>

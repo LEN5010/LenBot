@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, fmtTime } from '../api.js'
 import { logout } from '../composables/useAuth.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+import AdvancedSection from '../components/AdvancedSection.vue'
+import HelpHint from '../components/HelpHint.vue'
 import PageHeader from '../components/PageHeader.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 const route = useRoute()
@@ -59,6 +61,44 @@ function setHeartbeat(key, value) {
   draft[key] = value
   runtimeText.value = JSON.stringify(draft, null, 2)
 }
+// The backend refuses a mismatched pair outright, so the panel derives the
+// protocol instead of offering it as a second thing to get wrong.
+const UPLOAD_PROTOCOLS = {napcat:'upload_group_file_data_file_id', snowluma:'upload_group_file'}
+const UPLOAD_HELP = `implementation 决定协议：napcat 用 upload_group_file_data_file_id，snowluma 用 upload_group_file。两者不会自动互相回退。
+
+version 填现场实际版本，可用「连接」页的「读取平台实现与版本」按钮核对。
+
+deployment_verified 表示你已人工核对现场版本与「仅文件资产目录只读挂到 /lenbot-files」这两件事，不要求先有过一次成功上传。真实 file_id 只从 FILE_UPLOADED 回执派生。
+
+改动保存后需重启。`
+const fileUpload = computed(() => {
+  try { return JSON.parse(runtimeText.value || '{}').onebot_file_upload || null } catch { return null }
+})
+function setFileUpload(patch) {
+  let draft
+  try { draft = JSON.parse(runtimeText.value || '{}') } catch { return }
+  if (patch === null) draft.onebot_file_upload = null
+  else {
+    const current = draft.onebot_file_upload || {implementation:'snowluma', version:'',
+      protocol:UPLOAD_PROTOCOLS.snowluma, deployment_verified:false, export_mount_path:'/lenbot-files'}
+    const next = {...current, ...patch}
+    next.protocol = UPLOAD_PROTOCOLS[next.implementation] || next.protocol
+    // Declaring a different platform or version retires the operator's check;
+    // the flag has to be re-earned rather than carried across.
+    const retargeted = (patch.implementation && patch.implementation !== current.implementation)
+      || (patch.version !== undefined && patch.version !== current.version)
+    if (retargeted && patch.deployment_verified === undefined) next.deployment_verified = false
+    draft.onebot_file_upload = next
+  }
+  runtimeText.value = JSON.stringify(draft, null, 2)
+}
+const RESET_HELP = `Reset 是独立的破坏性管理动作，需要当次明确授权。
+
+会删除：全部群聊和私聊的原话与会话、摘要与自动认识、自动技能与其候选、工作与检查点、任务与等待、工具资料、调用账、聊天图片和场景上下文。执行前先停止认知、维护、工作和投递，并在管理记录里追加一条操作事件。
+
+会保留：登录、根配置、人工表达样例、运营表情库及其来源、人格、Shadow、QQ 回复白名单、各群设置与能力授予。人工样例只重置使用计数。
+
+不处理：usage_reservations、execution_runs、execution_events 不在清理表列表内。既有额度预占和执行记录会留下，页面也不能证明外部容器已经结束；这些行需要另行核对归属与处置。`
 const accessText = ref(null)
 const accessOriginal = ref('')
 const grants = ref([])
@@ -512,7 +552,39 @@ watch(tab,load,{immediate:true})
     </v-card>
     <v-card v-if="tab==='runtime'&&runtimeText!==null" class="pa-5 form-card">
       <h2>运行参数</h2>
-      <p class="muted mt-2">普通文件交付由 file_delivery 和独立 send_file 授权控制。onebot_file_upload 默认为 null；implementation 可选 napcat（protocol=upload_group_file_data_file_id）或 snowluma（protocol=upload_group_file）。填写现场版本，并核对仅文件资产目录挂到 /lenbot-files 的只读权限后，才能把 deployment_verified 设为 true。该标记表示版本与挂载已人工核对，不要求先有一次成功上传；真实 file_id 只从 FILE_UPLOADED 回执派生。不会自动改用另一种协议。保存后需重启。</p>
+      <section class="upload-block">
+        <div class="section-header">
+          <h3>群文件上传平台<HelpHint :text="UPLOAD_HELP" /></h3>
+          <v-chip size="small" :color="fileUpload?.deployment_verified ? 'success' : 'warning'">
+            {{ fileUpload ? (fileUpload.deployment_verified ? '已核对' : '未核对，无法上传') : '未声明' }}
+          </v-chip>
+        </div>
+        <p v-if="!fileUpload" class="muted my-3">
+          未声明上传平台，群文件只能在工作面板下载。
+          <v-btn size="small" variant="tonal" color="primary" class="ml-2"
+                 @click="setFileUpload({})">声明上传平台</v-btn>
+        </p>
+        <template v-else>
+          <div class="form-grid my-3">
+            <v-select :model-value="fileUpload.implementation" label="实现"
+              :items="[{title:'SnowLuma',value:'snowluma'},{title:'NapCat',value:'napcat'}]"
+              @update:model-value="value=>setFileUpload({implementation:value})" />
+            <v-text-field :model-value="fileUpload.version" label="现场实际版本"
+              placeholder="例如 1.14.15-node" hint="改动后需重新核对" persistent-hint
+              @update:model-value="value=>setFileUpload({version:value})" />
+            <v-text-field :model-value="fileUpload.protocol" label="协议（由实现决定）" readonly />
+            <v-text-field :model-value="fileUpload.export_mount_path" label="只读挂载点" readonly />
+          </div>
+          <v-switch :model-value="fileUpload.deployment_verified"
+            label="已人工核对现场版本与只读挂载"
+            :disabled="!fileUpload.version"
+            :hint="fileUpload.version ? '打开后模型才会把上传当作可用能力' : '先填写现场版本'"
+            persistent-hint
+            @update:model-value="value=>setFileUpload({deployment_verified:!!value})" />
+          <div class="actions"><v-btn size="small" variant="text" color="error"
+            @click="setFileUpload(null)">取消声明</v-btn></div>
+        </template>
+      </section>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
       <div class="budget-table-wrap"><table class="budget-table"><caption>执行预算</caption><thead><tr><th scope="col">范围</th><th scope="col">已保存</th><th scope="col">当前发布</th></tr></thead><tbody><tr v-for="item in executionBudgets" :key="item.key"><th scope="row">{{ item.label }}</th><td>{{ budgetText(runtimeSavedBudgets[item.key], item.unit) }}</td><td>{{ budgetText(runtimeEffectiveBudgets[item.key], item.unit) }}</td></tr></tbody></table></div>
       <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>
@@ -526,18 +598,21 @@ watch(tab,load,{immediate:true})
             :label="item.label+'（'+item.unit+'）'" type="number" :hint="'留空即不设限'" persistent-hint
             @update:model-value="value=>setRuntimeBudget(item.key,value)" />
         </div>
-        <v-textarea v-model="runtimeText" label="运行参数 JSON（含其余字段）" rows="16" spellcheck="false" class="runtime-json" />
+        <AdvancedSection title="其余运行参数（原始 JSON）" note="上面没有控件的字段在这里改">
+          <v-textarea v-model="runtimeText" label="运行参数 JSON" rows="16" spellcheck="false" class="runtime-json" />
+        </AdvancedSection>
         <div class="actions"><v-btn type="submit" color="primary" :loading="busy==='runtime'" :disabled="!!busy||!runtimeDirty">保存运行参数</v-btn><span v-if="runtimeDirty" class="muted">有未保存修改</span></div>
       </v-form>
     </v-card>
     <v-card v-if="tab==='account'&&me" class="pa-5 form-card"><div class="section-header"><h2>登录账户</h2><v-chip :color="me.is_default_password?'warning':'default'">{{ me.is_default_password?'仍使用初始密码':'已修改初始密码' }}</v-chip></div><p class="my-4">{{ me.username }} · 上次登录 {{ fmtTime(me.last_login_at) }}</p><v-form :disabled="!!busy" class="form-grid" @submit.prevent="changePassword"><v-text-field v-model="passwords.current_password" type="password" autocomplete="current-password" label="当前密码" required /><v-text-field v-model="passwords.new_password" type="password" autocomplete="new-password" label="新密码（至少 6 位）" minlength="6" required /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='password'" :disabled="!!busy||!passwords.current_password||passwords.new_password.length<6">更新密码</v-btn><v-btn variant="outlined" :disabled="!!busy" @click="signOut">退出登录</v-btn></div></v-form></v-card>
     <v-expansion-panels v-if="tab==='account'&&me" class="danger-zone">
-      <v-expansion-panel title="高级危险区：重置全部对话数据">
+      <v-expansion-panel title="破坏性操作：重置全部对话数据">
         <v-expansion-panel-text>
-          <p class="mb-3">Reset 是独立的破坏性管理动作，需要当次明确授权。执行记录与额度记录的清理口径没有核定前，<strong>不要把它当作修复路径</strong>。</p>
-          <p class="mb-2"><strong>会删除</strong>：全部群聊和私聊的原话与会话、摘要与自动认识、自动技能与其候选、工作与检查点、任务与等待、工具资料、调用账、聊天图片和场景上下文；先停止认知、维护、工作和投递再执行，并在管理记录里追加一条操作事件。</p>
-          <p class="mb-2"><strong>会保留</strong>：登录、根配置、人工表达样例、运营表情库及其来源、人格、Shadow、QQ 回复白名单、各群设置与能力授予。人工样例只重置使用计数。</p>
-          <p class="mb-3"><strong>不处理</strong>：<code>usage_reservations</code>、<code>execution_runs</code>、<code>execution_events</code> 不在清理表列表内。既有额度预占和执行记录会留下，页面也不能证明外部容器已经结束；这些行需要另行核对归属与处置，不能直接删除残留。</p>
+          <p class="mb-3">
+            清空全部对话、认识、工作与任务；运行配置、人工样例与表情库保留。
+            <strong>不要把它当作修复路径。</strong>
+            <HelpHint :text="RESET_HELP" />
+          </p>
           <v-btn color="error" variant="outlined" :disabled="!!busy" @click="resetConfirm=true">Reset 对话数据</v-btn>
         </v-expansion-panel-text>
       </v-expansion-panel>
@@ -548,6 +623,7 @@ watch(tab,load,{immediate:true})
 </template>
 <style scoped>
 .budget-table-wrap{overflow-x:auto}.budget-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}.budget-table caption{text-align:left;font-weight:600;padding:8px 0 12px}.budget-table th,.budget-table td{padding:12px;border-bottom:1px solid var(--line);white-space:nowrap}.budget-table thead{background:rgb(var(--v-theme-surface-variant))}.budget-table tbody th{font-weight:500}.preset-field{margin-bottom:12px}.runtime-json :deep(textarea){font-family:monospace;font-size:13px;line-height:1.6}
+.upload-block{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:16px 0}.upload-block h3{display:flex;align-items:center;gap:2px;font-size:15px;font-weight:650;margin:0}
 
 .form-card{max-width:1000px;width:100%}.grant-card{border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:18px}.grant-card h3{font-size:14px;font-weight:650;margin-bottom:12px}.impact-summary{border-left:3px solid rgb(var(--v-theme-primary));padding:12px 14px;margin:16px 0;background:rgb(var(--v-theme-surface-variant));max-width:1000px}.impact-summary p{margin:4px 0;font-size:13px;line-height:1.7}.section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.section-header h2,.form-card>h2{font-size:20px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.wide{grid-column:1/-1}.form-grid>.v-btn{justify-self:start}.actions,.meta,.delivery-state,.saved-scenes{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}.meta{font-size:13px;color:#64748b}.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}.example-row:last-child{border:0;padding-bottom:0}.example-main{min-width:0;flex:1}.example-row>.actions{max-width:220px;justify-content:flex-end}.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}.example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}.example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}.example-body img{max-width:180px;max-height:180px;object-fit:contain}.part-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}.part-toolbar>.v-input{flex:1;min-width:140px;max-width:180px}.part-image{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.part-image img{max-width:100%;height:170px;object-fit:contain}.media-filter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.media-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.media-picker img{width:100%;height:150px;object-fit:contain;background:#f4f6f9}.media-picker p{overflow-wrap:anywhere;min-height:3em}.danger-zone{max-width:1000px;margin-top:12px}
 .error-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px}.policy-row{border:1px solid #e2e8f0;border-radius:8px;padding:16px}.policy-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.policy-heading h3{font-size:14px;font-weight:650}.policy-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.policy-error{color:#b3261e;font-size:13px;margin:8px 0 0}.settings-view p{line-height:1.7}@media(max-width:650px){.form-grid{grid-template-columns:minmax(0,1fr)}.policy-fields{grid-template-columns:minmax(0,1fr)}.example-row{flex-direction:column}.example-row>.actions{max-width:none;justify-content:flex-start}.section-header{align-items:flex-start}.media-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.part-toolbar>.actions{width:100%}.example-body img{max-width:140px;max-height:140px}}

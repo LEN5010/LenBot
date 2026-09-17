@@ -69,7 +69,7 @@ async def assemble(query, scene_id, *, joined=None):
     plugins = {item['id']: item for item in record['plugins']}
     settings = record['settings'] or {}
     scene_plugins = (settings.get('plugins') or {})
-    for ident, title, implementations, _actions, entry, wizard in CARDS:
+    for ident, title, implementations, _actions, entry in CARDS:
         owners = []
         for plugin_id, _tools in implementations:
             plugin = plugins.get(plugin_id)
@@ -84,7 +84,7 @@ async def assemble(query, scene_id, *, joined=None):
                 'scene_config_schema': plugin['scene_config_schema'] if plugin else {},
                 'missing': plugin is None,
             })
-        cards.append({'id': ident, 'title': title, 'entry': entry, 'wizard': wizard, 'plugins': owners})
+        cards.append({'id': ident, 'title': title, 'entry': entry, 'plugins': owners})
     delivery = file_delivery_facts(query.runtime, scene_id, None)
     participants = []
     raw = await query.runtime.event_store.load_scene_session(scene_id)
