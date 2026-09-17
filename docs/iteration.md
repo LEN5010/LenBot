@@ -1,58 +1,58 @@
 # 当前任务
 
-更新时间：2026-09-17。分支 `dev/social-agent-con`，本轮起点 `1683b8a0e4a56596b95f30da80464651b56a6858`。当前按用户提供的[全链路审计与产品化重构计划](LenBot_全链路审计与产品化重构计划_1683b8a.md)推进 R0—R6。报告已完整读取并原样纳入 docs；它是施工依据，不是运行证明。[社会 Agent 总计划](LenBot_社会Agent_完整实施计划_7a4152d.md)和人格来源正文保持不变。此前逐批记录通过 Git 查阅，不再持续叠加到本页。
+更新时间：2026-09-17 21:55。分支 `dev/social-agent-con`，基线提交 `3eadcad`，本批提交 `294dca1`（构建管线）与本次提交（B1—B4 与 G4）。本批已获授权推进现场配置与起停。
 
-## 当前结论与范围
+## 当前结论
 
-**Verdict：BLOCKER_FOUND（整体运行放行）；已完成 R0 源码复核及 A01—A07 源码修复，尚未完成 R1/R2 验收。**
+**Verdict：B1—B4 与 G4 已提交，前端产物改为构建期生成；LenBot 已按运行手册停机（SIGTERM，20:53 起的进程已退出）。QQ OneBot 因 SnowLuma 重建后尚未重新登录，`deployment_verified` 仍为 false，没有任何真实文件上传回执，不能宣称已能发群文件。新代码尚未启动运行过。**
 
-源码已有 C29 部署材料，但当前实例尚未跑通全部能力。先修确定性缺口，再验证普通群聊、Python 文件工作、正常提醒与历史回读四条基础旅程；随后推进产品化控制面、参与与回忆、模型动作接口，最后按依赖放行社会链与高级执行。不以构建、工具注册或阶段编号代替真实业务结果。
+备份：`.backups/lenbot-dev-backup-20260917-203616`（HEAD、根配置、SQLite、media，477MB）。经用户授权删除其余 35 份历史快照，`.backups` 从 6.4GB 降到 477MB；保留这一份是因为它是本批在运行手册意义上的回退点，重启到新代码前不要删。
 
-本批起点存在上一轮未提交的 `deploy/dev/` 草稿，以及 Git 忽略的根配置变更。开发部署草稿尚未就绪，不是可用配方，本批没有启动或继续构建它。未覆盖或删除这些现场文件。
+## 本批代码改动
 
-## 源码、配置与运行观察
+| 批次 | 已做 | 未验 |
+|---|---|---|
+| B1 文件动作入口 | `respond` 在本轮有可交付候选时才公开互斥的 `intent=file` 分支（只填 `file_asset_id` + 唯一 `delivery_ref`/`work_ref`，无 segments）；`runtime_facts.files` 与 `file_delivery` 投影；工作详情已显示资产、尝试与回执 | 模型在真实请求中实际选中文件分支 |
+| B2 平台与交付 | `FileUploadConfig` 显式支持 `napcat`/`snowluma` 并校验协议配对；`upload_response` 记录所选协议；`deployment_verified` 收口为「版本与挂载已人工核对」，不再要求先有成功上传；新增只读 `POST /api/websocket/read-version` 读现场 `get_version_info` 并与已声明实现/版本对照 | 真实 `FILE_UPLOADED` 与 `file_id`；只读挂载在 node 侧的实际读取 |
+| B3 旁听与表情 | `scenes[group].attention` / `expression` 覆盖；单一解析器 `attention_config.effective_attention`；下一次抽样改为绝对时刻 `SceneSession.attention_sample_at`，窗口改短时收到 `now+新窗口`，改长不冻结；palette 传 tags、描述放宽到 120 字并标注截断，未发过的素材在限额内优先 | 自然聊天下的命中率、沉默比例与费用对比 |
+| B4 一页群配置 | `GET/PUT /api/setup/group-quick` 一次事务保存本群设置与 `send_file` 授予（按 grant 修订比对冲突）；群列表合并 OneBot `get_group_list` 的已加入群；`SceneSettingsForm` 改为参与／能力／申请者三段加固定保存区 | 两个页面并发改同一群、窄屏与切群的实际操作 |
+| G4 授予判定 | 主体／能力／范围／到期的匹配收敛到 `capabilities.grant_allows`，`CapabilityAuthority.grant_for` 与启用向导共用；已过期授予不再显示成「已授权」，向导据此提议补发并注明 | 面板上的实际预览与保存 |
 
-| 能力 | 源码事实 | 当前配置／部署条件 | 已有运行观察与缺口 |
-|---|---|---|---|
-| 群聊与搜索 | 社会循环、搜索、Gate 与发送回执链已有 | 现有模型、SnowLuma WS 和两群配置保留 | 之前普通回复有 MESSAGE_SENT/message_id，搜索走 web_search/read_page；本批未重跑 |
-| Python 工作 | start_work 与本机/Gateway 驱动已有 | 本机 worker 已选、Python 镜像已有 | 旧提醒曾令新工作整批回滚，尚缺 run_python→产物→交付完整证据；A03/A04 已修源码、尚未人工运行 |
-| 提醒 | 原委托、到期与可交付候选筛选已有 | 原 Scheduler 保留 | `task_4464650a5a` 曾进入 review_required；修复后正常到期交付未验，不自动恢复旧提醒 |
-| 历史维护／回读 | 原话、摘要、认识索引和读取工具已有 | 语义模式仍逐群 opt-in | A02 已改为相关认识版本核对与过期候选持久保存，实际竞争时序未验；上午细节按需回读尚无完整证据 |
-| 浏览器 | 本机试运行与 Gateway 命令链已有 | 本机已配置；独立镜像构建失败 | 失败原文：`Failed to download Chrome for Testing 151.0.7922.34 (playwright chromium v1234)`；无 browser_open 验收 |
-| 心跳／公共兴趣／分享 | 系统槽、公共工作、候选采用和逐群表达已有 | 上轮已写入 A-SOUL 主题、系统研究 grant、1014123451 群分享 grant；每天 2 条、冷却 3600 秒 | 用户已授权该群开发联调；未启动生效，尚无真实研究→兴趣→分享闭环 |
-| 视频片段／转写 | 媒体 Gateway 与 openai_verbose_json 转写代码已有 | 媒体镜像构建成功；Gateway 未部署；用户指定当前 Gemini | 根配置启用媒体但无 Gateway，当前不能合法启动；Gemini 名称被填入尚未确认兼容的协议，不能认定可转写 |
-| 文件／账号／Core／Linux | 分别已有实现或部署材料 | SnowLuma 1.14.15；上传代码声明 NapCat；Core 未配置 | 对应平台、账号、隔离与 Linux 发布证据均未完成，不由普通聊天成功代替 |
+同批修正：`file_delivery_facts` 原先固定取第一个全局启用的 workspace 实现判断本群是否能生成文件，两种实现同时存在而本群只开了另一个时会误报未开放，已改为按本群实际启用的实现判断。
 
-现场配置特别说明：上轮停机时备份了根配置和数据库到本机 `/private/tmp/lenbot-dev-backup-20260916-195955`，不是完整媒体备份。随后配置媒体插件但没有 Gateway，正常配置读取报：`plugins.media_analysis: 媒体分析需要已配置的 workspace Gateway；没有宿主解码入口`。本批未改根配置、未启动服务、未购买模型调用或实发。恢复联调前须先收口这份不完整配置，不能照文档直接启动。开发范围授权仍是群 1014123451；不扩展其他群或账号动作。
+构建管线（提交 `294dca1`）：控制面板产物不再进 Git。原先前端相关提交里 40—59／45—87 个文件是构建产物；`deploy/linux/Dockerfile` 新增 Node 阶段自建面板，`.dockerignore` 只挡装好的 toolchain 与本机产物，`pyproject.toml` 增加 source/wheel 排除。核对：`uv build --wheel` 从 47.7MB（含 3291 个 node_modules 文件）降到 13MB 且 81 个面板资源齐全；`docker build -f deploy/linux/Dockerfile .` 成功，镜像内已安装包含 78 个资源加 index.html、无 `web/frontend`；镜像内构建与本机 `npm run build` 产出相同哈希。历史未重写，旧提交仍带产物。
 
-## A01—A07 本轮源码复核
+构建：`src/len_bot/web/frontend` 执行 `npm run build` 通过，产物留在本机工作副本供本地运行。未运行测试（按 AGENTS.md）。未做自动截图。
 
-| 项目 | 核对结果与处理 |
+## 文档收敛
+
+- `AGENTS.md` 3051 → 2661 字节，规则条目保留，去掉已过期的「前期只做契约」阶段说明。
+- 删除已完成批次的 `docs/LenBot_全链路审计与产品化重构计划_1683b8a.md`（R0—R6 已交付，正文保留在 Git 提交 `3eadcad`）。
+- 新增本批合同 `docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md`；README、架构与运行手册的引用同步改到它。
+- `docs/` 文档正文从 425.5KB 降到 352.1KB（含本批新增的合同 41.5KB）。
+
+## 现场状态（未变）
+
+| 项 | 结果 |
 |---|---|
-| A01 空群参数插件新增 | 已确认 readyToAdd 错用 schema 属性数量；已改为仅要求全局已配置。新增仍为 enabled=false/config={}；有必填参数时复用原表单校验并显示字段错误。未增加网络、执行或发送行为 |
-| A02 历史维护竞争 | Actor 与存储层均比较全群 knowledge_revision；begin_history_batch 被任意非 completed 批次阻断。已改为同主体/类别和目标版本核对；摘要、采用认识和过期候选同事务保存，过期候选在群历史页独立可见 |
-| A03 本机执行修订 | 已接入共用准入函数；锁后与实际执行前核对原修订、状态、插件和截止，本机浏览器页面按修订隔离 |
-| A04 本次输入残留 | 每次调用独立输入目录，准备完整后挂载，仅清理该次输入；未知终止保留快照，不删持续工作成果 |
-| A05 延期消息依赖 | 已按持久批次／请求身份和前序回执恢复依赖；前序失败或未知停止后续表达，未尝试前序复用 Scheduler 等待；已有失败事实不再返回成功 |
-| A06 授予截止精度 | 已保留未编辑的原始到期 epoch；日期编辑支持秒；白名单与授予按改动独立提交，在原锁内合并和核对授予修订 |
-| A07 debounce 上限 | 已按 min(末条到达+idle, 首条到达+max) 设置单调时钟截止；旧 timer 不取走新缓冲，@/真实回复立即路径保留 |
+| SnowLuma 版本 | `get_version_info`：app_name=SnowLuma，app_version=`1.14.15-node`，protocol_version=v11（重建前读到） |
+| `upload_group_file` | 存在；空参数返回 `group_id: is required`（1400），不是 unknown action |
+| 已加入群 | `1014123451` 造密码、`126300994` 类人群星（枝江）建筑梦限公司员工群 |
+| 文件目录 | 宿主 `file_assets/` 0750；当前容器只读挂到 `/lenbot-files`，node(1000) 可列出 |
+| `onebot_file_upload` | `implementation=snowluma`，`protocol=upload_group_file`，`version=1.14.15-node`，`deployment_verified=false` |
+| 旁听 +2 | 两群 `p=0.8`、`W=150`、`K=30`（由当时全局 0.6/300/60 计算并保存具体值） |
+| 表情 | 两群 `expression.sticker_preference=slightly_more` |
+| LenBot | 已停机：向主进程 81211 发 SIGTERM，81211/81209 均已退出，`127.0.0.1:11307` 不再监听；Gateway `127.0.0.1:8790`（Docker）未动 |
+| OneBot | 容器内 3001 未监听；LenBot 对 `ws://127.0.0.1:13001/` 报 InvalidMessage。QQ 需在 noVNC/WebUI 完成登录后才会打开 OneBot |
 
-架构文档同步移除“文件上传与点赞收藏尚未开始”的过时表述，并明确本机输入快照仍未满足 A04；运行手册补充空群参数新增行为。没有将报告建议的新导航、recall_chat 或能力投影写成现有能力。
+停用容器 `snowluma-prev` 在登录恢复前不要删。登录态卷仍是 `qq-client-config` / `qq-client-data` / `qq-gateway-data`。
 
-## 核对与数据边界
+未登录面板（默认密码已失效）。未向群发送、未把 `deployment_verified` 标成已核验。18:20 开发群「群里发不了文件附件」的实发文字回退属于旧协议缺失，不是本批新回执。
 
-- 报告与相关真实源码已阅读。`npm run build` 正常构建通过（Vite 6.4.3，446 模块），同批构建产物已更新；页面人工操作未验，当前根配置阻止正常启动，不以构建代替 V01/V02。
-- 未新增或运行测试、夹具、断言探针、自动截图；未修改数据库、Reset、补造来源、重发提醒、启动 LenBot/Gateway、推送或扩大账号授权。
-- A01 不涉及数据库结构或数据转换。历史身份、事件、模型消费和未知回执保留。
+## 下一步
 
-## 本轮核对与后续
-
-A02—A07 已分批提交；正常 Python 编译与相关前端构建通过。A06/A07 前后的修改均保留原事务、事件和配置边界，不运行测试、探针或模拟验收。原根配置问题仍存在。
-
-R3 第一批已增加统一能力只读投影与总览复用，导航收口为六个一级入口；部署、保存、装载、资格与最近事实分开，不新增权限或配置事实源。Python 正常编译、前端构建（450 模块）与差异格式检查通过。页面尚未人工运行，不算 R3 完成。草稿基线、领域表单拆分及三条启用向导仍待完成。
-
-继续推进 R3 配置写入合同及领域入口、R4 参与阶段与 recall_chat、R5 模型动作接口；R2 四条基础旅程与 R6 真实放行需在收口现有无效配置后逐项人工核对。未运行或无部署前提的功能保持未验，不以源码和构建代替。
-
-R3 第二批：以上设置、群和插件表单已接原值基线比较，字典按实际变化合并、列表整表冲突检查；OneBot 令牌操作显式化。Python 正常编译和前端构建（450 模块）通过，差异检查发现并清理一处行尾空格。模型配置未接入、配置向导与领域拆分未完成；未人工运行 V22，根配置和服务状态未改。
-
-R3 第三批：模型供应商／目录／职责／检索路由已接基线保存；保留当前模型绑定，不执行原有能力探针。人格、参与方式和睡眠从大型 SettingsView 拆为独立 AgentSettingsView（原深链单次映射）。修复插件草稿复制 Vue 响应式对象不应使用 structuredClone 的问题。Python 正常编译、前端构建（452 模块）和差异检查通过；人工页面及并发保存仍未验。启用向导继续待办。
+1. 启动 LenBot 以加载本批代码（已停机；`.backups/lenbot-dev-backup-20260917-203616` 是当前回退点）。本机运行需先有面板产物，缺少时后端照常起但面板不可用。
+2. 在 `http://127.0.0.1:6081`（noVNC）或 `http://127.0.0.1:5099`（SnowLuma WebUI）完成 QQ 登录，直到容器监听 3001。
+3. 用连接页「读取平台实现与版本」核对现场实现与版本，确认 node 能读 `/lenbot-files`，再把 `deployment_verified` 改为 true 并重启。
+4. 在群 `1014123451` 由人类提出资料整理并发送 CSV；成功证据必须是 `FILE_UPLOADED` 与真实 `file_id`（V01、V02）。
+5. 再用一个不依赖日程的表格计算请求复验同一通用链（V03）。

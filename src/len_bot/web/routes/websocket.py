@@ -77,6 +77,42 @@ async def test_onebot_http(request: Request, user: str = Depends(get_current_use
         raise HTTPException(status_code=502, detail=f"HTTP 接口测试失败：{wording}")
     return {"success": True, "message": f"HTTP 接口连接正常，耗时 {result['latency_ms']} 毫秒"}
 
+@router.post("/read-version")
+async def read_onebot_version(request: Request, user: str = Depends(get_current_user)):
+    """Read the platform's own implementation and version over the live channel.
+
+    This is the read the operator owes before setting `deployment_verified`: a
+    published catalogue names an action, it does not prove the running build
+    answers to it.  Nothing is written here, and a real upload receipt is still
+    the only evidence that a file reached a group.
+    """
+    runtime = request.app.state.runtime
+    adapter = getattr(runtime, "_onebot_adapter", None)
+    if not adapter:
+        raise HTTPException(status_code=503, detail="OneBot 连接器尚未启动")
+    try:
+        payload = await adapter.call_api("get_version_info")
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"读取平台版本失败：{error}") from error
+    if payload.get("status") != "ok" or payload.get("retcode") not in (0, None):
+        wording = payload.get("wording") or payload.get("message") or f"返回码 {payload.get('retcode')}"
+        raise HTTPException(status_code=502, detail=f"读取平台版本失败：{wording}")
+    data = payload.get("data") or {}
+    upload = runtime.config_store.current.runtime.onebot_file_upload
+    app_name = str(data.get("app_name") or "")
+    app_version = str(data.get("app_version") or "")
+    configured = None
+    if upload is not None:
+        configured = {"implementation": upload.implementation, "version": upload.version,
+                      "protocol": upload.protocol, "deployment_verified": upload.deployment_verified,
+                      "name_matches": upload.implementation.casefold() in app_name.casefold(),
+                      "version_matches": upload.version == app_version}
+    return {"success": True, "app_name": app_name, "app_version": app_version,
+            "protocol_version": data.get("protocol_version"), "transport": runtime.config.onebot_action_transport,
+            "configured_upload": configured,
+            "message": "这是当前连接实际报告的实现与版本；上传成功仍以 FILE_UPLOADED 的真实 file_id 为准"}
+
+
 @router.post("/disconnect")
 async def disconnect_ws_client(request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime

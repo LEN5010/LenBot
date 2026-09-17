@@ -418,13 +418,22 @@ class MediaService:
         assets = await self.runtime.event_store.list_palette(scene_id,
             limit=self.runtime.config.media_palette_limit)
         usage = await self.recent_usage(scene_id, [asset['id'] for asset in assets], through_rowid=through_rowid)
-        manifest = [
-            {"asset_id": asset["id"], "ref": f"P{index+1:02d}",
-             "name": asset["description"][:40], "description": asset["description"][:40],
-             "tags": list(asset["tags"]), "source_event_id": asset["source_event_id"],
-             "status": "catalog_only", **usage[asset['id']]}
-            for index, asset in enumerate(assets)
-        ]
+        def rank(asset):
+            record = usage[asset['id']]
+            return (record['recent_send_count'] > 0, record['recent_send_count'],
+                    asset.get('palette_order') if asset.get('palette_order') is not None else 10**9, asset['id'])
+        assets = sorted(assets, key=rank)
+        manifest = []
+        for index, asset in enumerate(assets):
+            description = asset["description"] or ""
+            tags = list(asset["tags"] or [])
+            name = "、".join(tags[:3]) if tags else description[:40]
+            manifest.append({
+                "asset_id": asset["id"], "ref": f"P{index+1:02d}",
+                "name": name[:40], "description": description[:120],
+                "description_truncated": len(description) > 120,
+                "tags": tags, "source_event_id": asset["source_event_id"],
+                "status": "catalog_only", **usage[asset['id']]})
         return {"blocks": [], "manifest": manifest}
 
     async def prepare_action(self, action):

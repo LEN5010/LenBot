@@ -136,6 +136,8 @@ class AgentRuntime:
             self.attention_policy.random_source = attention_random
         self.attention_policy.chat_allowed = self.scene_policy.chat_allowed
         self.attention_policy.time_settings = lambda: self.config_store.current.time
+        from len_bot.runtime.attention_config import effective_attention
+        self.attention_policy.effective_attention = lambda scene_id: effective_attention(self.config_store.current, scene_id)
         self.scene_manager = SceneManager(self.bot_actor_id, self.event_store, self._on_scene_event_committed,
                                           attention_policy=self.attention_policy,
                                           classify_event=lambda event, cutoff: classify_event(self, event, cutoff))
@@ -432,10 +434,11 @@ class AgentRuntime:
         from len_bot.web import setup_wizards
         async with self.config_update_lock:
             data = self.config_store.current.model_dump()
-            preview = setup_wizards.preview(self.config_store.current, wizard, values)
+            now = self.clock()
+            preview = setup_wizards.preview(self.config_store.current, wizard, values, now)
             if preview.get('blocked'):
                 raise ValueError(preview['blocked'])
-            candidate_data = setup_wizards.apply_values(data, wizard, values, operator_id=operator_id)
+            candidate_data = setup_wizards.apply_values(data, wizard, values, now, operator_id=operator_id)
             candidate = self.config_store.parse(candidate_data)
             self.config_store.save(candidate)
         if wizard == 'research':
@@ -460,6 +463,28 @@ class AgentRuntime:
             data = self.config_store.current.model_dump()
             data['scenes'][scene_id] = merge_edit(data['scenes'].get(scene_id), baseline, values, ('scenes', scene_id))
             self.config_store.save(self.config_store.parse(data))
+        await self._apply_scene_settings(scene_id, was_enabled)
+
+    async def apply_group_quick(self, scene_id: str, baseline: dict, values: dict, *, operator_id: str) -> None:
+        from len_bot.config_edit import merge_edit
+        from len_bot.config_store import SceneSettings
+        from len_bot.runtime.capabilities import CapabilityGrant
+        from len_bot.web.group_quick import apply_send_file_grants
+        settings = SceneSettings.model_validate(values['settings']).model_dump()
+        was_enabled = self.semantic_retrieval_enabled(scene_id)
+        async with self.config_update_lock:
+            data = self.config_store.current.model_dump()
+            data['scenes'][scene_id] = merge_edit(data['scenes'].get(scene_id), baseline.get('settings'),
+                                                  settings, ('scenes', scene_id))
+            if values.get('send_file_principals') is not None:
+                grants = [CapabilityGrant.model_validate(item) for item in data['access']['capability_grants']]
+                grants = apply_send_file_grants(grants, scene_id, values['send_file_principals'],
+                                                baseline.get('send_file_grants'), operator_id)
+                data['access']['capability_grants'] = [grant.model_dump() for grant in grants]
+            self.config_store.save(self.config_store.parse(data))
+        await self._apply_scene_settings(scene_id, was_enabled)
+
+    async def _apply_scene_settings(self, scene_id: str, was_enabled: bool) -> None:
         if was_enabled != self.semantic_retrieval_enabled(scene_id):
             self._semantic_index_epochs[scene_id] = self._semantic_index_epochs.get(scene_id, 0) + 1
         actor = self.scene_manager._actors.get(scene_id)

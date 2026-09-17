@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import uuid
 
-from len_bot.runtime.capabilities import Capability
+from len_bot.runtime.capabilities import Capability, CapabilitySubject, first_allowing_grant
 
 
 WIZARDS = ('python', 'research', 'broadcast')
 BROADCAST_PLUGINS = ('asoul_calendar', 'asoul_dynamics', 'bilibili_live_sensor')
 PYTHON_PLUGINS = ('workspace', 'python_workspace')
+
+# A grant may not expire at or before the Unix epoch, so asking the same matcher
+# at time 0 answers "would this grant still match if it had not lapsed?".
+BEFORE_ANY_EXPIRY = 0.0
 
 
 def _scene_id(value):
@@ -34,20 +38,25 @@ def _backend(data):
     return None, None, '未配置已启用的执行后端'
 
 
-def _has_grant(grants, *, principal_type, principal_id, scene_id=None, system_scope=None, capability):
-    for grant in grants:
-        if not grant.get('enabled'):
-            continue
-        if grant.get('principal_type') != principal_type or grant.get('principal_id') != principal_id:
-            continue
-        if capability not in grant.get('capabilities', []):
-            continue
-        if scene_id is not None and grant.get('scene_id') != scene_id:
-            continue
-        if system_scope is not None and grant.get('system_scope') != system_scope:
-            continue
-        return grant
-    return None
+def _has_grant(grants, now, *, principal_type, principal_id, scene_id=None, system_scope=None, capability):
+    """The runtime's own admission question, asked against the draft grant list.
+
+    A lapsed or disabled grant is not "already granted", so the wizard offers to
+    issue a working one instead of reporting a permission the runtime refuses.
+    """
+    subject = CapabilitySubject(principal_type, principal_id, scene_id, system_scope)
+    return first_allowing_grant(grants, subject, Capability(capability), now)
+
+
+def _grant_note(grants, now, base, **subject):
+    """Say whether the proposed grant is the first one or replaces a lapsed one.
+
+    The "lapsed" reading comes from the same matcher asked before any expiry, so
+    the wizard never keeps a second opinion about who is authorised.
+    """
+    if _has_grant(grants, BEFORE_ANY_EXPIRY, **subject) is not None:
+        return base + '；原有同主体授予已过有效期，按当前判定不再允许'
+    return base
 
 
 def preview_python(root, values):
@@ -97,7 +106,7 @@ def apply_python(data, values):
     return data
 
 
-def preview_research(root, values):
+def preview_research(root, values, now):
     data = root.model_dump()
     topics = [item.strip() for item in (values.get('topics') or []) if isinstance(item, str) and item.strip()]
     if len(topics) > 20:
@@ -115,13 +124,16 @@ def preview_research(root, values):
         changes.append({'path': 'runtime.heartbeat_topics', 'from': runtime.get('heartbeat_topics') or [],
                         'to': topics, 'note': '写入研究主题'})
     grants = list(data['access']['capability_grants'])
-    research = _has_grant(grants, principal_type='system', principal_id='scheduler',
+    research = _has_grant(grants, now, principal_type='system', principal_id='scheduler',
                           system_scope='heartbeat', capability=Capability.PUBLIC_RESEARCH.value)
     if research is None:
         changes.append({'path': 'access.capability_grants', 'from': None,
                         'to': {'principal_type': 'system', 'principal_id': 'scheduler',
                                'system_scope': 'heartbeat', 'capabilities': [Capability.PUBLIC_RESEARCH.value]},
-                        'note': '为 scheduler/heartbeat 授予公共研究；不猜其他主体'})
+                        'note': _grant_note(grants, now, '为 scheduler/heartbeat 授予公共研究；不猜其他主体',
+                                            principal_type='system', principal_id='scheduler',
+                                            system_scope='heartbeat',
+                                            capability=Capability.PUBLIC_RESEARCH.value)})
     share = _plugin_state(data, 'interest_share')
     if share_scenes and share.get('config') is None:
         return {'wizard': 'research', 'blocked': '分享前需要先在插件页填写 interest_share 全局参数',
@@ -139,19 +151,22 @@ def preview_research(root, values):
                                               'cooldown_seconds': cooldown}}
         changes.append({'path': f'scenes.{scene_id}.plugins.interest_share', 'from': current, 'to': target,
                         'note': '本群独立分享次数与冷却'})
-        grant = _has_grant(grants, principal_type='plugin', principal_id='interest_share',
+        grant = _has_grant(grants, now, principal_type='plugin', principal_id='interest_share',
                            scene_id=scene_id, capability=Capability.INTEREST_SHARE.value)
         if grant is None:
             changes.append({'path': 'access.capability_grants', 'from': None,
                             'to': {'principal_type': 'plugin', 'principal_id': 'interest_share',
                                    'scene_id': scene_id, 'capabilities': [Capability.INTEREST_SHARE.value]},
-                            'note': '向本群插件主体授予分享'})
+                            'note': _grant_note(grants, now, '向本群插件主体授予分享',
+                                                principal_type='plugin', principal_id='interest_share',
+                                                scene_id=scene_id,
+                                                capability=Capability.INTEREST_SHARE.value)})
     return {'wizard': 'research', 'blocked': None, 'changes': changes, 'share_scenes': share_scenes,
             'note': '没有分享群也可以只做研究。启用配置不会启动一次付费模型或发送预览。'}
 
 
-def apply_research(data, values, *, operator_id):
-    preview = preview_research(type('R', (), {'model_dump': lambda self: data})(), values)
+def apply_research(data, values, now, *, operator_id):
+    preview = preview_research(type('R', (), {'model_dump': lambda self: data})(), values, now)
     if preview['blocked']:
         raise ValueError(preview['blocked'])
     topics = [item.strip() for item in (values.get('topics') or []) if isinstance(item, str) and item.strip()]
@@ -162,7 +177,7 @@ def apply_research(data, values, *, operator_id):
     if topics:
         data['runtime']['heartbeat_topics'] = topics
     grants = list(data['access']['capability_grants'])
-    if _has_grant(grants, principal_type='system', principal_id='scheduler',
+    if _has_grant(grants, now, principal_type='system', principal_id='scheduler',
                   system_scope='heartbeat', capability=Capability.PUBLIC_RESEARCH.value) is None:
         grants.append({
             'grant_id': 'g' + uuid.uuid4().hex, 'revision': 1, 'operator_id': operator_id, 'principal_type': 'system',
@@ -179,7 +194,7 @@ def apply_research(data, values, *, operator_id):
             plugins['interest_share'] = {'enabled': True, 'config': {
                 'topics': [], 'daily_limit': daily_limit, 'cooldown_seconds': cooldown}}
             scene['plugins'] = plugins
-            if _has_grant(grants, principal_type='plugin', principal_id='interest_share',
+            if _has_grant(grants, now, principal_type='plugin', principal_id='interest_share',
                           scene_id=scene_id, capability=Capability.INTEREST_SHARE.value) is None:
                 grants.append({
                     'grant_id': 'g' + uuid.uuid4().hex, 'revision': 1, 'operator_id': operator_id, 'principal_type': 'plugin',
@@ -239,21 +254,21 @@ def apply_broadcast(data, values):
     return data
 
 
-def preview(root, wizard, values):
+def preview(root, wizard, values, now):
     if wizard == 'python':
         return preview_python(root, values)
     if wizard == 'research':
-        return preview_research(root, values)
+        return preview_research(root, values, now)
     if wizard == 'broadcast':
         return preview_broadcast(root, values)
     raise ValueError('未知向导')
 
 
-def apply_values(data, wizard, values, *, operator_id):
+def apply_values(data, wizard, values, now, *, operator_id):
     if wizard == 'python':
         return apply_python(data, values)
     if wizard == 'research':
-        return apply_research(data, values, operator_id=operator_id)
+        return apply_research(data, values, now, operator_id=operator_id)
     if wizard == 'broadcast':
         return apply_broadcast(data, values)
     raise ValueError('未知向导')

@@ -1,18 +1,31 @@
-"""One explicitly configured NapCat protocol, not a generic OneBot promise."""
+"""One explicitly selected file-upload implementation, not a generic OneBot promise."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
+
+PROTOCOLS = {
+    'napcat': 'upload_group_file_data_file_id',
+    'snowluma': 'upload_group_file',
+}
 
 
 class FileUploadConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    implementation: Literal['napcat']
+    implementation: Literal['napcat', 'snowluma']
     version: str = Field(min_length=1, max_length=80, description='运营核对的实际版本')
-    protocol: Literal['upload_group_file_data_file_id']
-    deployment_verified: bool = Field(default=False, description='已核对实际版本、file_id 回执与仅资产目录的只读挂载')
+    protocol: Literal['upload_group_file_data_file_id', 'upload_group_file']
+    deployment_verified: bool = Field(default=False,
+        description='运营已核对实际版本与仅资产目录的只读挂载；真实上传成功只从 FILE_UPLOADED 的 file_id 派生，本标记不要求先有成功上传')
     export_mount_path: Literal['/lenbot-files'] = '/lenbot-files'
+
+    @model_validator(mode='after')
+    def matching_protocol(self):
+        expected = PROTOCOLS[self.implementation]
+        if self.protocol != expected:
+            raise ValueError(f'{self.implementation} 必须使用 protocol={expected}，不能改用其他实现或自动回退')
+        return self
 
 
 class UploadEnvelope(BaseModel):
@@ -27,7 +40,7 @@ class UploadIdentity(BaseModel):
     file_id: str = Field(min_length=1, max_length=1024)
 
 
-def upload_response(data, transport):
+def upload_response(data, transport, protocol):
     try:
         response = UploadEnvelope.model_validate(data)
         if response.status == 'failed':
@@ -40,5 +53,5 @@ def upload_response(data, transport):
         return DeliveryResult(status=DeliveryStatus.UNKNOWN, transport=transport,
             error_code='file_receipt_unconfirmed', error='上传请求未取得已配置协议要求的真实 file_id，保留占用且不自动重传')
     return DeliveryResult(status=DeliveryStatus.SENT, transport=transport, file_id=identity.file_id,
-        file_receipt={'protocol': 'upload_group_file_data_file_id', 'status': response.status,
+        file_receipt={'protocol': protocol, 'status': response.status,
                       'retcode': response.retcode, 'file_id': identity.file_id})

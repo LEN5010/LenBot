@@ -32,10 +32,21 @@ class AttentionPolicy:
         self.config, self.clock, self.random_source = config, clock, random_source
         self.chat_allowed = None
         self.time_settings = None
+        self.effective_attention = None
+
+    def _attention(self, scene_id):
+        if self.effective_attention is not None:
+            return self.effective_attention(scene_id)
+        from types import SimpleNamespace
+        return SimpleNamespace(sample_probability=self.config.attention_sample_probability,
+            sample_window_seconds=self.config.attention_sample_window_seconds,
+            keyword_cooldown_seconds=self.config.attention_keyword_cooldown_seconds,
+            focus_seconds=self.config.attention_focus_seconds, keywords=self.config.attention_keywords)
 
     def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=(),
               awaiting_response=(), focus_renewal_actors=()):
         now = self.clock()
+        attention = self._attention(event.scene_id)
         state.focused_participants = {actor: until for actor, until in state.focused_participants.items() if until > now}
         if event.metadata.get('conversation_excluded'):
             event.metadata['attention_reasons'] = []
@@ -45,7 +56,7 @@ class AttentionPolicy:
             renewed = []
             for actor in sorted(set(focus_renewal_actors)):
                 if actor != bot_actor_id:
-                    state.focused_participants[actor] = now + self.config.attention_focus_seconds
+                    state.focused_participants[actor] = now + attention.focus_seconds
                     renewed.append(actor)
             event.metadata['focus_renewed_actor_ids'] = renewed
 
@@ -75,15 +86,27 @@ class AttentionPolicy:
                 reasons.append('awaiting_response')
             certain = bool(reasons)
             if not certain:
-                if (any(word and word.casefold() in text for word in self.config.attention_keywords)
+                if (any(word and word.casefold() in text for word in attention.keywords)
                         and (state.attention_keyword_at is None
-                             or now - state.attention_keyword_at >= self.config.attention_keyword_cooldown_seconds)):
+                             or now - state.attention_keyword_at >= attention.keyword_cooldown_seconds)):
                     reasons.append('keyword_opportunity')
                     state.attention_keyword_at = now
-                window = int(now // self.config.attention_sample_window_seconds)
-                if window > state.attention_sample_window:
-                    state.attention_sample_window = window
-                    if self.random_source() < self.config.attention_sample_probability:
+                if state.attention_sample_at is None:
+                    # A window index from an earlier configuration cannot be compared
+                    # once the window length changes, so the next opportunity becomes
+                    # an absolute time.  A session that already sampled under the old
+                    # coordinate waits one full window; a new session may sample now.
+                    state.attention_sample_at = (now + attention.sample_window_seconds
+                                                 if state.attention_sample_window >= 0 else now)
+                # A shortened window takes effect from here instead of after the old
+                # one would have ended.  This moves one pending deadline closer; it
+                # never adds a second draw inside the same window.
+                state.attention_sample_at = min(state.attention_sample_at,
+                                                now + attention.sample_window_seconds)
+                if now >= state.attention_sample_at:
+                    state.attention_sample_at = now + attention.sample_window_seconds
+                    state.attention_sample_window = int(now // attention.sample_window_seconds)
+                    if self.random_source() < attention.sample_probability:
                         reasons.append('sample_opportunity')
         elif event.event_type in RUNTIME_INPUTS:
             stale = event.metadata.get('obsolete_task_wake') or event.metadata.get('obsolete_job_result')

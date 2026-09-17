@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { api, setDisplayTimezone } from '../api.js'
 
-const state = reactive({ status: null, scenes: [], error: '', sceneError: '', loading: false, loadedScenes: false })
+const state = reactive({ status: null, scenes: [], error: '', sceneError: '', discoveryError: '', loading: false, loadedScenes: false })
 let request = 0
 let sceneRequest
 export function useAppState() { return state }
@@ -16,7 +16,7 @@ export async function loadScopes(refresh = false) {
   if (state.loadedScenes && !refresh) return
   if (sceneRequest) return sceneRequest
   sceneRequest = (async () => {
-    try { const data = await api('/api/cockpit/scenes'); state.scenes = data.scenes; state.loadedScenes = true; state.sceneError = '' }
+    try { const data = await api('/api/cockpit/scenes'); state.scenes = data.scenes; state.loadedScenes = true; state.sceneError = ''; state.discoveryError = data.discovery?.error || '' }
     catch (error) { state.sceneError = error.message }
     finally { sceneRequest = null }
   })()

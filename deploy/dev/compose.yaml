@@ -1,0 +1,37 @@
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile.gateway
+    image: lenbot-gateway:dev
+    command: ["--config", "/etc/lenbot-gateway/gateway.config.json"]
+    restart: "no"
+    init: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LENBOT_DEV_GATEWAY_DIR:?set LENBOT_DEV_GATEWAY_DIR}/gateway.config.json:/etc/lenbot-gateway/gateway.config.json:ro
+      - ${LENBOT_DEV_GATEWAY_DIR:?set LENBOT_DEV_GATEWAY_DIR}/data:${LENBOT_DEV_GATEWAY_DIR}/data
+      - ${LENBOT_DEV_GATEWAY_DIR:?set LENBOT_DEV_GATEWAY_DIR}/browser-seccomp.json:/etc/lenbot-gateway/browser-seccomp.json:ro
+    ports:
+      - "127.0.0.1:8790:8790"
+    networks:
+      control:
+        ipv4_address: 172.31.8.2
+      egress:
+        ipv4_address: 172.31.9.2
+      uplink: {}
+
+networks:
+  control:
+    name: lenbot-dev-control
+    ipam:
+      config: [{subnet: 172.31.8.0/24, gateway: 172.31.8.1}]
+  egress:
+    name: lenbot-dev-egress
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.9.0/24, gateway: 172.31.9.1}]
+  uplink:
+    name: lenbot-dev-uplink

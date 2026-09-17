@@ -24,6 +24,31 @@ from len_bot.execution.protocol import OCCUPYING_STATES
 class RuntimeQueryService:
     def __init__(self, runtime):
         self.runtime = runtime
+        self._joined_groups = {'sampled_at': None, 'items': [], 'error': None, 'complete': False}
+
+    async def joined_groups(self, *, refresh=False):
+        """OneBot get_group_list overlay; failure keeps the last successful sample."""
+        cached = self._joined_groups
+        if not refresh and cached['sampled_at'] and self.current_time() - cached['sampled_at'] < 30:
+            return cached
+        adapter = getattr(self.runtime, '_onebot_adapter', None)
+        if adapter is None:
+            return {**cached, 'error': cached['error'] or 'OneBot 适配器尚未启动'}
+        try:
+            payload = await adapter.call_api('get_group_list')
+            rows = payload.get('data') if isinstance(payload, dict) else None
+            if payload.get('status') != 'ok' or payload.get('retcode') not in (0, None) or not isinstance(rows, list):
+                raise ValueError(str(payload.get('wording') or payload.get('message') or 'get_group_list 未返回群列表'))
+            items = []
+            for row in rows:
+                if not isinstance(row, dict) or row.get('group_id') in (None, ''):
+                    continue
+                items.append({'group_id': str(row['group_id']), 'group_name': row.get('group_name') or str(row['group_id'])})
+            self._joined_groups = {'sampled_at': self.current_time(), 'items': items, 'error': None, 'complete': True}
+        except Exception as error:
+            self._joined_groups = {**cached, 'sampled_at': cached['sampled_at'] or self.current_time(),
+                                   'error': str(error)[:300], 'complete': cached['complete']}
+        return self._joined_groups
 
     def current_time(self) -> float:
         return self.runtime.event_store.clock()
@@ -471,8 +496,12 @@ class RuntimeQueryService:
         return await self.runtime.file_assets.bytes_for_job(scene_id, job_id, asset_id)
 
     @staticmethod
-    def public_asset(asset):
-        return {key:asset[key] for key in ("id","scope","source_event_id","mime_type","description","tags","enabled","curated","created_at","palette_order")}
+    def public_asset(asset, *, in_current_limit=None):
+        item={key:asset[key] for key in ("id","scope","source_event_id","mime_type","description","tags","enabled","curated","created_at","palette_order")}
+        item["in_initial_catalog"]=item["palette_order"] is not None
+        item["in_current_limit"]=bool(in_current_limit) if in_current_limit is not None else None
+        item["description_sufficient"]=bool((item.get("description") or "").strip() or item.get("tags"))
+        return item
 
     async def media_assets(self, scene_id, query="", *, curated=None, enabled=None, palette_only=False, page=1, page_size=48):
         source="FROM media_assets WHERE scope IN (?, 'global-safe')";params=[scene_id]
@@ -486,7 +515,8 @@ class RuntimeQueryService:
         result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
         for item in result["items"]:
             item["tags"]=json.loads(item.pop("tags_json"));item["enabled"]=bool(item["enabled"]);item["curated"]=bool(item["curated"])
-        result["items"]=[self.public_asset(item) for item in result["items"]]
+        palette_ids={asset["id"] for asset in await self.runtime.event_store.list_palette(scene_id, limit=self.runtime.config.media_palette_limit)}
+        result["items"]=[self.public_asset(item, in_current_limit=item["id"] in palette_ids) for item in result["items"]]
         return result
 
     async def media_asset(self, asset_id, scene_id):
@@ -494,8 +524,8 @@ class RuntimeQueryService:
         return self.public_asset(asset) if asset else None
 
     async def media_palette(self, scene_id):
-        items=[self.public_asset(asset) for asset in await self.runtime.event_store.list_palette(scene_id, limit=self.runtime.config.media_palette_limit)]
-        return {"items":items,"total":len(items),"complete":True}
+        items=[self.public_asset(asset, in_current_limit=True) for asset in await self.runtime.event_store.list_palette(scene_id, limit=self.runtime.config.media_palette_limit)]
+        return {"items":items,"total":len(items),"complete":True,"limit":self.runtime.config.media_palette_limit}
 
     async def media_file(self, asset_id, scene_id):
         return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
@@ -598,6 +628,25 @@ class RuntimeQueryService:
         for item in items:
             settings = self.runtime.config_store.current.scenes.get(item["scene_id"])
             item["settings"] = settings.model_dump() if settings is not None else None
+            item["joined"] = None
+        joined = await self.joined_groups()
+        known = {item["scene_id"] for item in items}
+        for row in joined.get("items") or []:
+            scene_id = f"group:{row['group_id']}"
+            if scene_id in known:
+                continue
+            items.append({"scene_id": scene_id, "display_name": row.get("group_name") or f"群聊 {row['group_id']}",
+                          "scene_type": "group", "version": None, "participant_count": 0, "last_event_at": None,
+                          "last_bot_message_at": None, "active_job_count": 0, "pending_wake_count": 0,
+                          "has_history": False, "settings": None, "joined": True})
+            known.add(scene_id)
+        names = {f"group:{row['group_id']}": row.get("group_name") for row in joined.get("items") or []}
+        joined_ids = set(names)
+        for item in items:
+            if item["scene_id"] in names and names[item["scene_id"]]:
+                item["display_name"] = names[item["scene_id"]]
+            if item["scene_id"].startswith("group:"):
+                item["joined"] = item["scene_id"] in joined_ids if joined.get("complete") else None
         return items
 
     async def scene_detail(self, scene_id: str) -> Optional[dict]:

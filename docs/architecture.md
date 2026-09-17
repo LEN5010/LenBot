@@ -4,7 +4,7 @@
 
 ## 社会 Agent 计划与当前实现
 
-完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本轮全链路审计与产品化施工合同见[全链路审计与产品化重构计划](LenBot_全链路审计与产品化重构计划_1683b8a.md)；该文件记录源码审计发现、建议和验收合同，不把建议或报告中的历史观察当作当前运行事实。R0/R1 源码修复与 R3 产品化入口已有对应实现；R2 四条基础旅程和 R6 分项放行仍要真实运行证据。本文不复制计划对象与未来拓扑。C14—C20 已补充独立浏览器命令链、逐动作模型审查、B 站匿名原语、公共兴趣采用、实际心跳工作、自然语言叫醒确认与持久延期交付。心跳和睡眠默认关闭；已有 B 站只读工具不受这两个开关控制。C13/C14 未取得部署放行。文件资产、已声明的 NapCat 上传协议、专用账号读取与点赞收藏已有源码；当前 SnowLuma 的上传兼容性及账号动作仍缺实际验收。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker。Gateway 已选时浏览器工具使用独立 browser worker，宿主不创建 Chromium；部署与真实运行仍待验收。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
+完整目标、D01—D12 裁决、M01—M20 模块和 C00—C29 提交合同见[完整实施计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件，正文不改）。本轮施工合同见[文件交付与群聊快速配置计划](LenBot_文件交付与群聊快速配置实施计划_3eadcad.md)；该文件记录本批断点、验收矩阵与不采用的路线，建议条款不是当前运行事实。上一轮全链路审计与产品化计划（R0—R6）已完成并归档在 Git 提交 `3eadcad` 的 `docs/` 中，回查它不继承任何授权或部署状态。本文不复制计划对象与未来拓扑。C14—C20 已补充独立浏览器命令链、逐动作模型审查、B 站匿名原语、公共兴趣采用、实际心跳工作、自然语言叫醒确认与持久延期交付。心跳和睡眠默认关闭；已有 B 站只读工具不受这两个开关控制。C13/C14 未取得部署放行。文件资产、NapCat 与 SnowLuma 两种已声明的上传协议、专用账号读取与点赞收藏已有源码；实际现场版本、只读挂载与真实 file_id 回执仍待验收，账号动作同样未验收。执行后端由 workspace 配置在宿主 worker 与独立 Gateway 之间二选一，样例仍是宿主 worker。Gateway 已选时浏览器工具使用独立 browser worker，宿主不创建 Chromium；部署与真实运行仍待验收。源码可把 `run_python` 交给网关并登记出口代理，不等于隔离或公网出口已验收。
 
 ## 主链与所有权
 
@@ -44,7 +44,7 @@ SQLite 保存事件、账号、认识、人工样例、素材、工作/检查点
 
 工作 payload 可以保存 HumanInitiator、SystemInitiator 或 PluginInitiator；旧人类工作仅由其明确 requester/source 字段转换。JobStore 在提案事务内核验对应真实来源。普通 start_work 与插件 stage_work 仍以已读人类请求为入口。
 
-CapabilityGrant 保存在 `access.capability_grants`，默认空。Gate 对非人类 create/revise/resume 复核当前授予，主体取自原工作；cancel 不另开执行。JobRunner 在每次模型/工具前对非人类再查当前 grant，人类仍走 chat_allowed。information 使用 public_research 授予及其绑定策略；策略名称失效直接拒绝。系统工作的检索范围只有 `global-safe`。并发上限计入创建准入。面板提交可编辑授予字段，认证后再绑定签发者；只改白名单保留原授予。类型中出现 system/plugin 仍不表示计划中的全部自主能力已经开放。
+CapabilityGrant 保存在 `access.capability_grants`，默认空。Gate 对非人类 create/revise/resume 复核当前授予，主体取自原工作；cancel 不另开执行。JobRunner 在每次模型/工具前对非人类再查当前 grant，人类仍走 chat_allowed。information 使用 public_research 授予及其绑定策略；策略名称失效直接拒绝。系统工作的检索范围只有 `global-safe`。并发上限计入创建准入。面板提交可编辑授予字段，认证后再绑定签发者；只改白名单保留原授予。类型中出现 system/plugin 仍不表示计划中的全部自主能力已经开放。主体、能力、范围与到期的匹配只有 `capabilities.grant_allows` 一处实现：`CapabilityAuthority.grant_for` 与启用向导的授予查找都调用它，因此已停用或已过期的授予在任何界面都不读作“已授权”；向导据此提议补发并注明原授予已过有效期，不新增第二套授权判断。
 
 ### 预占、调用与结算
 
@@ -70,7 +70,7 @@ workspace 插件按根配置选择唯一后端：`worker` 由 LenBot 进程调�
 
 一次执行的输入有两类，都由**工作本身**决定，不由模型在工具参数里指定路径：一是本工作已登记的观察（`input_result_ids`），二是本工作来源里已经登记过的媒体资产（`input_asset_ids`）——来源事件自身的图片、被引用消息的图片，或本工作自己产出的观察附件。名单是精确且完整的：不在其中的 id 一律拒绝，而不是静默丢弃；因此模型知道一个看似合理的 asset_id 也拿不到别群或别的图片。观察必须是本工作已登记的 result_id，资产必须经本场景的 `get_bytes` 读出并在导出前用 Pillow 验证（媒体能力停用时明确拒绝）。两类合计不超过 8 份、总字节不超过 24 MB；名字按序生成为 `result_N.txt` 与 `asset_N.<ext>`，重复 id 只导出一次。
 
-每次导出都写一份只读的 `manifest.json`，记录 job/scene、输入目录与每个输入的来源身份（观察 result_id／资产 asset_id 与其登记事件）、coverage、状态、字节数、展示描述与来源列表。manifest 描述本次实际导入集合。容器内仍为 `/lenbot-control/input/`，宿主挂载来源则是本次唯一输入目录，前次输入不在挂载中；持续工作成果目录单独保留。
+每次导出都写一份只读的 `manifest.json`，记录 job/scene、输入目录与每个输入的来源身份（观察 result_id／资产 asset_id 与其登记事件）、coverage、状态、字节数、展示描述与来源列表。manifest 描述本次实际导入集合。容器内仍为 `/lenbot-control/input/`，宿主挂载来源则是本次唯一输入目录，前次输入不在挂载中；持续工作成果目录单独保留。Gateway 若通过宿主 Docker socket 启动 worker，控制目录的宿主路径必须与 `-v` 源路径一致；容器内部别名不能交给宿主 Docker。
 
 ### Gateway
 
@@ -109,6 +109,8 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 ## 输入、注意力与实际阅读
 
 事件保存、注意力扫描、摘要覆盖、本轮原文读取与来源处理分别记录。AttentionPolicy 在事件事务前提供观察机会，扫描位置与待处理唤醒和原话同事务保存；BurstAssembler 只按到达时间聚合获得机会的输入，不决定其中各请求的归属或完成情况。
+
+AttentionPolicy 的抽样概率、窗口与关键词冷却经 `attention_config.effective_attention(scene_id)` 解析：`scenes[group].attention` 的缺省字段继承全局，API 预览、实际抽样与诊断共用这一个解析器。每个窗口仍最多一次机会，但下一次可抽样时刻按绝对时间保存在 SceneSession.attention_sample_at，不再用不能跨配置比较的窗口编号；窗口改短时把待定时刻收到 now+新窗口，改长不冻结抽样，也不因反复保存多掷一次骰子。旧会话首次进入时按已有窗口编号做一次性初始化，不回放历史输入。抽样只增加观察机会，不改变关注时长、预算、睡眠或直接 @ 的快入口。
 
 Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。
 
@@ -261,11 +263,11 @@ ModelGateway 在真实请求前创建唯一 model_calls；真实 usage 与估算
 
 `prepare_workspace_file` 从当前工作修订的 Gateway 不可变产物读取实际字节，保存 `file_assets` 身份及数据库同级专用目录中的文件。资产保存原群、请求者、工作/修订、执行/产物、大小、MIME、展示名和有效期，不向模型提供宿主路径。首版仅支持 UTF-8 TXT/CSV/JSON、PDF、PNG/JPEG/WEBP/GIF、ZIP；独立脚本、可执行文件和 Office 均 unsupported。ZIP 不解包到宿主；检查路径、链接/特殊文件、加密、嵌套（最多 3 层）、文件数（1000）、展开字节（100MB）、不可检查压缩格式及敏感名称。名称筛查不是任意秘密内容检测；凭据、根配置、数据库和控制目录本来就不得进入工作输入。
 
-`for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 以 `file_asset_id` 加 `delivery_ref/work_ref` 单独提出文件行动，Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。C23 阶段适配器明确返回 capability_missing，C24 接入已确认协议。
+`for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 在本轮存在可交付文件候选时公开 `intent=file` 形状：只填当前 `file_asset_id` 和唯一的 `delivery_ref` 或 `work_ref`，不得带 `segments`。没有候选时模型看不到文件形状，不能发明资产。Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。能力投影分别说明 can_generate、can_prepare_asset、can_upload_to_target；未上传不得把面板下载写成已履约。
 
 ### OneBot 文件上传协议（C24）
 
-当前适配器只实现显式配置的 NapCat `upload_group_file_data_file_id`：上传参数 `group_id/file/name`，文件路径只能由宿主已登记资产映射为 `/lenbot-files/<asset_id>`。HTTP 和 WebSocket 复用原连接和发送队列，传输前已有 `DELIVERY_ATTEMPTED`。仅 `status=ok`、整数 `retcode=0` 且 `data.file_id` 非空才产生 `FILE_UPLOADED`；不会伪造 `message_id`。空返回、异步返回、格式变化或传输中断记 unknown，保留额度与文件且不重放；明确失败或连接未建立分别记录 rejected/not_sent。文字通知必须读取这条回执后沿原对话另行提出，通知失败不重传文件。协议来自 [NapCat 上传文档](https://napcat.apifox.cn/226658753e0)，生产实现/版本及挂载仍需现场核对，不能用该文档宣称现场已联调。
+`FileUploadConfig.implementation` 显式选择 `napcat`（`protocol=upload_group_file_data_file_id`）或 `snowluma`（`protocol=upload_group_file`）。运行时只调用选定实现，不轮流尝试或伪装另一种协议。上传参数均为 `group_id/file/name`，文件路径只能由宿主已登记资产映射为 `/lenbot-files/<asset_id>`。HTTP 和 WebSocket 复用原连接和发送队列，传输前已有 `DELIVERY_ATTEMPTED`。仅 `status=ok`、整数 `retcode=0` 且 `data.file_id` 非空才产生 `FILE_UPLOADED`；不会伪造 `message_id`。空返回、异步返回、格式变化或传输中断记 unknown，保留额度与文件且不重放；明确失败或连接未建立分别记录 rejected/not_sent。`deployment_verified` 表示运营已核对实际版本与只读挂载，不要求先有一次成功上传；真实 file_id 只从回执派生。文字通知必须读取这条回执后沿原对话另行提出，通知失败不重传文件。NapCat 协议来自 [NapCat 上传文档](https://napcat.apifox.cn/226658753e0)，SnowLuma 动作名来自其公开目录 `upload_group_file`；生产实现/版本及挂载仍需现场核对。
 
 ### B 站登录态读取（C25）
 

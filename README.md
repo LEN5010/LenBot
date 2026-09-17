@@ -9,8 +9,11 @@
 ```sh
 uv sync
 cp lenbot.config.example.json lenbot.config.json
+(cd src/len_bot/web/frontend && npm ci && npm run build)
 uv run len-bot
 ```
+
+控制面板的构建产物不进 Git：Vite 对每个资源做内容哈希，提交它会让每次前端改动变成几十个文件的删增噪声。本机首次克隆后执行一次上面的 `npm run build`，之后只有改了前端才需要重建；缺少产物时后端照常启动，但面板页面不可用。部署镜像由 `deploy/linux/Dockerfile` 的 Node 阶段自行构建，不依赖本机产物。
 
 `lenbot.config.json` 是唯一运行配置来源：连接、账号、模型、群和插件都在其中，运行中由面板保存，不用 env、CLI 或数据库覆盖。样例是初始化模板，不参与运行合并。`runtime.bot_qq` 等占位值必须按真实情况填写；配置不合法时启动会指出具体位置并拒绝启动，不会带默认值继续运行。该文件含连接凭据与模型密钥，只留在本机并排除在 Git 之外。面板地址与登录来自该文件的初始化账号；初始化、停机、备份与故障处理见[运行手册](docs/operations.md)。
 
@@ -47,6 +50,6 @@ uv run len-bot
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
 | 工程约束 | [AGENTS.md](AGENTS.md) |
 | 社会 Agent 后续目标与提交依赖 | [完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md) |
-| 本轮全链路审计与产品化施工合同 | [审计与重构计划](docs/LenBot_全链路审计与产品化重构计划_1683b8a.md) |
+| 本轮文件交付、旁听与群配置施工合同 | [本轮计划](docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md) |
 | 本轮状态、下一步和实际核对结果 | [当前任务](docs/iteration.md) |
 | 人格与素材的原始资料 | [人格来源资料](docs/persona/diana/README.md) |

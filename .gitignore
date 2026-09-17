@@ -20,16 +20,12 @@ wheels/
 .installed.cfg
 *.egg
 
-# The bare `dist/` rule above would also swallow the built control plane, which
-# FastAPI serves and which ships with the same batch of API changes.  These
-# un-ignores keep that one path committable while a same-named directory
-# somewhere new still stays out (git ignores a file inside an ignored
-# directory, so every level of the path has to be un-ignored, not just the
-# leaf).  They must stay below the rule they counter; gitignore order decides.
-!src/len_bot/
-!src/len_bot/web/
-!src/len_bot/web/static/
-!src/len_bot/web/static/dist/**
+# The built control plane stays out of Git.  Vite content-hashes every asset,
+# so committing it turned each frontend change into a delete+add churn of ~40
+# files that buried the real diff.  It is produced by `npm run build` for local
+# runs and by the Node stage in deploy/linux/Dockerfile for deploys; the bare
+# `dist/` rule above already covers it, and this anchored rule records intent.
+/src/len_bot/web/static/dist/
 
 # Virtual Environment
 .venv/
@@ -60,9 +56,6 @@ node_modules/
 
 # ZCode session artifacts
 .zcode/
-
-# Exception: the built control plane is served by FastAPI and versioned
-!src/len_bot/web/static/dist/
 
 # Local trial state and recovery copies
 /.backups/

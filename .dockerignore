@@ -1,4 +1,5 @@
-# Build context contains only release source and the fixed worker recipes.
+# Build context contains only release source, the frontend the image builds
+# itself, and the fixed worker recipes.
 **
 !pyproject.toml
 !uv.lock
@@ -8,7 +9,11 @@
 !src/len_bot/**
 src/len_bot/**/__pycache__/
 src/len_bot/**/*.pyc
-src/len_bot/web/frontend/
+# The frontend sources stay in the context so the Node stage can build the
+# panel, but its installed toolchain and any local build output never do:
+# the image installs from package-lock.json and builds fresh.
+src/len_bot/web/frontend/node_modules/
+src/len_bot/web/static/dist/
 !containers/
 !containers/**
 !deploy/
