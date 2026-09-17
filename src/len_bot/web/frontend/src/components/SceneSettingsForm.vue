@@ -11,7 +11,7 @@ const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved'])
 const record = ref(null), draft = ref(null), original = ref('null')
 const loading = ref(false), saving = ref(false), error = ref(''), message = ref(''), readAt = ref(null)
-const pluginProblems = ref({})
+const pluginProblems = ref({}), baseline = ref(null)
 let requestId = 0
 const dirty = computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==original.value)
 const {confirmLeave} = useUnsavedChanges(dirty)
@@ -52,7 +52,7 @@ async function load() {
     const data=await api(endpoint())
     if (own!==requestId) return
     record.value=data; readAt.value=Date.now()/1000
-    if (!dirty.value) { draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value) }
+    if (!dirty.value) { baseline.value=data.settings;draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value) }
   } catch(e) { if (own===requestId) error.value=e.message }
   finally { if (own===requestId) loading.value=false }
 }
@@ -76,9 +76,9 @@ async function save() {
   try {
     const values={...draft.value,plugins:Object.fromEntries(Object.entries(draft.value.plugins).map(([id,item])=>[id,
       {...item,config:configValue(item.config,record.value.plugins.find(plugin=>plugin.id===id).scene_config_schema)}]))}
-    const data=await api(endpoint(),{method:'PUT',body:JSON.stringify(values)})
+    const data=await api(endpoint(),{method:'PUT',body:JSON.stringify({baseline:baseline.value,values})})
     if (id!==props.sceneId) return
-    record.value=data; draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value)
+    record.value=data; baseline.value=data.settings;draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value)
     message.value=data.message; readAt.value=Date.now()/1000; emit('saved')
   } catch(e) { if (id===props.sceneId) error.value=e.message }
   finally { saving.value=false }

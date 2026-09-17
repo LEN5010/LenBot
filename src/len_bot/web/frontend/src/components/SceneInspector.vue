@@ -53,6 +53,7 @@ function handledStatus(turn) { const ids=turn.payload.source_outcomes?.map(item=
           <EntityLink v-if="event.interaction.calendar_parent_event_id" type="event" :id="event.interaction.calendar_parent_event_id" :scene-id="event.scene_id" label="查看实际引用的日程交互" />
         </template>
         <h3>注意力、读取与处理</h3>
+        <p v-if="event.participation"><strong>{{ event.participation.title }}</strong> · {{ event.participation.lane==='fast'?'快路径':event.participation.lane==='slow'?'普通机会':'无机会' }} · {{ event.participation.stage }}</p>
         <template v-if="hasAttention"><p v-if="event.attention.attention_reasons.length">{{ event.attention.attention_reasons.map(attentionReason).join(' · ') }}</p><p v-else><StatusBadge domain="attention" status="stored_only" /> 未产生独立唤醒</p><v-chip v-if="event.attention.attention_reasons.length" size="small" variant="tonal">{{ Object.hasOwn(event.attention, 'attention_certain') ? (event.attention.attention_certain ? '确定唤醒来源' : '观察机会') : '未记录唤醒确定性' }}</v-chip></template>
         <p v-else class="muted-copy">没有保存注意力判定。</p>
         <p v-if="relations?.source_handling?.pending" class="inspector-badges"><StatusBadge domain="attention" status="pending" /> 这条来源仍在当前待处理唤醒中。</p>

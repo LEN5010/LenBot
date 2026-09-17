@@ -11,6 +11,8 @@ const route = useRoute(), router = useRouter()
 const tab = computed(() => route.query.tab === 'providers' ? 'providers' : 'roles')
 const data = ref({ providers: [], routing: null }), loading = ref(false), loaded = ref(false), readAt = ref(null)
 const error = ref(''), message = ref(''), busy = ref(''), catalogs = ref({}), selectedModels = ref({}), modelOriginal = ref({})
+const providerBaseline=ref(null),routingBaseline=ref(null),retrievalBaseline=ref(null)
+const clone=value=>JSON.parse(JSON.stringify(value))
 const providerOpen = ref(false), editingProvider = ref(''), providerForm = ref(null), providerOriginal = ref('')
 const routesOpen = ref(false), routingForm = ref(null), routingOriginal = ref(''), roleEnabled = ref({})
 const testConfirm = ref(null), testResult = ref(null)
@@ -46,6 +48,7 @@ const roles = [
   { key: 'maintenance', name: '维护', description: '增量整理历史与认识，压缩工作上下文和整理方法技能。' },
 ]
 const emptyProfile = () => ({ provider_id: '', model: '', reasoning_effort: '', supports_vision: false })
+const applicationPending = computed(()=>data.value.effective && ['providers','routing','retrieval'].some(key=>JSON.stringify(data.value[key])!==JSON.stringify(data.value.effective[key])))
 const providerDirty = computed(() => providerOpen.value && JSON.stringify(providerForm.value) !== providerOriginal.value)
 const routingSnapshot = () => JSON.stringify({ profiles: routingForm.value, enabled: roleEnabled.value })
 const routingDirty = computed(() => routesOpen.value && routingSnapshot() !== routingOriginal.value)
@@ -61,12 +64,14 @@ const canSaveProvider = computed(() => providerForm.value && providerForm.value.
   && providerForm.value.base_url.trim() && providerForm.value.api_style
   && Number.isFinite(providerForm.value.timeout_seconds) && providerForm.value.timeout_seconds > 0)
 function initialiseRouting() {
+  routingBaseline.value=clone(data.value.routing)
   routingForm.value = Object.fromEntries(roles.map(({ key }) => [key,
     data.value.routing?.[key] ? { ...data.value.routing[key] } : emptyProfile()]))
   roleEnabled.value = Object.fromEntries(roles.map(({ key }) => [key, data.value.routing?.[key] != null]))
   routingOriginal.value = routingSnapshot()
 }
 function editRetrieval() {
+  retrievalBaseline.value=clone(data.value.retrieval)
   retrievalForm.value = { embedding: data.value.retrieval?.embedding ? {...data.value.retrieval.embedding} : emptyRetrievalProfile(),
     rerank: data.value.retrieval?.rerank ? {...data.value.retrieval.rerank} : emptyRetrievalProfile() }
   retrievalOriginal.value = JSON.stringify(retrievalForm.value); retrievalOpen.value = true
@@ -76,7 +81,7 @@ async function saveRetrieval() {
   if (busy.value || !retrievalForm.value) return
   busy.value='retrieval'; error.value=''; message.value=''
   const profile = (value, rerank=false) => value?.provider_id?.trim() && value?.model?.trim() ? {provider_id:value.provider_id.trim(),model:value.model.trim(),...(value.dimension ? {dimension:Number(value.dimension)} : {}),...(rerank && value.protocol ? {protocol:value.protocol} : {})} : null
-  try { const result = await api('/api/models/retrieval',{method:'POST',body:JSON.stringify({embedding:profile(retrievalForm.value.embedding),rerank:profile(retrievalForm.value.rerank,true)})}); retrievalOpen.value=false; message.value=result.message; await load() }
+  try { const result = await api('/api/models/retrieval',{method:'POST',body:JSON.stringify({baseline:retrievalBaseline.value,values:{embedding:profile(retrievalForm.value.embedding),rerank:profile(retrievalForm.value.rerank,true)}})}); retrievalOpen.value=false; message.value=result.message; await load() }
   catch(e){ error.value=e.message } finally { busy.value='' }
 }
 async function load() {
@@ -92,11 +97,12 @@ async function load() {
   finally { if (request === requestId) loading.value = false }
 }
 function editProvider(provider = null) {
+  providerBaseline.value=clone(provider)
   editingProvider.value = provider?.id || ''
   providerForm.value = provider ? {
-    id: provider.id, base_url: provider.base_url, api_style: provider.api_style, api_key: '',
+    id: provider.id, base_url: provider.base_url, api_style: provider.api_style, api_key: '',api_key_action:'keep',
     enabled: provider.enabled, timeout_seconds: provider.timeout_seconds, models: provider.models.join('\n'),
-  } : { id: '', base_url: '', api_style: 'openai', api_key: '', enabled: false, timeout_seconds: null, models: '' }
+  } : { id: '', base_url: '', api_style: 'openai', api_key: '',api_key_action:'replace', enabled: false, timeout_seconds: null, models: '' }
   providerOriginal.value = JSON.stringify(providerForm.value)
   providerOpen.value = true
 }
@@ -113,7 +119,7 @@ function closeRouting() {
 }
 async function saveProvider() {
   if (busy.value || !canSaveProvider.value) return
-  if (!window.confirm('保存此供应商配置？接口和启用状态将用于后续运行，空白密钥保留原值。')) return
+  if (!window.confirm('保存此供应商配置？接口和启用状态将用于后续运行，密钥按所选保留、替换或清除操作处理。')) return
   busy.value = 'provider'
   error.value = ''
   message.value = ''
@@ -122,19 +128,24 @@ async function saveProvider() {
       models: [...new Set(providerForm.value.models.split('\n').map(model=>model.trim()).filter(Boolean))],
       api_key: providerForm.value.api_key.trim() || null,
     }
-    const result = await api('/api/models/providers', { method: 'POST', body: JSON.stringify(body) })
+    const result = await api('/api/models/providers', { method: 'POST', body: JSON.stringify({baseline:providerBaseline.value,values:body}) })
     providerOpen.value = false
     providerForm.value = null
     message.value = result.message
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+    if (e.status===409 && e.details?.config_saved===false) {
+      error.value = e.message + '。草稿未保存。刷新后采用现值，或保留本页改动后用最新修订再提交。'
+    }
+  }
   finally { busy.value = '' }
 }
 async function deleteProvider(provider) {
   if (busy.value || !window.confirm(`删除供应商「${provider.id}」及保存的密钥？`)) return
   busy.value = `delete:${provider.id}`; error.value = ''; message.value = ''
   try {
-    const result = await api(`/api/models/providers/${encodeURIComponent(provider.id)}`, { method: 'DELETE' })
+    const result = await api(`/api/models/providers/${encodeURIComponent(provider.id)}`, { method: 'DELETE',body:JSON.stringify({baseline:provider,values:null}) })
     delete catalogs.value[provider.id]; delete selectedModels.value[provider.id]; delete modelOriginal.value[provider.id]
     message.value = result.message; await load()
   } catch (e) { error.value = e.message }
@@ -155,7 +166,7 @@ async function saveModels(provider) {
   if (busy.value) return
   busy.value = `models:${provider.id}`; error.value = ''
   try {
-    const result = await api(`/api/models/providers/${encodeURIComponent(provider.id)}/models`, { method: 'POST', body: JSON.stringify({ models: selectedModels.value[provider.id] }) })
+    const result = await api(`/api/models/providers/${encodeURIComponent(provider.id)}/models`, { method: 'POST', body: JSON.stringify({baseline:JSON.parse(modelOriginal.value[provider.id]),values:{models:selectedModels.value[provider.id]}}) })
     delete catalogs.value[provider.id]; message.value = result.message; await load()
   } catch (e) { error.value = e.message }
   finally { busy.value = '' }
@@ -174,7 +185,7 @@ async function saveRouting() {
   message.value = ''
   try {
     const routing = Object.fromEntries(roles.map(({key})=>[key,roleEnabled.value[key]?profile(key):null]))
-    const result = await api('/api/models/routing', { method: 'POST', body: JSON.stringify(routing) })
+    const result = await api('/api/models/routing', { method: 'POST', body: JSON.stringify({baseline:routingBaseline.value,values:routing}) })
     routesOpen.value = false
     message.value = result.message
     await load()
@@ -195,6 +206,7 @@ watch(() => route.name, load, { immediate: true })
   <div class="page-stack">
     <PageHeader title="模型设置" description="三个职责显式配置，每次运行固定提供商、模型和推理强度。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn><v-btn v-if="tab==='roles'" color="primary" :disabled="!loaded" @click="editRouting">编辑职责配置</v-btn><v-btn v-else color="primary" @click="editProvider()">添加供应商</v-btn></PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
+    <v-alert v-if="applicationPending" type="warning" variant="tonal">已保存配置与当前运行值存在差异。下面表单编辑已保存值；尚未应用的配置不能视为运行中可用。</v-alert>
     <v-card v-if="loaded" class="pa-4 retrieval-card"><div class="role-title"><h2>语义检索</h2><div class="actions"><v-chip size="small" :color="data.retrieval?.embedding ? 'primary' : 'default'">{{ data.retrieval?.embedding ? '已绑定' : '未启用' }}</v-chip><v-btn variant="outlined" size="small" :disabled="!!busy" @click="editRetrieval">编辑</v-btn></div></div><p class="muted">只在 Agent 主动查询认识时使用；索引失败不会回滚已提交认识。Embedding 与 rerank 请求单独计量。</p><p v-if="data.retrieval?.embedding" class="auxiliary">Embedding：{{ data.retrieval.embedding.provider_id }} · {{ data.retrieval.embedding.model }}<span v-if="data.retrieval.embedding.dimension"> · {{ data.retrieval.embedding.dimension }} 维</span></p><p v-if="data.retrieval?.rerank" class="auxiliary">Rerank：{{ data.retrieval.rerank.provider_id }} · {{ data.retrieval.rerank.model }}</p></v-card>
     <v-card v-if="loaded" class="pa-4 usage-card">
       <div class="role-title"><h2>工作额度预占</h2><v-chip size="small" :color="reservationAccounts.length ? 'primary' : 'default'">{{ reservations?.day_key || '未读取' }}</v-chip></div>
@@ -212,12 +224,12 @@ watch(() => route.name, load, { immediate: true })
     <v-tabs :model-value="tab" color="primary" @update:model-value="value=>router.push({name:'models',query:{tab:value}})"><v-tab value="roles">职责配置</v-tab><v-tab value="providers">供应商</v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
     <template v-if="tab==='roles'">
-      <div v-if="loaded" class="role-grid"><v-card v-for="role in roles" :key="role.key" class="pa-5 role-card"><div class="role-title"><h2>{{ role.name }}</h2><v-chip size="small" :color="data.routing?.[role.key] ? 'primary' : 'default'">{{ data.routing?.[role.key] ? '已配置' : '未配置' }}</v-chip></div><p class="muted role-description">{{ role.description }}</p><template v-if="data.routing?.[role.key]"><dl><dt>供应商</dt><dd>{{ data.routing[role.key].provider_id }}</dd><dt>模型</dt><dd>{{ data.routing[role.key].model }}</dd><dt>推理强度</dt><dd>{{ data.routing[role.key].reasoning_effort || '模型默认' }}</dd></dl><v-alert v-if="!providerById(data.routing[role.key].provider_id)?.enabled" type="warning" variant="tonal" density="compact">当前供应商未启用</v-alert><v-btn class="mt-auto" variant="outlined" :disabled="!!busy || !providerById(data.routing[role.key].provider_id)?.enabled" @click="testConfirm={name:role.name,profile:{...data.routing[role.key]}}">主动检查能力</v-btn></template><p v-else class="muted">{{ role.key==='maintenance' ? '维护未配置，历史维护与工作压缩尚未就绪。' : '该职责尚未配置。' }}</p></v-card></div>
+      <div v-if="loaded" class="role-grid"><v-card v-for="role in roles" :key="role.key" class="pa-5 role-card"><div class="role-title"><h2>{{ role.name }}</h2><v-chip size="small" :color="data.routing?.[role.key] ? 'primary' : 'default'">{{ data.routing?.[role.key] ? '已配置' : '未配置' }}</v-chip></div><p class="muted role-description">{{ role.description }}</p><template v-if="data.routing?.[role.key]"><dl><dt>供应商</dt><dd>{{ data.routing[role.key].provider_id }}</dd><dt>模型</dt><dd>{{ data.routing[role.key].model }}</dd><dt>推理强度</dt><dd>{{ data.routing[role.key].reasoning_effort || '模型默认' }}</dd><dt>当前运行</dt><dd>{{ data.effective?.routing?.[role.key]?.model || '未绑定' }}</dd></dl><v-alert v-if="!providerById(data.routing[role.key].provider_id)?.enabled" type="warning" variant="tonal" density="compact">当前供应商未启用</v-alert><v-btn class="mt-auto" variant="outlined" :disabled="!!busy || !providerById(data.routing[role.key].provider_id)?.enabled" @click="testConfirm={name:role.name,profile:{...data.routing[role.key]}}">主动检查能力</v-btn></template><p v-else class="muted">{{ role.key==='maintenance' ? '维护未配置，历史维护与工作压缩尚未就绪。' : '该职责尚未配置。' }}</p></v-card></div>
       <v-alert type="info" variant="tonal">浏览、刷新和选择模型不会发起模型请求。能力检查需要你主动确认；模型目录中的名称不代表已通过检查。</v-alert>
       <v-card v-if="testResult" class="pa-5"><div class="role-title"><h2>{{ testResult.name }}能力检查</h2><v-chip :color="testResult.success?'success':'error'">{{ testResult.success?'检查通过':'检查失败' }}</v-chip></div><p class="my-3">{{ testResult.model }} · {{ testResult.latency_ms }} 毫秒</p><div class="check-list"><p v-for="(name,key) in {image_reading:'原图识别',forced_tool:'指定工具调用',tool_continuation:'原生工具续接'}" :key="key">{{ name }}：{{ testResult.checks[key] ? '通过' : '未通过或未执行' }}</p></div><v-alert v-if="testResult.error" type="error" variant="tonal" class="mt-3">{{ testResult.error }}</v-alert></v-card>
       <RouterLink :to="{name:'activity',query:{tab:'calls'}}">前往运行记录查看持久调用账与用量</RouterLink>
     </template>
-    <template v-else><p class="muted">密钥只在后台保存，编辑时留空保留。获取接口目录不会生成模型回答。</p><v-card v-for="provider in data.providers" :key="provider.id" class="pa-5 provider-card"><div class="provider-heading"><div class="provider-name"><h2>{{ provider.id }}</h2><p class="provider-url muted">{{ provider.base_url }}</p></div><StatusBadge domain="provider" :status="provider.enabled?'enabled':'disabled'" /></div><div class="provider-meta"><span>密钥 {{ provider.api_key_masked || '未设置' }}</span><span>超时 {{ provider.timeout_seconds }} 秒</span><span v-if="inUse(provider.id)">当前职责正在使用</span></div><div class="actions"><v-btn variant="outlined" :disabled="!!busy" @click="editProvider(provider)">编辑接口</v-btn><v-btn color="error" variant="text" :disabled="!!busy || inUse(provider.id)" @click="deleteProvider(provider)">删除</v-btn></div><v-divider class="my-4" /><h3 class="mb-3">常用模型目录</h3><template v-if="catalogs[provider.id]"><v-autocomplete v-model="selectedModels[provider.id]" :items="[...new Set([...catalogs[provider.id],...provider.models])]" label="搜索并选择常用模型" multiple chips closable-chips clearable /><div class="actions"><v-btn color="primary" :loading="busy===`models:${provider.id}`" :disabled="!!busy" @click="saveModels(provider)">保存常用模型</v-btn><v-btn variant="text" :disabled="!!busy" @click="delete catalogs[provider.id]">取消选择</v-btn></div></template><template v-else><div class="model-tags"><v-chip v-for="model in provider.models" :key="model" size="small">{{ model }}</v-chip><span v-if="!provider.models.length" class="muted">尚未保存常用模型</span></div><v-btn class="mt-4" variant="tonal" :loading="busy===`catalog:${provider.id}`" :disabled="!!busy" @click="fetchModels(provider)">获取接口模型目录</v-btn></template></v-card><v-card v-if="loaded&&!error&&!data.providers.length" class="pa-8 text-center muted">还没有供应商，点击“添加供应商”开始配置。</v-card></template>
+    <template v-else><p class="muted">密钥只在后台保存，编辑时明确选择保留、替换或清除。获取接口目录不会生成模型回答。</p><v-card v-for="provider in data.providers" :key="provider.id" class="pa-5 provider-card"><div class="provider-heading"><div class="provider-name"><h2>{{ provider.id }}</h2><p class="provider-url muted">{{ provider.base_url }}</p></div><StatusBadge domain="provider" :status="provider.enabled?'enabled':'disabled'" /></div><div class="provider-meta"><span>密钥 {{ provider.api_key_masked || '未设置' }}</span><span>超时 {{ provider.timeout_seconds }} 秒</span><span v-if="inUse(provider.id)">当前职责正在使用</span></div><div class="actions"><v-btn variant="outlined" :disabled="!!busy" @click="editProvider(provider)">编辑接口</v-btn><v-btn color="error" variant="text" :disabled="!!busy || inUse(provider.id)" @click="deleteProvider(provider)">删除</v-btn></div><v-divider class="my-4" /><h3 class="mb-3">常用模型目录</h3><template v-if="catalogs[provider.id]"><v-autocomplete v-model="selectedModels[provider.id]" :items="[...new Set([...catalogs[provider.id],...provider.models])]" label="搜索并选择常用模型" multiple chips closable-chips clearable /><div class="actions"><v-btn color="primary" :loading="busy===`models:${provider.id}`" :disabled="!!busy" @click="saveModels(provider)">保存常用模型</v-btn><v-btn variant="text" :disabled="!!busy" @click="delete catalogs[provider.id]">取消选择</v-btn></div></template><template v-else><div class="model-tags"><v-chip v-for="model in provider.models" :key="model" size="small">{{ model }}</v-chip><span v-if="!provider.models.length" class="muted">尚未保存常用模型</span></div><v-btn class="mt-4" variant="tonal" :loading="busy===`catalog:${provider.id}`" :disabled="!!busy" @click="fetchModels(provider)">获取接口模型目录</v-btn></template></v-card><v-card v-if="loaded&&!error&&!data.providers.length" class="pa-8 text-center muted">还没有供应商，点击“添加供应商”开始配置。</v-card></template>
     <v-dialog :model-value="providerOpen" max-width="650" :persistent="!!busy" @update:model-value="value=>!value&&closeProvider()">
       <v-card>
         <v-card-title class="dialog-title">{{ editingProvider?'编辑供应商':'添加供应商' }}<v-btn variant="text" :disabled="!!busy" @click="closeProvider">关闭</v-btn></v-card-title>
@@ -228,7 +240,7 @@ watch(() => route.name, load, { immediate: true })
             <v-select v-model="providerForm.api_style" label="接口协议" :items="[{title:'OpenAI 兼容接口',value:'openai'}]" required />
             <v-text-field v-model="providerForm.base_url" label="接口地址" placeholder="https://example.com/v1" required />
             <p v-if="editingProvider" class="muted">已保存密钥：{{ providerById(editingProvider)?.api_key_masked || '未设置' }}</p>
-            <v-text-field v-model="providerForm.api_key" label="接口密钥" type="password" autocomplete="new-password" :placeholder="editingProvider?'留空保留原密钥':'填写供应商密钥'" />
+            <v-select v-model="providerForm.api_key_action" label="密钥操作" :items="[{title:'保留当前密钥',value:'keep'},{title:'替换密钥',value:'replace'},{title:'清除密钥',value:'clear'}]" /><v-text-field v-if="providerForm.api_key_action==='replace'" v-model="providerForm.api_key" label="接口密钥" type="password" autocomplete="new-password" :placeholder="editingProvider?'留空保留原密钥':'填写供应商密钥'" />
             <v-text-field v-model.number="providerForm.timeout_seconds" type="number" min="0.1" step="0.1" label="超时时间（秒）" required />
             <v-textarea v-model="providerForm.models" label="常用模型名称（每行一项，可留空）" rows="4" />
             <v-switch v-model="providerForm.enabled" label="启用供应商" color="primary" />

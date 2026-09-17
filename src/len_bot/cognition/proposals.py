@@ -36,6 +36,8 @@ class ReplyExpectation(StrictModel):
     intent: str=Field(min_length=1)
 
 class TurnMessage(StrictModel):
+    intent:Literal['reply','ack','operation','delivery','work','file']|None=Field(
+        default=None,description='互斥业务形状：普通回复、创建确认、操作确认、成果交付、工作说明或文件上传。宿主从已登记句柄派生工作修订、原请求者和回执关系。')
     segments:list[TurnPart]=Field(default_factory=list,max_length=12)
     file_asset_id:str|None=Field(default=None,description="prepare_workspace_file 返回且已审查的资产 ID；必须独占此条并以 delivery_ref/work_ref 绑定原工作，不含文字通知")
     reply_to: str|None=Field(default=None,description='可选消息M引用')
@@ -55,8 +57,19 @@ class TurnMessage(StrictModel):
                 raise ValueError('文件上传独占一条行动并绑定原工作；文字通知另行提交')
         elif not self.segments:
             raise ValueError('普通消息需要至少一个片段')
-        if sum(value is not None for value in (self.ack_ref,self.operation_ref,self.delivery_ref,self.work_ref)) > 1:
+        selected=[name for name,value in (('ack',self.ack_ref),('operation',self.operation_ref),
+            ('delivery',self.delivery_ref),('work',self.work_ref)) if value is not None]
+        if self.file_asset_id:
+            inferred='file'
+        elif len(selected)>1:
             raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
+        elif selected:
+            inferred=selected[0]
+        else:
+            inferred='reply'
+        if self.intent and self.intent!=inferred:
+            raise ValueError(f'intent={self.intent} 与当前引用字段不一致；普通回复不填工作句柄，交付只填当前可交付句柄')
+        object.__setattr__(self,'intent',inferred)
         return self
 
 class SourceResolution(StrictModel):
@@ -168,9 +181,11 @@ RESPOND={
     'type':'function',
     'function':{
         'name':'respond',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。新建确认用ack_ref；控制或记忆操作确认用operation_ref；普通工作说明用work_ref；最终履约用delivery_ref。每条消息只选一种关系，操作确认仅在对应事务成功后成立。片段只填text、image、video、audio或at，不填type。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。每条消息用intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。宿主从已登记句柄派生工作修订、原请求者与回执关系。未准备好交付的旧任务没有delivery句柄。片段只填text、image、video、audio或at，不填type。',
         'parameters':_object({
             'messages':{'type':'array','maxItems':3,'items':_object({
+                'intent':{'type':'string','enum':['reply','ack','operation','delivery','work','file'],
+                          'description':'互斥业务形状；普通短答用reply，不要带无关工作字段'},
                 'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
                     **_object({'text':{'type':'string','minLength':1},
                                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
@@ -314,6 +329,13 @@ class ProposalLedger:
             props['delivery_ref']={'type':'string','enum':delivery_refs,
                 'description':'本条真实送达后完成的实际工作J或提醒T；可省略消息source沿用已读的原始人类委托，在sources中把本次到期或完成事件M标为replied。暂存回执S只能填ack_ref'}
         relations=[name for name in ('ack_ref','operation_ref','work_ref','delivery_ref') if name in props]
+        intents=['reply']
+        if 'ack_ref' in props:intents.append('ack')
+        if 'operation_ref' in props:intents.append('operation')
+        if 'work_ref' in props:intents.append('work')
+        if 'delivery_ref' in props:intents.append('delivery')
+        props['intent']={'type':'string','enum':intents,
+            'description':'本轮实际可提交的业务形状；宿主填充工作修订、原请求者和回执关联'}
         if len(relations)>1:
             message['allOf']=[{'not':{'required':[left,right]}}
                 for index,left in enumerate(relations) for right in relations[index+1:]]

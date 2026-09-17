@@ -3,8 +3,9 @@ import uuid
 from fastapi import APIRouter, Request, Depends, HTTPException, Body
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, TypeAdapter, model_validator
 from len_bot.config import AddressName
+from len_bot.config_edit import ConfigEdit, ConfigEditConflict
 from len_bot.config_store import AccessSettings, ResourceSettings, TimeSettings, MemberSettings
 from len_bot.runtime.capabilities import Capability, CapabilityGrant
 from len_bot.web.auth import get_current_user
@@ -12,22 +13,38 @@ from len_bot.web.auth import get_current_user
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-async def save_runtime_settings(runtime, values, *, live):
+async def save_runtime_settings(runtime, values, *, live, baseline):
     try:
-        await runtime.update_runtime_settings(values, live=live)
+        await runtime.update_runtime_settings(values, live=live, baseline=baseline)
     except ValidationError as error:
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except ConfigEditConflict:
+        raise
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     except OSError as error:
         raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
 
 
-async def save_root_section(runtime, section, values):
+async def save_root_section(runtime, section, values, *, baseline):
     try:
-        await runtime.update_root_settings(section, values)
+        await runtime.update_root_settings(section, values, baseline=baseline)
     except ValidationError as error:
         raise HTTPException(422, error.errors(include_input=False, include_context=False)) from error
+    except ConfigEditConflict:
+        raise
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     except OSError as error:
         raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
+
+
+@router.get("/draft/{domain}")
+async def settings_draft(domain: str, request: Request, user: str = Depends(get_current_user)):
+    try:
+        return request.app.state.runtime.query_service.settings_draft(domain)
+    except KeyError:
+        raise HTTPException(404, '未知配置领域') from None
 
 
 @router.get("/access")
@@ -125,14 +142,24 @@ def _grant_content(grant: CapabilityGrant) -> dict:
 
 
 @router.put("/access")
-async def update_access_settings(values: AccessSettingsRequest, request: Request, user: str = Depends(get_current_user)):
+async def update_access_settings(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
+    values = AccessSettingsRequest.model_validate(edit.values)
     changed = False
     merged = None
 
-    def merge_current(saved):
+    def merge_current(saved, baseline):
         nonlocal changed, merged
         current = AccessSettings.model_validate(saved)
+        # Lists have deliberate replacement semantics. Check only the list
+        # being edited, including concurrent additions and removals.
+        for field in values.model_fields_set:
+            if getattr(values, field) is not None:
+                if not isinstance(baseline, dict) or field not in baseline:
+                    raise HTTPException(422, '缺少访问设置草稿基线')
+                if saved[field] != baseline[field]:
+                    from len_bot.config_edit import ConfigEditConflict
+                    raise ConfigEditConflict(('access', field))
         if values.capability_grants is None:
             grants = list(current.capability_grants)
         else:
@@ -164,7 +191,7 @@ async def update_access_settings(values: AccessSettingsRequest, request: Request
         changed = merged['capability_grants'] != current.model_dump()['capability_grants']
         return merged
 
-    await save_root_section(runtime, "access", merge_current)
+    await save_root_section(runtime, "access", merge_current, baseline=edit.baseline)
     if changed:
         # A grant revision is an operator action; the saved file is the
         # effective version from this point, and an already-sent message
@@ -186,18 +213,18 @@ async def resource_settings(request: Request, user: str = Depends(get_current_us
 
 
 @router.put("/resources")
-async def update_resource_settings(request: Request, values: ResourceSettings, user: str = Depends(get_current_user)):
+async def update_resource_settings(request: Request, edit: ConfigEdit, user: str = Depends(get_current_user)):
     """Quota policies live with the capabilities that reference them by name."""
     runtime = request.app.state.runtime
-    await save_root_section(runtime, "resources", values.model_dump())
+    await save_root_section(runtime, "resources", ResourceSettings.model_validate(edit.values).model_dump(), baseline=edit.baseline)
     return {"settings": runtime.query_service.resource_settings(),
             "message": "额度策略已写入根文件；新策略用于此后新建的工作，已预占的工作保留自己的策略"}
 
 
 @router.put("/time")
-async def update_time_settings(request: Request, values: TimeSettings | None = Body(...), user: str = Depends(get_current_user)):
+async def update_time_settings(request: Request, edit: ConfigEdit, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    await save_root_section(runtime, "time", values.model_dump() if values is not None else None)
+    await save_root_section(runtime, "time", TimeSettings.model_validate(edit.values).model_dump() if edit.values is not None else None, baseline=edit.baseline)
     return {"settings": runtime.query_service.time_settings(), "requires_restart": runtime.restart_required,
             "message": "业务时间设置已写入根文件，按页面提示重启后用于新查询"}
 
@@ -208,9 +235,9 @@ async def member_settings(request: Request, user: str = Depends(get_current_user
 
 
 @router.put("/members")
-async def update_member_settings(request: Request, values: list[MemberSettings] = Body(...), user: str = Depends(get_current_user)):
+async def update_member_settings(request: Request, edit: ConfigEdit, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    await save_root_section(runtime, "members", [member.model_dump() for member in values])
+    await save_root_section(runtime, "members", [member.model_dump() for member in TypeAdapter(list[MemberSettings]).validate_python(edit.values)], baseline=edit.baseline)
     return {"settings": runtime.query_service.member_settings(), "requires_restart": runtime.restart_required,
             "message": "成员名称、别名与 B 站身份已写入根文件，重启后用于新查询与采集"}
 
@@ -240,16 +267,12 @@ async def get_persona_settings(request: Request, user: str = Depends(get_current
     return request.app.state.runtime.query_service.persona_settings()
 
 @router.post("/persona")
-async def update_persona_settings(req: PersonaSettingsRequest, request: Request, user: str = Depends(get_current_user)):
+async def update_persona_settings(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    values = {
-        key: getattr(runtime.config, key) for key in
-        ("character_context", "identity_name", "identity_core", "identity_persona",
-         "conversation_style", "address_names")
-    }
-    values.update({key: value.strip() if isinstance(value, str) else value
-                   for key, value in req.model_dump(exclude_none=True).items()})
-    await save_runtime_settings(runtime, values, live=True)
+    req = PersonaSettingsRequest.model_validate(edit.values)
+    values = {key: value.strip() if isinstance(value, str) else value
+              for key, value in req.model_dump(exclude_none=True).items()}
+    await save_runtime_settings(runtime, values, live=True, baseline=edit.baseline)
     return {"success": True, "message": "人格与说话风格已保存，并立即生效"}
 
 
@@ -269,12 +292,11 @@ async def get_attention_settings(request: Request, user: str = Depends(get_curre
 
 
 @router.patch("/attention")
-async def update_attention_settings(req: AttentionSettingsRequest, request: Request, user: str = Depends(get_current_user)):
+async def update_attention_settings(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
-    current = runtime.query_service.attention_settings()
-    values = {**current, **req.model_dump(exclude_unset=True)}
-    await save_runtime_settings(runtime, values, live=True)
-    return {"success": True, "message": "注意力参数已写入根配置，下次扫描起生效", "settings": values}
+    values = AttentionSettingsRequest.model_validate(edit.values).model_dump(exclude_unset=True)
+    await save_runtime_settings(runtime, values, live=True, baseline=edit.baseline)
+    return {"success": True, "message": "注意力参数已写入根配置，下次扫描起生效", "settings": runtime.query_service.attention_settings()}
 
 
 @router.get("/runtime")
@@ -283,11 +305,11 @@ async def runtime_parameters(request: Request, user: str = Depends(get_current_u
 
 
 @router.patch("/runtime")
-async def update_runtime_parameters(values: dict, request: Request, user: str = Depends(get_current_user)):
+async def update_runtime_parameters(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     current = runtime.query_service.runtime_settings()["settings"]
-    if set(values) != set(current):
-        raise HTTPException(422, "运行参数节必须完整填写页面提供的字段")
-    await save_runtime_settings(runtime, values, live=False)
+    if not isinstance(edit.values, dict) or not set(edit.values) <= set(current):
+        raise HTTPException(422, "只允许修改页面提供的运行参数字段")
+    await save_runtime_settings(runtime, edit.values, live=False, baseline=edit.baseline)
     return {**runtime.query_service.runtime_settings(),
             "message": "运行参数已写入根配置；五项执行预算用于新对话和新工作执行段，其他待生效改动需手动重启"}

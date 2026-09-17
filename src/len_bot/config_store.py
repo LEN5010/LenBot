@@ -132,6 +132,7 @@ class PluginSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
     config: dict | None
+    credential_revision: int = Field(default=1, ge=1, description='服务端凭据世代；replace/clear 必须与当前值一致')
     _parsed_config: BaseModel | None = PrivateAttr(default=None)
 
     @property
