@@ -45,6 +45,7 @@ uv run len-bot
 | 要了解什么 | 入口 |
 |---|---|
 | 消息、资料、工作、执行、提交与回执如何衔接 | [当前架构](docs/architecture.md) |
+| 每轮请求怎么拼、窗口为什么是锯齿、丢掉的原话怎么取回 | [上下文装配](docs/context.md) |
 | 配置、启动、停机、备份与回退 | [运行手册](docs/operations.md) |
 | Linux Compose、Gateway 服务、卷映射与发布记录 | [部署材料](deploy/linux/README.md) |
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
