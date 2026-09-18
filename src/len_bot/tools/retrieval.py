@@ -161,15 +161,15 @@ def read_tool(name, description):
 
 
 LOCAL_TOOLS = [
-    read_tool('recall_chat', '同群复合回忆：按关键词、可选时间范围和人物定位原话与摘要索引，再回读真实片段。摘要只定位，原句才是精确证据。默认仅本群；没有历史指向时不要查一整天。'),
+    read_tool('recall_chat', '同群复合回忆：按关键词、可选时间范围和人物定位原话与摘要索引，再回读真实片段。摘要只定位，原句才是精确证据。默认仅本群。需要确认更早说过什么就用它，不必等对方先给出明确日期；范围不清楚时先用窄关键词，而不是查一整天。'),
     read_tool('search_messages', '按文字查找本群已读截点之前的原话；只查询群消息，不检索外部网站或账号发布记录。'),
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
     read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
-    read_tool('query_memory', '按需读取本群认识及其来源；已撤销的认识不是当前事实。'),
+    read_tool('query_memory', '按语义读取本群认识及其来源，包括很久以前形成的；已撤销的认识不是当前事实。'),
     read_tool('list_public_interests', '读取已允许公共发布的兴趣；与本群认识分开，不含群成员或私聊资料。'),
-    read_tool('search_history_summaries', '按需定位较早的已完成历史摘要；结果只是定位，精确原话仍需回读。'),
+    read_tool('search_history_summaries', '按语义定位较早的已完成历史摘要，可及远早于当前窗口的对话；结果只是定位，精确原话仍需回读。窗口里找不到的旧事先用它定位，再回读原话。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
     read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
     read_tool('search_media', '按名称和描述查询本群或运营发布的图片。'),
@@ -257,7 +257,10 @@ class RetrievalToolkit:
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
-        deferred_local = {'search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries'}
+        # search_history_summaries is the only semantic route to conversations older
+        # than the window, so hiding it behind tool_search left it at zero calls in
+        # 923 turns while the window kept sliding. It stays on the list.
+        deferred_local = {'search_messages', 'query_timeline', 'query_person_history'}
         if self.call_context().role == 'conversation':
             definitions = [item for item in definitions if item['function']['name'] not in deferred_local
                            or item['function']['name'] in self.discovered_tools]

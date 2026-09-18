@@ -163,10 +163,10 @@ class InterestShare(BasePlugin):
             rows = await (await self.context.event_store._db.execute("""SELECT id,timestamp,payload FROM events
                 WHERE scene_id=? AND rowid<=? AND event_type='MESSAGE_SENT'
                   AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
-                ORDER BY rowid DESC LIMIT 8""", (call.scene_id, call.cutoff_rowid))).fetchall()
+                ORDER BY rowid DESC LIMIT 4""", (call.scene_id, call.cutoff_rowid))).fetchall()
             recent = ToolResult(content=json.dumps({'recent_deliveries': [
-                {'event_id': ident, 'at': at, 'text_excerpt': json.loads(raw).get('raw_text', '')[:1000]}
-                for ident, at, raw in rows], 'meaning': '本群最近实际送达的 Bot 表达，每条只呈现前1000字符，不是外部事实证据'}, ensure_ascii=False),
+                {'event_id': ident, 'at': at, 'text_excerpt': json.loads(raw).get('raw_text', '')[:300]}
+                for ident, at, raw in rows], 'meaning': '本群最近实际送达的 Bot 表达，每条只呈现前300字符，不是外部事实证据'}, ensure_ascii=False),
                 evidence_kind='retrieval', coverage='本群最近八条真实送达记录的文字节选',
                 provenance=ObservationProvenance(access='scene', source_event_ids=[row[0] for row in rows]))
             result = await call.run_agent(instructions=(
