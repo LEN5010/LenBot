@@ -17,6 +17,17 @@ from len_bot.memory.writes import commit_memory_proposal_core, validate_memory_p
 
 logger = logging.getLogger(__name__)
 
+# Upstream failures and process interruption leave a batch that never reached
+# commit_history_batch, and that call writes the summary and the completed
+# status in one transaction.  So a batch in these states provably holds no
+# summary: redoing its range cannot produce a second account, and a refused
+# request spent nothing.  Resuming it here is the operator's own retry, taken
+# on that evidence; anything else still waits for a person to look.
+RESUMABLE_HISTORY_ERRORS = frozenset({
+    'RateLimitError', 'APIConnectionError', 'APITimeoutError',
+    'InternalServerError', 'process_restart',
+})
+
 
 class HistoryConflictError(ValueError):
     """Coverage or knowledge changed before an atomic maintenance commit."""
@@ -86,12 +97,39 @@ class HistoryStoreMixin:
                                    (scene_id, after_rowid))
             await self._db.commit()
 
+    async def _resume_blocked_history_batch(self, scene_id: str) -> str | None:
+        """Take the blocking batch back to pending when its own state is the evidence."""
+        async with self._write_lock:
+            row = await (await self._db.execute(
+                """SELECT id,status,error_type FROM history_batches
+                   WHERE scene_id=? AND status!='completed' LIMIT 1""", (scene_id,))).fetchone()
+            if row is None:
+                return None
+            blocking, status, error_type = row
+            # Once per batch per process: a range that fails again on the same
+            # run stops here and waits, and a restart may try it once more.
+            resumed = self.__dict__.setdefault('_history_auto_resumed', set())
+            if blocking in resumed or not (status == 'pending' or error_type in RESUMABLE_HISTORY_ERRORS):
+                return None
+            resumed.add(blocking)
+            await self._db.execute(
+                "UPDATE history_batches SET status='pending',error_type=NULL WHERE id=? AND status!='completed'",
+                (blocking,))
+            await self._db.commit()
+        self.__dict__.setdefault('_history_block_warned', {}).pop(scene_id, None)
+        logger.info('History maintenance resuming blocked batch in %s: batch=%s status=%s error=%s',
+                    scene_id, blocking, status, error_type)
+        return blocking
+
     async def begin_history_batch(self, scene_id: str, *, target_tokens, min_tokens, quiet,
                                   input_budget_tokens: int, estimate_input: Callable[[HistoryBatch], int]):
         if target_tokens < 1 or min_tokens < 1 or min_tokens > target_tokens:
             raise ValueError("Invalid incremental history token limits")
         if input_budget_tokens < 1:
             raise ValueError("History maintenance needs positive input capacity")
+        resumed_id = await self._resume_blocked_history_batch(scene_id)
+        if resumed_id is not None:
+            return await self.load_history_batch(resumed_id)
         batch_id = uuid.uuid4().hex
 
         def candidate(parts, tokens):
@@ -107,12 +145,13 @@ class HistoryStoreMixin:
                 """SELECT id,status,error_type,start_rowid,end_rowid FROM history_batches
                    WHERE scene_id=? AND status!='completed' LIMIT 1""", (scene_id,))).fetchone()
             if unfinished:
-                # Failure and process interruption require an explicit retry:
-                # redoing a range on its own would spend the call again and can
-                # produce a second account of the same conversation. But the
-                # block is total — until an operator retries, this scene's
-                # long-term memory simply stops growing — so it says so out
-                # loud instead of stalling in silence for hours.
+                # What is left here already had its one resume, or failed for
+                # a reason the range itself may cause, so repeating it would
+                # just spend the call again. The block is total — until an
+                # operator retries, this scene's long-term memory stops
+                # growing, and with it the summary frontier that window
+                # anchoring needs — so it says so out loud instead of
+                # stalling in silence for hours.
                 # Per store, and keyed on the blocking batch, so the warning
                 # fires once for each new blockage rather than on every message.
                 warned = self.__dict__.setdefault('_history_block_warned', {})

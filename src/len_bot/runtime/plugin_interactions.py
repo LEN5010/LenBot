@@ -306,7 +306,7 @@ async def _respond_agent(runtime, call, request, *, resume=None, resume_event=No
         return {'session':new,'events':related,'through_rowid':new.last_observed_event_rowid}
 
     async def commit(outcome, *, read_event_ids):
-        return await actor.commit_turn(outcome,execution.context.refs.cutoff,read_event_ids,
+        return await actor.commit_turn(outcome,execution.context.refs.cutoff,sorted(read_event_ids),
             execution.context.session.knowledge_revision,mailbox,runtime.runtime_gate)
 
     async def publish(decision):
