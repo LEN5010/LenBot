@@ -814,14 +814,19 @@ class ConversationContext:
         dropped = [message for message in window if message['_source_rowid'] < boundary]
         if not dropped or len(dropped) == len(window):
             return
-        summary_ranges = [span for message in messages if not message.get('_context_omitted')
-                          for span in message.get('_summary_ranges', [])]
+        # A batch already records which events it summarized end to end, and that
+        # is the question being asked here. Comparing offsets instead compared two
+        # different coordinate systems: the window measures its range over
+        # event.raw_text, while a batch's start/end offsets index the JSON that
+        # history_source_text builds around a projected copy of that text. The two
+        # agree only by accident -- a short message's JSON envelope is longer than
+        # the message, so the check passed -- and 1.4% of messages project shorter
+        # than their raw text, where it failed. One such message at the boundary
+        # pinned a scene's anchor permanently and took its prefix cache with it.
+        covered = {ident for message in messages if not message.get('_context_omitted')
+                   for ident in message.get('_summary_complete_ids', ())}
         for message in dropped:
-            rowid = message['_source_rowid']
-            source = message['_source_range']
-            if not any((start_row, start_offset) <= (rowid, source['start'])
-                       and (rowid, source['end']) <= (end_row, end_offset)
-                       for start_row, start_offset, end_row, end_offset in summary_ranges):
+            if message['_source_event_id'] not in covered:
                 self.omit('window_anchor', 'summary_does_not_cover_original', event_id=message['_source_event_id'])
                 return
         for message in dropped:
@@ -1337,9 +1342,14 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                     'unsummarized_before_initial_boundary':bool(history_status['initial_history_boundary']),
                     'unfinished_ranges':len(history_status.get('unsuccessful', []))}
         summary_views = []
+        # What each loaded batch summarized end to end, carried beside the views
+        # rather than inside them: anchor_window_start needs it, the model does
+        # not, and an underscore key never reaches the request.
+        summary_complete = []
         def history_message():
             return {'role':'user','_context_section':'history_summary',
-                    '_summary_ranges':[item['range'] for item in summary_views], 'content':
+                    '_summary_ranges':[item['range'] for item in summary_views],
+                    '_summary_complete_ids':[ident for ids in summary_complete for ident in ids], 'content':
                     json.dumps({'kind':'history_summary','evidence':'locator_only',
                         'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
         summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
@@ -1353,10 +1363,12 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             snapshot = self._projection_snapshot()
             summary_views.append({'range':[summary['start_rowid'],summary['start_offset'],summary['end_rowid'],summary['end_offset']],
                 'summary':summary['summary'], 'sources':[self.refs.register_event_locator(ident) for ident in summary['key_event_ids']]})
+            summary_complete.append(summary['complete_event_ids'])
             if self.request_tokens([*messages,history_message()]) <= self.input_budget:
                 summary_tokens += size
             else:
                 summary_views.pop()
+                summary_complete.pop()
                 self._restore_projection(snapshot)
                 self.omit('history_summary', 'no_capacity', batch_id=summary['id'])
         history = history_message()
