@@ -13,6 +13,8 @@ class BurstBuffer:
         self.events: list[Event] = []
         self.first_arrived_at = first_arrived_at
         self.timer_task: asyncio.Task[None] | None = None
+        self.priority = -1
+        self.max_deadline: float | None = None
 
 
 class BurstAssembler:
@@ -40,8 +42,10 @@ class BurstAssembler:
         config: RuntimeConfig,
         on_burst: Callable[[Stimulus], Awaitable[None]],
         clock=time.monotonic,
+        wall_clock=time.time,
     ):
         self.clock = clock
+        self.wall_clock = wall_clock
         self.config = config
         self.on_burst = on_burst
         self._buffers: dict[str, BurstBuffer] = {}
@@ -70,24 +74,29 @@ class BurstAssembler:
                 if buffer is None:
                     buffer = BurstBuffer(event.scene_id, now)
                     self._buffers[event.scene_id] = buffer
-                buffer.events.append(event)
-
-                # The same set the policy calls "addressed", imported rather
-                # than restated: a name hit is an opportunity now, and an
-                # opportunity waits for the debounce window like any other
-                # message instead of flushing the buffer on its own.
+                if not any(item.id == event.id for item in buffer.events):
+                    buffer.events.append(event)
                 reasons = set(event.metadata.get('attention_reasons') or [])
-                if event.is_mention_bot or event.is_reply_bot or reasons & ADDRESSED_REASONS:
-                    self._take_buffer(event.scene_id)
-                    bursts.append(self._create_burst(buffer.events))
-                elif (now - buffer.first_arrived_at) * 1000 >= self.config.debounce_max_ms:
+                priority = (3 if event.is_mention_bot or event.is_reply_bot or reasons & ADDRESSED_REASONS
+                            else 2 if reasons & {'active_observation', 'in_flight_observation'}
+                            else 0 if reasons == {'sample_opportunity'} else 1)
+                if priority == 0:
+                    candidate_deadline = now + max(0, event.metadata['attention_due_at'] - self.wall_clock())
+                else:
+                    _, cap = self._windows(priority)
+                    candidate_deadline = now + cap / 1000
+                buffer.max_deadline = (candidate_deadline if buffer.max_deadline is None
+                                       else min(buffer.max_deadline, candidate_deadline))
+                buffer.priority = max(buffer.priority, priority)
+                idle, _ = self._windows(buffer.priority)
+                deadline = (buffer.max_deadline if buffer.priority == 0 else
+                            min(buffer.max_deadline, now + idle / 1000))
+                if deadline <= now:
                     self._take_buffer(event.scene_id)
                     bursts.append(self._create_burst(buffer.events))
                 else:
                     if buffer.timer_task:
                         buffer.timer_task.cancel()
-                    deadline = min(now + self.config.debounce_idle_ms / 1000.0,
-                                   buffer.first_arrived_at + self.config.debounce_max_ms / 1000.0)
                     buffer.timer_task = asyncio.create_task(
                         self._wait_and_flush(buffer, deadline)
                     )
@@ -96,6 +105,23 @@ class BurstAssembler:
 
         for burst in bursts:
             await self.on_burst(burst)
+
+    def _windows(self, priority):
+        if priority == 3:
+            return self.config.addressed_debounce_idle_ms, self.config.addressed_debounce_max_ms
+        if priority == 2:
+            return self.config.observing_debounce_idle_ms, self.config.observing_debounce_max_ms
+        return self.config.debounce_idle_ms, self.config.debounce_max_ms
+
+    async def discard_provided(self, scene_id: str, event_ids: set[str]) -> None:
+        """An in-flight request can cover a buffered input before its timer fires."""
+        async with self._lock:
+            buffer = self._buffers.get(scene_id)
+            if buffer is None:
+                return
+            buffer.events[:] = [event for event in buffer.events if event.id not in event_ids]
+            if not buffer.events:
+                self._take_buffer(scene_id)
 
     async def flush_scene(self, scene_id: str) -> None:
         burst: Stimulus | None = None

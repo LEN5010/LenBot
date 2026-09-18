@@ -158,8 +158,10 @@ class RuntimeQueryService:
 
     def attention_settings(self):
         return {key: getattr(self.runtime.config, key) for key in (
-            "attention_keywords", "attention_sample_window_seconds", "attention_sample_probability",
+            "attention_keywords", "attention_observation_interval_seconds", "attention_observation_enabled",
             "attention_keyword_cooldown_seconds", "attention_focus_seconds", "conversation_recent_tokens",
+            "addressed_debounce_idle_ms", "addressed_debounce_max_ms",
+            "observing_debounce_idle_ms", "observing_debounce_max_ms",
             "scene_hourly_message_limit", "user_hourly_message_limit")}
 
     def access_settings(self):
@@ -727,7 +729,7 @@ class RuntimeQueryService:
                         if part.get('type')=='at'))
                 views[event.id]={"id":event.id,"rowid":metadata["_rowid"],"event_type":event.event_type.value,"scene_id":scene,
                     "actor_id":event.actor_id,"timestamp":event.timestamp,"payload":payload,
-                    "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain","attention_lane") if key in metadata},
+                    "attention":{key:metadata[key] for key in ("attention_reasons","attention_certain","attention_lane","attention_due_at") if key in metadata},
                     "participation": self._participation(event, metadata, delivery),
                     "interaction": {key:metadata[key] for key in ("interaction", "interaction_reason", "requester_qq_uid",
                                        "command_id", "calendar_parent_event_id", "conversation_excluded",

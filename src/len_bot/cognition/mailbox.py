@@ -1,4 +1,5 @@
 from typing import Optional
+from len_bot.scenes.models import OriginalCoverage
 
 class EpisodeMailbox:
     """Episode identity, interaction participants, and explicit cancellation."""
@@ -21,6 +22,8 @@ class EpisodeMailbox:
         self.source_started_at: float | None = None
         self.interaction_actors: set[str] = set()
         self.handled_source_ids: set[str] = set()
+        # Filled only after a real model response confirms the final request.
+        self.provided_original_ranges: dict[str, OriginalCoverage] = {}
         self.messages_committed = 0
         self.next_checkpoint = 0
         self._cancelled: bool = False

@@ -12,6 +12,7 @@ from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessagePr
 from len_bot.memory.models import MemoryProposal
 from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
 from len_bot.scheduler.models import task_delivery_available
+from len_bot.runtime.attention import HUMAN_INPUTS
 
 
 class StrictModel(BaseModel):
@@ -79,12 +80,18 @@ class SourceResolution(StrictModel):
     unfinished:list[str]=Field(default_factory=list,description='同一原话中仍未完成的要求；未做的部分不能被已发送内容覆盖')
 
 
+class ObservationChoice(StrictModel):
+    source: str
+    action: Literal['continue', 'end']
+
+
 class Respond(StrictModel):
     messages:list[TurnMessage]=Field(max_length=3,description='零至三条；空列表表示沉默')
     sources:list[SourceResolution]
     next:Literal['end','continue','wait']
     note:str=Field(default='',max_length=500,description='内部参与判断；尚有待处理来源但本次不处理任何来源时，说明等待条件或结束原因。不发送、不保存为长期认识')
     release_focus:list[str]=Field(default_factory=list,description='根据本人原话停止本次误接或互动的成员U；只撤销现有关注窗口，不写长期规则')
+    observation: ObservationChoice | None = None
 
 class Evidence(StrictModel):
     evidence:list[str]=Field(min_length=1,description='本轮实际读过的消息M引用')
@@ -211,6 +218,8 @@ RESPOND={
                 'description':'end结束本轮；continue提交后在原预算继续；wait提交一个真实等待关系，释放模型资源后等对应回应'},
             'release_focus':{'type':'array','items':{'type':'string'},'uniqueItems':True,
                 'description':'根据本人已读原话停止本次互动的成员U；撤销现有短时关注'},
+            'observation':_object({'source':{'type':'string','description':'本次新处理的已完整读取的人类原话M'},
+                'action':{'type':'string','enum':['continue','end']}},('source','action')),
         },('messages','sources','next')),
     },
 }
@@ -300,6 +309,8 @@ class ProposalLedger:
         # comes back as a correctable observation, not a lost turn, which is
         # what `messages[].source` has always relied on.
         parameters=result['function']['parameters']['properties']
+        if self.plugin_source_ids:
+            parameters.pop('observation', None)
         if self.proposal_refs:
             props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
                 'description':'仅对应新建事项的确认消息填写；复制实际暂存回执S，每个回执只确认一次。其他人的普通回复不填；不提前写工作结论'}
@@ -664,10 +675,18 @@ class ProposalLedger:
             released=list(dict.fromkeys(refs.member_id(ref) for ref in result.release_focus))
             if set(released)-{event.actor_id for event in source_candidates}:
                 raise ValueError('撤销关注必须有本次处理的本人原话，不能替其他人结束互动')
+            observation = None
+            if result.observation:
+                from len_bot.cognition.models import ObservationDecision
+                ident = refs.event_id(result.observation.source)
+                if (self.plugin_source_ids or ident not in handled or ident in self.continuing_sources
+                        or not any(event.id == ident and event.event_type in HUMAN_INPUTS for event in source_candidates)):
+                    raise ValueError('观察期决定必须引用本次新处理的人类原话；插件来源和旧阶段不能续期')
+                observation = ObservationDecision(source_event_id=ident, action=result.observation.action)
             return EpisodeOutcome(disposition=FinalDisposition.ACTION if messages else FinalDisposition.SILENCE,
                 decision_reason=result.note or ('参与' if messages else '旁听'),message_proposals=messages,
                 source_outcomes=outcomes,checkpoint_index=self.checkpoint_index,next_action=result.next,
-                release_focus_actor_ids=released,
+                release_focus_actor_ids=released, observation=observation,
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
         except TerminalArgumentError:
             raise

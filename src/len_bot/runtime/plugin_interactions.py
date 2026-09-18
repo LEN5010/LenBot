@@ -289,7 +289,7 @@ async def _respond_agent(runtime, call, request, *, resume=None, resume_event=No
     current.pending_wakes=[wake for wake in current.pending_wakes if wake.event_id in ids]
     observed_cutoff=call.cutoff_rowid
 
-    async def observe():
+    async def observe(*, provided_ranges=None):
         nonlocal observed_cutoff
         new=actor.session.model_copy(deep=True)
         related=await runtime.event_store.events_by_ids(call.scene_id,
@@ -490,6 +490,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         await runtime.plugin_host.validate_call(call)
         context.trajectory=trajectory
         tokens=context.fit_request(trajectory,definitions,phase='plugin_agent')
+        context.reconcile_original_reads(trajectory)
         context.context_plan['request']={'input_tokens':tokens,'input_budget_tokens':context.input_budget,
             'current_pixel_assets':sorted(context.loaded_media),'messages':context.request_manifest(trajectory)}
         pending_presentations[:]=toolkit.read_presentations(trajectory)
@@ -528,6 +529,11 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
 
     async def checkpoint(stage,payload):
         if stage=='after_model':
+            context.confirm_original_reads()
+            if nested_respond and execution.mailbox is not None:
+                from len_bot.scenes.models import OriginalCoverage
+                execution.mailbox.provided_original_ranges = {ident: OriginalCoverage.model_validate(span)
+                    for ident, span in context.confirmed_original_ranges.items()}
             toolkit.adopt_presentations(pending_presentations)
             if execution.record_presentations:
                 await execution.record_presentations(pending_presentations)

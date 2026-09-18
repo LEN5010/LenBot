@@ -196,7 +196,7 @@ class SocialCognitionCore:
             # and still submit.  An unlimited count always can.
             left=count_remaining(config.conversation_max_steps, execution.budget.model_used)
             can_absorb=left is None or left>=2
-            update=await observe() if observe and can_absorb else None
+            update=await observe(provided_ranges=context.confirmed_original_ranges) if observe and can_absorb else None
             if update:
                 context.session=update['session']
                 context.refs.cutoff=update['through_rowid']
@@ -204,7 +204,7 @@ class SocialCognitionCore:
                 context.add_current_sources(new_events,[wake.event_id for wake in context.session.pending_wakes])
                 if plugin_call:
                     ledger.plugin_source_ids.update(event.id for event in new_events)
-                current_ids=[event.id for event in new_events if event.metadata.get('attention_reasons')]
+                current_ids=[event.id for event in new_events]
                 related=await context.associated_originals(new_events,current_ids)
                 by_id={event.id:event for event in [*new_events,*related]}
                 provided_ids=list(dict.fromkeys([*current_ids,*(event.id for event in related)]))
@@ -246,6 +246,7 @@ class SocialCognitionCore:
             nonlocal pending_presentations
             context.trajectory=trajectory
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
+            context.reconcile_original_reads(trajectory)
             pending_presentations=toolkit.read_presentations(trajectory)
             sections={}
             empty_schema_tokens=context.request_tokens([],[])
@@ -261,19 +262,25 @@ class SocialCognitionCore:
             audit['output_reserved_tokens']=config.conversation_output_tokens
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
-            if input_prepared:
-                input_prepared(context.provided_event_ids,context.refs.read_events)
             return context.model_messages(trajectory)
 
         async def checkpoint(stage,payload):
             nonlocal pending_presentations
             if stage=='after_model':
+                context.confirm_original_reads()
+                if mailbox is not None:
+                    from len_bot.scenes.models import OriginalCoverage
+                    mailbox.provided_original_ranges = {ident: OriginalCoverage.model_validate(span)
+                        for ident, span in context.confirmed_original_ranges.items()}
+                if input_prepared:
+                    input_prepared(context.provided_event_ids, context.refs.read_events)
                 toolkit.adopt_presentations(pending_presentations)
                 actual=copy.deepcopy(pending_presentations)
                 pending_presentations=[]
                 step=audit['steps'][-1]
                 step['presentations']=actual
                 step['context_plan']=copy.deepcopy(context.context_plan)
+                step['provided_original_ranges']=copy.deepcopy(context.confirmed_original_ranges)
                 audit['tool_presented_ranges']=copy.deepcopy(toolkit.presented_ranges)
                 payload={**payload,'presentations':actual,'context_plan':copy.deepcopy(context.context_plan)}
             if runtime.evaluation_hook:

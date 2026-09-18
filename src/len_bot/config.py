@@ -30,6 +30,14 @@ class RuntimeConfig(BaseModel):
     db_path: str = Field(description='Path to SQLite database')
     debounce_idle_ms: int = Field(description='Sliding idle window (ms)')
     debounce_max_ms: int = Field(description='Max debounce wait cap (ms)')
+    addressed_debounce_idle_ms: int = Field(default=400, gt=0,
+        description='真实 @ / 回复的短合并等待（毫秒）')
+    addressed_debounce_max_ms: int = Field(default=1000, gt=0,
+        description='真实 @ / 回复单批最大合并等待（毫秒），不承诺模型和送达延迟')
+    observing_debounce_idle_ms: int = Field(default=800, gt=0,
+        description='短时观察期内新原话的合并等待（毫秒）')
+    observing_debounce_max_ms: int = Field(default=2000, gt=0,
+        description='短时观察期内单批最大合并等待（毫秒）')
     conversation_max_steps: int | None = Field(ge=1,
         description='每轮对话的模型调用上限；null 表示该维度不设限，此时必须有期限或 token 上限')
     conversation_max_tool_calls: int | None = Field(ge=1,
@@ -42,14 +50,15 @@ class RuntimeConfig(BaseModel):
     conversation_window_seconds: float | None = Field(default=None, gt=0,
         description='一轮对话自首次模型调用起的绝对期限（秒）；null 表示不设期限维度；恢复不重置')
     attention_keywords: list[str]
-    attention_sample_window_seconds: float = Field(gt=0,
-        description='同一场景两次主动观察之间的最小间隔（秒）；一次观察携带自上次以来到达的全部消息，开不开口由模型判断，不再抽签')
-    attention_sample_probability: float = Field(ge=0, le=1,
-        description='是否观察这个场景的开关：0 表示完全不观察，大于 0 表示按上面的间隔观察。不再作为概率使用')
+    attention_observation_interval_seconds: float = Field(gt=0,
+        description='普通消息待观察批次的间隔（秒）；有未读输入才定时触发，按容量分批提供，睡眠、权限与预算仍生效')
+    attention_observation_enabled: bool = Field(
+        description='是否启用普通消息的周期观察；关闭不影响真实搭话、短时观察期和名称/关键词的独立机会')
     attention_keyword_cooldown_seconds: float = Field(ge=0)
-    attention_focus_seconds: float = Field(gt=0)
+    attention_focus_seconds: float = Field(gt=0,
+        description='真实搭话或本轮有来源的继续观察决定所授予的短时观察期（秒）；沉默可保留，普通消息和Bot发言不自动续期')
     attention_opportunity_ttl_seconds: float = Field(default=600.0, gt=0,
-        description='机会类唤醒（抽样／关键词／名字命中）在待处理集合里的存活时长（秒）；过期即关闭，原消息仍留在事件与历史里。被直接搭话、运行时来源与已获准工作不受此限')
+        description='旧版未记录读取范围的机会来源的保留秒数；新版未覆盖原话不因超时冒充已读，明确请求仍须处理结果')
     scene_hourly_message_limit: int = Field(default=0, ge=0,
         description='同一群每滚动小时真实发出的消息上限；达到后闲聊与主动发言停止进入模型，插件命令与推送不受影响；0 表示不限')
     user_hourly_message_limit: int = Field(default=0, ge=0,

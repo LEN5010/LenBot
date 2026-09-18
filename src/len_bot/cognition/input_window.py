@@ -22,5 +22,20 @@ def original_prefix(event, token_limit):
         return event
     view = event.model_copy(deep=True)
     view.payload['raw_text'] = text[:low]
-    view.metadata['_text_range'] = {'start':0, 'end':low, 'total':len(text)}
+    span = event.metadata.get('_text_range') or {'start': 0, 'end': len(text), 'total': len(text)}
+    view.metadata['_text_range'] = {'start':span['start'], 'end':span['start']+low, 'total':span['total']}
+    return view
+
+
+def original_remainder(event, coverage):
+    """Schedule the first uncovered range without granting previous-episode evidence."""
+    if coverage is None or coverage.complete or not coverage.next_offset:
+        return event
+    if coverage.total != len(event.raw_text):
+        raise ValueError('Observation coverage no longer matches the original')
+    start = coverage.next_offset
+    end = next((left for left, _ in coverage.ranges if left > start), coverage.total)
+    view = event.model_copy(deep=True)
+    view.payload['raw_text'] = event.raw_text[start:end]
+    view.metadata['_text_range'] = {'start': start, 'end': end, 'total': coverage.total}
     return view
