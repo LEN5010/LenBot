@@ -82,6 +82,59 @@ APIConnectionError: Connection error.; transport cause: RemoteProtocolError: Ser
 - **批次自动恢复（8e3b3ce）再次现场生效**：`History maintenance resuming blocked batch in group:126300994: batch=b1f04bfa... status=pending error=None`。随后该批次因同一中继故障再次失败并转入 `blocked`，属预期——自动恢复解决的是"卡住不再重试"，不是"上游坏了也能成"。
 - **检索工具的基线比原先记的高**：近两天 `tool_observations` 里 `recall_chat` 47 次、`query_memory` 16 次、`search_history_summaries` 2 次。原先"923 轮 2 次"说的只是 `search_history_summaries` 一个工具，不是全部召回。7a0ab97 把它从 `tool_search` 后面放到常驻列表，效果要在中继恢复后另测。
 
+### 缓存命中率的未命中发生在中继，不在请求拼装
+
+切到 `gemini-3.8-flash-high` 之后，端到端命中率 28—30%，低于上一段 35.9% 的基线。逐轮看，分布仍是双峰且中间为空：32 次完全未命中、19 次大部分复用、0 次部分命中。
+
+两个群形态相反：`group:1042218062` 14 次调用只有 3 次全未命中，命中时稳定在 45,055—45,067（输入约 58k）；`group:1078114081` 16 次里 13 次全未命中，但命中时是 61,4xx（输入约 64k）。**命中时的前缀长度分别是 78% 和 95%，而且每轮几乎一致**——请求拼装本身是稳的。
+
+先怀疑过 `limit_image_window()` 就地改写窗口中段的消息（把图片部件换成"像素已移出当前窗口"）会打断前缀。**实测否定**：74 轮里淘汰次数为 0，`media_manifest` 的 22 条中位数大多是 `catalog_only`（表情包目录，落在 volatile），每轮真正装入像素的只有 1—5 张。这条假设作废。
+
+决定性核对是直接向中继连发五次**逐字节完全相同**的请求（固定 36,008 token 前缀）：
+
+| 次 | 输入 | 命中 |
+|---:|---:|---|
+| 1 | 36,008 | 0（冷启） |
+| 2 | 36,008 | 32,735（90.9%） |
+| 3 | 36,008 | **0** |
+| 4 | 36,008 | 32,735（90.9%） |
+| 5 | 36,008 | 32,735（90.9%） |
+
+第 3 次与第 2 次字节完全相同、相隔 1 秒，仍然返回 0。**未命中发生在供应商侧**，本项目改变请求构造无法影响它。最可能是中继在多条上游通道间分流，各通道各有自己的缓存，落到没见过该前缀的通道就是 0；这属于运营者自己的 new-api，不在本仓库范围内。
+
+由此更正 [上下文装配](context.md) 第八节原先写的回滚判据：端到端平均命中率 ≈ 本项目的前缀占比 × 中继实际服务缓存的比例，不能直接用来判断锯齿参数。要判断锯齿，看**命中时** `cached_tokens` 占输入的比例。按这个口径，当前两个群是 78% 和 95%。
+
+### `[image]` 混进 Bot 自己的发言
+
+群里实际看到「从前有只小猪很爱熬夜，后来它……睡着了！讲完了快闭眼[image]」后面还跟着一张真图。存下来的事件里，**文字段本身**含这个字面量：
+
+```json
+"segments": [
+  {"type":"text",  "text":"...讲完了快闭眼[image]"},
+  {"type":"image", "asset_id":"image_afa85da5df215139b93b62dbafeddf99"}
+]
+```
+
+来源是 `projection.py` 的 `text = project_onebot_text(event.raw_text)`。别人发的消息 `raw_text` 是 OneBot CQ 文本，`[CQ:image,...]` 被映射成 `[图片]`；而 Bot 自己的 `raw_text` 由 `media/models.py` 的 `segment_text()` 拼，媒体段写成裸的 `f"[{segment.type}]"`，CQ 正则匹配不到，原样进入窗口。模型看到自己上一条是「晚上好呀！[image]」，读起来就是自己打的字，于是照打，同时又正常挂了图。
+
+近两天 694 条 Bot 发言里 8 条中招（1%），全部是"既写了占位符又真发了图"，没有只写占位符不发图的。**7 条发生在 deepseek 时期，1 条在 gemini**，与换模型无关。
+
+修法是把标记从 Bot 自己的投影文本里**删掉**而不是改成 `[图片]`——换标签只会让它改抄另一个字面量。信息不丢：同一事件的 `metadata["media"]` 已经在下一行输出 `图片引用（需要时用 read_media 查看）：`。对 400 条真实发言核对：8 条泄漏全消、0 残留；别人发图仍是 `[图片]`；纯图片的 Bot 发言投影后正文为空，媒体引用行仍在。
+
+### 维护上下文太紧，把两条批次永久卡死
+
+切模型后两分钟出现：
+
+```
+ValueError: 历史维护请求需要 82570 token，可用输入容量为 81808；原区间未推进
+```
+
+`maintenance_context_tokens=90000` 减 `maintenance_output_tokens=8192` 得 81808，差 762。上一轮设这个数时只按"装得下 60k 原话"算，没给人格、认识、工具定义和模型自己调 `query_memory` 的结果留余量。`ValueError` 不在 `RESUMABLE_HISTORY_ERRORS` 里，这两条批次不会自动恢复。
+
+实测分布：同期成功的维护请求在 6,740—58,131，只有积压最大的批次顶到 82k。`maintenance_context_tokens` 是**上限不是目标**——调高它不会让任何一次请求变大，真正决定请求大小的是 `history_target_tokens=60000`。经面板 `PATCH /api/settings/runtime` 改为 120000（预算 111,808，对 60k 原话的余量从 21,808 变成 51,808），重启生效后从面板重试那两条，均完成。**当前 7 个群没有任何未完成批次。**
+
+没有把 `ValueError` 加进可自动恢复集：同一配置下重试必然同样失败，它需要的是运营者改配置，不是自愈。
+
 ### set 序列化修复仍无运行证据，但不再依赖 interest_share
 
 原以为只有 `interest_share` 会走到那条提交路径，而它现已停用。核对后：走 `run_agent(output_mode='respond')` 且 `parent.finish is None` 的调用有两处，另一处是 `local_plugins/local_clock` 的 `on_brief`，**7 个群的 `local_clock.commands` 都含 `time_brief`**。也就是任一群里发一句「时间简报」即可走到 `plugin_interactions.py` 那个 `commit` 回调。触发需要真实群消息，不能自行注入，仍待运营者实发一次。
