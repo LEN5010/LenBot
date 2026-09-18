@@ -39,6 +39,16 @@ def project_onebot_text(text: str) -> str:
     return re.sub(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]", replace, text)
 
 
+# Our own raw_text comes from segment_text, not from OneBot, so the marker it
+# writes for a media segment is a bare "[image]" rather than a CQ code and the
+# pattern above leaves it alone. The window then shows the Bot its own last
+# reply as "晚上好呀！[image]", which reads as characters it typed, and it types
+# them again: eight replies in two days went out with a literal [image] beside
+# the picture they were already carrying. The attachment is stated on its own
+# line below from event.metadata["media"], so dropping the marker loses nothing.
+OWN_MEDIA_MARKER = re.compile(r"\[(?:image|video|audio)\]")
+
+
 def project_event(event: Event, bot_qq: int | str) -> str:
     sender = event.payload.get("sender") or {}
     display_name = sender.get("card") or sender.get("nickname")
@@ -51,6 +61,8 @@ def project_event(event: Event, bot_qq: int | str) -> str:
         else f"EventID={event.id}"
     )
     text = project_onebot_text(event.raw_text)
+    if event.actor_id == f"user:{bot_qq}":
+        text = OWN_MEDIA_MARKER.sub("", text).strip()
     if event.metadata.get("media"):
         text += "\n图片引用（需要时用 read_media 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
     if event.metadata.get("image_observations"):
