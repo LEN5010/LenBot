@@ -171,7 +171,12 @@ async def workspace_artifact(job_id: str, scene_id: str, path: str, request: Req
 @router.get("/jobs/{job_id}/workspace-artifacts")
 async def workspace_artifacts(job_id: str, scene_id: str, request: Request,
                               user: str = Depends(get_current_user)):
-    result = await _service(request).workspace_artifacts(scene_id, job_id)
+    try:
+        result = await _service(request).workspace_artifacts(scene_id, job_id)
+    except RuntimeError as error:
+        # A work without a confirmed snapshot is a state, not a server fault:
+        # the panel should read the sentence, not a 500 and a traceback.
+        raise HTTPException(409, str(error)) from error
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作目录')
     return result

@@ -51,7 +51,7 @@ class AttentionPolicy:
         return bool(set(wake.reasons) & OBLIGATION_REASONS) or any(
             reason.startswith('runtime:') for reason in wake.reasons)
 
-    def _close_stale_opportunities(self, state, now):
+    def _close_stale_opportunities(self, state, now, *, conversation_active=False):
         """An opportunity nobody took expires; a half-read original does not.
 
         A rate-limited room accumulated 321 of these in twelve hours once, and
@@ -62,6 +62,16 @@ class AttentionPolicy:
         case: dropping it would strand the half already recorded as read, so it
         waits for the rest of its coverage instead.
         """
+        if conversation_active:
+            # The turn in flight is holding exactly the wakes old enough to
+            # expire: it read them when it started, minutes ago.  Dropping one
+            # now makes its whole commit fail — the handled sources are no
+            # longer pending — and the model call dies with it; three turns
+            # went that way in the first minutes after a restart, on wakes
+            # 655-742 seconds old.  The sweep runs again on the next event
+            # once the turn has ended, so the ceiling is deferred by one turn
+            # rather than lifted.
+            return
         ttl = self.config.attention_opportunity_ttl_seconds
         state.pending_wakes = [wake for wake in state.pending_wakes
                                if self._is_obligation(wake)
@@ -73,7 +83,7 @@ class AttentionPolicy:
         now = self.clock()
         attention = self._attention(event.scene_id)
         state.focused_participants = {actor: until for actor, until in state.focused_participants.items() if until > now}
-        self._close_stale_opportunities(state, now)
+        self._close_stale_opportunities(state, now, conversation_active=conversation_active)
         if event.metadata.get('conversation_excluded'):
             event.metadata['attention_reasons'] = []
             event.metadata['attention_certain'] = False
