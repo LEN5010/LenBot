@@ -870,12 +870,12 @@ class AgentRuntime:
         if not self.scene_policy.maintenance_allowed(batch.scene_id):
             raise ValueError('该群未开放历史维护')
         if batch.scene_id in self._maintaining_history_scenes:
-            raise ValueError('History maintenance is already running for this scene')
+            raise ValueError('该群的历史维护正在进行，等这一轮跑完再重试')
         self._maintaining_history_scenes.add(batch.scene_id)
         try:
-            actor = await self.scene_manager.get_or_create_actor(batch.scene_id)
-            if actor.has_active_episode():
-                raise ValueError('Conversation is running; retry maintenance when this turn has finished')
+            # A turn in flight no longer refuses the retry: the background run
+            # waits for it, so the operator's one chance to unblock this scene
+            # does not depend on clicking between two conversations.
             maintenance_context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
             reflector = self.history_engine.llm_reflector
             estimate = reflector.input_tokens(batch, maintenance_context)
@@ -903,8 +903,20 @@ class AgentRuntime:
             while self._running and self._can_maintain_history() and self.scene_policy.maintenance_allowed(scene_id):
                 actor = await self.scene_manager.get_or_create_actor(scene_id)
                 if actor.has_active_episode():
-                    self._schedule_history_maintenance(actor.session)
-                    return
+                    # A scheduled run can simply come back after the next quiet
+                    # window: it owns nothing, and the timer will offer the same
+                    # tail again.  An operator retry is holding the one batch
+                    # that unblocks this scene, and the scheduled path refuses
+                    # to touch a range it did not create, so handing the turn
+                    # back to the timer drops the retry and the scene stays
+                    # blocked until someone happens to click between two turns —
+                    # which in a busy group may never come.  It waits out the
+                    # turn instead, keeping its claim so the panel can say so.
+                    if batch is None:
+                        self._schedule_history_maintenance(actor.session)
+                        return
+                    await actor.wait_episode_idle()
+                    continue
                 if batch is None:
                     maintenance_context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
                     reflector = self.history_engine.llm_reflector
