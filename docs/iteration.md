@@ -87,16 +87,65 @@ Runtime 入口在额度耗尽时直接把 `interest_share` 槽设为 CANCELLED�
 
 19:08:56 修复后重启：OneBot 连上，Dashboard 起来，**重启之后 conversation_error 0 次**。截至 19:10 群里没有新消息，因此模型调用 0 次——这正是「无新输入不调用」应有的样子，但也意味着到期观察本身仍未取得运行证据。
 
+### 第一段真实流量：10.5 分钟，六个群
+
+19:08:56—19:19:28 这一段是本轮改动第一次被真实流量检验。14 次 conversation、19 次 history_maintenance。重启后收到的人类消息里，`attention_reasons` 分布为 `sample_opportunity` 182、`in_flight_observation` 143、`active_observation` 6、`address_name` 3、`mention` 1——到期观察和观察期都在真实触发，不再只有被 @ 才动。
+
+`PendingWake.observation` 确实带着 `OriginalCoverage` 进了请求（trace 的 `wake_sources` 里能看到 `total` 与 `ranges`）。但**没有任何一条 wake 留下非空 `ranges`**：完整覆盖的纯观察机会直接收口出列，只有装不下的长原话才会留半截等续读，这十分钟里没有出现。分批续读与证据重建因此仍然没有运行证据。
+
+group:1078114081 的两次对话都以上游 `APIConnectionError: Server disconnected` 失败，十分钟里积压到 156 条 pending wake（最早一条正好 10 分钟前），600 秒 TTL 在边界上起作用。两次 conversation_error 都来自上游中转，与本批无关。
+
+### 面板重试历史批次：不只是报错，那次重试本身被丢掉了
+
+用户在面板点重试，收到 `History maintenance is already running for this scene`。
+
+`OPERATOR_ACTION` 记录显示 19:15:23/:24/:25/:28 连点四次同一批次（`c2b545aa`，group:1078114081），而该群 19:14:32—19:17:55 正好有一次 conversation 在跑。第一次点击撞上 `actor.has_active_episode()`，被 `retry_history` 用「Conversation is running」挡下；后三次与第一次的 scene 认领重叠，拿到那句「already running」。批次至今仍是 pending，没有产生任何 model call，也没有留下 trace。
+
+真正的缺口不在提示词。`retry_history` 把批次改回 pending 之后交给 `_maintain_history(retry_batch=..., claimed=True)`；后者在循环开头发现轮次在跑，就 `_schedule_history_maintenance` 然后 return——而定时器那条路走的是 `begin_history_batch`，它看到未完成批次就拒绝（未完成的区间只能由人显式重试）。于是**操作员的重试被静默丢掉，这个群继续卡着**，下一次警告还会被同批次去重挡掉。忙群里两次对话之间的空隙可能永远等不到，重试这个动作实际上在碰运气。
+
+改法：`retry_history` 不再因为轮次在跑而拒绝，把等待交给后台；`_maintain_history` 手里握着重试批次时改为 `await actor.wait_episode_idle()` 再继续（HistoryCommitDeferred 已经在用这条路径），认领全程不放。并发提示改成中文，且现在是真话——它确实正在跑。
+
+### 缓存为什么仍然是 0：锚定一次都没成立
+
+重启后 15 次 conversation 调用里只有 4 次命中缓存，其余 `usage_json` 连 `prompt_tokens_details` 都不带（上一轮记的「`usage_json` 拿不到 `cached_tokens`」是错的，命中时它会回传）。命中的 4 次是同一轮次的第二步、或重启后接续上一进程轨迹的 resume，都属于「同一份请求再发一次」；**跨轮次零命中**，每轮实付 64k—70k 输入。
+
+原因在 trace 里是直接写着的：14 次请求里 13 次记了 `window_anchor / summary_does_not_cover_original`。请求本身的布局是对的——
+
+| 位置 | 段 | tokens |
+|---|---|---|
+| 0 | persona | 4919 |
+| 1–289 | recent_history | 43203 |
+| 290–315 | related_original / original_input / original_media | 7640 |
+| 316 | own_recent_expression | 267 |
+| 317 | current_time | 97 |
+| 318–324 | input_status … execution_budget | 11101 |
+
+易变的东西全在尾部，`execution_budget` 每步搬到最后，能复用的前缀有 56k 正文加 9.3k 工具定义。但前缀要成立，`recent_history` 的**起点**必须不动，而起点只有 `anchor_window_start()` 能钉住；它又要求被裁掉的原话在本次请求里确实有已完成摘要覆盖。摘要前沿被 pending 批次挡住，锚定就永远不成立，窗口起点随每条新消息滑动：group:1042218062 相邻两次请求的首条从 `M29997` 变成 `M30103`，整块 44k 平移，缓存自然从第 1 条消息就断。
+
+唯一一次锚定成功（19:15:00，group:1102823315，裁掉 5 条）正好发生在该群维护连续追赶、摘要前沿贴近当前行的时候。所以这不是两个问题：**卡住的历史维护就是缓存不命中的原因**，上面那个重试缺口是它的上游。
+
+积压规模（按各群自己的消息条数算）：
+
+| 群 | 摘要前沿 | 落后条数 |
+|---|---|---|
+| group:1078114081 | 21836 | 2458 |
+| group:992584358 | 21593 | 2155 |
+| group:1042218062 | 29248 | 563 |
+| group:126300994 | 30211 | 331 |
+| group:1102823315 | 32279 | 28 |
+
+追平要一批批跑，每批约 8k 输入、20k 左右一次调用。前两个群从 16:43 就卡着，各需二十批上下。
+
 ### 未确认
 
 - **除了「能正常启动、空闲时不调模型」，其余改动仍然没有运行数据。** 到期观察在无后续消息时是否按时触发、四条车道的毫秒数、短时观察期 120 秒、分批覆盖、证据重建，全部尚未被真实流量检验。
 - 本轮把 `pyflakes` 加进了实际使用的检查手段，但它只覆盖未定义名称一类；提示词与模板里的运行期错误仍然只有真实启动才暴露得出来。
 - 定时观察是否真的在无后续消息时按时触发、四条车道的毫秒数是否合适、短时观察期 120 秒是否够用，都只能在真实群里看。
-- 观察频率提高后的实际调用量与成本没有测。缓存改善仍只能看中转面板，`usage_json` 不回传 `cached_tokens`；`I:<asset_id>` 与摘要覆盖检查对前缀的影响同样未测。
+- 观察频率提高后的实际调用量与成本没有测。缓存已能从 `usage_json` 直接读（命中时带 `prompt_tokens_details.cached_tokens`），结论见上；`I:<asset_id>` 对前缀的影响仍未单独测。
 - `tests/` 里有 9 处仍引用已退役的 `attention_sample_probability` / `attention_sample_window_seconds` / `limit_notice`（`test_scene_transactions.py`、`test_dashboard_api.py`、`test_runtime_lifecycle.py`）。按本仓库约束本轮不新增、不修改、不运行测试，这些引用原样留着。
 - `AttentionPolicy.random_source` 与 `AgentRuntime(attention_random=...)` 已无调用方，但仍被上述测试引用，未删。
 - 观察期开启后 `pending_wakes` 在被限额挡住的小时里仍会累积，恢复后按批读取而不是一次涌入；实际累积速度与排空节奏没有数据。
-- 摘要前沿被失败批次挡住时，锚定不再额外裁剪，等于该群窗口起点回到逐轮滑动。这是有意的取舍（宁可不命中缓存，也不谎称摘要覆盖），代价未测。
+- 摘要前沿被失败批次挡住时，锚定不再额外裁剪，等于该群窗口起点回到逐轮滑动。这是有意的取舍（宁可不命中缓存，也不谎称摘要覆盖），代价已经测到：13/14 次请求锚定失败、跨轮次零命中，每轮多付约 60k 输入。维护追平之后锚定能否稳定成立，以及 `conversation_window_step_rowids=800`（默认 200）是否合适，要等积压清完再看。
 
 ## 2026-09-18：让前缀可复用，然后用它换掉抽签
 
