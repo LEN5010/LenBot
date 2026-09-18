@@ -41,9 +41,32 @@ boundary = ((最老 rowid + step - 1) // step) * step
 dropped  = 窗口里 rowid < boundary 的消息
 ```
 
-`boundary` 在最老 rowid 越过它之前不变，所以**头在两次跳跃之间完全不动，窗口只在尾部生长**。越过时 `boundary` 跳一个 `step`，窗口一次性缩掉那一段。
+**头不动，是因为每轮都被重新钉回同一个位置，不是因为它被记住了。**
+`pack_events` 每轮从最新往回重装，头落在预算用完的地方，它不记得上一轮裁到哪。
+真正让头稳定的是 `anchor_window_start` 每轮把它重新对齐到同一个 `boundary`。
+缓存命中完全依赖这次对齐。
 
-于是窗口呈锯齿：**谷底约 30k → 峰值 130k（头全程不动）→ 一次丢约 100k → 回到谷底**。丢掉的那段不再出现在请求里，要用只能召回。
+因此 **`step` 的真正含义不是"一次丢多少"，而是"窗口里有没有可对齐的边界"**。
+函数开头那两个提前返回是关键：
+
+```python
+if not dropped or len(dropped) == len(window):
+    return          # 没有可对齐的边界，头从此由预算决定，每轮都在动
+```
+
+- `dropped` 为空：窗口整个落在 `boundary` **之上**，没东西可裁，头失去锚点
+- `dropped == window`：窗口整个落在 `boundary` **之下**，同样跨不过去
+
+两种情况都让头开始逐轮滑动，前缀每轮从窗口第一条就断。**step 必须明显小于窗口的
+rowid 跨度**，窗口里才总有边界可钉。
+
+2026-09-19 实测这条：`step=3300` 而全局 rowid 只推进 437/小时，两个边界之间相隔
+**7.5 小时**；最忙的群 130k 窗口只跨 3,410 rowid，几乎等于 step，窗口里最多一个边界。
+越过之后锚定连续 11 轮不触发，其中 9 轮缓存为 0。改成 `step=1000`（窗口内 3.4 个
+边界）后锚定 9/9 触发，同一个群的命中回到 86—98%。
+
+于是窗口呈锯齿：**头被每轮重新钉在 `boundary` 上，窗口在尾部生长，越过下一个边界时
+缩掉一段**。齿越浅越密，头越稳，缓存越好；丢掉的那段不再出现在请求里，要用只能召回。
 
 ## 四、三个数互锁，不能单独调
 
@@ -130,8 +153,8 @@ token 预算在约束（正确），没出现而窗口停在条数上限，说�
 | `conversation_output_tokens` | 4096 | 预留输出，`input_budget` = 两者之差 |
 | `conversation_history_limit` | 1500 | 取多少条原料；必须大到让 token 预算先生效 |
 | `conversation_recent_tokens` | 130000 | 锯齿的峰；也是摘要块的上限 |
-| `conversation_window_step_rowids` | 3300 | 一次丢约 100k，谷底约 30k |
-| `conversation_summary_limit` | 3 | 两条覆盖一次丢弃量，留一条余量 |
+| `conversation_window_step_rowids` | 1000 | 保证窗口里总有可对齐的边界；必须远小于窗口 rowid 跨度 |
+| `conversation_summary_limit` | 15 | 要够到窗口头；实测头被第 2—10 新的摘要覆盖 |
 | `history_target_tokens` | 60000 | 单批摘要覆盖量 |
 | `maintenance_context_tokens` | 90000 | 单批要装得下 60k 原话 |
 | `maintenance_output_tokens` | 8192 | 单条摘要的长度上限 |
