@@ -341,6 +341,7 @@ class PluginHost:
         aliases: tuple[str, ...] = (),
         keywords: tuple[str, ...] = (),
         kind: Literal["read", "proposal"],
+        ordered: bool = False,
         roles: tuple[Literal["conversation", "work"], ...],
         required_capabilities: tuple[str, ...] = (),
         side_effect: Literal['none', 'account_write'] = 'none',
@@ -370,7 +371,8 @@ class PluginHost:
             handler=handler,
             required_capabilities=required_capabilities, side_effect=side_effect,
             input_scope=input_scope, output_scope=output_scope,
-            timeout_seconds=timeout_seconds, kind=kind, roles=roles, deferred=deferred, available=available,page_chars=page_chars,
+            timeout_seconds=timeout_seconds, kind=kind, ordered=ordered, roles=roles, deferred=deferred,
+            available=available,page_chars=page_chars,
         )
         self._plugins[plugin_id].manifest.registered_tools.append(name)
         logger.info("Plugin '%s' registered tool '%s'", plugin_id, name)
@@ -811,6 +813,10 @@ class PluginHost:
 
     def proposal_tool_names(self) -> set[str]:
         return {name for name, tool in self._tools.items() if tool.kind == "proposal"}
+
+    def ordered_tool_names(self) -> set[str]:
+        """Tools whose siblings in one response must not overtake them."""
+        return {name for name, tool in self._tools.items() if tool.ordered}
 
     def get_tool_definitions(self, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] | None = None) -> list[dict[str, Any]]:
         defs = []

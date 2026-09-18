@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +14,8 @@ from len_bot.cognition.projection import estimate_tokens, project_onebot_text
 from len_bot.events.models import Event, EventType
 from len_bot.memory.models import MemoryModel
 from len_bot.memory.writes import commit_memory_proposal_core, validate_memory_proposal
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryConflictError(ValueError):
@@ -101,10 +104,27 @@ class HistoryStoreMixin:
 
         async with self._write_lock:
             unfinished = await (await self._db.execute(
-                "SELECT id FROM history_batches WHERE scene_id=? AND status!='completed' LIMIT 1", (scene_id,))).fetchone()
+                """SELECT id,status,error_type,start_rowid,end_rowid FROM history_batches
+                   WHERE scene_id=? AND status!='completed' LIMIT 1""", (scene_id,))).fetchone()
             if unfinished:
-                # Failure and process interruption require an explicit retry.
+                # Failure and process interruption require an explicit retry:
+                # redoing a range on its own would spend the call again and can
+                # produce a second account of the same conversation. But the
+                # block is total — until an operator retries, this scene's
+                # long-term memory simply stops growing — so it says so out
+                # loud instead of stalling in silence for hours.
+                # Per store, and keyed on the blocking batch, so the warning
+                # fires once for each new blockage rather than on every message.
+                warned = self.__dict__.setdefault('_history_block_warned', {})
+                blocking = unfinished[0]
+                if warned.get(scene_id) != blocking:
+                    warned[scene_id] = blocking
+                    logger.warning(
+                        "History maintenance blocked in %s: batch=%s status=%s error=%s rows=%s-%s; "
+                        "no further summaries until it is retried from the panel",
+                        scene_id, blocking, unfinished[1], unfinished[2], unfinished[3], unfinished[4])
                 return None
+            self.__dict__.setdefault('_history_block_warned', {}).pop(scene_id, None)
             last = await (await self._db.execute("""SELECT end_rowid,end_offset FROM history_batches
                 WHERE scene_id=? AND status='completed' ORDER BY end_rowid DESC,end_offset DESC LIMIT 1""",
                 (scene_id,))).fetchone()

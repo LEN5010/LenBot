@@ -9,13 +9,13 @@ import AdvancedSection from './AdvancedSection.vue'
 import HelpHint from './HelpHint.vue'
 import {blankConfigDraft,configDraft,configValue,draftProblems} from '../lib/pluginConfig.js'
 
-const ATTENTION_HELP = `旁听决定 Bot 有多少次「可以接话」的机会，不决定它一定说话。
+const ATTENTION_HELP = `旁听决定 Bot 隔多久读一次这个群，不决定它一定说话。
 
-p 是每个窗口抽中的概率，窗口是抽样周期，冷却是关键词两次触发之间的最小间隔。每个窗口最多抽一次，所以名义机会约等于 p ÷ 窗口。
+窗口是两次主动观察之间的最小间隔，一次观察会带上自上次以来到达的全部消息，所以没有消息会因为运气不好而被跳过，最多只是晚一点被读到。p 已经不是概率，只是开关：0 表示完全不观察这个群，大于 0 表示按间隔观察。冷却是关键词两次触发之间的最小间隔。
 
-被 @、被回复、私聊和明确委托不走抽样，永远立即响应，不受这些参数影响。
+被 @、被回复、私聊和明确委托不走这条路，永远立即响应，不受这些参数影响。
 
-机会不等于额度：抽中只是进入一次判断，是否发言由模型决定，也不增加模型预算或关注时长。`
+读到不等于会说：进入一次判断而已，是否发言由模型决定，也不增加模型预算或关注时长。`
 
 const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved'])
@@ -73,7 +73,8 @@ const attentionPreview = computed(()=>{
   const current = draft.value?.attention
   const p = current?.sample_probability ?? effective.sample_probability
   const w = current?.sample_window_seconds ?? effective.sample_window_seconds
-  return {p, w, density: w ? (p/w)*3600 : 0}
+  // The probability is a switch now, so the rate is the interval alone.
+  return {p, w, density: p && w ? 3600/w : 0}
 })
 function applyRaise() {
   const raised = record.value?.attention?.raise_two_steps
@@ -222,9 +223,9 @@ onBeforeUnmount(()=>{++requestId})
                 </v-chip>
               </div>
               <p class="muted-copy">
-                有效 p={{ record.attention.effective.sample_probability }}，窗口
+                观察{{ record.attention.effective.sample_probability ? '开启' : '关闭' }}，间隔
                 {{ record.attention.effective.sample_window_seconds }} 秒，冷却
-                {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 约
+                {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 最多约
                 {{ (record.attention.raise_two_steps.density.current_per_hour||0).toFixed(1) }} 次/小时
               </p>
               <AdvancedSection title="仅本群覆盖旁听参数" note="会让本群偏离统一聊天参数">
@@ -233,9 +234,9 @@ onBeforeUnmount(()=>{++requestId})
                   <v-btn size="small" color="primary" variant="tonal" @click="applyRaise">旁听 +2 档</v-btn>
                   <v-btn size="small" variant="text" @click="inheritAttention">恢复继承全局</v-btn>
                 </div>
-                <v-alert v-if="record.attention.raise_two_steps.enables_sampling" type="warning" variant="tonal">当前有效抽样为 0，保存 +2 将开启随机旁听。</v-alert>
+                <v-alert v-if="record.attention.raise_two_steps.enables_sampling" type="warning" variant="tonal">当前该群完全不观察，保存 +2 将按间隔开始观察。</v-alert>
                 <p v-for="note in record.attention.raise_two_steps.notes" :key="note" class="muted-copy">{{ note }}</p>
-                <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为 p={{ attentionPreview.p }}、窗口 {{ attentionPreview.w }} 秒（约 {{ attentionPreview.density.toFixed(1) }} 次/小时）。</p>
+                <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为观察{{ attentionPreview.p ? '开启' : '关闭' }}、间隔 {{ attentionPreview.w }} 秒（最多约 {{ attentionPreview.density.toFixed(1) }} 次/小时）。</p>
               </AdvancedSection>
             </div>
             <v-select v-model="sticker" label="表情倾向" :items="[{title:'继承自然',value:'inherit'},{title:'自然',value:'natural'},{title:'稍多',value:'slightly_more'}]" />

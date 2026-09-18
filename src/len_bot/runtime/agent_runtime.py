@@ -36,7 +36,7 @@ from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.capabilities import CapabilityAuthority
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
-from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
+from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS, UNAMBIGUOUS_ADDRESS
 from len_bot.runtime.scene_policy import ScenePolicy, conversation_visible
 from len_bot.runtime.plugin_interactions import classify_event, validate_plugin_origin
 from len_bot.runtime.heartbeat import Heartbeat
@@ -808,6 +808,17 @@ class AgentRuntime:
             if self._can_maintain_history():
                 self._spawn_background_task(self._maintain_history(session.scene_id, quiet=False))
 
+    def _chat_ceiling_applies(self, event: Event) -> bool:
+        """Whether the hourly chat allowance governs this input at all.
+
+        Both gates ask this, because they used to disagree: a job checkpoint,
+        a due task and a finished job all travel with interaction='chat', so
+        the eligibility pass was cancelling exactly the obligations the entry
+        gate exempts by name.
+        """
+        return (event.event_type == EventType.GROUP_MESSAGE_RECEIVED
+                and event.actor_id != self.bot_actor_id)
+
     async def _chat_within_allowance(self, event: Event, session) -> bool:
         """Whether ordinary chat may still start a turn in this scene.
 
@@ -817,15 +828,17 @@ class AgentRuntime:
         work results, live events and plugin pushes carry an obligation the
         ceiling was never meant to cancel.
         """
-        if event.event_type != EventType.GROUP_MESSAGE_RECEIVED or event.actor_id == self.bot_actor_id:
+        if not self._chat_ceiling_applies(event):
             return True
         requester = event.actor_id.removeprefix('user:') if event.actor_id.startswith('user:') else None
         state = await self.rate_limiter.status(event.scene_id, requester)
         if not (state['scene_exhausted'] or state['user_exhausted']):
             return True
-        if event.metadata.get('attention_lane') == 'fast':
+        if set(event.metadata.get('attention_reasons') or []) & UNAMBIGUOUS_ADDRESS:
             # Being addressed directly earns an answer about the silence; being
-            # merely sampled earns the silence itself.
+            # merely sampled earns the silence itself.  The character's own name
+            # is not enough: a room discussing the real 嘉然 would otherwise be
+            # told about the ceiling every time it said so.
             await self._send_limit_notice(event, session, state, requester)
         return False
 
@@ -1043,9 +1056,11 @@ class AgentRuntime:
             if (original.metadata.get('interaction') != 'chat' or not self.scene_policy.chat_allowed(
                     original.scene_id, original.metadata.get('requester_qq_uid'))):
                 continue
-            # A ceiling reached while this burst waited still stops the turn.
-            if await self.rate_limiter.exhausted(original.scene_id,
-                                                 original.metadata.get('requester_qq_uid')):
+            # A ceiling reached while this burst waited still stops the turn,
+            # over the same inputs the entry gate weighs and no others.
+            if (self._chat_ceiling_applies(original)
+                    and await self.rate_limiter.exhausted(original.scene_id,
+                                                          original.metadata.get('requester_qq_uid'))):
                 continue
             event = original.model_copy(deep=True)
             event.metadata['conversation_excluded'] = False
@@ -1099,15 +1114,27 @@ class AgentRuntime:
         trace: dict[str, Any] = {'checkpoints':[]}
         if resume:trace['resumed_from']={'loop_id':resume_packet['loop_id'],'send_event_id':resume_packet['send_event_id'],
                                         'model_calls_used':resume.model_calls_used,'tool_calls_used':resume.tool_calls_used}
-        session,other_resume_ids = await self._conversation_snapshot(actor,resume_event_id=resume_event_id)
-        trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
-        observed, revision = session.last_observed_event_rowid, session.knowledge_revision
+        other_resume_ids: set[str] = set()
+        observed, revision = actor.session.last_observed_event_rowid, actor.session.knowledge_revision
         source_ids: list[str] = []
         delivered_ids: set[str] = set()
         decision: GateDecision | None = None
         outcome: EpisodeOutcome | None = None
         self.metrics.inc_social("cognition_attempts")
         try:
+            # The lease is held from here, so the snapshot belongs inside: it
+            # reads the database and the ceiling, and an exception between the
+            # two used to leave the scene unable to start another turn for the
+            # rest of the process.
+            session,other_resume_ids = await self._conversation_snapshot(actor,resume_event_id=resume_event_id)
+            trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
+            observed, revision = session.last_observed_event_rowid, session.knowledge_revision
+            if not resume and not session.pending_wakes:
+                # Current eligibility filtered away everything that woke this
+                # turn — a ceiling reached while the burst waited, or a scene
+                # switched off. Old history alone is nobody's question, and
+                # asking the model about it costs the same as a real turn.
+                return
             if resume and resume.runtime_started_at!=self._started_at:
                 raise SceneCommitConflict('Suspended conversation belongs to a previous process; review is required, no request is resent')
             events, observed, source_ids = await self._read_initial_window(session, burst.source_event_ids)
@@ -1251,10 +1278,14 @@ class AgentRuntime:
                          "gate": self._gate_record(decision), "elapsed_ms": round((time.monotonic() - started) * 1000)},
             )
         finally:
+            # Unconditional and first. Releasing is a local assignment; the
+            # bookkeeping under it is a database write that can fail or be
+            # cancelled, and a lease lost that way is never recovered — the
+            # scene simply stops taking turns.
+            actor.release_episode_lease(episode_id)
+            self.metrics.record_latency("cognition_total", time.monotonic() - started)
             await self.event_store.set_model_call_disposition(episode_id,
                 'expression' if mailbox.messages_committed else 'silence' if trace['checkpoints'] else 'rejected')
-            self.metrics.record_latency("cognition_total", time.monotonic() - started)
-            actor.release_episode_lease(episode_id)
 
     async def _preserve_unhandled_bursts(self, current: Stimulus, session: SceneSession, handled_ids, delivered_ids) -> None:
         pending = self._pending_bursts.pop(current.scene_id, None)

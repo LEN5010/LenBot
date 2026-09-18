@@ -52,7 +52,7 @@ export function fmtAgo(ts) {
 
 export function attentionReason(reason) {
   return { private: '私聊', private_message: '私聊', mention: '真实 @', reply: '回复 Bot', reply_to_bot: '回复 Bot',
-    address_name: '呼唤昵称', nickname: '呼唤昵称', continuing_interaction: '连续互动', in_flight_follow_up: '运行中的追问', keyword_opportunity: '关键词观察机会', sample_opportunity: '旁听抽样机会', focus: '连续互动', focused_participant: '连续互动',
+    address_name: '呼唤昵称', nickname: '呼唤昵称', continuing_interaction: '连续互动', in_flight_follow_up: '运行中的追问', keyword_opportunity: '关键词观察机会', sample_opportunity: '旁听观察机会', focus: '连续互动', focused_participant: '连续互动',
     active_work_participant: '工作参与者', work_participant: '工作参与者', work_event: '工作事件',
-    runtime_event: '运行事件', keyword: '运营关键词', sample: '旁听抽样', sampling: '旁听抽样' }[reason] || reason
+    runtime_event: '运行事件', keyword: '运营关键词', sample: '旁听观察', sampling: '旁听观察' }[reason] || reason
 }
