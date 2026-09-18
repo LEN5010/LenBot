@@ -57,7 +57,7 @@ Runtime 入口在额度耗尽时直接把 `interest_share` 槽设为 CANCELLED�
 - 图片定位符改用 `I:<asset_id>`。此前按本轮注册顺序发号，当前消息新增一张图会把历史消息里的图片重编号，历史文本跟着变，前缀在那一条断。
 - 配置项改名：`attention_sample_probability` / `attention_sample_window_seconds` → `attention_observation_enabled` / `attention_observation_interval_seconds`（`scenes[group].attention` 同名字段一并改）。`extra='forbid'`，**带旧键的根配置会被启动校验拒绝**，升级前必须跑 `scripts/migrate_observation_config.py`。面板「旁听 +2」改为「开启并将观察间隔减半」，密度文案标明是间隔折算频率而不是调用上限。
 
-### 实际核对（只做了读取、编译与构建，没有启动）
+### 静态核对
 
 - 全部模块导入通过（0 失败），`compileall` 通过。
 - 真实库 13 个 `scene_sessions` 用新模型载入正常，`observing_until` 与 `PendingWake.observation` 取默认值；现存 35 条 pending wake 全部是旧记录（`observation=None`），理由分布 `in_flight_follow_up` 23、`sample_opportunity` 7、`mention` 4、`address_name` 3、`runtime:reflection_recorded` 1。
@@ -65,9 +65,32 @@ Runtime 入口在额度耗尽时直接把 `interest_share` 槽设为 CANCELLED�
 - 候选轮换的新 SQL 在真实库副本上执行通过，9 条公共兴趣，带群与不带群参数结果一致（该库尚无 `interest_share_consideration` 记录）。
 - 前端 `npm run build` 通过，`web/static/dist` 已重建（不进 Git）。
 
+### 首次真实启动：一个 f-string 花括号让 6 个群哑了 2.5 分钟
+
+19:07:15 取得授权后启动（Shadow 关闭，6 个 chat 群）。**启动即失败**：
+
+```
+[ERROR] len_bot.runtime.agent_runtime: Conversation failed in group:1102823315: NameError: name 'source' is not defined
+```
+
+2.5 分钟内 35 次 conversation 全挂在同一处。根因在本轮新加的系统提示词里——它是 f-string，而新写的一句
+
+```
+可用observation={source:M引用,action:continue}申请同一短期观察
+```
+
+花括号没有转义，`{source:M引用,action:continue}` 被解释成一个替换字段（字段名 `source`、格式规格 `M引用,action:continue`），于是每次 `build()` 都抛 NameError。改成 `{{...}}` 之后渲染回预期的字面量。
+
+**为什么之前没抓到。** 编译和导入都进不到 f-string 内部：它只在方法真正执行时求值，所以 `compileall` 与 `import` 全绿是必然的——这正是把静态检查当成运行通过的代价。`pyflakes` 一次就点了出来（`context.py:1224:188: undefined name 'source'`），本轮之前没有跑过它。AST 复查确认该提示词其余五个替换字段（`config.identity_name` 等）都是有意的，只有这一处是意外。
+
+代价有限：35 次都在装配阶段失败，**模型调用 0 次、发送 0 条**，没有花费也没有错误发言，期间群里收到的消息仍完整存进事件库。副作用是被 kill 时留下一条 pending 历史批次（`de8ba131`，group:126300994，rows 30214-30482），需要从面板重试；另外三条 pending 批次（16:43—16:45，群 992584358 / 1078114081 / 1042218062）在本次会话之前就已存在。
+
+19:08:56 修复后重启：OneBot 连上，Dashboard 起来，**重启之后 conversation_error 0 次**。截至 19:10 群里没有新消息，因此模型调用 0 次——这正是「无新输入不调用」应有的样子，但也意味着到期观察本身仍未取得运行证据。
+
 ### 未确认
 
-- **以上全部改动没有任何运行数据。** 编译、导入、只读查询和前端构建都不是运行通过，需要一次获授权的真实启动。
+- **除了「能正常启动、空闲时不调模型」，其余改动仍然没有运行数据。** 到期观察在无后续消息时是否按时触发、四条车道的毫秒数、短时观察期 120 秒、分批覆盖、证据重建，全部尚未被真实流量检验。
+- 本轮把 `pyflakes` 加进了实际使用的检查手段，但它只覆盖未定义名称一类；提示词与模板里的运行期错误仍然只有真实启动才暴露得出来。
 - 定时观察是否真的在无后续消息时按时触发、四条车道的毫秒数是否合适、短时观察期 120 秒是否够用，都只能在真实群里看。
 - 观察频率提高后的实际调用量与成本没有测。缓存改善仍只能看中转面板，`usage_json` 不回传 `cached_tokens`；`I:<asset_id>` 与摘要覆盖检查对前缀的影响同样未测。
 - `tests/` 里有 9 处仍引用已退役的 `attention_sample_probability` / `attention_sample_window_seconds` / `limit_notice`（`test_scene_transactions.py`、`test_dashboard_api.py`、`test_runtime_lifecycle.py`）。按本仓库约束本轮不新增、不修改、不运行测试，这些引用原样留着。
