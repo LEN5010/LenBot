@@ -13,6 +13,26 @@ from len_bot.events.models import EventType
 from len_bot.scenes.models import PendingWake
 
 HUMAN_INPUTS = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
+# Nothing here is decided by a draw. A draw was only ever a way of not paying
+# for a look: at forty thousand fresh tokens a turn the room could not be read
+# every time, so dice picked which messages were allowed to exist. They picked
+# badly — a question about building a PC and a joke made directly about the
+# bot's own line both came back invisible, not because it had nothing to say
+# but because a number came up short. The window caches now, so a look costs
+# the new messages and little else, and what is worth answering is a judgement
+# the model makes with the room in front of it.
+#
+# Saying the character's name is still not the same as being called: a room
+# that talks about the real 嘉然 says it constantly. The name stays a reason,
+# because sleep asks whether it was being called and the panel shows it, but
+# it is not a fast lane.
+ADDRESSED_REASONS = {'mention', 'reply_to_bot', 'private_message',
+                     'awaiting_response', 'wake_confirmation_reply'}
+UNAMBIGUOUS_ADDRESS = {'mention', 'reply_to_bot', 'private_message'}
+ENGAGED_REASONS = {'continuing_interaction', 'in_flight_follow_up', 'work_participant'}
+# A wake that only ever was an opportunity is not a debt. Anything below keeps
+# the ordinary lifecycle: a request, a job's participant, a runtime result.
+OBLIGATION_REASONS = ADDRESSED_REASONS | {'work_participant'}
 RUNTIME_INPUTS = {
     EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
     EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOAD_FAILED, EventType.FILE_UPLOADED,
@@ -43,11 +63,31 @@ class AttentionPolicy:
             keyword_cooldown_seconds=self.config.attention_keyword_cooldown_seconds,
             focus_seconds=self.config.attention_focus_seconds, keywords=self.config.attention_keywords)
 
+    @staticmethod
+    def _is_obligation(wake):
+        return bool(set(wake.reasons) & OBLIGATION_REASONS) or any(
+            reason.startswith('runtime:') for reason in wake.reasons)
+
+    def _close_stale_opportunities(self, state, now):
+        """An hour-old joke is not still waiting to be answered.
+
+        The ceiling and the sampling draw both stop turns without consuming the
+        wakes that caused them, so a rate-limited room accumulated 321 of these
+        in twelve hours. They then arrived together and crowded the chat window
+        down to a fifth of its size. The original messages stay in the events
+        and in the history either way; what closes here is only the claim that
+        somebody is still owed a look.
+        """
+        ttl = self.config.attention_opportunity_ttl_seconds
+        state.pending_wakes = [wake for wake in state.pending_wakes
+                               if self._is_obligation(wake) or now - wake.created_at < ttl]
+
     def apply(self, state, event, bot_actor_id, *, in_flight=(), work_participants=(),
               awaiting_response=(), focus_renewal_actors=()):
         now = self.clock()
         attention = self._attention(event.scene_id)
         state.focused_participants = {actor: until for actor, until in state.focused_participants.items() if until > now}
+        self._close_stale_opportunities(state, now)
         if event.metadata.get('conversation_excluded'):
             event.metadata['attention_reasons'] = []
             event.metadata['attention_certain'] = False
@@ -75,7 +115,14 @@ class AttentionPolicy:
             if event.is_reply_bot:
                 reasons.append('reply_to_bot')
             if any(name and name.casefold() in text for name in names):
-                reasons.append('address_name')
+                # One fresh look per cooldown, sharing the keyword clock's knob
+                # because it answers the same question: how often a weak textual
+                # match may buy a turn. Inside the cooldown the name stops
+                # counting, and the message falls through to ordinary sampling.
+                if (state.attention_name_at is None
+                        or now - state.attention_name_at >= attention.keyword_cooldown_seconds):
+                    state.attention_name_at = now
+                    reasons.append('address_name')
             if event.actor_id in state.focused_participants:
                 reasons.append('continuing_interaction')
             if event.actor_id in in_flight:
@@ -89,24 +136,22 @@ class AttentionPolicy:
                 if (any(word and word.casefold() in text for word in attention.keywords)
                         and (state.attention_keyword_at is None
                              or now - state.attention_keyword_at >= attention.keyword_cooldown_seconds)):
-                    reasons.append('keyword_opportunity')
                     state.attention_keyword_at = now
-                if state.attention_sample_at is None:
-                    # A window index from an earlier configuration cannot be compared
-                    # once the window length changes, so the next opportunity becomes
-                    # an absolute time.  A session that already sampled under the old
-                    # coordinate waits one full window; a new session may sample now.
-                    state.attention_sample_at = (now + attention.sample_window_seconds
-                                                 if state.attention_sample_window >= 0 else now)
-                # A shortened window takes effect from here instead of after the old
-                # one would have ended.  This moves one pending deadline closer; it
-                # never adds a second draw inside the same window.
-                state.attention_sample_at = min(state.attention_sample_at,
-                                                now + attention.sample_window_seconds)
-                if now >= state.attention_sample_at:
-                    state.attention_sample_at = now + attention.sample_window_seconds
-                    state.attention_sample_window = int(now // attention.sample_window_seconds)
-                    if self.random_source() < attention.sample_probability:
+                    reasons.append('keyword_opportunity')
+                if attention.sample_probability:
+                    # The probability is now only a switch: zero means this room
+                    # is not observed at all, anything above it means observe on
+                    # a fixed interval. One look carries everything that arrived
+                    # since the last one, so nothing goes unseen — it is seen
+                    # late at worst.
+                    if state.attention_sample_at is None:
+                        state.attention_sample_at = now
+                    # A shortened interval takes effect from here rather than
+                    # after the old one would have ended.
+                    state.attention_sample_at = min(state.attention_sample_at,
+                                                    now + attention.sample_window_seconds)
+                    if now >= state.attention_sample_at:
+                        state.attention_sample_at = now + attention.sample_window_seconds
                         reasons.append('sample_opportunity')
         elif event.event_type in RUNTIME_INPUTS:
             stale = event.metadata.get('obsolete_task_wake') or event.metadata.get('obsolete_job_result')
@@ -119,9 +164,8 @@ class AttentionPolicy:
                 certain = True
         event.metadata['attention_reasons'] = reasons
         event.metadata['attention_certain'] = certain
-        fast = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response',
-                'wake_confirmation_reply', 'private_message'}
-        event.metadata['attention_lane'] = 'fast' if set(reasons) & fast else 'slow' if reasons else 'none'
+        event.metadata['attention_lane'] = ('fast' if set(reasons) & ADDRESSED_REASONS
+                                            else 'slow' if reasons else 'none')
         if event.event_type in HUMAN_INPUTS and event.actor_id != bot_actor_id:
             from len_bot.runtime.sleep_policy import note_human
             uid = event.actor_id[5:] if event.actor_id.startswith('user:') else None
@@ -133,7 +177,7 @@ class AttentionPolicy:
                 event.metadata['attention_lane'] = 'fast'
         if reasons:
             state.pending_wakes.append(PendingWake(event_id=event.id, actor_id=event.actor_id,
-                                                  reasons=reasons, certain=certain))
+                                                  reasons=reasons, certain=certain, created_at=now))
 
 
 def record_scanned_event(state, event_id, rowid):

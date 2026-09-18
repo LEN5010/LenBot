@@ -37,13 +37,19 @@ class RuntimeConfig(BaseModel):
     conversation_context_tokens: int = Field(ge=4000)
     conversation_output_tokens: int = Field(ge=256)
     conversation_recent_tokens: int = Field(ge=500)
+    conversation_window_step_rowids: int = Field(default=200, ge=0,
+        description='原话窗口起点按事件 rowid 向上取整到该步长，只在跨过一个步长时整体前移一次；0 表示不锚定，窗口每来一条消息就滑一格（那样跨轮缓存前缀会停在第一条历史消息）')
     conversation_window_seconds: float | None = Field(default=None, gt=0,
         description='一轮对话自首次模型调用起的绝对期限（秒）；null 表示不设期限维度；恢复不重置')
     attention_keywords: list[str]
-    attention_sample_window_seconds: float = Field(gt=0)
-    attention_sample_probability: float = Field(ge=0, le=1)
+    attention_sample_window_seconds: float = Field(gt=0,
+        description='同一场景两次主动观察之间的最小间隔（秒）；一次观察携带自上次以来到达的全部消息，开不开口由模型判断，不再抽签')
+    attention_sample_probability: float = Field(ge=0, le=1,
+        description='是否观察这个场景的开关：0 表示完全不观察，大于 0 表示按上面的间隔观察。不再作为概率使用')
     attention_keyword_cooldown_seconds: float = Field(ge=0)
     attention_focus_seconds: float = Field(gt=0)
+    attention_opportunity_ttl_seconds: float = Field(default=600.0, gt=0,
+        description='机会类唤醒（抽样／关键词／名字命中）在待处理集合里的存活时长（秒）；过期即关闭，原消息仍留在事件与历史里。被直接搭话、运行时来源与已获准工作不受此限')
     scene_hourly_message_limit: int = Field(default=0, ge=0,
         description='同一群每滚动小时真实发出的消息上限；达到后闲聊与主动发言停止进入模型，插件命令与推送不受影响；0 表示不限')
     user_hourly_message_limit: int = Field(default=0, ge=0,
@@ -97,6 +103,8 @@ class RuntimeConfig(BaseModel):
     media_max_file_bytes: int = Field(default=100_000_000, gt=0, description='视频/音频临时文件的最大字节数')
     media_max_image_pixels: int = Field(gt=0)
     media_max_dimension: int = Field(gt=0)
+    media_context_max_bytes: int = Field(default=3_000_000, gt=0,
+        description='一次请求装配的图片编码字节上限；超出时从最旧的图片开始移出窗口（0 以外的正数，token 估算看不见字节，这是唯一的字节维度）')
     media_request_timeout_seconds: float = Field(gt=0)
     media_io_concurrency: int = Field(ge=1)
     media_palette_limit: int = Field(ge=1)

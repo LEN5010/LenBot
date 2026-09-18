@@ -81,6 +81,7 @@ class WorkToolPresentation:
         self.attached = set()
         self.omissions = []
         self._image_limit = cfg.max_context_images
+        self._max_image_bytes = cfg.media_context_max_bytes
         self.supports_segment_vision = supports_segment_vision
 
     def omit(self,section,reason,**details):
@@ -94,7 +95,7 @@ class WorkToolPresentation:
         self.attached = set(snapshot)
 
     def limit_image_window(self, messages):
-        self.attached = synchronize_image_window(messages, self._image_limit)
+        self.attached = synchronize_image_window(messages, self._image_limit, self._max_image_bytes)
 
     def request_tokens(self, messages, definitions):
         return request_tokens(messages, definitions)
@@ -364,6 +365,7 @@ class InformationJobRunner:
         if checkpoint:
             messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service,
                 job["scene_id"], image_limit=self.runtime.config.max_context_images,
+                max_bytes=self.runtime.config.media_context_max_bytes,
                 supports_segment_vision=bool((job.get('model_binding') or {}).get('supports_vision')))
             if checkpoint["goal_revision"] != job["revision"]:
                 note=(f'这是原工作的显式继续，当前版本 {job["revision"]}；目标与范围未改，已有结果、阅读范围和已用预算保留。'
@@ -371,7 +373,8 @@ class InformationJobRunner:
                       if job['resume_from'] else
                       f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上交换保留旧版观察与结论，须按当前目标重新核对完成步骤。')
                 messages.append({'role':'developer','content':note})
-        return messages, synchronize_image_window(messages, self.runtime.config.max_context_images)
+        return messages, synchronize_image_window(messages, self.runtime.config.max_context_images,
+                                                  self.runtime.config.media_context_max_bytes)
 
     def work_config(self, job):
         """This work's own execution limits, from the record it was created under.
@@ -946,14 +949,14 @@ class InformationJobRunner:
 
                         async def prepare_request(trajectory, definitions):
                             nonlocal current_assets
-                            current_assets = synchronize_image_window(trajectory, config.max_context_images)
+                            current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             require_current_access()
                             await compressor.prepare(trajectory, definitions)
-                            current_assets = synchronize_image_window(trajectory, config.max_context_images)
+                            current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
 
                         async def finalize_request(trajectory, definitions):
                             nonlocal current_assets
-                            current_assets = synchronize_image_window(trajectory, config.max_context_images)
+                            current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             presentation.check_request(trajectory,definitions)
                             pending_presentations[:]=toolkit.read_presentations(trajectory)
                             run_trace['context_plan']={'input_budget_tokens':config.job_context_tokens-config.work_output_tokens,
@@ -967,6 +970,7 @@ class InformationJobRunner:
                             tool_definitions=work_definitions,
                             execute_tool=execute_tool, terminal=FINISH_WORK, finish=finish,
                             proposal_tool_names={"report_progress", "update_work_state"} | self.runtime.plugin_host.proposal_tool_names(),
+                            ordered_tool_names=self.runtime.plugin_host.ordered_tool_names(),
                             max_steps=count_remaining(config.job_max_steps, job["model_steps"]),
                             max_tool_calls=count_remaining(config.job_max_tool_calls, job["tool_calls"]),
                             before_model=before_model,

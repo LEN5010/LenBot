@@ -171,6 +171,11 @@ class PluginToolDefinition(BaseModel):
     handler: Callable[[BaseModel, PluginCallContext], Awaitable[ToolResult | dict[str, Any]]]
     timeout_seconds: float
     kind: Literal["read", "proposal"]
+    # `kind` says whether the tool submits a business proposal. Whether it may
+    # run beside its siblings is a different question: a workspace that runs a
+    # script and then reads what the script wrote has an order, and "read" was
+    # never a promise that the tool leaves nothing behind.
+    ordered: bool = False
     roles: tuple[Literal["conversation", "work"], ...]
     required_capabilities: tuple[str, ...] = ()
     side_effect: Literal['none', 'account_write'] = 'none'

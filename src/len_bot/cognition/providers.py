@@ -142,8 +142,12 @@ class ProviderRegistry:
             raise LookupError(f"Provider '{provider_id}' has no configured API key")
         client = self._clients.get(provider.id)
         if client is None:
+            # A dropped connection is not an answer, so it must not end the turn.
+            # The SDK only retries where no response was consumed, which leaves
+            # a committed turn unrepeatable; without this a single relay drop
+            # loses the reply outright.
             client = AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url,
-                                 timeout=provider.timeout_seconds, max_retries=0,
+                                 timeout=provider.timeout_seconds, max_retries=2,
                                  http_client=DefaultAsyncHttpxClient(trust_env=False))
             self._clients[provider.id] = client
             self._connection_keys[provider.id] = connection_key(provider)

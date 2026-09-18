@@ -348,6 +348,7 @@ class SocialCognitionCore:
                          else 'plugin_agent' if plugin_call else 'conversation'))).run(
                 messages=messages,tool_definitions=definitions,
                 execute_tool=execute,terminal=terminal_definition,finish=finish,after_finish=after_finish,proposal_tool_names=set(TOOLS) | plugin_proposals,
+                ordered_tool_names=runtime.plugin_host.ordered_tool_names(),
                 max_steps=config.conversation_max_steps,max_tool_calls=config.conversation_max_tool_calls,
                 observe=incorporate,finalize_request=finalize_request,record_tool_result=record_tool_result,prepare_tool_results=prepare_tool_results,
                 checkpoint=checkpoint,trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools,

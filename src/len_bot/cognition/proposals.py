@@ -290,21 +290,16 @@ class ProposalLedger:
         refs=self.context.refs
         message=result['function']['parameters']['properties']['messages']['items']
         props=message['properties']
-        available = [ref for ref, event_id in refs.events.items()
-                     if event_id in refs.read_events and (event_id in self.continuing_sources | self.plugin_source_ids
-                         or any(w.event_id == event_id for w in self.context.session.pending_wakes))]
+        # Tool schemas sit at the head of the cached prefix, so anything
+        # per-turn written into them costs the whole request its cache. The
+        # three facts that used to live here are already carried elsewhere:
+        # the resolvable sources by `input_status.pending_sources`, the
+        # remaining message and call allowance by `execution_budget`, and all
+        # three are enforced after the fact — bogus refs by the ledger's own
+        # subset check, the message count by the Gate. A rejected argument
+        # comes back as a correctable observation, not a lost turn, which is
+        # what `messages[].source` has always relied on.
         parameters=result['function']['parameters']['properties']
-        parameters['messages']['maxItems']=3-self.messages_committed
-        # `None` means this run's call count is not what stops it, so the
-        # terminal offers its full action set; the runtime's own deadline and
-        # token allowance end the run instead.
-        remaining=self.remaining_model_calls()
-        if remaining is not None and remaining<=1:parameters['next']['enum']=['end']
-        handled = parameters['sources']
-        if available:
-            handled['items']['properties']['source']['enum'] = available
-        else:
-            handled['maxItems'] = 0
         if self.proposal_refs:
             props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
                 'description':'仅对应新建事项的确认消息填写；复制实际暂存回执S，每个回执只确认一次。其他人的普通回复不填；不提前写工作结论'}

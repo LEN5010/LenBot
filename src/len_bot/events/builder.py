@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, EventType, Stimulus, StimulusType
+from len_bot.runtime.attention import ADDRESSED_REASONS
 
 
 class BurstBuffer:
@@ -71,10 +72,12 @@ class BurstAssembler:
                     self._buffers[event.scene_id] = buffer
                 buffer.events.append(event)
 
-                fast_reasons = {'mention', 'reply_to_bot', 'address_name', 'awaiting_response',
-                                'wake_confirmation_reply', 'private_message'}
+                # The same set the policy calls "addressed", imported rather
+                # than restated: a name hit is an opportunity now, and an
+                # opportunity waits for the debounce window like any other
+                # message instead of flushing the buffer on its own.
                 reasons = set(event.metadata.get('attention_reasons') or [])
-                if event.is_mention_bot or event.is_reply_bot or reasons & fast_reasons:
+                if event.is_mention_bot or event.is_reply_bot or reasons & ADDRESSED_REASONS:
                     self._take_buffer(event.scene_id)
                     bursts.append(self._create_burst(buffer.events))
                 elif (now - buffer.first_arrived_at) * 1000 >= self.config.debounce_max_ms:

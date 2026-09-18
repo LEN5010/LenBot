@@ -37,7 +37,12 @@ def effective_attention(root, scene_id=None) -> EffectiveAttention:
 
 
 def raise_attention_two_steps(attention: EffectiveAttention) -> dict:
-    """Concrete +2 preview from the current effective numbers, not a stored multiplier."""
+    """Concrete +2 preview from the current effective numbers, not a stored multiplier.
+
+    The probability is a switch now rather than a draw, so raising it only ever
+    turns a silent room back on. The interval is the real lever: halving it
+    doubles how often the room is read.
+    """
     probability = min(1.0, attention.sample_probability + 0.20)
     window = min(attention.sample_window_seconds, max(30.0, attention.sample_window_seconds / 2))
     cooldown = attention.keyword_cooldown_seconds
@@ -45,15 +50,13 @@ def raise_attention_two_steps(attention: EffectiveAttention) -> dict:
         cooldown = min(cooldown, max(20.0, cooldown / 2))
     notes = []
     if attention.sample_probability == 0 and probability > 0:
-        notes.append('当前有效抽样概率为 0，保存后将开启随机旁听')
-    if probability == attention.sample_probability:
-        notes.append('抽样概率已到上限，本档未再提高')
+        notes.append('当前该场景完全不观察，保存后将按间隔开始观察')
     if window == attention.sample_window_seconds:
-        notes.append('抽样窗口未再缩短（已低于或等于 30 秒，或不需要减半）')
+        notes.append('观察间隔未再缩短（已低于或等于 30 秒，或不需要减半）')
     if cooldown == attention.keyword_cooldown_seconds:
         notes.append('关键词冷却未再缩短')
-    current_density = attention.sample_probability / attention.sample_window_seconds
-    raised_density = probability / window
+    current_density = 3600 / attention.sample_window_seconds if attention.sample_probability else 0.0
+    raised_density = 3600 / window if probability else 0.0
     return {
         'sample_probability': probability,
         'sample_window_seconds': window,
@@ -61,9 +64,9 @@ def raise_attention_two_steps(attention: EffectiveAttention) -> dict:
         'notes': notes,
         'enables_sampling': attention.sample_probability == 0 and probability > 0,
         'density': {
-            'current_per_hour': current_density * 3600,
-            'raised_per_hour': raised_density * 3600,
-            'unit': '名义窗口机会次数/小时，实际模型轮次仍受合并、睡眠和预算影响',
+            'current_per_hour': current_density,
+            'raised_per_hour': raised_density,
+            'unit': '每小时主动观察次数上限，实际模型轮次仍受合并、睡眠和预算影响',
         },
     }
 

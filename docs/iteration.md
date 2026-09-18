@@ -1,5 +1,145 @@
 # 当前任务
 
+## 2026-09-18：让前缀可复用，然后用它换掉抽签
+
+上一轮把窗口装满了，这一轮发现装满的东西**一次都没被复用过**。中转面板显示约一半调用没有缓存行，命中的那些是 87–94%。
+
+### 三个各自足以致命的原因
+
+**编号每轮整体平移。** `TurnReferences._register` 按注册顺序发号，本轮新进 3 条消息就把后面每条的编号顶高 3 位（实测 M69→M72、M170→M173，280 个跨轮共有事件 **280 个全变**）。编号写在消息正文里（`{"ref":"M170",...}`），于是窗口里每条历史的文本都变了，前缀在第 1 条就断。上一轮把这条记成"摘要定位符的问题"，**判轻了**——它破坏的是 24–31k 的原话窗口本身。
+
+**窗口有洞，洞会移动。** `pack_events` 里可选消息装不下就跳过去试更旧的，大的塞不进、小的塞得进，窗口成了带洞的集合，洞随每轮剩余预算变化（实测两轮之间同一段落缺失的消息完全不同）。
+
+**窗口起点逐轮滑动。** 按预算从最新回填，每来一条消息起点前移一格。
+
+### 改法
+
+编号改为 `M<rowid>`，由事件自身决定，与集合构成脱钩；`_register` 接受首选编号并在冲突时探测空位。人物编号改用 `SceneSession.participants`（持久、只增不删、保序），回来的人保留原号。可选消息第一条装不下即收尾，窗口成为连续区间。锚点从候选层（被预算架空）移到装填后的**实际窗口**起点，按 `conversation_window_step_rowids` 网格向上取整。窗口单独成区，排在引用/回捞带进来的旧消息之前，避免它们插进窗口头部。被锚点丢掉的消息撤销"已读原话"标记但保留定位符。
+
+| | 跨轮编号稳定 | 相邻请求公共前缀 |
+|---|---|---|
+| 改前 | 0 / 280 | 1 条（1%） |
+| 连续窗口 + `M<rowid>` | 248 / 253 | 76% / 1% |
+| 放宽窗口 + 步长 800 | **300 / 300** | **74% / 82%** |
+
+配置：`conversation_context_tokens` 120k→200k、`conversation_recent_tokens` 32k→56k、`conversation_window_step_rowids` 200→800、`conversation_history_limit` 200→400。实测窗口 313 条 / 42k（每条均 134 token），请求合计 68k。锚点跨步约每 **75 条消息**一次（10.3–11 全局 rowid 一条消息）；历史摘要批次也是每 69–91 条一批，两条线节奏基本同步。
+
+### 为什么"发几条消息"仍要付几千 token
+
+前缀之后的尾巴每轮重建。按真实 token 数逐段测变化率（678 个相邻对）：
+
+| 段落 | 变化率 | 平均多少轮变 | 均值 token |
+|---|---|---|---|
+| persona | 1% | 96.9 轮 | 4,702 |
+| reference | 31% | 3.2 轮 | 3,180 |
+| history_summary | 28% | 3.6 轮 | 2,401 |
+| runtime_facts | 28% | 3.5 轮 | 1,677 |
+
+把这三块前移到窗口之前的想法**被这次测量否决**：盈亏平衡点约 7 轮（前置块一变，后面整个窗口跟着失效），而它们 3 轮出头就变一次。期望新增约 **9,000 token/轮**（图片 2,030 + 上一步工具往返 2,470 + 本轮原话与状态约 1,800 + 上述三块摊销约 2,100 + 零碎），跨步摊销另加约 4,100。
+
+一个方法上的教训：`traces` 的 `request.messages` 只记 role/section/event_id/ref，**不记内容**，单条无 event_id 的块比出来永远"相同"。我先按它得出"这三块从不变"的结论并准备据此改动，用 `section_tokens` 复测才发现是假象。
+
+### 关掉抽签，回到一直判断
+
+抽签存在的唯一理由是"每轮 40k 全价看不起"，前缀可复用之后理由没了，而它决定得很差。两个实例：
+
+- 16:13:45 "如果现在配台 78x3d+5060ti 的电脑怎么样"——`attention_reasons` 为空。bot 在 16:13:02–05 连答三个 @ 它的人，每条扣 0.3，参与度 1.0→0.1，40 秒后这条只剩 0.8×0.1 = 8% 的概率被看一眼。**额度是被"履行义务"花掉的。**
+- 16:35:20 "不是变矮吗"——直接接着 bot 自己那句话玩梗，同样零理由。发话人是第三方，`continuing_interaction` 只认 bot 刚回应过的人；现有理由里没有"bot 刚说完、有人紧接着接话"这个信号，抽样是唯一兜底，没中。
+
+参与度整套删除（`engagement()`、`_set_engagement`、发一条扣一档、三处概率乘子、两个配置旋钮）。`SceneSession.engagement_level`/`engagement_at` 保留但退役——`extra='forbid'`，删字段会让已存会话读不进来。任何理由成立即唤醒；无理由的普通消息由**主动观察**兜底：每群每 `attention_sample_window_seconds`（现 60 秒）最多读一次，一次读取携带自上次以来的全部消息。`attention_sample_probability` 从概率降级为开关（0 = 该群不观察），以此保住每群覆盖与面板，不整体拆掉那套配置。面板文案与密度公式（`3600 ÷ 间隔`）同步改，dist 已重建。
+
+### 历史摘要停了 3–14 小时
+
+`begin_history_batch` 见到任何非 completed 批次即返回 None。五个活跃群**每个都有一条失败批次正好压在完成边界的下一段**：
+
+| 群 | 完成到 | 失败区间 | 错误 | 卡住于 |
+|---|---|---|---|---|
+| 992584358 | 21,593 | 21,597–21,900 | RateLimitError | 02:30 |
+| 1078114081 | 21,836 | 21,837–21,980 | APIConnectionError | 11:59 |
+| 1102823315 | 27,960 | 27,964–28,430 | APIConnectionError | 12:08 |
+| 1042218062 | 28,529 | 28,530–28,785 | APITimeoutError | 12:22 |
+| 126300994 | 30,211 | 30,214–30,482 | APIConnectionError | 13:16 |
+
+累计 6,890 条既不在摘要也不在窗口——对 Bot 完全不存在。"不自动重试"是有意设计（重跑会再买一次调用，也会让同一段对话产生两份说法），但阻塞是完全的且**全程静默**。已清除这五条让前沿恢复推进，并给阻塞加 WARNING（按每个新阻塞点一次，写明群、批次、错误与 rowid 区间）；设计本身不动，运行手册补了处置步骤。
+
+### 实测（16:43:58 重启，窗口仅 1.9 分钟）
+
+51 条消息、车道 none 24 / slow 25 / fast 2；理由 `in_flight_follow_up` 22、`sample_opportunity` 4、`mention` 2、`address_name` 2。`engagement_level` 已不再写入。对话 2 轮 / 4 次调用 / 0 条发言。新摘要批次 2 条，摘要恢复推进。WARNING 与 ERROR 均为 0。
+
+### 未确认
+
+- **观察间隔没有得到检验**：窗口只有 1.9 分钟，四个群各只触发 1 次，量不出重复间隔是否守在 60 秒。
+- `certain = bool(reasons)` 回来了，而那次 129 条连发正是它造成的。现在压住它的是小时限额、重写过的人设与模型判断，**尚无运行数据**。本窗口 `in_flight_follow_up` 已触发 22 次。
+- 缓存改善只能看中转面板，`usage_json` 不回传 `cached_tokens`（只有 prompt/completion/reasoning）。74–82% 是本地前缀测量，不是命中率。
+- 6,890 条摘要积压约 88 批会集中补；若再撞上上游 503，对应群会重新被卡，区别只是这次有日志。
+- 图片每轮按 1024/张重付约 2,030、上一步工具往返约 2,470，两块都还没压。
+- 引用带进旧消息、以及长引用按剩余预算截断（`quote_tokens=cap`），仍可能让同一事件的文本逐轮不同；未处理。
+- 上游 503 `No capacity available for model gemini-3.8-flash-high`、429 配额与 502 换模型，均属中转侧，未处理。
+
+## 2026-09-18：12 分钟窗口的审计结论、机会积压与执行缺口
+
+14:08 重启、14:20:42 干净关停，实测窗口 12.5 分钟：8 个 episode、34 次 conversation、187 条群消息、**0 条发言**、1 次插件图片投递 `delivery_unknown`。样本小，但足以判上一轮的判据。
+
+**已确认修好。** 失败率按图片数：6 图 74.9% → **3.0%**（29 次 1 次失败，是 APIConnectionError 不是体积）。同群相邻工具块 69% 不同 → **18%**（23/28 相同），剩余差异是 `1409`（插件精简轮）与 `9993/10581`（`revise_work` 一类条件披露），本轮数据不再进 schema。日志出现 `openai._base_client: Retrying request`（有限重试生效）与 `Media read failed: asset=… http=400`（此前零日志）。3 条 `address_name` 未触发任何限流提示。沉默理由改为「无具体接话点」「无合适想法或梗切入」，不再是「没人在跟我说话」——仅 3 条样本。
+
+**上一轮的记忆结论是错的。** 原话窗口的闸门是 `conversation_recent_tokens`，不是 `conversation_context_tokens`。后者 50k→120k 之后 `estimate.parts.history` 均值只从 **20,032 → 21,028**（+5%）；多出的预算被图片吃掉（每轮 2.9 → 5.9 张），单轮真实输入 33.5k → 38.0k。「吐槽完矢口否认」没有解决。根因是图片按 1024/张计入同一条原话额度：六张图占掉 20k 中的 6k。本轮把图片移出该额度（仍受张数、字节与请求预算三处限制），并把 `conversation_recent_tokens` 20000 → 32000，使 200 条候选（实测均 ~116 token/条）能整体装入。
+
+**机会积压是第二个、更大的成因。** `pending_wakes` 02:28 为 7 条、13:43 为 293 条、关停时 321 条（另有 241/127/126 三个群）。被限额或抽样拦下的普通机会不消费待处理集合。这些群一旦拿到轮次，200 条候选里 115 条当场作为 `original_input/no_capacity` 丢弃，`remaining_raw` 归零，`recent_history` 一条装不进——原话窗口从约 178 条塌到约 21 条。按小时的省略中位数是干净的：13 点前 `original_input` 为 0，13/14 点为 114/115。
+
+### 本轮改动
+
+| | 改了什么 |
+|---|---|
+| 机会过期 | `PendingWake.created_at`；`attention_opportunity_ttl_seconds`（默认 600）之后关闭非义务类唤醒。@／回复／私聊／等待中的答案／工作参与者／`runtime:*` 不受限 |
+| 原话额度 | 图片不再计入 `pack_events` 的 raw 额度，`original_media` 也不再缩减 `remaining_raw`；`conversation_recent_tokens` 32000 |
+| 名字降级 | `address_name` 移出 `ADDRESSED_REASONS`，改为每 `attention_keyword_cooldown_seconds` 一次的机会，不重置参与度、不冲洗合并窗口；`keyword_opportunity` 也乘参与度 |
+| 限额一致 | 新增 `_chat_ceiling_applies`，入口闸门与 `_eligible_conversation_events` 共用。此前 `AGENT_JOB_CHECKPOINT`(349)／`TASK_DUE`(105)／`AGENT_JOB_FINISHED`(40) 都带 `interaction='chat'`，会被第二道网取消 |
+| 租约 | 快照移入 `try`；`finally` 中先释放租约再记账 |
+| 空来源 | 资格过滤后无有效来源即结束本轮，不拿旧历史开模型调用 |
+| 图片字节 | 单张也受 `media_context_max_bytes` 约束；`synchronize_image_window` 增加必填 `max_bytes`，工作侧 7 处调用全部覆盖 |
+| 工具顺序 | 注册新增与 `kind` 正交的 `ordered`；工作区五个工具声明后在 AgentLoop 中串行 |
+| 配置化 | `attention_engagement_step` / `attention_engagement_recovery_seconds` / `attention_opportunity_ttl_seconds` 进根配置，不再是代码常量 |
+
+其中「机会过期」与「限额一致」「租约」「空来源」「图片字节」「工具顺序」仍然有效；**「名字降级」的冷却保留但不再乘参与度，「配置化」的前两个旋钮与整套参与度已在下一轮删除**，改法与理由见上一节。
+
+### 实际核对
+
+只核对了**静态**与**只读**两类，没有重新启动：全部模块导入无错；真实库 6 个群的 `scene_sessions` 用新模型载入正常，新字段取默认值；按新的关闭规则对真实待处理集合做只读推演，818 条收敛为 13 条，保留项理由全是 `mention`／`reply_to_bot`／`runtime:reflection_recorded`。
+
+### 未确认
+
+- **以上全部改动尚无运行数据。** 编译与只读推演不是运行通过，需要一次获授权的真实启动。
+- 零发言是否由积压造成仍未证实：窗口内 186 个事件的 `engagement_level` 全是 1.0（一条没发出去，衰减从未启动），所以参与度机制本轮**没有得到检验**。
+- 空来源轮次在 831 条 trace 里出现 **0 次**；该防护是按代码路径加的，没有实例。
+- 工作区工具在全部数据里一次都没被调用过，`ordered` 同样没有实例。
+- 图片字节闸门在窗口内一次未触发（JPEG 后 6 张远低于 3 MB），目前是休眠保险。
+- group:1078114081 一次 `FreshInputConflict` 报废整条 episode，12 次已完成调用零提交；未处理。
+- 每轮调用数 1.29 → 4.25（失败修好后必然上涨），12.5 分钟 1.18M 输入 token 换 0 条发言。缓存是否改善仍只能看中转面板，`usage_json` 拿不到 `cached_tokens`。
+- 原话窗口起点仍逐轮滑动，那段仍不命中缓存；锚定需要持久化的窗口起点与脱离 M 编号池的定位符，均未做。
+- 上游 429（`Individual quota reached`）与 502 里中转把 gemini 换成 `deepseek-v4.1-flash`，未处理。
+
+## 2026-09-18：图片编码、有限重试、参与度节奏与缓存前缀
+
+12 小时实测（重启窗口 02:28–13:10）暴露三件上一轮限额没碰到的事；限额自始至终没触发（每群每小时峰值 16／上限 50，单人 7／上限 10）。
+
+**图片。** conversation 失败 44.7%，同 provider 同模型的 `history_maintenance` 只有 4.8%。按图片数拆开单调上升（0 图 7.2%、6 图 **74.9%**），且在同一小时内成立（11–13 点 0 图 0%、6 图 81–87%），排除中转在抖。根因是 `media/service.py` 缩放后存**无损 PNG**：实测 40 张真实素材，6 张图的 base64 体积 p90 **13.6 MB**、最坏 37 MB，改 JPEG q85 后为 2.0 / 5.0 MB。`limit_image_window` 只按张数裁，token 估算按每张固定 1024 计——字节是预算系统看不见的维度，故增 `media_context_max_bytes`（默认 3 MB）。
+
+**记忆。** 251 轮里 `recent_history` 因 `no_capacity` 省略 **6,803 次**，每轮中位丢 22 条。总量 ~42k 长期顶着 input_budget 45,904。用户报告「吐槽完马上矢口否认」，成因是它自己刚发的那条被挤出上下文。`conversation_context_tokens` 50,000 → 120,000。**该结论后被实测推翻**，闸门是 `conversation_recent_tokens`，见上一节。
+
+**缓存。** 同群相邻调用工具块 69% 大小不同，根因是 `respond` 的 schema 每轮被写进当轮数据。三处已移除，兜底校验本就在 ProposalLedger 与 Gate，参数被拒返回可纠正回执而非废掉一轮。`build()` 末尾重排为 `[稳定] [原话按时序] [易变]`。
+
+**节奏与人设。** `certain` 拆三档，新增 `SceneSession.engagement_level`（初值 1.0，发一条 −0.3，每 5 分钟 +0.3，被搭话重置 1.0）。根配置删「不确定就别回」与「别人发问号先别急」，沉默判据改为「没有具体想法才旁听」，自称由「喜欢」降为「偶尔」。新增 `own_recent_expression` 块携带自己近期开头与收尾。限流提示由 `attention_lane=='fast'` 收紧为只认 @／回复／私聊——群里聊真人嘉然会不断命中 `address_name`，而这条提示不经模型。
+
+`max_retries` 0 → 2；`MediaService._media_error` 补 WARNING（此前 982 个资产 342 个没有本地文件而运维侧零日志）。
+
+### 未确认
+
+- 以上均为 14:08 重启后**尚未取得运行数据**的改动，审计窗口进行中。（已完成，结论见上一节。）
+- 缓存是否真的改善**只能看中转面板的缓存列**，`usage_json` 拿不到 `cached_tokens`。若仍只在同轮第二步命中，说明该 provider 的缓存键不含 tools。
+- 原话窗口仍按预算从最新回填，起点逐轮滑动，那 19k **仍不会命中缓存**。锚定需要两件事：窗口起点要有持久化位置（`build()` 不拥有 session），以及摘要／偏好的定位符要脱离与原话共用的 M 编号池。均未做。
+- 上游 429（`Individual quota reached`）重试救不了；502 里出现请求 gemini 却被中转转给 `deepseek-v4.1-flash`。未处理。
+
+
 ## 2026-09-18：发言限额与跟读群
 
 用户要求：群 50 条/小时、单人 10 条/小时；达到后不闲聊、不主动发言，但继续观察记录，今日直播与直播推送不受影响，@ 给一条说明。另加一个「不闲聊但一直旁听」的群模式。
@@ -34,204 +174,3 @@
 
 跟读群尚未真实启用过（当前 6 个群都是 `chat=true`，`listen` 为空转）。`chat=false` 时 `attention.py:134` 仍在追加 `pending_wakes` 而消费端全被过滤，长期跟读群该列表可能持续增长，真正投用前要复查。`attention_sample_probability` 未动——那是降成本的另一个独立旋钮，等限额数据再说。
 
-## 2026-09-18：丢掉积压唤醒后重新启动
-
-用户认为上次没启动成功（后台 nohup，前台终端无输出；当时 CPU 约 96%，面板会像卡住）。授权：积压先不发，再启动。
-
-旧进程 20099 SIGKILL。停机后清掉 `group:1078114081` 176 条 `pending_wakes`；`task_4464650a5a`（起来活动一下）由 `review_required` 改为 `cancelled`，避免再发 `TASK_REVIEW`。未改根配置、未动心跳/兴趣分享已到期槽。
-
-新进程 20844，`uv run --no-sync len-bot`，日志 `/tmp/lenbot-runtime/len-bot-20260918-0131.log`。01:33:01 面板 `http://127.0.0.1:11307` 返回 200，OneBot 连上 13001。启动后各群 wakes=0，无 `TASK_REVIEW`。01:33:21 枝兴阁有一条对**新消息**的实发，不是种植园那 176 条旧唤醒。CPU 约 2%。
-
-## 2026-09-18：按用户授权停掉并重启
-
-旧进程 18773 处于 T 停止态；SIGTERM 15 秒未退，SIGKILL 18773/18772。11307 已空。未备份。随后 `uv run --no-sync len-bot` 后台启动，launcher 20097 / 主进程 20099，日志 `/tmp/lenbot-runtime/len-bot-20260918.log`。01:26:16 监听 `127.0.0.1:11307`，OneBot 连上 `127.0.0.1:13001`，self id 3684366985。启动后约 1 分钟：造密码 `CONVERSATION_COMMITTED` 仅 1 次（不再出现 174 次空转），CPU 约 1%。种植园 `pending_wakes` 仍有 171 条历史积压，会按新的合并窗口消化，不是空转。Gateway `:8790` 未动。
-
-## 2026-09-18：重启空转与跟进唤醒堆积
-
-用户问如何解决再次卡住。未重启、未改根配置。
-
-- **空转（已改代码，需重启才生效）**：睡眠窗内 `run_wake_confirmation` 只把人类消息标成已处理。重启恢复的 `TASK_REVIEW`（造密码 `task_4464650a5a`「起来活动一下」，`review_required`）不是人类消息，空提交后 `_preserve_unhandled_bursts` 又把它塞回队列。01:09 新进程对该来源 1 分钟内 174 次 SILENCE，间隔约 8ms，CPU 100%。现改为：空提交不把本轮已经交给这次尝试的来源再唤醒。
-- **种植园堆积（已改快路径，需重启）**：`in_flight_follow_up` 曾与 @ 一样立刻冲洗，群被叫醒后跟进消息各开一轮，109 条待处理里 92 条是跟进，并触发 `FreshInputConflict`。现跟进仍是确定唤醒，走合并窗口。@／回复／称呼／等待中的答案仍是快路径。
-- **运营可选项**：面板取消或完成那条「起来活动一下」提醒，避免下次启动再发 `TASK_REVIEW`。当前实例仍是旧代码，要停掉再拉起来才带上本改动。
-
-## 2026-09-18：按用户要求停掉卡住的实例
-
-用户授权停掉当前 LenBot。主进程 14947（`uv run len-bot` 子进程，00:29 起）先 SIGTERM，进程当时处于 T 停止态（此前 `sample` 采样留下的），CONT 后 TERM 仍不退出；30 秒后 SIGKILL 14947/14946。11307 已无监听，Playwright/Chromium 子进程一并消失。未重启。Gateway / OneBot `:13001` 未动。
-
-停前观察：北京时间已过 00:00 睡眠窗，但多个群因 @/点名处于 30 分钟清醒。`group:1078114081` 积压 52 条待处理唤醒（50 条确定，多为 mention / continuing_interaction），模型仍在跑（10 分钟内该群 32 次 conversation 调用）却几乎提交不出去，最近一次 `FreshInputConflict` 在 01:02:24。对话并发上限 2，进程 CPU 约 90%。这是积压把认知槽占满，不是面板无响应。
-
-## 2026-09-18：为三个新群填写配置（不开工作）
-
-用户授权通过运行中的面板保存本群设置。未停机、未改模型、未推送。保存走 `PUT /api/setup/group-quick` 与 `PUT /api/settings/access`，根文件已写入。
-
-三个新群：
-
-| 群 | 名称 | 聊天 | 工作（workspace / python_workspace） |
-|---|---|---|---|
-| `group:1042218062` | 枝兴阁 | 开 | 关（本群无这两项） |
-| `group:1078114081` | 羊驼精品种植园 | 开 | 关 |
-| `group:1102823315` | aakk巨龙友好群 | 开 | 关 |
-
-三群均：启用、允许聊天、语义检索开、表情 `slightly_more`、旁听继承全局。本群插件与两个旧群对齐，但不含 `workspace` / `python_workspace`：网页搜索、B 站资料、日历命令、动态、开播订阅、兴趣分享、媒体片段、群报告、浏览器、本地时钟。`link_parser` 全局仍停用，枝兴阁原先那条本群记录已去掉。文件申请者 `1649211052` 的 `send_file` 已授予；三群各有一条 `interest_share` 插件授予。`deployment_verified` 仍为 false，真实群文件上传仍未核验。
-
-随后用户再加入 `group:992584358`（ak相亲相爱联机群）。同样经面板保存：聊天开、工作关，插件与三个非工作群一致，`send_file` 申请者 `1649211052`，并补一条 `interest_share` 授予。
-
-旧群 `group:1014123451`、`group:126300994` 未改。
-
-## 2026-09-18：日程卡提交不被新输入打断，启动时预热浏览器
-
-接续 Claude 会话在 `46a4e71` 处中断的修复。用户授权追加一条提交并快速修复，未授权推送、改根配置或重启。
-
-- `46a4e71` 的说明只写了排期图去链接和页脚，实际还删除了启用向导（`setup_wizards.py` / `SetupWizardsView.vue`）并改了总览、能力卡入口、`agent_loop` / `agent_runtime` / `group_quick` / `routes/setup`。历史未重写；本条把那次混入记清楚，并带上本轮运行修复。
-- 日程精确命令（今日/明日/本周直播）提交时不再因有关未读确定唤醒而 `FreshInputConflict`。原先 Playwright 冷启动把窗口拉长，群里后续消息会把命令判失败，面板把最近一次错误显示成「加载失败」。插件三次加载本身是成功的。工作履约和开播公告仍走原检查。
-- 日历插件 `on_enable` 即启动 Chromium，不把第一次「今日直播」当成冷启动。预热失败只记警告，不把插件标成加载失败。
-- 表情内联前缩到 92×92 PNG（卡片显示 46px）。原素材约 648×648 / 640KB，四张塞进 HTML 约 3.4MB。
-
-未重启，未在群里复验「今日直播」。预热是否在本机成功、热渲染是否短到不再和群消息重叠，都要等获准重启后看。
-
-## 2026-09-17：按用户授权重启并核对心跳
-
-用户本轮明确授权「先重启一下（别备份了）」；本次跳过备份，未改根配置、模型、权限和群名单。以下运行时刻注明时区。
-
-- 旧主进程 8486 于 23:37:37（Asia/Tokyo）收到 SIGTERM，日志记录 `Len Bot stopped cleanly.`，随后进程退出、11307 无监听。首次 nohup shell 未留下进程、日志为空；核实无重复实例后，使用独立会话 `uv run --no-sync len-bot` 启动，launcher 10553 / 主进程 10554，启动时间 23:38:58（Asia/Tokyo）。日志位于仓库外 `/tmp/lenbot-runtime/len-bot-20260917.log`；未移动旧日志。
-- 新实例监听 `127.0.0.1:11307`，23:39:00（Asia/Tokyo）记录 `OneBot WebSocket connected: ('127.0.0.1', 13001)`；interest_share、web_search_tool、workspace、browser_agent 等已加载，Scheduler 启动时读到 3 个待执行槽。
-- 心跳配置已开，jobs_enabled=true；主题为「A-SOUL 公开活动与视频」「嘉然」，public_research 系统授予有效，job_max_concurrent=2，工作预算 24 次模型／48 次工具／600 秒。每半小时一轮，业务时区 Asia/Shanghai，睡眠 00:00—07:00。
-- 已沿 `_start_workers → Heartbeat.ensure_next → Scheduler TASK_DUE → run_slot → operator_outcome → Gate/JobStore → JobRunner → ActionReviewer → 公共只读工具 → finish_work → InterestStore → interest_share → Gate/发送回执` 阅读核对。原有授权、来源检查与睡眠限制保留。未手动触发系统槽、未运行测试或额外模型探针，未主动实发。
-- 下一次持久槽为北京时间 2026-09-17 23:00（日本时间 2026-09-18 00:00）：心跳 1 个、群 1014123451 与 126300994 分享各 1 个，均 pending。这证明已排队，不证明届时成功。
-- 历史心跳工作共 completed=2、failed=6。最近一轮 `job_cc90d717c6ac52048d03`（北京时间 22:30）实际创建成功，但审查记录 `act_c6e2d12d946c4c009f0d56779d5f52e3:1` 为 uncertain/review_failed；原错误：`ValidationError: 1 validation error for ReviewDecision / Invalid JSON: expected value at line 1 column 1`，输入以 Markdown 的 ```json 围栏开始。面板工作摘要被通用 PermissionError 分支写成「原群或请求者的当前配置不允许继续此工作」，真实原因是模型输出格式，不是现有 grant 缺失。此前多次失败也有相同围栏解析错误。
-- 北京时间 22:00 的 `job_72329957961f5b08a914` 审查 allow，实际进入模型及 web_search，两次搜索均返回 no_results，最终零成果结束；不能把 completed 当作已取得可分享资料。当前 public_interests 为 0 条，分享轨迹为 no_candidate，没有兴趣发送尝试记录。
-- 两群 interest_share 已全局和本群启用且分别有 grant，每日最多 2 次、冷却 3600 秒，主题匹配；后半段实际采用候选／社会判断／真实交付没有运行证据。
-- 新实例正常对话于 23:39:44、23:39:50（Asia/Tokyo）仍记录 `APIConnectionError: Connection error.`，当前调用账型号为 `cline-pass/deepseek-v4.1-flash`。这是重启后自然产生的失败记录；本轮未替换模型，不能据历史旧模型心跳完成记录推断当前模型可用。
-- 结论：实例、OneBot、调度与建工作已有运行证据；完整「研究→候选→分享」尚未跑通。阻塞优先级为当前模型连接、审查 JSON 协议、有效公共资料获取；本次仅核对和记录，未改心跳业务实现。
-
-
-## 2026-09-17：删除启用向导、修复总览、精简日历
-
-本轮基线 `5ea2280`，开始时工作区干净。用户说明实例运行中；只读进程记录确认 PID 8486，23:24:08 启动，命令为本项目 `.venv/bin/len-bot`。HEAD 日历样式提交时间 23:24:41，进程启动早于该提交，不能据此宣称运行实例已使用当前模板。
-
-- 删除启用向导页面、导航与能力卡入口、`/api/setup/options|preview|apply`、运行时向导保存方法及专用模块；保留群快速配置、权限判定与已有配置值。
-- 总览原 `readiness` 引用了未定义的 `plugins`，会在渲染时抛错；现从能力清单按插件 ID 去重取得，首屏同时加载能力清单与运行状态。读取中和读取失败不标为已就绪。
-- 今日/明日/本周共用已有图 2 对应的粉色 HTML 详细模板；删除底部范围、抓取信息、来源 URL 和重复免责声明（原工具观察仍保留）。跨日结束时间补日期；Pillow 原有失败回退也删除冗余页脚。没有新建渲染或降级路径。
-- 前端 `npm run build` 通过，本机 dist 已生成且不进入 Git。本轮修改的 Python 模块 `compileall` 与 `git diff --check` 通过；未新增或运行测试、断言探针、自动截图或真实发送。
-- 实际页面检查未完成：Codex 内置浏览器和 Edge 打开 `http://127.0.0.1:11307/overview` 均报 `net::ERR_BLOCKED_BY_CLIENT`；Chrome 不可用。未绕过浏览器限制，未把构建结果写成运行验收。
-- 未停机、重启、修改根配置、提交或推送。后端接口删除及日历运行效果待按运行手册备份并获准重启后核对。
-
-以下为此前批次历史，不能替代本轮运行状态。
-
-
-更新时间：2026-09-17 22:40。分支 `master`，基线提交 `f059191`。
-
-## 本轮（聊天参与 + 富卡片）
-
-**Verdict：代码已改，但 LenBot 仍在旧代码上运行（PID 88556，21:49 起），本轮改动一次都没有在 Bot 里跑过。富卡片已在本机独立渲染验证通过；容器字体修复未验证（镜像未重建）。**
-
-### 已做
-
-| 项 | 改动 | 已核对 |
-|---|---|---|
-| 聊天参与 | `cognition/context.py:1071` 重写 certain=false 段：删去「沉默是正常结果，不是遗漏」，改为「话题相关或确有具体信息/看法/玩笑可加时就接一句，不必等人点名」。守卫条款（不据此建立工作/提醒/长期认识、不硬找新话题）保留 | 仅静态改动，未重启，无运行观察 |
-| 渲染地基 | 新增 `cards/html_render.py`：进程内 Playwright，`set_content` 不导航，http/https 一律 abort | 本机渲染 1200×800 RGBA PNG，中文正常，故意放入的 `https://example.invalid` 图片被拦成裂图 |
-| 卡片移植 | 新增 `cards/bilibili/`：`template.html` + `logo.png` 原样复制；`models.py`（卡片数据契约）、`context.py`（移植 `build_card_context`）、`source.py`（资料取数 + 图片内联） | 真实渲染出含封面、头像挂件、UP 资料、二维码的完整卡片 |
-| 直播卡片接线 | `bilibili_live`：`RoomInfo` 补 `user_cover`/`keyframe`，`LiveSample` 补 `cover_url`；`_render_card` 出富卡片，失败回落到原 PIL 卡片 | 对真实房间 22637261 采样，`cover_url` 实际取到；插件 import 与 compileall 通过 |
-
-实测取数（2026-09-17 22:3x，UID 672328094）：`x/web-interface/card` 返回 获赞 33438533、关注 32、粉丝 1869578、头像与挂件 URL 各一；卡片footer 显示为 3343.9万 / 32 / 187万。
-
-### 两处偏离计划，理由记此
-
-1. **渲染不走 Gateway 浏览器容器，改为进程内。** `browser/gateway_service.py:52-55` 的 `_job()` 强制 `call.tool_call_id` 并走 `require_execution_job`，`_session()` 还要构造带 `job_id`/`job_revision`/预算期限的 `ExecutionRequest`。推送卡片由后台轮询产生，没有工作也没有 tool_call_id，接上去只能伪造一个工作。改用进程内 Playwright，与 `browser_agent/plugin_core.py:25` 已有的 `None if self.gateway else BrowserWorkerV2(...)` 回落同一模式。两条路径的分工写在 `cards/html_render.py` 的模块 docstring。
-2. **不需要 `bilibili-api-python`。** 计划原定移植 `asoul_bilibili.py` 2321 行以取得 UP 资料（参考实现用三个 wbi 签名/登录接口）。核对接口文档后确认 `x/web-interface/card?mid=` **免签名、免 Cookie**，一次 GET 就返回 name/face/pendant/fans/attention/like_num，覆盖卡片footer 全部字段。因此未引入该依赖，也不再有 SESSDATA 硬性要求。
-
-### 依赖
-
-`pyproject.toml` 增加 `jinja2>=3.1.4`、`qrcode>=8.2`；`uv lock` 只新增 jinja2/markupsafe/qrcode，无任何升级或移除。安装用 `uv pip install jinja2 qrcode`（不用 `uv sync`，因为 `playwright` 在 `browser` 可选组里，不带 `--extra browser` 的 sync 会把它卸掉，而 Bot 正在运行）。
-
-### 续做（同一轮，用户临时授权修改）
-
-**动态卡片**：`asoul_dynamics` 也接入同一套模板，设计风格随之统一。新增 `asoul_dynamics/card.py` 把源记录映射到卡片契约。源站 `/search` 本就返回 `images`、`likeCount`/`commentCount`/`forwardCount`、`member.avatarUrl`/`bilibiliUid` 与 `orig`（转发），模型未声明而已。实测渲染：点赞 4869 / 评论 446 / 分享 7 与真实配图齐全。新增共用 `ProfileCache`（6 小时 TTL，刷新失败保留上一份而不是覆盖成空白）。
-
-**模板样式修正**：`count-1` 原为 `width:100%` + `max-height:680px` + `contain`，方形图被高度卡住后在 1064px 宽的盒子里留出灰边。改为 `width:auto;max-width:100%;margin:0 auto`，单图与转发单图都贴合自身尺寸。
-
-**Part 2.4 聊天参数收敛（已完成）**：全局 `attention_*` 由 0.6/300/60 改为 **0.8/150/30**（即两个群原本就在跑的值），并删除 `group:1014123451` 与 `group:126300994` 的 `scenes.*.attention` 覆盖，两群回到继承。`RuntimeConfig` 与 `SceneSettings` 逐个校验通过，`attention=None`。改前 Bot 已停机，配置备份在 `.backups/config-20260917-224325/`。今后新群自动继承同一套聊天参数；差异化靠 `chat` 与工作插件开关，不靠调参。
-
-**Part 4 前端（部分完成）**：新增两个共用原语——`AdvancedSection.vue`（基础/高级分层，刻意不用 `v-expansion-panel`，避免与全站 16 个只读证据查看器混淆）与 `HelpHint.vue`（长说明移入「?」浮层）。已应用：
-- `SettingsView` 运行参数页：`onebot_file_upload` 从「100 字说明 + 手打 JSON」换成真控件（实现下拉、现场版本、协议只读派生、核对开关），协议随实现自动派生以匹配 `adapters/file_upload.py:23` 的校验器；改实现或改版本会自动把 `deployment_verified` 复位为 false（核对结果不跟着新目标走）。原始 JSON 降级进 `AdvancedSection`。
-- `SettingsView` 危险区：面板与确认对话框原本重复同样三段，面板改为一句摘要 + HelpHint，完整口径保留在对话框（真正要确认的时刻）。
-- `SceneSettingsForm` 旁听盒：默认只显示「继承全局 / 本群已覆盖」徽标与一行有效值，覆盖入口与「旁听 +2 档」移入 `AdvancedSection` 并标注会偏离统一参数。
-- `PluginsView`（原说明/标签比 106×）：90 字段落收进 HelpHint。
-
-**R5 群与权限页（新增）**：新增 `/groups` 与 `/groups/:sceneId` 路由和 `GroupsView.vue`。列表按群展示两个权限徽标（聊天取 `settings.chat`，工作取本群是否启用 `workspace`/`python_workspace`），支持搜索与按权限筛选，并可勾选多个群批量开关聊天。后端未改动——`list_scenes` 本就在每行返回完整 `settings`。批量走既有的 `PUT /api/cockpit/scenes/{id}/settings`，逐群各带自己的 baseline，是对同一个带冲突检查的保存的便利封装，不绕过检查；未配置的群会被跳过并列出原因。权限词汇加进 `domain/status.js` 的 `scene_chat`/`scene_work`，沿用 StatusBadge 的既有机制。导航「群聊」拆为「群与权限」与「群聊消息」两项，旧的 `/scenes` 路由与书签不变。
-
-**R6 抽公共脚手架（部分）**：新增 `composables/useRequestGuard.js`（14 份 `const own=++requestId` 守卫的唯一实现），已接入 `GroupsView` 与 `CapabilitiesView`；其余 12 个视图保留原内联守卫——在无法目视回归的情况下手改 12 个文件不划算。新增 `domain/roles.js` 收敛三处不一致的角色名（`OverviewView` 原为 对话/后台工作/维护整理，`ModelsView` 原为 对话/工作/维护），两处均改为引用。`AgentSettingsView` 的 scoped 样式删除 18 条死规则（3549 → 2134 字符），复核后仅剩 `v-btn`/`v-input` 两个 Vuetify 元素选择器（媒体查询内，有意保留）。
-
-**R7 合并能力表面（部分）**：删除 `PluginsView` 里复制主导航的「系统能力」链接卡。`CapabilitiesView` 页头加「启用向导」按钮，把「看能力」与「开能力」接成一条路径。四个能力表面**未合并成一个视图**——它们职责确实不同（Capabilities 是只读证据、SetupWizards 会改配置、Overview 是摘要），合并是大改写且无法目视回归，因此只做了去重与串联。
-
-`npm run build` 通过。
-
-### 未做 / 未验
-
-- **Part 1 卡住，`deployment_verified` 未翻。** Docker Desktop 已停（22:43 核对：`Cannot connect to the Docker daemon`），SnowLuma/Gateway/QQ 客户端都不在，**无法核对现场版本**。按本轮计划的自我约束「版本核不上就不翻开关」，没有翻。控件已就位，Docker 起来后读一次版本即可一键完成。
-- **未重启**，提示词、卡片接线与聊天参数都没有在真实群里生效过。LenBot 进程已不在（近 20 分钟零事件）。
-- **前端页面未做人工目视检查**：面板未运行，且 AGENTS.md 禁止自动截图，这一步留给运营。已完成的只有构建通过。
-- `containers/browser/Dockerfile` 的 `fonts-noto-cjk` **镜像未重建，未验证**。本机渲染的中文靠 macOS 自带 PingFang SC，不能作为容器已修好的证据。
-- R6 只接入 2 个视图，其余 12 份请求守卫仍是内联副本；`useSettingsDraft(domain)`（6 份 tab+baseline+dirty 脚手架）未做。
-- R7 未把四个能力表面合并成单一视图，只做了去重与串联。
-- 未新增、未运行测试（AGENTS.md）。
-
----
-
-## 上一批（B1—B4 与 G4）
-
-## 当前结论
-
-**Verdict：B1—B4 与 G4 已提交，前端产物改为构建期生成；LenBot 已按运行手册停机（SIGTERM，20:53 起的进程已退出）。QQ OneBot 因 SnowLuma 重建后尚未重新登录，`deployment_verified` 仍为 false，没有任何真实文件上传回执，不能宣称已能发群文件。新代码尚未启动运行过。**
-
-备份：`.backups/lenbot-dev-backup-20260917-203616`（HEAD、根配置、SQLite、media，477MB）。经用户授权删除其余 35 份历史快照，`.backups` 从 6.4GB 降到 477MB；保留这一份是因为它是本批在运行手册意义上的回退点，重启到新代码前不要删。
-
-## 本批代码改动
-
-| 批次 | 已做 | 未验 |
-|---|---|---|
-| B1 文件动作入口 | `respond` 在本轮有可交付候选时才公开互斥的 `intent=file` 分支（只填 `file_asset_id` + 唯一 `delivery_ref`/`work_ref`，无 segments）；`runtime_facts.files` 与 `file_delivery` 投影；工作详情已显示资产、尝试与回执 | 模型在真实请求中实际选中文件分支 |
-| B2 平台与交付 | `FileUploadConfig` 显式支持 `napcat`/`snowluma` 并校验协议配对；`upload_response` 记录所选协议；`deployment_verified` 收口为「版本与挂载已人工核对」，不再要求先有成功上传；新增只读 `POST /api/websocket/read-version` 读现场 `get_version_info` 并与已声明实现/版本对照 | 真实 `FILE_UPLOADED` 与 `file_id`；只读挂载在 node 侧的实际读取 |
-| B3 旁听与表情 | `scenes[group].attention` / `expression` 覆盖；单一解析器 `attention_config.effective_attention`；下一次抽样改为绝对时刻 `SceneSession.attention_sample_at`，窗口改短时收到 `now+新窗口`，改长不冻结；palette 传 tags、描述放宽到 120 字并标注截断，未发过的素材在限额内优先 | 自然聊天下的命中率、沉默比例与费用对比 |
-| B4 一页群配置 | `GET/PUT /api/setup/group-quick` 一次事务保存本群设置与 `send_file` 授予（按 grant 修订比对冲突）；群列表合并 OneBot `get_group_list` 的已加入群；`SceneSettingsForm` 改为参与／能力／申请者三段加固定保存区 | 两个页面并发改同一群、窄屏与切群的实际操作 |
-| G4 授予判定 | 主体／能力／范围／到期的匹配收敛到 `capabilities.grant_allows`，`CapabilityAuthority.grant_for` 与启用向导共用；已过期授予不再显示成「已授权」，向导据此提议补发并注明 | 面板上的实际预览与保存 |
-
-同批修正：`file_delivery_facts` 原先固定取第一个全局启用的 workspace 实现判断本群是否能生成文件，两种实现同时存在而本群只开了另一个时会误报未开放，已改为按本群实际启用的实现判断。
-
-构建管线（提交 `294dca1`）：控制面板产物不再进 Git。原先前端相关提交里 40—59／45—87 个文件是构建产物；`deploy/linux/Dockerfile` 新增 Node 阶段自建面板，`.dockerignore` 只挡装好的 toolchain 与本机产物，`pyproject.toml` 增加 source/wheel 排除。核对：`uv build --wheel` 从 47.7MB（含 3291 个 node_modules 文件）降到 13MB 且 81 个面板资源齐全；`docker build -f deploy/linux/Dockerfile .` 成功，镜像内已安装包含 78 个资源加 index.html、无 `web/frontend`；镜像内构建与本机 `npm run build` 产出相同哈希。历史未重写，旧提交仍带产物。
-
-构建：`src/len_bot/web/frontend` 执行 `npm run build` 通过，产物留在本机工作副本供本地运行。未运行测试（按 AGENTS.md）。未做自动截图。
-
-## 文档收敛
-
-- `AGENTS.md` 3051 → 2661 字节，规则条目保留，去掉已过期的「前期只做契约」阶段说明。
-- 删除已完成批次的 `docs/LenBot_全链路审计与产品化重构计划_1683b8a.md`（R0—R6 已交付，正文保留在 Git 提交 `3eadcad`）。
-- 新增本批合同 `docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md`；README、架构与运行手册的引用同步改到它。
-- `docs/` 文档正文从 425.5KB 降到 352.1KB（含本批新增的合同 41.5KB）。
-
-## 现场状态（未变）
-
-| 项 | 结果 |
-|---|---|
-| SnowLuma 版本 | `get_version_info`：app_name=SnowLuma，app_version=`1.14.15-node`，protocol_version=v11（重建前读到） |
-| `upload_group_file` | 存在；空参数返回 `group_id: is required`（1400），不是 unknown action |
-| 已加入群 | `1014123451` 造密码、`126300994` 类人群星（枝江）建筑梦限公司员工群 |
-| 文件目录 | 宿主 `file_assets/` 0750；当前容器只读挂到 `/lenbot-files`，node(1000) 可列出 |
-| `onebot_file_upload` | `implementation=snowluma`，`protocol=upload_group_file`，`version=1.14.15-node`，`deployment_verified=false` |
-| 旁听 +2 | 两群 `p=0.8`、`W=150`、`K=30`（由当时全局 0.6/300/60 计算并保存具体值） |
-| 表情 | 两群 `expression.sticker_preference=slightly_more` |
-| LenBot | 已停机：向主进程 81211 发 SIGTERM，81211/81209 均已退出，`127.0.0.1:11307` 不再监听；Gateway `127.0.0.1:8790`（Docker）未动 |
-| OneBot | 容器内 3001 未监听；LenBot 对 `ws://127.0.0.1:13001/` 报 InvalidMessage。QQ 需在 noVNC/WebUI 完成登录后才会打开 OneBot |
-
-停用容器 `snowluma-prev` 在登录恢复前不要删。登录态卷仍是 `qq-client-config` / `qq-client-data` / `qq-gateway-data`。
-
-未登录面板（默认密码已失效）。未向群发送、未把 `deployment_verified` 标成已核验。18:20 开发群「群里发不了文件附件」的实发文字回退属于旧协议缺失，不是本批新回执。
-
-## 下一步
-
-1. 启动 LenBot 以加载本批代码（已停机；`.backups/lenbot-dev-backup-20260917-203616` 是当前回退点）。本机运行需先有面板产物，缺少时后端照常起但面板不可用。
-2. 在 `http://127.0.0.1:6081`（noVNC）或 `http://127.0.0.1:5099`（SnowLuma WebUI）完成 QQ 登录，直到容器监听 3001。
-3. 用连接页「读取平台实现与版本」核对现场实现与版本，确认 node 能读 `/lenbot-files`，再把 `deployment_verified` 改为 true 并重启。
-4. 在群 `1014123451` 由人类提出资料整理并发送 CSV；成功证据必须是 `FILE_UPLOADED` 与真实 `file_id`（V01、V02）。
-5. 再用一个不依赖日程的表格计算请求复验同一通用链（V03）。

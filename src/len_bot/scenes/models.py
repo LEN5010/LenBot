@@ -21,6 +21,9 @@ class PendingWake(BaseModel):
     actor_id: str
     reasons: list[str]
     certain: bool
+    # Opportunity-class wakes expire; a wake stored before this field existed
+    # reads as 0, which is the same as "old enough to close".
+    created_at: float = 0
 
 
 class WakeConfirmationRequest(BaseModel):
@@ -46,10 +49,15 @@ class SceneSession(BaseModel):
     attention_sample_window: int = -1
     attention_sample_at: float | None = None
     attention_keyword_at: float | None = None
+    attention_name_at: float | None = None
     participants: dict[str, ParticipantFacts] = Field(default_factory=dict)
     last_event_at: float = 0
     last_bot_message_at: float | None = None
     last_bot_message_event_id: str | None = None
+    # Retired with the sampling draw; kept so sessions saved while the appetite
+    # existed still load. Nothing reads them.
+    engagement_level: float = 1.0
+    engagement_at: float = 0
     consecutive_bot_messages: int = 0
     human_messages_since_bot: int = 0
     awake_until: float | None = None

@@ -110,15 +110,25 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 
 事件保存、注意力扫描、摘要覆盖、本轮原文读取与来源处理分别记录。AttentionPolicy 在事件事务前提供观察机会，扫描位置与待处理唤醒和原话同事务保存；BurstAssembler 只按到达时间聚合获得机会的输入，不决定其中各请求的归属或完成情况。
 
-AttentionPolicy 的抽样概率、窗口与关键词冷却经 `attention_config.effective_attention(scene_id)` 解析：`scenes[group].attention` 的缺省字段继承全局，API 预览、实际抽样与诊断共用这一个解析器。每个窗口仍最多一次机会，但下一次可抽样时刻按绝对时间保存在 SceneSession.attention_sample_at，不再用不能跨配置比较的窗口编号；窗口改短时把待定时刻收到 now+新窗口，改长不冻结抽样，也不因反复保存多掷一次骰子。旧会话首次进入时按已有窗口编号做一次性初始化，不回放历史输入。抽样只增加观察机会，不改变关注时长、预算、睡眠或直接 @ 的快入口。
+AttentionPolicy 的观察开关、间隔与关键词冷却经 `attention_config.effective_attention(scene_id)` 解析：`scenes[group].attention` 的缺省字段继承全局，API 预览、实际行为与诊断共用这一个解析器。`attention_sample_probability` 已不是概率而是开关——0 表示该场景完全不观察，大于 0 表示按 `attention_sample_window_seconds` 的间隔观察。下一次观察时刻按绝对时间保存在 `SceneSession.attention_sample_at`；间隔改短时把待定时刻收到 now+新间隔，改长不冻结观察。观察只增加读取机会，不改变关注时长、预算、睡眠或直接 @ 的快入口。
 
-Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。睡眠确认若本轮没有人类原话，也是空提交：本轮已经交给这次尝试的运行时唤醒（含重启后的 TASK_REVIEW）不能立刻再开一轮。跟进发言（in_flight_follow_up）仍是确定唤醒，但不走快路径立刻冲洗，与 @／回复／称呼／等待中的答案区分，由原有合并窗口收束。
+episode lease 覆盖取得之后的全部工作，并在 `finally` 中**先于**任何数据库记账无条件释放：释放是本地赋值，记账是可能失败或被取消的写入，租约一旦因此丢失，该群不再开始任何轮次。最新资格过滤之后若已没有有效来源（等待并发槽位期间限额到顶、场景被关闭），本轮直接结束，不拿旧历史开一次模型调用。
+
+小时限额管哪些输入只有一处判断（`_chat_ceiling_applies`：本群人类消息，且不是 Bot 自己），入口闸门与快照资格过滤共用它。工作检查点、到期任务与工作完成同样带 `interaction='chat'`，闲聊额度不取消这些已获准事项的必要回执。
+
+Actor 提交时校验 episode lease、实际读取集合、读取截点和 knowledge_revision。CONVERSATION_COMMITTED.source_event_ids 保存实际读过的原话；EpisodeOutcome.source_outcomes 经同一事务写入提交事件，并由 reducer 只移除这些来源的 pending_wakes。每项保留 replied/delegated/waiting/incomplete/silent、原因、未完成要求、消息序号和已提交 action/task/operation 关系；这些关系不证明答案语义正确。处理来源必须属于已读集合，并且是当前待处理来源或同一 episode 先前 checkpoint 的来源，定位或部分原文不授予整条处理资格。未处理来源继续保留；一次提交处理了有限来源后，Runtime 可沿现有调度继续其他来源，空提交只能由尚未提供的新输入继续唤醒，不反复领取新预算。睡眠确认若本轮没有人类原话，也是空提交：本轮已经交给这次尝试的运行时唤醒（含重启后的 TASK_REVIEW）不能立刻再开一轮。**唤醒不掷骰子。** 任何一条理由成立即唤醒；没有理由的普通消息由主动观察兜底：每个场景每 `attention_sample_window_seconds` 最多读一次，一次读取携带自上次以来到达的全部消息。抽签曾经是"看一眼太贵"的代价——一轮四万个全价 token，只好让随机数决定哪些消息有资格存在，而它决定得很差：一个装机问题和一句直接接着 Bot 原话的玩笑都因为点数不够而从未进入视野。前缀可复用之后，一次观察的成本主要是新消息本身，值不值得开口回到模型在完整上下文里判断。硬墙仍是小时限额，不是概率。
+
+称呼命中**不是**被搭话：只有 @、回复 Bot 与私聊指认 Bot 本身，聊真人嘉然的群会不断命中角色名。名字仍作为 `address_name` 理由保留（睡眠据此发出叫醒确认，面板据此显示），但每 `attention_keyword_cooldown_seconds` 只记一次，冷却内不再计数，也不走快路径冲洗合并窗口。
+
+机会类唤醒会过期。被限额挡下的普通机会不消费 `pending_wakes`，`attention_opportunity_ttl_seconds` 之后即关闭——原消息仍完整留在事件与历史里，关闭的只是"还欠这个人一眼"。被直接搭话、运行时来源与工作参与者保留原有生命周期，由 `source_outcomes` 经 reducer 处理。
 
 普通聊天按实际读过的快照提交。普通回应、认识修改、工作控制、提醒、履约与 OpenLoop 由 Actor 检查有关的未读确定唤醒：使用原请求者、回应及提及对象、认识主体与证据、真实事项 ID 和 reply 引用关系，不按全量群消息或关键词猜关联。有关追加须先读完，其他独立请求不因此阻塞本项提交。认识版本或租约失效结束提交，不进入通用重试循环。Gate 沿用 Actor 的检查结果；Runtime 从事件存储取得实际新输入，Mailbox 只保存轮次身份、互动参与者与显式取消。
 
 TurnReferences 将本轮短编号映射到真实 ID。历史目录只授予定位，持久记录使用真实事件 ID，跨轮回读重新绑定短编号。长原话与引用按字符范围提供；范围并集完整之前，不能使用整条原话作证据或确认对应唤醒。历史查询还在 SQL 中限制场景与允许读取截点。
 
 模型输入按 kind 分区。chat_message 独立保存 ref、sender、text、mentions、reply_to、时间、正文范围与媒体定位，不把预算、待处理目录或运行说明拼进原话。纯运行元数据使用 developer 消息；含人类或外部内容的运行资料、认识、摘要和表达参考保留为带类型的 user 资料，不提升为指令。首次装配先选当前请求、引用链和按现有邻居数提供的相邻原话，再将选中原话按保存顺序放在参考之后；后续原生工具交换不重新排序。
+
+原话窗口的 `conversation_recent_tokens` 只计文字。图片按张数（`max_context_images`）、按编码字节（`media_context_max_bytes`）和按整个请求预算三处受限，不再占用原话额度——否则抬高请求预算只会让更多图片挤掉群友说过的话。字节上限对**每一张**成立，包括窗口里仅剩的那张：装不下就留定位符说明像素已移出窗口，不谎称模型看过。对话与信息工作共用同一套图片窗口规则，恢复检查点与压缩后的重装同样执行。
 
 工具返回或收到新输入不无条件清历史。实际下一次请求超出容量时才外置旧工具正文，依次移出可选参考、摘要与已提供的无关历史；当前及关联原话保留。Trace 的 context_plan.request.messages 记录角色、段类别、真实事件与范围、工具调用 ID 和省略状态；原句从事件库按范围回读，不另存完整供应商请求或 base64 图片。
 
@@ -140,7 +150,7 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。插件调用不写普通对话的 disposition：供应商是否完成由 status 表示，结果与运行失败见插件 Trace，表达和送达分别以提交、行动回执为准；work 路由也通过相同调用身份关联。
 
-对话默认展示 `recall_chat` 复合回忆入口，底层 `search_messages` / 时间线 / 人物历史在该次召回后按需展开。`recall_chat` 只查本群，摘要只定位，原句进入本轮窗口后才是精确证据。`respond` 用 `intent` 选择互斥形状：reply / ack / operation / delivery / work / file；宿主从已登记句柄派生工作修订、原请求者和回执关系。未准备好交付的旧任务不出现 delivery 句柄。空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。直接 @、回复 Bot、明确称呼、等待中的答案走快路径立即合并；普通抽样仍受 debounce 上限约束。
+对话默认展示 `recall_chat` 复合回忆入口，底层 `search_messages` / 时间线 / 人物历史在该次召回后按需展开。`recall_chat` 只查本群，摘要只定位，原句进入本轮窗口后才是精确证据。`respond` 用 `intent` 选择互斥形状：reply / ack / operation / delivery / work / file；宿主从已登记句柄派生工作修订、原请求者和回执关系。未准备好交付的旧任务不出现 delivery 句柄。空消息列表表示本阶段不发送；同一 episode 的全部 checkpoint 累计最多三条消息。片段恰好填写 `{"text":"一句话"}`、`{"image":"P01"}` 或 `{"at":"U2"}`。成员提及由本轮 U 解析为 qq_uid，OneBot 编码为 at；addressed_to 单独解析为 response_actor_ids，不从请求者、引用作者或等待目标拼成回应对象。ProposalLedger 解析本轮短引用并转换为内部来源与 `type/text/asset_id/qq_uid` 片段。MessageProposal 与 ActionItem 以必填 segments 为唯一消息主体，content 只读派生；Gate、MediaService 和 OneBot 不按 content 重建发送正文。普通模型正文不发送，消息及工作、提醒、认识和等待提案共同提交。直接 @、回复 Bot、私聊、等待中的答案走快路径立即合并；称呼命中与主动观察都受 debounce 上限约束。
 
 无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。提交工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。每个 checkpoint 使用独立 CONVERSATION_COMMITTED 事件与 action_id，发送批次绑定该提交，episode_id 另保留原执行身份；重复提交只返回原记录，不再次发布。Actor 原子提交后更新会话/认识版本和累计消息数，Ledger 才清空该阶段；next=continue 在原 AgentLoop 中得到真实提交/发布回执再继续，步骤和工具额度不重置。发布失败不把 accepted 改成 rejected，后续失败仍保留所有已提交 checkpoint。
 
@@ -158,9 +168,11 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 原始观察完整保存；本轮只展示 ObservationPage。字符页与记录页坐标分开，source_next_call 不是本地续读。试算未采用的页不算已读。字符片段不授予原话证据或认识编辑资格。capacity_failure / presentation_capacity_error 表示装不下或未读，不是源为空。
 
-插件 handler 和工具接收不可变 PluginCallContext，携带场景、真实来源、可为空的人类请求者、截点、插件版本、入口、父调用身份与本次调用被准入时的工作 revision。共享插件实例没有可变 current_scene。根场景插件条目按 plugin_id 保存 enabled 和插件自己的 config，专有模型由描述符提供。处理器数值优先级小者先匹配，同级按注册顺序；消费归属与原话一同保存，失败不退回普通聊天。精确命令入口可在普通聊天关闭时执行本插件获准工具，其他插件工具仍履行各自的当前资格。读取定义声明角色与是否延迟发现，返回 ToolResult；提案定义只暂存到现有 Ledger。Toolkit 不按相同参数盲目复用旧结果：源的有效缓存由具体服务维护，原观察按 result_id 显式续读。conversation 与 work 的整组展示共同复用 pack_tool_pages，实际展示后才更新原文覆盖。
+插件 handler 和工具接收不可变 PluginCallContext，携带场景、真实来源、可为空的人类请求者、截点、插件版本、入口、父调用身份与本次调用被准入时的工作 revision。共享插件实例没有可变 current_scene。根场景插件条目按 plugin_id 保存 enabled 和插件自己的 config，专有模型由描述符提供。处理器数值优先级小者先匹配，同级按注册顺序；消费归属与原话一同保存，失败不退回普通聊天。精确命令入口可在普通聊天关闭时执行本插件获准工具，其他插件工具仍履行各自的当前资格。读取定义声明角色与是否延迟发现，返回 ToolResult；提案定义只暂存到现有 Ledger。`kind` 只回答是否提交业务提案；是否可与同一次响应里的兄弟调用并行是另一个维度，由 `ordered` 声明。工作区一系（run_python、列出/读取/导出/登记文件）共用同一个工作区并按已确认的执行快照作答，声明 `ordered` 后按模型给出的顺序串行执行——同一次响应里先跑脚本再读产物是两步，不是两次互不相干的读取。Toolkit 不按相同参数盲目复用旧结果：源的有效缓存由具体服务维护，原观察按 result_id 显式续读。conversation 与 work 的整组展示共同复用 pack_tool_pages，实际展示后才更新原文覆盖。
 
 新输入装配时更新当前运行事实槽位，消失或省略的事项明确标注；保存观察本身不反复追加完整工作列表。历史查询中的旧工作版本不能覆盖当前目标版本。展示页与续读参数不自动执行，模型实际选择的读取仍沿原工具与模型预算记账，不另建分页循环、后台工作或压缩供应商。
+
+阅读顺序同时是缓存顺序：供应商只复用到与上次请求首个不同的 token 为止，所以 `build()` 末尾按变动频率分三段落位——整场景不变的（当前只有 persona）、本群按时序排列的原话、以及每次调用都变的（时钟、运行事实、输入状态、执行预算、媒体目录、自己近期说法）。摘要与偏好块看似缓慢，但其证据定位符与原话共用同一个 M 编号池且在原话之后注册，编号随窗口平移，故归入后段。终结工具 `respond` 的 schema 不再写入本轮数据：可处理来源由 `input_status.pending_sources` 给出，剩余消息与调用额度由 `execution_budget` 给出，强制仍在 ProposalLedger 的子集校验与 Gate。原话窗口目前仍按预算从最新回填，起点逐轮滑动，尚未锚定。
 
 ## 工作、任务与交付
 
@@ -186,7 +198,7 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 认识账本保存主体、陈述、reported/inferred、原话证据、有效期与修订链。查询先按允许场景、主体、类型、认识创建时间和有效状态筛选，再复用确定性中文片段与别名排序；昵称、群名片和有效 reported 称呼只作同一主体的检索线索，不合并身份或新增认识。当前互动投影限有关参与者与本群的有效明确偏好，其他认识按需读。角色资料、模型摘要和 Bot 自己的发言不能独立证明群友事实或现实能力。要求忘掉昵称时先查看有效认识，有记录则撤销或替代；未保存为长期认识时停止采用该称呼，不声称清空历史。撤销或替代保留旧陈述及理由。
 
-历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围。生成前保存本群认识的主体、类别、版本与状态快照；提交时在原事务内核对候选目标及同主体同类别的记录。无关认识修订不阻断摘要，相关记录变化则不采用该候选，将完整提案、前后版本和原因存入同一 REFLECTION_RECORDED 回执；摘要、实际采用的认识、未采用候选和覆盖一起提交。此为 A02 对原“认识冲突令整批失败”合同的定向调整，不自动改写候选版本或重新购买模型调用。群历史页独立显示待核对候选，摘要完成不表示所有认识已采用。对话期间维护在 Actor 队列外等待；存储层仍核对当前 Actor 状态、来源范围、关键原话与证据。提交后索引/回调失败不改写完成事实；供应商失败或进程中断仍须显式处理，旧 failed 批次不自动重试。
+历史维护沿 ReflectionEngine、LLMReflector 和原 history 存储处理新增原始范围。生成前保存本群认识的主体、类别、版本与状态快照；提交时在原事务内核对候选目标及同主体同类别的记录。无关认识修订不阻断摘要，相关记录变化则不采用该候选，将完整提案、前后版本和原因存入同一 REFLECTION_RECORDED 回执；摘要、实际采用的认识、未采用候选和覆盖一起提交。此为 A02 对原“认识冲突令整批失败”合同的定向调整，不自动改写候选版本或重新购买模型调用。群历史页独立显示待核对候选，摘要完成不表示所有认识已采用。对话期间维护在 Actor 队列外等待；存储层仍核对当前 Actor 状态、来源范围、关键原话与证据。提交后索引/回调失败不改写完成事实；供应商失败或进程中断仍须显式处理，旧 failed 批次不自动重试——自动重跑会再买一次调用，也会让同一段对话产生第二份说法。代价是这个阻塞是**完全的**：`begin_history_batch` 见到任何非 completed 批次就返回 None，该群从此不再生成摘要，长期记忆停止生长，直到有人在面板重试。因此被挡住时按"每个新的阻塞点一次"记 WARNING，写明群、批次、错误类型与被卡的 rowid 区间，不再静默停摆。
 
 技能目录按用途、适用及排除条件确定性检索，返回版本；正文沿普通观察分页，工作首次读取时固定版本。有实际工作观察或明确纠正的候选才触发一次 maintenance，同一次模型调用只接受 save_skill 或 skip_skill 中的一条终结。重复、没有方法价值、来源不足或仅有暂时故障可正常 skipped，原因保存在既有候选结果字段；保存和跳过均核对候选状态与来源工作版本。有效纠正形成新版本并保留前版与依据，人工内容不能自动覆盖，公开针对指定版本。
 

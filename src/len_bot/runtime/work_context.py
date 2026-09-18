@@ -72,8 +72,14 @@ def _image_contexts(messages):
                 raise ValueError("Work image lacks a stored asset manifest")
 
 
-def synchronize_image_window(messages, image_limit):
-    """Retain the newest asset pixels within the configured image window."""
+def synchronize_image_window(messages, image_limit, max_bytes):
+    """Retain the newest asset pixels within the configured image window.
+
+    Both ceilings, because the token estimate charges a flat rate per picture
+    and cannot see that one of them is four megabytes. `max_bytes` has no
+    default: a work request assembled without it would be the same unbounded
+    body that was dropping conversation requests mid-upload.
+    """
     contexts = list(_image_contexts(messages))
     pixels = []
     for content, _, _, _, manifest in contexts:
@@ -85,11 +91,16 @@ def synchronize_image_window(messages, image_limit):
                     raise ValueError("Work image lacks a stored asset reference")
                 pixels.append((content, index, by_index[image_index]))
                 image_index += 1
-    current_assets, retained = set(), set()
+    current_assets, retained, used_bytes = set(), set(), 0
     for content, index, asset in reversed(pixels):
-        if asset not in current_assets and len(current_assets) < image_limit:
-            current_assets.add(asset)
-            retained.add((id(content), index))
+        if asset in current_assets or len(current_assets) >= image_limit:
+            continue
+        encoded = len(((content[index].get("image_url") or {}).get("url")) or "")
+        if used_bytes + encoded > max_bytes:
+            continue
+        current_assets.add(asset)
+        used_bytes += encoded
+        retained.add((id(content), index))
     local_indices = {}
     for content, index, asset in pixels:
         if (id(content), index) in retained:
@@ -134,9 +145,10 @@ def archive_trajectory(messages):
     return archived
 
 
-async def restore_trajectory(messages, media_service, scene_id, *, image_limit, supports_segment_vision=False):
+async def restore_trajectory(messages, media_service, scene_id, *, image_limit, max_bytes,
+                             supports_segment_vision=False):
     restored = copy.deepcopy(messages)
-    current_assets = synchronize_image_window(restored, image_limit)
+    current_assets = synchronize_image_window(restored, image_limit, max_bytes)
     for content, manifest_block, prefix, facts, manifest in _image_contexts(restored):
         if not any(block.get("type") == "work_image_reference" for block in content):
             continue
@@ -169,7 +181,7 @@ async def restore_trajectory(messages, media_service, scene_id, *, image_limit, 
                 item["status"] = "included_elsewhere" if item.get("asset_id") in current_assets else "omitted"
                 item["coverage"] = "pixels_elsewhere_in_current_context" if item.get("asset_id") in current_assets else "pixels_not_loaded"
         manifest_block["text"] = prefix + json.dumps(facts, ensure_ascii=False)
-    synchronize_image_window(restored, image_limit)
+    synchronize_image_window(restored, image_limit, max_bytes)
     return restored
 
 
@@ -284,7 +296,7 @@ class WorkCompressor:
             entry = {"start_exchange": start_exchange, "end_exchange": end_exchange, "goal_revision": self.revision, **segment.model_dump()}
             replacement = {"role": "user", "content": "旧工作区间摘要（非新增证据，原资料按 result_id 回读）：" + json.dumps(entry, ensure_ascii=False)}
             candidate[start:end] = [replacement]
-            synchronize_image_window(candidate, config.max_context_images)
+            synchronize_image_window(candidate, config.max_context_images, config.media_context_max_bytes)
             after = cost(candidate)
             if after >= compacted_before or after > input_budget:
                 raise JobContextExhausted("工作压缩未形成有效可用窗口")
