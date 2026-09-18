@@ -1,6 +1,6 @@
 """Only observable protocol facts enter the persistent session."""
 from len_bot.events.models import Event, EventType
-from len_bot.scenes.models import ParticipantFacts, SceneSession
+from len_bot.scenes.models import OriginalCoverage, ParticipantFacts, SceneSession
 
 
 class SceneReducer:
@@ -13,7 +13,27 @@ class SceneReducer:
                 and not event.metadata.get('operator_control')
                 and event.payload.get('output_kind', 'chat') == 'chat'):
             handled = {item['source_event_id'] for item in event.payload.get('source_outcomes', [])}
-            result.pending_wakes = [wake for wake in result.pending_wakes if wake.event_id not in handled]
+            from len_bot.runtime.attention import AttentionPolicy
+            presented = event.payload.get('provided_original_ranges', {})
+            remaining = []
+            for wake in result.pending_wakes:
+                if wake.event_id in handled:
+                    continue
+                if wake.event_id in presented:
+                    coverage = OriginalCoverage.model_validate(presented[wake.event_id])
+                    wake.observation = (wake.observation.merged_with(coverage)
+                                        if wake.observation is not None else coverage)
+                # Satisfying a read opportunity does not synthesize a silent
+                # source outcome or complete an addressed request/work.
+                if (wake.observation is not None and wake.observation.complete
+                        and not AttentionPolicy._is_obligation(wake)):
+                    continue
+                remaining.append(wake)
+            result.pending_wakes = remaining
+            if 'next_observation_at' in event.payload:
+                result.attention_sample_at = event.payload['next_observation_at']
+            if 'observing_until' in event.payload:
+                result.observing_until = event.payload['observing_until']
             for actor_id in event.payload.get('outcome',{}).get('release_focus_actor_ids',[]):
                 result.focused_participants.pop(actor_id,None)
             wake = event.payload.get('outcome', {}).get('wake_decision')

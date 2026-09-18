@@ -36,14 +36,14 @@ from len_bot.runtime.gate import GateDecision, RuntimeGate
 from len_bot.runtime.capabilities import CapabilityAuthority
 from len_bot.runtime.job_runner import InformationJobRunner
 from len_bot.runtime.metrics import RuntimeMetrics
-from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS, UNAMBIGUOUS_ADDRESS
+from len_bot.runtime.attention import AttentionPolicy, HUMAN_INPUTS
 from len_bot.runtime.scene_policy import ScenePolicy, conversation_visible
 from len_bot.runtime.plugin_interactions import classify_event, validate_plugin_origin
 from len_bot.runtime.heartbeat import Heartbeat
 from len_bot.runtime.sleep_policy import DeliveryDeferred, should_defer_send, should_ingest_social
 from len_bot.scenes.actor import HistoryCommitDeferred, SceneCommitConflict
 from len_bot.scenes.manager import SceneManager
-from len_bot.scenes.models import SceneSession
+from len_bot.scenes.models import OriginalCoverage, SceneSession
 from len_bot.scheduler.engine import TaskScheduler
 from len_bot.scheduler.models import TaskItem, TaskStatus
 from len_bot.state.open_loops import OpenLoopManager
@@ -134,9 +134,6 @@ class AgentRuntime:
         self.runtime_gate.deterministic_service = self.plugin_host.deterministic_service
         from len_bot.runtime.rate_limit import MessageRateLimiter
         self.rate_limiter = MessageRateLimiter(self.event_store, lambda: self.config_store.current.runtime, clock)
-        # One notice per ceiling per scene or requester; a group full of people
-        # must not turn one exhausted allowance into a second flood.
-        self._limit_notice_at: dict[tuple[str, str], float] = {}
         self.attention_policy = AttentionPolicy(config, clock)
         if attention_random is not None:
             self.attention_policy.random_source = attention_random
@@ -147,7 +144,7 @@ class AgentRuntime:
         self.scene_manager = SceneManager(self.bot_actor_id, self.event_store, self._on_scene_event_committed,
                                           attention_policy=self.attention_policy,
                                           classify_event=lambda event, cutoff: classify_event(self, event, cutoff))
-        self.burst_assembler = BurstAssembler(config, self._on_burst)
+        self.burst_assembler = BurstAssembler(config, self._on_burst, wall_clock=clock)
         self.social_core = SocialCognitionCore(self)
         from len_bot.cognition.action_review import ActionReviewer
         self.action_reviewer = ActionReviewer(self)
@@ -767,9 +764,7 @@ class AgentRuntime:
         kind = (event.payload.get("payload") or {}).get("kind")
         if event.event_type == EventType.TASK_DUE and kind == 'interest_share':
             plugin = self.plugin_host.get_plugin('interest_share')
-            # An exhausted scene drops the slot rather than queueing it: a share
-            # is worth having now or not at all.
-            if plugin and plugin.manifest.enabled and not await self.rate_limiter.exhausted(event.scene_id):
+            if plugin and plugin.manifest.enabled:
                 await plugin.run_slot(event)
             else:
                 from len_bot.scheduler.models import TaskStatus
@@ -834,38 +829,13 @@ class AgentRuntime:
         state = await self.rate_limiter.status(event.scene_id, requester)
         if not (state['scene_exhausted'] or state['user_exhausted']):
             return True
-        if set(event.metadata.get('attention_reasons') or []) & UNAMBIGUOUS_ADDRESS:
-            # Being addressed directly earns an answer about the silence; being
-            # merely sampled earns the silence itself.  The character's own name
-            # is not enough: a room discussing the real 嘉然 would otherwise be
-            # told about the ceiling every time it said so.
-            await self._send_limit_notice(event, session, state, requester)
+        # A reaction containing @ is still allowed to end without a message.
+        # The panel exposes this allowance; do not buy a model call or send a
+        # fixed chat notification just to explain an exhausted allowance.
+        await self.event_store.save_trace(kind='observation', scene_id=event.scene_id, ref_id=event.id,
+            payload={'source_event_ids': [event.id], 'status': 'not_started', 'reason': 'hourly_limit',
+                     'scene_exhausted': state['scene_exhausted'], 'user_exhausted': state['user_exhausted']})
         return False
-
-    async def _send_limit_notice(self, event: Event, session, state: dict, requester) -> None:
-        from len_bot.actions.models import ActionType
-        from len_bot.media.models import MessageSegment
-        from len_bot.runtime.rate_limit import NOTICE_INTERVAL_SECONDS, limit_notice
-        from len_bot.runtime.sleep_policy import is_asleep
-        if is_asleep(session, self.config_store.current.time, self.event_store.clock()):
-            # Sleep already owns this silence and has its own wording for it.
-            return
-        key = (event.scene_id, 'scene' if state['scene_exhausted'] else str(requester))
-        now = self.event_store.clock()
-        if now - self._limit_notice_at.get(key, 0.0) < NOTICE_INTERVAL_SECONDS:
-            return
-        self._limit_notice_at[key] = now
-        try:
-            self.action_queue.enqueue(ActionItem(
-                action_type=ActionType.SEND_GROUP_MESSAGE, scene_id=event.scene_id,
-                segments=[MessageSegment(type='text', text=limit_notice(state))],
-                requester_qq_uid=requester, origin_event_id=event.id,
-                reply_to=str(event.payload['message_id']) if event.payload.get('message_id') is not None else None,
-                planned_at=now, source_started_at=event.timestamp,
-                origin_mode='shadow' if self.shadow_mode else 'live'))
-        except Exception as error:
-            logger.warning('Message ceiling notice was not enqueued (%s: %s)', type(error).__name__, error)
-            self._limit_notice_at.pop(key, None)
 
     def _can_maintain_history(self) -> bool:
         return bool(self.history_engine and self.mock_turn_handler is None and self.has_model_profile("maintenance"))
@@ -1010,7 +980,13 @@ class AgentRuntime:
         if self.mock_turn_handler is None and not self.has_model_profile("conversation"):
             return
         actor = await self.scene_manager.get_or_create_actor(burst.scene_id)
-        allowed = await self._eligible_conversation_events(burst.events, actor.session.last_observed_event_rowid)
+        rejections = []
+        allowed = await self._eligible_conversation_events(burst.events, actor.session.last_observed_event_rowid,
+                                                          session=actor.session, rejections=rejections)
+        if rejections:
+            await self.event_store.save_trace(kind='observation', scene_id=burst.scene_id, ref_id=burst.id,
+                payload={'source_event_ids': [item['event_id'] for item in rejections],
+                         'status': 'not_started', 'at': self.clock(), 'rejections': rejections})
         if not allowed:
             return
         burst = self._burst_from_events(allowed, burst)
@@ -1039,28 +1015,45 @@ class AgentRuntime:
         cutoff = session.last_observed_event_rowid
         preferred = set(preferred_ids)
         sources = sorted(session.pending_wakes,
-            key=lambda wake:(wake.event_id not in preferred,not wake.certain,-wake.rowid))[:self.config.conversation_read_batch_limit]
+            key=lambda wake:(not (wake.certain and wake.event_id in preferred), wake.rowid))[:self.config.conversation_read_batch_limit]
         source_ids = [wake.event_id for wake in sources]
         required = await self.event_store.events_by_ids(session.scene_id,source_ids,cutoff)
+        from len_bot.cognition.input_window import original_remainder
+        wakes = {wake.event_id: wake for wake in sources}
+        required = [original_remainder(event, wakes[event.id].observation)
+                    if not AttentionPolicy._is_obligation(wakes[event.id]) else event for event in required]
         recent = await self.event_store.get_recent_events(session.scene_id,limit=self.config.conversation_history_limit,through_rowid=cutoff,conversation_only=True)
-        events = sorted({event.id:event for event in [*required,*recent] if conversation_visible(event)
+        events = sorted({event.id:event for event in [*recent,*required] if conversation_visible(event)
                          and (not event.metadata.get('conversation_resume') or event.id in preferred)}.values(),
                         key=lambda event:event.metadata['_rowid'])
         events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
         return events,cutoff,source_ids
 
-    async def _eligible_conversation_events(self, events, cutoff):
+    async def _eligible_conversation_events(self, events, cutoff, *, session=None, rejections=None):
         """Current eligibility controls scheduling; it never consumes a wake."""
         result = []
+        def rejected(event, reason):
+            if rejections is not None:
+                rejections.append({'event_id': event.id, 'reason': reason})
         for original in events:
             if (original.metadata.get('interaction') != 'chat' or not self.scene_policy.chat_allowed(
                     original.scene_id, original.metadata.get('requester_qq_uid'))):
+                rejected(original, 'chat_not_allowed')
+                continue
+            reasons = original.metadata.get('attention_reasons') or []
+            if reasons == ['sample_opportunity'] and not self.attention_policy._attention(original.scene_id).observation_enabled:
+                rejected(original, 'periodic_observation_disabled')
+                continue
+            if session is not None and not should_ingest_social(session, self.config_store.current.time,
+                                                               self.clock(), reasons):
+                rejected(original, 'sleep')
                 continue
             # A ceiling reached while this burst waited still stops the turn,
             # over the same inputs the entry gate weighs and no others.
             if (self._chat_ceiling_applies(original)
                     and await self.rate_limiter.exhausted(original.scene_id,
                                                           original.metadata.get('requester_qq_uid'))):
+                rejected(original, 'hourly_limit')
                 continue
             event = original.model_copy(deep=True)
             event.metadata['conversation_excluded'] = False
@@ -1071,7 +1064,7 @@ class AgentRuntime:
         session = actor.session.model_copy(deep=True)
         pending = await self.event_store.events_by_ids(session.scene_id,
             [wake.event_id for wake in session.pending_wakes], session.last_observed_event_rowid)
-        inputs=await self._eligible_conversation_events(pending, session.last_observed_event_rowid)
+        inputs=await self._eligible_conversation_events(pending, session.last_observed_event_rowid, session=session)
         other_resumes={event.id for event in inputs if event.metadata.get('conversation_resume') and event.id!=resume_event_id}
         eligible = {event.id for event in inputs}-other_resumes
         session.pending_wakes = [wake for wake in session.pending_wakes if wake.event_id in eligible]
@@ -1128,6 +1121,7 @@ class AgentRuntime:
             # rest of the process.
             session,other_resume_ids = await self._conversation_snapshot(actor,resume_event_id=resume_event_id)
             trace['wake_sources'] = [wake.model_dump() for wake in session.pending_wakes]
+            coverage_before = {wake.event_id: wake.observation for wake in session.pending_wakes}
             observed, revision = session.last_observed_event_rowid, session.knowledge_revision
             if not resume and not session.pending_wakes:
                 # Current eligibility filtered away everything that woke this
@@ -1138,6 +1132,11 @@ class AgentRuntime:
             if resume and resume.runtime_started_at!=self._started_at:
                 raise SceneCommitConflict('Suspended conversation belongs to a previous process; review is required, no request is resent')
             events, observed, source_ids = await self._read_initial_window(session, burst.source_event_ids)
+            # What the initial window already handed over, so a later step does
+            # not offer the same uncovered stretch a second time.
+            initial = set(source_ids)
+            offered = {wake.event_id: tuple(wake.observation.ranges) if wake.observation else ()
+                       for wake in session.pending_wakes if wake.event_id in initial}
             if resume:
                 anchors=await self.event_store.events_by_ids(scene_id,
                     [*resume.source_event_ids,resume_packet['send_event_id']],observed)
@@ -1154,7 +1153,7 @@ class AgentRuntime:
                     if wake.event_id in provided_ids | read_ids and wake.actor_id != self.bot_actor_id
                     and wake.actor_id.startswith('user:'))
 
-            async def observe():
+            async def observe(*, provided_ranges=None):
                 nonlocal observed, source_ids
                 if mailbox.is_cancelled() or not self._running or not self.scene_policy.enabled(scene_id):
                     raise asyncio.CancelledError()
@@ -1162,16 +1161,42 @@ class AgentRuntime:
                 other_resume_ids.update(reserved)
                 if current.knowledge_revision != revision:
                     raise SceneCommitConflict("Knowledge changed during conversation; rebuild from the next real input")
-                if current.last_observed_event_rowid == observed:
+                # The durable pending originals are the backlog. A scan cutoff
+                # alone cannot remember omitted messages or long-message gaps.
+                unread = []
+                coverage = {}
+                batch = {}
+                for wake in sorted(current.pending_wakes, key=lambda item: item.rowid):
+                    span = OriginalCoverage.model_validate(provided_ranges[wake.event_id]) if (
+                        provided_ranges and wake.event_id in provided_ranges) else None
+                    if span is not None and span.complete:
+                        continue
+                    prior = wake.observation
+                    if span is not None:
+                        prior = prior.merged_with(span) if prior is not None else span
+                    if prior is not None and prior.complete:
+                        continue
+                    # Offering the same uncovered stretch again on the next step
+                    # would reinstall facts, preferences and a second copy of
+                    # the footer without adding a word anybody said, and move
+                    # the prefix while doing it. It waits for real progress:
+                    # either coverage advances or the next turn picks it up.
+                    handed = tuple(prior.ranges) if prior is not None else ()
+                    if offered.get(wake.event_id) == handed:
+                        continue
+                    unread.append(wake.event_id)
+                    coverage[wake.event_id] = prior
+                    batch[wake.event_id] = handed
+                    if len(unread) >= self.config.conversation_read_batch_limit:
+                        break
+                observed = current.last_observed_event_rowid
+                if not unread:
                     return None
-                additions = await self.event_store.get_events_since(scene_id, observed, limit=self.config.conversation_read_batch_limit)
-                additions = [event for event in additions if event.metadata["_rowid"] <= current.last_observed_event_rowid]
-                cutoff = additions[-1].metadata["_rowid"] if additions else observed
-                additions = await self._eligible_conversation_events(additions, cutoff)
-                additions = [event for event in additions if not event.metadata.get('conversation_resume')
-                             or event.id==resume_event_id]
-                additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=cutoff)
-                observed = cutoff
+                additions = await self.event_store.events_by_ids(scene_id, unread, observed)
+                additions = await self.event_store.project_reply_context(scene_id, additions, through_rowid=observed)
+                from len_bot.cognition.input_window import original_remainder
+                additions = [original_remainder(event, coverage[event.id]) for event in additions]
+                offered.update({event.id: batch[event.id] for event in additions})
                 source_ids = list(dict.fromkeys([*source_ids, *(event.id for event in additions)]))
                 if any(_is_shadow_input(event) for event in additions):
                     mailbox.origin_mode = "shadow"
@@ -1243,7 +1268,15 @@ class AgentRuntime:
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")
-            await self._preserve_unhandled_bursts(burst, actor.session, mailbox.handled_source_ids, delivered_ids)
+            progressed = any(
+                (coverage_before.get(ident).merged_with(span) if coverage_before.get(ident) is not None else span)
+                != coverage_before.get(ident)
+                for ident, span in mailbox.provided_original_ranges.items()
+                if ident in coverage_before)
+            await self.burst_assembler.discard_provided(scene_id,
+                {ident for ident, span in mailbox.provided_original_ranges.items() if span.complete})
+            await self._preserve_unhandled_bursts(burst, actor.session, mailbox.handled_source_ids,
+                                                  delivered_ids, observation_progress=progressed)
             self.metrics.inc_social("social_cognition")
             self.metrics.inc_social("social_would_speak" if mailbox.messages_committed else "intentional_silence")
             await self._save_conversation_trace(scene_id, episode_id, burst, trace, outcome, decision)
@@ -1287,14 +1320,16 @@ class AgentRuntime:
             await self.event_store.set_model_call_disposition(episode_id,
                 'expression' if mailbox.messages_committed else 'silence' if trace['checkpoints'] else 'rejected')
 
-    async def _preserve_unhandled_bursts(self, current: Stimulus, session: SceneSession, handled_ids, delivered_ids) -> None:
+    async def _preserve_unhandled_bursts(self, current: Stimulus, session: SceneSession, handled_ids, delivered_ids, *, observation_progress=False) -> None:
         pending = self._pending_bursts.pop(current.scene_id, None)
         merged = self._merge_bursts(current, pending) if pending else current
-        if handled_ids:
+        if handled_ids or observation_progress:
             # Progress consumes at least one finite source. Any other request,
             # including one read but not handled, gets the existing next turn.
             remaining = await self.event_store.events_by_ids(session.scene_id,
-                [wake.event_id for wake in session.pending_wakes], session.last_observed_event_rowid)
+                [wake.event_id for wake in session.pending_wakes if handled_ids
+                 or wake.observation is not None and not wake.observation.complete
+                 or wake.event_id not in delivered_ids], session.last_observed_event_rowid)
         else:
             # An empty completion cannot repeatedly buy a fresh budget. Only
             # genuinely new input not supplied to this attempt may wake again.
@@ -1305,9 +1340,12 @@ class AgentRuntime:
             remaining = [event for event in merged.events
                          if event.id in pending_ids and event.id not in delivered_ids
                          and event.id not in supplied]
-        remaining = await self._eligible_conversation_events(remaining, session.last_observed_event_rowid)
-        if remaining:
-            self._pending_bursts[current.scene_id] = self._burst_from_events(remaining, merged)
+        remaining = await self._eligible_conversation_events(remaining, session.last_observed_event_rowid, session=session)
+        now = self.clock()
+        for event in remaining:
+            if event.metadata.get('attention_reasons') == ['sample_opportunity']:
+                event.metadata['attention_due_at'] = max(now, session.attention_sample_at or now)
+            await self.burst_assembler.ingest(event)
 
     @staticmethod
     def _burst_from_events(events: list[Event], origin: Stimulus) -> Stimulus:

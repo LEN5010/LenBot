@@ -133,7 +133,7 @@ class InterestStore:
             visibility=row[9], revision=row[10], status=row[11])
 
     async def list_public(self, *, topic: str | None = None, now: float | None = None,
-                          limit: int = 20) -> list[InterestItem]:
+                          limit: int = 20, considered_in_scene: str | None = None) -> list[InterestItem]:
         now = self.event_store.clock() if now is None else now
         db = self.event_store._db
         rows = await (await db.execute(
@@ -142,8 +142,13 @@ class InterestStore:
                WHERE status='active' AND visibility='public'
                  AND (valid_until IS NULL OR valid_until>?)
                  AND (? IS NULL OR topic=?)
-               ORDER BY observed_at DESC LIMIT ?""",
-            (now, topic, topic, limit))).fetchall()
+               ORDER BY CASE WHEN ? IS NULL THEN 0 ELSE COALESCE((
+                   SELECT MAX(t.created_at) FROM traces t
+                   WHERE t.kind='interest_share_consideration' AND t.scene_id=?
+                     AND json_extract(t.payload,'$.interest_id')=public_interests.id
+                     AND json_extract(t.payload,'$.revision')=public_interests.revision
+               ),0) END ASC, observed_at DESC, id ASC LIMIT ?""",
+            (now, topic, topic, considered_in_scene, considered_in_scene, limit))).fetchall()
         items = []
         for row in rows:
             # Legacy records without acquisition proof remain readable in the

@@ -279,10 +279,14 @@ async def update_persona_settings(edit: ConfigEdit, request: Request, user: str 
 class AttentionSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     attention_keywords: list[str] | None = None
-    attention_sample_window_seconds: float | None = None
-    attention_sample_probability: float | None = None
+    attention_observation_interval_seconds: float | None = None
+    attention_observation_enabled: bool | None = None
     attention_keyword_cooldown_seconds: float | None = None
     attention_focus_seconds: float | None = None
+    addressed_debounce_idle_ms: int | None = None
+    addressed_debounce_max_ms: int | None = None
+    observing_debounce_idle_ms: int | None = None
+    observing_debounce_max_ms: int | None = None
     conversation_recent_tokens: int | None = None
     scene_hourly_message_limit: int | None = None
     user_hourly_message_limit: int | None = None

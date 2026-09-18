@@ -49,7 +49,8 @@ class InterestShare(BasePlugin):
 
     async def ensure_next(self):
         async with self._schedule_lock:
-            await self._ensure_next()
+            if self.manifest.enabled:
+                await self._ensure_next()
 
     async def _ensure_next(self):
         runtime, store = self.context._runtime, self.context.event_store
@@ -83,6 +84,9 @@ class InterestShare(BasePlugin):
                 return
             config, _ = scene_permission(store, event.scene_id)
             runtime = self.context._runtime
+            if await runtime.rate_limiter.exhausted(event.scene_id):
+                outcome = 'skipped_hourly_limit'
+                return
             actor = await runtime.scene_manager.get_or_create_actor(event.scene_id)
             if is_asleep(actor.session, self.context.time_settings, self.context.now()):
                 outcome = 'skipped_sleep'
@@ -91,7 +95,7 @@ class InterestShare(BasePlugin):
             if actor.session.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
                 outcome = 'skipped_anti_loop'
                 return
-            candidates = await runtime.interest_store.list_public(limit=20)
+            candidates = await runtime.interest_store.list_public(limit=20, considered_in_scene=event.scene_id)
             for item in candidates:
                 if item.record_type == 'research_intent' or config.topics and item.topic not in config.topics:
                     continue
@@ -143,9 +147,13 @@ class InterestShare(BasePlugin):
     async def on_candidate(self, call):
         if call.scene_id in self._busy:
             return
+        candidate = Candidate.model_validate(call.event.payload['data'])
+        consideration = {'interest_id': candidate.interest_id, 'revision': candidate.revision,
+            'slot': candidate.slot, 'context_cutoff_rowid': call.cutoff_rowid,
+            'outcome': 'failed', 'reason': '',
+            'reconsideration': '按本群最近考虑时间轮换；候选修订后重新取得优先机会，沉默不永久屏蔽'}
         self._busy.add(call.scene_id)
         try:
-            candidate = Candidate.model_validate(call.event.payload['data'])
             item, publication = await publication_for(self.context.event_store, candidate.interest_id, candidate.revision)
             materials = ToolResult(content=json.dumps({'interest': item.model_dump(mode='json'),
                 'resource_urls': publication.resource_urls,
@@ -161,7 +169,7 @@ class InterestShare(BasePlugin):
                 for ident, at, raw in rows], 'meaning': '本群最近实际送达的 Bot 表达，每条只呈现前1000字符，不是外部事实证据'}, ensure_ascii=False),
                 evidence_kind='retrieval', coverage='本群最近八条真实送达记录的文字节选',
                 provenance=ObservationProvenance(access='scene', source_event_ids=[row[0] for row in rows]))
-            await call.run_agent(instructions=(
+            result = await call.run_agent(instructions=(
                 '这是本群本时段的一次自主分享机会，使用当前群的必要语境与近期已发内容判断相关性。'
                 '不相关、已知、证据不足或会打扰时用 respond 保持沉默。研究完成不意味着应当发布。'
                 '至多一条简短表达，区分公共事实与自己的评价，保留资源链接，不能把研究意向当成果。'
@@ -171,5 +179,12 @@ class InterestShare(BasePlugin):
                 model_role='conversation', include_identity=True, input_mode='conversation', output_mode='respond',
                 max_steps=self.config.max_steps, max_tool_calls=2,
                 context_tokens=self.config.context_tokens, output_tokens=self.config.output_tokens)
+            consideration.update(outcome='expression_submitted' if result.message_proposals else 'silent',
+                                 reason=result.decision_reason)
+        except BaseException as error:
+            consideration['error_type'] = type(error).__name__
+            raise
         finally:
             self._busy.discard(call.scene_id)
+            await self.context.event_store.save_trace(kind='interest_share_consideration',
+                scene_id=call.scene_id, ref_id=candidate.task_id, payload=consideration)

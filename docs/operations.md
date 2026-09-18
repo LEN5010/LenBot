@@ -2,9 +2,9 @@
 
 面向运营者。本文是从初始化到停机、备份、升级和故障处置的可执行最短路径；行为含义与边界见[当前架构](architecture.md)，插件开发见[插件开发](plugins.md)，当前实施状态、实际核对与未确认项见[当前任务](iteration.md)。
 
-后续能力的启用条件以 [完整计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件）和当前施工批次的[文件交付与群聊快速配置计划](LenBot_文件交付与群聊快速配置实施计划_3eadcad.md)为准；报告中的建议和历史观察不能替代当前任务中的运行证据。具体部署是否已运行只看当前任务，不从历史文档继承授权或机器状态。已完成批次的计划随该批提交归档在 Git 里（`141ec2e` 的 `docs/archive/`、`3eadcad` 的全链路审计与产品化计划），回查它们不是当前的操作依据。
+后续能力的启用条件以 [完整计划](LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件）和当前施工批次的[文件交付与群聊快速配置计划](LenBot_文件交付与群聊快速配置实施计划_3eadcad.md)为准；报告中的建议和历史观察不能替代当前任务中的运行证据。具体部署是否已运行只看当前任务，不从历史文档继承授权或机器状态。已完成批次的计划随该批提交归档在 Git 里（`d1fd37e` 的 `docs/archive/`、`e762832` 的全链路审计与产品化重构计划），回查它们不是当前的操作依据。
 
-本群设置可为全局已配置的插件添加独立记录。没有群专属参数的插件使用 `{}`，新增草稿默认关闭；添加动作不执行工具，也不授权其他群。有必填参数时需补齐对应字段才能保存。全局停用、部署缺失和运行失败仍需分别处理。群列表合并已保存群、已有原话的群和 OneBot `get_group_list` 读到的已加入群；刚发现的群在保存前不启用聊天或工具。群页「配置」是一页快速配置：本群启用/聊天、旁听覆盖、表情倾向、能力开关、文件申请者和语义检索一次保存。旁听 +2 把当前有效 p 加 0.20、窗口和关键词冷却减半（窗口不低于 30 秒，冷却为 0 时保持），保存具体数值而不是每次再乘一次。未填 `scenes[group].attention` / `expression` 的旧群继承全局，不会自动变得更积极。
+本群设置可为全局已配置的插件添加独立记录。没有群专属参数的插件使用 `{}`，新增草稿默认关闭；添加动作不执行工具，也不授权其他群。有必填参数时需补齐对应字段才能保存。全局停用、部署缺失和运行失败仍需分别处理。群列表合并已保存群、已有原话的群和 OneBot `get_group_list` 读到的已加入群；刚发现的群在保存前不启用聊天或工具。群页「配置」是一页快速配置：本群启用/聊天、旁听覆盖、表情倾向、能力开关、文件申请者和语义检索一次保存。旁听区显示本群普通周期观察是开是关、观察间隔、名称与关键词冷却，以及本群这一小时已发条数与上限；按钮「开启并将观察间隔减半」把这三项算成具体数值写进草稿，而不是每次再乘一次。本群覆盖可分别填写 `observation_enabled`（继承／开启／关闭）、`observation_interval_seconds` 与 `keyword_cooldown_seconds`。关闭周期观察不关闭真实 @／回复／私聊、名称与关键词机会以及短时观察期。未填 `scenes[group].attention` / `expression` 的旧群继承全局，不会自动变得更积极。
 
 能力页按真实插件 ID 展示状态；启用向导及其预览、保存接口已删除。全局参数在「插件与开发」配置，本群能力在「群与权限」配置，授权仍在现有权限入口维护。总览首次进入会读取运行统计、能力清单与运行状态；能力清单读取失败显示原因，不当作已就绪。替换模型密钥、插件秘密或 OneBot 令牌时，若另一页已先改过同一凭据，保存会冲突并保留草稿；选择「保留我的改动」会用最新修订重建基线后再提交，选择「采用现值」放弃本页密钥改动。
 
@@ -59,7 +59,7 @@ uv run len-bot
 
 运行中使用面板分节保存，保存成功才更新显示；手工编辑根文件前先正常停机。监听地址等需重启的字段显示“已保存，需重启”，不自动重启。新轮次使用新模型设置，已启动工作保留原模型绑定，恢复时原绑定不可用就明确失败。
 
-控制面板产物 `src/len_bot/web/static/dist` 不在 Git 里：本机在 `src/len_bot/web/frontend` 执行 `npm ci && npm run build` 生成，部署镜像由 `deploy/linux/Dockerfile` 的 Node 阶段自行构建。缺少该目录时后端仍正常启动并提供 API，只是面板页面不可用（`web/app.py` 检查 `dist/assets` 是否存在），升级后发现面板 404 先确认这一步。切到 `294dca1` 之前的提交会把当时随提交带的旧产物写回该目录，切回来又只删掉被跟踪的那部分，留下新旧混合的残留；跨这个边界切换分支或提交后重新执行一次 `npm run build`（vite 配置了 `emptyOutDir`，会清成一致的一套），不要按目录里还有文件就认为面板可用。
+控制面板产物 `src/len_bot/web/static/dist` 不在 Git 里：本机在 `src/len_bot/web/frontend` 执行 `npm ci && npm run build` 生成，部署镜像由 `deploy/linux/Dockerfile` 的 Node 阶段自行构建。缺少该目录时后端仍正常启动并提供 API，只是面板页面不可用（`web/app.py` 检查 `dist/assets` 是否存在），升级后发现面板 404 先确认这一步。切到 `d81c4a6` 之前的提交会把当时随提交带的旧产物写回该目录，切回来又只删掉被跟踪的那部分，留下新旧混合的残留；跨这个边界切换分支或提交后重新执行一次 `npm run build`（vite 配置了 `emptyOutDir`，会清成一致的一套），不要按目录里还有文件就认为面板可用。
 
 OneBot 显式选择主动／反向 WebSocket 与发送通道，保存后需正常重启生效。插件参数保存按描述符声明原位应用或正常停用、重载该插件；保存失败与运行应用失败分别显示，代码更新仍需停机重启。HTTP 检查只检查当前正在使用的接口，不证明尚未生效的新连接可用。模型能力检查由运营主动发起，会产生真实模型请求，浏览或刷新页面不会。
 
@@ -169,7 +169,16 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 更新前记录实际代码版本、数据库结构、根配置及未结束调用/工作，按上文停机和普通备份后再更新同批代码、文档与前端产物。当前库包含 usage_reservations、execution_runs/execution_events/execution_commands、public_interests 与预占账；若使用独立 Gateway，它另有自己的日志库和 execution_artifacts，都要一并备份。旧阶段“没有新增表、不需要迁移”的结论不再适用。
 
-旧配置中的插件列表、群顶层业务字段与当前描述符结构不兼容时，先按其实际版本核对并离线转换。这需要辨认旧结构时，用 Git 提交 `141ec2e` 的 `docs/archive/operations-before-doc-cleanup.md` 对照，不是所有版本通用的升级命令。不得从样例补生产模型、人格、Shadow 或群名单；新增本地插件用法见 [业务时钟](../local_plugins/local_clock/README.md)。
+**本批必须先做的离线转换：观察配置改名。** `attention_sample_probability` / `attention_sample_window_seconds` 已由 `attention_observation_enabled` / `attention_observation_interval_seconds` 取代，`scenes[group].attention` 下的 `sample_probability` / `sample_window_seconds` 同样改名为 `observation_enabled` / `observation_interval_seconds`。`RuntimeConfig` 是 `extra='forbid'`，带旧键的根配置会在启动时被校验拒绝。停机并按上文备份之后，在项目根目录执行：
+
+```sh
+uv run python scripts/migrate_observation_config.py          # 只报告将改动的字段并按新结构校验
+uv run python scripts/migrate_observation_config.py --write  # 确认无误后写回 lenbot.config.json
+```
+
+脚本只改这些键（概率 >0 转成 `true`，=0 转成 `false`，窗口秒数原值保留），顺带删除上一轮已退役的 `attention_engagement_step` / `attention_engagement_recovery_seconds`；其他配置值原样保留，不打印任何配置内容或凭据，转换后再按新 schema 校验一次，校验失败即不写入。新增的 `addressed_debounce_idle_ms` / `addressed_debounce_max_ms` / `observing_debounce_idle_ms` / `observing_debounce_max_ms` 有默认值，旧配置不必手工补；默认值是首轮调参起点，不是已验证的最优值，也不是回复延迟承诺。转换动作记入本次升级记录。
+
+旧配置中的插件列表、群顶层业务字段与当前描述符结构不兼容时，先按其实际版本核对并离线转换。这需要辨认旧结构时，用 Git 提交 `d1fd37e` 的 `docs/archive/operations-before-doc-cleanup.md` 对照，不是所有版本通用的升级命令。不得从样例补生产模型、人格、Shadow 或群名单；新增本地插件用法见 [业务时钟](../local_plugins/local_clock/README.md)。
 
 旧工作缺独立来源、绑定、原额度或首次开始时间时先保留原记录。不能为了符合新结构，用当前默认值补造可恢复预算或真实身份。必要结构补充和旧记录处置按完整计划第 9 章处理，未结束容器和在途模型请求另行核对。
 
@@ -201,7 +210,9 @@ cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
 
 | 问题 | 沿现有入口处理 |
 |---|---|
-| 没有回复 | 从原话查看注意力、当前 pending、已读和明确处理来源，再看对应调用、提交与发送回执；按请求原话区分同轮多人事项 |
+| 没有回复 | 从原话查看注意力、当前 pending、已读和明确处理来源，再看对应调用、提交与发送回执；按请求原话区分同轮多人事项。先分清没有被观察、观察后沉默、模型失败、发送失败和额度阻止，不把所有没发言都算成正确旁听 |
+| 没有被观察 | 在事件详情看车道与「普通观察计划截止」：`interval` 表示排在周期批次里等该时刻，`observing` 表示短时观察期内的快批次，`none` 表示根本没有取得机会。本群仍有未覆盖原话时，场景页「注意力」显示待观察或待处理来源数与短时观察截止；被入口挡下的写成 `observation` trace，`reason` 为 `hourly_limit`，burst 资格过滤挡下的写在同类 trace 的 `rejections` 里（`chat_not_allowed` / `sleep` / `periodic_observation_disabled` / `hourly_limit`） |
+| 额度到顶后被 @ | 本批起不再自动回一条固定说明。看群配置页的本小时已发条数与上限，或上述 `observation` trace；这是明确的产品选择，不是发送失败 |
 | 对话失败或超时 | 记录原话、时间、场景和调用 ID，查看实际型号、错误与预算；容量失败另看 context_plan.capacity_failure 的阶段、实际输入、上限及分项，不自动换型号或补发 |
 | 已提交但发布失败 | 查看提交事件、发布阶段、Scheduler 状态及每条 action 的入队情况，再关联真实发送回执；不按候选失败重做事务，也不把入队未知当成未发送而补发 |
 | 工具查不到或返回失败 | 先看本群开放插件与当前可用状态，再看工具观察的错误阶段、具体字段、HTTP 状态及调用 ID；调用已返回不表示观察成功，no_results 与 timeout 分别处理 |
@@ -249,7 +260,7 @@ time.sleep_start/sleep_end 成对设置。具备聊天资格的人类叫醒时�
 
 通过面板填写并启用 `interest_share` 全局插件，再为明确目标群填写主题、每日次数与冷却并启用该插件；在全局能力授予中向插件主体 `interest_share` 授予该群的 `interest_share` 能力。普通聊天、公共研究与发送文件各自授权，任何一个开关都不替代此 grant。不要手工修改运行中的根文件。
 
-TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的“公共兴趣分享机会”给出候选/跳过原因，“公共兴趣表达”记录模型用量。实际是否发送以原 ActionQueue 的消息回执为准；发送尝试的 `interest_publication` 保存候选版本与公共资源 URL。未知结果不重发，也不释放当日次数；明确未发送不计入已用次数。默认每半小时一个机会，睡眠、连续消息上限、冷却、额度或无相关内容均可零发布。停用插件会取消其未领取槽，重启不重新执行已领取机会。
+TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的“公共兴趣分享机会”给出候选/跳过原因，“公共兴趣表达”记录模型用量。实际是否发送以原 ActionQueue 的消息回执为准；发送尝试的 `interest_publication` 保存候选版本与公共资源 URL。未知结果不重发，也不释放当日次数；明确未发送不计入已用次数。默认每半小时一个机会，睡眠、连续消息上限、冷却、额度或无相关内容均可零发布。被小时限额挡下记为 `skipped_hourly_limit`，只跳过当前槽，仍然启用的插件照常续排下一槽；错过的分享不补发。停用插件会取消其未领取槽，重启不重新执行已领取机会。「公共兴趣分享考虑」trace 保存每次实际考虑的候选 ID、修订与结果，候选顺序按本群最近考虑时间轮换：被沉默拒绝的候选让位给其他候选，修订后重新获得机会。
 
 ### 配置媒体片段（C22）
 

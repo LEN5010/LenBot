@@ -1,5 +1,80 @@
 # 当前任务
 
+## 2026-09-18：让它按时读到，并且只把真读过的算成读过
+
+两份外部审查（群聊观察与参与专项、`4921efa` 源码审查）对同一批代码给出 FIX_RECOMMENDED / BLOCKER_FOUND。核对后主要结论成立，本轮按"先修证据与调度完整性，再打通到期观察与分批覆盖"的顺序做完。
+
+### 上一轮的"按间隔观察"其实没有触发者
+
+`attention_sample_at` 只在**收到人类消息时**被比较。间隔内、没有其他理由的消息拿到空 `attention_reasons`，Runtime 就不把它交给 BurstAssembler；而 Burst 的定时器只能冲洗已经在缓冲区里的事件。于是"t=0 观察一次、t=5 来一条值得聊的普通消息、然后群里安静"这条路径上，t=60 什么都不会发生——不是模型选择沉默，是根本没有发起判断。把 60 改成 5 只缩小盲区，不改变末尾消息没有触发者这件事。
+
+改法是让普通消息也真正进缓冲：attention 给它 `sample_opportunity` 并写下 `attention_due_at`，BurstAssembler 按这个绝对时刻排定时器。截止时间属于**本批第一条**待观察消息，后来的消息只能把它提前。缓冲区现在有四条车道，共用同一个 buffer 和同一个"最早截止"：
+
+| 车道 | idle / max | 谁走这里 |
+|---|---|---|
+| `fast` | `addressed_debounce_*`（400 / 1000 ms） | 真实 @、回复 Bot、私聊 |
+| `observing` | `observing_debounce_*`（800 / 2000 ms） | 短时观察期内、或轮次进行中的新原话 |
+| `slow` | 原 `debounce_*` | 名称、关键词等弱线索 |
+| `interval` | `attention_due_at` | 纯周期观察 |
+
+真实 @ 不再零等待冲洗缓冲。先 @ 再补一句要求或一张图，此前首轮容易只看到"@你"，靠后续增量和 FreshInputConflict 纠正，等于多买一次调用去问"你要问什么"。这些毫秒数是首轮调参起点，不是实测最优值，也不是回复延迟承诺。
+
+### 关注期依赖 Bot 先说过话
+
+`focused_participants` 在确认 MESSAGE_SENT 之后才建立。被 @ 之后模型判断无需回复、合法 silent，就没有回执，也就没有关注期；对方随后的补充、第三人接着 Bot 上一句的接话，都掉回普通间隔。新增 `SceneSession.observing_until`：收到真实 @／回复／私聊即开启，与是否发言无关，期内任何成员的新原话获得 `active_observation`。轮次进行中另有 `in_flight_observation`。模型可用 `observation={source,action}` 就本轮实际处理的人类原话申请续期或结束；定时器、Bot 自己的发言和旧来源都不能续期。没有复用管睡眠的 `awake_until`。
+
+### 扫描位置不是覆盖位置
+
+`observe()` 原本把本轮 `observed` 推到本批截点，`append_update` 再只装 `attention_reasons` 非空的事件——被扫过、通过资格检查、却没有理由的第三方接话就这样被跳过了，而扫描位置已经越过它。初始窗口同样只是"最近 N 条"，不保证覆盖上次以来的全部输入。
+
+现在待观察积压记在 `PendingWake.observation`（`OriginalCoverage`：原话总长 + 已提供字符区间）。每轮按 `conversation_read_batch_limit` 取一批未覆盖原话，装不下的保留位置等下一批；长消息按 `original_remainder` 续读剩余区间。唤醒理由只解释为什么开始读，不再决定哪些原话能进请求。覆盖只有在模型确实返回之后才确认，随 `CONVERSATION_COMMITTED.provided_original_ranges` 由 reducer 并入 `pending_wakes`；完整覆盖的纯观察机会就此收口，被搭话与工作来源仍须由 `source_outcomes` 处理。
+
+`observe()` 只在有真正新增或覆盖推进时返回。这一条是补的：按覆盖重写之后，装不下的同一段积压会在每个步骤被重新提供一次，而 `append_update` 每次都要重装 facts、preferences 和一份新的 input footer——既白花 token 又把刚锚定好的前缀顶掉。现在记下本 episode 已经交出过的区间，覆盖没有推进就等下一轮。
+
+### 被裁掉的载体仍留着"已读"
+
+`event_message()` 给消息 A 登记原文范围时，也给 A 的 `reply_to` 引用原文 X 登记；随后 `anchor_window_start()` 从请求里删掉 A，却只撤销 A 自己的记录。最终请求里既没有 A 也没有独立的 X，X 仍在已读集合里。反方向也错：X 自己的条目被删、但另一条保留消息仍完整引用 X 时，简单清掉 X 的记录会错撤真实读取，所以不能靠递归删除引用 ID 解决。
+
+改成按最终请求体重建：每次原文投影记进 `range_contributions` 并随所属消息存为 `_original_ranges`，裁剪完成后 `reconcile_original_reads()` 清空并只从**实际保留且非省略**的消息重建，多个载体对同一原话取并集。工具正文按 `tool_call_id` 记录渲染时的投影与内容，插件替换过正文的工具消息不继承那批范围。`confirm_original_reads()` 在模型返回后把本次范围转为已确认，后续步骤在此之上累积。
+
+同一处另有两个边界错误：锚点公式 `(oldest // step + 1) * step` 求的是严格大于，`step=200`、最早 rowid 正好 200 时得到 400，白跨一整格；改为真正的上取整。以及锚定裁掉的区间并没有核对摘要是否真的覆盖——注释里的假设而已，摘要前沿被失败批次挡住时这会进一步减少可见原话。现在只在本次请求里确实有已完成摘要覆盖该区间时才额外裁掉，否则保留原话并记 `summary_does_not_cover_original`。
+
+### 分享被限额挡一次可能就不再有下一次
+
+Runtime 入口在额度耗尽时直接把 `interest_share` 槽设为 CANCELLED，而续排在插件 `run_slot()` 的 `finally` 里——入口取消绕过了它。单群部署、或所有群本轮都被挡下时，额度恢复也不会恢复调度，要等重新启用、改配置或重启。限额判断移进 `run_slot()`（记 `skipped_hourly_limit`），续排留在同一个 `finally`；`ensure_next()` 自己核对 `manifest.enabled`，停用才停止续排。不补发错过的分享。
+
+候选顺序也改了：`list_public(considered_in_scene=...)` 按本群最近一次 `interest_share_consideration` 时间升序，未考虑过的优先。此前永远取 `observed_at` 最新的第一个合格候选，它一直不适合这个群时，每槽都在同一条上沉默，后面的没机会。
+
+### 额度到顶后的 @ 不再自动回一条
+
+超额时真实 @／回复会触发一条不经模型的固定提示。这与本轮"被 @ 只提高阅读优先级、反应式表达可以自然结束"直接冲突——"@你 哈哈哈"也会收到"这一小时我已经回你多少条"。删掉 `_send_limit_notice` 与 `limit_notice`，入口拒绝改写一条 `observation` trace（`reason='hourly_limit'`），剩余额度显示在群配置页。这是明确的产品选择，不是把它判成程序错误。
+
+### 其余
+
+- `certain` 从 `bool(reasons)` 收回到只认 ADDRESSED_REASONS。系统提示不再说"certain=true 需要有处理结果"，改为"wake 只解释阅读机会与优先级"；`input_status` 同时给出 `directly_addressed`。Actor 的新鲜输入检查不再按 `wake.certain` 选来源，而是要求"同一请求者 + 这条确实是搭话"。
+- 名称／关键词冷却不再吞掉触发资格：冷却内的消息落回周期观察，不会因为第一次第三人称提到角色名就让紧接着的"然然你怎么看"失去机会。
+- 机会过期保留，但已经**部分提供过**的原话例外——它保留已记录区间等剩余覆盖，不在中途被丢掉。上一轮 321 条积压压塌窗口的教训还在，所以没有整体取消 TTL。
+- 图片定位符改用 `I:<asset_id>`。此前按本轮注册顺序发号，当前消息新增一张图会把历史消息里的图片重编号，历史文本跟着变，前缀在那一条断。
+- 配置项改名：`attention_sample_probability` / `attention_sample_window_seconds` → `attention_observation_enabled` / `attention_observation_interval_seconds`（`scenes[group].attention` 同名字段一并改）。`extra='forbid'`，**带旧键的根配置会被启动校验拒绝**，升级前必须跑 `scripts/migrate_observation_config.py`。面板「旁听 +2」改为「开启并将观察间隔减半」，密度文案标明是间隔折算频率而不是调用上限。
+
+### 实际核对（只做了读取、编译与构建，没有启动）
+
+- 全部模块导入通过（0 失败），`compileall` 通过。
+- 真实库 13 个 `scene_sessions` 用新模型载入正常，`observing_until` 与 `PendingWake.observation` 取默认值；现存 35 条 pending wake 全部是旧记录（`observation=None`），理由分布 `in_flight_follow_up` 23、`sample_opportunity` 7、`mention` 4、`address_name` 3、`runtime:reflection_recorded` 1。
+- **真实根配置仍然是旧键**（`attention_sample_probability=0.8`、`attention_sample_window_seconds=60.0`，无群级覆盖）。迁移脚本 dry-run 报告正好这两项改名并按新 schema 校验通过；未写入。
+- 候选轮换的新 SQL 在真实库副本上执行通过，9 条公共兴趣，带群与不带群参数结果一致（该库尚无 `interest_share_consideration` 记录）。
+- 前端 `npm run build` 通过，`web/static/dist` 已重建（不进 Git）。
+
+### 未确认
+
+- **以上全部改动没有任何运行数据。** 编译、导入、只读查询和前端构建都不是运行通过，需要一次获授权的真实启动。
+- 定时观察是否真的在无后续消息时按时触发、四条车道的毫秒数是否合适、短时观察期 120 秒是否够用，都只能在真实群里看。
+- 观察频率提高后的实际调用量与成本没有测。缓存改善仍只能看中转面板，`usage_json` 不回传 `cached_tokens`；`I:<asset_id>` 与摘要覆盖检查对前缀的影响同样未测。
+- `tests/` 里有 9 处仍引用已退役的 `attention_sample_probability` / `attention_sample_window_seconds` / `limit_notice`（`test_scene_transactions.py`、`test_dashboard_api.py`、`test_runtime_lifecycle.py`）。按本仓库约束本轮不新增、不修改、不运行测试，这些引用原样留着。
+- `AttentionPolicy.random_source` 与 `AgentRuntime(attention_random=...)` 已无调用方，但仍被上述测试引用，未删。
+- 观察期开启后 `pending_wakes` 在被限额挡住的小时里仍会累积，恢复后按批读取而不是一次涌入；实际累积速度与排空节奏没有数据。
+- 摘要前沿被失败批次挡住时，锚定不再额外裁剪，等于该群窗口起点回到逐轮滑动。这是有意的取舍（宁可不命中缓存，也不谎称摘要覆盖），代价未测。
+
 ## 2026-09-18：让前缀可复用，然后用它换掉抽签
 
 上一轮把窗口装满了，这一轮发现装满的东西**一次都没被复用过**。中转面板显示约一半调用没有缓存行，命中的那些是 87–94%。

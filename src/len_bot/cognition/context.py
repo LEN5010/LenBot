@@ -43,6 +43,7 @@ class TurnReferences:
         self.cutoff = cutoff
         self.events = {}
         self.read_events = set()
+        self.range_contributions = []
         self.read_event_ranges = {}
         self.partial_events = {}
         self.actors = {'BOT': bot_actor_id, 'GROUP': scene_id}
@@ -116,6 +117,7 @@ class TurnReferences:
     def _record_event_range(self, event_id, start, end, total):
         if not 0 <= start <= end <= total:
             raise ValueError('Invalid original text range')
+        self.range_contributions.append({'event_id': event_id, 'start': start, 'end': end, 'total': total})
         current = self.read_event_ranges.get(event_id, {'total':total,'ranges':[]})
         if current['total'] != total:
             raise ValueError('Original message length changed')
@@ -137,7 +139,9 @@ class TurnReferences:
         if ref and ref not in self.media:
             self.media[ref] = asset_id
             return ref
-        return self._register(self.media, asset_id, 'I')
+        # Asset IDs are immutable and scoped by the existing media lookup. A
+        # new current image must not renumber images in old chat messages.
+        return self._register(self.media, asset_id, 'I', preferred='I:' + asset_id)
 
     def register_memory(self, memory_id, *, editable=False):
         if editable:self.editable_memories.add(memory_id)
@@ -233,6 +237,9 @@ class ConversationContext:
         self.call_signals = {}
         self.required_originals = set()
         self.provided_event_ids = set()
+        self.confirmed_original_ranges = {}
+        self.confirmed_provided_ids = set()
+        self.tool_original_presentations = {}
         self.input_budget = self.config.conversation_context_tokens - self.config.conversation_output_tokens
         self.tool_definitions = lambda: []
         self.trajectory = None
@@ -521,11 +528,41 @@ class ConversationContext:
 
     def _projection_snapshot(self):
         return {name:copy.deepcopy(getattr(self,name)) for name in
-                ('refs','attached','loaded_media','media_manifest','event_records','call_signals')}
+                ('refs','attached','loaded_media','media_manifest','event_records','call_signals',
+                 'provided_event_ids','required_originals')}
 
     def _restore_projection(self, snapshot):
         for name,value in snapshot.items():
             setattr(self,name,value)
+
+    def reconcile_original_reads(self, messages):
+        """Project evidence from final retained carriers plus prior confirmed requests."""
+        self.refs.read_events.clear()
+        self.refs.read_event_ranges.clear()
+        self.refs.partial_events.clear()
+        self.refs.range_contributions.clear()
+        self.provided_event_ids = set(self.confirmed_provided_ids)
+        for event_id, span in self.confirmed_original_ranges.items():
+            for start, end in span['ranges']:
+                self.refs._record_event_range(event_id, start, end, span['total'])
+        for message in messages:
+            if message.get('_context_omitted') or not message.get('content'):
+                continue
+            ranges = message.get('_original_ranges', [])
+            if message.get('role') == 'tool':
+                presentation = self.tool_original_presentations.get(message.get('tool_call_id'))
+                # A plugin may replace a tool body. Only the unchanged, actually
+                # supplied projection earns the original ranges rendered for it.
+                ranges = (presentation['ranges'] if presentation
+                          and presentation['content'] == message['content'] else [])
+            for span in ranges:
+                self.refs._record_event_range(span['event_id'], span['start'], span['end'], span['total'])
+            if message.get('_source_event_id') and ranges:
+                self.provided_event_ids.add(message['_source_event_id'])
+
+    def confirm_original_reads(self):
+        self.confirmed_original_ranges = copy.deepcopy(self.refs.read_event_ranges)
+        self.confirmed_provided_ids = set(self.provided_event_ids)
 
     async def prepare_tool_results(self, toolkit, trajectory, entries, *, definitions, reserved=(), append_update=None):
         """Present one complete native tool group, its bodies and actual pixels."""
@@ -676,9 +713,12 @@ class ConversationContext:
             self._restore_projection(snapshot)
             messages[index]['content'] = original
             if best:
+                range_start = len(self.refs.range_contributions)
                 page = await render(position, best)
                 images.extend(await self.attachments(page.attachments,read_cache=prepared_images))
                 messages[index]['content'] = str(page)
+                self.tool_original_presentations[messages[index]['tool_call_id']] = {
+                    'content': str(page), 'ranges': copy.deepcopy(self.refs.range_contributions[range_start:])}
             else:
                 self.omit('tool_body', 'no_capacity_for_original_body', tool_call_id=messages[index]['tool_call_id'])
                 locator = json.loads(original)
@@ -762,35 +802,30 @@ class ConversationContext:
         return current
 
     def anchor_window_start(self, messages):
-        """Snap the window's oldest message up to a step boundary.
-
-        What fits in the allowance shifts by a message every time somebody
-        speaks, so an honest "newest N that fit" window starts somewhere new on
-        every call — and a provider stops reusing a request at the first token
-        that differs. Rounding the start up to a fixed grid holds it still
-        between steps, which turns the rest of the window into an append. The
-        cost is the stretch below the boundary, which the summary already
-        covers and `recall_chat` can still read.
-        """
+        """Trim only original ranges covered by completed summaries in this request."""
         step = self.config.conversation_window_step_rowids
         window = [message for message in messages
                   if message.get('_context_section') == 'recent_history']
         if not step or not window:
             return
-        boundary = (min(message['_source_rowid'] for message in window) // step + 1) * step
+        boundary = ((min(message['_source_rowid'] for message in window) + step - 1) // step) * step
         dropped = [message for message in window if message['_source_rowid'] < boundary]
         if not dropped or len(dropped) == len(window):
             return
+        summary_ranges = [span for message in messages if not message.get('_context_omitted')
+                          for span in message.get('_summary_ranges', [])]
+        for message in dropped:
+            rowid = message['_source_rowid']
+            source = message['_source_range']
+            if not any((start_row, start_offset) <= (rowid, source['start'])
+                       and (rowid, source['end']) <= (end_row, end_offset)
+                       for start_row, start_offset, end_row, end_offset in summary_ranges):
+                self.omit('window_anchor', 'summary_does_not_cover_original', event_id=message['_source_event_id'])
+                return
         for message in dropped:
             messages.remove(message)
-            event_id = message['_source_event_id']
-            # The locator survives — the number is this event's own, and a
-            # number grants nothing. What does not survive is the claim to have
-            # read the original, which `read_message_range` can earn back.
-            self.refs.read_events.discard(event_id)
-            self.refs.read_event_ranges.pop(event_id, None)
-            self.refs.partial_events.pop(event_id, None)
-            self.omit('recent_history', 'before_window_anchor', event_id=event_id)
+            self.omit('recent_history', 'before_window_anchor', event_id=message['_source_event_id'])
+        self.reconcile_original_reads(messages)
 
     def project_text(self, text):
         def mention(match):
@@ -811,11 +846,9 @@ class ConversationContext:
             wake=wakes.get(event.id)
             entry={'ref':ref,'original_complete':event.id in self.refs.read_events}
             if wake is not None:
-                # Why this input woke the scene: a certain wake is an explicit
-                # approach, a weak one is only an observation opportunity.
-                # Without this, a random sample and a follow-up to the bot's
-                # own interaction look identical in the request.
-                entry['wake']={'reasons':list(wake.reasons),'certain':wake.certain}
+                entry['wake']={'reasons':list(wake.reasons),
+                    'directly_addressed':bool(set(wake.reasons) & {'mention','reply_to_bot','private_message'}),
+                    'meaning':'阅读线索，不表示必须回应或已获委托'}
             (pending if event.id in self.plugin_source_ids or wake is not None else related).append(entry)
             if event.event_type not in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}:continue
             text=re.sub(r'\[CQ:[^\]]*\]','',event.raw_text).casefold()
@@ -849,6 +882,7 @@ class ConversationContext:
         return result
 
     def event_message(self, event, *, quote_tokens=None):
+        range_start = len(self.refs.range_contributions)
         ref = self.refs.register_event(event)
         self.event_records[event.id] = event
         sender = event.payload.get('sender') or {}
@@ -886,6 +920,7 @@ class ConversationContext:
                 '_context_section': 'runtime_event' if event.event_type in CUE_TYPES else 'original_input',
                 '_source_event_id':event.id,'_source_rowid':event.metadata['_rowid'],
                 '_source_range':span,'_source_ref':ref,
+                '_original_ranges':copy.deepcopy(self.refs.range_contributions[range_start:]),
                 'content':json.dumps(view,ensure_ascii=False)}
 
     async def attachments(self, asset_ids, *, read_cache=None):
@@ -1185,7 +1220,8 @@ class ConversationContext:
 表达特点：{config.conversation_style}
 角色资料与梗的语境：{config.character_context}
 
-先理解谁提出请求、实际对谁说、要完成什么。source/request_source保留提出者的原话M，addressed_to是实际回应对象U，reply_to只决定QQ展示引用，expect_reply是确实期待回答的人。input_status的wake说明这条原话为什么进入本轮：certain=true（专门找你、回应你的发言、私聊、你正在进行的交流、明确委托）需要有处理结果；certain=false（关键词或随机抽到的公开话题）是可以接话的机会：话题与你相关、或你确有具体信息、看法或玩笑可加时就接一句，不必等人点名；确实无话可说、或别人正在互相讨论与你无关的事时才旁听。这种机会不是委托，不能据它建立工作、提醒或长期认识，也不要为了参与硬找新话题。关注、昵称命中、连续发言和随机机会都只提供观察机会，本身不是请求。纠正先改变当前判断，不把否认改编成另一个身份；本人要求停止或纠正误接时用release_focus撤销本次关注，不扩张为永久群规则。
+先理解谁提出请求、实际对谁说、要完成什么。source/request_source保留提出者的原话M，addressed_to是实际回应对象U，reply_to只决定QQ展示引用，expect_reply是确实期待回答的人。input_status的wake只解释阅读机会与优先级，certain不表示必须发言，也不证明有真实委托。真实@、回复、私聊优先读取完整内容；昵称、关键词、持续观察和工作参与者只是线索。由原话判断是否有问题、纠正、承诺或具体值得补充的信息、看法和玩笑。纯反应式@可以silent；含有实际问题的“哈哈哈”仍须处理问题，不能按语气词过滤。读过不等于已处理，不为证明在线而回复确认或镜像笑声。来源没有新内容可处理时以silent正常结束；没有业务义务的完整观察机会由宿主收口，不能据此声称替别人办理了请求。纠正先改变当前判断；本人要求停止或纠正误接时用release_focus撤销本次关注，不扩张为永久群规则。
+真实搭话可开启有限的场景观察期；即使本次沉默，也能继续接收第三人的新原话。本轮实际处理的人类消息值得继续跟进时，可用observation={source:M引用,action:continue}申请同一短期观察；结束用action:end。截止由运行配置决定，不能靠旧来源反复续期。观察期只改变下一批读取速度，不授予新工作权限，不要求发消息，不用next=wait或continue空等。
 角色语气不替代普通可执行请求，也不产生现实事实：没有可核对来源时，不声称自己刚结束直播、正在忙现实中的事、离开或回到某处、参加了某项活动，也不把这些写进旁白；直播、房间和订阅类来源只支持它实际记录的状态。
 要求“只发这些字”或原样转发时，本条消息只发送指定文字、标点和换行，不加称呼、引号、表情或角色评论。text是实际发送文本，换行使用真实换行；仅在对方要求展示转义写法时发送反斜线加n，不对消息二次编码。
 
@@ -1279,7 +1315,6 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
         remaining_raw = max(0, config.conversation_recent_tokens - original_tokens)
         await self.pack_events(messages, [event for event in events if event.id not in mandatory_ids], [],
             raw_tokens=remaining_raw)
-        self.anchor_window_start(messages)
         if self.pending_wakes():
             snapshot = self._projection_snapshot()
             page = {'role':'developer','_context_section':'pending_directory','content':json.dumps({
@@ -1301,7 +1336,8 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                     'unfinished_ranges':len(history_status.get('unsuccessful', []))}
         summary_views = []
         def history_message():
-            return {'role':'user','_context_section':'history_summary','content':
+            return {'role':'user','_context_section':'history_summary',
+                    '_summary_ranges':[item['range'] for item in summary_views], 'content':
                     json.dumps({'kind':'history_summary','evidence':'locator_only',
                         'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
         summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
@@ -1437,6 +1473,8 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
         brought_in.sort(key=lambda message:message['_source_rowid'])
         messages[:]=[*stable,*window,*brought_in,*volatile]
         self.fit_request(messages, self.tool_definitions(), phase='initial_context')
+        self.anchor_window_start(messages)
+        self.reconcile_original_reads(messages)
         return messages
 
     @staticmethod
