@@ -14,6 +14,24 @@ from zoneinfo import ZoneInfo
 from len_bot.events.models import Event, EventType
 
 
+# Our own sent messages do not come back as OneBot CQ text: their raw_text is
+# built by segment_text, which writes a bare "[image]" for a media segment, so
+# the CQ pattern below never touches it. The window then showed the Bot its own
+# last reply as "晚上好呀！[image]" -- indistinguishable from characters it had
+# typed -- and it copied the convention: eight replies in two days went out with
+# a literal [image] beside the picture they were already carrying.
+#
+# The marker is dropped rather than relabelled, because relabelling only changes
+# which literal gets copied, and nothing is lost -- the attachment is stated on
+# its own line from event.metadata["media"]. It is dropped inside this function
+# rather than at one call site because every projection showed it: the quoted
+# text of a reply, the maintenance batch and the recall paths all pass through
+# here. Nothing incoming carries these markers -- 21,545 messages from other
+# accounts in a week contain none of the three -- because a real media segment
+# arrives as a CQ code instead.
+OWN_MEDIA_MARKER = re.compile(r"\[(?:image|video|audio)\]")
+
+
 def project_onebot_text(text: str) -> str:
     labels = {
         "image": "图片",
@@ -36,17 +54,7 @@ def project_onebot_text(text: str) -> str:
             return f"[回复消息 {id_match.group(1)}]" if id_match else "[回复消息]"
         return f"[{label}]"
 
-    return re.sub(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]", replace, text)
-
-
-# Our own raw_text comes from segment_text, not from OneBot, so the marker it
-# writes for a media segment is a bare "[image]" rather than a CQ code and the
-# pattern above leaves it alone. The window then shows the Bot its own last
-# reply as "晚上好呀！[image]", which reads as characters it typed, and it types
-# them again: eight replies in two days went out with a literal [image] beside
-# the picture they were already carrying. The attachment is stated on its own
-# line below from event.metadata["media"], so dropping the marker loses nothing.
-OWN_MEDIA_MARKER = re.compile(r"\[(?:image|video|audio)\]")
+    return OWN_MEDIA_MARKER.sub("", re.sub(r"\[CQ:([a-zA-Z0-9_-]+)(?:,([^\]]*))?\]", replace, text))
 
 
 def project_event(event: Event, bot_qq: int | str) -> str:
@@ -60,9 +68,7 @@ def project_event(event: Event, bot_qq: int | str) -> str:
         if onebot_message_id is not None
         else f"EventID={event.id}"
     )
-    text = project_onebot_text(event.raw_text)
-    if event.actor_id == f"user:{bot_qq}":
-        text = OWN_MEDIA_MARKER.sub("", text).strip()
+    text = project_onebot_text(event.raw_text).strip()
     if event.metadata.get("media"):
         text += "\n图片引用（需要时用 read_media 查看）：" + json.dumps(event.metadata["media"], ensure_ascii=False)
     if event.metadata.get("image_observations"):
