@@ -122,8 +122,8 @@ class ScenePluginSettings(BaseModel):
 
 class SceneAttentionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    sample_probability: float | None = Field(default=None, ge=0, le=1, description='本群抽样概率；缺省继承全局')
-    sample_window_seconds: float | None = Field(default=None, gt=0, description='本群抽样窗口秒数；缺省继承全局')
+    observation_enabled: bool | None = Field(default=None, description='本群是否启用普通消息的周期观察；缺省继承全局，不关闭真实搭话及短时观察')
+    observation_interval_seconds: float | None = Field(default=None, gt=0, description='本群普通消息观察间隔（秒）；缺省继承全局，未覆盖部分分批读取')
     keyword_cooldown_seconds: float | None = Field(default=None, ge=0, description='本群关键词冷却秒数；缺省继承全局')
 
 

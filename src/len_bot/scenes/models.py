@@ -1,5 +1,40 @@
 """Event-derived session facts. Social interpretations belong to a single turn."""
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class OriginalCoverage(BaseModel):
+    """Provided character ranges; this is observation progress, not a handled request."""
+    model_config = ConfigDict(extra='forbid')
+    total: int = Field(ge=0)
+    ranges: list[tuple[int, int]] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def normalize(self):
+        merged = []
+        for start, end in sorted(self.ranges):
+            if not 0 <= start <= end <= self.total:
+                raise ValueError('Original coverage is outside the message')
+            if start == end and self.total:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        self.ranges = merged
+        return self
+
+    def merged_with(self, other: 'OriginalCoverage') -> 'OriginalCoverage':
+        if self.total != other.total:
+            raise ValueError('Original message length changed')
+        return OriginalCoverage(total=self.total, ranges=[*self.ranges, *other.ranges])
+
+    @property
+    def complete(self) -> bool:
+        return self.ranges == [(0, self.total)]
+
+    @property
+    def next_offset(self) -> int:
+        return self.ranges[0][1] if self.ranges and self.ranges[0][0] == 0 else 0
 
 
 class ParticipantFacts(BaseModel):
@@ -24,6 +59,7 @@ class PendingWake(BaseModel):
     # Opportunity-class wakes expire; a wake stored before this field existed
     # reads as 0, which is the same as "old enough to close".
     created_at: float = 0
+    observation: OriginalCoverage | None = None
 
 
 class WakeConfirmationRequest(BaseModel):
@@ -46,6 +82,7 @@ class SceneSession(BaseModel):
     attention_scanned_event_rowid: int = 0
     pending_wakes: list[PendingWake] = Field(default_factory=list)
     focused_participants: dict[str, float] = Field(default_factory=dict)
+    observing_until: float | None = None
     attention_sample_window: int = -1
     attention_sample_at: float | None = None
     attention_keyword_at: float | None = None

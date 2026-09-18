@@ -9,6 +9,12 @@ Reaching a ceiling stops chat from entering the model at all.  Silence alone
 would save nothing — the input tokens are already spent once a turn starts —
 so the check belongs in front of the turn, not in front of the send.  Plugin
 commands and background pushes never travel this path and are unaffected.
+
+An exhausted allowance no longer answers a mention with a fixed sentence about
+itself.  Being addressed raises how quickly the room is read, not whether the
+Bot owes an announcement, and an automatic notice contradicted that: a room
+saying "@bot 哈哈哈" got told about the ceiling.  The refusal is recorded as an
+`observation` trace and the remaining allowance is on the group's page.
 """
 from __future__ import annotations
 
@@ -16,8 +22,6 @@ WINDOW_SECONDS = 3600.0
 # One SQL scan serves every message in a burst; the window is an hour, so a
 # few seconds of staleness cannot carry a scene past its ceiling.
 CACHE_SECONDS = 5.0
-# A ceiling explains itself once; after that the silence speaks for itself.
-NOTICE_INTERVAL_SECONDS = 600.0
 
 
 class MessageRateLimiter:
@@ -63,12 +67,3 @@ class MessageRateLimiter:
     def note_send(self, scene_id: str) -> None:
         """Drop the cached window so a send inside it is visible immediately."""
         self._cache.pop(scene_id, None)
-
-
-def limit_notice(state: dict) -> str:
-    """The one sentence a mention gets while a ceiling holds."""
-    if state['scene_exhausted']:
-        return (f"本群这一小时我已经发了 {state['scene_used']} 条（上限 {state['scene_limit']}），"
-                "先安静一会儿。日程命令和直播推送不受影响。")
-    return (f"这一小时我回你已经 {state['user_used']} 条了（上限 {state['user_limit']}），"
-            "让我缓缓，过会儿再找我。日程命令还能用。")

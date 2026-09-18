@@ -227,7 +227,8 @@ class SceneActor:
             self.attention_policy.apply(candidate, event, self.bot_actor_id,
                 in_flight=in_flight,
                 work_participants=participants, awaiting_response=waiting,
-                focus_renewal_actors=focus_renewals)
+                focus_renewal_actors=focus_renewals,
+                conversation_active=bool(self._active_mailbox and self._active_mailbox.output_kind == 'chat'))
         rowid = await self.event_store.commit_scene_event(
             event, candidate.model_dump(),
             task_id_to_trigger=event.payload.get('task_id') if event.event_type == EventType.TASK_DUE else None,
@@ -347,6 +348,8 @@ class SceneActor:
                       actor_id='system:conversation', timestamp=self.event_store.clock(),
                       payload={'source_event_ids': item.source_event_ids,
                                'source_outcomes': [source.model_dump(mode='json') for source in item.outcome.source_outcomes],
+                               'provided_original_ranges': {ident: span.model_dump(mode='json')
+                                   for ident, span in item.mailbox.provided_original_ranges.items()},
                                'episode_id':item.mailbox.episode_id,'checkpoint_index':item.outcome.checkpoint_index,
                                'output_kind': item.mailbox.output_kind,
                                'plugin_origin': item.mailbox.plugin_origin.model_dump() if item.mailbox.plugin_origin else None,
@@ -355,6 +358,23 @@ class SceneActor:
                       metadata={'through_event_rowid': item.through_rowid, 'mode': item.mailbox.origin_mode,
                                 'operator_control': item.operator,
                                 'conversation_excluded': native_output or item.operator})
+        if not native_output and not item.operator and self.attention_policy:
+            attention = self.attention_policy._attention(self.scene_id)
+            if item.mailbox.provided_original_ranges:
+                event.payload['next_observation_at'] = event.timestamp + attention.observation_interval_seconds
+            observation = item.outcome.observation
+            if observation:
+                if (observation.source_event_id not in handled
+                        or observation.source_event_id in item.mailbox.handled_source_ids):
+                    raise SceneCommitConflict('Observation changes require a newly handled human original')
+                originals = await self.event_store.events_by_ids(self.scene_id,
+                    [observation.source_event_id], item.through_rowid)
+                if not originals or originals[0].event_type not in HUMAN_INPUTS:
+                    raise SceneCommitConflict('Observation changes require a human original')
+                event.payload['observing_until'] = (event.timestamp + attention.focus_seconds
+                    if observation.action == 'continue' else None)
+        elif item.outcome.observation:
+            raise SceneCommitConflict('This entry cannot change scene observation')
         candidate = SceneReducer.reduce(state, event, self.bot_actor_id)
         if item.outcome.memory_proposals: candidate.knowledge_revision += 1
         decision = await item.gate.evaluate_and_commit(item.outcome, item.mailbox, state,
@@ -373,7 +393,7 @@ class SceneActor:
 
     async def _related_unread_wakes(self, outcome, read, state, scene_policy):
         """Require related input, using stored request and reply links only."""
-        unread_ids = [wake.event_id for wake in state.pending_wakes if wake.certain and wake.event_id not in read]
+        unread_ids = [wake.event_id for wake in state.pending_wakes if wake.event_id not in read]
         if not unread_ids:
             return []
         source_ids = set()
@@ -412,6 +432,8 @@ class SceneActor:
             requesters.update(subject for subject in await self.event_store.memory_subjects(
                 self.scene_id,proposal.target_memory_ids) if subject.startswith('user:'))
         requesters.update(outcome.release_focus_actor_ids)
+        if outcome.observation:
+            request_source(outcome.observation.source_event_id)
         for message in outcome.message_proposals:
             request_source(message.source_event_id)
             requester(message.requester_qq_uid)
@@ -468,6 +490,8 @@ class SceneActor:
             reply_to = event.payload.get('reply_to_message_id')
             if (event.id in source_ids
                     or event.event_type in HUMAN_INPUTS and event.actor_id in requesters
+                       and set(event.metadata.get('attention_reasons', [])) &
+                           {'mention', 'reply_to_bot', 'private_message', 'awaiting_response', 'wake_confirmation_reply'}
                     or linked_payload(event.payload)
                     or reply_to is not None and str(reply_to) in message_ids
                     or quote_id in source_ids

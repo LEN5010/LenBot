@@ -151,6 +151,12 @@ class WakeDecision(BaseModel):
     decision: Literal['ask', 'confirm', 'decline', 'uncertain']
 
 
+class ObservationDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_event_id: str
+    action: Literal['continue', 'end']
+
+
 class EpisodeOutcome(BaseModel):
     disposition: FinalDisposition = Field(
         default=FinalDisposition.SILENCE,
@@ -168,6 +174,7 @@ class EpisodeOutcome(BaseModel):
     next_action: Literal['end','continue','wait'] = 'end'
     resume_state: ConversationResume | None = None
     wake_decision: WakeDecision | None = None
+    observation: ObservationDecision | None = None
 
     @property
     def handled_source_event_ids(self):
@@ -175,4 +182,5 @@ class EpisodeOutcome(BaseModel):
 
     def requires_fresh_input(self) -> bool:
         return bool(self.task_proposals or self.job_proposals or self.memory_proposals
-                    or self.resolve_open_loop_ids or self.message_proposals or self.release_focus_actor_ids)
+                    or self.resolve_open_loop_ids or self.message_proposals or self.release_focus_actor_ids
+                    or self.observation)

@@ -9,13 +9,13 @@ import AdvancedSection from './AdvancedSection.vue'
 import HelpHint from './HelpHint.vue'
 import {blankConfigDraft,configDraft,configValue,draftProblems} from '../lib/pluginConfig.js'
 
-const ATTENTION_HELP = `旁听决定 Bot 隔多久读一次这个群，不决定它一定说话。
+const ATTENTION_HELP = `普通周期观察开启时，第一条待观察消息会安排实际截止时间；不需要等下一条消息来唤醒。
 
-窗口是两次主动观察之间的最小间隔，一次观察会带上自上次以来到达的全部消息，所以没有消息会因为运气不好而被跳过，最多只是晚一点被读到。p 已经不是概率，只是开关：0 表示完全不观察这个群，大于 0 表示按间隔观察。冷却是关键词两次触发之间的最小间隔。
+原话按条数和文本预算分批提供，未覆盖范围仍保留。间隔只控制普通观察调度，不是回复延迟承诺，也不是总模型调用上限。
 
-被 @、被回复、私聊和明确委托不走这条路，永远立即响应，不受这些参数影响。
+真实 @、回复 Bot 和私聊使用短合并等待；短时观察期内第三人的接话也能被读取。名称和关键词有独立机会，冷却只限制提速，不丢弃已获准的周期观察输入。关闭普通周期观察不关闭这些入口。
 
-读到不等于会说：进入一次判断而已，是否发言由模型决定，也不增加模型预算或关注时长。`
+读到不等于会说。沉默可以结束本次处理并保留有限观察期；无新输入时不调用模型。睡眠、权限、额度和每群单轮执行仍生效。`
 
 const props = defineProps({sceneId:{type:String,required:true}})
 const emit = defineEmits(['saved'])
@@ -71,17 +71,17 @@ const attentionPreview = computed(()=>{
   const effective = record.value?.attention?.effective
   if (!effective) return null
   const current = draft.value?.attention
-  const p = current?.sample_probability ?? effective.sample_probability
-  const w = current?.sample_window_seconds ?? effective.sample_window_seconds
-  // The probability is a switch now, so the rate is the interval alone.
+  const p = current?.observation_enabled ?? effective.observation_enabled
+  const w = current?.observation_interval_seconds ?? effective.observation_interval_seconds
+  // This is only a periodic scheduling frequency, not a model-call budget.
   return {p, w, density: p && w ? 3600/w : 0}
 })
 function applyRaise() {
   const raised = record.value?.attention?.raise_two_steps
   if (!raised || !draft.value) return
   draft.value.attention = {
-    sample_probability: raised.sample_probability,
-    sample_window_seconds: raised.sample_window_seconds,
+    observation_enabled: raised.observation_enabled,
+    observation_interval_seconds: raised.observation_interval_seconds,
     keyword_cooldown_seconds: raised.keyword_cooldown_seconds,
   }
 }
@@ -223,22 +223,30 @@ onBeforeUnmount(()=>{++requestId})
                 </v-chip>
               </div>
               <p class="muted-copy">
-                观察{{ record.attention.effective.sample_probability ? '开启' : '关闭' }}，间隔
-                {{ record.attention.effective.sample_window_seconds }} 秒，冷却
-                {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 最多约
+                普通周期观察{{ record.attention.effective.observation_enabled ? '开启' : '关闭' }}，间隔
+                {{ record.attention.effective.observation_interval_seconds }} 秒，冷却
+                {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 间隔折算约
                 {{ (record.attention.raise_two_steps.density.current_per_hour||0).toFixed(1) }} 次/小时
               </p>
               <AdvancedSection title="仅本群覆盖旁听参数" note="会让本群偏离统一聊天参数">
                 <p class="muted-copy">聊天参数默认全局统一，新群自动继承。只有这个群确实需要不同节奏时才覆盖。</p>
                 <div class="settings-actions">
-                  <v-btn size="small" color="primary" variant="tonal" @click="applyRaise">旁听 +2 档</v-btn>
+                  <v-btn size="small" color="primary" variant="tonal" @click="applyRaise">开启并将观察间隔减半</v-btn>
                   <v-btn size="small" variant="text" @click="inheritAttention">恢复继承全局</v-btn>
                 </div>
-                <v-alert v-if="record.attention.raise_two_steps.enables_sampling" type="warning" variant="tonal">当前该群完全不观察，保存 +2 将按间隔开始观察。</v-alert>
+                <div v-if="draft.attention" class="form-grid mt-3">
+                  <v-select v-model="draft.attention.observation_enabled" label="本群普通周期观察" :items="[{title:'继承全局',value:null},{title:'开启',value:true},{title:'关闭',value:false}]" />
+                  <v-text-field v-model.number="draft.attention.observation_interval_seconds" type="number" min="0.1" step="0.1" label="本群观察间隔（秒）" />
+                  <v-text-field v-model.number="draft.attention.keyword_cooldown_seconds" type="number" min="0" step="1" label="名称与关键词提速冷却（秒）" />
+                </div>
+                <v-alert v-if="record.attention.raise_two_steps.enables_observation" type="warning" variant="tonal">当前普通周期观察关闭，保存 +2 将开启。真实搭话和短时观察独立生效。</v-alert>
                 <p v-for="note in record.attention.raise_two_steps.notes" :key="note" class="muted-copy">{{ note }}</p>
-                <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为观察{{ attentionPreview.p ? '开启' : '关闭' }}、间隔 {{ attentionPreview.w }} 秒（最多约 {{ attentionPreview.density.toFixed(1) }} 次/小时）。</p>
+                <p v-if="attentionPreview && draft.attention" class="muted-copy">草稿将保存为普通周期观察{{ attentionPreview.p ? '开启' : '关闭' }}、间隔 {{ attentionPreview.w }} 秒（间隔折算约 {{ attentionPreview.density.toFixed(1) }} 次/小时，不是调用上限）。</p>
               </AdvancedSection>
             </div>
+            <p v-if="record.allowance" class="muted-copy">
+              本群这一小时已发 {{ record.allowance.scene_used }} 条{{ record.allowance.scene_limit ? '（上限 ' + record.allowance.scene_limit + '）' : '（不限）' }}{{ record.allowance.scene_exhausted ? ' · 已达上限，闲聊与主动分享暂不进入模型，不会自动发提示；日程命令与直播推送不受影响' : '' }}。单人上限 {{ record.allowance.user_limit || '不限' }} 条/小时，按实际送达滚动计算。
+            </p>
             <v-select v-model="sticker" label="表情倾向" :items="[{title:'继承自然',value:'inherit'},{title:'自然',value:'natural'},{title:'稍多',value:'slightly_more'}]" />
             <p v-if="record.sleep" class="muted-copy">睡眠：{{ record.sleep.configured ? (record.sleep.in_window ? '当前处于全局睡眠窗口' : '当前不在睡眠窗口') : '未配置睡眠' }}。叫醒状态不在本页修改。</p>
           </section>

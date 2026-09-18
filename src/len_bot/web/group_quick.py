@@ -111,13 +111,16 @@ async def assemble(query, scene_id, *, joined=None):
             'complete': bool(joined.get('complete'))},
         'attention': {
             'global': {
-                'sample_probability': root.runtime.attention_sample_probability,
-                'sample_window_seconds': root.runtime.attention_sample_window_seconds,
+                'observation_enabled': root.runtime.attention_observation_enabled,
+                'observation_interval_seconds': root.runtime.attention_observation_interval_seconds,
                 'keyword_cooldown_seconds': root.runtime.attention_keyword_cooldown_seconds,
             },
             'effective': attention.model_dump(),
             'raise_two_steps': raised,
         },
+        # An exhausted allowance stops turns silently now, so the number it
+        # stopped them on has to be readable somewhere.
+        'allowance': await query.runtime.rate_limiter.status(scene_id),
         'expression': {'effective': effective_sticker_preference(root, scene_id)},
         'file_delivery': delivery,
         'send_file_grants': [_grant_public(grant) for grant in grants],
