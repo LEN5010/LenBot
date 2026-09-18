@@ -1,6 +1,6 @@
 # LenBot 工程约束
 
-[架构](docs/architecture.md) 定行为与执行边界，[运行手册](docs/operations.md) 定起停、配置与备份，[插件开发](docs/plugins.md) 定插件，本轮状态只记在 [当前任务](docs/iteration.md)。本批范围见 [本轮计划](docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md)，阶段目标与 D01—D12 裁决见 [完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件）。计划是待实现合同：未实现的目标只能记为待办，不是已有能力或权限。
+[架构](docs/architecture.md) 定行为与执行边界，[上下文装配](docs/context.md) 定每轮请求怎么拼与窗口取舍，[运行手册](docs/operations.md) 定起停、配置与备份，[插件开发](docs/plugins.md) 定插件，本轮状态只记在 [当前任务](docs/iteration.md)。本批范围见 [本轮计划](docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md)，阶段目标与 D01—D12 裁决见 [完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md)（保护文件）。计划是待实现合同：未实现的目标只能记为待办，不是已有能力或权限。
 
 ## 修改方式
 
