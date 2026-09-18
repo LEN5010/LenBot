@@ -1,5 +1,98 @@
 # 当前任务
 
+## 2026-09-19 凌晨：网关落地、索引追平，以及一次被中继拖住的真实启动
+
+上一段的四项遗留里，两项做完并有实测，两项被外部情况挡住。
+
+### 网关部署：离线 Python 通了，联网那条停在人工验收闸前
+
+`workspace` / `browser_agent` / `media_analysis` 三个插件配置一直开着，但本机从来没有网关进程，8790 无人监听，第一次执行必然失败。本机 Docker 可用，`lenbot-gateway:dev`、`lenbot-workspace:py313`、`lenbot-media:local` 都在，缺的只是一份现场配置。
+
+现场目录 `~/.lenbot-gateway`（不在仓库内）：`gateway.config.json`（0600，token 与根配置 `workspace.config.gateway.token` 同一份）、`data/`、`browser-seccomp.json`（Playwright 1.62.0 官方文件，12,997 字节，`defaultAction=SCMP_ACT_ERRNO`）。按 `deploy/dev/README.md` 用 compose 启动，建 control / egress / uplink 三网，网关取 172.31.8.2 与 172.31.9.2。
+
+配置先用网关自己的 `GatewayConfig` 校验通过，再启动。实际观察：
+
+```
+INFO:len_bot.worker_gateway:网络策略 public 的出口代理已监听 172.31.9.2:8799
+INFO:     Uvicorn running on http://0.0.0.0:8790
+```
+
+容器内 `docker version` 打到宿主守护进程返回 28.0.1，socket 挂载有效。
+
+**离线 Python 端到端跑通**（README 第 5 步的第一项）：`POST /v1/executions`，`image_ref=python` / `network_policy=offline`。结果 `state=exited`、`returncode=0`、`termination=null`，stdout 为
+
+```
+python 3.13.15
+uid 65532
+net blocked: OSError
+```
+
+产物 `result.txt`（29 字节，text/plain）已登记。即非 root、确实无网、产物接口可用。
+
+四条拒绝路径逐条核对，全部按名字拒绝而不是静默替换：
+
+| 请求 | 网关应答 |
+|---|---|
+| `network_policy=public` | 409 网络策略 public 尚未完成部署核验；未确认 worker 只能到达出口代理前，本次不启动联网执行 |
+| `network_policy=nonexistent` | 409 未登记的网络策略引用 nonexistent |
+| `image_ref=whatever` | 409 未登记的 worker 引用 whatever |
+| 复用他人工作区 | 409 工作区已绑定其他发起者，不能改写归属 |
+
+`lenbot-browser:local` 已按 `containers/browser/Dockerfile` 构建（1.77 GB），seccomp 文件已就位，`images.browser` 与 `public` 策略都已登记。
+
+**未放行**：`public` 的 `deployment_verified` 保持 `false`。`containers/browser/README.md` 要求分别人工观察域名/资源域转发、重定向、CONNECT 计字节、超限、取消、Gateway 与宿主重启、未知终止占用，并写明「单改此字段不构成验收」「不用自动探针或截图代替证据」。因此 `browser_agent` 与 `media_analysis` 目前的失败形态是上表第一行那条明确拒绝，不是连接错误；要真正可用必须由运营者完成这八项观察后自行改这个字段。C13/C14 保持未放行。
+
+### 语义索引：7 个群全部追平
+
+重建走面板真实端点 `POST /api/cockpit/memory-index/rebuild`，不是另写脚本，`request_guard` 与线上同一条路径。7 个群全部 `status=indexed`，共 336 条，耗时 6—34 秒不等。
+
+事后直接查库核对（按 `source_revision` 与当前 `generation_version` / `revision` 对齐，不只数行数）：
+
+| 群 | 摘要索引 | 认识索引 |
+|---|---|---|
+| 1014123451 | 9/9 | 0/0 |
+| 1042218062 | 43/43 | 11/11 |
+| 1078114081 | 39/39 | 8/8 |
+| 1090284567 | 3/3 | 0/0 |
+| 1102823315 | 26/26 | 3/3 |
+| 126300994 | **117/117** | **35/35** |
+| 992584358 | 42/42 | 0/0 |
+
+索引总条数 336，`profile_generation` 只有一代（`baimiao:Qwen3-Embedding-8B:1024`），没有混代。
+
+`group:126300994` 原先缺的 78 条摘要建于 09-08—09-18，而已索引的最早只到 09-17——缺口是历史欠账，不是持续失败：`memory_index_error` 全库只有 4 条，全是 `APIConnectionError: Connection error.`，属偶发。
+
+### 真实启动：中继掉线，三个数没测成
+
+02:58 按运行手册停机备份后启动（备份含数据库、媒体、根配置，以及新增的网关配置、`gateway.db` 与 `workspaces_root`）。12 个插件全部装载，面板在 11307 起来。
+
+但**本次启动的每一个对话轮次都失败**：8 分钟内 23 条 `conversation_error`，`model_calls` 里 27 条 `failed/APIConnectionError`，成功的 18 条全部是 baimiao 的嵌入调用。原文：
+
+```
+APIConnectionError: Connection error.; transport cause: ConnectError:
+APIConnectionError: Connection error.; transport cause: RemoteProtocolError: Server disconnected without sending a response.
+```
+
+供应商 `G` 是 `https://new-api.len5010.top/v1`。本机分三次核对，三次结果各不相同：curl 得 HTTP 200；项目 httpx 带真实凭据连续三次得 **502 `{"error":{"message":"empty response content","type":"upstream_error"}}`**；再一次得 **`ConnectError [SSL: UNEXPECTED_EOF_WHILE_READING]`**。同一时间 `ssh lbot` 也从正常变为 `kex_exchange_identification: read: Connection reset by peer`，再变为 `Connection closed`。
+
+即那台主机在间歇性丢连接，不是某条模型通道单独坏，也不是 LenBot 侧的问题（`trust_env=False`，无代理，无 hosts 覆盖，嵌入走另一个供应商全程正常）。运营者确认服务器故障并自行重启，本次遂停机。**锚定成功率、缓存命中率、检索工具调用率三个数本轮未取得**。
+
+顺带两条实际观察：
+
+- **批次自动恢复（8e3b3ce）再次现场生效**：`History maintenance resuming blocked batch in group:126300994: batch=b1f04bfa... status=pending error=None`。随后该批次因同一中继故障再次失败并转入 `blocked`，属预期——自动恢复解决的是"卡住不再重试"，不是"上游坏了也能成"。
+- **检索工具的基线比原先记的高**：近两天 `tool_observations` 里 `recall_chat` 47 次、`query_memory` 16 次、`search_history_summaries` 2 次。原先"923 轮 2 次"说的只是 `search_history_summaries` 一个工具，不是全部召回。7a0ab97 把它从 `tool_search` 后面放到常驻列表，效果要在中继恢复后另测。
+
+### set 序列化修复仍无运行证据，但不再依赖 interest_share
+
+原以为只有 `interest_share` 会走到那条提交路径，而它现已停用。核对后：走 `run_agent(output_mode='respond')` 且 `parent.finish is None` 的调用有两处，另一处是 `local_plugins/local_clock` 的 `on_brief`，**7 个群的 `local_clock.commands` 都含 `time_brief`**。也就是任一群里发一句「时间简报」即可走到 `plugin_interactions.py` 那个 `commit` 回调。触发需要真实群消息，不能自行注入，仍待运营者实发一次。
+
+### 本轮未确认
+
+- `public` 网络策略的八项人工观察一项都没做，`deployment_verified` 仍为 false。
+- 锚定成功率、缓存命中率、检索工具调用率三个数未取得；锯齿参数（`recent_tokens=130000` / `step=3300` / `summary_limit=3`）的收益仍然只是推算，命中率不到约 70% 就要调回。
+- set 序列化修复无运行证据。
+- 中继故障的根因在运营者那台主机上，本机只能观察到症状。
+
 ## 2026-09-19：两小时真实流量的账，两个卡死的修复，和一条被推翻的旧结论
 
 20:43:14—22:42:27 是配置改动（`reasoning_effort=low`、`conversation_max_concurrent=6`、`timeout=120`）之后第一段长流量，7 个群。收 4073 条人类消息，起 923 个对话轮次、1005 次对话调用，**实际发出 163 条**。输入 4260 万 token，缓存命中 35.9%。22:42:27 收到 SIGTERM，`Len Bot stopped cleanly.`，无残留进程。
