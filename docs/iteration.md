@@ -118,6 +118,31 @@ Object of type set is not JSON serializable
 
 三层合起来的结论：**当前状态下不具备"隔一个月自主想起一个月前的事"的能力**，索引缺口、召回口子和检索方式各断一层。均未修。
 
+### 回忆改成模型自己去取，不再靠关键词强推
+
+`seed_history_recall` 的自动注入保留，但它不再是唯一的路，也不再假装自己完整。三处一起改：
+
+- `search_history_summaries` 从对话角色的 `deferred_local` 里移出。它是**语义检索旧对话的唯一入口**，此前不在工具列表里，模型要先调 `tool_search` 才发现得了——于是 923 轮 0 次调用，而 `tool_search` 本身只被调过 2 次。
+- 三条工具描述从"什么时候别用"改成"什么时候用"。`recall_chat` 原本写着「没有历史指向时不要查一整天」，这句直接劝退了自发回忆，换成「需要确认更早说过什么就用它，不必等对方先给出明确日期」。
+- 系统提示加一句软提示：`recent_history` 只是最近一段原话，不是全部记忆，想不起来就去查，不要凭印象断言记得或不记得。它在人格段之后、属于缓存前缀，每轮不额外花钱。
+- 自动注入的那批结果现在自述局限：按字面关键词命中，不是语义检索，也不代表本群没有别的相关历史。
+
+对照数据：本阶段 923 轮里模型调 `query_memory` 1 次、`recall_chat` 1 次、`search_history_summaries` 0 次；`seed_history_recall` 自动触发 14 次，全部是字面 FTS。现有 10 词白名单在 4070 条原话里命中 34 条，而同类但不在表里的词（以前／之前／上周／上个月／当时／说过／提过／去年／当初／最早等）命中 74 条，是现有的 2.2 倍，且恰好是指向更久远过去的那一组。**不扩词表**，因为扩的是字面路径；改的是让模型够得着语义路径。
+
+### 原话窗口改成锯齿：长到峰值，一次丢掉大半
+
+此前窗口是固定大小的尾随窗口：`conversation_recent_tokens=56000` 一开机就被积压填满，从第一轮起就永远处在"满了只能滑"的状态，头每轮前移，缓存从窗口第一条断。`anchor_window_start` 把头钉在 `conversation_window_step_rowids` 的整数倍上，让它在两次跳跃之间不动——但 800 rowid 只有约 24k token 宽，增长期太短。
+
+改成锯齿：窗口从谷底约 30k 一路长到峰值 130k，**这期间头完全不动**，然后一次性丢掉约 100k 回到谷底。被丢掉的那段只能靠召回工具取回，这是有意的。
+
+三个数必须一起动，因为锚定能丢多少受第三个约束卡死：裁剪要在**本次请求里**找到覆盖该区间的摘要（`_summary_ranges`），而摘要块只装 `conversation_summary_limit` 条。实测单条摘要覆盖 7,494 token 原话、自身 823 token，所以原来的 4 条只能证明约 30,000 token 的覆盖——`step=800`（约 24k）正是贴着这个天花板调的。光放大窗口和步长会让锚定直接拒绝。
+
+按你要的"分两段、提前摘"，把单批摘要放大到 60k：两条就覆盖一次丢弃量，维护调用数随之从约 16 次降到 2 次。维护本来就是后台连续跑的，不是等到要裁时才摘；此前失效纯粹是批次阻塞那个 bug。
+
+预算核对：`input_budget` = 200000 − 4096 = 195,904；峰值请求 = 130,000（原话）+ 24,576（摘要块上限）+ 20,428（实测其余固定）= **175,004**，余量 20,900。维护单批输入预算 81,808，装得下 60,000 原话加开销。
+
+周期约 3,300 rowid ≈ 620 条消息，按活跃群 11.7 条/分钟算，前缀能稳定约 50 分钟。
+
 ### 本次配置改动（停机状态下改，旧值备份在 `.backups/`）
 
 | 项 | 旧 | 新 | 依据 |
@@ -128,6 +153,13 @@ Object of type set is not JSON serializable
 | `plugins.interest_share.enabled` | true | **false** | 同一条链的分享臂，且本段 23/23 失败 |
 | `public_research` / `interest_share` 授权 | enabled | **false** | 停用不删除，翻回 true 即恢复 |
 | `plugins.link_parser.enabled` | false | **true** | 唯一未启用的插件 |
+| `conversation_recent_tokens` | 56000 | **130000** | 锯齿的峰 |
+| `conversation_window_step_rowids` | 800 | **3300** | 一次丢约 100k，谷底回到约 30k |
+| `conversation_summary_limit` | 4 | **3** | 两条覆盖一次丢弃量，留一条余量 |
+| `history_target_tokens` | 8000 | **60000** | 一次丢弃分两段摘完 |
+| `history_min_tokens` | 2000 | **20000** | 与上一行配套 |
+| `maintenance_context_tokens` | 50000 | **90000** | 单批要装得下 60k 原话 |
+| `maintenance_output_tokens` | 4096 | **8192** | 60k 的批次值得更长的摘要 |
 
 `addressed_debounce_*`（400／1000）未动，真实 @／回复／私聊的响应速度不变。`conversation_recent_tokens` 保持 56000 未动：窗口变小会改变锚定步长的相对大小，等积压清完再看。
 
@@ -137,6 +169,9 @@ Object of type set is not JSON serializable
 
 - `runtime/plugin_interactions.py`：`commit` 回调改为 `sorted(read_event_ids)`。
 - `memory/history.py`：新增 `RESUMABLE_HISTORY_ERRORS` 与 `_resume_blocked_history_batch()`，并重写阻塞分支的注释。
+- `tools/retrieval.py`：`search_history_summaries` 不再对对话角色延迟发现；`recall_chat` / `query_memory` / `search_history_summaries` 三条描述改写。
+- `cognition/context.py`：系统提示加入长期记忆软提示；`seed_recall` 记录附带自述局限的 `hint`。
+- `plugins/builtin/interest_share/plugin.py`：最近送达资料由 8 条 × 1000 字降到 4 条 × 300 字，针对本段 16 次「初始插件资料与当前请求超过输入容量」。
 
 ### 结构收敛
 
@@ -144,6 +179,9 @@ Object of type set is not JSON serializable
 
 ### 未确认
 
+- **锯齿窗口的全部收益都是推算，没有一次运行数据。** 峰值 175k 的请求在未命中时全价付；上一段 54% 的调用是完全未命中。命中率若不随锚定修复回升，这组参数会比原来更贵，必须立刻调回。
+- 摘要粒度从 7.5k 放大到 60k 会降低语义索引的定位精度，对"想起很久以前某件具体事"的影响没有测。
+- 回忆改动之后模型到底会不会主动调检索工具，没有数据；本段的基线是 923 轮里 2 次。
 - **两个修复都只有静态核对与副本判定，没有运行证据。** set 序列化那处要等插件自主轮次真正提交一次；批次自动恢复要等一次真实的上游失败或重启之后观察是否自行追平。
 - debounce 改动的实际效果没有测。预估只是按 15 分 40 秒那个样本的算术外推，不是实测。
 - 摘要索引与认识索引的重建尚未执行，`group:126300994` 的缺口仍在。
