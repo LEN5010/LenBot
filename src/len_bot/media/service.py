@@ -6,6 +6,7 @@ import base64
 import copy
 import io
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import Sequence
@@ -20,6 +21,8 @@ from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource, error_message, error_source_url
+
+logger = logging.getLogger(__name__)
 
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 MEDIA_SUFFIXES = {"video/mp4": "mp4", "video/webm": "webm", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav", "audio/mp4": "m4a", "audio/flac": "flac"}
@@ -81,13 +84,18 @@ def prepare_image(data: bytes, *, max_bytes: int, max_pixels: int, max_dimension
         background = Image.new("RGBA", frame.size, "white")
         background.alpha_composite(frame)
         output = io.BytesIO()
-        background.convert("RGB").save(output, format="PNG")
+        # The frame is already composited onto white and flattened to RGB, so a
+        # lossless encoding preserves nothing an alpha channel would have kept.
+        # It only inflates the request body: measured on real group images, six
+        # pictures reach 13.6 MB at p90 and 37 MB at worst as PNG, which is what
+        # the relay drops mid-upload.
+        background.convert("RGB").save(output, format="JPEG", quality=85, optimize=True)
         return output.getvalue(), animated, frame.width, frame.height
 
 
 def image_block(data: bytes):
     return {"type": "image_url", "image_url": {
-        "url": "data:image/png;base64," + base64.b64encode(data).decode(), "detail": "high"}}
+        "url": "data:image/jpeg;base64," + base64.b64encode(data).decode(), "detail": "high"}}
 
 
 class MediaService:
@@ -309,6 +317,11 @@ class MediaService:
             code, reason = 'media_io_error', f'媒体文件读写失败：{error}'
         else:
             code, reason = 'media_unavailable', f'媒体读取失败：{error}'
+        # The model is told about this through the manifest, but nothing reached
+        # the operator: a third of stored assets had no file and the only trace
+        # was an httpx access line. A failed read is an operational fact.
+        logger.warning("Media read failed: asset=%s code=%s http=%s %s: %s",
+                       asset_id, code, http_status, error_type, error)
         return {"asset_id": asset_id, "status": "error", "error_code": code, "error_type": error_type,
                 "error_stage": "execution", "http_status": http_status,
                 "source_url": error_source_url(source_url) if source_url else None,

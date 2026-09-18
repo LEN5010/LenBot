@@ -549,6 +549,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         admission=admission)).run(
             messages=messages,tool_definitions=definitions,execute_tool=execute,terminal=terminal,finish=finish,
             after_finish=after_finish,proposal_tool_names=set(TOOLS)|runtime.plugin_host.proposal_tool_names() if nested_respond else set(),
+            ordered_tool_names=runtime.plugin_host.ordered_tool_names(),
             max_steps=steps,max_tool_calls=request.max_tool_calls,budget=execution.budget,
             finalize_request=prepare,checkpoint=checkpoint,trace=execution.audit,
             prepare_tool_results=prepare_tool_results,record_tool_result=record_tool_result,observe=observe,

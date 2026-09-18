@@ -514,6 +514,28 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                 per_user[str(uid)] = count
         return total, per_user
 
+    async def recent_sent_texts(self, scene_id: str, limit: int = 12) -> list[str]:
+        """The wording of this scene's own last chat messages, newest first.
+
+        Measured over 48h, a quarter of messages opened with one of seven stock
+        phrases and 93% closed on the same two marks. A turn cannot avoid
+        echoing itself while it cannot see what it just said; sticker reuse is
+        already visible through the media catalog's own send counts.
+        """
+        cursor = await self._db.execute("""
+            SELECT payload FROM events
+            WHERE scene_id=? AND event_type='MESSAGE_SENT'
+              AND json_extract(payload,'$.delivery_status')='sent'
+              AND json_extract(payload,'$.origin_mode')='live'
+              AND COALESCE(json_extract(payload,'$.output_kind'),'chat')='chat'
+              AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
+            ORDER BY timestamp DESC LIMIT ?""", (scene_id, limit))
+        texts = []
+        for (payload,) in await cursor.fetchall():
+            content = json.loads(payload)
+            texts.append(str(content.get('content') or content.get('raw_text') or ''))
+        return texts
+
     async def get_events_since(self, scene_id: str, after_rowid: int = 0, limit: int = 200, event_types: list[EventType] | None = None, *, conversation_only=False) -> list[Event]:
         """ADR-0019 §10.4: events after a reflection cursor, in immutable write order.
         Each event's metadata carries its `_rowid` so callers can advance the cursor."""

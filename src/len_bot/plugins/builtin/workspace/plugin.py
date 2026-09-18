@@ -48,20 +48,26 @@ class WorkspacePlugin(BasePlugin):
             self.service.action_reviewer = context._runtime.action_reviewer
 
     async def on_load(self, context: PluginContext):
+        # Every tool here shares one workspace: a script writes files, and the
+        # listing, the read and the export answer from the confirmed execution
+        # snapshot. Run side by side, a read issued in the same response as the
+        # script it depends on answers from the state before it. `ordered` keeps
+        # them in the order the model asked for them; it says nothing about
+        # whether they submit proposals, which is what `kind` is for.
         context.register_tool('run_python', '在当前信息工作的离线 Python 容器中处理已获准资料；每次调用是新进程，文件可持续。输入清单位于只读的 /lenbot-control/manifest.json，输入文件在与它同级的 input/ 下；产物写入当前目录 /workspace；依赖由已配置镜像提供。可导入本工作已保存的文本资料（input_result_ids）与本工作来源里已登记的图片（input_asset_ids）；每个文件的来源身份记在清单的 inputs 里，面板与发送都不会因导入而被触发。',
             RunPythonInput, self.run_python, purpose='执行隔离 Python 处理', aliases=('运行Python', 'Python处理'),
-            keywords=('Python', '代码', '脚本', '表格', '图表'), kind='read', roles=('work',), deferred=True)
+            keywords=('Python', '代码', '脚本', '表格', '图表'), kind='read', ordered=True, roles=('work',), deferred=True)
         context.register_tool('list_workspace_files', '列出当前信息工作归属的相对文件，不浏览宿主目录。',
             ListWorkspaceInput, self.list_files,
-            purpose='查看工作区文件', aliases=('列出文件',), keywords=('工作区', '文件'), kind='read', roles=('work',))
+            purpose='查看工作区文件', aliases=('列出文件',), keywords=('工作区', '文件'), kind='read', ordered=True, roles=('work',))
         context.register_tool('read_workspace_file', '分页读取当前信息工作中的普通文件。', WorkspaceFileInput, self.read_file,
-            purpose='读取工作区文件', aliases=('读取文件',), keywords=('工作区', '文件', '读取'), kind='read', roles=('work',))
+            purpose='读取工作区文件', aliases=('读取文件',), keywords=('工作区', '文件', '读取'), kind='read', ordered=True, roles=('work',))
         context.register_tool('export_workspace_artifact', '导出当前工作的文件产物。支持的图片登记为 attachments 中的场景媒体引用，普通文件可在授权面板下载；不自动发送。',
             WorkspaceFileInput, self.export_file, purpose='导出工作区产物', aliases=('导出文件',),
-            keywords=('工作区', '文件', '导出', '产物'), kind='read', roles=('work',))
+            keywords=('工作区', '文件', '导出', '产物'), kind='read', ordered=True, roles=('work',))
 
         context.register_tool('prepare_workspace_file', '将当前工作 Gateway 产物登记为持久文件资产。支持 TXT/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP；不接受宿主路径。for_upload 需要本群 send_file 授权及原工作审查；工具不发群。',
-            PrepareFileInput, self.prepare_file, purpose='登记普通文件交付', keywords=('文件', 'ZIP', '交付'), kind='read', roles=('work',))
+            PrepareFileInput, self.prepare_file, purpose='登记普通文件交付', keywords=('文件', 'ZIP', '交付'), kind='read', ordered=True, roles=('work',))
 
     async def prepare_file(self, values: PrepareFileInput, call: PluginCallContext):
         return await self._run(lambda: self.context._runtime.file_assets.prepare(self.service, call, values))
