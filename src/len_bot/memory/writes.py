@@ -11,7 +11,7 @@ from len_bot.memory.models import MemoryBasis, MemoryItem, MemoryKind, MemoryPro
 from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
 
 
-_EXTERNAL_EVENTS = {EventType.USER_JOINED, EventType.USER_LEFT, EventType.LIVE_STARTED, EventType.LIVE_ENDED}
+_EXTERNAL_EVENTS = {EventType.USER_JOINED, EventType.LIVE_STARTED, EventType.LIVE_ENDED}
 
 
 async def _load_target(db: aiosqlite.Connection, memory_id: str, scene_id: str) -> MemoryItem:
