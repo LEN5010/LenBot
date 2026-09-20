@@ -586,9 +586,14 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             raise ValueError('Message search requires a positive integer limit')
         if not allowed_scopes: return []
         placeholders = ",".join("?" for _ in allowed_scopes)
-        # FTS input is literal text; quotes/operators from chat cannot alter the query.
-        clause = "f.content MATCH ?" if len(query) >= 3 else "f.content LIKE ?"
-        term = '"' + query.replace('"', '""') + '"' if len(query) >= 3 else f"%{query}%"
+        # Both branches use literal input, not FTS syntax or LIKE wildcards.
+        if len(query) >= 3:
+            clause = "f.content MATCH ?"
+            term = '"' + query.replace('"', '""') + '"'
+        else:
+            clause = "f.content LIKE ? ESCAPE '!'"
+            literal = query.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+            term = f"%{literal}%"
         cursor = await self._db.execute(f"""
             SELECT e.id,e.event_type,e.scene_id,e.actor_id,e.timestamp,e.payload,e.rowid,e.metadata
             FROM events_fts f JOIN events e ON f.event_id=e.id
