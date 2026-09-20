@@ -157,10 +157,11 @@ class PluginRunHooks:
         if view.name != name or view.original != original:
             raise ValueError('after_tool cannot rewrite the original observation or operation receipt')
         if view.notes or view.view is not None:
-            original['plugin_view'] = {'notes': view.notes, 'data': view.view,
-                                       'evidence_kind': 'model_view', 'original_observation_retained': True}
-            return json.dumps(original, ensure_ascii=False, separators=(',', ':'))
-        return content
+            return content, {'role': 'user', '_context_section': 'plugin_tool_view',
+                'content': json.dumps({'kind': 'plugin_tool_view', 'tool_call_id': tool_call_id,
+                    'tool_name': name, 'notes': view.notes, 'data': view.view,
+                    'evidence_kind': 'model_view'}, ensure_ascii=False)}
+        return content, None
 
     async def before_commit(self, outcome):
         view = await self.apply('before_commit', BeforeCommit(messages=[message.segments for message in outcome.message_proposals]))

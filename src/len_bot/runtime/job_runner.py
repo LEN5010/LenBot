@@ -936,7 +936,8 @@ class InformationJobRunner:
 
                             await presentation.pack_tool_pages(prepared,
                                 [tool_start + index for index, _ in pages], [page.limit for _, page in pages], render,
-                                definitions=request_definitions, reserved=reserved)
+                                definitions=request_definitions, reserved=reserved,
+                                on_present=lambda message, page: toolkit.remember_presentation(page))
                             pending_additions.extend(prepared[tool_end:])
                             return [item["content"] for item in prepared[tool_start:tool_end]]
 

@@ -267,16 +267,17 @@ async def _source_events(runtime, call, request, *, resume_event=None, resume=No
             limit=runtime.config.conversation_history_limit,through_rowid=call.cutoff_rowid,conversation_only=True)
     else:
         events=[]
+    recent_ids=frozenset(event.id for event in events)
     originals=await runtime.event_store.events_by_ids(call.scene_id,ids,call.cutoff_rowid)
     events=sorted({event.id:event for event in [*events,*originals]}.values(),key=lambda event:event.metadata['_rowid'])
-    return await runtime.event_store.project_reply_context(call.scene_id,events,through_rowid=call.cutoff_rowid),ids
+    return await runtime.event_store.project_reply_context(call.scene_id,events,through_rowid=call.cutoff_rowid),ids,recent_ids
 
 
 async def _respond_agent(runtime, call, request, *, resume=None, resume_event=None):
     execution=call.execution
     actor=await runtime.scene_manager.get_or_create_actor(call.scene_id)
     mailbox=execution.mailbox
-    events,ids=await _source_events(runtime,call,request,resume=resume,resume_event=resume_event)
+    events,ids,recent_ids=await _source_events(runtime,call,request,resume=resume,resume_event=resume_event)
     mailbox.plugin_source_ids.update(ids)
     if resume:
         if resume.runtime_started_at!=runtime._started_at:
@@ -315,7 +316,7 @@ async def _respond_agent(runtime, call, request, *, resume=None, resume_event=No
 
     return await runtime.social_core.run(current,events,call.cutoff_rowid,mailbox.episode_id,ids,
         observe=observe,commit=commit,publish=publish,trace=execution.audit,
-        requester_qq_uid=call.requester_qq_uid,resume=resume,mailbox=mailbox,
+        requester_qq_uid=call.requester_qq_uid,recent_event_ids=recent_ids,resume=resume,mailbox=mailbox,
         plugin_call=call,plugin_request=request)
 
 
@@ -408,7 +409,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         instructions=f'你是{runtime.config.identity_name}。{runtime.config.identity_persona}\n{runtime.config.identity_core}\n'+instructions
     messages=[{'role':'system','content':instructions}]
     if request.input_mode!='materials':
-        events,ids=await _source_events(runtime,call,request)
+        events,ids,recent_ids=await _source_events(runtime,call,request)
         context.add_current_sources(events,ids)
 
     async def observation(event):
@@ -515,7 +516,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         prepared=messages[1:]
         budget_note,_=execution_budget_message(state,'respond' if nested_respond else 'return_result')
         messages=await context.build(events,ids,execution_budget=budget_note,plugin_request=request,
-            tool_definitions=context.tool_definitions)
+            tool_definitions=context.tool_definitions,recent_event_ids=recent_ids)
         messages.extend(prepared)
     elif request.input_mode=='source':
         await context.pack_events(messages,events,ids,raw_tokens=context.input_budget)

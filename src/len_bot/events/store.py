@@ -580,7 +580,8 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         return {"id": row[0], "event_type": row[1], "scene_id": row[2], "actor_id": row[3],
                 "timestamp": row[4], "payload": json.loads(row[5]), "metadata": {**json.loads(row[7]), "_rowid": row[6]}}
 
-    async def search_messages(self, query, allowed_scopes, limit: int, through_rowid=None):
+    async def search_messages(self, query, allowed_scopes, limit: int, through_rowid=None, *,
+                              actor_id=None, start_time=None, end_time=None):
         if type(limit) is not int or limit < 1:
             raise ValueError('Message search requires a positive integer limit')
         if not allowed_scopes: return []
@@ -592,8 +593,12 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             SELECT e.id,e.event_type,e.scene_id,e.actor_id,e.timestamp,e.payload,e.rowid,e.metadata
             FROM events_fts f JOIN events e ON f.event_id=e.id
             WHERE {clause} AND e.scene_id IN ({placeholders})
-              AND (? IS NULL OR e.rowid<=?) ORDER BY e.rowid DESC LIMIT ?""",
-            [term,*allowed_scopes,through_rowid,through_rowid,limit])
+              AND (? IS NULL OR e.rowid<=?)
+              AND (? IS NULL OR e.actor_id=?)
+              AND (? IS NULL OR e.timestamp>=?) AND (? IS NULL OR e.timestamp<?)
+            ORDER BY e.rowid DESC LIMIT ?""",
+            [term,*allowed_scopes,through_rowid,through_rowid,actor_id,actor_id,
+             start_time,start_time,end_time,end_time,limit])
         return [self._retrieval_event(r) for r in await cursor.fetchall()]
 
     async def read_context(self, event_id, before: int, after: int, allowed_scopes, through_rowid=None):
