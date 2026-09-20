@@ -897,20 +897,27 @@ class ConversationContext:
         timings['event_packing'] = round(timings.get('event_packing', 0) + (time.monotonic()-started)*1000, 2)
         return current
 
+    @staticmethod
+    def _initial_context_order(message):
+        """Order initial carriers only; never reorder native tool exchanges."""
+        section = message.get('_context_section')
+        if '_source_rowid' in message:
+            return (1 if section == 'recent_history' else 2, message['_source_rowid'])
+        return (0 if section in STABLE_SECTIONS else 3, 0)
+
     def anchor_window_start(self, messages):
-        """Trim only original ranges covered by completed summaries in this request."""
+        """Keep required originals after the window; trim only covered history."""
         step = self.config.conversation_window_step_rowids
         window = [message for message in messages
                   if message.get('_context_section') == 'recent_history']
         if not step or not window:
             return
         boundary = ((min(message['_source_rowid'] for message in window) + step - 1) // step) * step
-        dropped = [message for message in window if message['_source_rowid'] < boundary]
-        if not dropped or len(dropped) == len(window):
+        before_boundary = [message for message in window if message['_source_rowid'] < boundary]
+        if not before_boundary or len(before_boundary) == len(window):
             return
-        if any(message['_source_event_id'] in self.required_originals for message in dropped):
-            self.omit('window_anchor', 'required_original_within_anchor')
-            return
+        dropped = [message for message in before_boundary
+                   if message['_source_event_id'] not in self.required_originals]
         # A batch already records which events it summarized end to end, and that
         # is the question being asked here. Comparing offsets instead compared two
         # different coordinate systems: the window measures its range over
@@ -926,9 +933,15 @@ class ConversationContext:
             if message['_source_event_id'] not in covered:
                 self.omit('window_anchor', 'summary_does_not_cover_original', event_id=message['_source_event_id'])
                 return
+        # These bodies remain present, so they need no summary replacement.
+        # Changing their carrier section does not change text or read ranges.
+        for message in before_boundary:
+            if message['_source_event_id'] in self.required_originals:
+                message['_context_section'] = 'related_original'
         for message in dropped:
             messages.remove(message)
             self.omit('recent_history', 'before_window_anchor', event_id=message['_source_event_id'])
+        messages.sort(key=self._initial_context_order)
         self.reconcile_original_reads(messages)
 
     def project_text(self, text):
@@ -1615,11 +1628,6 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
         # Putting the budget counter second, as it used to be, ended the
         # reusable prefix four thousand tokens in.
         originals=[message for message in messages if '_source_rowid' in message]
-        references=[message for message in messages if '_source_rowid' not in message]
-        stable=[message for message in references
-                if message.get('_context_section') in STABLE_SECTIONS]
-        volatile=[message for message in references
-                  if message.get('_context_section') not in STABLE_SECTIONS]
         # Attention is not window membership. Required sources already inside
         # the retained chronological suffix keep their canonical projection in
         # place. Only outside sources, fragments and current pixels go after it.
@@ -1632,18 +1640,13 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                     continue
                 break
             window_ids.add(event.id)
-        window, brought_in = [], []
         for message in originals:
             if message.get('_window_projection') and message['_source_event_id'] in window_ids:
                 message['_context_section'] = 'recent_history'
-                window.append(message)
             else:
                 if message.get('_context_section') == 'recent_history':
                     message['_context_section'] = 'related_original'
-                brought_in.append(message)
-        window.sort(key=lambda message:message['_source_rowid'])
-        brought_in.sort(key=lambda message:message['_source_rowid'])
-        messages[:]=[*stable,*window,*brought_in,*volatile]
+        messages.sort(key=self._initial_context_order)
         self.fit_request(messages, self.tool_definitions(), phase='initial_context')
         self.anchor_window_start(messages)
         self.reconcile_original_reads(messages)
