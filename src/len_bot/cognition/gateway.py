@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from len_bot.cognition.providers import RouteResolution
+from len_bot.cognition.providers import RouteResolution, capture_model_transport
 from len_bot.cognition.call_store import estimate_request
 from len_bot.cognition.projection import estimate_tokens
 
@@ -34,6 +34,7 @@ class GatewayResponse:
     latency_ms: int
     call_id: str | None = None
     local_estimate: dict[str, Any] | None = None
+    transport: dict[str, Any] | None = None
 
 
 class ModelGateway:
@@ -99,28 +100,36 @@ class ModelGateway:
 
         started = time.monotonic()
         usage = None
-        try:
-            raw = await self.binding.client.chat.completions.with_raw_response.create(**request)
-            # Preserve provider-native signatures and continuation fields.
-            body = raw.http_response.json()
-            usage = (body.get("usage") or None) if isinstance(body, dict) else None
-            response = self._parse_response(body, round((time.monotonic() - started) * 1000))
-        except BaseException as error:
+        with capture_model_transport() as transport:
+            transport['max_retries'] = self.binding.client.max_retries
+            try:
+                raw = await self.binding.client.chat.completions.with_raw_response.create(**request)
+                transport['request_id'] = raw.http_response.headers.get('x-request-id')
+                # Preserve provider-native signatures and continuation fields.
+                body = raw.http_response.json()
+                if isinstance(body, dict):
+                    for field, key in (('model', 'returned_model'), ('id', 'response_id')):
+                        if isinstance(body.get(field), str):
+                            transport[key] = body[field]
+                usage = (body.get("usage") or None) if isinstance(body, dict) else None
+                response = self._parse_response(body, round((time.monotonic() - started) * 1000))
+            except BaseException as error:
+                if call_id is not None:
+                    # Client cancellation cannot prove the supplier stopped billing.
+                    await asyncio.shield(self.call_store.end_model_call(
+                        call_id, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                        usage=usage, error_type=type(error).__name__, transport=transport,
+                    ))
+                raise
             if call_id is not None:
-                # Client cancellation cannot prove the supplier stopped billing.
                 await asyncio.shield(self.call_store.end_model_call(
-                    call_id, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
-                    usage=usage, error_type=type(error).__name__,
+                    call_id, status="completed", usage=usage, transport=transport,
+                    output_estimate_tokens=estimate_tokens(json.dumps(response.continuation, ensure_ascii=False)),
                 ))
-            raise
-        if call_id is not None:
-            await asyncio.shield(self.call_store.end_model_call(
-                call_id, status="completed", usage=usage,
-                output_estimate_tokens=estimate_tokens(json.dumps(response.continuation, ensure_ascii=False)),
-            ))
         return GatewayResponse(continuation=response.continuation, tool_calls=response.tool_calls,
                                finish_reason=response.finish_reason, usage=response.usage,
-                               latency_ms=response.latency_ms, call_id=call_id, local_estimate=estimate)
+                               latency_ms=response.latency_ms, call_id=call_id, local_estimate=estimate,
+                               transport=transport)
 
     @staticmethod
     def _parse_response(body: dict, latency_ms: int) -> GatewayResponse:

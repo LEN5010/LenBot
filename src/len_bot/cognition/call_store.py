@@ -1,4 +1,4 @@
-"""Durable accounting for actual provider requests, without a billing claim.
+"""Durable accounting for logical model calls, without a billing claim.
 
 Two absences are kept apart throughout this module, because the plan treats
 them as different facts and a caller that conflates them would either hand out
@@ -21,13 +21,16 @@ import uuid
 from len_bot.cognition.projection import estimate_tokens
 
 
-def estimate_request(messages: list[dict], tools: list[dict]) -> dict:
+def estimate_request(messages: list[dict], tools: list[dict], *, strip_context_metadata=False) -> dict:
     """One deliberately approximate estimator; image estimates are explicit."""
     parts = {"system_reference": 0, "history": 0, "tool_results": 0,
              "tool_definitions": estimate_tokens(json.dumps(tools, ensure_ascii=False)), "images": 0}
     images = 0
     for message in messages:
-        text = {key:value for key,value in message.items() if key != '_context_section'}
+        # Internal projection metadata never enters the model request. Read
+        # around it here instead of deep-copying the entire growing window.
+        text = {key:value for key,value in message.items() if key != '_context_section'
+                and (not strip_context_metadata or not key.startswith('_'))}
         content = message.get("content")
         if isinstance(content, list):
             text["content"] = []
@@ -35,7 +38,8 @@ def estimate_request(messages: list[dict], tools: list[dict]) -> dict:
                 if isinstance(item, dict) and item.get("type") in {"image_url", "input_image"}:
                     images += 1
                 else:
-                    text["content"].append(item)
+                    text["content"].append({key:value for key,value in item.items() if key != '_asset_id'}
+                        if strip_context_metadata and message.get('role') == 'user' and isinstance(item, dict) else item)
         key = "system_reference" if (message.get("role") in {"system", "developer"}
             or message.get('_context_section') == 'reference') else (
             "tool_results" if message.get("role") == "tool" else "history")
@@ -408,7 +412,7 @@ class ModelCallStoreMixin:
     async def begin_model_call(self, *, scene_id, episode_id, job_id, batch_id, role, purpose,
                                provider_id, model, reasoning_effort, estimate, output_tokens=0,
                                admission=None):
-        """Register one outbound request and hold what it may spend.
+        """Register one logical call and hold what it may spend.
 
         `admission` runs inside this write transaction, before the call row
         exists: it is what decides whether this request may be sent at all,
@@ -440,7 +444,8 @@ class ModelCallStoreMixin:
                 raise
         return call_id
 
-    async def end_model_call(self, call_id, *, status, usage=None, output_estimate_tokens=None, error_type=None):
+    async def end_model_call(self, call_id, *, status, usage=None, output_estimate_tokens=None, error_type=None,
+                             transport=None):
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("Invalid model call completion status")
         async with self._write_lock:
@@ -452,6 +457,12 @@ class ModelCallStoreMixin:
                      output_estimate_tokens, error_type, call_id))
                 if cursor.rowcount != 1:
                     raise ValueError("Model call is missing or already ended")
+                if transport is not None:
+                    # One diagnostic receipt under the existing call identity;
+                    # no extra usage row, schema change or request-body log.
+                    await self._db.execute("""INSERT INTO traces (id,kind,scene_id,ref_id,payload,created_at)
+                        SELECT ?,'model_call_transport',scene_id,id,?,? FROM model_calls WHERE id=?""",
+                        ('trc_model_transport_' + call_id, json.dumps(transport), self.clock(), call_id))
                 # This request's receipt may be the last one a work that was
                 # already ended is waiting for.  The check is keyed by the
                 # work and does nothing unless its account is still settling,
@@ -541,7 +552,10 @@ class ModelCallStoreMixin:
             await self._db.commit()
 
     async def list_model_calls(self, scene_id=None, limit=100):
-        cursor = await self._db.execute("""SELECT * FROM model_calls WHERE (? IS NULL OR scene_id=?)
+        cursor = await self._db.execute("""SELECT model_calls.*,
+            (SELECT payload FROM traces WHERE id='trc_model_transport_' || model_calls.id
+             AND kind='model_call_transport' AND ref_id=model_calls.id AND scene_id=model_calls.scene_id) AS transport_json
+            FROM model_calls WHERE (? IS NULL OR scene_id=?)
             ORDER BY started_at DESC,id DESC LIMIT ?""", (scene_id, scene_id, limit))
         names = [column[0] for column in cursor.description]
         result = []
@@ -550,6 +564,8 @@ class ModelCallStoreMixin:
             usage = item.pop("usage_json")
             item["usage"] = json.loads(usage) if usage is not None else None
             item["estimate"] = json.loads(item.pop("estimate_json"))
+            transport = item.pop('transport_json', None)
+            item['transport'] = json.loads(transport) if transport is not None else None
             result.append(item)
         return result
 

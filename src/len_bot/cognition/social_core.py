@@ -24,7 +24,7 @@ class SocialCognitionCore:
     def __init__(self,runtime):
         self.runtime=runtime
 
-    async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None, *, requester_qq_uid, publish=None, resume:ConversationResume|None=None,
+    async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None, *, requester_qq_uid, recent_event_ids: frozenset[str], publish=None, resume:ConversationResume|None=None,
                   mailbox=None, plugin_call=None, plugin_request=None):
         runtime=self.runtime
         config=runtime.config.model_copy(deep=True)
@@ -146,12 +146,13 @@ class SocialCognitionCore:
         def next_is_final():
             # Closing changes execution eligibility, not the tool catalog.
             return execution.budget.force_terminal(execution.budget.local_state())
+        context_started = time.monotonic()
         try:
             initial_budget,_=execution_budget_message({
                 'model_calls_limit':config.conversation_max_steps,'model_calls_used':initial_models,
                 'tool_calls_limit':config.conversation_max_tool_calls,'tool_calls_used':initial_tools},'respond')
             messages=await context.build(events,source_event_ids,tool_definitions=request_definitions,
-                                         execution_budget=initial_budget,
+                                         execution_budget=initial_budget, recent_event_ids=recent_event_ids,
                                          terminal_hint=final_step_message('respond') if next_is_final() else None,
                                          plugin_request=plugin_request)
             if plugin_request:
@@ -169,9 +170,9 @@ class SocialCognitionCore:
                     'kind':'resumed_request','sources':[context.refs.register_event_locator(ident) for ident in resume.source_event_ids],
                     'result_locators':[context.refs.register_result(ident) for ident in resume.result_ids],
                     'messages_already_committed':resume.messages_committed,'next_checkpoint':resume.next_checkpoint},ensure_ascii=False)})
-        except BaseException:
+        finally:
+            audit['initial_context_ms'] = round((time.monotonic() - context_started) * 1000, 2)
             audit['context_plan']=copy.deepcopy(context.context_plan)
-            raise
 
         async def execute(name,args,*,tool_call_id=None):
             if name in TOOLS:return await ledger.stage(name,args)
@@ -332,7 +333,12 @@ class SocialCognitionCore:
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
             if commit:
-                decision=await commit(outcome, read_event_ids=context.refs.read_events)
+                commit_started = time.monotonic()
+                try:
+                    decision=await commit(outcome, read_event_ids=context.refs.read_events)
+                finally:
+                    timings = audit.setdefault('timings_ms', {})
+                    timings['commit'] = round(timings.get('commit', 0) + (time.monotonic()-commit_started)*1000, 2)
                 if not decision.accepted:raise CommitConflict(decision.reason)
                 last_decision=decision
                 context.session=decision.scene_session
@@ -344,7 +350,14 @@ class SocialCognitionCore:
 
         async def after_finish(outcome):
             if last_decision is None:return None
-            if publish:await publish(last_decision)
+            if publish:
+                publication_started = time.monotonic()
+                try:
+                    await publish(last_decision)
+                finally:
+                    timings = audit.setdefault('timings_ms', {})
+                    timings['publication'] = round(timings.get('publication', 0)
+                                                   + (time.monotonic()-publication_started)*1000, 2)
             if outcome.next_action=='wait':execution.suspended_outcome=outcome
             return {**last_decision.record(),'checkpoint_index':outcome.checkpoint_index,
                     'next':outcome.next_action,'continue_run':outcome.next_action=='continue',

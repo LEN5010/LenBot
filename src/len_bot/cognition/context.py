@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import copy
 import re
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -72,6 +73,8 @@ class TurnReferences:
         A preferred ref comes from something the value owns — an event's row,
         a speaker's place in the scene's own roster — so it holds still.
         """
+        if preferred is not None and preferred in mapping and mapping[preferred] == value:
+            return preferred
         for ref, existing in mapping.items():
             if existing == value: return ref
         ref = preferred
@@ -105,7 +108,7 @@ class TurnReferences:
             self._record_event_range(event.id, span['start'], span['end'], span['total'])
         else:
             self._record_event_range(event.id, 0, len(event.raw_text), len(event.raw_text))
-        return self._register(self.events, event.id, 'M')
+        return self.register_event_locator(event.id)
 
     def register_event_range(self, event, start, end, total):
         if event.scene_id != self.scene_id or event.metadata.get('_rowid', 0) > self.cutoff:
@@ -454,6 +457,8 @@ class ConversationContext:
                 if self.request_tokens([*messages, *reserved], definitions) <= self.input_budget:
                     return
                 if message.get('_context_section') == section and not message.get('_context_omitted'):
+                    if section == 'recent_history' and message.get('_source_event_id') in self.required_originals:
+                        continue
                     # The omission is recorded in the context plan below; a
                     # marker object would itself consume enough tokens to
                     # keep a just-over-budget exchange failing.
@@ -502,7 +507,7 @@ class ConversationContext:
 
     def request_tokens(self, messages, definitions=None):
         definitions = self.tool_definitions() if definitions is None else definitions
-        return estimate_request(self.model_messages(messages), definitions)['input_tokens']
+        return estimate_request(messages, definitions, strip_context_metadata=True)['input_tokens']
 
     def fit_request(self, messages, definitions, *, reserved=(), phase='request'):
         """Keep current input, facts and complete receipts ahead of optional context."""
@@ -542,6 +547,41 @@ class ConversationContext:
         for name,value in snapshot.items():
             setattr(self,name,value)
 
+    def _event_projection_snapshot(self, event):
+        """Only a history message and its quote can change these read ranges."""
+        ids = {event.id}
+        quote = event.metadata.get('quote_context') or {}
+        if quote.get('event_id'):
+            ids.add(quote['event_id'])
+        return {'mapping_lengths': {name: len(getattr(self.refs, name)) for name in ('events', 'actors', 'media')},
+            'range_count': len(self.refs.range_contributions),
+            'ranges': {ident: self.refs.read_event_ranges.get(ident) for ident in ids},
+            'partial': {ident: self.refs.partial_events.get(ident) for ident in ids},
+            'read': self.refs.read_events.intersection(ids),
+            'rowids': {ident: self.refs.event_rowids.get(ident) for ident in ids},
+            'event': self.event_records.get(event.id)}
+
+    def _restore_event_projection(self, event, snapshot):
+        for name, length in snapshot['mapping_lengths'].items():
+            mapping = getattr(self.refs, name)
+            while len(mapping) > length:
+                mapping.popitem()
+        del self.refs.range_contributions[snapshot['range_count']:]
+        self.refs.read_events.difference_update(snapshot['ranges'])
+        self.refs.read_events.update(snapshot['read'])
+        for name, values in (('read_event_ranges', snapshot['ranges']), ('partial_events', snapshot['partial']),
+                             ('event_rowids', snapshot['rowids'])):
+            mapping = getattr(self.refs, name)
+            for ident, value in values.items():
+                if value is None:
+                    mapping.pop(ident, None)
+                else:
+                    mapping[ident] = value
+        if snapshot['event'] is None:
+            self.event_records.pop(event.id, None)
+        else:
+            self.event_records[event.id] = snapshot['event']
+
     def reconcile_original_reads(self, messages):
         """Project evidence from final retained carriers plus prior confirmed requests."""
         self.refs.read_events.clear()
@@ -558,8 +598,8 @@ class ConversationContext:
             ranges = message.get('_original_ranges', [])
             if message.get('role') == 'tool':
                 presentation = self.tool_original_presentations.get(message.get('tool_call_id'))
-                # A plugin may replace a tool body. Only the unchanged, actually
-                # supplied projection earns the original ranges rendered for it.
+                # Plugin explanations are separate carriers. Only the retained
+                # original projection earns the ranges rendered for this call.
                 ranges = (presentation['ranges'] if presentation
                           and presentation['content'] == message['content'] else [])
             for span in ranges:
@@ -594,10 +634,14 @@ class ConversationContext:
         tool_start,tool_end=indexes[0],indexes[-1]+1
         page_calls=[call for call,_ in entries if call.id in pages]
         media_reads={}
+        original_ranges={}
 
         async def render(position,limit):
-            page=pages[page_calls[position].id]
+            call_id=page_calls[position].id
+            page=pages[call_id]
+            range_start=len(self.refs.range_contributions)
             result=await toolkit._present(page.name,page.result,page.offset,limit,page.coordinate_unit)
+            original_ranges[call_id]=copy.deepcopy(self.refs.range_contributions[range_start:])
             # A historical job query must not replace newer facts already
             # projected after this tool group.
             self.refs.jobs.update(current_jobs)
@@ -622,9 +666,15 @@ class ConversationContext:
         finally:
             self._restore_projection(snapshot)
             for index,content in originals.items():messages[index]['content']=content
+        def record_originals(message, page):
+            toolkit.remember_presentation(page)
+            self.tool_original_presentations[message['tool_call_id']] = {
+                'content': message['content'],
+                'ranges': original_ranges[message['tool_call_id']]}
+
         await self.pack_tool_pages(messages,[positions[call.id] for call in page_calls],
             [pages[call.id].limit for call in page_calls],render,definitions=definitions,reserved=reserved,
-            prepared_images=media_reads)
+            prepared_images=media_reads, on_present=record_originals)
         trajectory[:]=messages[:tool_start]
         return [messages[index]['content'] for index in indexes],messages[tool_end:]
 
@@ -675,7 +725,8 @@ class ConversationContext:
             raise ValueError(f'初始插件资料的图片 {refs} 在最终模型窗口中缺失，且当前入口没有图片续读工具')
         self.check_request(messages, definitions(), phase='initial_plugin_material')
 
-    async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None):
+    async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None,
+                              on_present=None):
         """Share remaining request capacity across a complete native tool group.
 
         The caller installs matching locator responses first. Trial pages never
@@ -720,12 +771,11 @@ class ConversationContext:
             self._restore_projection(snapshot)
             messages[index]['content'] = original
             if best:
-                range_start = len(self.refs.range_contributions)
                 page = await render(position, best)
                 images.extend(await self.attachments(page.attachments,read_cache=prepared_images))
                 messages[index]['content'] = str(page)
-                self.tool_original_presentations[messages[index]['tool_call_id']] = {
-                    'content': str(page), 'ranges': copy.deepcopy(self.refs.range_contributions[range_start:])}
+                if on_present is not None:
+                    on_present(messages[index], page)
             else:
                 self.omit('tool_body', 'no_capacity_for_original_body', tool_call_id=messages[index]['tool_call_id'])
                 locator = json.loads(original)
@@ -739,15 +789,22 @@ class ConversationContext:
 
     async def pack_events(self, messages, events, current_ids, *, raw_tokens):
         """One assembler chooses raw fragments against the actual request cost."""
+        started = time.monotonic()
         current_ids = list(current_ids)
+        current_set = set(current_ids)
         media_reads={}
         by_id = {event.id:event for event in events}
         required = [by_id[ident] for ident in current_ids if ident in by_id and by_id[ident].event_type in CHAT_TYPES|CUE_TYPES]
-        optional = [event for event in reversed(events) if event.id not in current_ids and event.event_type in CHAT_TYPES]
+        optional = [event for event in reversed(events) if event.id not in current_set and event.event_type in CHAT_TYPES]
         packed = []
+        packed_ids = set()
         used_raw = 0
+        optional_base = None
+        packed_current = []
+        packed_tokens = 0
+        empty_schema_tokens = self.request_tokens([], [])
         for event in [*required,*optional]:
-            current = event.id in current_ids
+            current = event.id in current_set
             if used_raw >= raw_tokens:
                 if current:
                     self.omit('original_input', 'original_text_allowance_exhausted', event_id=event.id)
@@ -758,16 +815,48 @@ class ConversationContext:
                 # conversation was never spelled the same way twice.
                 self.omit('recent_history', 'before_window_start', event_id=event.id)
                 break
+            if not current:
+                if optional_base is None:
+                    # Tool definitions and the retained base are unchanged
+                    # while adding optional history. Estimate each new body
+                    # once; keep the final whole-request capacity check.
+                    optional_base = self.request_tokens(messages)
+                    packed_tokens = self.request_tokens(
+                        [part for _, raw, pixels in packed for part in [raw, *pixels]], []) - empty_schema_tokens
+                    packed_current = [item for item, _, _ in packed if item.id in current_set]
+                snapshot = self._event_projection_snapshot(event)
+                message = self.event_message(event)
+                message['_context_section'] = 'recent_history'
+                span = message['_source_range']
+                message['_window_projection'] = span['start'] == 0 and span['end'] == span['total']
+                original_cost = self.request_tokens([message], [])
+                footer = self.input_message(packed_current)
+                tail_tokens = self.request_tokens([footer, *self.pending_notice()], []) - empty_schema_tokens
+                candidate_tokens = optional_base + packed_tokens + original_cost - empty_schema_tokens + tail_tokens
+                if candidate_tokens > self.input_budget or used_raw + original_cost > raw_tokens:
+                    self._restore_event_projection(event, snapshot)
+                    self.omit('recent_history', 'no_capacity', event_id=event.id)
+                    break
+                packed.append((event, message, []))
+                packed_ids.add(event.id)
+                packed_tokens += original_cost - empty_schema_tokens
+                used_raw += original_cost
+                self.provided_event_ids.add(event.id)
+                continue
             cap = raw_tokens - used_raw
+            first_attempt = True
             while cap > 0:
                 snapshot = self._projection_snapshot()
-                view = original_prefix(event, cap) if current else event
-                message = self.event_message(view, quote_tokens=cap)
-                if not current:
-                    message['_context_section'] = 'recent_history'
-                elif event.id not in self.current_source_ids:
+                view = original_prefix(event, cap)
+                message = self.event_message(view, quote_tokens=None if first_attempt else cap)
+                span = message['_source_range']
+                quote = view.metadata.get('quote_context') or {}
+                canonical_quote = (first_attempt or not quote or quote.get('missing')
+                    or prefix_end(quote['text'], cap) == prefix_end(quote['text'], self.config.conversation_recent_tokens))
+                message['_window_projection'] = canonical_quote and span['start'] == 0 and span['end'] == span['total']
+                if event.id not in self.current_source_ids:
                     message['_context_section'] = 'related_original'
-                images = await self.attachments(media_ids(view),read_cache=media_reads) if current else []
+                images = await self.attachments(media_ids(view),read_cache=media_reads)
                 for image in images:
                     image['_media_source_event_id']=event.id
                     image['_source_rowid']=event.metadata['_rowid']
@@ -783,29 +872,29 @@ class ConversationContext:
                 original_cost = self.request_tokens([message], [])
                 footer = self.input_message([item for item,_,_ in chosen if item.id in current_ids])
                 candidate = [*messages,*bodies,footer,*self.pending_notice()]
-                if current and self.request_tokens(candidate) > self.input_budget:
+                if self.request_tokens(candidate) > self.input_budget:
                     self.release_optional_context(messages, reserved=[*bodies,footer,*self.pending_notice()])
                 if self.request_tokens(candidate) <= self.input_budget and (
-                        used_raw + original_cost <= raw_tokens or not packed and current):
+                        used_raw + original_cost <= raw_tokens or not packed):
                     packed = chosen
+                    packed_ids.add(event.id)
                     used_raw += original_cost
                     self.provided_event_ids.add(event.id)
-                    if current:self.required_originals.add(event.id)
+                    self.required_originals.add(event.id)
                     break
                 self._restore_projection(snapshot)
-                if not current:
-                    break
                 # A required source may be exposed as an exact fragment; its
                 # remaining original stays pending and does not grant evidence.
                 cap //= 2
-            if event.id not in {item.id for item, _, _ in packed}:
-                self.omit('original_input' if current else 'recent_history', 'no_capacity', event_id=event.id)
-                if not current:
-                    break
+                first_attempt = False
+            if event.id not in packed_ids:
+                self.omit('original_input', 'no_capacity', event_id=event.id)
         packed.sort(key=lambda item:item[0].metadata['_rowid'])
         messages.extend(part for _,raw,images in packed for part in [raw,*images])
-        current = [event for event,_,_ in packed if event.id in current_ids]
+        current = [event for event,_,_ in packed if event.id in current_set]
         if current:messages.append(self.input_message(current))
+        timings = self.context_plan.setdefault('timings_ms', {})
+        timings['event_packing'] = round(timings.get('event_packing', 0) + (time.monotonic()-started)*1000, 2)
         return current
 
     def anchor_window_start(self, messages):
@@ -818,6 +907,9 @@ class ConversationContext:
         boundary = ((min(message['_source_rowid'] for message in window) + step - 1) // step) * step
         dropped = [message for message in window if message['_source_rowid'] < boundary]
         if not dropped or len(dropped) == len(window):
+            return
+        if any(message['_source_event_id'] in self.required_originals for message in dropped):
+            self.omit('window_anchor', 'required_original_within_anchor')
             return
         # A batch already records which events it summarized end to end, and that
         # is the question being asked here. Comparing offsets instead compared two
@@ -1247,7 +1339,7 @@ class ConversationContext:
                 messages.append(message)
         self.context_plan['preference_subjects'] = sorted({self.session.scene_id, *self.relevant_actor_ids})
 
-    async def build(self, events, current_ids, *, execution_budget: dict, terminal_hint: dict | None = None,
+    async def build(self, events, current_ids, *, execution_budget: dict, recent_event_ids: frozenset[str], terminal_hint: dict | None = None,
                     tool_definitions=None, plugin_request=None):
         config = self.config
         if tool_definitions is not None:self.tool_definitions = tool_definitions
@@ -1319,8 +1411,11 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             self.fit_request(messages, self.tool_definitions(), phase='plugin_source')
             self.trajectory = messages
             return messages
+        source_read_started = time.monotonic()
         originals = await self.associated_originals(events, current_ids)
         recalled = await self.seed_history_recall(events, current_ids)
+        self.context_plan.setdefault('timings_ms', {})['associated_source_reads'] = round(
+            (time.monotonic()-source_read_started)*1000, 2)
         by_id = {event.id: event for event in events}
         for event in originals:
             by_id[event.id] = event
@@ -1344,7 +1439,10 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             self.refs.note_event_rowid(event.id, event.metadata.get('_rowid'))
             self.refs.register_actor(event.actor_id)
             self.refs.register_event_locator(event.id)
-        chat = sorted((event for event in events if event.event_type in CHAT_TYPES),key=lambda event:event.metadata['_rowid'])
+        # The input list also carries old pending/resume anchors. Only the
+        # IDs returned by the actual recent-history query belong to its window.
+        chat = sorted((event for event in events if event.id in recent_event_ids and event.event_type in CHAT_TYPES),
+                      key=lambda event:event.metadata['_rowid'])
         neighbors=[]
         for index,event in enumerate(chat):
             if event.id in current_ids:
@@ -1522,16 +1620,27 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                 if message.get('_context_section') in STABLE_SECTIONS]
         volatile=[message for message in references
                   if message.get('_context_section') not in STABLE_SECTIONS]
-        # The anchored window grows only at its end, which is what a cache wants.
-        # A reply quoting something from last week, or a recall reaching back,
-        # would otherwise splice an old message into the front of it and move
-        # everything after — so they read after the window instead, next to the
-        # current input they belong with. Each message carries its own time, and
-        # the chronology inside each zone still holds.
-        window=[message for message in originals
-                if message.get('_context_section')=='recent_history']
-        brought_in=[message for message in originals
-                    if message.get('_context_section')!='recent_history']
+        # Attention is not window membership. Required sources already inside
+        # the retained chronological suffix keep their canonical projection in
+        # place. Only outside sources, fragments and current pixels go after it.
+        canonical = {message['_source_event_id']: message for message in originals
+                     if message.get('_window_projection')}
+        window_ids = set()
+        for event in reversed(chat):
+            if event.id not in canonical:
+                if not window_ids:
+                    continue
+                break
+            window_ids.add(event.id)
+        window, brought_in = [], []
+        for message in originals:
+            if message.get('_window_projection') and message['_source_event_id'] in window_ids:
+                message['_context_section'] = 'recent_history'
+                window.append(message)
+            else:
+                if message.get('_context_section') == 'recent_history':
+                    message['_context_section'] = 'related_original'
+                brought_in.append(message)
         window.sort(key=lambda message:message['_source_rowid'])
         brought_in.sort(key=lambda message:message['_source_rowid'])
         messages[:]=[*stable,*window,*brought_in,*volatile]
