@@ -84,7 +84,7 @@ class TurnMessage(StrictModel):
         return self
 
 class SourceResolution(StrictModel):
-    source:str=Field(description='本次处理的已读来源M；继续同一请求时可沿用此前checkpoint的来源，系统来源不伪装成人类原话')
+    source:str=Field(description='本次处理的已读来源M，包括人类原话及到期、工作完成等系统来源，保留原类型；继续同一请求可沿用此前checkpoint来源，与messages[].source的回应来源分开')
     status:Literal['replied','delegated','waiting','incomplete','silent']
     reason:str=Field(default='',max_length=500)
     unfinished:list[str]=Field(default_factory=list,description='同一原话中仍未完成的要求；未做的部分不能被已发送内容覆盖')
@@ -170,7 +170,7 @@ class DiscardProposal(StrictModel):
 
 
 TOOLS={
-    'start_work':(StartWork,'建立需要长时间、多页资料或持续进度的后台只读工作；短读取和计算可直接使用本轮工具。先调用本工具，再把回执中的ack_ref复制到respond的确认消息；引用由工具生成，无需自拟。'),
+    'start_work':(StartWork,'建立需要较长执行、跨轮保存进度或使用仅供工作调用能力的后台只读工作。当前循环与剩余预算内可完成的短查询、计算和必要续读直接处理，分页本身不要求建工作。确需创建时先调用本工具，再把回执中的ack_ref复制到respond的确认消息，不自拟引用。'),
     'revise_work':(ReviseWork,'按新消息修订实际工作目标或约束，保留已有资料与预算。取得回执后用operation_ref确认本次操作，不用work_ref确认新版本。'),
     'cancel_work':(ControlWork,'取消工作；本轮终结并提交后生效。确认消息用本回执的operation_ref，不同时交付旧结果。'),
     'resume_work':(ControlWork,'显式继续can_resume=true的失败/中断工作，或有未完成范围且交付状态已确定的partial工作；保留原工作ID、已用预算和资料，新版本不重复旧交付。取得回执后用operation_ref确认。'),
@@ -266,11 +266,11 @@ RESPOND={
             'messages':{'type':'array','maxItems':3,'items':_message_schema()},
             'note':{'type':'string','maxLength':500,'description':'内部参与判断；不处理任何待处理来源时必须说明等待条件或结束原因，不发送'},
             'sources':{'type':'array','items':_object({
-                'source':{'type':'string','description':'本次处理的原话M'},
+                'source':{'type':'string','description':'本次处理的已读来源M，包括人类原话及到期、工作完成等系统来源，保留原类型；继续同一请求可沿用此前checkpoint来源，与messages[].source的回应来源分开'},
                 'status':{'type':'string','enum':['replied','delegated','waiting','incomplete','silent']},
                 'reason':{'type':'string','maxLength':500},
                 'unfinished':{'type':'array','items':{'type':'string'}}},('source','status')),
-                'description':'逐来源保留本次处理去向及未完成要求；未处理的独立原话不要列入'},
+                'description':'逐来源保留本次处理去向及未完成要求；未处理的独立来源不要列入'},
             'next':{'type':'string','enum':['end','continue','wait'],
                 'description':'end结束本轮；continue提交后在原预算继续；wait提交一个真实等待关系，释放模型资源后等对应回应'},
             'release_focus':{'type':'array','items':{'type':'string'},'uniqueItems':True,
@@ -487,7 +487,7 @@ class ProposalLedger:
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
-                        '需要查询时先调用start_work取得staged回执，再调用respond确认。')
+                        '需要新建工作或提醒时先调用对应工具取得staged回执，再用返回的ack_ref确认；普通短查询不填写ack_ref。')
                 operation=None
                 operation_sources=[]
                 if item.operation_ref:

@@ -75,7 +75,7 @@ class PublicInterestArguments(ReadArguments):
     limit: int = Field(ge=1)
 
 class RecallChatArguments(ReadArguments):
-    query: str = Field(min_length=1, pattern=r'\S', description='要找的事项或关键词；不当作 SQL 或 FTS 语法执行')
+    query: str = Field(min_length=1, pattern=r'\S', description='原话可能包含的字词或短语；人物和时间另填对应字段，不把整段检索要求当关键词，不执行 SQL 或 FTS 语法')
     start_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间起点，业务时区的 Unix 秒')
     end_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间终点，不含')
     speaker_ref: str | None = Field(default=None, min_length=1, description='可选本群人物 U 引用；同名分别列出，不自动认定唯一身份')
@@ -161,7 +161,7 @@ def read_tool(name, description):
 
 
 LOCAL_TOOLS = [
-    read_tool('recall_chat', '同群复合回忆：按关键词、可选时间范围和人物定位原话与摘要索引，再回读真实片段。摘要只定位，原句才是精确证据。默认仅本群。需要确认更早说过什么就用它，不必等对方先给出明确日期；范围不清楚时先用窄关键词，而不是查一整天。'),
+    read_tool('recall_chat', '有原话关键词时，用本工具按词面、可选人物和时间范围定位本群原话及摘要线索；没有日期也可查，不先扫整天。只有主题线索或需要摘要定位时可用search_history_summaries。返回定位不等于已读，精确引述须回读原话。'),
     read_tool('search_messages', '按文字查找本群已读截点之前的原话；只查询群消息，不检索外部网站或账号发布记录。'),
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
@@ -169,9 +169,9 @@ LOCAL_TOOLS = [
     read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
     read_tool('query_memory', '按对象、类型、时间与有效状态读取本群认识及来源，包括很久以前形成的。以词面查询为基础，只在当前启用且有绑定时补语义候选；历史版本不是当前事实。'),
     read_tool('list_public_interests', '读取已允许公共发布的兴趣；与本群认识分开，不含群成员或私聊资料。'),
-    read_tool('search_history_summaries', '按语义定位较早的已完成历史摘要，可及远早于当前窗口的对话；结果只是定位，精确原话仍需回读。窗口里找不到的旧事先用它定位，再回读原话。'),
+    read_tool('search_history_summaries', '仅记得主题大意或需要摘要线索时，定位本群已完成历史摘要。以词面匹配为基础，语义候选受当前场景开关、检索绑定和索引约束，不保证语义可用。有原话关键词时优先recall_chat；摘要只定位，精确原话及人物、时间条件须回读核对。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
-    read_tool('read_tool_result', '继续阅读已获得的资料R；offset使用上次next_offset。'),
+    read_tool('read_tool_result', '读取已保存的资料R，不重新获取来源。续读按返回的next_call调用，保留其result_id、offset、limit和coordinate_unit，不能只复制next_offset或混用字符与记录坐标。source_next_call是源端下一批，不是本地续读。'),
     read_tool('search_media', '按名称和描述查询本群或运营发布的图片。'),
     read_tool('read_media', '装入图片I/P像素和来源；动图只覆盖首帧。'),
 ]
@@ -521,7 +521,7 @@ class RetrievalToolkit:
             return page.result.page(page.offset, page.limit)
         return ToolResult(status='partial' if page.result.status in {'ok','partial'} else page.result.status,
             result_id=self.references.register_result(page.result.result_id) if self.references else page.result.result_id,
-            content='本轮输入额度有限，正文尚未装入；用read_tool_result按result_id和next_offset继续读取。',
+            content='本轮输入额度有限，正文尚未装入；按返回的next_call调用read_tool_result，保留完整参数及坐标单位。',
             truncated=True, next_offset=page.offset,
             coordinate_unit=page.coordinate_unit,
             next_call=ToolNextCall(name='read_tool_result',arguments={
