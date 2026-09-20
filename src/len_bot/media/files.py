@@ -19,7 +19,7 @@ from len_bot.media.service import validate_image
 from len_bot.runtime.capabilities import Capability, CapabilitySubject
 
 MAX_FILE_BYTES = 50_000_000
-FORMATS = {'txt': 'text/plain', 'csv': 'text/csv', 'json': 'application/json',
+FORMATS = {'txt': 'text/plain', 'md': 'text/markdown', 'csv': 'text/csv', 'json': 'application/json',
            'pdf': 'application/pdf', 'png': 'image/png', 'jpg': 'image/jpeg',
            'jpeg': 'image/jpeg', 'webp': 'image/webp', 'gif': 'image/gif', 'zip': 'application/zip'}
 
@@ -29,7 +29,7 @@ class PrepareFileInput(BaseModel):
     path: str = Field(min_length=1, max_length=240)
     execution_id: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=160,
-        description='真实格式的展示名；支持 TXT/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP，不支持独立脚本、可执行文件或 Office')
+        description='真实格式的展示名；支持 TXT/MD/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP，MD 按 UTF-8 纯文本检查；不支持独立脚本、可执行文件或 Office')
     for_upload: bool = Field(default=False, description='为本群上传取得独立 send_file 授权和动作审查；不会立即上传')
 
     @field_validator('display_name')
@@ -244,7 +244,7 @@ def inspect_file(data, name, *, max_bytes, max_pixels):
     suffix = Path(name).suffix.lower().removeprefix('.')
     mime = FORMATS.get(suffix)
     if mime is None:
-        raise ValueError('unsupported：仅支持 TXT/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP')
+        raise ValueError('unsupported：仅支持 TXT/MD/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP')
     if mime.startswith('image/'):
         if validate_image(data, max_bytes=max_bytes, max_pixels=max_pixels) != mime:
             raise ValueError('展示名与实际图片格式不一致')

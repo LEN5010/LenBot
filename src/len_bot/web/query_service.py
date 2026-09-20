@@ -64,6 +64,7 @@ class RuntimeQueryService:
         runtime_fields = {
             'persona': ('character_context', 'identity_name', 'identity_core', 'identity_persona',
                         'conversation_style', 'address_names'),
+            'character_references': ('character_reference_assets',),
             'attention': tuple(self.attention_settings()),
             'runtime': tuple(self.runtime_settings()['settings']),
         }
@@ -71,7 +72,7 @@ class RuntimeQueryService:
             keys = runtime_fields[domain]
             saved = {key: root.runtime.model_dump()[key] for key in keys}
             effective = {key: self.runtime.config.model_dump()[key] for key in keys}
-            apply = 'live' if domain in {'persona', 'attention'} else 'field_dependent'
+            apply = 'live' if domain in {'persona', 'attention', 'character_references'} else 'field_dependent'
         elif domain in {'access', 'resources', 'time', 'members'}:
             saved = root.model_dump()[domain]
             effective = saved if domain in {'access', 'resources'} else None
@@ -622,8 +623,14 @@ class RuntimeQueryService:
         reservations = await self._rows(
             'SELECT subject,day_key,status,reserved_tokens,usage_tokens,estimated_tokens FROM usage_reservations WHERE job_id=? AND scene_id=?',
             [job_id, job['scene_id']])
+        followups=await self._page(
+            "SELECT j.id,j.goal,j.revision,t.status,t.created_at,json_extract(t.payload,'$.reused_work.revision') AS source_revision",
+            "FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id "
+            "WHERE j.scene_id=? AND json_extract(t.payload,'$.reused_work.job_id')=?",
+            [job['scene_id'],job_id],"t.created_at DESC,j.id DESC",1,20)
         return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job),
                 **self.job_delivery(job), "method_reads": await self.job_method_reads(job),
+                'followup_work':followups,
                 "executions": executions, "reservation": reservations[0] if reservations else None,
                 "file_assets": await self.runtime.file_assets.for_job(job["scene_id"], job["id"]),
                 "platform_actions": await actions_for(self.runtime.event_store, scene_id=job["scene_id"], job_id=job["id"])}
@@ -672,17 +679,32 @@ class RuntimeQueryService:
 
     @staticmethod
     def public_asset(asset, *, in_current_limit=None):
+        from len_bot.media.models import media_purpose
         item={key:asset[key] for key in ("id","scope","source_event_id","mime_type","description","tags","enabled","curated","created_at","palette_order")}
-        item["in_initial_catalog"]=item["palette_order"] is not None
+        item['purpose']=media_purpose(item['tags'])
+        item["in_initial_catalog"]=item["palette_order"] is not None and item['purpose']!='character_reference'
         item["in_current_limit"]=bool(in_current_limit) if in_current_limit is not None else None
         item["description_sufficient"]=bool((item.get("description") or "").strip() or item.get("tags"))
         return item
 
-    async def media_assets(self, scene_id, query="", *, curated=None, enabled=None, palette_only=False, page=1, page_size=48):
+    async def media_assets(self, scene_id, query="", *, curated=None, enabled=None, palette_only=False, purpose=None, page=1, page_size=48):
         source="FROM media_assets WHERE scope IN (?, 'global-safe')";params=[scene_id]
         for field,value in (("curated",curated),("enabled",enabled)):
             if value is not None:source+=f" AND {field}=?";params.append(int(value))
-        if palette_only:source+=" AND palette_order IS NOT NULL AND curated=1 AND enabled=1"
+        if purpose is not None:
+            from len_bot.media.models import CHARACTER_REFERENCE_TAG
+            if purpose not in {'character_reference','sticker','media'}:
+                raise ValueError('未知素材用途')
+            reference="EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)"
+            source+=f" AND {'' if purpose=='character_reference' else 'NOT '}{reference}"
+            params.append(CHARACTER_REFERENCE_TAG)
+            if purpose!='character_reference':
+                source+=f" AND {'' if purpose=='sticker' else 'NOT '}EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)"
+                params.append('表情包')
+        if palette_only:
+            from len_bot.media.models import CHARACTER_REFERENCE_TAG
+            source+=" AND palette_order IS NOT NULL AND curated=1 AND enabled=1 AND NOT EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)"
+            params.append(CHARACTER_REFERENCE_TAG)
         terms=list(dict.fromkeys(query.split()))
         if terms:
             source+=" AND ("+" OR ".join("(instr(lower(description),lower(?))>0 OR instr(lower(tags_json),lower(?))>0)" for _ in terms)+")"
@@ -716,6 +738,17 @@ class RuntimeQueryService:
     def persona_settings(self):
         return {key:getattr(self.runtime.config,key) for key in (
             "character_context","identity_name","identity_core","identity_persona","conversation_style","address_names","bot_qq")}
+
+    async def character_reference_settings(self):
+        snapshot=self.settings_draft('character_references')
+        configured=self.runtime.config_store.current.runtime.character_reference_assets
+        media_enabled=self.runtime.config.media_enabled
+        assets=await self.runtime.event_store.reference_assets_for_operator([item.asset_id for item in configured])
+        return {**snapshot,'configured':[{**item.model_dump(mode='json'),
+                    'asset':self.public_asset(assets[item.asset_id]) if item.asset_id in assets else None,
+                    'issue':self.runtime.media_service.character_reference_issue(assets.get(item.asset_id))}
+                for item in configured],
+            'media_enabled':media_enabled}
 
     async def preview_diana_persona(self):
         return await self.runtime.event_store.preview_diana_persona(palette_limit=self.runtime.config.media_palette_limit)
@@ -782,7 +815,7 @@ class RuntimeQueryService:
 
     def runtime_settings(self):
         from len_bot.config import EXECUTION_BUDGET_FIELDS
-        excluded = {"ws_host", "ws_port", "address_names", "character_context",
+        excluded = {"ws_host", "ws_port", "address_names", "character_context", "character_reference_assets",
                     "conversation_style", "dashboard_secret_key", "dashboard_default_admin_password"}
         values = self.runtime.config_store.current.runtime.model_dump()
         settings = {key:value for key,value in values.items()

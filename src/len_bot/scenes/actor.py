@@ -329,6 +329,9 @@ class SceneActor:
         for message in item.outcome.message_proposals:
             if message.source_event_id:
                 refs.add(message.source_event_id)
+            refs.update(message.covered_source_event_ids)
+            if not set(message.covered_source_event_ids).issubset(handled):
+                raise SceneCommitConflict('Covered sources need their own handled outcome in this checkpoint')
             if message.answer_basis:
                 refs.update(message.answer_basis.event_ids)
         for proposal in item.outcome.memory_proposals:

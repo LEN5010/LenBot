@@ -678,19 +678,28 @@ class PluginHost:
         return 'callable'
 
     def _tool_applies(self, tool: PluginToolDefinition, call_context: PluginCallContext) -> bool:
+        return self._tool_requirement(tool,call_context) is None
+
+    def _tool_requirement(self, tool: PluginToolDefinition, call_context: PluginCallContext) -> str | None:
+        """Explain the existing applicability check without granting a new role."""
         if tool.input_scope == 'current_work' and not call_context.job_id:
-            return False
+            return 'current_work_required'
         if tool.required_capabilities:
             from len_bot.runtime.capabilities import CapabilitySubject
             if not call_context.requester_qq_uid or call_context.public_research:
-                return False
+                return 'human_requester_required'
             subject = CapabilitySubject('human', call_context.requester_qq_uid, call_context.scene_id, None)
             if any(not self.runtime.runtime_gate.capability_authority.check(Capability(cap), subject,
                     now=self.runtime.clock()).allowed for cap in tool.required_capabilities):
-                return False
-        return (call_context.role in tool.roles and (tool.kind == 'read' or call_context.ledger is not None
-                or call_context.role == 'work' and tool.side_effect == 'account_write')
-                and (tool.available is None or tool.available(call_context)))
+                return 'capability_denied'
+        if call_context.role not in tool.roles:
+            return 'role_not_supported'
+        if not (tool.kind=='read' or call_context.ledger is not None
+                or call_context.role=='work' and tool.side_effect=='account_write'):
+            return 'proposal_entry_required'
+        if tool.available is not None and not tool.available(call_context):
+            return 'entry_conditions_not_met'
+        return None
 
     def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
         tool = self._tools.get(name)
@@ -701,33 +710,62 @@ class PluginHost:
         return bool(tool and self._plugin_availability(tool.plugin_id, call_context) == 'callable'
                     and self._tool_applies(tool, call_context))
 
-    def capability_facts(self, call_context: PluginCallContext) -> list[dict[str, Any]]:
+    def capability_facts(self, call_context: PluginCallContext, *, allowed_tool_names: set[str] | None = None) -> list[dict[str, Any]]:
         """Explain current capability state without publishing hidden schemas or entry points."""
         facts = []
+        can_describe_work = (call_context.role=='conversation' and not call_context.public_research
+                            and (allowed_tool_names is None or 'start_work' in allowed_tool_names))
+        work_requirement = None
+        if can_describe_work:
+            work_requirement = ('jobs_disabled' if not self.runtime.config.jobs_enabled else
+                                'work_model_unconfigured' if not self.runtime.has_model_profile('work') else None)
+        public_owners = None
+        if call_context.public_research:
+            from len_bot.runtime.public_research import PUBLIC_TOOL_OWNERS
+            public_owners = PUBLIC_TOOL_OWNERS
         for plugin_id in sorted(self.runtime.config_store.catalog.entries):
-            plugin = self._plugins.get(plugin_id)
-            direct = [tool for tool in self._tools.values() if tool.plugin_id == plugin_id
-                      and self._tool_applies(tool, call_context)]
-            if plugin is not None and not direct:
-                # The module is loaded but exposes nothing this role may call
-                # directly.  Say so instead of omitting it: otherwise a
-                # conversation cannot tell that Python or browsing is
-                # delegable at all.  Purposes stay descriptive; no schema,
-                # entry point or permission is published here.
-                delegable = sorted({tool.purpose for tool in self._tools.values()
-                                    if tool.plugin_id == plugin_id and tool.available is None})
-                if not delegable:
-                    continue
-                facts.append({'plugin_id': plugin_id,
-                              'name': self.runtime.config_store.catalog.entries[plugin_id].spec.name,
-                              'status': self._plugin_availability(plugin_id, call_context),
-                              'delegable_purposes': delegable,
-                              'note': '本模块的能力属于长工作，不在当前对话直接调用；需要时用start_work交给工作执行。'})
-                continue
             status = self._plugin_availability(plugin_id, call_context)
-            name = self.runtime.config_store.catalog.entries[plugin_id].spec.name
-            facts.append({'plugin_id': plugin_id, 'name': name, 'status': status,
-                          'purposes': sorted({tool.purpose for tool in direct})})
+            tools = [tool for tool in self._tools.values() if tool.plugin_id==plugin_id
+                     and (public_owners is None or public_owners.get(tool.name)==plugin_id)]
+            direct, blocked, delegable, conditional = set(), [], set(), []
+            for tool in tools:
+                current_role = call_context.role in tool.roles
+                selected = allowed_tool_names is None or tool.name in allowed_tool_names
+                requirement = None
+                if current_role and selected:
+                    requirement = status if status!='callable' else self._tool_requirement(tool,call_context)
+                    if requirement is None:
+                        direct.add(tool.purpose)
+                    else:
+                        blocked.append({'purpose':tool.purpose,'requirement':requirement,
+                                        'required_capabilities':list(tool.required_capabilities)})
+                if (can_describe_work and 'work' in tool.roles
+                        and (tool.kind=='read' or tool.side_effect=='account_write')
+                        and (not current_role or tool.input_scope=='current_work')):
+                    if tool.available is None and not tool.required_capabilities:
+                        delegable.add(tool.purpose)
+                    else:
+                        conditional.append({'purpose':tool.purpose,
+                            'required_capabilities':list(tool.required_capabilities),
+                            'entry_conditions':'真实工作建立后，由该工具的原入口核对具体条件'})
+            if public_owners is not None and not tools:
+                continue
+            row = {'plugin_id':plugin_id,'name':self.runtime.config_store.catalog.entries[plugin_id].spec.name,
+                   'status':status,'purposes':sorted(direct)}
+            observed=self._status.get(plugin_id)
+            if observed is not None:
+                row['runtime_state']=observed.state
+            if direct:
+                row['direct_entry']=('按已提供定义调用；尚未展开的只读工具用tool_search发现'
+                    if allowed_tool_names is None or 'tool_search' in allowed_tool_names else '按本入口已经提供的定义调用')
+            if blocked:
+                row['blocked_purposes']=blocked
+            if delegable or conditional:
+                row['delegable_purposes']=sorted(delegable)
+                if conditional:row['conditional_work_purposes']=conditional
+                row['work_requirement']=work_requirement or (status if status!='callable' else None)
+                row['note']='工作用途是委托说明；新工作仍需真实请求及原准入、预算、工具入口检查。配置或本群条件缺失时先保留具体缺项。'
+            facts.append(row)
         return facts
 
     def has_registered_tool(self, name: str) -> bool:
@@ -795,10 +833,12 @@ class PluginHost:
             view['work_progress_schema']=work.progress_model.model_json_schema()
         return view
 
-    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] | None = "read") -> tuple[list[dict[str, Any]], list[str]]:
+    def search_tools(self, query: str, call_context: PluginCallContext, *, kind: Literal["read", "proposal"] | None = "read",
+                     allowed_names: frozenset[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
         """Rank the same scoped candidates used for model definitions/execution."""
         candidates = [tool for name, tool in self._tools.items()
-                      if self.has_tool(name, call_context) and (kind is None or tool.kind == kind)]
+                      if (allowed_names is None or name in allowed_names)
+                      and self.has_tool(name, call_context) and (kind is None or tool.kind == kind)]
         matches = []
         for tool in candidates:
             plugin_name = self._plugins[tool.plugin_id].manifest.name

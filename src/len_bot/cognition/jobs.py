@@ -16,6 +16,7 @@ class JobProposal(BaseModel):
     constraints_remove: list[str] = Field(default_factory=list)
     source_event_ids: list[str] = Field(min_length=1)
     result_ids: list[str] = Field(default_factory=list)
+    reused_work: 'ReusedWorkResult | None' = None
     requester_qq_uid: str | None = None
     request_source_event_id: str | None = None
     # A typed initiator is only ever built here, in internal code, from a
@@ -47,6 +48,11 @@ class JobProposal(BaseModel):
             raise ValueError("Job control needs real job_id and expected_revision")
         if self.operation!='create' and self.initiator is not None:
             raise ValueError('Job controls inherit the original work initiator and cannot replace it')
+        if self.reused_work is not None:
+            if self.operation!='create' or self.work_operation!='information' or self.human_initiator is None:
+                raise ValueError('复用工作成果只用于真实人类新委托的普通后续工作')
+            if not set(self.reused_work.result_ids).issubset(self.result_ids):
+                raise ValueError('后续工作须保留所选原成果的资料身份')
         if self.operation=='resume' and (self.goal is not None or self.constraints_add or self.constraints_remove or self.work_parameters is not None):
             raise ValueError('Resume preserves the existing goal and scope; changing them requires revise')
         return self
@@ -94,8 +100,36 @@ class ResultSpan(BaseModel):
         return self
 
 
+class ReusedWorkResult(BaseModel):
+    """One original result version copied as input, without execution authority."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    job_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    goal: str = Field(min_length=1)
+    request_source_event_id: str | None = None
+    status: Literal['completed','partial']
+    summary: str = Field(max_length=4000)
+    unresolved: list[str] = Field(default_factory=list)
+    result_ids: list[str] = Field(default_factory=list)
+    evidence_spans: list[ResultSpan] = Field(default_factory=list)
+
+    @classmethod
+    def from_job(cls, job):
+        if job['work_operation']!='information' or job['plugin_origin'] is not None:
+            raise ValueError('本入口复用普通研究工作；专用插件成果沿其所属入口读取与交付')
+        if job.get('origin_mode')!='live' or not job.get('result'):
+            raise ValueError('原工作须有真实执行的完整或部分成果；目录、进度和模拟结果不能作为成果复用')
+        result=JobResult.model_validate(job['result'])
+        if result.status not in {'completed','partial'}:
+            raise ValueError('原工作当前没有可复用的完整或部分成果')
+        return cls(job_id=job['id'],revision=job['revision'],goal=job['goal'],
+            request_source_event_id=job['request_source_event_id'],
+            **result.model_dump(mode='json',include={'status','summary','unresolved','result_ids','evidence_spans'}))
+
+
 class ResultPresentation(ResultSpan):
     name: str | None = None
+    evidence_ref: str | None = Field(default=None, pattern=r'^E[0-9a-f]{32}$')
     total: int = Field(ge=0, strict=True)
 
     @model_validator(mode='after')
@@ -200,3 +234,6 @@ class JobBudgetExhausted(RuntimeError):
     def __init__(self,message,*,budget_kind='model_steps'):
         super().__init__(message)
         self.budget_kind=budget_kind
+
+
+JobProposal.model_rebuild()

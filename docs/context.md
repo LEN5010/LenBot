@@ -54,9 +54,31 @@ stable（当前只有 persona）
 
 当前循环与剩余预算内可完成的短查询、计算和必要续读直接处理，分页本身不是创建工作的条件。较长执行、跨轮保存进度或仅供工作调用的能力才按需使用 start_work；同一工作仍先读已有状态，不为重发成果重新执行。工具说明与无效 ack_ref 的错误提示采用同一边界：新建工作或提醒先取得对应暂存回执，再确认创建；普通短查询不填写创建句柄，不改变原提交和预算校验。
 
-respond 的 sources[].source 表示本次处理的已读来源，可以是人类原话，也可以是到期、工作完成等系统来源，保留原类型；它与 messages[].source 的回应来源分别填写。系统触发交付仍沿原 delivery_ref 和已读原始委托处理，不因说明统一而取得人类证据资格；未处理的独立来源不列入 sources。
+respond 的公开结构与参数解析来自同一组输入模型，不重复填写 intent。普通回复用 source 指定主来源，用可选 covers 声明同一答复覆盖的其他已读待处理人类原话。sources 只填 silent／incomplete 及具体原因或未完成部分；replied、delegated 和 waiting 从真实消息、创建提案和等待关系派生。仅仅读到的独立来源继续待处理，本阶段没有处理任何来源时用 note 说明结束或等待原因。系统触发交付仍沿原 delivery_ref 和已读原始委托处理，宿主关联本次已读运行来源，保留其系统类型与原人类证据边界。
+
+answer_basis 按 kind 区分字段：social/general 只填类别，observed 提供直接已读依据，work_result／mixed 保留实际工作与资料关系，unverified 列出缺口。错误定位到 messages 索引及对应字段；不自动丢证据、换类别或把未完成来源变成旁听。显式 incomplete 的等待沿真实 expect_reply 消息关联保存恢复来源，仍共享原预算、消息额度与送达条件。
 
 人工人格字段保持原样，与固定合同分别拼接为同一 `persona` 消息。插件 `include_identity=false` 只省略人格段，保留运行合同，再追加插件指令；不依赖对中文提示词截字符串，不更换模型绑定或增加调用。上述是输入合同，不是实际接话、查证或纠正效果的验收结论。
+
+### 人物与服装参考目录
+
+`runtime.character_reference_assets` 是运营确认的人物键、服装与已登记图片资产的对应表。普通对话及包含人格的完整对话插件，在历史摘要装配之后、反应表情目录之前，按本轮配置快照读取同场景／global-safe、启用的运营图片元数据，形成 `character_reference_catalog`。仅指定来源／材料的插件早返回路径不引入此目录。
+
+每项只提供 character_key、outfit、image_ref、短描述及 catalog_only，归入原 `reference` 区和媒体 manifest，用途标为 character_reference。逐项核对总请求容量；装不下时恢复临时引用并记录省略，不挤走当前原话、改变历史锚定或装入五张像素。目录中的定位不授予视觉阅读、原话依据或最新事实资格。
+
+需要辨认人物时沿原 read_media 读取相关参照，与当前群图像素及明确原话一起判断；图片数量、字节、实际已读重建和发送资格仍用原路径。固定表情目录在 LIMIT 之前排除“人物参考”标签，保留原表情频率、顺序和数量。目录配置保存不会上传素材、修改角色文字或读取像素；素材停用后后续目录不再提供该项。
+
+### 图片讨论与纠正的对象关联
+
+当前人类来源包含图片或真实消息引用时，`related_image_context` 从同场景、读取截点内的真实原话出发，沿平台引用和 Bot 实际 sent 回执的 origin_event_id／covered_source_event_ids 找回图片来源。引用只连接严格早于当前消息的原记录；同平台 ID 有多份记录时选最近的合法前项。排除模拟、Shadow、未确认发送、conversation_excluded 记录及其他场景，校验图片资产仍登记在本场景或 global-safe。仅指定来源／材料的插件入口不自动扩展这条路径。
+
+找到具体图片后，按同一来源或完全相同的 asset_id，查询后续人类引用及其被引用的实际回答、原来源。查询先限定对象和真实关系，再按 rowid 倒序选取。原 retrieval_default_limit 分别约束向前追溯的新增原话数、后续人类回复数；每批回复共用其条数三倍的补充祖先／桥接回执额度，额度用尽标记 limited，不能据此宣称全部相关原话已经找到。它不会通过“这是某某”等词给原话贴上“正确纠正”标签，也不搜索图片相似度、URL 相等或新建认识。
+
+选中材料沿原 pack_events 装配，当前来源保持其原片段；相关材料先尝试较新的人类原话，再尝试旧 Bot 回答，装配后仍按原保存时序展示。文字、引用与像素各自沿原容量和阅读确认处理，窗外材料保留 related_original，不搬到历史窗口头。续轮吸收新输入使用同一路径，不重排原生工具交换。
+
+另有 `image_discussion` 短目录列出原图所在消息和 reply、response_source、covered_response_source 关系；它只提供 locator_only，不因存在关系就把未装入的原话、摘要或像素算已读。目录装不下则记录省略；原文仍以最终请求的范围集合为准。主对话读原话判断是否构成纠正及其对象，采用当前明确纠正，不把旧回答当作人物事实。关联事实与额度记录在原 context_plan.image_discussion，查找耗时记为 image_related_source_reads；这些是定位诊断，不是事实核实或表达效果结论。
+
+边界：未明确引用的“上一张”等表达仍由已有群上下文判断；单凭这类文字不持久绑定对象。重传的图片通常会获得新资产 ID，不自动沿用旧图纠正。跨对象的人物知识继续依赖人工角色资料、实际参照像素和原认识修订，不从一次认图自动泛化。源码路径与实际采用效果分开验收。
 
 ## 3. 锚定窗口与摘要覆盖
 
@@ -124,7 +146,7 @@ boundary = ((oldest + step - 1) // step) * step
 
 | 入口 | 当前职责 |
 |---|---|
-| `recall_chat` | 本群复合回忆入口，按词面、人物和时间寻找原话/摘要线索，按需展开底层读取 |
+| `recall_chat` | 按词面、人物和固定时间范围定位本群原话，返回实际筛选条件及截点；按需展开底层读取 |
 | `search_history_summaries` | 按主题寻找已完成摘要，以词面匹配为基础；语义候选受本群开关、检索绑定和索引约束，摘要本身只定位 |
 | `query_memory` | 查询有范围、主体、类别与有效状态的认识及来源，不把旧版本当当前事实 |
 | `read_context` / `read_message_range` | 实际回读原话及其字符区间 |
@@ -136,7 +158,13 @@ boundary = ((oldest + step - 1) // step) * step
 
 `seed_history_recall()` 还会对有限字面线索进行预取，并说明匹配局限；它只是补充，不是每条消息自动语义检索。未命中预取不证明没有相关历史。
 
-recall_chat 的原话查询在数据库内先应用场景、截点、关键词、人物和时间条件，再按保存时序排序并 LIMIT；时间范围为起点包含、终点不包含，不先截取全群结果再筛选。返回保留 message_filters。附带的摘要仍只是同群关键词索引，明确未确认满足本次人物与时间条件，不冒充精确原话命中。
+recall_chat 的 `time_range` 为两种互斥形状：absolute 提供 start_time／end_time 绝对 Unix 秒，日期含义沿当前业务时区；relative 提供 request_source 与 lookback_seconds。对话入口的 request_source 必须解析为本轮已完整读取、同群且在读取截点内的人类原话。宿主用该原话 timestamp 计算 `[timestamp-lookback_seconds,timestamp)`，继续同一来源不会跟随执行时钟移动；右端不含原请求时间。没有时间条件时省略 time_range，不推测日期或补造范围。
+
+工作入口没有对话短引用表，relative 只接受该工作原始 request_source_event_id；工作事实显式提供此 ID，仍需核对它是同群、截点内的人类来源。此定位沿已确认的委托关系，不授予原话或检索候选新的证据资格。其他无原请求的入口使用明确的绝对区间；错误不会被自动改成当前时间或另一条消息。
+
+原话查询在数据库内先应用场景、截点、关键词、人物和解析后的时间条件，再按保存时序排序并 LIMIT，不先截取全群结果再筛选。保存的原观察正文包含原输入形状的 time_range、time_anchor 中的原请求 ID／timestamp，以及 message_filters 中实际执行的人物、起止、through_rowid、limit。相对输入回显保留 request_source 和 lookback_seconds，不把扩展后的事实字段塞回输入形状。同一问题再次查询保留时间含义，每次实际读取截点分别记录；新提问明确要“现在再看”才选新的请求来源。
+
+recall_chat 只返回符合条件的原话候选，不再附带未经人物／时间筛选的摘要，也不以摘要命中把原话空集改成 ok。主题定位继续用 search_history_summaries。候选和片段仍只是位置，须回读原话才取得精确引用资格；SQL 查询、人物过滤、排序、LIMIT 与特殊字符转义路径不变。
 
 短于三个字符的关键词使用参数化 LIKE 查询，并显式指定 `ESCAPE '!'`；先转义 `!`，再转义 `%` 和 `_`，避免把用户字面内容解释为通配符。三个字符及以上继续使用原带引号的全文检索分支，不改变筛选范围、排序和数量上限。
 
@@ -152,13 +180,25 @@ recall_chat 的原话查询在数据库内先应用场景、截点、关键词�
 
 工具页使用 `characters` 或 `records` 坐标；本地 `next_call` 与尚未取得的源端 `source_next_call` 分开。`presentation_capacity_error` 表示本次没能呈现，不是源无结果；试算未采用的页不推进已读范围。
 
-单条资料答复可在 `answer_basis` 关联已读的人类原话与非空 ResultSpan；source 不自动填入依据。范围只从实际请求返回之后的累计展示记录取得，独立恢复仅有资料 ID 时仍须重新读取，不从导入目录继承已读。工作依据另确认实际请求中的完整结果投影，或已保存工作详情的完整记录区间；省略/紧凑目录不计。当前工作版本与结果来源在原事务再次核对。此状态只补足答复到实际资料的关联，不建立第二个阅读调度器，也不改变原话或工作压缩的所有权。
+单条资料答复在 `answer_basis.event_refs` 关联完整已读的人类原话，在 `answer_basis.evidence_refs` 复制支持结论的资料页 `evidence_ref`；source 不自动填入依据。页引用是宿主分配的 E 开头不透明标识，局部映射到原 result_id、坐标单位和非空范围。公开输入不再手填 result_spans，内部 AnswerBasis 仍保存原 ResultSpan，原事务继续复核同群、实际阅读、资料类别与工作版本。目录、摘要、工作定位和群原话序列化记录不会因有页引用而成为直接资料依据。
+
+页名与已读资格分开：试装时可分配页名，候选可能随后缩小或被裁掉；最终请求必须保留原正文，或匹配宿主登记的原投影，read_presentations 才记录其实际范围与页名，模型响应后由原 adopt_presentations 确认。外置正文时移除 displayed_range、evidence_span 和 evidence_ref，仅保留原回读位置；已经确认的范围仍沿原账本保存。保存原工具观察时清空输入携带的 evidence_ref，插件不能用这个字段自发授予已读资格。反复展示同一页可复用引用；同页的多个有效引用分别确认，不能让其中一个名字掩盖另一个已经展示的名字。
+
+工作 `finish_work.evidence_refs` 同样选择已读页，宿主解析为原 JobResult.evidence_spans，并继续要求每个 result_ids 项有实际依据。原 observation_reads 的每个资料／坐标单位记录增加 evidence_refs 映射，保存页名到精确范围的关系；原 ranges 仍合并以核对覆盖，不因合并丢掉页名。该字段随原工作阅读事务保存，拒绝把同一个页名绑定到另一资料或范围。工作恢复先按场景装入原资料，再从已保存 ranges 与页名重建局部映射；旧记录没有页名时不补造，需引用时按 read_tool_result 取得需要的页。保存过但尚未收到响应的原生页，恢复后只有正文在最终请求中再次通过核对，才能在新响应后取得资格。
+
+工作中的独立插件读取仍通过原 record_presentations 回调保存实际阅读，父工作随后采用相同页名与范围；不是凭导入资料 ID 或插件输出摘要授予资格。work_state 和公共兴趣候选保留原显式 evidence_spans 合同，页面的 evidence_span 仍供这些结构与诊断使用。独立对话恢复只有资料 ID 时仍须实际提供正文，不继承其他执行的局部页名。
+
+工作答复依据另确认实际请求中的完整结果投影，或已保存工作详情的完整记录区间；省略／紧凑目录不计。页引用只定位实际已读内容，不证明每个结论在语义上得到支持。没有新增资料表、阅读调度器、摘要事实或内容指纹，也不改变原话与工作压缩的所有权。
 
 导入 Python 的是本工作已保存资料或获准图片，不自动要求模型先逐字读完，也不因导入而增加模型实际已读范围。输入清单记录导出时工作修订、原资料状态、source_truncated 和 provenance，源端未取得部分不因复制到文件变完整。清单、程序读取、程序结果、模型读取与发送回执是不同事实；面板查看输入来源不会触发其中任何后续动作。
 
 公共兴趣摘要只作为研究线索或已采用候选，不等于重新读取原始资料。分享入口按本群主题、有效期及匿名来源选择可发布项，不直接分享研究意图；近期表达材料只含当前 Bot 在原截点之前至多四条真实送达文字节选，每条前 300 字符。覆盖和 provenance 只列实际采用记录，模拟与未知回执不冒充已经说过，也不把 Bot 文字当作外部事实证据。
 
 ## 6. 长工作检查点与压缩
+
+普通研究追加整理／导出时，start_work.reuse_work_ref 选择已经实际提供的原成果版本；仅 query_jobs 控制目录不算完整成果读取。对话及原 Gate 的 provided_work_results、提交事务的同场景实际快照共同核对选择。任务 payload 保存的 reused_work 作为新工作固定输入提供，不从父工作当前状态动态替换；原未完成项继续明确展示。正文仍通过原 result_ids 读取或作为 run_python 的 input_result_ids 导入，新工作 observation_reads 从空开始，不继承父工作阅读资格。
+
+有人类申请者的工作初始事实同时提供原 file_delivery_facts，区分生成配置、持久资产登记条件、平台上传配置和当前申请者授予。它不额外探测 Gateway，也不把保存配置当成部署连通或执行成功。工作合同按用户新要求完成格式转换／导出，已有资料优先按范围读取；原摘要只作整理输入，引用外部事实仍须真实阅读。产物导出、持久资产登记和群上传各沿自己的工具及回执，缺少前置保留具体未完成项。
 
 主要实现为 [work_context.py](../src/len_bot/runtime/work_context.py) 与原工作运行器。检查点保留完整 assistant/tool 交换及供应商原生续接字段，不能拆开工具调用与回执。恢复沿同一目标 revision、绑定和累计账，旧资料不自动变成当前版本的新证据。
 
@@ -180,7 +220,20 @@ recall_chat 的原话查询在数据库内先应用场景、截点、关键词�
 
 可选历史装填复用本次不变的基础请求与工具定义估算，每个新消息只计一次新增成本；失败仅回退本条及其引用原话的范围、引用登记和事件投影，不逐条深拷贝整个历史状态。估算直接跳过内部上下文元数据，真正出站时仍生成独立消息副本。当前来源片段与工具页的试装继续保留原回退路径，最终 messages + tools 的完整容量检查、图片、来源与预算边界不省略。这里不是跨轮缓存，也不据代码复杂度声称已测得加速倍数。
 
-现有 Trace 分别记录 initial_source_reads_ms、initial_context_ms、context_plan.timings_ms 的 associated_source_reads/event_packing，以及各模型步骤的 request_preparation_ms、工具 execution_ms/tool_presentation_ms、提交与发布 timings_ms。event_packing 计已结束的装填调用并含媒体读取；initial_context 与 request_preparation 也包含各自等待、钩子或压缩，数值可能嵌套，不能相加冒充纯 CPU 耗时。模型等待沿原 latency_ms，真正发送仍查原行动回执的 queue_ms/send_ms；发布耗时不是平台送达耗时。
+现有 Trace 分别记录 initial_source_reads_ms、initial_context_ms、context_plan.timings_ms 的 associated_source_reads/event_packing，以及各模型步骤的 request_preparation_ms、工具 execution_ms/tool_presentation_ms、提交与发布 timings_ms。event_packing 在装填退出时记录，包含失败及媒体等待；initial_context 与 request_preparation 也包含各自等待、钩子或压缩，数值可能嵌套，不能相加冒充纯 CPU 耗时。模型等待沿原 latency_ms，真正发送仍查原行动回执的 queue_ms/send_ms；发布耗时不是平台送达耗时。
+
+context_plan.event_packing_detail 细分原事件装配，不额外执行查询或模型调用：
+
+| 字段 | 口径 |
+|---|---|
+| calls；required_candidates／optional_candidates | 装填调用数及各次必需／可选候选数，跨调用累计 |
+| evaluated_candidates／fitted_candidates | 已进入候选循环数／该次装填接受数；不等于最终请求保留数或模型确认已读数 |
+| phases | snapshot、restore、text_projection、request_estimation、media_preparation、optional_release 各自的 calls 与 elapsed_ms；包含试装和回退 |
+| media | asset_checks／asset_lookup_ms；source_preparations／source_prepare_ms；preparation_failures；prepared_reuses／failure_reuses |
+
+request_estimation 包含其触发的工具定义准备，optional_release 内部估算计在释放阶段。source_prepare_ms 包含文件读取、锁等待、解码和图片块准备；内层资产再核对不属于前置 asset_lookup_ms。媒体子计时包含在 media_preparation，阶段计时包含在 event_packing；上下层不能相加，也不是无重叠的完整耗时分解。该细分尚不覆盖所有工具页和工作装配。
+
+同一个必需消息候选未改变时复用当次容量估算；释放可选内容后重建候选并重算。图片准备保留原单次 read_cache，复用前仍查当前资产；资产不可用时清除该局部项并记录 asset_unavailable，不装像素。最终容量、窗口锚定及原文／图片阅读核对保留。这些准备复用与供应商 cached_tokens 是不同指标。
 
 文件状态沿持久资产与原行动身份投影。当前可交付目录排除旧工作修订、未关联上传审查、已过期、已上传、已提交待核对或上传未知的资产；生成／下载不等于上传，模拟和 Shadow 不当真实 file_id。多个发起者同处一轮时不选择任意一人的授权代表所有工作，具体权限仍按原工作请求者在原事务与发送入口核对。状态增量留在运行事实尾部，不改变固定工具 Schema 或新增模型调用。
 

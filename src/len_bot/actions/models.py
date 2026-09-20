@@ -84,6 +84,7 @@ class ActionItem(BaseModel):
     plugin_origin: PluginOrigin | None = None
     requester_qq_uid: str | None = None
     origin_event_id: str | None = None
+    covered_source_event_ids: list[str] = Field(default_factory=list, max_length=16)
     command_id: str | None = None
     announcement_member: str | None = None
     resolved_images: dict[str, str] = Field(default_factory=dict, exclude=True)
@@ -107,6 +108,13 @@ class ActionItem(BaseModel):
 
     @model_validator(mode="after")
     def operation_confirmation(self):
+        if self.covered_source_event_ids:
+            if (self.output_kind!='chat' or self.plugin_origin or not self.origin_event_id or not self.batch_id
+                    or self.file_asset_id or self.job_id or self.operation_ref or self.acknowledges_task_id or self.fulfils_task_id):
+                raise ValueError('其他来源覆盖须保留普通回复的主来源及提交身份')
+            if (len(set(self.covered_source_event_ids))!=len(self.covered_source_event_ids)
+                    or self.origin_event_id in self.covered_source_event_ids):
+                raise ValueError('其他来源覆盖不得重复或包含主来源')
         if self.action_type == ActionType.UPLOAD_GROUP_FILE:
             if (not self.file_asset_id or self.segments or not self.job_id or self.job_revision is None
                     or not self.scene_id.startswith('group:') or self.reply_to or self.associated_open_loop

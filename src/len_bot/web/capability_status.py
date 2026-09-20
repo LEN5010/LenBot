@@ -68,6 +68,15 @@ async def capability_status(query, scene_id=None, requester=None):
                'local' if workspace_config and workspace_config.worker else None)
     items = []
     catalog = rt.config_store.catalog.entries
+    requirement_labels = {
+        'unconfigured':'插件参数未配置','plugin_disabled':'插件未启用或尚未装载',
+        'scene_not_enabled':'当前场景或申请者未开放','capability_denied':'当前授予检查未通过',
+        'current_work_required':'需要真实工作上下文','human_requester_required':'需要明确的人类申请者',
+        'role_not_supported':'当前职责不包含该工具','proposal_entry_required':'需要原提案入口',
+        'entry_conditions_not_met':'需要在工具原入口核对额外条件',
+        'jobs_disabled':'后台工作开关关闭','work_model_unconfigured':'尚未配置工作模型',
+        'invalid_system_source':'系统来源不符合当前入口',
+    }
     for ident, title, implementations, evidence_tools, entry in CARDS:
         item = {'id': ident, 'title': title, 'entry': entry, 'plugins': [],
                 'actions': [], 'missing_owners': [],
@@ -105,6 +114,21 @@ async def capability_status(query, scene_id=None, requester=None):
                 source_status=fact['source_status'],
                 actions=shown)
             item['plugins'].append(row)
+            if current:
+                if current['purposes']:
+                    item['deployment'].append({'label':f"{fact['name']} · 对话入口用途",'value':'、'.join(current['purposes'])})
+                work_purposes=current.get('delegable_purposes',[])
+                if work_purposes:
+                    item['deployment'].append({'label':f"{fact['name']} · 工作用途",'value':'、'.join(work_purposes)+'；创建工作后仍核对来源与额度'})
+                for conditional in current.get('conditional_work_purposes',[]):
+                    conditions='、'.join(conditional['required_capabilities']) or '该工具的原入口条件'
+                    item['deployment'].append({'label':'条件型工作用途','value':conditional['purpose']+'；检查项：'+conditions})
+                if current.get('work_requirement'):
+                    issue=current['work_requirement']
+                    item['deployment'].append({'label':'工作前置','value':requirement_labels.get(issue,issue)})
+                for blocked in current.get('blocked_purposes',[]):
+                    issue=blocked['requirement']
+                    item['deployment'].append({'label':'当前入口缺项','value':blocked['purpose']+'：'+requirement_labels.get(issue,issue)})
         item['actions'] = list({action['name']: action for plugin in item['plugins']
                                 for action in plugin.get('actions', []) if action.get('purpose') != '已声明但当前未注册'}.values())
         if ident in {'python', 'browser', 'media'}:

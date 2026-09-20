@@ -318,6 +318,8 @@ class AgentRuntime:
                     data['runtime']['onebot_access_token'] = replacement
                     data['runtime']['onebot_credential_revision'] = current_revision + 1
             candidate = self.config_store.parse(data)
+            if 'character_reference_assets' in changed_keys:
+                await self.media_service.validate_character_references(candidate.runtime.character_reference_assets)
             self.config_store.save(candidate)
             live_keys = changed_keys if live else changed_keys & EXECUTION_BUDGET_FIELDS
             if live_keys:
@@ -710,6 +712,15 @@ class AgentRuntime:
         return await self.media_service.prepare_action(action)
 
     async def validate_outbound_action(self, action: ActionItem) -> None:
+        if action.covered_source_event_ids:
+            originals=await self.event_store.events_by_ids(action.scene_id,action.covered_source_event_ids,2**63-1)
+            if len(originals)!=len(action.covered_source_event_ids):
+                raise ValueError('合并回复的原始来源不再完整可用')
+            for original in originals:
+                if (original.event_type not in {EventType.GROUP_MESSAGE_RECEIVED,EventType.PRIVATE_MESSAGE_RECEIVED}
+                        or not original.actor_id.startswith('user:') or original.actor_id==self.bot_actor_id
+                        or not self.scene_policy.chat_allowed(action.scene_id,original.actor_id.removeprefix('user:'))):
+                    raise ValueError('合并回复的来源不再具备当前群的回应资格')
         if action.file_asset_id:
             from len_bot.media.files import validate_file_action
             await validate_file_action(self.event_store, action)

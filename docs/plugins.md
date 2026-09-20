@@ -30,7 +30,19 @@
 
 核心提案和 respond 使用固定结构，不将当前目标或回执写入 Schema 枚举。低频插件仍沿 deferred 渐进发现，显式插件调用仍受原 tool_names 子集限制，before_model hook 只能选择当前获准目录并保留终结工具。终结步骤不再缩成单工具表，但宿主在执行前禁止非终结调用；定义可见不等于当前可执行，也不放宽来源、版本或预算。
 
+工具发现同步沿所属入口的原子集：显式插件传入 tool_names，专用工作传入 allowed_tools，公共研究叠加原公共工具集合。候选及无结果时的类别先过滤，再排名和截取；已不属于当前入口的展开项不占目录额度。嵌套调用复制展开目录，不通过子入口的搜索挤掉父入口工具；观察、已读资格与累计预算继续按原共享合同处理。发现结果只说明本入口本次匹配，下次提供 Schema 时仍查当前资格与合法 hook 子集。
+
+capability_facts 复用原适用性判断投影用途和缺项，不新增执行判断。混合模块同时保留对话用途与普通工作用途；条件型工作用途仅列 required_capabilities 和原入口检查说明，不在缺少真实工作时运行 available 来宣称已就绪。工作用途仅在允许 start_work 的对话入口说明，只覆盖普通工作可用的读取和账号写入工具；专用提案继续走所属入口。页面和模型读取同一投影，runtime_state 不作为第二套启停开关，具体参数与业务条件仍由原 handler 核对。
+
+普通 start_work 新增可选 reuse_work_ref，选择已实际提供的普通研究结果版本，用于后续整理／导出。宿主填写内部 JobProposal.reused_work 并在原 Gate／事务核对；插件钩子不能靠填写该内部字段补造已读资格、换来源版本或带入其他场景资料。新工作不继承旧阅读账、发送片段或上传资格；专用插件成果仍沿所属入口处理。现有插件 stage_work 的普通 result_refs 资料传递不变，不自动把相同资料推断成父子工作关系。
+
+工作空间的 prepare_workspace_file 增加独立 MD 纯文本格式，仍只接受当前工作 Gateway 的确认产物。Markdown 按 UTF-8 与原控制字符规则检查，不作为可执行内容；for_upload 沿原 send_file、工作修订及动作审查，不直接发送。工具发现增加 Markdown／MD 关键词，不增加额外执行角色或权限。
+
+respond 的输入 Schema 与本地解析由同一组模型定义：业务关系通过唯一回执字段确定，不填写 intent；sources 仅声明 silent／incomplete，实际回应、创建与等待由宿主派生。提案工具 submit_message 已沿同一路径提交，不再补写 replied。covers 只用于普通人类对话合并回应，插件系统表达仍绑定原唯一来源。直接确定性入口及 result_only 保持原合同；旧参数不自动改写为新结构。
+
 respond 的 `messages[].answer_basis` 是可选增量字段，详见[单条答复的依据](architecture.md#单条答复的依据)。嵌套表达共享原实际阅读记录与工作版本，但导入资料 ID 不表示已读；result_only 的结果类型和直接确定性发送入口不变，不自动给它们补造依据。钩子仍不能重写原始工具回执或增加消息归属，依据穿过提交/队列时保留，不能借它改变权限或发送参数。
+
+资料页的 evidence_ref 由宿主投影生成。respond.answer_basis 和普通工作 finish_work 用 evidence_refs 选择页，内部仍解析为原 ResultSpan；原始 ToolResult 保存时不接受插件自带的页名作为读取资格。原生正文或合法宿主投影必须实际进入最终请求，并在模型响应后确认。独立插件读取通过既有工作 record_presentations 回调保存页名和范围，工作恢复从 observation_reads 重建；result_only 的自定义输出类型、专用工作的 JobResult 以及 work_state 的范围合同保持不变。
 
 `kind` 区分读取与提案，`ordered` 独立声明兄弟调用是否必须串行；工作区执行和文件操作共用状态，不能因 kind=read 就并发。原始观察按 result_id 保存、分页展示，不按参数相同盲目复用旧结果。
 

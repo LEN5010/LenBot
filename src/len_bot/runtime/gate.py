@@ -174,11 +174,15 @@ class RuntimeGate:
         if operator_control and (outcome.disposition != FinalDisposition.SILENCE or outcome.message_proposals):
             return GateDecision(FinalDisposition.SILENCE, 'Operator controls cannot submit messages', accepted=False)
         read_ids = scene_commit['event'].payload['source_event_ids'] if scene_commit else []
+        covered={ident for message in outcome.message_proposals for ident in message.covered_source_event_ids}
+        if covered and (mailbox.output_kind!='chat' or mailbox.plugin_origin or operator_control):
+            return GateDecision(FinalDisposition.SILENCE, 'Only ordinary chat may cover additional human sources', accepted=False)
         source_events = {event.id:event for event in await self.event_store.events_by_ids(
             current_scene_state.scene_id,[message.source_event_id for message in outcome.message_proposals
                 if message.source_event_id],current_scene_state.last_observed_event_rowid)}
         if mailbox.output_kind == 'chat' and not operator_control:
             ids = {message.source_event_id for message in outcome.message_proposals if message.source_event_id}
+            ids.update(covered)
             ids.update(outcome.handled_source_event_ids)
             if not ids.issubset(read_ids):
                 return GateDecision(FinalDisposition.SILENCE, 'Message request source was not read in this turn', accepted=False)
@@ -187,13 +191,21 @@ class RuntimeGate:
             requesters = set()
             requesters.update(event.actor_id.removeprefix('user:') for event in source_events.values()
                 if event.id in outcome.handled_source_event_ids and event.actor_id.startswith('user:') and event.actor_id != self.bot_actor_id)
-            for message in outcome.message_proposals:
+            for index,message in enumerate(outcome.message_proposals):
                 source = source_events.get(message.source_event_id)
                 if (source is None or source.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
                         or source.actor_id == self.bot_actor_id or not message.requester_qq_uid
                         or source.actor_id != 'user:' + message.requester_qq_uid):
                     return GateDecision(FinalDisposition.SILENCE, 'Each chat message needs its own human request source', accepted=False)
                 requesters.add(message.requester_qq_uid)
+                for ident in message.covered_source_event_ids:
+                    original=source_events.get(ident)
+                    relation=next((source for source in outcome.source_outcomes if source.source_event_id==ident),None)
+                    if (original is None or original.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                            or not original.actor_id.startswith('user:') or original.actor_id==self.bot_actor_id
+                            or relation is None or index not in relation.message_indices or relation.status=='silent'):
+                        return GateDecision(FinalDisposition.SILENCE, 'Covered sources need actual human originals and this message relation', accepted=False)
+                    requesters.add(original.actor_id.removeprefix('user:'))
                 if message.job_id and message.fulfils_task_id:
                     job=await self.event_store.get_job(message.job_id,current_scene_state.scene_id)
                     if job:requesters.add(job['requester_qq_uid'])
@@ -286,6 +298,10 @@ class RuntimeGate:
         # Resolve references before any transaction or visible acknowledgement.
         if not self.jobs_enabled_probe() and any(p.operation == 'create' for p in outcome.job_proposals):
             return GateDecision(FinalDisposition.SILENCE, "Information work is disabled", accepted=False)
+        for proposal in outcome.job_proposals:
+            reused=proposal.reused_work
+            if reused and (reused.job_id,reused.revision) not in mailbox.provided_work_results:
+                return GateDecision(FinalDisposition.SILENCE, '复用工作成果须已实际提供所选版本，工作目录不授予该资格', accepted=False)
         if self.capability_authority:
             for proposal in outcome.job_proposals:
                 if proposal.operation == 'cancel':
@@ -532,6 +548,7 @@ class RuntimeGate:
                 plugin_origin=msg.plugin_origin or mailbox.plugin_origin,
                 requester_qq_uid=msg.requester_qq_uid if msg.source_event_id else mailbox.requester_qq_uid,
                 origin_event_id=msg.source_event_id or mailbox.origin_stimulus_id,
+                covered_source_event_ids=msg.covered_source_event_ids,
                 command_id=mailbox.command_id,
                 announcement_member=mailbox.announcement_member,
                 episode_id=committed.episode_id,checkpoint_index=outcome.checkpoint_index,

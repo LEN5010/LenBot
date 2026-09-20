@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import shutil
+import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -16,7 +17,7 @@ from urllib.parse import urldefrag
 import httpx
 from PIL import Image, ImageOps
 
-from len_bot.media.models import CuratedMediaBaseline, CuratedMediaSavedError, PreparedMediaContext
+from len_bot.media.models import CHARACTER_REFERENCE_TAG, CuratedMediaBaseline, CuratedMediaSavedError, PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
@@ -267,6 +268,8 @@ class MediaService:
     async def upload(self, data, scope, description, tags):
         if scope != "global-safe" and not scope.startswith(("group:", "private:")):
             raise ValueError("请选择群聊、私聊或global-safe素材范围")
+        if CHARACTER_REFERENCE_TAG in tags and '表情包' in tags:
+            raise ValueError('人物参考与反应表情使用不同标签')
         mime, path = await self._store_bytes(data)
         asset_id = "image_" + uuid.uuid4().hex
         event = await self.runtime.event_store.save_media_file(asset_id, scope, mime, path,
@@ -298,9 +301,46 @@ class MediaService:
         return await self.runtime.event_store.get_media(asset_id, [scene_id])
 
     async def edit(self, asset_id, scope, description, tags, enabled, *, baseline: CuratedMediaBaseline, palette_order=PALETTE_UNCHANGED):
-        event = await self.runtime.event_store.edit_media(asset_id, scope, description, tags, enabled,
-            baseline=baseline, palette_order=palette_order)
+        async with self.runtime.config_update_lock:
+            bound=any(item.asset_id==asset_id for item in self.runtime.config_store.current.runtime.character_reference_assets)
+            if bound and CHARACTER_REFERENCE_TAG not in tags:
+                raise ValueError('该图片仍绑定人物参考；先解除绑定，再改变素材用途')
+            event = await self.runtime.event_store.edit_media(asset_id, scope, description, tags, enabled,
+                baseline=baseline, palette_order=palette_order)
         return await self._finish_curated_save(event, asset_id, scope)
+
+    @staticmethod
+    def character_reference_issue(asset):
+        if asset is None:
+            return '素材不存在或不在当前可读范围'
+        if not asset['curated'] or not (asset['mime_type'] or '').startswith('image/') or not asset['path']:
+            return '人物参考需要已登记的运营图片'
+        if not asset['enabled']:
+            return '素材已停用'
+        if CHARACTER_REFERENCE_TAG not in asset['tags'] or '表情包' in asset['tags']:
+            return '人物参考需使用独立的人物参考标签'
+        if asset['palette_order'] is not None:
+            return '人物参考的表情目录顺序须留空'
+        return None
+
+    async def validate_character_references(self, bindings):
+        assets=await self.runtime.event_store.reference_assets_for_operator([item.asset_id for item in bindings])
+        for index,item in enumerate(bindings):
+            issue=self.character_reference_issue(assets.get(item.asset_id))
+            if issue:
+                raise ValueError(f'character_reference_assets[{index}].asset_id: {issue}')
+
+    async def character_reference_catalog(self, scene_id, bindings):
+        if not self.runtime.config.media_enabled:
+            return []
+        catalog=[]
+        for item in bindings:
+            asset=await self.runtime.event_store.get_media(item.asset_id,[scene_id,'global-safe'])
+            if self.character_reference_issue(asset) is not None:
+                continue
+            catalog.append({'character_key':item.character_key,'outfit':item.outfit,
+                'asset_id':item.asset_id,'description':asset['description'][:240],'status':'catalog_only'})
+        return catalog
 
     async def _prepare_asset(self, asset_id, scene_id):
         asset, data = await self.get_bytes(asset_id, scene_id)
@@ -342,17 +382,33 @@ class MediaService:
 
     async def prepare_context_images(self, scene_id: str, asset_ids: Sequence[str], *, limit: int,
                                      read_cache: dict[str, PreparedMediaContext] | None = None,
-                                     supports_segment_vision: bool = False) -> PreparedMediaContext:
+                                     supports_segment_vision: bool = False,
+                                     preparation_stats: dict[str, int | float] | None = None) -> PreparedMediaContext:
         """Native image blocks, with explicit omissions and no hidden model call."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= self.runtime.config.max_context_images:
             raise ValueError("Image limit must be within the configured image window")
         result: PreparedMediaContext = {"blocks": [], "manifest": []}
         reads = read_cache if read_cache is not None else {}
+        def record(name, value):
+            if preparation_stats is not None:
+                preparation_stats[name]=round(preparation_stats.get(name,0)+value,3)
         for asset_id in dict.fromkeys(asset_ids):
             if not self.runtime.config.media_enabled:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "media_disabled"})
                 continue
-            asset = await self.runtime.event_store.get_media(asset_id, [scene_id, 'global-safe'])
+            started=time.monotonic()
+            try:
+                asset = await self.runtime.event_store.get_media(asset_id, [scene_id, 'global-safe'])
+            finally:
+                record('asset_checks',1)
+                record('asset_lookup_ms',(time.monotonic()-started)*1000)
+            if asset is None:
+                # Prepared pixels cannot outlive the original asset's current
+                # scope or enablement, even inside one packing attempt cache.
+                reads.pop(asset_id,None)
+                result['manifest'].append({'asset_id':asset_id,'status':'omitted','reason':'asset_unavailable',
+                    'note':'图片不存在、已停用或不在本场景中，本次未装入像素'})
+                continue
             mime = (asset or {}).get('mime_type') or ''
             if mime.startswith(('audio/', 'video/')):
                 result['manifest'].append({'asset_id': asset_id, 'status': 'available', 'media_type': mime,
@@ -367,11 +423,18 @@ class MediaService:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "image_limit"})
                 continue
             if asset_id not in reads:
+                started=time.monotonic()
+                record('source_preparations',1)
                 try:
                     prepared, manifest = await self._prepare_asset(asset_id, scene_id)
                     reads[asset_id] = {'blocks':[image_block(prepared)], 'manifest':[manifest]}
                 except (ValueError, OSError, httpx.HTTPError, Image.DecompressionBombError) as error:
                     reads[asset_id] = {'blocks':[], 'manifest':[self._media_error(asset_id, error)]}
+                    record('preparation_failures',1)
+                finally:
+                    record('source_prepare_ms',(time.monotonic()-started)*1000)
+            else:
+                record('prepared_reuses' if reads[asset_id]['blocks'] else 'failure_reuses',1)
             one = reads[asset_id]
             manifest = copy.deepcopy(one['manifest'][0])
             if one['blocks']:

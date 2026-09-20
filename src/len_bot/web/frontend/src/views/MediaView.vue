@@ -1,11 +1,12 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
 import { api, fmtTime } from '../api.js'
 import PageHeader from '../components/PageHeader.vue'
 import ScopeSelect from '../components/ScopeSelect.vue'
 import EntityLink from '../components/EntityLink.vue'
 import MediaPreview from '../components/MediaPreview.vue'
+import CharacterReferencesPanel from '../components/CharacterReferencesPanel.vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useConfigConflicts } from '../composables/useConfigConflicts.js'
@@ -22,6 +23,8 @@ const error = ref(''), readAt = ref(null), uploadMaxBytes = ref(null)
 const paletteLoading = ref(false), paletteLoaded = ref(false), paletteError = ref(''), paletteReadAt = ref(null), paletteLimit = ref(null)
 const query = ref(route.query.q || ''), scope = ref(listScope.value)
 const kind = ref(route.query.kind || 'all'), enabled = ref(route.query.enabled || 'all')
+const purpose = ref(route.query.purpose || 'all'), referenceEditor = ref(null)
+const purposeLabels = {character_reference:'人物参考',sticker:'反应表情',media:'一般媒体'}
 const selected = ref(null), detailLoading = ref(false), detailError = ref(''), draft = ref(null), baseline = ref(null)
 const saveError = ref(''), detailMessage = ref(''), readbackPending = ref(false), savedNotice = ref(null)
 const saveReview = ref(null)
@@ -35,11 +38,12 @@ const page = computed(() => Math.max(1, Number(route.query.page) || 1))
 const dirty = computed(() => !!draft.value && !!baseline.value && hasConfigDraftChanges(editableAsset(baseline.value), draftValues()))
 const uploadDirty = computed(() => uploadOpen.value && !uploadReceipt.value && !!(uploadForm.value.file || uploadForm.value.description || uploadForm.value.tags))
 const paletteValid = computed(()=>!draft.value || draft.value.palette_order===null || Number.isSafeInteger(draft.value.palette_order)&&draft.value.palette_order>=0)
+const purposeValid = computed(()=>!draft.value || !draftValues().tags.includes('人物参考') || !draftValues().tags.includes('表情包')&&draft.value.palette_order===null)
 const changedSinceEdit = computed(()=>!!baseline.value&&!!selected.value&&hasConfigDraftChanges(baseline.value,assetBaseline(selected.value)))
 const { confirmLeave } = useUnsavedChanges(computed(() => dirty.value || uploadDirty.value || !!saveReview.value))
 onBeforeRouteUpdate((to, from) => (to.query.id !== from.query.id || to.query.scene !== from.query.scene || (uploadOpen.value && to.fullPath !== from.fullPath)) ? confirmLeave() : true)
 const detailSelection = () => JSON.stringify([route.name,detailKey.value])
-const listGuard = useRequestGuard(()=>JSON.stringify([route.name,listScope.value,route.query.q,route.query.kind,route.query.enabled,page.value]))
+const listGuard = useRequestGuard(()=>JSON.stringify([route.name,listScope.value,route.query.q,route.query.kind,route.query.enabled,route.query.purpose,page.value]))
 const paletteGuard = useRequestGuard(()=>JSON.stringify([route.name,listScope.value]))
 const detailGuard = useRequestGuard(detailSelection), saveGuard = useRequestGuard(detailSelection)
 const uploadGuard = useRequestGuard(()=>JSON.stringify([route.name,route.fullPath,uploadOpen.value]))
@@ -72,6 +76,7 @@ async function load() {
   const params = new URLSearchParams({ scene_id: listScope.value, query: route.query.q || '', page: String(page.value), page_size: '48' })
   if (route.query.kind && route.query.kind !== 'all') params.set('curated', String(route.query.kind === 'curated'))
   if (route.query.enabled && route.query.enabled !== 'all') params.set('enabled', String(route.query.enabled === 'enabled'))
+  if (route.query.purpose && route.query.purpose !== 'all') params.set('purpose', route.query.purpose)
   try {
     const result = await api('/api/media?' + params)
     if (!fresh()) return
@@ -115,9 +120,18 @@ async function loadDetail({accept=()=>true}={}) {
   finally { if (fresh()) detailLoading.value = false }
 }
 function filter() {
-  router.push({ name: 'media', query: { return_to: route.query.return_to, scene: scope.value || 'global-safe', q: query.value || undefined, kind: kind.value === 'all' ? undefined : kind.value, enabled: enabled.value === 'all' ? undefined : enabled.value, page: 1 } })
+  router.push({ name: 'media', query: { return_to: route.query.return_to, scene: scope.value || 'global-safe', q: query.value || undefined, kind: kind.value === 'all' ? undefined : kind.value, enabled: enabled.value === 'all' ? undefined : enabled.value, purpose: purpose.value === 'all' ? undefined : purpose.value, page: 1 } })
 }
-function closeDetail() { const query = { ...route.query, scene: listScope.value }; delete query.id; delete query.list_scene; router.push({ name: 'media', query }) }
+async function addReference() {
+  if (dirty.value || saving.value || detailLoading.value || readbackPending.value || saveReview.value || currentConflict.value
+    || !selected.value?.curated || selected.value.purpose!=='character_reference' || !selected.value.enabled || selected.value.palette_order!==null) return
+  if (referenceEditor.value?.addAsset(selected.value)) {
+    await closeDetail()
+    await nextTick()
+    document.getElementById('character-references')?.scrollIntoView({block:'start'})
+  }
+}
+function closeDetail() { const query = { ...route.query, scene: listScope.value }; delete query.id; delete query.list_scene; return router.push({ name: 'media', query }) }
 function refresh() { load(); loadPalette() }
 function refreshDetail() { if (!saving.value) loadDetail() }
 function setPaletteOrder(value) { if(draft.value&&!saving.value&&!detailLoading.value&&!readbackPending.value&&!saveReview.value)draft.value.palette_order = value === '' || value === null ? null : Number(value) }
@@ -144,6 +158,7 @@ function resolveConflict(keep) {
 async function save() {
   if (saving.value || detailLoading.value || detailError.value || readbackPending.value || saveReview.value || currentConflict.value || !dirty.value || !draft.value || !baseline.value || !selected.value?.curated) return
   if (!paletteValid.value) { saveError.value = '固定目录顺序须为非负整数，或留空不列入目录。'; return }
+  if (!purposeValid.value) { saveError.value = '人物参考请移除表情包标签，并将固定目录顺序留空。'; return }
   const changedAccess = draft.value.enabled !== baseline.value.enabled || draft.value.palette_order !== baseline.value.palette_order
   if (changedAccess && !window.confirm(`保存到「${baseline.value.scope}」，更新素材启用状态与固定目录。${baseline.value.scope==='global-safe'?'公共素材会影响所有场景的可用目录。':''}确认保存？`)) return
   const fresh=saveGuard(),key=detailKey.value,id=baseline.value.id,scope=baseline.value.scope
@@ -217,9 +232,9 @@ async function inspectUploadScope() {
   if(sameLocation)refresh()
   else await router.push(target)
 }
-watch(() => [listScope.value, route.query.q, route.query.kind, route.query.enabled, route.query.page], () => {
+watch(() => [listScope.value, route.query.q, route.query.kind, route.query.enabled, route.query.purpose, route.query.page], () => {
   assets.value = []; total.value = 0; loaded.value = false; readAt.value = null
-  scope.value = listScope.value; query.value = route.query.q || ''; kind.value = route.query.kind || 'all'; enabled.value = route.query.enabled || 'all'; load()
+  scope.value = listScope.value; query.value = route.query.q || ''; kind.value = route.query.kind || 'all'; enabled.value = route.query.enabled || 'all'; purpose.value = route.query.purpose || 'all'; load()
 }, { immediate: true })
 watch(listScope, () => { palette.value = []; paletteReadAt.value = null; paletteLimit.value = null; paletteLoaded.value = false; loadPalette() }, { immediate: true })
 watch(detailKey, () => {
@@ -244,9 +259,11 @@ watch(() => route.fullPath, () => {
         <v-text-field v-model="query" label="描述或标签" hide-details clearable />
         <v-select v-model="kind" :items="[{title:'全部来源',value:'all'},{title:'运营素材',value:'curated'},{title:'消息与工具媒体',value:'chat'}]" label="来源" hide-details />
         <v-select v-model="enabled" :items="[{title:'全部状态',value:'all'},{title:'已启用',value:'enabled'},{title:'已停用',value:'disabled'}]" label="状态" hide-details />
+        <v-select v-model="purpose" :items="[{title:'全部用途',value:'all'},{title:'反应表情',value:'sticker'},{title:'人物参考',value:'character_reference'},{title:'一般媒体',value:'media'}]" label="用途" hide-details />
         <v-btn type="submit" color="primary" :disabled="loading">查询</v-btn>
       </v-form>
     </v-card>
+    <CharacterReferencesPanel ref="referenceEditor" />
     <v-expansion-panels>
       <v-expansion-panel title="固定表情目录">
         <v-expansion-panel-text>
@@ -265,7 +282,7 @@ watch(() => route.fullPath, () => {
       <v-card v-for="asset in assets" :key="asset.id" tag="article">
         <RouterLink :to="toAsset(asset)" class="asset-link">
           <div class="asset-preview"><MediaPreview :asset="asset" :scene-id="listScope" /></div>
-          <div class="asset-copy"><strong class="clamp-2">{{ asset.description || (asset.curated ? '运营素材' : '已登记媒体') }}</strong><p class="muted asset-scope">{{ asset.scope }} · {{ asset.mime_type || '图片类型待读取' }}</p><div class="chips"><v-chip size="small" :color="asset.enabled ? 'success' : 'default'">{{ asset.enabled ? '已启用' : '已停用' }}</v-chip><v-chip v-if="asset.palette_order != null" size="small" color="primary">目录 {{ asset.palette_order }}</v-chip><v-chip v-if="asset.in_current_limit" size="small" color="success">当前目录限额内</v-chip><v-chip v-else-if="asset.in_initial_catalog" size="small">有序号，未进入当前目录</v-chip><v-chip v-if="asset.curated && !asset.description_sufficient" size="small" color="warning">缺描述/标签</v-chip></div><p class="asset-tags clamp-2">{{ asset.tags.slice(0,3).join(' · ') }}<span v-if="asset.tags.length > 3"> · +{{ asset.tags.length - 3 }}</span></p></div>
+          <div class="asset-copy"><strong class="clamp-2">{{ asset.description || (asset.curated ? '运营素材' : '已登记媒体') }}</strong><p class="muted asset-scope">{{ asset.scope }} · {{ asset.mime_type || '图片类型待读取' }}</p><div class="chips"><v-chip size="small">{{ purposeLabels[asset.purpose] || '一般媒体' }}</v-chip><v-chip size="small" :color="asset.enabled ? 'success' : 'default'">{{ asset.enabled ? '已启用' : '已停用' }}</v-chip><v-chip v-if="asset.palette_order != null" size="small" color="primary">目录 {{ asset.palette_order }}</v-chip><v-chip v-if="asset.in_current_limit" size="small" color="success">当前目录限额内</v-chip><v-chip v-else-if="asset.in_initial_catalog" size="small">有序号，未进入当前目录</v-chip><v-chip v-if="asset.curated && !asset.description_sufficient" size="small" color="warning">缺描述/标签</v-chip></div><p class="asset-tags clamp-2">{{ asset.tags.slice(0,3).join(' · ') }}<span v-if="asset.tags.length > 3"> · +{{ asset.tags.length - 3 }}</span></p></div>
         </RouterLink>
       </v-card>
     </div>
@@ -294,8 +311,13 @@ watch(() => route.fullPath, () => {
           <p class="entity-id mb-3">{{ selected.id }}</p><div class="detail-image"><MediaPreview :asset="selected" :scene-id="scalar(route.query.scene) || 'global-safe'" interactive /></div>
           <div class="detail-meta"><v-chip>{{ selected.curated ? '运营素材' : '消息或工具媒体 · 只读' }}</v-chip><span>{{ selected.scope }}</span><span>{{ selected.mime_type || '图片类型待读取' }}</span><span>{{ fmtTime(selected.created_at) }}</span><a :href="preview(selected)" target="_blank" rel="noopener">打开原媒体</a></div>
           <p class="muted mb-4">音视频须手动播放；此处预览不代表模型已看、已听或已转写，也不改变原资料的阅读范围。</p>
+          <div v-if="selected.purpose==='character_reference'" class="mb-4">
+            <p class="muted mb-2">人物参考用于按需辨认，独立于反应表情。先保存素材标签与状态，再选择人物与服装。</p>
+            <v-btn variant="outlined" :disabled="dirty||saving||detailLoading||!!detailError||readbackPending||!!saveReview||!!currentConflict||!selected.curated||!selected.enabled||selected.palette_order!==null||!referenceEditor?.canAdd" @click="addReference">加入人物参考草稿</v-btn>
+          </div>
+          <p v-if="!purposeValid" class="text-error mb-3" role="alert">人物参考请移除“表情包”标签，并将固定目录顺序留空。</p>
           <p v-if="changedSinceEdit&&!currentConflict" class="muted mb-4">本次读取的保存值已有变化，编辑草稿和原基线仍保留；保存只合并实际编辑的字段，不按刷新后的记录覆盖整份素材。</p>
-          <v-form v-if="draft" :disabled="saving||detailLoading||readbackPending||!!saveReview" class="edit-form" @submit.prevent="save"><v-textarea v-model="draft.description" label="完整描述" maxlength="2000" auto-grow rows="3" /><v-text-field v-model="draft.tagsText" label="标签（空格分隔）" /><v-text-field :model-value="draft.palette_order" type="number" min="0" step="1" clearable label="固定目录顺序" hint="非负整数，越小越靠前；留空不列入目录。目录数量由运行配置限制。" persistent-hint @update:model-value="setPaletteOrder" /><v-switch v-model="draft.enabled" label="启用素材" color="primary" hide-details /><p v-if="!paletteValid" class="text-error" role="alert">目录顺序只能填写非负整数或留空。</p><v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty||!paletteValid||saving||detailLoading||!!detailError||readbackPending||!!saveReview||!!currentConflict||!selected.curated">保存素材与目录</v-btn></v-form>
+          <v-form v-if="draft" :disabled="saving||detailLoading||readbackPending||!!saveReview" class="edit-form" @submit.prevent="save"><v-textarea v-model="draft.description" label="完整描述" maxlength="2000" auto-grow rows="3" /><v-text-field v-model="draft.tagsText" label="标签（空格分隔）" /><v-text-field :model-value="draft.palette_order" type="number" min="0" step="1" clearable label="固定目录顺序" hint="非负整数，越小越靠前；留空不列入目录。目录数量由运行配置限制。" persistent-hint @update:model-value="setPaletteOrder" /><v-switch v-model="draft.enabled" label="启用素材" color="primary" hide-details /><p v-if="!paletteValid" class="text-error" role="alert">目录顺序只能填写非负整数或留空。</p><v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty||!paletteValid||!purposeValid||saving||detailLoading||!!detailError||readbackPending||!!saveReview||!!currentConflict||!selected.curated">保存素材与目录</v-btn></v-form>
           <template v-else><p class="full-text">{{ selected.description || '没有描述' }}</p><div class="chips"><v-chip v-for="tag in selected.tags" :key="tag" size="small">{{ tag }}</v-chip></div><p class="muted my-4">非运营媒体保留其原始登记，在此只读；不能借此改写来源、描述或启用状态。</p></template>
           <v-divider class="my-4" /><h3 class="mb-2">来源记录</h3><EntityLink v-if="selected.source_event_id" type="event" :id="selected.source_event_id" :scene-id="selected.scope" /><p v-else class="muted">未记录来源事件</p>
         </template>
@@ -313,7 +335,7 @@ watch(() => route.fullPath, () => {
         <v-alert v-if="uploadReview" type="warning" variant="tonal" class="mb-4"><p>此次 {{ uploadReview.name }}（{{ uploadReview.size }} 字节）向 {{ uploadReview.scope }} 的上传结果未确认，当前表单不再次发送。</p><v-btn class="mt-3" variant="outlined" :disabled="uploading" @click="inspectUploadScope">查看提交范围的素材列表</v-btn></v-alert>
         <v-form v-if="!uploadReceipt" class="edit-form" :disabled="uploading||!!uploadReview" @submit.prevent="upload">
           <p class="muted">仅支持 PNG、JPEG、WEBP、GIF；{{ uploadMaxBytes == null ? '大小上限按当前运行配置' : `大小上限 ${uploadMaxBytes.toLocaleString()} 字节` }}。公共素材可在所有场景使用。此处不上传音视频，也不直接向群发送。</p><p class="muted">请求发出后，离开页面不等于取消服务器处理；结果未确认时请回原范围刷新，不要重复上传。</p>
-          <ScopeSelect v-model="uploadForm.scope" :include-global="true" :clearable="false" :disabled="uploading||!!uploadReview" /><v-file-input v-model="uploadForm.file" accept="image/png,image/jpeg,image/webp,image/gif" label="图片文件" show-size required /><v-textarea v-model="uploadForm.description" label="描述用途或情绪" maxlength="2000" rows="3" /><v-text-field v-model="uploadForm.tags" label="标签（空格分隔）" />
+          <ScopeSelect v-model="uploadForm.scope" :include-global="true" :clearable="false" :disabled="uploading||!!uploadReview" /><v-file-input v-model="uploadForm.file" accept="image/png,image/jpeg,image/webp,image/gif" label="图片文件" show-size required /><v-textarea v-model="uploadForm.description" label="描述用途或情绪" maxlength="2000" rows="3" /><v-text-field v-model="uploadForm.tags" label="标签（空格分隔）" hint="人物常服使用 人物参考；反应图使用 表情包。两种用途分别登记。" persistent-hint />
           <p>将保存到：<strong>{{ uploadForm.scope || '请选择范围' }}</strong></p><v-btn type="submit" color="primary" :loading="uploading" :disabled="uploading||!!uploadReview||!uploadForm.file||!uploadForm.scope">上传到所选范围</v-btn>
         </v-form>
       </v-card-text></v-card>
@@ -321,7 +343,7 @@ watch(() => route.fullPath, () => {
   </div>
 </template>
 <style scoped>
-.filters{display:grid;grid-template-columns:minmax(170px,1.2fr) minmax(160px,1.5fr) minmax(120px,.7fr) minmax(120px,.7fr) auto;gap:12px;align-items:center}
+.filters{display:grid;grid-template-columns:minmax(170px,1.2fr) minmax(160px,1.5fr) repeat(3,minmax(110px,.7fr)) auto;gap:12px;align-items:center}
 .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}.asset-link{display:block;color:inherit;text-decoration:none;height:100%}.asset-preview{aspect-ratio:1;background:#f4f6f9;display:flex;align-items:center;justify-content:center;padding:12px}
 .asset-copy{padding:14px;min-width:0;display:grid;gap:8px}.asset-copy strong{line-height:1.5;min-height:3em;overflow-wrap:anywhere}.asset-scope{font-size:12px;overflow-wrap:anywhere}.asset-tags{font-size:12px;color:#64748b;min-height:1.5em}.chips,.detail-meta{display:flex;gap:8px;flex-wrap:wrap}
 .list-summary,.dialog-title{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.palette-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}.palette-item{display:flex;gap:10px;align-items:center;min-width:0;text-decoration:none;color:inherit}.palette-preview{width:48px;height:48px;flex:none;background:#f4f6f9}

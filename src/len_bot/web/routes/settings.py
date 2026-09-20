@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, Body
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, TypeAdapter, model_validator
-from len_bot.config import AddressName
+from len_bot.config import AddressName, CharacterReferenceAsset
 from len_bot.config_edit import ConfigEdit, ConfigEditConflict
 from len_bot.config_store import AccessSettings, ResourceSettings, TimeSettings, MemberSettings
 from len_bot.runtime.capabilities import Capability, CapabilityGrant
@@ -261,6 +261,28 @@ class PersonaSettingsRequest(BaseModel):
     identity_core: Optional[str] = None
     conversation_style: Optional[str] = None
     address_names: list[AddressName]|None = Field(default=None,max_length=32)
+
+
+class CharacterReferencesRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    character_reference_assets: list[CharacterReferenceAsset] = Field(max_length=40)
+
+
+@router.get('/character-references')
+async def character_references(request: Request, user: str = Depends(get_current_user)):
+    return await request.app.state.runtime.query_service.character_reference_settings()
+
+
+@router.post('/character-references')
+async def update_character_references(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
+    runtime=request.app.state.runtime
+    try:
+        values=CharacterReferencesRequest.model_validate(edit.values).model_dump(mode='json')
+    except ValidationError as error:
+        raise HTTPException(422,error.errors(include_input=False,include_context=False)) from error
+    await save_runtime_settings(runtime,values,live=True,baseline=edit.baseline)
+    return {'success':True,'message':'人物参考绑定已保存，后续新对话按原范围和图片预算使用；未读取像素或发送图片'}
+
 
 @router.get("/persona")
 async def get_persona_settings(request: Request, user: str = Depends(get_current_user)):

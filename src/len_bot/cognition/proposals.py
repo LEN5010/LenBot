@@ -3,23 +3,25 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Annotated, Literal
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
-from len_bot.cognition.jobs import JobProposal, ResultSpan
-from len_bot.cognition.models import (AnswerBasis, AnswerBasisKind, AnswerGap, AnswerWorkResult,
+from len_bot.cognition.jobs import JobProposal, ReusedWorkResult
+from len_bot.cognition.models import (AnswerBasis, AnswerGap, AnswerWorkResult,
     EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal)
 from len_bot.memory.models import MemoryProposal
 from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
 from len_bot.scheduler.models import task_delivery_available
-from len_bot.runtime.attention import HUMAN_INPUTS
+from len_bot.runtime.attention import HUMAN_INPUTS, RUNTIME_INPUTS
 
 
 class StrictModel(BaseModel):
     model_config=ConfigDict(extra='forbid')
 
 class TurnPart(StrictModel):
+    model_config=ConfigDict(json_schema_extra={'oneOf':[
+        {'required':[name]} for name in ('text','image','video','audio','at')]})
     text: str|None=Field(default=None,min_length=1,
         description='要实际发送的文字；指定照发时只填要求的文字、标点和换行，不添加角色评语。换行使用真实换行，仅在用户要求展示转义写法时发送反斜线加n。')
     image: str|None=Field(default=None,min_length=1)
@@ -37,55 +39,126 @@ class ReplyExpectation(StrictModel):
     target: str=Field(description='期待回应的人物U引用')
     intent: str=Field(min_length=1)
 
-class TurnAnswerBasis(StrictModel):
-    kind: AnswerBasisKind
+class SocialAnswerBasis(StrictModel):
+    kind: Literal['social','general']
+
+
+class EvidenceAnswerBasis(StrictModel):
     event_refs: list[str]=Field(default_factory=list,max_length=16,
         description='支持本条答复的已完整读取的人类原话M；与回应来源source分开，不填摘要或Bot发言')
-    result_spans: list[ResultSpan]=Field(default_factory=list,max_length=16,
-        description='复制实际已读资料的evidence_span；result_id用R或真实ID，范围非空，保留坐标单位；目录不算正文')
+    evidence_refs: list[str]=Field(default_factory=list,max_length=16,
+        description='复制支持本条结论的实际已读资料页evidence_ref；宿主解析原资料与精确范围。群原话用event_refs，目录不作为正文依据')
     unresolved: list[AnswerGap]=Field(default_factory=list,max_length=12)
 
+    @model_validator(mode='after')
+    def unique_references(self):
+        if len(set(self.event_refs)) != len(self.event_refs):
+            raise ValueError('event_refs 每条已读原话只填一次')
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValueError('evidence_refs 每个已读资料页只填一次')
+        return self
+
+
+class ObservedAnswerBasis(EvidenceAnswerBasis):
+    model_config=ConfigDict(json_schema_extra={'anyOf':[
+        {'required':[name],'properties':{name:{'minItems':1}}}
+        for name in ('event_refs','evidence_refs')]})
+    kind: Literal['observed']
+
+    @model_validator(mode='after')
+    def has_direct_evidence(self):
+        if not (self.event_refs or self.evidence_refs):
+            raise ValueError('observed 填写支持本条答复的已读 event_refs 或 evidence_refs')
+        return self
+
+
+class WorkAnswerBasis(EvidenceAnswerBasis):
+    kind: Literal['work_result']
+
+
+class MixedAnswerBasis(EvidenceAnswerBasis):
+    kind: Literal['mixed']
+
+
+class UnverifiedAnswerBasis(EvidenceAnswerBasis):
+    kind: Literal['unverified']
+    unresolved: list[AnswerGap]=Field(min_length=1,max_length=12,
+        description='本条答复仍待核实的具体内容')
+
+
+TurnAnswerBasis = Annotated[
+    SocialAnswerBasis | ObservedAnswerBasis | WorkAnswerBasis | MixedAnswerBasis | UnverifiedAnswerBasis,
+    Field(discriminator='kind')]
+
+
+_RELATIONS=('ack_ref','operation_ref','delivery_ref','work_ref')
+_FILE_TEXT_FIELDS=('segments','reply_to','expect_reply','addressed_to','covers')
+
+
+def _message_shapes():
+    shapes=[]
+    for relation in (None,*_RELATIONS):
+        forbidden=['file_asset_id',*(name for name in _RELATIONS if name!=relation)]
+        if relation:
+            forbidden.append('covers')
+        shapes.append({'required':['segments',relation or 'source'],
+            'properties':{relation or 'source':{'type':'string','minLength':1}},
+            'not':{'anyOf':[{'required':[name]} for name in forbidden]}})
+    for relation in ('delivery_ref','work_ref'):
+        forbidden=[*_FILE_TEXT_FIELDS,*(name for name in _RELATIONS if name!=relation)]
+        shapes.append({'required':['file_asset_id',relation],
+            'properties':{name:{'type':'string','minLength':1} for name in ('file_asset_id',relation)},
+            'not':{'anyOf':[{'required':[name]} for name in forbidden]}})
+    return {'oneOf':shapes}
+
+
 class TurnMessage(StrictModel):
-    intent:Literal['reply','ack','operation','delivery','work','file']|None=Field(
-        default=None,description='互斥业务形状：普通回复、创建确认、操作确认、成果交付、工作说明或文件上传。宿主从已登记句柄派生工作修订、原请求者和回执关系。')
-    segments:list[TurnPart]=Field(default_factory=list,max_length=12)
-    file_asset_id:str|None=Field(default=None,description="prepare_workspace_file 返回且已审查的资产 ID；必须独占此条并以 delivery_ref/work_ref 绑定原工作，不含文字通知")
+    model_config=ConfigDict(json_schema_extra=_message_shapes())
+    segments:list[TurnPart]=Field(default_factory=list,min_length=1,max_length=12)
+    file_asset_id:str|None=Field(default=None,min_length=1,description="prepare_workspace_file 返回且已审查的资产 ID；必须独占此条并以 delivery_ref/work_ref 绑定原工作，不含文字通知")
     reply_to: str|None=Field(default=None,description='可选消息M引用')
-    source: str|None=Field(default=None,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话。delivery_ref交付可省略，沿用事项原始委托；不要填写到期或工作完成的系统事件。插件系统来源保留原类型，与显示引用reply_to分别表达')
-    ack_ref: str|None=Field(default=None,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
-    operation_ref: str|None=Field(default=None,description='复制本轮控制工作、提醒或记忆操作返回的proposal_ref；只确认这项操作实际提交后的结果')
-    delivery_ref: str|None=Field(default=None,description='本条送达后完成的工作J或提醒T；可省略消息source沿用已读的原始人类委托，并在sources中处理本次到期或完成事件M。工作只接受completed/partial执行结果，失败通知不用此字段')
-    work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
+    source: str|None=Field(default=None,min_length=1,description='本条回应对应的已读来源M；普通聊天和操作确认使用人类原话。delivery_ref交付可省略，沿用事项原始委托；插件系统来源保留原类型，与显示引用reply_to分别表达')
+    covers:list[str]=Field(default_factory=list,max_length=16,
+        description='普通回复同时回答的其他来源M；逐项为本轮已完整读取、待处理或此前checkpoint继续处理的人类原话。主来源只填source；此列表不改变请求者或工作归属')
+    ack_ref: str|None=Field(default=None,min_length=1,description='复制本轮start_work/schedule_reminder回执中的ack_ref')
+    operation_ref: str|None=Field(default=None,min_length=1,description='复制本轮控制工作、提醒或记忆操作返回的proposal_ref；只确认这项操作实际提交后的结果')
+    delivery_ref: str|None=Field(default=None,min_length=1,description='本条送达后完成的工作J或提醒T；可省略source沿用已读原委托。宿主关联本次已读到期或完成来源。工作只接受completed/partial执行结果')
+    work_ref: str|None=Field(default=None,min_length=1,description='本条进展或结果所依据的工作J；首次待交付结果使用delivery_ref')
     expect_reply: ReplyExpectation|None=None
     addressed_to:list[str]=Field(default_factory=list,description='实际对谁说话的成员U引用；与source、reply_to和期待回答者分别填写')
-    answer_basis: TurnAnswerBasis|None=None
+    answer_basis: TurnAnswerBasis|None=Field(default=None,
+        description='资料性答复填写；闲聊可省略。social/general只填类别；observed填已读原话或资料，work_result绑定真实工作成果，mixed组合依据，unverified列明缺口。此信息不发送到群')
 
     @model_validator(mode='after')
     def one_message_relation(self):
-        selected=[name for name,value in (('ack',self.ack_ref),('operation',self.operation_ref),
-            ('delivery',self.delivery_ref),('work',self.work_ref)) if value is not None]
+        selected=[name for name in _RELATIONS if getattr(self,name) is not None]
         if self.file_asset_id:
             if self.segments or self.reply_to or self.expect_reply or self.addressed_to:
                 raise ValueError('文件上传独占一条行动并绑定原工作；文字通知另行提交')
             if self.ack_ref or self.operation_ref:
                 raise ValueError('文件行动不能同时确认创建或操作')
-            if selected not in (['delivery'], ['work']):
+            if selected not in (['delivery_ref'], ['work_ref']):
                 raise ValueError('文件行动必须且只能绑定一个 delivery_ref 或 work_ref')
-            inferred='file'
         else:
             if not self.segments:
                 raise ValueError('普通消息需要至少一个片段')
             if len(selected)>1:
                 raise ValueError('ack_ref、operation_ref、delivery_ref、work_ref每条消息只能选择一种；创建、操作确认、结果交付和普通工作引用分别表达')
-            inferred=selected[0] if selected else 'reply'
-        if self.intent and self.intent!=inferred:
-            raise ValueError(f'intent={self.intent} 与当前引用字段不一致；普通回复不填工作句柄，交付只填当前可交付句柄')
-        object.__setattr__(self,'intent',inferred)
+            if not selected and not self.source:
+                raise ValueError('普通回复的 source 填写本条实际回应的已读来源M')
+        if self.covers and (selected or self.file_asset_id):
+            raise ValueError('covers 只用于普通回复；创建、控制、工作和文件沿各自唯一业务来源处理')
+        if len(set(self.covers))!=len(self.covers) or self.source in self.covers:
+            raise ValueError('covers 只列其他来源，每条出现一次，主来源保留在 source')
+        if isinstance(self.answer_basis,(WorkAnswerBasis,MixedAnswerBasis)):
+            direct=bool(self.answer_basis.event_refs or self.answer_basis.evidence_refs)
+            if (isinstance(self.answer_basis,WorkAnswerBasis) or not direct) and not (self.work_ref or self.delivery_ref):
+                raise ValueError('answer_basis 的工作成果须关联 work_ref 或 delivery_ref；直接资料使用 observed，mixed 至少保留一项真实依据')
         return self
 
 class SourceResolution(StrictModel):
     source:str=Field(description='本次处理的已读来源M，包括人类原话及到期、工作完成等系统来源，保留原类型；继续同一请求可沿用此前checkpoint来源，与messages[].source的回应来源分开')
-    status:Literal['replied','delegated','waiting','incomplete','silent']
+    status:Literal['incomplete','silent']
     reason:str=Field(default='',max_length=500)
     unfinished:list[str]=Field(default_factory=list,description='同一原话中仍未完成的要求；未做的部分不能被已发送内容覆盖')
 
@@ -97,7 +170,8 @@ class ObservationChoice(StrictModel):
 
 class Respond(StrictModel):
     messages:list[TurnMessage]=Field(max_length=3,description='零至三条；空列表表示沉默')
-    sources:list[SourceResolution]
+    sources:list[SourceResolution]=Field(default_factory=list,
+        description='仅声明旁听或未完成部分并说明原因；消息source/covers、实际创建提案及真实等待的处理结果由宿主生成。仅仅读到的独立来源保持待处理')
     next:Literal['end','continue','wait']
     note:str=Field(default='',max_length=500,description='内部参与判断；尚有待处理来源但本次不处理任何来源时，说明等待条件或结束原因。不发送、不保存为长期认识')
     release_focus:list[str]=Field(default_factory=list,description='根据本人原话停止本次误接或互动的成员U；只撤销现有关注窗口，不写长期规则')
@@ -111,6 +185,8 @@ class StartWork(Evidence):
     goal:str=Field(min_length=1,description='保留原问题指定的公司、型号、对象与所求结果；未核实的同名猜测不替代目标')
     constraints:list[str]=Field(default_factory=list)
     result_refs:list[str]=Field(default_factory=list,description='复用本群已有资料R')
+    reuse_work_ref:str|None=Field(default=None,min_length=1,
+        description='对已读的普通研究完整或部分成果做后续整理／导出时填写原工作J；固定该结果版本并带入其资料，新工作保留本次request_source。专用插件沿所属入口，继续原未完成研究使用resume_work')
 
 class ReviseWork(Evidence):
     work_ref:str
@@ -188,98 +264,14 @@ TOOLS={
 def definition(name,model,description):
     return {'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}}
 
-def _object(properties, required=()):
-    return {'type':'object','properties':properties,'required':list(required),'additionalProperties':False}
-
-
-def _message_schema():
-    source={'type':'string','minLength':1,
-        'description':'本条回应的已读来源M；普通回复和操作确认须来自人类原话。delivery_ref可省略以沿用已读原委托，不填到期/完成事件；插件来源保留原类型'}
-    relations={
-        'ack_ref':{'type':'string','minLength':1,
-            'description':'本轮新建事项回执的ack_ref；仅确认创建，不表示结果完成'},
-        'operation_ref':{'type':'string','minLength':1,
-            'description':'本轮控制或认识操作回执的proposal_ref；只确认这一项操作'},
-        'work_ref':{'type':'string','minLength':1,
-            'description':'runtime_facts或已读工作目录中的J；首次待交付结果使用delivery_ref，不引用本轮待控制的旧版本'},
-        'delivery_ref':{'type':'string','minLength':1,
-            'description':'当前可交付工作J或提醒T；runtime_facts须表明可交付，无句柄不填。真实送达后才履约，sources关联本次到期/完成事件'},
-    }
-    basis=_object({
-        'kind':{'type':'string','enum':['social','general','observed','work_result','mixed','unverified'],
-            'description':'本条依据类别，不是真假评定。资料答复填写；闲聊或一般知识可以省略'},
-        'event_refs':{'type':'array','maxItems':16,'uniqueItems':True,'items':{'type':'string','minLength':1},
-            'description':'已完整读过的人类原话M；不是回应来源source的自动副本，不填Bot发言或摘要'},
-        'result_spans':{'type':'array','maxItems':16,'items':_object({
-            'result_id':{'type':'string','minLength':1,'description':'本轮资料R或其真实ID'},
-            'start':{'type':'integer','minimum':0},'end':{'type':'integer','minimum':1},
-            'coordinate_unit':{'type':'string','enum':['characters','records']},
-        },('result_id','start','end','coordinate_unit')),
-            'description':'复制已读资料的evidence_span；[start,end)非空，不能扩大到未展示正文'},
-        'unresolved':{'type':'array','maxItems':12,'items':{'type':'string','minLength':1,'maxLength':500},
-            'description':'当前答复的具体未核实缺口，unverified必须填写；不写长推理过程'},
-    },('kind',))
-    basis['description']='资料性答复填写。work_result须绑定本条work_ref/delivery_ref的真实成果，mixed可同时引用直接资料；宿主解析身份，不将元数据发到群。'
-    text=_object({
-        'intent':{'type':'string','enum':['reply','ack','operation','delivery','work'],
-            'description':'互斥业务形状；普通短答用reply，不带无关事项引用'},
-        'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
-            **_object({'text':{'type':'string','minLength':1},
-                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
-                'video':{'type':'string','minLength':1,'description':'本轮已保存视频I引用'},
-                'audio':{'type':'string','minLength':1,'description':'本轮已保存音频I引用'},
-                'at':{'type':'string','minLength':1,'description':'真实提及本轮成员U'}}),
-            'description':'每片段恰好一个字段，按顺序混排'}},
-        'reply_to':{'type':'string','minLength':1,'description':'可选已读消息M引用'},
-        'source':source,
-        'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
-            'description':'实际回应的成员U；请求者和引用作者不自动成为回应对象'},
-        'expect_reply':_object({'target':{'type':'string','minLength':1,'description':'等待回应的成员U'},
-            'intent':{'type':'string','minLength':1}},('target','intent')),
-        'answer_basis':basis,
-        **relations,
-    },('segments',))
-    names=list(relations)
-    text['allOf']=[{'not':{'required':[left,right]}}
-        for index,left in enumerate(names) for right in names[index+1:]]
-    file=_object({
-        'intent':{'type':'string','enum':['file']},
-        'file_asset_id':{'type':'string','minLength':1,
-            'description':'runtime_facts.files中当前可交付的真实资产ID；无候选时不可上传，不填路径'},
-        'answer_basis':basis,
-        'source':source,
-        'delivery_ref':relations['delivery_ref'],
-        'work_ref':relations['work_ref'],
-    },('intent','file_asset_id'))
-    file['oneOf']=[{'required':['delivery_ref']},{'required':['work_ref']}]
-    return {'oneOf':[text,file]}
-
-
-# The model sees fixed business shapes, not a per-turn reference enum.
-# Local validation remains authoritative, including exactly one content field.
-RESPOND={
-    'type':'function',
-    'function':{
-        'name':'respond',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。定义固定不表示当前有目标或权限；引用只取本轮事实与真实工具回执。文件独占行动，不带segments。宿主核对原请求者、工作修订、当前资格与回执关系。',
-        'parameters':_object({
-            'messages':{'type':'array','maxItems':3,'items':_message_schema()},
-            'note':{'type':'string','maxLength':500,'description':'内部参与判断；不处理任何待处理来源时必须说明等待条件或结束原因，不发送'},
-            'sources':{'type':'array','items':_object({
-                'source':{'type':'string','description':'本次处理的已读来源M，包括人类原话及到期、工作完成等系统来源，保留原类型；继续同一请求可沿用此前checkpoint来源，与messages[].source的回应来源分开'},
-                'status':{'type':'string','enum':['replied','delegated','waiting','incomplete','silent']},
-                'reason':{'type':'string','maxLength':500},
-                'unfinished':{'type':'array','items':{'type':'string'}}},('source','status')),
-                'description':'逐来源保留本次处理去向及未完成要求；未处理的独立来源不要列入'},
-            'next':{'type':'string','enum':['end','continue','wait'],
-                'description':'end结束本轮；continue提交后在原预算继续；wait提交一个真实等待关系，释放模型资源后等对应回应'},
-            'release_focus':{'type':'array','items':{'type':'string'},'uniqueItems':True,
-                'description':'根据本人已读原话停止本次互动的成员U；撤销现有短时关注'},
-            'observation':_object({'source':{'type':'string','description':'本次新处理的已完整读取的人类原话M'},
-                'action':{'type':'string','enum':['continue','end']}},('source','action')),
-        },('messages','sources','next')),
-    },
-}
+# The same fixed business models define the public schema and local parsing.
+RESPOND=definition('respond',Respond,
+    '提交剩余暂存提案及零至三条消息；空messages表示沉默，提案仍提交。'
+    '普通回复填segments、source，可用covers合并回应其他已读来源。'
+    '创建确认、操作确认、成果交付、工作说明分别选唯一ack_ref、operation_ref、delivery_ref或work_ref；'
+    '文件填file_asset_id及唯一工作关系，不带segments。业务形状由字段确定。'
+    'sources只说明silent/incomplete；replied、delegated及waiting由实际消息、创建提案与等待关系生成。'
+    '引用取本轮事实与真实回执，宿主核对阅读、原请求者、工作修订、当前资格及真实送达关系。')
 
 
 class ProposalLedger:
@@ -381,9 +373,17 @@ class ProposalLedger:
             proposal_ref=f'S{self._next_handle}'
             if name=='start_work':
                 source=await self.request_source(model.request_source)
+                reused=None
+                result_ids=[refs.result_id(r) for r in model.result_refs]
+                if model.reuse_work_ref:
+                    previous=refs.job(model.reuse_work_ref)
+                    if (previous['id'],previous['revision']) not in self.context.confirmed_work_results:
+                        raise ValueError('reuse_work_ref 须先读取该工作当前版本的成果；仅工作目录不够，按 query_jobs 及其详情续读入口读取')
+                    reused=ReusedWorkResult.from_job(previous)
+                    result_ids=list(dict.fromkeys([*result_ids,*reused.result_ids]))
                 collection='jobs'
                 value=JobProposal(proposal_id=proposal_ref,goal=model.goal,constraints_add=model.constraints,
-                    source_event_ids=list(dict.fromkeys([source.id,*evidence])),result_ids=[refs.result_id(r) for r in model.result_refs],
+                    source_event_ids=list(dict.fromkeys([source.id,*evidence])),result_ids=result_ids,reused_work=reused,
                     requester_qq_uid=source.actor_id.removeprefix('user:'),request_source_event_id=source.id,
                     initiator=self.human_source(source))
             elif name in {'revise_work','cancel_work','resume_work'}:
@@ -458,7 +458,8 @@ class ProposalLedger:
         except (ValueError,KeyError) as error:
             raise ToolArgumentError(str(error)) from error
 
-    async def finish(self,arguments,*,result_reads=None):
+    async def finish(self,arguments,*,result_reads=None,resolve_evidence_refs=None):
+        error_path='respond'
         try:
             result=Respond.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
             refs=self.context.refs;messages=[]
@@ -466,30 +467,39 @@ class ProposalLedger:
                 raise ValueError('所有checkpoint共用本轮三条消息上限')
             if result.next!='end' and self.remaining_model_calls()==0:
                 raise ValueError('原执行预算不足以继续或恢复等待，请结束并保留未完成项')
-            handled=[refs.event_id(item.source) for item in result.sources]
             pending=self.plugin_source_ids or {wake.event_id for wake in self.context.session.pending_wakes}
-            if len(handled) != len(set(handled)) or not set(handled).issubset(pending|self.continuing_sources):
+            available=(pending|self.continuing_sources)&refs.read_events
+            handled=[]
+            for index,item in enumerate(result.sources):
+                error_path=f'sources[{index}].source'
+                handled.append(refs.event_id(item.source))
+            if len(handled) != len(set(handled)) or not set(handled).issubset(available):
                 raise ValueError('sources只能填写本轮已读、当前待处理或本轮此前checkpoint已处理的来源，每个来源只能出现一次')
-            if pending and not handled and not result.note.strip():
-                raise ValueError('仍有待处理来源；空sources须在note说明等待依赖或本次结束原因，不能靠空提交反复取得预算')
-            source_candidates = await self.context.runtime.event_store.events_by_ids(refs.scene_id, handled, refs.cutoff)
-            source_records={event.id:event for event in source_candidates}
-            source_candidates = [event for event in source_candidates if event.id in self.plugin_source_ids
-                or event.event_type.value in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
-                and event.actor_id.startswith('user:') and event.actor_id != refs.bot_actor_id]
+            declarations=dict(zip(handled,result.sources))
+            source_records={event.id:event for event in await self.context.runtime.event_store.events_by_ids(
+                refs.scene_id, sorted(available), refs.cutoff)}
+            if set(handled)-source_records.keys():
+                raise ValueError('来源不在当前场景与读取截点内')
+            source_candidates=[source_records[ident] for ident in handled
+                if ident in self.plugin_source_ids or human_event_uid(source_records[ident]) is not None
+                and source_records[ident].actor_id!=refs.bot_actor_id]
+            error_path='proposals'
             controlled_jobs=[proposal.job_id for proposal in self.jobs if proposal.operation!='create']
             controlled_tasks=[proposal.task_id for proposal in self.tasks if proposal.operation!='create']
             changed_memories=[ident for proposal in self.memories for ident in proposal.target_memory_ids]
             if any(len(values)!=len(set(values)) for values in (controlled_jobs,controlled_tasks,changed_memories)):
                 raise ValueError('同一轮对同一工作、提醒或认识目标只能保留一项操作；用discard_proposal撤回重复或冲突提案')
             confirmed_operations=set()
-            for item in result.messages:
+            for message_index,item in enumerate(result.messages):
+                message_path=f'messages[{message_index}]'
+                error_path=message_path+'.ack_ref'
                 if item.ack_ref and item.ack_ref not in self.proposal_refs:
                     raise ValueError('ack_ref没有对应本轮提案。当前已暂存的新建事项引用：'
                         + ', '.join(sorted(self.proposal_refs)) + '。引用字段本身不会创建工作；'
                         '需要新建工作或提醒时先调用对应工具取得staged回执，再用返回的ack_ref确认；普通短查询不填写ack_ref。')
                 operation=None
                 operation_sources=[]
+                error_path=message_path+'.operation_ref'
                 if item.operation_ref:
                     operation=self.staged.get(item.operation_ref)
                     if (operation is None or operation[0] not in {'jobs','tasks','memories'}
@@ -500,7 +510,8 @@ class ProposalLedger:
                     confirmed_operations.add(item.operation_ref)
                     operation_sources=(operation[1].evidence if operation[0]=='memories' else operation[1].source_event_ids)
                 parts=[]
-                for part in item.segments:
+                for part_index,part in enumerate(item.segments):
+                    error_path=f'{message_path}.segments[{part_index}]'
                     if part.text is not None:
                         parts.append({'type':'text','text':part.text})
                     elif part.at is not None:
@@ -521,6 +532,7 @@ class ProposalLedger:
                             raise ValueError('消息片段类型与媒体实际类型不一致')
                         parts.append({'type':'video' if part.video is not None else 'audio', 'asset_id':asset_id})
                 reply=None
+                error_path=message_path+'.reply_to'
                 if item.reply_to:
                     event_id=refs.event_id(item.reply_to)
                     rows=await self.context.runtime.event_store.read_context(event_id,before=0,after=0,
@@ -528,9 +540,11 @@ class ProposalLedger:
                     reply=rows[0]['payload'].get('message_id') if rows else None
                     if reply is None:raise ValueError('引用消息没有可回复的协议message_id')
                     reply=str(reply)
+                error_path=message_path+('.operation_ref' if operation else '.work_ref')
                 job=(refs.job(operation[1].job_id) if operation and operation[0]=='jobs'
                      else refs.job(item.work_ref) if item.work_ref else None)
                 delivery=None
+                error_path=message_path+'.delivery_ref'
                 if item.delivery_ref:
                     if item.delivery_ref in refs.tasks or item.delivery_ref in refs.tasks.values():
                         delivery=refs.task_id(item.delivery_ref)
@@ -547,6 +561,7 @@ class ProposalLedger:
                         if job and job['id']!=target['id']:raise ValueError('履约与工作引用不一致')
                         job=target;delivery=job['id']
                 if item.file_asset_id:
+                    error_path=message_path+'.file_asset_id'
                     if not refs.scene_id.startswith('group:'):
                         raise ValueError('文件上传只用于群聊')
                     info=refs.file_assets.get(item.file_asset_id)
@@ -554,6 +569,7 @@ class ProposalLedger:
                         raise ValueError('file_asset_id 不是本轮当前修订中已审查、未过期且没有已提交或未知上传行动的文件')
                     if job is None or job['id']!=info['job_id'] or job['revision']!=info['job_revision']:
                         raise ValueError('文件必须绑定其所属工作的当前修订')
+                error_path=message_path
                 if job and job['id'] in controlled_jobs and not item.operation_ref:
                     raise ValueError('该工作在本轮有未提交控制；状态确认用对应operation_ref，不能同时按旧work_ref或delivery_ref发送旧版本内容')
                 if delivery and delivery in controlled_tasks:
@@ -564,6 +580,7 @@ class ProposalLedger:
                         and job['delivery_action_id'] is None and not delivery and not (job['result'] or {}).get('delivery')):
                     raise ValueError('该工作已有首次待交付结果；使用delivery_ref绑定本条结果与真实送达关系，不要仅填work_ref')
                 acknowledgement = self.staged[item.ack_ref][1] if item.ack_ref else None
+                error_path=message_path+'.source'
                 source_id = refs.event_id(item.source) if item.source else None
                 if acknowledgement:
                     if source_id and source_id != acknowledgement.request_source_event_id:
@@ -602,11 +619,23 @@ class ProposalLedger:
                 else:
                     source = await self.request_event(source_id)
                     requester = source.actor_id.removeprefix('user:')
+                covered=[]
+                for cover_index,reference in enumerate(item.covers):
+                    error_path=f'{message_path}.covers[{cover_index}]'
+                    ident=refs.event_id(reference)
+                    if ident not in available:
+                        raise ValueError('覆盖来源须是本轮待处理或此前checkpoint继续处理的已读原话')
+                    if ident==source.id or ident in covered:
+                        raise ValueError('同条消息只覆盖每个其他来源一次')
+                    await self.request_event(ident)
+                    covered.append(ident)
                 # An explicit follow-up may come from another participant.
                 # Message ownership follows that human source; the referenced
                 # work keeps its own original requester and revision.
                 expectation=item.expect_reply
+                error_path=message_path+'.addressed_to'
                 addressed=list(dict.fromkeys(refs.member_id(ref) for ref in item.addressed_to))
+                error_path=message_path+'.expect_reply'
                 if expectation and refs.member_id(expectation.target)==refs.bot_actor_id:
                     raise ValueError('不能把自己作为外部等待回应对象')
                 message_owner=None
@@ -621,66 +650,96 @@ class ProposalLedger:
                         if delivered_task and delivered_task['payload'].get('plugin_origin'):
                             message_owner=PluginOrigin.model_validate(delivered_task['payload']['plugin_origin'])
                 basis=None
+                error_path=message_path+'.answer_basis'
                 if item.answer_basis is not None:
                     declared=item.answer_basis
+                    direct=declared if isinstance(declared,EvidenceAnswerBasis) else None
+                    evidence=[]
+                    if direct and direct.evidence_refs:
+                        if resolve_evidence_refs is None:
+                            raise ValueError('当前入口没有已确认资料页引用；先沿原读取入口取得正文')
+                        evidence=resolve_evidence_refs(direct.evidence_refs)
                     basis=AnswerBasis(kind=declared.kind,
-                        event_ids=[refs.event_id(ref) for ref in declared.event_refs],
-                        result_spans=[span.model_copy(update={'result_id':refs.result_id(span.result_id)})
-                                      for span in declared.result_spans],
-                        unresolved=declared.unresolved,
+                        event_ids=[refs.event_id(ref) for ref in direct.event_refs] if direct else [],
+                        result_spans=evidence,
+                        unresolved=direct.unresolved if direct else [],
                         work_result=(AnswerWorkResult.from_job(job) if job and declared.kind in {'work_result','mixed'} else None))
                     if basis.work_result and (job['id'],job['revision']) not in self.context.confirmed_work_results:
                         raise ValueError('该工作结果尚未实际提供；先读取当前工作详情，目录位置不是结果正文')
                     await self.context.runtime.event_store.validate_answer_basis(basis,refs.scene_id,
                         through_rowid=refs.cutoff,read_event_ids=refs.read_events,result_reads=result_reads or {},
                         bot_actor_id=refs.bot_actor_id)
+                error_path=message_path
                 messages.append(MessageProposal(segments=parts,file_asset_id=item.file_asset_id,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
+                    covered_source_event_ids=covered,
                     plugin_origin=message_owner,
                     addressed_to=addressed,
                     answer_basis=basis,
                     job_id=job['id'] if job else None,job_revision=job['revision'] if job else None,
                     expect_reply=bool(expectation),reply_target=refs.member_id(expectation.target) if expectation else None,
                     reply_intent=expectation.intent if expectation else None))
-            affected={message.source_event_id for message in messages}
-            affected.update(proposal.request_source_event_id for proposal in [*self.jobs,*self.tasks]
-                            if proposal.operation=='create')
-            if (affected & pending) - set(handled):
-                raise ValueError('本次已回应或已委托的请求来源必须列入sources，其它仅仅读到的来源继续保留')
+            error_path='sources'
+            for message in messages:
+                for ident in [message.source_event_id,*message.covered_source_event_ids]:
+                    if ident in available and ident not in handled:
+                        handled.append(ident)
+            for proposal in [*self.jobs,*self.tasks]:
+                ident=proposal.request_source_event_id
+                if proposal.operation=='create' and ident in available and ident not in handled:
+                    handled.append(ident)
+            for ident,event in source_records.items():
+                if (ident not in handled and event.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                        and any(self._message_handles_source(message,event) for message in messages)):
+                    handled.append(ident)
+            if pending and not handled and not result.note.strip():
+                raise ValueError('没有实际处理待处理来源；在note说明等待依赖或本次结束原因')
             outcomes=[]
-            for item,ident in zip(result.sources,handled):
+            for ident in handled:
+                item=declarations.get(ident)
+                error_path=(f'sources[{result.sources.index(item)}]' if item else 'sources(派生)')
                 original=source_records[ident]
-                runtime_source=original.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
-                related_indices=[index for index,message in enumerate(messages) if message.source_event_id==ident
-                    or runtime_source and (message.job_id and message.job_id==original.payload.get('job_id')
-                        or message.fulfils_task_id and message.fulfils_task_id==original.payload.get('task_id')
-                        or message.source_event_id and message.source_event_id==original.payload.get('origin_event_id'))]
+                related_indices=[index for index,message in enumerate(messages)
+                    if self._message_handles_source(message,original)]
                 related_messages=[messages[index] for index in related_indices]
                 related_proposals=[ref for ref,(kind,proposal) in self.staged.items()
                     if (kind=='memories' and ident in proposal.evidence
                         or kind in {'jobs','tasks'} and (proposal.request_source_event_id==ident or ident in proposal.source_event_ids))]
-                if item.status=='replied' and not related_messages:
-                    raise ValueError(f'sources中的{item.source}标为replied，但没有关联本checkpoint对应来源的消息；普通原话须与消息source一致，到期或完成事件须与消息delivery_ref对应')
-                if item.status=='delegated' and not any(ref in related_proposals for ref,(kind,_) in self.staged.items() if kind in {'jobs','tasks'}):
-                    raise ValueError('delegated必须关联本checkpoint实际暂存的工作或提醒')
-                if item.status=='waiting' and (result.next!='wait' or not any(message.expect_reply for message in related_messages)):
-                    raise ValueError('waiting必须关联本checkpoint期待真实回应的消息')
-                if item.status in {'incomplete','silent'} and not (item.reason.strip() or item.unfinished):
+                if item and not (item.reason.strip() or item.unfinished):
                     raise ValueError('未完成或旁听须说明原因或未完成范围')
-                if item.status=='silent' and (related_messages or related_proposals):
+                if item and item.status=='silent' and (related_messages or related_proposals):
                     raise ValueError(f'sources中的{item.source}已关联消息或实际操作，不能标为silent；到期或完成事件也会通过delivery_ref关联交付消息')
-                outcomes.append(SourceOutcome(source_event_id=ident,status=item.status,reason=item.reason,
-                    unfinished=item.unfinished,proposal_refs=related_proposals,message_indices=related_indices))
+                if item:
+                    status=item.status
+                elif result.next=='wait' and any(message.expect_reply for message in related_messages):
+                    status='waiting'
+                elif any(kind in {'jobs','tasks'} and proposal.operation=='create'
+                        and proposal.request_source_event_id==ident for kind,proposal in self.staged.values()):
+                    status='delegated'
+                elif related_messages:
+                    status='replied'
+                else:
+                    raise ValueError('来源没有实际消息或新建事项；使用sources声明未完成范围或旁听原因')
+                outcomes.append(SourceOutcome(source_event_id=ident,status=status,reason=item.reason if item else '',
+                    unfinished=item.unfinished if item else [],proposal_refs=related_proposals,message_indices=related_indices))
+            error_path='next'
             if result.next=='wait' and (sum(message.expect_reply for message in messages)!=1
-                    or not any(item.status=='waiting' for item in outcomes) or self.messages_committed+len(messages)>=3):
-                raise ValueError('wait需要且只能有一个真实等待对象及waiting来源，并保留后续表达的消息额度')
+                    or not any(messages[index].expect_reply for source in outcomes for index in source.message_indices)
+                    or self.messages_committed+len(messages)>=3):
+                raise ValueError('wait需要且只能有一个expect_reply消息、明确关联的处理来源及后续表达额度；未完成部分可在sources保留')
+            error_path='sources'
             unlinked={ref for ref,(kind,_) in self.staged.items() if kind!='loops'}-{ref for source in outcomes for ref in source.proposal_refs}
             if unlinked:
-                raise ValueError('实际提交的提案须有对应来源的处理结果：'+', '.join(sorted(unlinked)))
+                raise ValueError('实际提案缺少来源处理结果；用操作确认消息绑定其原话，或在sources保留未完成范围：'+', '.join(sorted(unlinked)))
+            source_candidates=[source_records[ident] for ident in handled
+                if ident in self.plugin_source_ids or human_event_uid(source_records[ident]) is not None
+                and source_records[ident].actor_id!=refs.bot_actor_id]
+            error_path='release_focus'
             released=list(dict.fromkeys(refs.member_id(ref) for ref in result.release_focus))
             if set(released)-{event.actor_id for event in source_candidates}:
                 raise ValueError('撤销关注必须有本次处理的本人原话，不能替其他人结束互动')
             observation = None
+            error_path='observation'
             if result.observation:
                 from len_bot.cognition.models import ObservationDecision
                 ident = refs.event_id(result.observation.source)
@@ -695,8 +754,24 @@ class ProposalLedger:
                 task_proposals=self.tasks,job_proposals=self.jobs,memory_proposals=self.memories,resolve_open_loop_ids=self.loops)
         except TerminalArgumentError:
             raise
+        except ValidationError as error:
+            details=[]
+            for issue in error.errors(include_url=False,include_input=False):
+                path=''.join(f'[{part}]' if isinstance(part,int) else '.'+str(part) for part in issue['loc']).lstrip('.')
+                location=path if error_path=='respond' else error_path+('.'+path if path else '')
+                details.append(f"{location or 'respond'}: {issue['msg']}")
+            raise TerminalArgumentError('; '.join(details)) from error
         except (ValueError,KeyError) as error:
-            raise TerminalArgumentError(str(error)) from error
+            raise TerminalArgumentError(f'{error_path}: {error}') from error
+
+    @staticmethod
+    def _message_handles_source(message,event):
+        if event.id==message.source_event_id or event.id in message.covered_source_event_ids:
+            return True
+        return event.event_type in RUNTIME_INPUTS and bool(
+            message.job_id and message.job_id==event.payload.get('job_id')
+            or message.fulfils_task_id and message.fulfils_task_id==event.payload.get('task_id')
+            or message.source_event_id and message.source_event_id==event.payload.get('origin_event_id'))
 
     async def validate_message_segments(self, outcome):
         """A plugin hook still uses the same known members and scene assets."""

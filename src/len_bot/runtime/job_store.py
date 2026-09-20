@@ -2,7 +2,7 @@
 import json
 import uuid
 
-from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResultRejected, JobResult, ResultPresentation, WorkState
+from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResultRejected, JobResult, ResultPresentation, WorkState, ReusedWorkResult
 from len_bot.events.models import Event, EventType
 from len_bot.scheduler.models import TaskItem
 from len_bot.skills.store import SkillStoreMixin
@@ -46,6 +46,8 @@ def _decode_job(row):
     data['observation_reads'] = task_payload.get('observation_reads', {})
     data['public_research'] = task_payload.get('public_research')
     data['resume_from'] = task_payload.get('resume_from')
+    reused=task_payload.get('reused_work')
+    data['reused_work'] = ReusedWorkResult.model_validate(reused).model_dump(mode='json') if reused is not None else None
     # Older work keeps its exact requester and request anchor; convert those
     # two fields into the typed human initiator rather than guessing one.
     # Records without a definite anchor keep no initiator at all.
@@ -400,6 +402,10 @@ class JobStoreMixin(SkillStoreMixin):
                     raise ValueError("Transferred work result outside scene")
             if proposal.operation == "create":
                 await self._validate_job_initiator_in_transaction(proposal, scene_id, sources)
+                if proposal.reused_work is not None:
+                    original=await self.get_job(proposal.reused_work.job_id,scene_id)
+                    if original is None or ReusedWorkResult.from_job(original)!=proposal.reused_work:
+                        raise JobChanged('复用的工作成果已变化或不在本场景；须重新读取并选择原结果版本')
                 continue
             if proposal.job_id in observed:
                 raise ValueError('One transaction cannot control the same work more than once')
@@ -496,6 +502,7 @@ class JobStoreMixin(SkillStoreMixin):
                             or existing['goal'] != proposal.goal
                             or existing['work_operation'] != proposal.work_operation
                             or existing['work_parameters'] != parameters
+                            or existing['reused_work'] != (proposal.reused_work.model_dump(mode='json') if proposal.reused_work else None)
                             or existing['plugin_origin'] != (proposal.plugin_origin.model_dump() if proposal.plugin_origin else None)
                             or existing['constraints'] != list(dict.fromkeys(proposal.constraints_add))
                             or existing['status'] not in {'pending', 'claimed', 'processing'}):
@@ -512,6 +519,7 @@ class JobStoreMixin(SkillStoreMixin):
                            "request_source_event_id":proposal.request_source_event_id,
                            "initiator":proposal.initiator.model_dump(mode='json') if proposal.initiator else None,
                            "observation_reads":{},
+                           'reused_work':proposal.reused_work.model_dump(mode='json') if proposal.reused_work else None,
                            'plugin_origin':proposal.plugin_origin.model_dump() if proposal.plugin_origin else None,
                            'work_parameters':parameters,'work_progress':progress}
                 task = TaskItem(id=job_id, scene_id=scene_id, description=proposal.goal,
@@ -608,6 +616,8 @@ class JobStoreMixin(SkillStoreMixin):
                 if not job or not 1 <= revision <= job['revision']:
                     raise JobChanged('Presented observations belong to an unknown work revision')
                 reads = job['observation_reads']
+                page_refs={reference:(ident,unit,*span) for ident,units in reads.items()
+                    for unit,record in units.items() for reference,span in record.get('evidence_refs',{}).items()}
                 for presentation in shown:
                     if presentation.result_id not in job['result_ids']:
                         raise ValueError('A presented range must belong to this work')
@@ -626,6 +636,15 @@ class JobStoreMixin(SkillStoreMixin):
                         else:
                             merged.append([left, right])
                     recorded['ranges'] = merged
+                    if presentation.evidence_ref:
+                        if presentation.start>=presentation.end:
+                            raise ValueError('A page reference needs a nonempty actual presentation')
+                        key=(presentation.result_id,presentation.coordinate_unit,presentation.start,presentation.end)
+                        previous=page_refs.get(presentation.evidence_ref)
+                        if previous is not None and previous!=key:
+                            raise ValueError('A page reference cannot change its stored observation or range')
+                        recorded.setdefault('evidence_refs',{})[presentation.evidence_ref]=[presentation.start,presentation.end]
+                        page_refs[presentation.evidence_ref]=key
                 await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.observation_reads',json(?)) WHERE id=? AND scene_id=?",
                     (json.dumps(reads, ensure_ascii=False), job_id, scene_id))
                 spec=self.plugin_work(job)

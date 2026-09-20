@@ -347,6 +347,21 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
         <v-card class="job-heading">
           <v-card-text><h2 class="full-title">{{ job.goal }}</h2><div class="identity-line"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" /><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /><span>目标版本 {{ job.revision }}</span></div><div class="identity-line"><span>发起人 {{ job.initiator?.principal_type === 'human' ? '用户 ' + job.initiator.user_id : job.initiator?.principal_type === 'system' ? '系统 ' + job.initiator.agent_id : job.initiator?.principal_type === 'plugin' ? '插件 ' + job.initiator.plugin_id : '未记录' }}</span><span>付额账户 {{ job.reservation?.subject || '未记录' }}</span><EntityLink v-if="job.request_source_event_id" type="event" :id="job.request_source_event_id" :scene-id="job.scene_id" label="发起此工作的来源事件" /><span v-else class="muted-copy">旧工作未单独保存请求来源</span></div><div class="detail-status"><span>执行 <StatusBadge domain="job_execution" :status="job.execution_status" /></span><span>交付 <StatusBadge domain="job_delivery" :status="job.delivery_required === false ? 'not_required' : job.status" /></span><span class="read-time">读取于 {{ fmtTime(detailReadAt) }}</span></div><div class="action-row"><v-btn :disabled="!editable || job.plugin_issue || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiPencilOutline" variant="outlined" @click="startEdit">修改要求</v-btn><v-btn :disabled="!job.can_resume || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiPlayOutline" variant="outlined" @click="askAction('resume')">{{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}</v-btn><v-btn :disabled="!editable || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiStopCircleOutline" color="error" variant="outlined" @click="askAction('cancel')">停止工作</v-btn></div></v-card-text>
         </v-card>
+        <v-card v-if="job.reused_work || job.followup_work?.total" class="section-gap">
+          <v-card-title>成果复用关系</v-card-title>
+          <v-card-text>
+            <template v-if="job.reused_work">
+              <p>本工作固定使用原成果版本 {{ job.reused_work.revision }}，后续原工作变化不会替换下方输入。新要求、申请者、额度及交付仍归本工作。</p>
+              <div class="identity-line"><EntityLink type="job" :id="job.reused_work.job_id" :scene-id="job.scene_id" label="查看原工作当前详情" /><span>所选版本的执行结果 <StatusBadge domain="job_execution" :status="job.reused_work.status" /></span><EntityLink v-if="job.reused_work.request_source_event_id" type="event" :id="job.reused_work.request_source_event_id" :scene-id="job.scene_id" label="原研究的请求来源" /></div>
+              <details class="mt-3"><summary>查看固定的原成果输入</summary><ResourceViewer :content="job.reused_work" title="原工作整理结果及资料位置（不是本工作的已读证明）" /></details>
+            </template>
+            <template v-if="job.followup_work?.total">
+              <h3 class="mt-4">复用此成果的后续工作</h3>
+              <p class="muted-copy">显示最近 {{ job.followup_work.items.length }} / {{ job.followup_work.total }} 项明确保存的复用关系；不会从目标文字或相同资料推断旧工作关系。</p>
+              <div v-for="item in job.followup_work.items" :key="item.id" class="identity-line"><EntityLink type="job" :id="item.id" :scene-id="job.scene_id" :label="item.goal" /><span>复用版本 {{ item.source_revision }} · 自身版本 {{ item.revision }}</span><StatusBadge domain="job_delivery" :status="item.status" /></div>
+            </template>
+          </v-card-text>
+        </v-card>
         <v-card v-if="editing" class="section-gap edit-card">
           <v-card-title>修改要求 · 基于版本 {{ baseline.revision }}</v-card-title>
           <v-card-text>

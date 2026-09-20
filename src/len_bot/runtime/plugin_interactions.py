@@ -173,7 +173,7 @@ async def submit_message(runtime, call, segments, *, mention_all=False):
             else:raise ValueError('Tool submission does not grant all-member mentions')
         source=context.refs.register_event_locator(call.source_event_id)
         outcome=await call.execution.finish({'messages':[{'segments':parts,'source':source}],
-            'sources':[{'source':source,'status':'replied'}],'next':'end'},owner_call=call)
+            'next':'end'},owner_call=call)
         return await call.execution.after_finish(outcome)
     mailbox.mention_all = mention_all
     actor = await runtime.scene_manager.get_or_create_actor(call.scene_id)
@@ -427,6 +427,8 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         config=runtime.config,call_context=lambda tool_call_id=None:replace(call,tool_call_id=tool_call_id))
     if nested_respond:toolkit.call_context=lambda:call
     execution.toolkit=toolkit
+    toolkit.discovery_tool_names=frozenset(request.tool_names)
+    toolkit.discovered_tools=dict(toolkit.discovered_tools)
     toolkit.discovered_tools.update({name:None for name in request.tool_names})
     await toolkit.import_results(request.result_ids)
     for ident in request.result_ids:

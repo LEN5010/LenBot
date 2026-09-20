@@ -91,6 +91,8 @@ class ToolResult(BaseModel):
     next_offset: int | None = None
     coordinate_unit: Literal['characters', 'records'] = 'characters'
     displayed_range: DisplayedRange | None = None
+    evidence_ref: str | None = Field(default=None, pattern=r'^E[0-9a-f]{32}$',
+        description='宿主为实际资料页分配的引用；使用资格仍由最终请求的已读记录确定')
     next_call: ToolNextCall | None = None
     source_next_call: ToolNextCall | None = None
     source_truncated: bool = False
@@ -136,6 +138,7 @@ class ToolResult(BaseModel):
             "next_offset": end if end < len(self.content) else None,
             'coordinate_unit':'characters',
             'displayed_range':DisplayedRange(start=offset,end=end,total=len(self.content)),
+            'evidence_ref':None,
             'next_call':continuation,
             'source_next_call':self.source_next_call if offset == 0 and end == len(self.content) else None,
             'source_truncated':source_truncated,

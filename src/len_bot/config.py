@@ -14,6 +14,13 @@ from len_bot.media.file_config import FileDeliveryConfig
 from len_bot.adapters.file_upload import FileUploadConfig
 
 
+class CharacterReferenceAsset(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
+    character_key: str = Field(pattern=r'^[a-z][a-z0-9_-]{0,31}$')
+    outfit: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    asset_id: str = Field(min_length=1, max_length=200, description='现有运营图片资产 ID，不是路径或 URL')
+
+
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
     onebot_file_upload: FileUploadConfig | None = None
@@ -96,6 +103,8 @@ class RuntimeConfig(BaseModel):
     identity_name: str
     address_names: list[AddressName] = Field(max_length=32, description='额外呼唤昵称；只提供参与线索，不强制回复')
     character_context: str
+    character_reference_assets: list[CharacterReferenceAsset] = Field(default_factory=list, max_length=40,
+        description='人工确认的人物与服装参考；只提供同场景可读的图片定位，像素按需读取')
     identity_core: str
     identity_persona: str
     conversation_style: str
@@ -139,6 +148,14 @@ class RuntimeConfig(BaseModel):
     onebot_reconnect_max_seconds: float = Field(gt=0)
     onebot_ping_interval_seconds: float = Field(gt=0)
     onebot_ping_timeout_seconds: float = Field(gt=0)
+
+    @model_validator(mode='after')
+    def distinct_character_references(self):
+        identities=[(item.character_key,item.outfit) for item in self.character_reference_assets]
+        assets=[item.asset_id for item in self.character_reference_assets]
+        if len(set(identities))!=len(identities) or len(set(assets))!=len(assets):
+            raise ValueError('人物与服装组合、参考图片资产各自只能绑定一次')
+        return self
 
     @model_validator(mode="after")
     def budgets_fit(self):

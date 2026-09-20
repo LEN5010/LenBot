@@ -66,8 +66,8 @@ class WorkspacePlugin(BasePlugin):
             WorkspaceFileInput, self.export_file, purpose='导出工作区产物', aliases=('导出文件',),
             keywords=('工作区', '文件', '导出', '产物'), kind='read', ordered=True, roles=('work',))
 
-        context.register_tool('prepare_workspace_file', '将当前工作 Gateway 产物登记为持久文件资产。支持 TXT/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP；不接受宿主路径。for_upload 需要本群 send_file 授权及原工作审查；工具不发群。',
-            PrepareFileInput, self.prepare_file, purpose='登记普通文件交付', keywords=('文件', 'ZIP', '交付'), kind='read', ordered=True, roles=('work',))
+        context.register_tool('prepare_workspace_file', '将当前工作 Gateway 产物登记为持久文件资产。支持 TXT/MD/CSV/JSON/PDF/PNG/JPEG/WEBP/GIF/ZIP；MD 按 UTF-8 纯文本检查，不渲染或执行内容；不接受宿主路径。for_upload 需要本群 send_file 授权及原工作审查；工具不发群。',
+            PrepareFileInput, self.prepare_file, purpose='登记普通文件交付', keywords=('文件', 'ZIP', 'Markdown', 'MD', '交付'), kind='read', ordered=True, roles=('work',))
 
     async def prepare_file(self, values: PrepareFileInput, call: PluginCallContext):
         return await self._run(lambda: self.context._runtime.file_assets.prepare(self.service, call, values))

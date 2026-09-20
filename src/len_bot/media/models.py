@@ -1,6 +1,14 @@
 from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+CHARACTER_REFERENCE_TAG = '人物参考'
+
+
+def media_purpose(tags):
+    if CHARACTER_REFERENCE_TAG in tags:
+        return 'character_reference'
+    return 'sticker' if '表情包' in tags else 'media'
+
 
 class CuratedMediaBaseline(BaseModel):
     """An operator's original public asset values, without paths or image bytes."""

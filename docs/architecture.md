@@ -166,7 +166,9 @@ ScenePolicy 直接读取当前根文件中的群字段与全局 QQ 回复白名�
 
 ## 对话循环与提案
 
-对话的 runtime_facts 即使没有工作、提醒、等待或新发送记录，也保留当前能力说明。仅工作角色可用的 Python、浏览器等能力通过 delegable_purposes 描述，并由 start_work 沿原权限与预算建立工作；tool_search 只发现当前职责可直接调用的工具，其空结果不表示整个系统没有对应的工作能力。
+对话的 runtime_facts 即使没有工作、提醒、等待或新发送记录，也保留当前能力说明。同一模块可同时列出当前入口可用的 purposes、普通工作用途 delegable_purposes，以及需要原入口额外核对的 conditional_work_purposes；不会因为模块已有一个对话工具就省略其工作用途。blocked_purposes 说明当前入口的具体缺项，work_requirement 说明工作开关、模型或插件状态前置；runtime_state 只是已有运行记录。委托说明只出现在允许 start_work 的对话入口，新工作仍沿原请求来源、准入、预算和工具检查建立，不预先假造工作身份或承诺未来可执行。
+
+tool_search 在排名和 LIMIT 前应用所属入口的原工具子集：显式插件使用 tool_names，专用工作使用 allowed_tools，公共研究再取原公共工具集合交集。嵌套插件的展开目录与父运行分开，原阅读账和预算边界保持。空结果只表示本入口没有匹配项，不推断全系统无此能力；实际执行与终结步骤仍核对原资格，发现结果不授予权限。
 
 提醒目录显式提供原始委托的 request_source 消息引用，定位不授予原文已读资格。到期或工作完成后的交付消息使用 delivery_ref，可省略消息 source 沿用已读的原始人类委托；sources 处理的仍是本次系统触发事件，通过交付关系关联消息。工具定义与错误指出这两个来源的区别，不把系统事件转换成人类请求，也不放宽提交与真实送达检查。
 
@@ -176,9 +178,15 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 调用角色与记账用途分开：插件 Agent 使用既有角色的模型绑定，以 plugin_agent 用途写入原 model_calls。直播插件选择 conversation 绑定；调用详情通过真实 run_id/episode_id 关联 plugin_run Trace，来源事件 ID 单独保存。result_only 返回插件声明的类型，不自动发送；直播插件随后明确提交一次邀请。插件调用不写普通对话的 disposition：供应商是否完成由 status 表示，结果与运行失败见插件 Trace，表达和送达分别以提交、行动回执为准；work 路由也通过相同调用身份关联。
 
-对话默认展示 `recall_chat` 复合回忆入口，底层 `search_messages` / 时间线 / 人物历史在该次召回后按需展开。它只查本群，摘要只定位，原句进入窗口才是精确证据。`respond.intent` 选择 reply / ack / operation / delivery / work / file，宿主从真实句柄派生修订、请求者和关系；未准备好交付的任务不提供 delivery 句柄。空消息列表表示不发送，同一 episode 的全部 checkpoint 累计最多三条消息。
+对话默认展示 `recall_chat` 原话回忆入口，底层 `search_messages` / 时间线 / 人物历史在该次召回后按需展开。它只查本群，人物与时间筛选在 LIMIT 之前完成。相对时间锚定原人类请求，实际区间与截点随原观察保存；主题摘要另用 search_history_summaries。原句进入实际阅读范围才是精确证据。`respond` 由同一组输入模型生成固定 Schema 并解析参数，不再填写 `intent`。普通回复填 segments 与 source，创建确认、操作确认、成果交付及工作说明分别选唯一 ack_ref、operation_ref、delivery_ref 或 work_ref，文件另填 file_asset_id；宿主从真实句柄派生修订、请求者和关系。未准备好交付的任务不提供 delivery 句柄。空消息列表表示不发送，同一 episode 的全部 checkpoint 累计最多三条消息。
 
 普通消息每个片段只填 text/image/video/audio/at 中一个字段。成员 U 解析为 qq_uid，由 OneBot 编码真实 at；addressed_to 独立解析为 response_actor_ids，不从请求者、引用作者或等待目标推导。MessageProposal 与 ActionItem 使用 segments 传递普通消息，content 只读派生，出站不按 content 重建正文；文件行动另用 file_asset_id，不能混入片段。普通模型正文不发送，表达与工作、提醒、认识和等待提案共同提交。真实搭话走 addressed 短合并车道，名称/关键词与普通观察使用各自窗口，不承诺立即调用或立即发送。
+
+普通回复可用 `covers` 明确覆盖其他已完整读过、同场景、当前待处理或本轮此前 checkpoint 继续处理的人类原话。主来源 source 及其请求者保持不变；创建、控制、工作、文件及插件表达不接受额外覆盖。宿主解析为 MessageProposal／ActionItem 的 `covered_source_event_ids`，Actor 核对已读与待处理范围，Gate 核对各来源的当前回应资格，原事务复核每条原话及其消息索引。发送前再核对额外来源的当前群资格。覆盖关系随原提交 JSON 和实际行动回执保存，不新增表或额外发送行动。
+
+公开 `sources` 可省略，只声明 `silent`／`incomplete` 及原因或 unfinished；处理结果仍沿内部 SourceOutcome 保存五种状态。Ledger 从消息 source／covers 派生 replied，从实际创建提案的唯一请求来源派生 delegated，从 next=wait 及真实 expect_reply 关系派生 waiting；到期、工作进展／完成及发送结果等已读运行来源沿保存的事项或 origin 关系关联，不扫描正文猜来源。显式 incomplete 保留未完成部分和已有消息／提案关联，silent 与实际行动冲突时拒绝。只读过的其他原话不会自动被标为已处理。无确认消息的控制或认识提案仍需在 sources 保留处理范围，不能把所读全部证据自动当作处理对象。
+
+等待恢复以实际 expect_reply 消息关联的来源保存，因此显式 incomplete 的等待仍能保留原请求；只有真实送达后才激活等待。来源的 message_indices 对应同一 action_id，合并回答在各来源下看到同一行动，不把多来源计成多次发送。已有来源投影与消息阶段按这条关系展示，历史记录不回填覆盖字段。
 
 无依赖的只读工具可并发取回，按原调用顺序回填；暂存提案和工作状态更新有序执行。提交工具独占一次模型响应，必须在取得此前全部回执之后调用，不能引用同批尚未返回的新提案。每个 checkpoint 使用独立 CONVERSATION_COMMITTED 事件与 action_id，发送批次绑定该提交，episode_id 另保留原执行身份；重复提交只返回原记录，不再次发布。Actor 原子提交后更新会话/认识版本和累计消息数，Ledger 才清空该阶段；next=continue 在原 AgentLoop 中得到真实提交/发布回执再继续，步骤和工具额度不重置。发布失败不把 accepted 改成 rejected，后续失败仍保留所有已提交 checkpoint。
 
@@ -198,7 +206,9 @@ ModelGateway 和 AgentLoop 供对话、工作与维护共用。一次运行固�
 
 行动选择留在同一对话循环，不增加前置规划或审查调用。输入索引区分说话人、事件类型、本轮来源与完整阅读，短期关注按 Session 版本投影且只涉及本轮人物；它们不证明存在委托。当前原话足够时可直接回应或沉默；时效、精确、版本敏感或指定来源事实按需查证，旧事按范围回忆，短计算不强制委派。必要信息缺失才聚焦澄清，多步长任务仍走原工作入口。取得时间不冒充来源时间，片段和搜索标题不冒充完整正文，失败保留具体范围。没有必要后续动作时正常结束，不靠假延迟、空转或固定追问模拟互动；未完成的明确要求仍须保留。
 
-`source` 仍只表示回应哪条原话，不能自动变成结论证据。模型可在 `TurnMessage.answer_basis` 声明 kind、event_refs、result_spans 与 unresolved；资料性答复的输入合同要求填写，普通闲聊和一般解释可缺省。kind 为 social/general/observed/work_result/mixed/unverified，是来源类别声明，不是真假评定。缺省历史记录保持“未记录”，不从当轮全部工具调用反推。
+`source` 与 `covers` 只表示回应哪条原话，不能自动变成结论证据。`TurnMessage.answer_basis` 按 kind 区分输入模型：social/general 只接收类别；observed 要有已读 event_refs 或资料页 evidence_refs；work_result 绑定本条真实工作成果；mixed 至少有直接依据或工作成果；unverified 要有非空 unresolved。公开 Schema 与解析字段由同一组模型生成，最终仍按真实身份和阅读范围复核。资料性答复的输入合同要求填写，普通闲聊和一般解释可缺省。kind 是来源类别声明，不是真假评定。缺省历史记录保持“未记录”，不从当轮全部工具调用反推。参数错误保留 messages 索引及字段位置，在原预算内修正，不自动删除证据、改类别或部分提交。
+
+Ledger 将 evidence_refs 经本执行已确认的页名映射解析为原 ResultSpan；试装、未实际提供、未知或重复页引用在提交前拒绝。工作阅读事务在原 observation_reads JSON 保存同一映射，范围合并不改变页名，恢复从真实阅读记录重建；没有新增表或内容指纹。公开 finish_work 也使用 evidence_refs，内部 JobResult 及既有工作状态／公共兴趣的范围结构不变。页引用不会把目录、摘要、人物资料或模型结论变成独立证据。
 
 Ledger 将 event_refs 解析为本群截点内已完整读过的人类 event_id；Bot、系统和模拟消息不能充当人类依据。result_spans 复用 ResultSpan 的非空 `[start,end)` 和 characters/records 坐标，核对同群保存正文与实际提供范围，拒绝只取得未展示、越界及坐标不匹配。群史/认识/工作目录分别回到 event_refs 或工作关系，不能靠序列化观察绕过其阅读边界；搜索摘要和失败结果不能标为 observed，未核实时保留具体缺口。摘要、模型产出和认识本身不升级为原始证据。
 
@@ -231,6 +241,12 @@ relations 还沿对话 Trace 已保存的 source_event_ids、burst.source_event_
 **已读账本按最终请求体核对。** 装配过程中的每次原文投影都记在 `TurnReferences.range_contributions` 上，并随所属消息保存为 `_original_ranges`；一条消息同时带上自己的正文和它 `reply_to` 引用的原文，所以载体与被引用者的读取资格是同一批记录。请求裁剪（预算省略、窗口锚定）完成后 `reconcile_original_reads()` 清空并按**实际保留且非省略**的消息重建 `read_events`／`read_event_ranges`／`provided_event_ids`，多个载体对同一原话的贡献取并集：唯一载体被删则被引用原文不再算已读，另有完整载体则读取资格保留。工具正文按 `tool_call_id` 记录它渲染时的投影与内容，插件替换过正文的工具消息不继承那批范围。`confirm_original_reads()` 只在模型确实返回之后把本次范围转为"已确认提供"，后续步骤在此基础上累积；提交给 Actor 的来源证据因此逐项对应本轮或本 episode 先前确认提供过的原文区间。
 
 ## 工作、任务与交付
+
+普通研究的后续整理／导出继续创建原 information 工作。start_work 可填写 reuse_work_ref，选择本轮已实际提供的完整或部分成果版本；宿主从真实工作生成 ReusedWorkResult，固定原 job/revision、目标、原委托位置、结果摘要、未完成项及资料／范围定位，并将原结果资料身份合并到新工作的 result_ids。目录本身不能选择成果复用。该字段只解决具体来源与版本关系，不新建执行循环、子工作树或结果数据库。
+
+原 Gate 核对 provided_work_results，提交事务再核对同场景原工作的真实结果快照与该已读版本；原工作在暂存后变化即拒绝，不悄悄换成最新版本。固定输入保存于新工作的 tasks.payload.reused_work，之后原工作修改或继续不改写这份输入。新工作仍由本次真实 request_source 决定请求者与计费，独立经过原准入、版本、预算和交付；旧 observation_reads、额度、准备好的发送片段及文件上传资格均不复制。原摘要是整理输入，资料范围是回读位置，不变成新工作的事实证据。专用插件成果继续由所属入口处理，不借普通复用入口解除插件归属或停用边界。
+
+工作详情展示固定原结果与原工作当前入口，并只读列出最近 20 个明确保存复用关系的后续工作及总数；不从相似目标或相同资料回填旧关系。已有 result_refs 的普通资料传递继续保留，没有明确工作来源时只作为资料复用。此路径的模型选择、格式转换、实际文件与送达效果须独立于源码核对验收。
 
 InformationJobRunner 使用现有 tasks 与 agent_jobs，同一工作共用实际 ID。任务存储读写 TaskItem，固定列在存储边界解析一次；payload 必须是 JSON 对象，可选 wake_match 区分 SQL NULL 与坏 JSON，不用行长或任意对象猜旧形状。Scheduler 持久认领后追加 TASK_DUE。恢复时只把匹配任务、场景与本次触发的待投递事件视为该次认领；已执行却没有持久结果的工作进入待核对，已有当前结果保留待回应，未知送达不自动重发。
 
@@ -302,11 +318,21 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 ## 工具、媒体与传输
 
+图片讨论关联由 events/image_context.py 在原事件库执行只读定位，不增加纠正表、识别模型或持久状态。它沿真实 reply、实际 sent 回执的原来源／覆盖来源及完全相同的图片资产找原话；只读取同场景、截点内的真实聊天记录，保持原 conversation_excluded 边界。有限候选中的人类回复与必要旧回答通过原上下文装配提供，关系目录只作定位。是否为纠正及其事实适用范围由主对话阅读原话判断，宿主不按关键词生成永久人物结论。
+
+为这条明确引用路径在原 events 表增加 scene＋平台消息 ID 和 scene＋被引用消息 ID 两个定向表达式索引，保留原事件、身份和字段；先定位有关图片／回答集合，再按引用 ID 取后续人类原话，不逐条对全群候选重扫历史。索引由现有初始化入口建立，没有新迁移账本或后台修复任务。实际建立时间、查询成本与聊天效果仍须在部署和正常业务中观察，索引存在本身不证明延迟改善。
+
+人物与服装参考复用运营 media_assets，以“人物参考”标签区分用途，palette_order 留空，不增加图片库或相似度系统。`runtime.character_reference_assets` 只保存 character_key、outfit 和真实 asset_id，默认空，最多 40 项；人物／服装组合与资产各自唯一。配置保存与素材编辑都先取得原 config_update_lock，再调用原存储读写路径，避免绑定与用途修改交错。绑定改变时核对已登记、启用、含本地路径元数据的运营图片及独立用途；已绑定素材允许停用，改变用途前须解除绑定。素材写事务在基线合并后检查“人物参考”与“表情包”及固定目录互斥。
+
+人物绑定的读写入口使用原登录与 ConfigEdit 基线，配置仍只保存到根文件；跨范围的明确 ID 元数据查询只供运营配置管理，模型目录继续按当前 scene／global-safe 读取。保存校验核对登记元数据，不证明文件当前可读取或像素已经提供。对话仅安装受容量约束的短目录，图片仍沿原 read_media 与实际阅读记录提供；固定表情目录在 LIMIT 前排除人物参考。管理页的用途筛选也在分页前执行，不截取后过滤。
+
 工具、插件注册、发现与 Schema 入口见[插件开发](plugins.md)。外部协议在生产者解析一次；持久观察是 ToolResult，不是任意成功字符串。错误不保存凭据或原始 input。别名不是执行入口。历史、观察和媒体的场景隔离在存储层执行。
 
 MediaService 解码与缩放已获准文件，不计算内容校验和；发送已登记资产不要求当前像素。URL 本身不授予像素或发送资格。视觉分析只依据实际装入的像素。ActionQueue 发送前复查范围、工作版本与群；准备失败记原发送失败。Scheduler 是持久认领的单写者，不另建投递队列。真实 MESSAGE_SENT 才确认送达；Shadow 与 unknown 不自动重发。
 
 对话和工作共用媒体装配入口：先核媒体总开关，再按当前场景登记的 MIME 区分。音视频只保留来源与 `registered_media_reference_only`，不进入图片解码、图片张数或像素资格；采样帧仍按原视觉能力与图片窗口处理。旧消息图片在首次读取前没有 MIME，继续走原图片验证入口，不猜为音视频。只读媒体文件 API 对已登记音视频使用原文件读取器，仍核归属、实际容器与文件上限；运营上传仍仅允许原图片格式。
+
+自动图片装配只在同一次准备阶段复用已准备结果。每次复用前仍读取当前场景／global-safe 的启用资产；资产不可用时丢弃该局部准备项，以 asset_unavailable 省略本次像素。此前已经提供的像素不因此被收回。该复用不是跨轮图片缓存，与模型接口上报的 cached_tokens 无关；具体计时口径见[上下文诊断](context.md#7-缓存与诊断边界)。
 
 运营素材编辑携带 CuratedMediaBaseline，只有公开身份、原来源／创建时间及描述、标签、启用和目录顺序，不含文件路径或字节。MediaStore 在原写锁内使用 BEGIN IMMEDIATE，先核同一 scope／id 的 curated 记录及原来源，再按原值合并四个编辑字段：未改字段保留当前值，实际改动的字段已变化则冲突，标签按整组处理。记录更新与原 pending_runtime_events 同事务，事件写入的是实际采用值；不移动范围、不把消息／工具媒体提升为运营素材，不新增列、签名或内容指纹。旧编辑接口缺 baseline 被拒绝。
 
@@ -376,7 +402,7 @@ ModelGateway 在调用客户端前创建唯一 model_calls，表示一次网关�
 
 `prepare_workspace_file` 从当前工作修订的 Gateway 不可变产物读取实际字节，保存 `file_assets` 身份及数据库同级专用目录中的文件。资产保存原群、请求者、工作/修订、执行/产物、大小、MIME、展示名和有效期，不向模型提供宿主路径。首版仅支持 UTF-8 TXT/CSV/JSON、PDF、PNG/JPEG/WEBP/GIF、ZIP；独立脚本、可执行文件和 Office 均 unsupported。ZIP 不解包到宿主；检查路径、链接/特殊文件、加密、嵌套（最多 3 层）、文件数（1000）、展开字节（100MB）、不可检查压缩格式及敏感名称。名称筛查不是任意秘密内容检测；凭据、根配置、数据库和控制目录本来就不得进入工作输入。
 
-`for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 固定公开普通消息与 `intent=file` 两种形状；文件只填当前 `file_asset_id` 和唯一的 `delivery_ref` 或 `work_ref`，不得带 `segments`。目录稳定不授予交付资格；缺少当前可交付候选时在终结解析与原事务拒绝，不能发明资产。Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。能力投影分别说明 can_generate、can_prepare_asset、can_upload_to_target；未上传不得把面板下载写成已履约。
+`for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 固定公开普通消息与文件两类形状（由业务字段确定）；文件只填当前 `file_asset_id` 和唯一的 `delivery_ref` 或 `work_ref`，不得带 `segments`。目录稳定不授予交付资格；缺少当前可交付候选时在终结解析与原事务拒绝，不能发明资产。Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。能力投影分别说明 can_generate、can_prepare_asset、can_upload_to_target；未上传不得把面板下载写成已履约。
 
 资产状态由原提交、尝试和回执按同一 action_id 投影，不增加上传队列或状态表。CONVERSATION_COMMITTED 只证明表达已提交，不证明已入发送队列；DELIVERY_ATTEMPTED 只证明尝试已登记。另一行动的旧失败不能结清当前无回执的尝试；已有真实成功和另一次未知可以同时存在，不能据历史成功抹掉未知。模拟／Shadow 单列，缺平台 file_id 的所谓成功不投影为已上传。面板保留每条原记录与采样时间，关系页的尝试身份不再列入终态回执，也不将动作审查事件当作消息送达。
 

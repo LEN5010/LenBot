@@ -146,6 +146,8 @@ class MessageProposal(BaseModel):
     job_id: str | None = None
     job_revision: int | None = None
     source_event_id: str | None = None
+    covered_source_event_ids: list[str] = Field(default_factory=list, max_length=16,
+        description='同一普通回复明确覆盖的其他已读人类来源；不改变主来源及请求者')
     requester_qq_uid: str | None = None
     addressed_to: list[str] = Field(default_factory=list, description="Actual addressed member actor IDs, separate from source and quote")
     plugin_origin: PluginOrigin | None = None
@@ -153,6 +155,13 @@ class MessageProposal(BaseModel):
 
     @model_validator(mode="after")
     def validate_body(self):
+        if self.covered_source_event_ids:
+            if (not self.source_event_id or self.file_asset_id or self.job_id or self.task_ref
+                    or self.operation_ref or self.fulfils_task_id or self.plugin_origin):
+                raise ValueError('其他来源覆盖只用于有明确主来源的普通人类回复')
+            if (len(set(self.covered_source_event_ids)) != len(self.covered_source_event_ids)
+                    or self.source_event_id in self.covered_source_event_ids):
+                raise ValueError('其他来源覆盖不得重复或包含主来源')
         if self.file_asset_id and (self.segments or not self.job_id or self.reply_to or self.expect_reply
                 or self.task_ref or self.operation_ref or self.addressed_to):
             raise ValueError('文件须单独作为本群工作交付，不混入消息片段或互动关系')
