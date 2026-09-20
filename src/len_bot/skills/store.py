@@ -6,7 +6,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from len_bot.cognition.jobs import JobChanged, SkillCandidate
+from len_bot.cognition.jobs import JobChanged, ResultSpan, SkillCandidate
+from len_bot.events.models import Event, EventType, human_initiator_for
 from len_bot.tools.discovery import rank_discovery
 
 
@@ -104,19 +105,59 @@ class SkillStoreMixin:
             value["candidate"] = json.loads(value["candidate"])
         return values
 
-    async def add_skill_candidate_in_transaction(self, job, candidate: SkillCandidate):
+    async def validate_skill_candidate_sources(self, job, candidate: SkillCandidate, *, bot_actor_id: str):
+        """Check saved source identity and actual work reads, not the lesson's truth."""
+        if job['origin_mode'] == 'simulated':
+            raise ValueError('Simulated work cannot establish a procedural lesson')
         if not set(candidate.result_ids).issubset(job["result_ids"]):
             raise ValueError("Skill candidate must cite this work's actual observations")
+        reads = {}
+        has_observation = False
         for result_id in candidate.result_ids:
             observation = await self.read_tool_observation(result_id, [job["scene_id"]])
             if observation is None:
                 raise ValueError("Skill evidence unavailable")
+            units = job['observation_reads'].get(result_id, {})
+            spans = [ResultSpan(result_id=result_id, coordinate_unit=unit, start=start, end=end)
+                     for unit, read in units.items() for start, end in read['ranges'] if end > start]
+            if not spans:
+                raise ValueError('Skill source body was not actually provided to this work')
+            await self._validate_evidence_spans(job, spans, candidate.result_ids)
+            reads[result_id] = units
+            call = await self.tool_observation_call(result_id, job['scene_id'])
+            # These resources locate prior statements or model-authored
+            # projections; a correction uses its original event instead.
+            projection = call is None or call[0] in {
+                'find_skills', 'read_skill', 'query_memory', 'query_jobs', 'search_history_summaries',
+                'recall_chat', 'search_messages', 'read_context', 'query_timeline', 'query_person_history',
+                'find_person', 'list_public_interests', 'read_group_report',
+            } or bool(observation.plugin_origin and observation.plugin_origin.plugin_id in {'group_summary', 'interest_share'})
+            if (observation.evidence_kind in {'external', 'retrieval'}
+                    and observation.status in {'ok', 'partial'}
+                    and not projection
+                    and 'locator' not in observation.coverage and 'catalog' not in observation.coverage):
+                has_observation = True
         if not set(candidate.correction_event_ids).issubset(job["source_event_ids"]):
             raise ValueError("Correction must locate original input to this work")
         for event_id in candidate.correction_event_ids:
-            row = await (await self._db.execute("SELECT event_type FROM events WHERE id=? AND scene_id=?", (event_id, job["scene_id"]))).fetchone()
-            if not row or row[0] not in {"GROUP_MESSAGE_RECEIVED", "PRIVATE_MESSAGE_RECEIVED", "OPERATOR_ACTION"}:
+            row = await (await self._db.execute(
+                'SELECT event_type,actor_id,timestamp,payload,metadata FROM events WHERE id=? AND scene_id=?',
+                (event_id, job['scene_id']))).fetchone()
+            if row is None:
+                raise ValueError('Correction source is unavailable')
+            event = Event(id=event_id, scene_id=job['scene_id'], event_type=row[0], actor_id=row[1],
+                          timestamp=row[2], payload=json.loads(row[3]), metadata=json.loads(row[4]))
+            if event.metadata.get('simulated') or event.payload.get('origin_mode') == 'simulated':
+                raise ValueError('Simulated input cannot establish a correction')
+            operator = event.event_type == EventType.OPERATOR_ACTION and event.actor_id.startswith('operator:') and bool(event.actor_id[9:])
+            if not operator and (not bot_actor_id or human_initiator_for(event, bot_actor_id) is None):
                 raise ValueError("Correction must be original human input")
+        if not has_observation and not candidate.correction_event_ids:
+            raise ValueError('Method text, locators, errors or unknown sources alone cannot establish a lesson')
+        return reads
+
+    async def add_skill_candidate_in_transaction(self, job, candidate: SkillCandidate, *, bot_actor_id: str):
+        await self.validate_skill_candidate_sources(job, candidate, bot_actor_id=bot_actor_id)
         if candidate.skill_id:
             skill = await self.read_skill(candidate.skill_id, job["scene_id"])
             if not skill or skill["author"] != "agent" or skill["scene_id"] != job["scene_id"] or skill["version"] != candidate.expected_version:
@@ -161,7 +202,7 @@ class SkillStoreMixin:
                 await self._db.rollback()
                 raise
 
-    async def save_skill_draft(self, candidate_id, scene_id, draft: SkillDraft):
+    async def save_skill_draft(self, candidate_id, scene_id, draft: SkillDraft, *, bot_actor_id: str):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -172,9 +213,7 @@ class SkillStoreMixin:
                 if not job or job["revision"] != row[1] or job["status"] == "cancelled":
                     raise JobChanged("Candidate source work changed before commit")
                 candidate = SkillCandidate.model_validate_json(row[2])
-                for result_id in candidate.result_ids:
-                    if await self.read_tool_observation(result_id, [scene_id]) is None:
-                        raise ValueError("Candidate evidence unavailable; choose skip_skill when sources are insufficient")
+                reads = await self.validate_skill_candidate_sources(job, candidate, bot_actor_id=bot_actor_id)
                 skill_id = candidate.skill_id or "skill_" + uuid.uuid4().hex[:20]
                 version = 1
                 if candidate.skill_id:
@@ -188,7 +227,8 @@ class SkillStoreMixin:
                 else:
                     await self._db.execute("INSERT INTO skills VALUES(?,?,?,1,'agent',?)", (skill_id, scene_id, scene_id, self.clock()))
                 source = {"job_id": row[0], "job_revision": row[1], "candidate_id": candidate_id,
-                          "result_ids": candidate.result_ids, "correction_event_ids": candidate.correction_event_ids}
+                          "result_ids": candidate.result_ids, "correction_event_ids": candidate.correction_event_ids,
+                          "work_observation_reads": reads}
                 await self._db.execute("INSERT INTO skill_versions VALUES(?,?,?,?,?,?)", (skill_id, version, draft.model_dump_json(), json.dumps(source), self.clock(), scene_id))
                 await self._db.execute("UPDATE skill_candidates SET status='saved',skill_id=?,updated_at=? WHERE id=?", (skill_id, self.clock(), candidate_id))
                 await self._db.commit()
@@ -199,10 +239,16 @@ class SkillStoreMixin:
 
     async def publish_skill(self, skill_id, scene_id, expected_version):
         async with self._write_lock:
-            cursor = await self._db.execute("UPDATE skills SET scope='global-safe',updated_at=? WHERE id=? AND scene_id=? AND current_version=?",
-                (self.clock(), skill_id, scene_id, expected_version))
-            if cursor.rowcount != 1:
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                cursor = await self._db.execute("UPDATE skills SET scope='global-safe',updated_at=? WHERE id=? AND scene_id=? AND current_version=?",
+                    (self.clock(), skill_id, scene_id, expected_version))
+                if cursor.rowcount != 1:
+                    raise ValueError("Skill version or scene conflict")
+                version = await self._db.execute("UPDATE skill_versions SET scope='global-safe' WHERE skill_id=? AND version=?", (skill_id, expected_version))
+                if version.rowcount != 1:
+                    raise ValueError("Skill version no longer available")
+                await self._db.commit()
+            except BaseException:
                 await self._db.rollback()
-                raise ValueError("Skill version or scene conflict")
-            await self._db.execute("UPDATE skill_versions SET scope='global-safe' WHERE skill_id=? AND version=?", (skill_id, expected_version))
-            await self._db.commit()
+                raise

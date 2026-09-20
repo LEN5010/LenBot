@@ -5,7 +5,7 @@ import {blankConfigDraft, configFields, enumLabels, exclusiveGroups, groupFor, l
 const props=defineProps({modelValue:{type:Object,required:true},schema:{type:Object,required:true},
   secrets:{type:Array,default:()=>[]},configSet:{type:Object,default:()=>({})},
   problems:{type:Array,default:()=>[]},prefix:{type:String,default:''},
-  definitions:{type:Object,default:null}})
+  definitions:{type:Object,default:null},disabled:Boolean})
 const emit=defineEmits(['update:modelValue'])
 const path=key=>props.prefix?`${props.prefix}.${key}`:key
 const fields=computed(()=>configFields(props.schema, props.definitions || props.schema?.$defs))
@@ -18,6 +18,7 @@ const nestedSecrets=field=>props.secrets.filter(item=>item===path(field.key)||it
 const nestedConfigSet=field=>Object.fromEntries(Object.entries(props.configSet)
   .filter(([item])=>item===path(field.key)||item.startsWith(path(field.key)+'.')))
 const childValue=(field,value)=>{
+  if(props.disabled)return
   const branch=typeof value==='object'&&value!==null&&!Array.isArray(value)?value:{}
   emit('update:modelValue',{...props.modelValue,[field.key]:branch})
 }
@@ -50,8 +51,9 @@ const visible=key=>{
   return !group || selectedBranch(props.modelValue,group)===key
 }
 const branch=group=>selectedBranch(props.modelValue,group)
-const update=(key,value)=>emit('update:modelValue',{...props.modelValue,[key]:value})
+const update=(key,value)=>{if(!props.disabled)emit('update:modelValue',{...props.modelValue,[key]:value})}
 const pick=(group,key)=>{
+  if(props.disabled)return
   // Switching branches clears the branch that is not chosen instead of
   // submitting both: the backend accepts exactly one of them.  The chosen
   // branch starts from the schema's own defaults, so choosing the Gateway is
@@ -99,61 +101,61 @@ const toggleChoice=(field,value,choice)=>{
       <div class="exclusive-group">
         <p class="exclusive-title">{{ group.title }}</p>
         <p class="exclusive-hint muted">{{ group.hint }}</p>
-        <v-btn-toggle :model-value="branch(group)" mandatory divided color="primary" variant="outlined"
+        <v-btn-toggle :disabled="disabled" :model-value="branch(group)" mandatory divided color="primary" variant="outlined"
           @update:model-value="value=>value&&pick(group,value)">
-          <v-btn v-for="key in group.fields" :key="key" :value="key">{{ (fields.find(item=>item.key===key)?.schema.title) || key }}</v-btn>
+          <v-btn v-for="key in group.fields" :key="key" :value="key" :disabled="disabled">{{ (fields.find(item=>item.key===key)?.schema.title) || key }}</v-btn>
         </v-btn-toggle>
         <p v-if="!branch(group)" class="muted mt-2">尚未选择；未选中的分支不会写入配置。</p>
       </div>
     </template>
     <template v-for="field in fields" :key="field.key">
       <template v-if="visible(field.key)">
-      <v-text-field v-if="secrets.includes(path(field.key))" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+      <v-text-field :disabled="disabled" v-if="secrets.includes(path(field.key))" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :label="label(field)" type="password" autocomplete="new-password" :placeholder="configSet[path(field.key)]?'已保存，留空保留':'尚未配置'"
         :hint="field.schema.description" :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
-      <v-text-field v-else-if="field.schema.const!==undefined" :model-value="field.schema.const" :label="label(field)" readonly />
-      <v-select v-else-if="field.schema.enum" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+      <v-text-field :disabled="disabled" v-else-if="field.schema.const!==undefined" :model-value="field.schema.const" :label="label(field)" readonly />
+      <v-select :disabled="disabled" v-else-if="field.schema.enum" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :items="enumItems(field,{nullable:field.nullable})" :label="label(field)" :hint="field.schema.description"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
-      <v-select v-else-if="field.schema.type==='boolean'" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+      <v-select :disabled="disabled" v-else-if="field.schema.type==='boolean'" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :items="[{title:'是',value:true},{title:'否',value:false},...(field.nullable?[{title:'未指定',value:null}]:[])]" :label="label(field)" :hint="field.schema.description"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
-      <v-text-field v-else-if="['number','integer'].includes(field.schema.type)" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value===''?null:Number(value))"
+      <v-text-field :disabled="disabled" v-else-if="['number','integer'].includes(field.schema.type)" :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value===''?null:Number(value))"
         :label="label(field)" type="number" :min="field.schema.minimum" :max="field.schema.maximum" :step="field.schema.type==='integer'?1:'any'" :hint="field.schema.description"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       <section v-else-if="field.nested" class="nested-field">
         <p class="nested-title">{{ label(field) }}</p>
         <p v-if="field.schema.description" class="muted mb-3">{{ field.schema.description }}</p>
-        <PluginConfigFields v-if="modelValue[field.key]" :ref="setNestedRef(field.key)" :model-value="modelValue[field.key]" :schema="field.schema"
+        <PluginConfigFields :disabled="disabled" v-if="modelValue[field.key]" :ref="setNestedRef(field.key)" :model-value="modelValue[field.key]" :schema="field.schema"
           :secrets="nestedSecrets(field)" :config-set="nestedConfigSet(field)" :problems="problems" :prefix="path(field.key)"
           :definitions="field.definitions || definitions || schema.$defs"
           @update:model-value="value=>update(field.key,value)" />
-        <div v-else class="actions"><v-btn size="small" variant="tonal" @click="childValue(field,modelValue[field.key])">填写此分支</v-btn><span class="muted">尚未选择；不填写就不会写入配置。</span></div>
+        <div v-else class="actions"><v-btn size="small" variant="tonal" @click="childValue(field,modelValue[field.key])" :disabled="disabled">填写此分支</v-btn><span class="muted">尚未选择；不填写就不会写入配置。</span></div>
       </section>
       <section v-else-if="field.list" class="list-field">
         <p class="nested-title">{{ label(field) }}</p>
         <p v-if="field.schema.description" class="muted mb-2">{{ field.schema.description }}</p>
         <div v-if="choicesFor(field)" class="list-choices">
-          <v-checkbox v-for="choice in choicesFor(field)" :key="choice" :model-value="rows(field.key,modelValue[field.key]).includes(choice)"
+          <v-checkbox :disabled="disabled" v-for="choice in choicesFor(field)" :key="choice" :model-value="rows(field.key,modelValue[field.key]).includes(choice)"
             :label="choiceTitle(field,choice)" hide-details density="compact" @update:model-value="()=>toggleChoice(field,modelValue[field.key],choice)" />
           <p class="muted">当前可选项来自插件声明；取消全部勾选即提交空列表。</p>
         </div>
         <template v-else>
         <div v-for="(row,index) in rows(field.key,modelValue[field.key])" :key="index" class="list-row">
-          <v-select v-if="field.schema.items?.enum" :model-value="row" :items="field.schema.items.enum" :label="`第 ${index+1} 项`" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value)" />
-          <v-text-field v-else-if="['number','integer'].includes(field.schema.items?.type)" :model-value="row" :label="`第 ${index+1} 项`" type="number" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value===''?null:Number(value))" />
-          <v-text-field v-else :model-value="row" :label="`第 ${index+1} 项`" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value)" />
-          <div class="list-actions"><v-btn size="small" variant="text" :disabled="index===0" @click="moveRow(field.key,modelValue[field.key],index,-1)">上移</v-btn><v-btn size="small" variant="text" :disabled="index===rows(field.key,modelValue[field.key]).length-1" @click="moveRow(field.key,modelValue[field.key],index,1)">下移</v-btn><v-btn size="small" variant="text" color="error" @click="removeRow(field.key,modelValue[field.key],index)">移除</v-btn></div>
+          <v-select :disabled="disabled" v-if="field.schema.items?.enum" :model-value="row" :items="field.schema.items.enum" :label="`第 ${index+1} 项`" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value)" />
+          <v-text-field :disabled="disabled" v-else-if="['number','integer'].includes(field.schema.items?.type)" :model-value="row" :label="`第 ${index+1} 项`" type="number" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value===''?null:Number(value))" />
+          <v-text-field :disabled="disabled" v-else :model-value="row" :label="`第 ${index+1} 项`" hide-details @update:model-value="value=>setRow(field.key,modelValue[field.key],index,value)" />
+          <div class="list-actions"><v-btn size="small" variant="text" :disabled="disabled||index===0" @click="moveRow(field.key,modelValue[field.key],index,-1)">上移</v-btn><v-btn size="small" variant="text" :disabled="disabled||index===rows(field.key,modelValue[field.key]).length-1" @click="moveRow(field.key,modelValue[field.key],index,1)">下移</v-btn><v-btn size="small" variant="text" color="error" @click="removeRow(field.key,modelValue[field.key],index)" :disabled="disabled">移除</v-btn></div>
         </div>
         <p v-if="!rows(field.key,modelValue[field.key]).length" class="muted mb-2">当前为空列表。</p>
-        <v-btn size="small" variant="tonal" @click="addRow(field.key,modelValue[field.key],field)">添加一项</v-btn>
+        <v-btn size="small" variant="tonal" @click="addRow(field.key,modelValue[field.key],field)" :disabled="disabled">添加一项</v-btn>
         </template>
         <p class="muted mt-2">保存的是这里的实际行数；删掉全部行即提交空列表，与“未填写”不是同一件事。</p>
       </section>
-      <v-textarea v-else-if="field.json" :ref="setAnchor(field.key)" class="compound-field" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+      <v-textarea :disabled="disabled" v-else-if="field.json" :ref="setAnchor(field.key)" class="compound-field" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :label="label(field)+' · JSON'" rows="4" auto-grow :hint="field.schema.description||'按下方插件 Schema 填写对象或列表；保存时校验结构。'"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
-      <v-textarea v-else :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
+      <v-textarea :disabled="disabled" v-else :ref="setAnchor(field.key)" :model-value="modelValue[field.key]" @update:model-value="value=>update(field.key,value)"
         :label="label(field)" rows="2" auto-grow :hint="field.schema.description"
         :error="hasProblem(field.key)" :error-messages="messages(field.key)" persistent-hint />
       </template>

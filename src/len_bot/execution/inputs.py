@@ -25,8 +25,12 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.execution.protocol import ExecutionInputFile
+from len_bot.tools.results import ObservationProvenance
 
 # One execution's inputs together stay well inside the wire field's own bound
 # and the Gateway's workspace byte cap; a work that needs more bytes than this
@@ -37,6 +41,44 @@ MAX_INPUT_TOTAL_BYTES = 24_000_000
 # ask for eight observations plus eight pictures and land in a directory
 # nobody sized.
 MAX_INPUTS = 8
+
+
+class InputFactView(BaseModel):
+    """Only provenance fields of a saved export; never its payload or script."""
+    model_config = ConfigDict(extra='ignore', strict=True)
+    kind: Literal['text', 'asset']
+    name: str
+    container_path: str = Field(validation_alias='path')
+    bytes: int = Field(ge=0)
+    coverage: str
+    result_id: str | None = None
+    status: str | None = None
+    source_truncated: bool | None = None
+    provenance: ObservationProvenance | None = None
+    asset_id: str | None = None
+    source_event_id: str | None = None
+    scope: str | None = None
+    mime_type: str | None = None
+
+    @model_validator(mode='after')
+    def source_identity(self):
+        if self.kind == 'text' and (not self.result_id or self.status is None):
+            raise ValueError('文本输入缺少原资料身份或取得状态')
+        if self.kind == 'asset' and (not self.asset_id or not self.scope):
+            raise ValueError('媒体输入缺少原资产身份或场景')
+        if self.container_path != '/lenbot-control/input/' + self.name:
+            raise ValueError('输入清单不是原只读控制目录')
+        return self
+
+
+class InputManifestView(BaseModel):
+    """A read-only projection; a missing old revision remains unrecorded."""
+    model_config = ConfigDict(extra='ignore', strict=True)
+    job_id: str
+    scene_id: str
+    job_revision: int | None = Field(default=None, ge=1)
+    input_directory: Literal['/lenbot-control/input']
+    inputs: list[InputFactView] = Field(max_length=MAX_INPUTS)
 
 # Only used to give the exported file a name the container can open; the
 # original display identity travels in the manifest, never in this name.
@@ -127,6 +169,8 @@ async def collect_input_entries(event_store, job, job_id: str, scene_id: str,
         entries.append({'kind': 'text', 'name': name,
             'path': f'/lenbot-control/input/{name}',
             'result_id': result_id, 'coverage': observation.coverage,
+            'source_truncated': observation.source_truncated or (observation.truncated and observation.displayed_range is None),
+            'provenance': observation.provenance.model_dump(mode='json') if observation.provenance else None,
             'status': observation.status, 'bytes': len(content.encode('utf-8')),
             'sources': [source.model_dump(mode='json') for source in observation.sources],
             'text': content, 'data': None})
@@ -149,14 +193,14 @@ async def collect_input_entries(event_store, job, job_id: str, scene_id: str,
     return entries
 
 
-def manifest_of(entries: list[dict], job_id: str, scene_id: str) -> dict:
+def manifest_of(entries: list[dict], job_id: str, scene_id: str, job_revision: int) -> dict:
     """The manifest as the container reads it, without the payloads.
 
     The bytes themselves stay in this process; only the identity, the coverage
     and the exported size are written down, so the manifest cannot be mistaken
     for the file it describes.
     """
-    return {'job_id': job_id, 'scene_id': scene_id,
+    return {'job_id': job_id, 'scene_id': scene_id, 'job_revision': job_revision,
             'input_directory': '/lenbot-control/input',
             'inputs': [{key: value for key, value in entry.items()
                         if key not in {'text', 'data'}} for entry in entries]}

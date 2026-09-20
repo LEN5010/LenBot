@@ -58,15 +58,68 @@ class FileAsset(BaseModel):
     review_action_id: str | None = None
 
 
+def file_receipt_status(receipt):
+    """A saved file receipt is success only with a real platform file identity."""
+    if receipt.get('simulated') or receipt.get('origin_mode') == 'simulated':
+        return 'simulated'
+    if receipt.get('event_type') == 'ACTION_SHADOWED' or receipt.get('origin_mode') == 'shadow':
+        return 'shadow'
+    if receipt.get('delivery_unknown') or receipt.get('delivery_status') == 'unknown':
+        return 'unknown'
+    if receipt.get('event_type') == 'FILE_UPLOADED':
+        file_id = receipt.get('file_id')
+        return ('uploaded' if isinstance(file_id, str) and file_id.strip()
+                and receipt.get('delivery_status') in {None, 'sent'} else 'unknown')
+    if receipt.get('event_type') == 'FILE_UPLOAD_FAILED' and receipt.get('delivery_status') in {'not_sent', 'rejected'}:
+        return receipt['delivery_status']
+    return 'unknown'
+
+
+def file_upload_state(record):
+    """Project existing submission/attempt/receipt identities; never enqueue."""
+    actions = {}
+    unlinked_submissions = 0
+    for submission in record.get('upload_submissions', []):
+        if submission['action_id']:
+            actions.setdefault(submission['action_id'], {'status': 'submitted'})
+        else:
+            unlinked_submissions += 1
+    unlinked_attempts = 0
+    for attempt in record.get('upload_attempts', []):
+        if attempt.get('action_id'):
+            actions[attempt['action_id']] = {'status': 'unknown'}
+        else:
+            unlinked_attempts += 1
+    # Receipts are stored newest first. A failure of a different action must
+    # not close a later attempt that has not received its own receipt.
+    closed = set()
+    unlinked = []
+    for receipt in record.get('upload_receipts', []):
+        status = file_receipt_status(receipt)
+        action_id = receipt.get('action_id')
+        if not action_id:
+            unlinked.append(status)
+        elif action_id not in closed:
+            actions[action_id] = {'status': status, 'receipt_event_id': receipt['event_id'],
+                                  'file_id': receipt.get('file_id') if status == 'uploaded' else None}
+            closed.add(action_id)
+    states = [item['status'] for item in actions.values()] + unlinked
+    uploaded = any(file_receipt_status(receipt) == 'uploaded' for receipt in record.get('upload_receipts', []))
+    unknown = 'unknown' in states or bool(unlinked_attempts)
+    submitted = 'submitted' in states or bool(unlinked_submissions)
+    status = ('unknown' if unknown else 'uploaded' if uploaded else 'submitted' if submitted else
+              'failed' if any(value in {'not_sent', 'rejected'} for value in states) else
+              'shadow' if 'shadow' in states else 'simulated' if 'simulated' in states else 'prepared')
+    return {'status': status, 'uploaded': uploaded, 'unknown': unknown, 'submitted': submitted,
+            'actions': [{'action_id': ident, **value} for ident, value in actions.items()],
+            'unlinked_submissions': unlinked_submissions,
+            'unlinked_attempts': unlinked_attempts,
+            'unlinked_receipts': len(unlinked)}
+
+
 def public_file_candidate(record):
     """Model-visible file handle; never includes host paths or bytes."""
-    receipts = record.get('upload_receipts') or []
-    attempts = record.get('upload_attempts') or []
-    uploaded = any(item.get('event_type') == 'FILE_UPLOADED' or item.get('delivery_status') == 'sent'
-                   for item in receipts)
-    unknown = (not uploaded and (
-        any(item.get('delivery_status') == 'unknown' for item in receipts)
-        or (attempts and not receipts)))
+    state = record['upload_state']
     return {
         'file_asset_id': record['asset_id'],
         'display_name': record['display_name'],
@@ -78,32 +131,38 @@ def public_file_candidate(record):
         'expires_at': record['expires_at'],
         'expired': bool(record.get('expired')),
         'reviewed_for_upload': bool(record.get('review_action_id')),
-        'uploaded': uploaded,
-        'upload_unknown': unknown,
-        'delivery_status': 'uploaded' if uploaded else 'unknown' if unknown else 'prepared',
+        'uploaded': state['uploaded'],
+        'upload_unknown': state['unknown'],
+        'upload_pending': state['submitted'],
+        'current_revision': record['current_revision'],
+        'delivery_status': state['status'],
     }
 
 
 def file_delivery_facts(runtime, scene_id=None, requester=None):
     """Read-only projection of generate / prepare / upload conditions."""
+    from len_bot.plugins.builtin.workspace.config import configured_workspace
     root = runtime.config_store.current
     delivery = runtime.config.file_delivery
     upload = runtime.config.onebot_file_upload
-    # Either workspace implementation may be the enabled one, and a scene may
-    # have enabled the other; ask whether any globally enabled one is also on
-    # here rather than picking the first and reporting the wrong scene.
-    enabled_globally = [name for name in ('workspace', 'python_workspace')
-                        if name in root.plugins and root.plugins[name].enabled]
+    workspace, selection_error = None, None
+    try:
+        workspace = configured_workspace(root)
+    except ValueError as error:
+        selection_error = str(error)
+    enabled_globally = [workspace[0]] if workspace and root.plugins[workspace[0]].enabled else []
     scene = root.scenes.get(scene_id) if scene_id else None
-    if scene_id:
-        can_generate = bool(scene and scene.enabled and any(
-            name in scene.plugins and scene.plugins[name].enabled for name in enabled_globally))
-    else:
-        can_generate = bool(enabled_globally)
-    can_prepare_asset = can_generate
-    blocked = []
+    selected = [name for name in enabled_globally if not scene_id or
+                scene and scene.enabled and name in scene.plugins and scene.plugins[name].enabled]
+    backends = [{'plugin_id': name, 'backend': 'gateway' if root.plugins[name].parsed_config.gateway else 'worker'}
+                for name in selected]
+    can_generate = bool(selected)
+    can_prepare_asset = any(item['backend'] == 'gateway' for item in backends)
+    blocked = [selection_error] if selection_error else []
     if not can_generate:
         blocked.append('本群未开放可生成文件的工作空间')
+    elif not can_prepare_asset:
+        blocked.append('本机 worker 可生成普通产物，但持久文件资产登记只支持已确认的 Gateway 产物')
     if not delivery.enabled:
         blocked.append('runtime.file_delivery.enabled=false，仅可在工作面板下载')
     if upload is None:
@@ -111,21 +170,30 @@ def file_delivery_facts(runtime, scene_id=None, requester=None):
     elif not upload.deployment_verified:
         blocked.append(f'onebot_file_upload.deployment_verified=false（{upload.implementation} {upload.version} 的版本与只读挂载尚未人工核对）')
     grant_allowed = None
-    if scene_id and requester:
+    if scene_id and not scene_id.startswith('group:'):
+        blocked.append('普通文件上传只接受目标群')
+    elif not scene_id or not requester:
+        blocked.append('尚未选择目标群与真实申请者，上传资格未核对')
+    else:
         authority = runtime.runtime_gate.capability_authority
-        decision = authority.check(Capability.SEND_FILE, CapabilitySubject('human', requester, scene_id, None),
-                                   now=runtime.clock())
-        grant_allowed = decision.allowed
-        if not decision.allowed:
-            blocked.append(decision.reason)
-    # Without a named requester this answers "is the platform side ready"; with
-    # one it also carries that person's current SEND_FILE grant.
-    can_upload = bool(delivery.enabled and upload and upload.deployment_verified
-                      and (grant_allowed is None or grant_allowed))
+        if authority is None:
+            grant_allowed = False
+            blocked.append('当前运行时没有文件上传授予检查')
+        else:
+            decision = authority.check(Capability.SEND_FILE, CapabilitySubject('human', requester, scene_id, None),
+                                       now=runtime.clock())
+            grant_allowed = decision.allowed
+            if not decision.allowed:
+                blocked.append(decision.reason)
+    platform_ready = bool(delivery.enabled and upload and upload.deployment_verified)
+    can_upload = (False if not platform_ready or scene_id and not scene_id.startswith('group:') else grant_allowed)
     return {
         'can_generate': can_generate,
         'can_prepare_asset': can_prepare_asset,
         'can_upload_to_target': can_upload,
+        'platform_configured': platform_ready,
+        'workspace_backends': backends,
+        'meaning': '工作空间来自已保存配置；上传协议与文件交付开关来自运行时。这里只核对所选申请者的授予，不探测部署连接，也不替代工作版本、资产、审查、额度与上传回执',
         'blocked_reason': '；'.join(blocked) if blocked else None,
         'file_delivery_enabled': delivery.enabled,
         'implementation': None if upload is None else upload.implementation,
@@ -290,6 +358,8 @@ class FileAssetService:
             raise ValueError('自主公共研究没有文件导出或上传入口')
         config = self.runtime.config.file_delivery
         async with self._lock:
+            await self.runtime.plugin_host.validate_call(call)
+            job = await service._require_current_admission(scope.job_id, scope.scene_id, call.job_revision)
             row = await service._artifact_by_path(scope.scene_id, scope.job_id, values.path, execution_id=values.execution_id)
             record = await self.store.get_execution(values.execution_id)
             if (row is None or record is None or record.job_revision != call.job_revision or record.worker_type != 'python'
@@ -354,21 +424,40 @@ class FileAssetService:
                 'note': '资产已保存。上传需对话 respond 使用 file_asset_id 和原工作交付引用；以独立文件回执为准。'}
 
     async def for_job(self, scene_id, job_id):
+        job = await self.store.get_job(job_id, scene_id)
+        sampled_at = self.store.clock()
         rows = await (await self.store._db.execute('SELECT asset_json FROM file_assets WHERE scene_id=? AND job_id=?',
             (scene_id, job_id))).fetchall()
         result = []
         for row in rows:
             asset = FileAsset.model_validate_json(row[0])
-            receipts = await (await self.store._db.execute("""SELECT id,event_type,payload FROM events
+            receipts = await (await self.store._db.execute("""SELECT id,event_type,payload,timestamp,metadata FROM events
                 WHERE scene_id=? AND json_extract(payload,'$.file_asset_id')=?
-                  AND event_type IN ('FILE_UPLOADED','FILE_UPLOAD_FAILED') ORDER BY rowid DESC""",
+                  AND event_type IN ('FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED') ORDER BY rowid DESC""",
                 (scene_id, asset.asset_id))).fetchall()
-            attempts = await (await self.store._db.execute("""SELECT id,payload FROM events WHERE scene_id=?
-                AND event_type='DELIVERY_ATTEMPTED' AND json_extract(payload,'$.file_asset_id')=?""",
+            attempts = await (await self.store._db.execute("""SELECT id,payload,timestamp FROM events WHERE scene_id=?
+                AND event_type='DELIVERY_ATTEMPTED' AND json_extract(payload,'$.file_asset_id')=? ORDER BY rowid""",
                 (scene_id, asset.asset_id))).fetchall()
-            result.append({**asset.model_dump(), 'expired': asset.expires_at <= self.store.clock(),
-                'upload_attempts': [json.loads(row[1]) for row in attempts],
-                'upload_receipts': [{'event_id': row[0], 'event_type': row[1], **json.loads(row[2])} for row in receipts]})
+            submissions = await (await self.store._db.execute('''SELECT e.id,e.timestamp,
+                json_extract(e.payload,'$.action_ids[' || m.key || ']'),json_extract(m.value,'$.job_revision')
+                FROM events e,json_each(e.payload,'$.outcome.message_proposals') m
+                WHERE e.scene_id=? AND e.event_type='CONVERSATION_COMMITTED'
+                AND json_extract(m.value,'$.file_asset_id')=? ORDER BY e.rowid,m.key''',
+                (scene_id, asset.asset_id))).fetchall()
+            reviews = (await self.store.query_traces(scene_id=scene_id, kind='action_review',
+                ref_id=f'{asset.review_action_id}:{asset.job_revision}', limit=1)) if asset.review_action_id else []
+            item = {**asset.model_dump(), 'expired': asset.expires_at <= sampled_at,
+                'current_revision': bool(job and asset.job_revision == job['revision']), 'sampled_at': sampled_at,
+                'review_trace_id': reviews[0]['id'] if reviews else None,
+                'upload_submissions': [{'event_id': row[0], 'timestamp': row[1], 'action_id': row[2],
+                                        'job_revision': row[3]} for row in submissions],
+                'upload_attempts': [{**json.loads(row[1]), 'event_id': row[0], 'timestamp': row[2]} for row in attempts],
+                'upload_receipts': [{**json.loads(row[2]), 'event_id': row[0], 'event_type': row[1],
+                    'timestamp': row[3], 'simulated': bool(json.loads(row[4]).get('simulated'))} for row in receipts]}
+            for receipt in item['upload_receipts']:
+                receipt['file_status'] = file_receipt_status(receipt)
+            item['upload_state'] = file_upload_state(item)
+            result.append(item)
         return result
 
     async def prepare_action(self, action):

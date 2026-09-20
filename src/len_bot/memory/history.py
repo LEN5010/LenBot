@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import Field
 
+from len_bot.actions.models import receipt_delivery_status
 from len_bot.cognition.projection import estimate_tokens, project_onebot_text
 from len_bot.events.models import Event, EventType
 from len_bot.memory.models import MemoryModel
@@ -61,6 +62,16 @@ def history_source_text(event: Event) -> str:
     if event.event_type == EventType.MESSAGE_SEND_FAILED:
         data["delivery"] = "not_confirmed"
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def history_source_context(event: Event) -> dict:
+    """Read qualifiers stay outside the text whose offsets are already saved."""
+    value = {"event_type": event.event_type.value, "actor_id": event.actor_id,
+             "simulated": bool(event.metadata.get('simulated') or event.payload.get('origin_mode') == 'simulated')}
+    if event.event_type in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED}:
+        value['delivery_status'] = receipt_delivery_status(event.event_type, event.payload, event.metadata)
+        value['origin_mode'] = event.payload.get('origin_mode')
+    return value
 
 
 _HISTORY_TYPES = [EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED,
@@ -188,7 +199,7 @@ class HistoryStoreMixin:
                 def segment(end):
                     return {"event_id": event.id, "rowid": rowid, "start_offset": start,
                             "end_offset": end, "total_characters": len(text), "text": text[start:end],
-                            "complete": start == 0 and end == len(text)}
+                            "complete": start == 0 and end == len(text), "source_context": history_source_context(event)}
 
                 def fits(end):
                     cost = estimate_tokens(text[start:end])
@@ -256,7 +267,7 @@ class HistoryStoreMixin:
                 raise ValueError("Original history offsets are unavailable")
             segments.append({"event_id": event.id, "rowid": rowid, "start_offset": start,
                 "end_offset": end, "total_characters": len(text), "text": text[start:end],
-                "complete": start == 0 and end == len(text)})
+                "complete": start == 0 and end == len(text), "source_context": history_source_context(event)})
         if [segment["rowid"] for segment in segments] != sorted(segment["rowid"] for segment in segments):
             raise ValueError("Original history sources are out of order")
         if segments[0]["rowid"] != batch.start_rowid or segments[-1]["rowid"] != batch.end_rowid:
@@ -309,9 +320,16 @@ class HistoryStoreMixin:
                     raise ValueError("Summary locations must belong to this history batch")
                 if review_event.scene_id != scene_id or review_event.event_type != EventType.REFLECTION_RECORDED:
                     raise ValueError("Invalid history maintenance receipt")
+                review_sources = set()
                 for item in review_event.payload.get("review_items", []):
                     if not item.get("source_event_ids") or not set(item["source_event_ids"]).issubset(readable):
                         raise ValueError("Review evidence requires completely read original events")
+                    review_sources.update(item['source_event_ids'])
+                review_originals = await self.events_by_ids(scene_id, sorted(review_sources), cutoff)
+                if len(review_originals) != len(review_sources) or any(
+                        event.metadata.get('simulated') or event.payload.get('origin_mode') == 'simulated'
+                        for event in review_originals):
+                    raise ValueError("Review evidence requires available non-simulated original events")
                 committed = []
                 adopted = []
                 stale = []

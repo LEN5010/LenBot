@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from len_bot.actions.models import receipt_delivery_status
 from len_bot.events.models import EventType
 from len_bot.media.models import MessageSegment
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -272,14 +273,14 @@ class GscoreAdapterPlugin(BasePlugin):
         if source.payload.get('plugin_id') != self.manifest.id or source.payload.get('name') != 'core_message_send':
             return view
         message = CoreMessageSend.model_validate(source.payload['data'])
-        status = payload.get('delivery_status')
+        status = receipt_delivery_status(view.receipt.get('event_type'), payload, view.receipt.get('metadata') or {})
         message_id = payload.get('message_id') if status == 'sent' else None
         await self._trace('delivery', source_event_id, call.scene_id, status=status, message_id=message_id,
             action_id=payload.get('action_id'), receipt_event_id=view.receipt.get('id'))
         await self._send_receipt(message.echo, message_id)
         return view
 
-    async def _send_receipt(self, echo: str | None, message_id: str | None):
+    async def _send_receipt(self, echo: str | None, message_id: str | int | None):
         if not echo:
             return
         if not await self._claim('receipt', echo, 'system:gscore', {'echo': echo, 'message_id': message_id, 'state': 'attempted_unknown'}):

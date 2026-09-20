@@ -45,6 +45,25 @@ def _public_provider(provider):
     return data
 
 
+def _merge_bindings(current, baseline, desired, path):
+    # Parameters and operator confirmations belong to a provider/model pair.
+    # Field-wise merging must not transfer edits to a concurrently retargeted
+    # binding, or retain concurrent parameters when replacing the pair.
+    if all(isinstance(value, dict) for value in (current, baseline, desired)):
+        for role, next_binding in desired.items():
+            original, saved = baseline.get(role), current.get(role)
+            if original == next_binding or not all(isinstance(value, dict) for value in (original, saved, next_binding)):
+                continue
+            if not {'provider_id', 'model'} <= original.keys():
+                raise HTTPException(422, '模型绑定基线缺少供应商或模型身份')
+            original_pair = (original['provider_id'], original['model'])
+            saved_pair = (saved['provider_id'], saved['model'])
+            desired_pair = (next_binding['provider_id'], next_binding['model'])
+            if saved_pair != original_pair or (desired_pair != original_pair and saved != original):
+                raise ConfigEditConflict((*path, role))
+    return merge_edit(current, baseline, desired, path)
+
+
 async def _edit_models(runtime, mutate):
     async with runtime.config_update_lock:
         data = runtime.config_store.current.model_dump()
@@ -93,15 +112,26 @@ async def list_providers(request: Request, user: str = Depends(get_current_user)
 @router.post("/providers")
 async def upsert_provider(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     req = ProviderUpsertRequest.model_validate(edit.values)
+    if edit.baseline is not None and (not isinstance(edit.baseline, dict) or edit.baseline.get('id') != req.id):
+        raise HTTPException(422, '供应商基线必须属于同一名称；改名请明确添加新供应商')
 
     def mutate(models):
         providers = {item['id']: item for item in models['providers']}
         existing = providers.get(req.id)
+        if existing is None and edit.baseline is not None:
+            raise ConfigEditConflict(('models', 'providers', req.id))
         public = _public_provider(existing) if existing else None
+        baseline = dict(edit.baseline) if edit.baseline is not None else None
+        # Credential revisions belong to the explicit secret operation, not
+        # the editable fields. Keeping a key retains its current revision.
+        if public is not None:
+            public.pop('credential_revision', None)
+        if baseline is not None:
+            baseline.pop('credential_revision', None)
         desired = req.model_dump(exclude={'api_key', 'api_key_action'})
         desired['models'] = sorted({model.strip() for model in req.models if model.strip()})
         desired['api_key_masked'] = edit.baseline.get('api_key_masked', '') if isinstance(edit.baseline, dict) else ''
-        merged = merge_edit(public, edit.baseline, desired, ('models', 'providers', req.id))
+        merged = merge_edit(public, baseline, desired, ('models', 'providers', req.id))
         merged.pop('api_key_masked', None)
         key = existing['api_key'] if existing else ''
         revision = int((existing or {}).get('credential_revision') or 1)
@@ -181,7 +211,7 @@ async def get_routing(request: Request, user: str = Depends(get_current_user)):
 async def update_routing(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     desired = RoutingConfig.model_validate(edit.values).model_dump()
     def mutate(models):
-        models['routing'] = merge_edit(models['routing'], edit.baseline, desired, ('models', 'routing'))
+        models['routing'] = _merge_bindings(models['routing'], edit.baseline, desired, ('models', 'routing'))
     await _edit_models(request.app.state.runtime, mutate)
     return {'success': True, 'message': '模型职责已保存，从下一次运行开始生效'}
 
@@ -195,7 +225,7 @@ async def get_retrieval(request: Request, user: str = Depends(get_current_user))
 async def update_retrieval(edit: ConfigEdit, request: Request, user: str = Depends(get_current_user)):
     desired = RetrievalRouting.model_validate(edit.values).model_dump()
     def mutate(models):
-        models['retrieval'] = merge_edit(models['retrieval'], edit.baseline, desired, ('models', 'retrieval'))
+        models['retrieval'] = _merge_bindings(models['retrieval'], edit.baseline, desired, ('models', 'retrieval'))
     await _edit_models(request.app.state.runtime, mutate)
     return {'success': True, 'message': '语义检索模型配置已保存；未绑定时不会发起检索请求'}
 
@@ -279,9 +309,9 @@ async def get_model_reservations(request: Request, scene_id: str | None = None, 
 
 @router.get("/usage")
 async def get_model_usage(request: Request, scene_id: str | None = None, since: float | None = None, until: float | None = None,
-                          purpose: str | None = None, status: str | None = None, page: int = Query(1,ge=1),
+                          purpose: str | None = None, status: str | None = None, job_id: str | None = None, page: int = Query(1,ge=1),
                           page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
-    return await request.app.state.runtime.query_service.model_usage(scene_id,since=since,until=until,purpose=purpose,status=status,page=page,page_size=page_size)
+    return await request.app.state.runtime.query_service.model_usage(scene_id,since=since,until=until,purpose=purpose,status=status,job_id=job_id,page=page,page_size=page_size)
 
 
 @router.get("/usage/{call_id}")

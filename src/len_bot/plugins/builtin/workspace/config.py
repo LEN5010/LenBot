@@ -1,7 +1,14 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.execution.client import WorkerGatewayConfig
 from len_bot.execution.workspace import WorkspaceConfig
+
+if TYPE_CHECKING:
+    from len_bot.config_store import RootConfig
 
 # Input export, result reading and container cleanup happen outside the
 # execution deadline, so the outer tool call gets this much more than the
@@ -64,3 +71,19 @@ class WorkspacePluginConfig(BaseModel):
         if self.gateway is not None:
             overhead += self.gateway.request_timeout_seconds
         return self.execution_timeout_seconds + overhead
+
+
+def configured_workspace(root: RootConfig) -> tuple[str, WorkspacePluginConfig] | None:
+    """Resolve the two existing IDs without selecting a fallback backend."""
+    configured = [(name, root.plugins[name]) for name in ('workspace', 'python_workspace')
+                  if name in root.plugins and root.plugins[name].config is not None]
+    enabled = [(name, setting) for name, setting in configured if setting.enabled]
+    choices = enabled or configured
+    if not choices:
+        return None
+    if len(choices) != 1:
+        raise ValueError('工作空间配置不唯一：两个兼容 ID 不能同时启用；全部停用时也不能从多份保存配置中猜后端')
+    name, setting = choices[0]
+    if not isinstance(setting.parsed_config, WorkspacePluginConfig):
+        raise ValueError('工作空间参数尚未完成类型解析，不能选择执行后端')
+    return name, setting.parsed_config

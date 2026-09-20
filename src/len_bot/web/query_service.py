@@ -12,13 +12,15 @@ import time
 import re
 from len_bot.runtime.platform_actions import actions_for
 from len_bot.cognition.budget import ReservationPolicy
+from len_bot.cognition.models import AnswerBasis
 from len_bot.events.models import Event, EventType
-from len_bot.tools.results import ToolResult
+from len_bot.tools.results import ToolResult, DisplayedRange, error_message
 from typing import Optional
 from len_bot.scenes.models import SceneSession
 from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
 from len_bot.memory.interests import InterestStore
 from len_bot.execution.protocol import OCCUPYING_STATES
+from len_bot.actions.models import receipt_delivery_status
 
 
 class RuntimeQueryService:
@@ -120,7 +122,44 @@ class RuntimeQueryService:
     def _observation_view(observation):
         excluded = set() if observation.status in {'error', 'unsupported'} else {'content'}
         return {**RuntimeQueryService._public(observation.model_dump(exclude=excluded)),
-                'content_length': len(observation.content)}
+                'content_length': len(observation.content),
+                'coverage_details': RuntimeQueryService._observation_coverage(observation)}
+
+    @staticmethod
+    def _observation_coverage(observation):
+        """Read saved acquisition metadata, independently of a displayed text page."""
+        known = {'browser_dom_text', 'browser_pixels', 'sampled_video_frames_and_optional_audio', 'audio_asr_selected_segment'}
+        if observation.coverage not in known or observation.status not in {'ok', 'partial'}:
+            return None
+        try:
+            data = json.loads(observation.content)
+            if not isinstance(data, dict):
+                raise ValueError('资料正文不是对象')
+            if observation.coverage == 'browser_dom_text':
+                from len_bot.browser.protocol import BrowserSnapshot
+                snapshot = BrowserSnapshot.model_validate(data)
+                return {'kind': 'browser_dom', 'page_ref': snapshot.page_ref,
+                    'snapshot_revision': snapshot.snapshot_revision,
+                    'text_offset': snapshot.text_offset, 'text_page_chars': len(snapshot.text),
+                    'text_total_chars': snapshot.text_total_chars, 'text_next_offset': snapshot.text_next_offset,
+                    'collection_truncated': snapshot.collection_truncated,
+                    'collection_limit_chars': snapshot.collection_limit_chars,
+                    'collected_text_saved': snapshot.collected_text is not None,
+                    'saved_text_chars': len(snapshot.collected_text) if snapshot.collected_text is not None else len(snapshot.text)}
+            if observation.coverage == 'browser_pixels':
+                return {'kind': 'browser_pixels', 'page_ref': data['page_ref'], 'asset_id': data['asset_id'],
+                    'area': data['area'], 'requested_snapshot_revision': data.get('requested_snapshot_revision')}
+            if observation.coverage == 'sampled_video_frames_and_optional_audio':
+                return {'kind': 'video_segment', **{key: data[key] for key in (
+                    'execution_id', 'job_id', 'job_revision', 'bvid', 'cid', 'requested_start_ms',
+                    'requested_end_ms', 'source_duration_ms', 'audio_start_ms', 'audio_end_ms')},
+                    'frames': [{key: frame[key] for key in ('asset_id', 'source_time_ms', 'timestamp_basis')}
+                               for frame in data['frames']], 'audio_asset_id': data.get('audio_asset_id')}
+            return {'kind': 'audio_transcript', **{key: data[key] for key in (
+                'execution_id', 'audio_asset_id', 'coverage_start_ms', 'coverage_end_ms', 'qualification')},
+                'segment_count': len(data['segments'])}
+        except (ValueError, KeyError, TypeError):
+            return {'kind': 'unavailable', 'error': '此记录的覆盖元数据不符合对应工具的保存格式；原文仍可回读，不补造采集或已读范围。'}
 
     async def tool_results(self, scene_id, page=1, page_size=30):
         result = await self._page("SELECT id,event_id,tool_name,result_json,created_at", "FROM tool_observations WHERE scene_id=?",
@@ -131,12 +170,56 @@ class RuntimeQueryService:
             item["content_length"] = len(observation.content)
         return result
 
-    async def tool_result(self, scene_id, result_id, offset=0):
+    async def tool_result(self, scene_id, result_id, offset=0, *, end=None, coordinate_unit='characters'):
         result = await self.runtime.event_store.read_tool_observation(result_id, [scene_id])
         if result is None:
             return None
-        page = self._public(result.page(offset, self.runtime.config.tool_result_page_chars).model_dump())
+        if offset < 0 or end is not None and end < offset:
+            raise ValueError('资料范围必须满足 0 <= offset <= end')
+        budget = self.runtime.config.tool_result_page_chars
+        if coordinate_unit == 'characters' and end is None:
+            shown = result.page(offset, budget)
+        else:
+            if coordinate_unit == 'characters':
+                total = len(result.content)
+                target = end
+                if target > total:
+                    raise ValueError('字符范围超出已保存正文')
+                stop = min(target, offset + budget)
+                content = result.content[offset:stop]
+            elif coordinate_unit == 'records':
+                try:
+                    records = json.loads(result.content)
+                except ValueError as error:
+                    raise ValueError('此资料未保存为记录数组，不能按记录坐标读取；可明确选择查看正文') from error
+                if result.tool_name == 'read_pending_wakes' and isinstance(records, dict):
+                    records = records.get('items')
+                if not isinstance(records, list):
+                    raise ValueError('此资料没有可读取的记录数组，不能将记录坐标当作字符偏移')
+                total = len(records)
+                target = total if end is None else end
+                if not offset <= target <= total:
+                    raise ValueError('记录范围超出已保存数组')
+                stop = offset
+                while stop < target:
+                    if len(json.dumps(records[offset:stop + 1], ensure_ascii=False)) > budget:
+                        break
+                    stop += 1
+                if stop == offset and stop < target:
+                    raise ValueError('单条保存记录超过当前页面字符上限；可明确选择查看正文，不自动更换坐标')
+                content = json.dumps(self._public(records[offset:stop]), ensure_ascii=False)
+            else:
+                raise ValueError('资料坐标只接受 characters 或 records')
+            source_truncated = result.source_truncated or (result.truncated and result.displayed_range is None)
+            # This is an operator view over saved data, not a model read or a
+            # replay of the original presentation. No tool is invoked here.
+            shown = result.model_copy(update={'content':content, 'coordinate_unit':coordinate_unit,
+                'displayed_range':DisplayedRange(start=offset, end=stop, total=total),
+                'next_offset':stop if stop < target else None, 'next_call':None,
+                'truncated':source_truncated or stop < total, 'source_truncated':source_truncated})
+        page = self._public(shown.model_dump())
         page["content_length"] = len(result.content)
+        page['coverage_details'] = self._observation_coverage(result)
         if result.source_next_call:
             page["source_next_call"] = self._public(result.source_next_call.model_dump())
             page["source_next_call_note"] = "源端下一批，仅位置未取得"
@@ -322,9 +405,9 @@ class RuntimeQueryService:
             "scene_subtotals": scene_subtotals,
         }
 
-    async def model_usage(self, scene_id=None, *, since=None, until=None, purpose=None, status=None, page=1, page_size=30):
+    async def model_usage(self, scene_id=None, *, since=None, until=None, purpose=None, status=None, job_id=None, page=1, page_size=30):
         source, params = "FROM model_calls WHERE 1=1", []
-        for column,value in (("scene_id",scene_id),("purpose",purpose),("status",status)):
+        for column,value in (("scene_id",scene_id),("purpose",purpose),("status",status),("job_id",job_id)):
             if value is not None:
                 source += f" AND {column}=?"; params.append(value)
         for op,value in ((">=",since),("<=",until)):
@@ -342,7 +425,7 @@ class RuntimeQueryService:
         fields.append("SUM(json_extract(estimate_json,'$.input_tokens')) AS estimated_input_tokens")
         fields.append("SUM(CASE WHEN json_extract(usage_json,'$.type')='duration' AND json_type(usage_json,'$.seconds') IN ('integer','real') THEN json_extract(usage_json,'$.seconds') ELSE 0 END) AS audio_seconds")
         result["totals"] = await self._rows("SELECT " + ",".join(fields) + " " + source + " GROUP BY purpose,disposition ORDER BY purpose,disposition", params)
-        result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status}
+        result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status,"job_id":job_id}
         result["cost"] = {"status":"unverified","amount":None,"reason":"尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}
         return result
 
@@ -389,9 +472,10 @@ class RuntimeQueryService:
         if not rows:
             return None
         payload = json.loads(rows[0]['payload'])
-        candidates = payload.get('stale_memory_candidates', [])
+        candidates = payload.get('stale_memory_candidates')
         return {'event_id': rows[0]['id'], 'candidates': candidates,
-                'status': 'needs_review' if candidates else 'none'}
+                'adopted_operations': payload.get('memory_receipts'),
+                'status': 'not_recorded' if candidates is None else 'needs_review' if candidates else 'none'}
 
     async def skills(self, scene_id=None, *, query="", page=1, page_size=30):
         source = """FROM skills s JOIN skill_versions v ON v.skill_id=s.id AND v.version=(
@@ -412,6 +496,11 @@ class RuntimeQueryService:
             item["skip_reason"] = item["error"] if item["status"] == "skipped" else None
             if item["status"] == "skipped":
                 item["error"] = None
+            item['saved_versions'] = await self._rows('''SELECT v.version,v.scope,v.created_at
+                FROM skill_versions v JOIN skills s ON s.id=v.skill_id
+                WHERE v.skill_id=? AND s.scene_id=? AND json_extract(v.source_json,'$.candidate_id')=?
+                AND json_extract(v.source_json,'$.job_id')=? AND json_extract(v.source_json,'$.job_revision')=?
+                ORDER BY v.version''', [item['skill_id'], item['scene_id'], item['id'], item['job_id'], item['job_revision']])
         return result
 
     async def skill(self, skill_id, scene_id, version=None):
@@ -440,19 +529,48 @@ class RuntimeQueryService:
         if snapshot is None:
             published['work_snapshot'] = None
             published['work_snapshot_note'] = (
-                '该工作没有记录创建时的执行快照，其原上限无法还原；以上为当前发布值，不构成该工作的既有额度')
+                '该工作没有记录创建时的执行快照，其原上限无法还原；当前发布值另列为参考，不构成该工作的既有额度')
             return published
         has_ceiling = 'token_limit' in snapshot
-        published['work_snapshot'] = {
-            'token_limit': snapshot.get('token_limit'),
-            'token_limit_state': 'recorded' if has_ceiling else 'unrecorded',
-            'max_model_steps': snapshot.get('job_max_steps'),
-            'max_tool_calls': snapshot.get('job_max_tool_calls'),
-            'max_seconds': snapshot.get('job_max_seconds'),
-            'context_tokens': snapshot.get('job_context_tokens'),
-            'output_tokens': snapshot.get('work_output_tokens'),
-            'deadline_at': snapshot.get('deadline_at')}
+        fields = {'token_limit': 'token_limit', 'max_model_steps': 'job_max_steps',
+                  'max_tool_calls': 'job_max_tool_calls', 'max_seconds': 'job_max_seconds',
+                  'context_tokens': 'job_context_tokens', 'output_tokens': 'work_output_tokens',
+                  'maintenance_context_tokens': 'maintenance_context_tokens',
+                  'maintenance_output_tokens': 'maintenance_output_tokens', 'deadline_at': 'deadline_at'}
+        recorded = {key: snapshot[source] for key, source in fields.items() if source in snapshot}
+        recorded['token_limit_state'] = 'recorded' if has_ceiling else 'unrecorded'
+        if 'context_tokens' in recorded and 'output_tokens' in recorded:
+            recorded['effective_input_tokens'] = recorded['context_tokens'] - recorded['output_tokens']
+        published['work_snapshot'] = recorded
         return published
+
+    @staticmethod
+    def job_delivery(job):
+        from len_bot.runtime.public_research import has_public_context
+        return {'delivery_required': not has_public_context(job)}
+
+    async def job_method_reads(self, job):
+        """Pinned versions and saved presentations, never an assertion of use."""
+        methods = {ident: {'skill_id': ident, 'version': version, 'observations': []}
+                   for ident, version in job['skill_versions'].items()}
+        if not methods:
+            return []
+        rows = await self._rows('''SELECT o.id,o.arguments_json,o.result_json FROM tool_observations o
+            WHERE o.scene_id=? AND o.tool_name='read_skill'
+            AND o.id IN (SELECT value FROM json_each(?)) ORDER BY o.created_at,o.id''',
+            [job['scene_id'], json.dumps(job['result_ids'])])
+        for row in rows:
+            result = ToolResult.model_validate_json(row['result_json'])
+            if result.status != 'ok':
+                continue
+            body = json.loads(result.content)
+            arguments = json.loads(row['arguments_json'])
+            method = methods.get(body['id'])
+            if method is None or arguments['skill_id'] != body['id'] or body['version'] != method['version']:
+                continue
+            method['observations'].append({'result_id': row['id'],
+                'provided_ranges': job['observation_reads'].get(row['id'], {})})
+        return list(methods.values())
 
     async def jobs(self, scene_id=None, *, status=None, execution_status=None, query="", page=1, page_size=30):
         source = """FROM agent_jobs j JOIN tasks t ON j.id=t.id AND j.scene_id=t.scene_id WHERE (? IS NULL OR j.scene_id=?)
@@ -470,7 +588,8 @@ class RuntimeQueryService:
             if job['can_resume']:
                 job['resume_issue']=self.runtime.job_resume_issue(job)
                 job['can_resume']=job['resume_issue'] is None
-            items.append({**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job)})
+            items.append({**self._public(job),**self.runtime.plugin_host.work_details(job),
+                          **self.job_delivery(job),"budget":self.job_budget(job)})
         result["items"]=items
         return result
 
@@ -494,9 +613,49 @@ class RuntimeQueryService:
             'SELECT subject,day_key,status,reserved_tokens,usage_tokens,estimated_tokens FROM usage_reservations WHERE job_id=? AND scene_id=?',
             [job_id, job['scene_id']])
         return {**self._public(job),**self.runtime.plugin_host.work_details(job),"budget":self.job_budget(job),
+                **self.job_delivery(job), "method_reads": await self.job_method_reads(job),
                 "executions": executions, "reservation": reservations[0] if reservations else None,
                 "file_assets": await self.runtime.file_assets.for_job(job["scene_id"], job["id"]),
                 "platform_actions": await actions_for(self.runtime.event_store, scene_id=job["scene_id"], job_id=job["id"])}
+
+    async def job_execution(self, scene_id, job_id, execution_id):
+        store = self.runtime.event_store
+        record = await store.get_execution(execution_id)
+        if (record is None or record.scene_id != scene_id or record.job_id != job_id
+                or await store.get_job(job_id, scene_id) is None):
+            return None
+        # On-demand local reads only: no Gateway query or execution reconciliation.
+        view = record.model_dump(mode='json', exclude={'stdout', 'stderr'})
+        view['error'] = error_message(record.error) if record.error else None
+        if view['termination']:
+            view['termination']['detail'] = error_message(view['termination']['detail'])
+        view['occupies_capacity'] = record.state in OCCUPYING_STATES
+        view['events'] = [{**event.model_dump(mode='json'), 'detail': error_message(event.detail)}
+                          for event in await store.read_execution_events(execution_id)
+                          if event.sequence <= record.last_sequence]
+        view['sampled_at'] = self.current_time()
+        view['input_manifest'] = None
+        view['input_manifest_state'] = 'not_applicable' if record.worker_type != 'python' else 'unrecorded'
+        if record.worker_type == 'python':
+            from len_bot.execution.inputs import InputManifestView
+            try:
+                request = await store.execution_request_of(execution_id)
+                files = [item for item in request.input_files if item.name == 'manifest.json'] if request else []
+                if files:
+                    if len(files) != 1 or files[0].text is None:
+                        raise ValueError('输入清单没有唯一文本载体')
+                    manifest = InputManifestView.model_validate_json(files[0].text)
+                    if (manifest.scene_id != scene_id or manifest.job_id != job_id
+                            or manifest.job_revision is not None and manifest.job_revision != record.job_revision):
+                        raise ValueError('输入清单与原执行身份不一致')
+                    view['input_manifest'] = manifest.model_dump(mode='json')
+                    view['input_manifest_state'] = 'recorded'
+            except ValueError:
+                # Validation errors may contain input bytes. Preserve the saved
+                # request, but do not send its invalid payload to the panel.
+                view['input_manifest_state'] = 'invalid'
+                view['input_manifest_error'] = '原执行输入清单格式或身份不符，无法投影；原记录保留，未补造输入。'
+        return self._public(view)
 
     async def file_asset_bytes(self, scene_id, job_id, asset_id):
         return await self.runtime.file_assets.bytes_for_job(scene_id, job_id, asset_id)
@@ -523,6 +682,7 @@ class RuntimeQueryService:
             item["tags"]=json.loads(item.pop("tags_json"));item["enabled"]=bool(item["enabled"]);item["curated"]=bool(item["curated"])
         palette_ids={asset["id"] for asset in await self.runtime.event_store.list_palette(scene_id, limit=self.runtime.config.media_palette_limit)}
         result["items"]=[self.public_asset(item, in_current_limit=item["id"] in palette_ids) for item in result["items"]]
+        result['upload_max_bytes'] = self.runtime.config.media_max_image_bytes
         return result
 
     async def media_asset(self, asset_id, scene_id):
@@ -534,6 +694,13 @@ class RuntimeQueryService:
         return {"items":items,"total":len(items),"complete":True,"limit":self.runtime.config.media_palette_limit}
 
     async def media_file(self, asset_id, scene_id):
+        asset = await self.runtime.event_store.get_media(asset_id, [scene_id, 'global-safe'], include_disabled=True)
+        if asset is None:
+            raise ValueError('媒体不存在或不属于当前场景')
+        if (asset['mime_type'] or '').startswith(('audio/', 'video/')):
+            return await self.runtime.media_service.get_file_bytes(asset_id, scene_id, include_disabled=True)
+        # The original image-registration path has no MIME until its first
+        # validated read. It keeps the same image reader, not an A/V guess.
         return await self.runtime.media_service.get_bytes(asset_id, scene_id, include_disabled=True)
 
     def persona_settings(self):
@@ -693,9 +860,7 @@ class RuntimeQueryService:
         for scene,events in groups.items():
             for event in events:
                 payload=self._public(event.payload);metadata=event.metadata
-                delivery=payload.get("delivery_status")
-                if event.event_type==EventType.ACTION_SHADOWED:delivery="shadow"
-                elif payload.get("delivery_unknown"):delivery="unknown"
+                delivery = receipt_delivery_status(event.event_type, event.payload, metadata)
                 sender=payload.get("sender") or {}
                 quote=None
                 quote_rows=[]
@@ -781,9 +946,10 @@ class RuntimeQueryService:
 
     async def list_tasks(self, status=None, *, scene_id=None, kind="reminder", page=1, page_size=30):
         source="FROM tasks WHERE (? IS NULL OR status=?) AND (? IS NULL OR scene_id=?)";params=[status,status,scene_id,scene_id]
-        if kind=="reminder":source+=" AND COALESCE(json_extract(payload,'$.kind'),'reminder') NOT IN ('agent_job','heartbeat','heartbeat_occupancy','interest_share')"
+        if kind=="reminder":source+=" AND COALESCE(json_extract(payload,'$.kind'),'reminder') NOT IN ('agent_job','heartbeat','heartbeat_occupancy','interest_share','deferred_delivery')"
         elif kind=="agent_job":source+=" AND json_extract(payload,'$.kind')='agent_job'"
         elif kind=="system":source+=" AND json_extract(payload,'$.kind') IN ('heartbeat','heartbeat_occupancy','interest_share')"
+        elif kind=="deferred":source+=" AND json_extract(payload,'$.kind')='deferred_delivery'"
         else:raise ValueError('未知任务分类')
         result=await self._page("SELECT *",source,params,"created_at DESC,id DESC",page,page_size)
         result["items"]=[self._task(item) for item in result["items"]]
@@ -794,6 +960,10 @@ class RuntimeQueryService:
         if not rows:
             return None
         task = self._task(rows[0])
+        if task['payload'].get('kind') == 'agent_job':
+            job = await self.runtime.event_store.get_job(task_id, task['scene_id'])
+            if job is not None:
+                task.update(self.job_delivery(job))
         if task['payload'].get('kind') in {'heartbeat', 'heartbeat_occupancy', 'interest_share'}:
             traces = await self._rows("SELECT * FROM traces WHERE scene_id=? AND ref_id=? AND kind IN ('heartbeat','interest_share') ORDER BY created_at DESC LIMIT 30",
                                      [task['scene_id'], task_id])
@@ -830,10 +1000,48 @@ class RuntimeQueryService:
         for change in changes:
             change['payload'] = self._public(json.loads(change['payload']))
         proven = await store.public_observation_ids(item.source_observation_ids)
+        publications = await self.public_interest_publications(ident)
         return {**item.model_dump(mode='json'), 'sources': sources,
                 'public_sources_confirmed': set(item.source_observation_ids) == proven,
                 'expired': item.valid_until is not None and item.valid_until <= self.current_time(),
-                'changes': changes[:50], 'more_changes': len(changes) > 50}
+                'changes': changes[:50], 'more_changes': len(changes) > 50,
+                **publications, 'read_at': self.current_time()}
+
+    async def public_interest_publications(self, ident):
+        # A cross-scene publication index contains identities and receipt facts,
+        # never the conversation text used to phrase a scene's expression.
+        actions = await self._rows("""SELECT scene_id,json_extract(payload,'$.action_id') AS action_id,
+            MAX(rowid) AS last_rowid FROM events
+            WHERE event_type IN ('DELIVERY_ATTEMPTED','MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+              AND json_extract(payload,'$.interest_publication.interest_id')=?
+              AND json_extract(payload,'$.action_id') IS NOT NULL
+            GROUP BY scene_id,json_extract(payload,'$.action_id') ORDER BY last_rowid DESC LIMIT 51""", [ident])
+        publications = []
+        for action in actions[:50]:
+            rows = await self._rows("""SELECT id,event_type,timestamp,payload,metadata FROM events
+                WHERE scene_id=? AND json_extract(payload,'$.action_id')=?
+                  AND json_extract(payload,'$.interest_publication.interest_id')=?
+                  AND event_type IN ('DELIVERY_ATTEMPTED','MESSAGE_SENT','MESSAGE_SEND_FAILED','ACTION_SHADOWED')
+                  AND rowid<=? ORDER BY rowid""",
+                [action['scene_id'], action['action_id'], ident, action['last_rowid']])
+            if not rows:
+                continue
+            attempts, receipts, latest = [], [], None
+            for row in rows:
+                payload, metadata = json.loads(row['payload']), json.loads(row['metadata'])
+                if row['event_type'] == 'DELIVERY_ATTEMPTED':
+                    attempts.append(row['id'])
+                else:
+                    receipts.append(row['id'])
+                    latest = {'status': receipt_delivery_status(row['event_type'], payload, metadata),
+                              'receipt_at': row['timestamp'], 'message_id': payload.get('message_id'),
+                              'error': error_message(payload.get('error') or '')}
+                revision = payload['interest_publication'].get('revision')
+            publications.append({'scene_id': action['scene_id'], 'action_id': action['action_id'],
+                'interest_revision': revision, 'attempt_event_ids': attempts, 'receipt_event_ids': receipts,
+                **(latest or {'status': 'unknown', 'receipt_at': None, 'message_id': None,
+                             'error': '已有发送尝试，尚无可靠终态回执；本页不确认上游是否仍在处理'})})
+        return {'publications': publications, 'more_publications': len(actions) > 50}
 
     async def open_loop(self, loop_id, scene_id=None):
         rows=await self._rows("SELECT * FROM open_loops WHERE id=? AND (? IS NULL OR scene_id=?)",[loop_id,scene_id,scene_id])
@@ -847,13 +1055,21 @@ class RuntimeQueryService:
         return await self._page("SELECT *","FROM open_loops WHERE (? IS NULL OR status=?) AND (? IS NULL OR scene_id=?)",
                                 [status,status,scene_id,scene_id],"created_at DESC,id DESC",page,page_size)
 
-    async def list_memories(self, status=None, scope=None, subject=None, *, kind=None, query="", page=1, page_size=30):
+    async def list_memories(self, status=None, scope=None, subject=None, *, kind=None, query="", validity=None, page=1, page_size=30):
         source="FROM memories WHERE 1=1";params=[]
         for field,value in (("status",status),("scope",scope),("subject",subject),("kind",kind)):
             if value is not None:source+=f" AND {field}=?";params.append(value)
+        now = self.current_time()
+        if validity == 'current':
+            source += " AND status='active' AND (expires_at IS NULL OR expires_at>?)"; params.append(now)
+        elif validity == 'expired':
+            source += " AND expires_at IS NOT NULL AND expires_at<=?"; params.append(now)
+        elif validity is not None:
+            raise ValueError('Unknown memory validity filter')
         if query:source+=" AND instr(lower(statement),lower(?))>0";params.append(query)
         result=await self._page("SELECT "+','.join(MEMORY_COLUMNS),source,params,"created_at DESC,id DESC",page,page_size)
         result["items"]=[memory_from_row(tuple(item[column] for column in MEMORY_COLUMNS)).model_dump(mode="json") for item in result["items"]]
+        result['sampled_at'] = now
         return result
 
     async def memory(self, memory_id, scope=None):
@@ -883,7 +1099,7 @@ class RuntimeQueryService:
             return [record, *(child for key in ('runs','agents') for run in record.get(key,[]) for child in collect(run))]
         return collect(payload.get('conversation') or payload.get('cognition') or payload)
 
-    def _trace(self, item, detail=False):
+    def _trace(self, item, detail=False, *, identities=False):
         item=dict(item);payload=RuntimeQueryService._public(json.loads(item.pop("payload")))
         conversation=payload.get("conversation") or {}
         result = payload.get("result") or {}
@@ -916,6 +1132,20 @@ class RuntimeQueryService:
         elif gate.get('committed') and item['kind'] == 'conversation_error':
             item['summary'] = '已提交，后续处理异常 · ' + item['summary']
         runs=self._trace_runs(item['kind'],payload)
+        if (detail or identities) and item['kind'] in {'conversation', 'conversation_error'}:
+            # These are stored identities, not inferred from the trace time.
+            # A source may belong to an attempt that failed before any commit.
+            item['source_event_ids'] = sorted(set(payload.get('source_event_ids', []))
+                | set((payload.get('burst') or {}).get('source_event_ids', [])))
+            item['read_source_event_ids'] = sorted({ident for run in runs
+                for ident in (run.get('references') or {}).get('read_messages', [])})
+            gates = [gate, *(checkpoint['gate'] for run in runs for checkpoint in run.get('checkpoints', []))]
+            item['commit_event_ids'] = sorted({record['commit_event_id'] for record in gates
+                if record.get('committed') and record.get('commit_event_id')})
+            item['error'] = payload.get('error') or conversation.get('failure_reason')
+            item['error_phase'] = payload.get('error_phase')
+            item['publication_error'] = publication.get('error')
+            item['publication_phase'] = publication.get('phase')
         calls = [call for run in runs
                  for step in run.get("steps", []) for call in step.get("tool_calls", [])]
         direct=[call for run in runs for call in run.get('tool_results',[])]
@@ -1013,6 +1243,18 @@ class RuntimeQueryService:
                 job_ids.add(encoded['parent_run_id'])
             plugin_origin(encoded.get('handler_origin'))
 
+        def answer_basis(encoded):
+            if encoded is None:
+                return
+            basis = AnswerBasis.model_validate(encoded)
+            event_ids.update(basis.event_ids)
+            result_ids.update(span.result_id for span in basis.result_spans)
+            if basis.work_result is not None:
+                work = basis.work_result
+                job_ids.add(work.job_id)
+                result_ids.update(work.result_ids)
+                result_ids.update(span.result_id for span in work.evidence_spans)
+
         def membership(column, values):
             values=sorted(values)
             return (column+" IN ("+','.join('?' for _ in values)+")",values) if values else ("0",[])
@@ -1080,10 +1322,17 @@ class RuntimeQueryService:
                 else:
                     episode_ids.add(item["ref_id"])
 
+        source_clause, source_values = membership('value', event_ids)
+        conversation_sources = [("kind IN ('conversation','conversation_error') AND EXISTS("
+            "SELECT 1 FROM json_each(payload,'" + path + "') WHERE " + source_clause + ")", source_values)
+            for path in ('$.source_event_ids', '$.burst.source_event_ids', '$.conversation.references.read_messages')]
         seed_traces=await linked('SELECT *','FROM traces WHERE scene_id=?',[
-            membership('ref_id',episode_ids|job_ids),membership("json_extract(payload,'$.plugin_origin.source_event_id')",event_ids)],
+            membership('ref_id',episode_ids|job_ids),membership("json_extract(payload,'$.plugin_origin.source_event_id')",event_ids),
+            *conversation_sources],
             'created_at DESC,id DESC','traces')
         for row in seed_traces:
+            if row['kind'] in {'conversation', 'conversation_error'}:
+                episode_ids.add(row['ref_id'])
             for run in self._trace_runs(row['kind'],json.loads(row['payload'])):plugin_origin(run.get('plugin_origin'))
 
         # A committed turn explicitly records all originals read in that turn.
@@ -1102,7 +1351,10 @@ class RuntimeQueryService:
             event_ids.add(event["id"]);payload=json.loads(event["payload"])
             plugin_origin(payload.get('plugin_origin'))
             for route in json.loads(event['metadata']).get('plugin_routes',[]):plugin_origin(route['origin'])
-            for message in payload.get('outcome',{}).get('message_proposals',[]):plugin_origin(message.get('plugin_origin'))
+            for message in payload.get('outcome',{}).get('message_proposals',[]):
+                plugin_origin(message.get('plugin_origin'))
+                answer_basis(message.get('answer_basis'))
+            answer_basis(payload.get('answer_basis'))
             if event['event_type'] == 'CONVERSATION_COMMITTED':
                 action_ids.update(payload.get('action_ids', []))
             if event["event_type"]=="CONVERSATION_COMMITTED" and event["id"].startswith('turn:'):
@@ -1194,7 +1446,8 @@ class RuntimeQueryService:
         event_views=await self._event_views(events,cutoff)
         actions={ident:{"id":ident,"scene_id":scene_id,"episode_id":None,"job_id":None,"origin_mode":None,
                         "job_revision":None,"origin_event_id":None,"request_source_event_id":None,"requester_qq_uid":None,
-                        "acknowledges_task_id":None,"fulfils_task_id":None,
+                        "acknowledges_task_id":None,"fulfils_task_id":None,"answer_basis":None,
+                        "file_asset_id":None,"file_id":None,"attempt_event_ids":[],
                         "publication_status":None,"delivery_status":None,"simulated":False,"receipt_event_ids":[]} for ident in sorted(action_ids)}
         for event in event_views:
             if event['event_type'] != 'CONVERSATION_COMMITTED':
@@ -1208,6 +1461,8 @@ class RuntimeQueryService:
                         origin_event_id=message.get('source_event_id') or payload.get('origin_event_id'),
                         requester_qq_uid=message.get('requester_qq_uid'),
                         job_id=message.get('job_id'), job_revision=message.get('job_revision'),
+                        file_asset_id=message.get('file_asset_id'),
+                        answer_basis=message.get('answer_basis'),
                         operation_ref=message.get('operation_ref'), fulfils_task_id=message.get('fulfils_task_id'))
         for row in reversed(trace_rows):
             payload = json.loads(row['payload'])
@@ -1218,28 +1473,37 @@ class RuntimeQueryService:
                 for published in publication.get('actions', []):
                     action = actions.get(published['action_id'])
                     if action is not None:
-                        action.update({key: published.get(key) for key in ('origin_event_id', 'requester_qq_uid',
-                            'job_id', 'job_revision', 'operation_ref', 'fulfils_task_id', 'acknowledges_task_id')})
+                        action.update({key: published[key] for key in ('origin_event_id', 'requester_qq_uid',
+                            'job_id', 'job_revision', 'operation_ref', 'fulfils_task_id', 'acknowledges_task_id') if key in published})
                         action.update(publication_status=published['status'], publication_phase=publication.get('phase'),
-                            publication_error=publication.get('error'), commit_event_id=gate.get('commit_event_id'))
+                            publication_error=publication.get('error'))
+                        if gate.get('commit_event_id'):
+                            action['commit_event_id'] = gate['commit_event_id']
         for job in jobs:
             if job.get("delivery_action_id") in actions:
                 actions[job["delivery_action_id"]].update(job_id=job["id"], request_source_event_id=job.get("request_source_event_id"))
             if job.get("ack_action_id") in actions:
                 actions[job["ack_action_id"]].update(acknowledges_task_id=job["id"], request_source_event_id=job.get("request_source_event_id"))
         for event in reversed(event_views):
+            if event['event_type'] not in {'MESSAGE_SENT', 'MESSAGE_SEND_FAILED', 'FILE_UPLOADED',
+                                          'FILE_UPLOAD_FAILED', 'ACTION_SHADOWED', 'DELIVERY_ATTEMPTED'}:
+                continue
             ident=event["payload"].get("action_id")
             if not ident:continue
-            action=actions.setdefault(ident,{"id":ident,"scene_id":scene_id,"receipt_event_ids":[]})
-            action.update(delivery_status=event["delivery_status"],simulated=event["simulated"],origin_mode=event["origin_mode"],
-                          plugin_origin=event['payload'].get('plugin_origin'),
-                          episode_id=event["payload"].get('episode_id',event["payload"].get("batch_id")),job_id=event["payload"].get("job_id"),
-                          checkpoint_index=event['payload'].get('checkpoint_index'),
-                          job_revision=event["payload"].get("job_revision"),origin_event_id=event["payload"].get("origin_event_id"),
-                          requester_qq_uid=event["payload"].get("requester_qq_uid"),
-                          operation_ref=event['payload'].get('operation_ref'),
-                          acknowledges_task_id=event["payload"].get("acknowledges_task_id", action.get("acknowledges_task_id")),
-                          fulfils_task_id=event["payload"].get("fulfils_task_id"))
+            action=actions.setdefault(ident,{"id":ident,"scene_id":scene_id,"receipt_event_ids":[],"attempt_event_ids":[]})
+            payload = event['payload']
+            if event['event_type'] == 'DELIVERY_ATTEMPTED':
+                action['attempt_event_ids'].append(event['id'])
+                if not action['receipt_event_ids']:
+                    action['delivery_status'] = 'unknown'
+                action.update({key: payload[key] for key in ('file_asset_id', 'job_id', 'origin_event_id') if key in payload})
+                continue
+            action.update(delivery_status=event["delivery_status"],simulated=event["simulated"],origin_mode=event["origin_mode"])
+            action.update({key: payload[key] for key in ('answer_basis', 'plugin_origin', 'job_id', 'checkpoint_index',
+                'job_revision', 'origin_event_id', 'requester_qq_uid', 'operation_ref', 'acknowledges_task_id',
+                'fulfils_task_id', 'file_asset_id', 'file_id', 'file_name') if key in payload})
+            if 'episode_id' in payload or 'batch_id' in payload:
+                action['episode_id'] = payload.get('episode_id', payload.get('batch_id'))
             action["receipt_event_ids"].append(event["id"])
         tools=[]
         for row in observations:
@@ -1265,6 +1529,8 @@ class RuntimeQueryService:
                     action['episode_id'] = episode
             turns.append({"event_id":event["id"], "episode_id":episode,'checkpoint_index':payload.get('checkpoint_index'),
                           "read_source_event_ids":payload.get("source_event_ids", []),
+                          'provided_result_ranges':payload.get('provided_result_ranges'),
+                          'provided_work_results':payload.get('provided_work_results'),
                           "handled_source_event_ids":[source['source_event_id'] for source in payload['source_outcomes']]
                               if 'source_outcomes' in payload else payload.get('handled_source_event_ids'),
                           'source_outcomes':payload.get('source_outcomes'),
@@ -1274,7 +1540,7 @@ class RuntimeQueryService:
                             "pending":any(wake["event_id"] == event_id for wake in session.get("pending_wakes", [])) if session else None}
                            if event_id else None)
         truncated['operation_receipts'] = len(operations) > limit
-        return {"events":event_views,"traces":[self._trace(row) for row in trace_rows],"calls":[self._call(row) for row in calls],
+        return {"events":event_views,"traces":[self._trace(row, identities=True) for row in trace_rows],"calls":[self._call(row) for row in calls],
                 "jobs":jobs,"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
                 "turns":turns,"source_handling":source_handling,'operation_receipts':operations[:limit],
                 "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches","operation_receipts")},
@@ -1290,8 +1556,8 @@ class RuntimeQueryService:
             stage, title = 'no_opportunity', '没有观察机会'
         elif delivery == 'unknown':
             stage, title = 'attempted_unknown', '已尝试未知'
-        elif delivery in {'sent', 'shadow'}:
-            stage, title = 'delivered', '实际送达' if delivery == 'sent' else 'Shadow 记录'
+        elif delivery in {'sent', 'shadow', 'simulated'}:
+            stage, title = 'delivered', {'sent': '实际送达', 'shadow': 'Shadow 记录', 'simulated': '模拟回执'}[delivery]
         elif metadata.get('attention_certain'):
             stage, title = 'waiting_resource', '等待资源或尚未提交'
         else:
@@ -1386,18 +1652,32 @@ class RuntimeQueryService:
 
     async def memory_index_status(self, scene_id: str) -> dict:
         index = self.runtime.memory_index
-        if index is None:
-            return {"enabled": False, "reason": "索引尚未初始化"}
-        coverage = await index.coverage(scene_id)
-        summary_coverage = await index.summary_coverage(scene_id)
-        profile = self.runtime.retrieval_profiles.embedding if self.runtime.retrieval_profiles else None
+        profile = index.profile if index else None
         scene_enabled = self.runtime.semantic_retrieval_enabled(scene_id)
-        errors = await self._rows("SELECT payload,created_at FROM traces WHERE scene_id=? AND kind='memory_index_error' ORDER BY created_at DESC LIMIT 1", [scene_id])
+        now = self.current_time()
+        if index is None:
+            total = (await self._rows("SELECT COUNT(*) AS total FROM memories WHERE scope=? AND status='active' AND (expires_at IS NULL OR expires_at>?)", [scene_id, now]))[0]['total']
+            summaries = (await self._rows("SELECT COUNT(*) AS total FROM history_batches WHERE scene_id=? AND status='completed'", [scene_id]))[0]['total']
+            coverage = {'total': total, 'indexed': None, 'pending': None}
+            summary_coverage = {'total': summaries, 'indexed': None, 'pending': None}
+        else:
+            coverage = await index.coverage(scene_id)
+            summary_coverage = await index.summary_coverage(scene_id)
+        reason = ('索引尚未初始化' if index is None else
+                  '该场景未开启语义检索；不会为其发起语义检索请求' if not scene_enabled else
+                  '未配置嵌入绑定' if profile is None else
+                  '检索客户端尚未初始化' if index.retrieval_models is None else None)
+        errors = await self._rows("""SELECT id,payload,created_at FROM traces WHERE scene_id=?
+            AND (kind='memory_index_error' OR (kind='memory_index_rebuild' AND json_extract(payload,'$.status')='error'))
+            ORDER BY created_at DESC,id DESC LIMIT 1""", [scene_id])
         last_error = None
         if errors:
-            try: last_error = {**json.loads(errors[0]['payload']), 'created_at': errors[0]['created_at']}
+            try: last_error = {**self._public(json.loads(errors[0]['payload'])), 'created_at': errors[0]['created_at'], 'trace_id': errors[0]['id']}
             except (TypeError, ValueError, json.JSONDecodeError): last_error = {'error': '索引错误记录无法解析'}
-        return {"enabled": profile is not None and scene_enabled, "scene_enabled": scene_enabled,
+        rebuilds = await self._rows("SELECT id,payload,created_at FROM traces WHERE scene_id=? AND kind='memory_index_rebuild' ORDER BY created_at DESC,id DESC LIMIT 1", [scene_id])
+        last_rebuild = ({**self._public(json.loads(rebuilds[0]['payload'])), 'created_at': rebuilds[0]['created_at'], 'trace_id': rebuilds[0]['id']} if rebuilds else None)
+        return {"enabled": reason is None, "reason": reason, "initialized": index is not None,
+                "scene_enabled": scene_enabled, "sampled_at": now, "last_rebuild": last_rebuild,
                 "profile": profile.model_dump() if profile else None, "last_error": last_error,
                 "summary_coverage": summary_coverage, **coverage}
 

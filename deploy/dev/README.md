@@ -12,4 +12,4 @@ Gateway 同时加入控制网和一个只供出口代理使用的内部网。Pyt
 4. 使用 `compose.yaml` 启动 Gateway。把根配置的 workspace 后端切换为 `gateway`，`base_url` 使用 `http://127.0.0.1:8790`，并重启 LenBot。不能同时保留 worker 和 gateway。
 5. 先做离线 Python，再做浏览器和媒体；每项都查看同一 execution_id 的实际状态、终止记录和产物。未完成网络隔离核对前，public 策略会拒绝启动。
 
-此配方不启动、登录或发送 OneBot；SnowLuma 的 WebSocket 仍由根配置单独连接。Gateway 的 socket 权限和内部网络是本机 Docker Desktop 的实际部署事实，不能替代 Linux 目标机的 C13/C14 验收。
+此配方不启动、登录或发送 OneBot；SnowLuma 的 WebSocket 仍由根配置单独连接。Gateway 的 socket 权限和内部网络是本机 Docker Desktop 的部署条件，不能替代 Linux 目标机的出口与浏览器隔离验收。

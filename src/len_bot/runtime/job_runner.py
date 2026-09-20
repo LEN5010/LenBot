@@ -116,7 +116,8 @@ class WorkToolPresentation:
             supports_segment_vision=self.supports_segment_vision)
         self.attached.update(item["asset_id"] for item in prepared["manifest"] if item["status"] == "included")
         return [{"role":"user", "content":[
-            {"type":"text", "text":"工具读取的原始图片：" + json.dumps(prepared["manifest"], ensure_ascii=False)},
+            {"type":"text", "text":json.dumps({'image_manifest': prepared['manifest'],
+                'note': '工具媒体装配清单：只有 included 才附有本次图片像素；音视频登记不表示已听过音轨或看过连续画面。'}, ensure_ascii=False)},
             *prepared["blocks"]]}]
 
 
@@ -347,7 +348,7 @@ class InformationJobRunner:
             "通过 update_work_state 保存简短步骤、结果依据、未决项和下一步，不保存长篇思维过程。旧目标版本的完成步骤必须根据新条件重新判断；已有资料保留并可回读。"
             "需要可复用方法时先find_skills按用途发现，再read_skill读取固定版本；技能只是方法文档而非权限或证据。无适用技能时继续正常工作。"
             "长正文按next_call读取本地已存部分，source_next_call才是尚未取得的源端下一批，先完整读取当前正文再取下一批。"
-            "只有实际工具观察或明确纠正支持可复用经验时，才在 update_work_state 或 finish_work 提出 skill_candidate；普通完成不必学习。人工技能不能自动覆盖。"
+            "只有实际已提供的工具观察或来源原话中的明确纠正支持可复用经验时，才在 update_work_state 或 finish_work 提出 skill_candidate；仅有纠正时 result_ids 可以为空，但必须填真实 correction_event_ids。方法正文、摘要、Bot发言、目录与模拟内容不能独立支持新经验；普通完成不必学习。人工技能不能自动覆盖。"
             "提交前核对最终结论与已验证的依据、数值、单位和条件是否一致；矛盾未解决时记录在 unresolved。"
             "结束本次工作时调用 finish_work，summary 给最终结论与简短完整依据，不重复草稿或已放弃的结论；result_ids、evidence_spans 和 unresolved 显式提供列表。"
             "evidence_spans用实际展示的result_id/start/end/coordinate_unit关联结论与资料位置；来源只是取得或定位时不能冒充已读。"
@@ -493,7 +494,8 @@ class InformationJobRunner:
 
         async def commit_result(result, expected, *, work_state=None, skill_candidate=None):
             await charge(expected, enforce=False)
-            event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state, skill_candidate=skill_candidate)
+            event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state,
+                skill_candidate=skill_candidate, bot_actor_id=runtime.bot_actor_id)
             if event is None:
                 raise JobChanged("Job changed before result commit")
             result=JobResult.model_validate(event.payload['result'])
@@ -582,7 +584,8 @@ class InformationJobRunner:
                 try:
                     update = WorkStateUpdate.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
                     await charge(revision)
-                    await store.update_work_state(job_id, scene_id, revision, update.state, update.skill_candidate)
+                    await store.update_work_state(job_id, scene_id, revision, update.state, update.skill_candidate,
+                        bot_actor_id=runtime.bot_actor_id)
                 except ValueError as error:
                     raise ToolArgumentError(str(error)) from error
                 return ToolResult(content="工作进度已保存；现实完成和发送状态仍由运行时决定。", evidence_kind="model")
@@ -895,16 +898,6 @@ class InformationJobRunner:
                             return [item for item in available if item['function']['name'] in work.allowed_tools] if work else available
 
                         def request_definitions():
-                            # The terminal alone is offered when no further
-                            # exchange fits: one model call left is already the
-                            # submission's own call, and a spent tool budget
-                            # leaves nothing to read with.  An unlimited count
-                            # never triggers this, and the account's own refusal
-                            # still ends the run on its deadline or allowance.
-                            steps_left = count_remaining(config.job_max_steps, job['model_steps'])
-                            calls_left = count_remaining(config.job_max_tool_calls, job['tool_calls'])
-                            if (steps_left is not None and steps_left <= 1) or calls_left == 0:
-                                return [FINISH_WORK]
                             return [*work_definitions(), FINISH_WORK]
 
                         async def prepare_tool_results(trajectory, entries):

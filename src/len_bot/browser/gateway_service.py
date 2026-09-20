@@ -15,8 +15,9 @@ from len_bot.runtime.public_research import verify_public_job
 
 
 class GatewayBrowserService:
-    def __init__(self, context, config, gateway_config):
+    def __init__(self, context, config, gateway_config, *, workspace_plugin_id):
         self.context, self.config, self.gateway_config = context, config, gateway_config
+        self.workspace_plugin_id = workspace_plugin_id
         self.store = context.event_store
         self.client = WorkerGatewayClient(gateway_config)
         self.mirror = GatewayWorkspaceService(self.client, gateway_config, self.store, 'browser_agent')
@@ -49,10 +50,19 @@ class GatewayBrowserService:
         finally:
             self._live_sessions.discard(ident)
 
+    def _check_backend(self):
+        from len_bot.plugins.builtin.workspace.config import configured_workspace
+        selected = configured_workspace(self.context._runtime.config_store.current)
+        if (selected is None or selected[0] != self.workspace_plugin_id
+                or selected[1].gateway != self.gateway_config):
+            raise ValueError('执行后端配置或所属插件已变化，请重新加载浏览器插件；不切换原会话后端')
+
     async def _job(self, call):
         if not call.tool_call_id:
             raise ValueError('浏览器需要已有工作及原生工具调用身份')
-        return await require_execution_job(self.store, call, 'browser_agent')
+        job = await require_execution_job(self.store, call, 'browser_agent')
+        self._check_backend()
+        return job
 
     async def _session(self, job, operation):
         existing = [record for record in await self.store.executions_for_job(job['scene_id'], job['id'])
@@ -85,6 +95,12 @@ class GatewayBrowserService:
             network_policy=self.config.network_policy, egress_authorized=True,
             deadline_seconds=seconds, deadline_at=deadline)
         record, _ = await self.store.record_execution(request)
+        try:
+            self._check_backend()
+        except ValueError as error:
+            await self.store.append_execution_event(record.execution_id, 'submission_refused', str(error),
+                state=ExecutionState.FAILED, error=str(error))
+            raise
         self._live_sessions.add(record.execution_id)
         try:
             await self.client.submit(request)
@@ -128,6 +144,7 @@ class GatewayBrowserService:
                         # Record possible transmission before POST, then query the
                         # same identity if transport fails. Never repeat a click.
                         await self.store.update_browser_command(record.execution_id, command.command_id, 'running')
+                        await self._job(call)
                         try:
                             result = await self.client.browser_command(record.execution_id, command)
                         except (GatewayUnavailable, GatewayResultUnknown):
