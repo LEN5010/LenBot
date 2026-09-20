@@ -2,6 +2,9 @@
 
 import asyncio
 import logging
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,6 +13,59 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 ModelRole = Literal["conversation", "work", "maintenance", "retrieval"]
+
+
+_model_transport: ContextVar[dict | None] = ContextVar('model_transport', default=None)
+
+
+@contextmanager
+def capture_model_transport():
+    """Correlate this logical call's retries without retaining request bodies."""
+    trace = {'attempts': []}
+    token = _model_transport.set(trace)
+    try:
+        yield trace
+    finally:
+        _model_transport.reset(token)
+
+
+class RecordedHttpClient(DefaultAsyncHttpxClient):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs, event_hooks={'request': [self._record_request],
+                                               'response': [self._record_response]})
+
+    async def _record_request(self, request):
+        trace = _model_transport.get()
+        if trace is not None and trace['attempts']:
+            retry = request.headers.get('x-stainless-retry-count')
+            trace['attempts'][-1]['requests'].append({'method': request.method,
+                'started_at': time.time(), 'status': 'started',
+                'sdk_retry_count': int(retry) if retry is not None and retry.isdecimal() else None})
+
+    async def _record_response(self, response):
+        trace = _model_transport.get()
+        if trace is not None and trace['attempts'] and trace['attempts'][-1]['requests']:
+            trace['attempts'][-1]['requests'][-1].update(status='headers_received',
+                http_status=response.status_code, request_id=response.headers.get('x-request-id'))
+
+    async def send(self, request, **kwargs):
+        trace = _model_transport.get()
+        if trace is None:
+            return await super().send(request, **kwargs)
+        attempt = {'index': len(trace['attempts']) + 1, 'started_at': time.time(),
+                   'status': 'started', 'requests': []}
+        trace['attempts'].append(attempt)
+        started = time.monotonic()
+        try:
+            response = await super().send(request, **kwargs)
+            attempt['status'] = 'response_received'
+            return response
+        except BaseException as error:
+            attempt.update(status='cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
+                           error_type=type(error).__name__)
+            raise
+        finally:
+            attempt['duration_ms'] = round((time.monotonic() - started) * 1000, 2)
 
 
 class ProviderConfig(BaseModel):
@@ -142,13 +198,12 @@ class ProviderRegistry:
             raise LookupError(f"Provider '{provider_id}' has no configured API key")
         client = self._clients.get(provider.id)
         if client is None:
-            # A dropped connection is not an answer, so it must not end the turn.
-            # The SDK only retries where no response was consumed, which leaves
-            # a committed turn unrepeatable; without this a single relay drop
-            # loses the reply outright.
+            # Keep the existing SDK retry policy. Each transport attempt is
+            # distinct from the logical call; a disconnect cannot establish
+            # whether the upstream processed or billed an earlier attempt.
             client = AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url,
                                  timeout=provider.timeout_seconds, max_retries=2,
-                                 http_client=DefaultAsyncHttpxClient(trust_env=False))
+                                 http_client=RecordedHttpClient(trust_env=False))
             self._clients[provider.id] = client
             self._connection_keys[provider.id] = connection_key(provider)
         return client

@@ -127,6 +127,8 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 | before_commit / BeforeCommit | 提交前调整每条消息的片段 | 消息数、来源关系不变，类型、人物与素材资格再次校验；提交后不改正文 |
 | after_delivery / AfterDelivery | 读取已保存的真实回执 | 不改写 sent、not_sent、unknown 或 Shadow；错误另记插件钩子 Trace |
 
+after_tool 的原始投影字符串保持不变，notes/view 由宿主作为独立 user 材料 plugin_tool_view 追加在整组工具回执之后，带原 tool_call_id；不插入原生工具配对中，也不授予原话或工具正文的已读范围。插件处理器仍返回 AfterTool 或 None，无需改返回类型。before_model 附加 ToolResult 只声明坐标不构成阅读证明：字符正文须对应保存片段，本地记录须对应宿主采用的投影；摘要不能复制旧范围冒充原文。附加说明仍占用请求容量，不因独立展示绕过原限制。
+
 直播插件的公告指令通过 before_model 加入；其 before_commit 按当前插件合同核对邀请与卡片片段。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
 
 消息发送适配器返回 sent 时必须携带平台 message_id，文件上传则须有 file_id；缺对应身份会沿原发送尝试保存 unknown，不由宿主补 ID、重试或换通道。模拟回执只记隔离观察，不激活真实等待或满足后续行动的送达依赖。deferred_delivery 属于原行动的专属调度，不能用普通提醒提案改写或提前触发；插件仍使用原 Scheduler 和生命周期入口，不直接修改任务表。

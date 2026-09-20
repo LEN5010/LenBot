@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from itertools import count as unbounded_steps
 from typing import Any, TYPE_CHECKING
@@ -239,6 +240,7 @@ class AgentLoop:
             local_tools_used += 1
             tool_calls_used = account.tool_used
             audit["tool_calls_used"] = tool_calls_used
+            execution_started = time.monotonic()
             try:
                 result = stopped if stopped is not None else await execute_tool(call.name, arguments, tool_call_id=call.id)
             except ToolArgumentError as exc:
@@ -248,6 +250,8 @@ class AgentLoop:
                 item["failure_reason"] = _error_text(exc)
                 item["status"] = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
                 raise
+            finally:
+                item['execution_ms'] = round((time.monotonic() - execution_started) * 1000, 2)
             if record_tool_result is not None:
                 result = await record_tool_result(call, arguments, result)
             state = await account.state()
@@ -287,6 +291,7 @@ class AgentLoop:
                      else range(initial_model_calls, max_steps))
             for step_index in steps:
                 step = None
+                preparation_started = time.monotonic()
                 state = await account.state()
                 # Three sources bound the remaining steps: this call's own
                 # argument, the account's count, and whatever the caller
@@ -349,6 +354,7 @@ class AgentLoop:
                 step = {"step": step_index, "provider_id": self.gateway.binding.provider_id,
                         "model": self.gateway.binding.model, "role": self.gateway.binding.role,
                         "forced_final": forced_final, "available_tools": [item["function"]["name"] for item in definitions],
+                        "request_preparation_ms": round((time.monotonic() - preparation_started) * 1000, 2),
                         "budget": budget,
                         "tool_calls": []}
                 audit["steps"].append(step)
@@ -362,6 +368,7 @@ class AgentLoop:
                     raise
                 step.update({"latency_ms": response.latency_ms, "usage": response.usage,
                              "call_id": response.call_id, "local_estimate": response.local_estimate,
+                             "transport": response.transport,
                              "finish_reason": response.finish_reason,
                              "continuation_keys": list(response.continuation)})
                 audit["latency_ms"] += response.latency_ms
@@ -465,10 +472,15 @@ class AgentLoop:
                     audit["failure_reason"] = step["failure_reason"]
                     raise
                 if prepare_tool_results is not None and not terminal_calls:
-                    results = await prepare_tool_results(trajectory, [(entry[0], result) for entry, result in zip(executions, results)])
+                    presentation_started = time.monotonic()
+                    try:
+                        results = await prepare_tool_results(trajectory, [(entry[0], result) for entry, result in zip(executions, results)])
+                    finally:
+                        step['tool_presentation_ms'] = round((time.monotonic() - presentation_started) * 1000, 2)
                     if len(results) != len(executions):
                         raise AgentProtocolError("Tool presentation must retain every matching response")
                 replies = []
+                plugin_views = []
                 for (call, arguments, item), result in zip(executions, results):
                     # Page planning may reject a source range after trying
                     # several display sizes. Persist only its selected error,
@@ -490,9 +502,12 @@ class AgentLoop:
                     else:
                         raise AgentProtocolError("A stored observation requires presentation before the next model request")
                     if hooks is not None:
-                        content = await hooks.after_tool(call.name, content, call.id)
+                        content, plugin_view = await hooks.after_tool(call.name, content, call.id)
+                        if plugin_view is not None:
+                            plugin_views.append(plugin_view)
                     replies.append({"role": "tool", "tool_call_id": call.id, "content": content})
                 trajectory.extend(replies)
+                trajectory.extend(plugin_views)
                 if terminal_calls:
                     _, arguments, terminal_trace = terminal_calls[0]
                     try:

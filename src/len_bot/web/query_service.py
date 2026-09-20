@@ -309,6 +309,9 @@ class RuntimeQueryService:
         usage = item.pop("usage_json")
         item["usage"] = json.loads(usage) if usage else None
         item["estimate"] = json.loads(item.pop("estimate_json"))
+        if 'transport_json' in item:
+            transport = item.pop('transport_json')
+            item['transport'] = json.loads(transport) if transport is not None else None
         return RuntimeQueryService._public(item)
 
     async def model_reservations(self, scene_id=None, *, subject=None):
@@ -413,7 +416,10 @@ class RuntimeQueryService:
         for op,value in ((">=",since),("<=",until)):
             if value is not None:
                 source += f" AND started_at{op}?"; params.append(value)
-        result = await self._page("SELECT *", source, params, "started_at DESC,id DESC", page, page_size)
+        select = """SELECT model_calls.*,
+            (SELECT payload FROM traces WHERE id='trc_model_transport_' || model_calls.id
+             AND kind='model_call_transport' AND ref_id=model_calls.id AND scene_id=model_calls.scene_id) AS transport_json"""
+        result = await self._page(select, source, params, "started_at DESC,id DESC", page, page_size)
         result["items"] = [self._call(item) for item in result["items"]]
         known = "json_type(usage_json,'$.prompt_tokens') IN ('integer','real') AND json_type(usage_json,'$.completion_tokens') IN ('integer','real')"
         fields = ["purpose", "disposition", "COUNT(*) AS calls"]
@@ -431,7 +437,11 @@ class RuntimeQueryService:
 
     async def model_call(self, call_id, scene_id=None):
         rows = await self._rows("SELECT * FROM model_calls WHERE id=? AND (? IS NULL OR scene_id=?)", [call_id,scene_id,scene_id])
-        return self._call(rows[0]) if rows else None
+        if not rows:
+            return None
+        traces = await self._rows("""SELECT payload FROM traces WHERE id=? AND kind='model_call_transport'
+            AND ref_id=? AND scene_id=?""", ['trc_model_transport_' + call_id, call_id, rows[0]['scene_id']])
+        return self._call({**rows[0], 'transport_json': traces[0]['payload'] if traces else None})
 
     async def history_batches(self, scene_id, page=1, page_size=30):
         result = await self._page("SELECT *", "FROM history_batches WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)

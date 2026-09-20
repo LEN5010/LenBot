@@ -1022,7 +1022,7 @@ class AgentRuntime:
 
         task.add_done_callback(finished)
 
-    async def _read_initial_window(self, session: SceneSession, preferred_ids=()) -> tuple[list[Event], int, list[str]]:
+    async def _read_initial_window(self, session: SceneSession, preferred_ids=()) -> tuple[list[Event], int, list[str], frozenset[str]]:
         """Fetch candidates only; ConversationContext owns all request packing."""
         cutoff = session.last_observed_event_rowid
         preferred = set(preferred_ids)
@@ -1035,11 +1035,12 @@ class AgentRuntime:
         required = [original_remainder(event, wakes[event.id].observation)
                     if not AttentionPolicy._is_obligation(wakes[event.id]) else event for event in required]
         recent = await self.event_store.get_recent_events(session.scene_id,limit=self.config.conversation_history_limit,through_rowid=cutoff,conversation_only=True)
+        recent_ids = frozenset(event.id for event in recent)
         events = sorted({event.id:event for event in [*recent,*required] if conversation_visible(event)
                          and (not event.metadata.get('conversation_resume') or event.id in preferred)}.values(),
                         key=lambda event:event.metadata['_rowid'])
         events = await self.event_store.project_reply_context(session.scene_id,events,through_rowid=cutoff)
-        return events,cutoff,source_ids
+        return events,cutoff,source_ids,recent_ids
 
     async def _eligible_conversation_events(self, events, cutoff, *, session=None, rejections=None):
         """Current eligibility controls scheduling; it never consumes a wake."""
@@ -1143,7 +1144,11 @@ class AgentRuntime:
                 return
             if resume and resume.runtime_started_at!=self._started_at:
                 raise SceneCommitConflict('Suspended conversation belongs to a previous process; review is required, no request is resent')
-            events, observed, source_ids = await self._read_initial_window(session, burst.source_event_ids)
+            read_started = time.monotonic()
+            try:
+                events, observed, source_ids, recent_ids = await self._read_initial_window(session, burst.source_event_ids)
+            finally:
+                trace['initial_source_reads_ms'] = round((time.monotonic()-read_started)*1000, 2)
             # What the initial window already handed over, so a later step does
             # not offer the same uncovered stretch a second time.
             initial = set(source_ids)
@@ -1275,7 +1280,7 @@ class AgentRuntime:
             else:
                 outcome = await self.social_core.run(
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
-                    input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid,
+                    input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid, recent_event_ids=recent_ids,
                     publish=publish,resume=resume,mailbox=mailbox,
                 )
             if decision is None:

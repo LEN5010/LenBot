@@ -227,6 +227,9 @@ class RetrievalToolkit:
         self.external_attempted=False
         self._parallel = asyncio.Semaphore(config.tool_read_concurrency)
         self.presented_ranges: dict[str,dict[str,list[tuple[int,int]]]] = {}
+        # Local record pages can contain scoped references rather than saved
+        # JSON. Keep the host-rendered bodies, not a material's claimed range.
+        self._projected_pages: dict[tuple, set[str]] = {}
 
     @property
     def references(self): return self.context.refs if self.context else None
@@ -344,6 +347,7 @@ class RetrievalToolkit:
         result = await self._present(page.name, page.result, page.offset, page.limit, page.coordinate_unit)
         if result.status == 'error' and result.result_id is None:
             return (await self.error_observation(name, arguments, result, tool_call_id=tool_call_id)).result
+        self.remember_presentation(result)
         return result
 
     async def execute_observation(self, name, arguments, *, tool_call_id=None, read_slot_owned=False) -> ObservationPage:
@@ -600,6 +604,19 @@ class RetrievalToolkit:
         shown.coverage = 'job_detail_page; displayed_range covers only the saved JSON fragment'
         return self._with_source_continuation(result, shown)
 
+    def remember_presentation(self, shown):
+        ident = shown.result_id
+        if self.references and ident in self.references.results:
+            ident = self.references.results[ident]
+        original = self.observations.get(ident)
+        span = shown.displayed_range
+        if (original is not None and span is not None and shown.status in {'ok', 'partial', 'no_results'}
+                and 'locator' not in shown.coverage
+                and not (shown.coordinate_unit == 'characters' and span.total == len(original.content)
+                         and shown.content == original.content[span.start:span.end])):
+            key = (ident, shown.coordinate_unit, span.start, span.end, span.total)
+            self._projected_pages.setdefault(key, set()).add(shown.content)
+
     async def _present(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
@@ -824,23 +841,39 @@ class RetrievalToolkit:
             if not isinstance(message.get('content'),str):continue
             try:shown=json.loads(message['content'])
             except ValueError:continue
-            if material:shown=shown.get('observation')
-            if not isinstance(shown,dict) or 'locator' in shown.get('coverage',''):continue
+            if material and isinstance(shown,dict):shown=shown.get('observation')
+            if not isinstance(shown,dict):continue
+            coverage=shown.get('coverage','')
+            if not isinstance(coverage,str) or 'locator' in coverage:continue
             ident=shown.get('result_id')
+            if not isinstance(ident,str):continue
             if self.references and ident in self.references.results:ident=self.references.results[ident]
             original=self.observations.get(ident)
             span=shown.get('displayed_range')
-            if original is None or not isinstance(span,dict):continue
+            if (original is None or not isinstance(span,dict)
+                    or original.status not in {'ok','partial','no_results'}
+                    or 'locator' in original.coverage
+                    or shown.get('status') not in {'ok','partial','no_results'}):continue
             unit=shown.get('coordinate_unit','characters')
-            if unit=='characters':total=len(original.content)
-            elif unit=='records':
+            start,end,total=(span.get(field) for field in ('start','end','total'))
+            if any(type(value) is not int for value in (start,end,total)):continue
+            if not isinstance(unit,str) or unit not in {'characters','records'} or not 0<=start<end<=total:continue
+            content=shown.get('content')
+            if not isinstance(content,str):continue
+            projection_key=(ident,unit,start,end,total)
+            exact_body=(unit=='characters' and total==len(original.content)
+                        and content==original.content[start:end])
+            if unit=='records' and self.context is None:
                 try:records=json.loads(original.content)
-                except ValueError:continue
-                if not isinstance(records,list):continue
-                total=len(records)
-            else:continue
-            if span.get('total')!=total or not 0<=span.get('start',-1)<=span.get('end',-1)<=total:continue
-            key=(ident,unit,span['start'],span['end'])
+                except ValueError:records=None
+                exact_body=(isinstance(records,list) and total==len(records)
+                            and content==json.dumps(records[start:end],ensure_ascii=False))
+            # A summary with copied coordinates is not a read. Record pages
+            # and decorated job pages must match a host-generated projection.
+            # Accepted rendering alone grants nothing: this runs on the
+            # retained request and adoption still waits for the model response.
+            if not exact_body and content not in self._projected_pages.get(projection_key,()):continue
+            key=(ident,unit,start,end)
             if key not in seen:
                 presentations.append({'result_id':ident,'coordinate_unit':unit,**span})
                 seen.add(key)
@@ -874,13 +907,8 @@ class RetrievalToolkit:
         limit = args['limit']
         query = args['query']
         speaker = args.get('speaker_ref')
-        rows = await store.search_messages(query, scopes, limit, through_rowid=self.cutoff)
-        if speaker:
-            rows = [row for row in rows if row.get('actor_id') == speaker]
-        if args.get('start_time') is not None:
-            rows = [row for row in rows if row.get('timestamp', 0) >= args['start_time']]
-        if args.get('end_time') is not None:
-            rows = [row for row in rows if row.get('timestamp', 0) < args['end_time']]
+        rows = await store.search_messages(query, scopes, limit, through_rowid=self.cutoff,
+            actor_id=speaker, start_time=args.get('start_time'), end_time=args.get('end_time'))
         candidates = []
         for row in rows[:limit]:
             event_id = row['id'] if isinstance(row, dict) else row.id
@@ -918,13 +946,15 @@ class RetrievalToolkit:
             item = dict(zip([column[0] for column in cursor.description], row))
             summaries.append({'batch_id': item['id'], 'summary': item['summary'][:240],
                               'match': 'history_summary', 'verbatim': False,
-                              'note': '摘要只定位，精确原话仍需回读'})
+                              'note': '摘要仅按关键词定位，未确认符合本次人物与时间条件；精确原话仍需回读'})
         semantic_note = None
         if self.context and not self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
             semantic_note = '本群未开放语义检索；本次仅为本地词面与摘要索引。'
         for name in ('search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries'):
             self.discovered_tools[name] = None
         payload = {'query': query, 'scene_id': self.default_scene_id, 'candidates': candidates,
+                   'message_filters': {'actor_id': speaker, 'start_time': args.get('start_time'),
+                                       'end_time': args.get('end_time')},
                    'summary_locators': summaries, 'ambiguity': len(candidates) > 1,
                    'semantic': semantic_note,
                    'coverage': 'local_literal_and_summary_index; original unread until presented'}
