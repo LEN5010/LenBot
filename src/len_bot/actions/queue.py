@@ -96,6 +96,7 @@ class ActionQueue:
                 "output_kind": action.output_kind, "requester_qq_uid": action.requester_qq_uid,
                 "plugin_origin": action.plugin_origin.model_dump() if action.plugin_origin else None,
                 "origin_event_id": action.origin_event_id, "command_id": action.command_id,
+                "covered_source_event_ids": action.covered_source_event_ids,
                 "announcement_member": action.announcement_member,
                 "source_started_at": action.source_started_at}
 

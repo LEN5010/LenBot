@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 import re
 import uuid
 import time
@@ -11,13 +12,15 @@ from dataclasses import dataclass, replace
 from contextlib import nullcontext
 from collections.abc import Callable
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
 from len_bot.cognition.projection import project_event
+from len_bot.cognition.jobs import ResultSpan
 from len_bot.config import RuntimeConfig
-from len_bot.events.models import Event
+from len_bot.events.models import Event, human_event_uid
+from len_bot.media.models import media_purpose
 from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import DisplayedRange, ToolFieldError, ToolNextCall, ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
@@ -74,18 +77,35 @@ class PublicInterestArguments(ReadArguments):
     topic: str | None = Field(default=None, min_length=1, max_length=200)
     limit: int = Field(ge=1)
 
-class RecallChatArguments(ReadArguments):
-    query: str = Field(min_length=1, pattern=r'\S', description='原话可能包含的字词或短语；人物和时间另填对应字段，不把整段检索要求当关键词，不执行 SQL 或 FTS 语法')
-    start_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间起点，业务时区的 Unix 秒')
-    end_time: float | None = Field(default=None, allow_inf_nan=False, description='明确时间终点，不含')
-    speaker_ref: str | None = Field(default=None, min_length=1, description='可选本群人物 U 引用；同名分别列出，不自动认定唯一身份')
-    limit: int = Field(ge=1)
+class AbsoluteRecallWindow(ReadArguments):
+    kind: Literal['absolute']
+    start_time: float = Field(allow_inf_nan=False,description='绝对 Unix 秒，包含；日期按当前业务时区理解')
+    end_time: float = Field(allow_inf_nan=False,description='绝对 Unix 秒，不包含')
 
     @model_validator(mode='after')
     def ordered_range(self):
-        if self.start_time is not None and self.end_time is not None and self.start_time >= self.end_time:
+        if self.start_time >= self.end_time:
             raise ValueError('end_time must be later than start_time')
         return self
+
+
+class RelativeRecallWindow(ReadArguments):
+    kind: Literal['relative']
+    request_source: str = Field(min_length=1,
+        description='提出这次回忆请求的已完整读取的人类原话M；工作入口使用该工作原始 request_source_event_id。继续同一问题沿用同一来源')
+    lookback_seconds: float = Field(gt=0,allow_inf_nan=False,
+        description='从原请求时间向前回看的秒数；最近十分钟填600，宿主计算[start,end)，end为原请求时间')
+
+
+RecallWindow = Annotated[AbsoluteRecallWindow | RelativeRecallWindow,Field(discriminator='kind')]
+
+
+class RecallChatArguments(ReadArguments):
+    query: str = Field(min_length=1, pattern=r'\S', description='原话可能包含的字词或短语；人物和时间另填对应字段，不把整段检索要求当关键词，不执行 SQL 或 FTS 语法')
+    time_range: RecallWindow | None = Field(default=None,
+        description='已知日期填absolute区间；最近几分钟等相对要求填relative与原请求来源，由宿主固定时间。省略表示不按事件时间筛选')
+    speaker_ref: str | None = Field(default=None, min_length=1, description='可选本群人物 U 引用；同名分别列出，不自动认定唯一身份')
+    limit: int = Field(ge=1)
 
 
 class SearchHistorySummariesArguments(ReadArguments):
@@ -161,7 +181,7 @@ def read_tool(name, description):
 
 
 LOCAL_TOOLS = [
-    read_tool('recall_chat', '有原话关键词时，用本工具按词面、可选人物和时间范围定位本群原话及摘要线索；没有日期也可查，不先扫整天。只有主题线索或需要摘要定位时可用search_history_summaries。返回定位不等于已读，精确引述须回读原话。'),
+    read_tool('recall_chat', '按原话关键词、可选人物和time_range精确定位本群原话。最近几分钟等相对要求以提出问题的原话为锚点，续轮沿用原请求；没有日期可省略时间。返回实际范围、截点及原话位置，精确引述须回读。主题线索另用search_history_summaries，本工具不混入摘要命中。'),
     read_tool('search_messages', '按文字查找本群已读截点之前的原话；只查询群消息，不检索外部网站或账号发布记录。'),
     read_tool('read_context', '读取消息M前后的本群原话。'),
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
@@ -182,7 +202,7 @@ READ_MESSAGE_RANGE = read_tool('read_message_range',
 READ_WEB_MEDIA = read_tool('read_web_media',
     '查看公开网页中的原图或PDF的一页，直接向模型提供像素。使用已知图片/PDF链接；不读取HTML页面。PDF页码从1开始，省略默认第1页。')
 TOOL_SEARCH = read_tool('tool_search',
-    '按名称、中文别名或用途发现当前群和职责可直接调用的工具；对话中仅供工作调用的能力看runtime_facts.capabilities中的delegable_purposes，按需通过start_work委托。结果含用途与关键参数提示。下一次请求获得选中工具的完整Schema，目录满时移除较早展开项，可再次发现。')
+    '按名称、中文别名或用途发现当前场景、职责与入口子集中的工具。工作用途及其前置见runtime_facts.capabilities，按需通过本入口提供的start_work委托。结果含用途与关键参数提示，选中项加入展开目录；下一次请求仍核对入口可用状态，目录满时移除较早展开项，可再次发现。')
 CORE_READ_TOOLS = [*LOCAL_TOOLS, READ_PENDING_WAKES, READ_MESSAGE_RANGE, READ_WEB_MEDIA,
                    TOOL_SEARCH, CALCULATE_TOOL, FINITE_CHECK_TOOL]
 
@@ -221,6 +241,9 @@ class RetrievalToolkit:
         if context and context.refs.scene_id != default_scene_id:
             raise ValueError('Conversation context belongs to another scene')
         self.discovered_tools: dict[str, None] = {}
+        # The owning conversation or work supplies its existing tool subset.
+        # This limits discovery promises; execution retains its own checks.
+        self.discovery_tool_names: frozenset[str] | None = None
         self._argument_models = self._build_argument_models()
         self.result_ids=[]
         self.observations={}
@@ -230,6 +253,10 @@ class RetrievalToolkit:
         # Local record pages can contain scoped references rather than saved
         # JSON. Keep the host-rendered bodies, not a material's claimed range.
         self._projected_pages: dict[tuple, set[str]] = {}
+        # Trial pages have names, but only confirmed presentations can be cited.
+        self._evidence_pages: dict[str, ResultSpan] = {}
+        self._evidence_page_keys: dict[tuple, str] = {}
+        self._provided_evidence_refs: set[str] = set()
 
     @property
     def references(self): return self.context.refs if self.context else None
@@ -259,6 +286,8 @@ class RetrievalToolkit:
         return model.model_validate(arguments).model_dump() if model else arguments
 
     def get_tool_definitions(self):
+        if self.discovery_tool_names is not None:
+            self.discovered_tools={name:None for name in self.discovered_tools if name in self.discovery_tool_names}
         definitions=copy.deepcopy(LOCAL_TOOLS)
         # High-frequency recall stays visible; discovery expands low-frequency reads.
         deferred_local = {'search_messages', 'query_timeline', 'query_person_history'}
@@ -340,6 +369,14 @@ class RetrievalToolkit:
                 return ToolResult.failure('job_id须使用本轮已提供的工作引用；先用query_jobs读取工作目录。',
                     'invalid_reference', stage='references', details=[ToolFieldError(loc=['job_id'],
                         type='invalid_reference', message='工作引用未出现在本轮可定位资料中')])
+        if name=='recall_chat' and args['time_range'] and args['time_range']['kind']=='relative':
+            try:
+                source=refs.event_id(args['time_range']['request_source'])
+            except ValueError as error:
+                return ToolResult.failure(str(error),'invalid_reference',stage='references',details=[
+                    ToolFieldError(loc=['time_range','request_source'],type='unread_request_source',
+                        message='使用本轮已完整读取的原请求M；定位目录不等于已读原话')])
+            args['time_range']={**args['time_range'],'request_source':source}
         return args
 
     async def execute_result(self, name, arguments, *, tool_call_id=None) -> ToolResult:
@@ -402,8 +439,9 @@ class RetrievalToolkit:
             return ObservationPage(call[0] if call and (args['coordinate_unit']=='records' or call[0] in {'query_jobs','query_memory'}) else 'read_tool_result',result,offset=offset,limit=limit,
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
-            matches, categories = self.plugin_host.search_tools(args['query'], self.call_context(),
-                kind=None if self.call_context().role == 'work' else 'read') if self.plugin_host else ([], [])
+            call=self.call_context()
+            matches, categories = self.plugin_host.search_tools(args['query'], call,
+                kind=None if call.role == 'work' else 'read',allowed_names=self.discovery_tool_names) if self.plugin_host else ([], [])
             selected = matches[:self.config.tool_discovery_limit]
             for item in selected:
                 tool_name = item['name']
@@ -412,10 +450,15 @@ class RetrievalToolkit:
                     self.discovered_tools[tool_name] = None
             while len(self.discovered_tools) > self.config.tool_discovery_limit:
                 self.discovered_tools.pop(next(iter(self.discovered_tools)))
+            note='所选工具已加入本入口展开目录；下次请求按当前场景、角色与可用状态提供定义，较早展开项可再次发现。'
+            if not selected:
+                note='未匹配本入口可直接调用的工具；返回类别只涉及本入口允许的候选。'
+                if call.role=='conversation' and (self.discovery_tool_names is None or 'start_work' in self.discovery_tool_names):
+                    note+='工作用途及其前置见runtime_facts.capabilities；需要较长执行时沿start_work委托。'
             result = ToolResult(status='ok' if selected else 'no_results',
                 content=json.dumps({'tools': selected, 'available_categories': categories if not selected else [],
                     'expanded_catalog_limit': self.config.tool_discovery_limit,
-                    'note': '下次请求提供选中工具的完整Schema；较早展开项可再次搜索。' if selected else '未匹配本轮可直接调用的工具；此结果不包括委托工作的能力。对话中请同时查看runtime_facts.capabilities的delegable_purposes，按需用start_work委托；工作中可用所列类别换一种表达。'}, ensure_ascii=False),
+                    'note':note}, ensure_ascii=False),
                 coverage='tool_catalog',evidence_kind='retrieval')
             return await self.store_observation(name,args,result,tool_call_id=tool_call_id)
         if self.checkpoint:
@@ -618,6 +661,21 @@ class RetrievalToolkit:
             self._projected_pages.setdefault(key, set()).add(shown.content)
 
     async def _present(self, name, result, offset, limit, coordinate_unit='characters'):
+        shown=await self._render_page(name,result,offset,limit,coordinate_unit)
+        shown.evidence_ref=None
+        if result.result_id and shown.evidence_span is not None:
+            span=ResultSpan(result_id=result.result_id,coordinate_unit=shown.coordinate_unit,
+                start=shown.displayed_range.start,end=shown.displayed_range.end)
+            key=(span.result_id,span.coordinate_unit,span.start,span.end)
+            reference=self._evidence_page_keys.get(key)
+            if reference is None:
+                reference='E'+uuid.uuid4().hex
+                self._evidence_page_keys[key]=reference
+                self._evidence_pages[reference]=span
+            shown.evidence_ref=reference
+        return shown
+
+    async def _render_page(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
         if name == 'query_memory' and result.status in {'ok', 'partial', 'no_results'}:
@@ -827,6 +885,7 @@ class RetrievalToolkit:
     @staticmethod
     def material_view(original):
         shown=original.model_copy(update={'coordinate_unit':'characters',
+            'evidence_ref':None,
             'displayed_range':DisplayedRange(start=0,end=len(original.content),total=len(original.content))})
         return {'role':'user','_context_section':'plugin_material','content':json.dumps({
             'kind':'plugin_material','observation':shown.model_dump(mode='json',exclude_none=True)},ensure_ascii=False)}
@@ -874,13 +933,38 @@ class RetrievalToolkit:
             # retained request and adoption still waits for the model response.
             if not exact_body and content not in self._projected_pages.get(projection_key,()):continue
             key=(ident,unit,start,end)
-            if key not in seen:
-                presentations.append({'result_id':ident,'coordinate_unit':unit,**span})
-                seen.add(key)
+            reference=shown.get('evidence_ref')
+            issued=self._evidence_pages.get(reference) if isinstance(reference,str) else None
+            # A restored native page may have been saved before any response.
+            # Its exact retained body can recover the name, never read status.
+            if issued is None and isinstance(reference,str) and re.fullmatch(r'E[0-9a-f]{32}',reference):
+                issued=ResultSpan(result_id=ident,coordinate_unit=unit,start=start,end=end)
+                self._evidence_pages[reference]=issued
+                self._evidence_page_keys.setdefault(key,reference)
+            retained_ref=reference if issued and (issued.result_id,issued.coordinate_unit,issued.start,issued.end)==key else None
+            presented_key=(*key,retained_ref)
+            if presented_key not in seen:
+                presentations.append({'result_id':ident,'coordinate_unit':unit,'start':start,'end':end,'total':total,
+                    **({'evidence_ref':retained_ref} if retained_ref else {})})
+                seen.add(presented_key)
         return presentations
 
     def adopt_presentations(self,presentations):
         for item in presentations:
+            reference=item.get('evidence_ref')
+            if reference:
+                if not re.fullmatch(r'E[0-9a-f]{32}',reference) or item['result_id'] not in self.observations:
+                    raise ValueError('已读页引用缺少当前场景的已保存资料')
+                span=ResultSpan(result_id=item['result_id'],coordinate_unit=item['coordinate_unit'],
+                    start=item['start'],end=item['end'])
+                previous=self._evidence_pages.get(reference)
+                if span.start>=span.end or previous is not None and previous!=span:
+                    raise ValueError('已读页引用与本次实际呈现范围不一致')
+                # A work's child reader reports the same confirmed presentation
+                # after the work transaction, even with a separate local toolkit.
+                self._evidence_pages[reference]=span
+                self._evidence_page_keys[(span.result_id,span.coordinate_unit,span.start,span.end)]=reference
+                self._provided_evidence_refs.add(reference)
             units=self.presented_ranges.setdefault(item['result_id'],{})
             ranges=sorted([*units.get(item['coordinate_unit'],[]),(item['start'],item['end'])])
             merged=[]
@@ -898,8 +982,48 @@ class RetrievalToolkit:
                         self.context.confirmed_work_results.add((job['id'], job['revision']))
 
     def restore_presentations(self,reads):
+        self.presented_ranges={}
+        self._evidence_pages={}
+        self._evidence_page_keys={}
+        self._provided_evidence_refs=set()
         self.adopt_presentations([{'result_id':ident,'coordinate_unit':unit,'start':start,'end':end}
             for ident,units in reads.items() for unit,record in units.items() for start,end in record['ranges']])
+        for ident,units in reads.items():
+            if ident not in self.observations:
+                raise ValueError('恢复阅读范围的原资料尚未按本场景装入')
+            for unit,record in units.items():
+                for reference,(start,end) in record.get('evidence_refs',{}).items():
+                    if not any(left<=start<end<=right for left,right in record['ranges']):
+                        raise ValueError('恢复的页引用超出已保存实际阅读范围')
+                    span=ResultSpan(result_id=ident,coordinate_unit=unit,start=start,end=end)
+                    if reference in self._evidence_pages and self._evidence_pages[reference]!=span:
+                        raise ValueError('恢复的页引用对应了多个不同资料范围')
+                    self._evidence_pages[reference]=span
+                    self._evidence_page_keys[(ident,unit,start,end)]=reference
+                    self._provided_evidence_refs.add(reference)
+
+    def resolve_evidence_refs(self,references):
+        spans=[]
+        seen=set()
+        for index,reference in enumerate(references):
+            if reference not in self._provided_evidence_refs:
+                raise ValueError(f'evidence_refs[{index}] 尚未作为本次实际已读页确认；复制已展示页面的evidence_ref，定位或试装页不能引用')
+            span=self._evidence_pages[reference]
+            key=(span.result_id,span.coordinate_unit,span.start,span.end)
+            if key in seen:
+                raise ValueError(f'evidence_refs[{index}] 重复引用同一资料页')
+            if not any(left<=span.start<span.end<=right for left,right in
+                    self.presented_ranges.get(span.result_id,{}).get(span.coordinate_unit,[])):
+                raise ValueError(f'evidence_refs[{index}] 超出本次实际已读范围')
+            spans.append(span.model_copy(deep=True))
+            seen.add(key)
+        return spans
+
+    def provided_evidence_pages(self,result_ids):
+        wanted=set(result_ids)
+        return [{'evidence_ref':reference,**self._evidence_pages[reference].model_dump(mode='json')}
+            for reference in sorted(self._provided_evidence_refs)
+            if self._evidence_pages[reference].result_id in wanted]
 
     async def _recall_chat(self, args) -> ToolResult:
         store = self.event_store
@@ -907,8 +1031,36 @@ class RetrievalToolkit:
         limit = args['limit']
         query = args['query']
         speaker = args.get('speaker_ref')
+        window=args['time_range']
+        start_time=end_time=None
+        time_anchor=None
+        if window:
+            if window['kind']=='absolute':
+                start_time,end_time=window['start_time'],window['end_time']
+            else:
+                source_id=window['request_source']
+                if self.references is None:
+                    invocation=self.call_context()
+                    job=await store.get_job(invocation.job_id,self.default_scene_id) if invocation.job_id else None
+                    if job is None or job['request_source_event_id']!=source_id:
+                        return ToolResult.failure('此入口的相对回忆只能使用本工作原始request_source_event_id；对话入口使用已读原请求M。',
+                            'invalid_reference',stage='references',details=[ToolFieldError(loc=['time_range','request_source'],
+                                type='invalid_request_source',message='来源不是当前工作的原始人类委托')])
+                sources=await store.events_by_ids(self.default_scene_id,[source_id],self.cutoff)
+                if (len(sources)!=1 or human_event_uid(sources[0]) is None
+                        or sources[0].actor_id=='user:'+str(self.bot_qq)):
+                    return ToolResult.failure('相对回忆锚点须为本群读取截点内的真实人类原话。',
+                        'invalid_reference',stage='references',details=[ToolFieldError(loc=['time_range','request_source'],
+                            type='invalid_request_source',message='来源不存在、超出范围或不是人类请求')])
+                end_time=sources[0].timestamp
+                start_time=end_time-window['lookback_seconds']
+                if not math.isfinite(start_time) or not math.isfinite(end_time) or start_time>=end_time:
+                    return ToolResult.failure('回看秒数无法形成有限且非空的时间区间。','invalid_arguments',stage='arguments',
+                        details=[ToolFieldError(loc=['time_range','lookback_seconds'],type='invalid_time_range',
+                            message='回看秒数需要形成有限且非空的[start,end)')])
+                time_anchor={'request_source_event_id':source_id,'request_timestamp':end_time}
         rows = await store.search_messages(query, scopes, limit, through_rowid=self.cutoff,
-            actor_id=speaker, start_time=args.get('start_time'), end_time=args.get('end_time'))
+            actor_id=speaker, start_time=start_time, end_time=end_time)
         candidates = []
         for row in rows[:limit]:
             event_id = row['id'] if isinstance(row, dict) else row.id
@@ -937,30 +1089,16 @@ class RetrievalToolkit:
                 'presented_this_turn': presented,
                 'unread_hint': None if presented else '用 read_context 读取完整原话后才能作为精确证据',
             })
-        summaries = []
-        summary_sql = ("SELECT id,start_rowid,end_rowid,summary,key_event_ids_json FROM history_batches "
-                       "WHERE scene_id=? AND status='completed' AND end_rowid<=? AND instr(lower(summary),lower(?))>0 "
-                       "ORDER BY end_rowid DESC LIMIT ?")
-        cursor = await store._db.execute(summary_sql, [self.default_scene_id, self.cutoff, query, limit])
-        for row in await cursor.fetchall():
-            item = dict(zip([column[0] for column in cursor.description], row))
-            summaries.append({'batch_id': item['id'], 'summary': item['summary'][:240],
-                              'match': 'history_summary', 'verbatim': False,
-                              'note': '摘要仅按关键词定位，未确认符合本次人物与时间条件；精确原话仍需回读'})
-        semantic_note = None
-        if self.context and not self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
-            semantic_note = '本群未开放语义检索；本次仅为本地词面与摘要索引。'
         for name in ('search_messages', 'query_timeline', 'query_person_history', 'search_history_summaries'):
             self.discovered_tools[name] = None
         payload = {'query': query, 'scene_id': self.default_scene_id, 'candidates': candidates,
-                   'message_filters': {'actor_id': speaker, 'start_time': args.get('start_time'),
-                                       'end_time': args.get('end_time')},
-                   'summary_locators': summaries, 'ambiguity': len(candidates) > 1,
-                   'semantic': semantic_note,
-                   'coverage': 'local_literal_and_summary_index; original unread until presented'}
-        status = 'ok' if candidates or summaries else 'no_results'
+                   'message_filters': {'actor_id': speaker, 'start_time': start_time, 'end_time': end_time,
+                                       'through_rowid':self.cutoff,'limit':limit},
+                   'time_range':window, 'time_anchor':time_anchor, 'ambiguity': len(candidates) > 1,
+                   'coverage': 'local_literal_messages; original unread until presented'}
+        status = 'ok' if candidates else 'no_results'
         if status == 'no_results':
-            payload['note'] = '没有查到同群原话或摘要定位；不能把角色设定或 Bot 旧回复补成群友说过的话。'
+            payload['note'] = '本次人物、时间、关键词和读取截点内没有原话命中；只有主题线索时可另用search_history_summaries定位。'
         return ToolResult(status=status, content=json.dumps(payload, ensure_ascii=False),
                           coverage=payload['coverage'], evidence_kind='retrieval')
 
@@ -1026,7 +1164,7 @@ class RetrievalToolkit:
             usage = await self.media_service.recent_usage(self.default_scene_id, [item['id'] for item in rows],
                 through_rowid=self.cutoff)
             records = [{'asset_id':x['id'],**{k:x[k] for k in ('scope','source_event_id','description','tags')},
-                        **usage[x['id']]} for x in rows]
+                        'purpose':media_purpose(x['tags']),**usage[x['id']]} for x in rows]
             return ToolResult(status='ok' if records else 'no_results', content=json.dumps(records, ensure_ascii=False),
                               coverage='media_catalog', evidence_kind='retrieval')
         if name=='query_jobs':

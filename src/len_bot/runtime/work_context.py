@@ -234,6 +234,7 @@ class WorkCompressor:
                     result['coverage'] = 'result_locator; archived_body'
                     result['displayed_range'] = None
                     result.pop('evidence_span', None)
+                    result.pop('evidence_ref', None)
                     result['next_offset'] = offset
                     result['next_call'] = {'name': 'read_tool_result', 'arguments': {
                         'result_id': result['result_id'], 'offset': offset,

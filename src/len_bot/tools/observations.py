@@ -15,7 +15,8 @@ class ObservationStoreMixin:
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_tool_observations_scene ON tool_observations(scene_id,created_at)")
 
     async def save_tool_observation(self, scene_id, tool_name, arguments, result: ToolResult, *, background_work=False, media_files=()):
-        result = result.model_copy(update={"result_id": uuid.uuid4().hex, "observation_event_id": uuid.uuid4().hex})
+        result = result.model_copy(update={"result_id": uuid.uuid4().hex, "observation_event_id": uuid.uuid4().hex,
+            'evidence_ref':None})
         assets = [('image_'+uuid.uuid4().hex, item) for item in media_files]
         result.attachments = [*result.attachments, *[ident for ident, _ in assets]]
         event = Event(id=result.observation_event_id, event_type=EventType.TOOL_OBSERVATION_RECORDED,

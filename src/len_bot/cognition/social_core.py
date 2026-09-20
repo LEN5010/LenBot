@@ -7,7 +7,7 @@ import copy
 import time
 from dataclasses import replace
 
-from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, final_step_message, execution_budget_message
+from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, TerminalArgumentError, final_step_message, execution_budget_message
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.proposals import ProposalLedger, TOOLS
@@ -111,7 +111,8 @@ class SocialCognitionCore:
                 event=context.event_records.get(source_event_ids[0]) if source_event_ids else None,
                 execution=execution)
 
-        context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context())
+        context.capabilities=lambda: runtime.plugin_host.capability_facts(plugin_context(),
+            allowed_tool_names=set(plugin_request.tool_names) if plugin_request else None)
         context._delegable_hint = any(runtime.scene_policy.delegable_work_allowed(session.scene_id, requester)
                                       for requester in (sorted(context.requester_qq_uids) or [None]))
         hooks = runtime.plugin_host.run_hooks(plugin_context, audit)
@@ -123,6 +124,7 @@ class SocialCognitionCore:
             config=config, call_context=plugin_context)
         execution.toolkit=toolkit
         if plugin_request:
+            toolkit.discovery_tool_names=frozenset(plugin_request.tool_names)
             toolkit.discovered_tools.update({name:None for name in plugin_request.tool_names})
             available={item['function']['name'] for item in toolkit.get_tool_definitions()
                 +runtime.plugin_host.get_tool_definitions(plugin_context(),kind='proposal')} | set(TOOLS)
@@ -204,11 +206,15 @@ class SocialCognitionCore:
                     ledger.plugin_source_ids.update(event.id for event in new_events)
                 current_ids=[event.id for event in new_events]
                 related=await context.associated_originals(new_events,current_ids)
+                if not plugin_request or plugin_request.input_mode=='conversation':
+                    image_related=await context.associated_image_originals(new_events,current_ids)
+                    related=list({event.id:event for event in [*related,*image_related]}.values())
                 by_id={event.id:event for event in [*new_events,*related]}
                 provided_ids=list(dict.fromkeys([*current_ids,*(event.id for event in related)]))
                 await context.pack_events(trajectory,[by_id[ident] for ident in provided_ids],provided_ids,
                     raw_tokens=config.conversation_recent_tokens)
                 if not plugin_request or plugin_request.input_mode=='conversation':
+                    context.install_image_discussion(trajectory)
                     await context.install_facts(trajectory)
                     await context.install_preferences(trajectory)
                 if ledger.jobs or ledger.tasks:
@@ -297,10 +303,13 @@ class SocialCognitionCore:
             owner_call=owner_call or plugin_call
             owner_request=owner_request or plugin_request
             owner_binding=owner_binding or binding
-            outcome=await ledger.finish(arguments,result_reads=toolkit.presented_ranges)
+            outcome=await ledger.finish(arguments,result_reads=toolkit.presented_ranges,
+                resolve_evidence_refs=toolkit.resolve_evidence_refs)
             if owner_call:
                 await runtime.plugin_host.validate_call(owner_call)
-                for message in outcome.message_proposals:
+                for index,message in enumerate(outcome.message_proposals):
+                    if message.covered_source_event_ids:
+                        raise TerminalArgumentError(f'messages[{index}].covers: 插件表达绑定原唯一来源，不合并处理普通群聊来源')
                     message.plugin_origin=owner_call.origin
                 for proposal in outcome.job_proposals:
                     if proposal.operation=='create' and proposal.plugin_origin is None:proposal.plugin_origin=owner_call.origin
@@ -310,7 +319,6 @@ class SocialCognitionCore:
             outcome=await active_hooks.before_commit(outcome)
             await ledger.validate_message_segments(outcome)
             if outcome.next_action!='end' and (commit is None or publish is None):
-                from len_bot.cognition.agent_loop import TerminalArgumentError
                 raise TerminalArgumentError('分阶段执行必须使用真实提交与发布服务')
             if outcome.next_action=='wait':
                 outcome.resume_state=ConversationResume(episode_id=episode_id,runtime_started_at=runtime._started_at,
@@ -325,7 +333,8 @@ class SocialCognitionCore:
                                  if execution.budget.deadline is not None else None),
                     messages_committed=ledger.messages_committed+len(outcome.message_proposals),
                     next_checkpoint=ledger.checkpoint_index+1,next_proposal_handle=ledger._next_handle,
-                    source_event_ids=[source.source_event_id for source in outcome.source_outcomes if source.status=='waiting'],
+                    source_event_ids=[source.source_event_id for source in outcome.source_outcomes
+                        if any(outcome.message_proposals[index].expect_reply for index in source.message_indices)],
                     result_ids=list(context.refs.results.values()),
                     plugin_origin=owner_call.origin if owner_call else None,plugin_request=owner_request)
             audit['references']=context.refs.snapshot()

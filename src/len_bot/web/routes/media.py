@@ -1,17 +1,19 @@
 """Authenticated curated-media operations; originals remain scope-bound."""
 from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import Response
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 import httpx
 
 from len_bot.web.auth import get_current_user
-from len_bot.media.models import CuratedMediaBaseline, CuratedMediaSavedError, MediaEditConflict
+from len_bot.media.models import CuratedMediaBaseline, CuratedMediaSavedError, MediaEditConflict, media_purpose
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
 
 def public_asset(asset):
-    return {key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at", "palette_order")}
+    return {**{key: asset[key] for key in ("id", "scope", "source_event_id", "mime_type", "description", "tags", "enabled", "curated", "created_at", "palette_order")},
+        'purpose':media_purpose(asset['tags'])}
 
 
 def saved_error(error: CuratedMediaSavedError):
@@ -22,9 +24,10 @@ def saved_error(error: CuratedMediaSavedError):
 @router.get("")
 async def list_media(request: Request, scene_id: str = "global-safe", query: str = "", curated: bool | None = None,
                      enabled: bool | None = None, palette_only: bool = False, page: int = Query(1,ge=1),
+                     purpose: Literal['character_reference','sticker','media'] | None = None,
                      page_size: int = Query(48,ge=1,le=100), user: str = Depends(get_current_user)):
     return await request.app.state.runtime.query_service.media_assets(scene_id,query,curated=curated,enabled=enabled,
-                                                                     palette_only=palette_only,page=page,page_size=page_size)
+                                                                     palette_only=palette_only,purpose=purpose,page=page,page_size=page_size)
 
 
 @router.get("/palette")
