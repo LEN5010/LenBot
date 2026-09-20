@@ -5,7 +5,7 @@ import uuid
 from html import unescape
 
 from len_bot.events.models import Event, EventType
-from len_bot.media.models import CuratedMediaBaseline, MediaEditConflict
+from len_bot.media.models import CHARACTER_REFERENCE_TAG, CuratedMediaBaseline, MediaEditConflict
 
 
 PALETTE_UNCHANGED = object()
@@ -87,8 +87,18 @@ class MediaStoreMixin:
         """The operator's fixed palette, including only this scene and global-safe."""
         rows = await (await self._db.execute("""SELECT * FROM media_assets
             WHERE scope IN (?, 'global-safe') AND curated=1 AND enabled=1 AND palette_order IS NOT NULL
-            ORDER BY palette_order, created_at, id LIMIT ?""", (scene_id, limit))).fetchall()
+              AND NOT EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)
+            ORDER BY palette_order, created_at, id LIMIT ?""", (scene_id, CHARACTER_REFERENCE_TAG, limit))).fetchall()
         return [_asset(row) for row in rows]
+
+    async def reference_assets_for_operator(self, asset_ids):
+        """Exact-ID metadata lookup for authenticated configuration management."""
+        if not asset_ids:
+            return {}
+        rows=await (await self._db.execute(
+            'SELECT * FROM media_assets WHERE id IN (SELECT value FROM json_each(?))',
+            (json.dumps(list(asset_ids)),))).fetchall()
+        return {row[0]:_asset(row) for row in rows}
 
     async def recent_media_sends(self, scene_id: str, *, bot_actor_id: str, limit: int, through_rowid: int | None = None):
         """Count each asset once per real sent message in the bounded scene window."""
@@ -205,6 +215,9 @@ class MediaStoreMixin:
                         raise MediaEditConflict(field)
                     else:
                         merged[field] = value
+                if CHARACTER_REFERENCE_TAG in merged['tags']:
+                    if '表情包' in merged['tags'] or merged.get('palette_order',current['palette_order']) is not None:
+                        raise ValueError('人物参考与反应表情分开使用；移除表情包标签并将目录顺序留空')
                 event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scope, actor_id='operator:media', timestamp=self.clock(),
                     payload={'asset_id':asset_id, **merged})
                 fields = "description=?,tags_json=?,enabled=?"

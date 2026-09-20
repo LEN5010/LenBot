@@ -82,6 +82,12 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             );
         """)
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_events_scene ON events(scene_id, timestamp);")
+        # Exact platform-reply lookup also serves image discussion ancestry.
+        # The implicit rowid suffix keeps the latest earlier match seekable.
+        await self._db.execute("""CREATE INDEX IF NOT EXISTS idx_events_scene_message_id
+            ON events(scene_id, CAST(json_extract(payload,'$.message_id') AS TEXT))""")
+        await self._db.execute("""CREATE INDEX IF NOT EXISTS idx_events_scene_reply_id
+            ON events(scene_id, CAST(json_extract(payload,'$.reply_to_message_id') AS TEXT))""")
 
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS pending_runtime_events (
@@ -725,6 +731,11 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             (scene_id, through_rowid, json.dumps(list(event_ids))))).fetchall()
         return [Event.model_validate(self._retrieval_event(row)) for row in rows]
 
+    async def related_image_context(self, scene_id, source_event_ids, through_rowid, *, bot_actor_id, limit):
+        from len_bot.events.image_context import read_image_discussion
+        return await read_image_discussion(self, scene_id, source_event_ids, through_rowid,
+                                           bot_actor_id=bot_actor_id, limit=limit)
+
     @staticmethod
     def _group_message_query(scene_id, start_at, end_at, cutoff_rowid, bot_actor_id):
         if not scene_id.startswith('group:') or start_at >= end_at or cutoff_rowid < 0:
@@ -1365,6 +1376,11 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                 if operation_confirmations and scene_commit is None:
                     raise ValueError("Operation confirmation requires a committed conversation event")
                 observed_jobs = await self.validate_job_proposals_in_transaction(job_proposals,scene_id)
+                for proposal in job_proposals:
+                    reused=proposal.reused_work
+                    if reused and (scene_commit is None or [reused.job_id,reused.revision]
+                            not in scene_commit['event'].payload['provided_work_results']):
+                        raise ValueError('复用成果须随真实对话提交保存所选版本的已读记录')
                 task_states = {}
                 for tp in task_proposals:
                     if tp.payload.get("kind") == "agent_job":
@@ -1425,7 +1441,21 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                     await validate_memory_proposal(self._db, mp, scene_id, through_rowid, bot_actor_id=bot_actor_id)
                     if mp.operation != "refute" and mp.expires_at is not None and mp.expires_at <= now:
                         raise ValueError("An already expired preference or belief cannot become active")
-                for message in job_messages:
+                for message_index,message in enumerate(job_messages):
+                    if message.covered_source_event_ids:
+                        if scene_commit is None:
+                            raise ValueError('覆盖其他原话必须保留实际阅读与提交关系')
+                        facts=scene_commit['event'].payload
+                        originals={event.id:event for event in await self.events_by_ids(
+                            scene_id,message.covered_source_event_ids,through_rowid)}
+                        for ident in message.covered_source_event_ids:
+                            source=originals.get(ident)
+                            relation=next((item for item in resolved_outcome.source_outcomes if item.source_event_id==ident),None)
+                            if (source is None or source.event_type.value not in {'GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'}
+                                    or not source.actor_id.startswith('user:') or source.actor_id==bot_actor_id
+                                    or ident not in facts['source_event_ids'] or relation is None
+                                    or message_index not in relation.message_indices or relation.status=='silent'):
+                                raise ValueError('覆盖来源必须是已读的人类原话，并与本条消息的处理和行动关系一致')
                     if message.answer_basis:
                         if scene_commit is None:
                             raise ValueError('答复依据必须随有实际阅读记录的场景提交保存')
