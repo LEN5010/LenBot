@@ -58,7 +58,7 @@ class TruncatedModelOutput(AgentProtocolError):
 
 def final_step_message(terminal_name: str) -> dict:
     return {"role": "developer", "_context_section": "terminal_hint", "content": (
-        f"当前只开放 {terminal_name}，具体剩余额度见运行时记录。"
+        f"本次只允许执行 {terminal_name}；其他工具定义仍可见，但不得调用。具体剩余额度见运行时记录。"
         "请直接调用这个提交工具，按其Schema选择本阶段结果与后续动作；尚未核实的内容保留不确定性。"
     )}
 
@@ -275,7 +275,7 @@ class AgentLoop:
             note, view = execution_budget_message(state, terminal_name)
             target[:] = [message for message in target if message.get('_context_section') != 'execution_budget']
             target.append(note)
-            return view, state
+            return note, view, state
 
         step = None
         try:
@@ -300,11 +300,9 @@ class AgentLoop:
                 if remaining == 0:
                     raise AgentBudgetExhausted("No persistent model budget remains")
                 forced_final = account.force_terminal(state) or remaining == 1
-                definitions = [] if forced_final else copy.deepcopy(tool_definitions())
+                definitions = copy.deepcopy(tool_definitions())
                 definitions = [definition for definition in definitions if definition["function"]["name"] != terminal_name]
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
-                known_names = {definition["function"]["name"] for definition in definitions}
-                choice: str | dict = {"type": "function", "function": {"name": terminal_name}} if forced_final else "required"
                 if forced_final and not any(message.get('_context_section') == 'terminal_hint' for message in trajectory):
                     trajectory.append(final_step_message(terminal_name))
                 await install_budget(trajectory)
@@ -317,21 +315,23 @@ class AgentLoop:
                         raise AgentBudgetExhausted("Context maintenance used the remaining model budget")
                     if remaining == 1 and not forced_final:
                         forced_final = True
-                        definitions = [copy.deepcopy(terminal() if callable(terminal) else terminal)]
-                        known_names = {terminal_name}
-                        choice = {"type": "function", "function": {"name": terminal_name}}
-                        ending = {"role": "developer", "content": f"本工作剩余最后一次模型调用，请调用 {terminal_name}，保留未核实事项。"}
-                        trajectory.append(ending)
-                        if request_messages is not None and request_messages is not trajectory:
-                            request_messages.append(copy.deepcopy(ending))
                 # Compression may have spent model calls. Rebuild the factual
                 # budget and tool list from that same current accounting before
                 # checking the final request, without asking another model.
-                budget, state = await install_budget(trajectory)
+                budget_note, budget, state = await install_budget(trajectory)
                 forced_final = (forced_final or account.force_terminal(state)
                                 or budget['model_calls_remaining_after'] == 0
                                 or budget['tool_calls_remaining'] == 0)
-                definitions = [] if forced_final else copy.deepcopy(tool_definitions())
+                if forced_final and not any(message.get('_context_section') == 'terminal_hint' for message in trajectory):
+                    trajectory.append(final_step_message(terminal_name))
+                if request_messages is not None and request_messages is not trajectory:
+                    request_messages[:] = [item for item in request_messages if item.get('_context_section') != 'execution_budget']
+                    if forced_final and not any(item.get('_context_section') == 'terminal_hint' for item in request_messages):
+                        request_messages.append(final_step_message(terminal_name))
+                    request_messages.append(copy.deepcopy(budget_note))
+                # Keep the currently authorized catalog even at the terminal
+                # step; directed choice and validation enforce the stop.
+                definitions = copy.deepcopy(tool_definitions())
                 definitions = [item for item in definitions if item['function']['name'] != terminal_name]
                 definitions.append(copy.deepcopy(terminal() if callable(terminal) else terminal))
                 known_names = {item['function']['name'] for item in definitions}
@@ -344,9 +344,6 @@ class AgentLoop:
                     known_names = {item['function']['name'] for item in definitions}
                 if finalize_request is not None:
                     request_messages = await finalize_request(trajectory, definitions)
-                elif request_messages is not None and request_messages is not trajectory:
-                    request_messages[:] = [item for item in request_messages if item.get('_context_section') != 'execution_budget']
-                    request_messages.append(copy.deepcopy(trajectory[-1]))
                 await account.take_model()
                 audit["model_calls_used"] = account.model_used
                 step = {"step": step_index, "provider_id": self.gateway.binding.provider_id,
@@ -428,7 +425,7 @@ class AgentLoop:
                     if allowed_tools is not None and external_count > allowed_tools:
                         raise AgentBudgetExhausted("Tool execution budget exceeded; no calls in this response were executed",budget_kind='tool_calls')
                     if forced_final and not terminal_calls:
-                        raise AgentProtocolError(f"Only {terminal_name} is available for this model call")
+                        raise AgentProtocolError(f"Only {terminal_name} may execute for this model call")
                 except (TerminalArgumentError, AgentProtocolError, AgentBudgetExhausted) as exc:
                     step["failure_reason"] = _error_text(exc)
                     audit["failure_reason"] = step["failure_reason"]

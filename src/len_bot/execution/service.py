@@ -73,7 +73,9 @@ class WorkspaceService:
         directory = control / 'input'
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         job = await self.event_store.get_job(scope.job_id, scene_id)
-        entries = await collect_input_entries(self.event_store, job or {}, scope.job_id, scene_id,
+        if job is None:
+            raise ValueError('原工作已不存在，不能导出执行输入')
+        entries = await collect_input_entries(self.event_store, job, scope.job_id, scene_id,
             request.input_result_ids, request.input_asset_ids, self._read_asset(scene_id))
         for entry in entries:
             path = directory / entry['name']
@@ -81,7 +83,7 @@ class WorkspaceService:
                 self.worker._write_control(path, entry['text'])
             else:
                 self.worker._write_control_bytes(path, entry['data'])
-        manifest = manifest_of(entries, scope.job_id, scene_id)
+        manifest = manifest_of(entries, scope.job_id, scene_id, job['revision'])
         self.worker._write_control(control / 'manifest.json',
             json.dumps(manifest, ensure_ascii=False, indent=2))
         return manifest
@@ -99,7 +101,8 @@ class WorkspaceService:
             return await self.media_service.read_image_bytes(asset_id, scene_id)
         return read
 
-    def _artifacts(self, scope: WorkspaceScope) -> list[WorkspaceArtifact]:
+    def _artifacts(self, scope: WorkspaceScope) -> tuple[list[WorkspaceArtifact], bool]:
+        self.worker.ensure_workspace_available(scope.workspace_id)
         directory = self.worker.directory(scope.workspace_id)
         artifacts = []
         for path in sorted(directory.rglob('*')):
@@ -116,7 +119,8 @@ class WorkspaceService:
             artifacts.append(WorkspaceArtifact(path=relative, size_bytes=size,
                 media_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream',
                 over_limit=size > self.worker.config.max_artifact_bytes))
-        return artifacts[:self.worker.config.max_artifact_files]
+        limit = self.worker.config.max_artifact_files
+        return artifacts[:limit], len(artifacts) > limit
 
     async def run_python(self, call, request: RunPythonInput) -> dict:
         scope = await self.scope_for(call)
@@ -137,10 +141,16 @@ class WorkspaceService:
                 # Keep that input snapshot until termination is confirmed.
                 if not (self.worker.control_root / scope.workspace_id / '.termination_unconfirmed').exists():
                     shutil.rmtree(control)
-            artifacts = self._artifacts(scope)
+            try:
+                artifacts, truncated = self._artifacts(scope)
+                artifacts_known = True
+            except (ValueError, OSError) as error:
+                artifacts, truncated, artifacts_known = [], None, False
+                result['artifacts_error'] = str(error)
         result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
             'input_manifest': manifest, 'artifacts': [item.model_dump(mode='json') for item in artifacts],
-            'artifacts_truncated': len(artifacts) >= self.worker.config.max_artifact_files}
+            'artifacts_known': artifacts_known, 'artifacts_truncated': truncated,
+            'snapshot_kind': 'live_workspace'}
         return result
 
     async def list_files(self, call) -> dict:
@@ -150,6 +160,8 @@ class WorkspaceService:
         return result
 
     async def read_file(self, call, request: WorkspaceFileInput) -> dict:
+        if request.execution_id is not None:
+            raise ValueError('宿主 worker 文件不接受 Gateway execution_id')
         scope = await self.scope_for(call)
         self.worker.ensure_workspace_available(scope.workspace_id)
         path = self.worker.file_path(scope.workspace_id, request.path)
@@ -162,6 +174,8 @@ class WorkspaceService:
             'truncated': next_offset is not None}
 
     async def export_file(self, call, request: WorkspaceFileInput) -> dict:
+        if request.execution_id is not None:
+            raise ValueError('宿主 worker 文件不接受 Gateway execution_id')
         scope = await self.scope_for(call)
         self.worker.ensure_workspace_available(scope.workspace_id)
         path = self.worker.file_path(scope.workspace_id, request.path)
@@ -236,10 +250,12 @@ class WorkspaceService:
         panel_call = type('PanelCall', (), {'role': 'work', 'job_id': job_id,
             'requester_qq_uid': job['requester_qq_uid'], 'scene_id': scene_id})()
         scope = await self.scope_for(panel_call, allow_terminal=True)
-        artifacts = self._artifacts(scope)
+        artifacts, truncated = self._artifacts(scope)
         return {'scene_id': scene_id, 'job_id': job_id,
             'artifacts': [item.model_dump(mode='json') for item in artifacts],
-            'truncated': len(artifacts) >= self.worker.config.max_artifact_files}
+            'snapshot_kind': 'live_workspace', 'truncated': truncated,
+            'sampled_at': self.event_store.clock(),
+            'truncated_reason': 'artifact_cap' if truncated else None}
 
 
 class GatewayWorkspaceService:
@@ -320,17 +336,20 @@ class GatewayWorkspaceService:
             await self._submit_once(execution, scope)
             final = await self._await_result(execution.execution_id, record.deadline_at, scope)
             result = self._execution_result(execution.execution_id, final, scope)
-            try:
-                listed, truncated, artifacts_known = await self._artifacts_summary(execution.execution_id)
-            except RuntimeError as error:
-                # The execution itself has an answer; only the file listing
-                # does not.  Saying that plainly is not the same as an empty
-                # directory, and it must not turn a finished run into a failure.
+            if final is None or final.state in OCCUPYING_STATES:
                 listed, truncated, artifacts_known = [], False, False
-                result['artifacts_error'] = str(error)
+                result['artifacts_error'] = '此执行尚无已确认的终态产物快照；不能据此报告没有文件，原执行不会自动重跑'
+            else:
+                try:
+                    listed, truncated, artifacts_known = await self._artifacts_summary(execution.execution_id)
+                except RuntimeError as error:
+                    # Keep the process outcome when its separate listing fails.
+                    listed, truncated, artifacts_known = [], False, False
+                    result['artifacts_error'] = str(error)
             result['workspace'] = {'scene_id': scope.scene_id, 'job_id': scope.job_id,
                 'input_manifest': manifest, 'artifacts': listed,
                 'artifacts_known': artifacts_known,
+                'snapshot_kind': 'execution_artifacts',
                 'artifacts_truncated': truncated if artifacts_known else None}
             return result
 
@@ -411,7 +430,7 @@ class GatewayWorkspaceService:
         entries = await collect_input_entries(self.event_store, job, job['id'], scene_id,
             request.input_result_ids, request.input_asset_ids, self._read_asset(scene_id))
         assets = [entry['asset_id'] for entry in entries if entry['kind'] == 'asset']
-        manifest = manifest_of(entries, job['id'], scene_id)
+        manifest = manifest_of(entries, job['id'], scene_id, job['revision'])
         return wire_input_files(entries, manifest), manifest, assets
 
     def _deadline_seconds(self, job) -> float:
@@ -638,22 +657,25 @@ class GatewayWorkspaceService:
         """One execution's listing, or None when the Gateway has no such log."""
         try:
             return await self.client.artifacts(execution_id)
-        except GatewayRefused:
-            return None
+        except GatewayRefused as error:
+            if error.status_code == 404:
+                return None
+            raise RuntimeError(f'网关拒绝读取产物清单：{error}') from None
         except (GatewayUnavailable, GatewayResultUnknown) as error:
             raise RuntimeError(f'网关暂时不可用，产物暂不可读：{error}') from None
 
     async def _snapshot_execution(self, scene_id: str, job_id: str):
         """The execution whose registered outputs are this job's current files.
 
-        The current workspace is a *confirmed* snapshot: the newest execution
-        the Gateway actually finished.  A row that was refused, or that is
+        The current Python workspace is a *confirmed* snapshot, not a later
+        browser or media execution belonging to the same job. A row that was refused, or that is
         still running or unknown, has no confirmed outputs yet, so the current
         listing must not fall back to an older execution's files and must not
         report "no files" either — it reports that the snapshot is not
         readable yet.
         """
-        records = await self.event_store.executions_for_job(scene_id, job_id)
+        records = [record for record in await self.event_store.executions_for_job(scene_id, job_id)
+                   if record.worker_type == 'python']
         if not records:
             return None, None
         newest = records[-1]
@@ -685,6 +707,10 @@ class GatewayWorkspaceService:
             host = await self.event_store.get_execution(execution_id)
             if host is None or host.scene_id != scene_id or host.job_id != job_id:
                 raise ValueError('指定的执行不属于当前工作')
+            if host.worker_type != 'python':
+                raise ValueError('工作空间文件只能读取本工作的 Python 执行产物；浏览器和媒体资料沿各自观察读取')
+            if host.state in OCCUPYING_STATES:
+                raise RuntimeError(f'指定执行 {execution_id} 的产物快照尚未确认（{host.state.value}）')
             listing = await self._listing_for(execution_id)
             if listing is None:
                 raise ValueError('指定的执行不在网关日志中，其产物身份无法确认')
@@ -852,6 +878,9 @@ class GatewayWorkspaceService:
                      for item in listing.get('artifacts', [])]
         return {'scene_id': scene_id, 'job_id': job_id,
                 'execution_id': host.execution_id if host else None,
+                'job_revision': host.job_revision if host else None,
+                'snapshot_kind': 'execution_artifacts',
+                'sampled_at': self.event_store.clock(),
                 'artifacts': artifacts,
                 'truncated': bool(listing.get('truncated')),
                 'truncated_reason': 'artifact_cap' if listing.get('truncated') else None}

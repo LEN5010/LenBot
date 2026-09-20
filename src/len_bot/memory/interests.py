@@ -133,29 +133,48 @@ class InterestStore:
             visibility=row[9], revision=row[10], status=row[11])
 
     async def list_public(self, *, topic: str | None = None, now: float | None = None,
-                          limit: int = 20, considered_in_scene: str | None = None) -> list[InterestItem]:
-        now = self.event_store.clock() if now is None else now
+                          limit: int = 20, considered_in_scene: str | None = None,
+                          topics: list[str] | None = None, publishable_only: bool = False) -> list[InterestItem]:
+        if limit < 1 or topic is not None and topics is not None:
+            raise ValueError('兴趣数量必须为正，单主题与主题列表不能同时指定')
+        clock = self.event_store.clock if now is None else lambda: now
+        selected_topics = [topic] if topic is not None else list(dict.fromkeys(topics or []))
         db = self.event_store._db
+        where = """status='active' AND visibility='public'
+            AND (valid_until IS NULL OR valid_until>?)"""
+        params = [clock()]
+        if selected_topics:
+            where += ' AND topic IN (' + ','.join('?' for _ in selected_topics) + ')'
+            params.extend(selected_topics)
+        if publishable_only:
+            where += " AND record_type!='research_intent'"
+        # Bound accepted items, not unqualified rows. Read only ordered identities
+        # here so old records without source proof cannot occupy every result slot.
         rows = await (await db.execute(
-            """SELECT id,topic,record_type,statement,source_json,evidence_json,observed_at,published_at,
-                      valid_until,visibility,revision,status FROM public_interests
-               WHERE status='active' AND visibility='public'
-                 AND (valid_until IS NULL OR valid_until>?)
-                 AND (? IS NULL OR topic=?)
+            f"""SELECT id,revision,source_json FROM public_interests WHERE {where}
                ORDER BY CASE WHEN ? IS NULL THEN 0 ELSE COALESCE((
                    SELECT MAX(t.created_at) FROM traces t
                    WHERE t.kind='interest_share_consideration' AND t.scene_id=?
                      AND json_extract(t.payload,'$.interest_id')=public_interests.id
                      AND json_extract(t.payload,'$.revision')=public_interests.revision
-               ),0) END ASC, observed_at DESC, id ASC LIMIT ?""",
-            (now, topic, topic, considered_in_scene, considered_in_scene, limit))).fetchall()
+               ),0) END ASC, observed_at DESC, id ASC""",
+            [*params, considered_in_scene, considered_in_scene])).fetchall()
         items = []
-        for row in rows:
+        for ident, revision, sources in rows:
             # Legacy records without acquisition proof remain readable in the
             # original database, but are not offered as current public facts.
-            ids = json.loads(row[4])
+            ids = json.loads(sources)
             if ids and set(ids) == await self.public_observation_ids(ids):
-                items.append(self._item(row))
+                item = await self.get(ident)
+                if (item is None or item.revision != revision or item.status != 'active'
+                        or item.source_observation_ids != ids
+                        or item.valid_until is not None and item.valid_until <= clock()
+                        or selected_topics and item.topic not in selected_topics
+                        or publishable_only and item.record_type == 'research_intent'):
+                    continue
+                items.append(item)
+                if len(items) >= limit:
+                    break
         return items
 
     async def withdraw(self, interest_id: str, reason: str) -> None:

@@ -1,13 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { onBeforeRouteUpdate } from 'vue-router'
+import { computed, nextTick, ref, watch } from 'vue'
+import { onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { api, fmtTime } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+import { useRequestGuard } from '../composables/useRequestGuard.js'
 import PluginConfigFields from './PluginConfigFields.vue'
 import ConfigConflictBanner from './ConfigConflictBanner.vue'
 import AdvancedSection from './AdvancedSection.vue'
 import HelpHint from './HelpHint.vue'
-import {blankConfigDraft,configDraft,configValue,draftProblems} from '../lib/pluginConfig.js'
+import CapabilityCards from './CapabilityCards.vue'
+import { withReturn } from '../router/navigation.js'
+import {blankConfigDraft,configDraft,configValue,draftProblems,rebasePluginDraft} from '../lib/pluginConfig.js'
+import { rebaseConfigDraft } from '../lib/configDraft.js'
 
 const ATTENTION_HELP = `普通周期观察开启时，第一条待观察消息会安排实际截止时间；不需要等下一条消息来唤醒。
 
@@ -18,24 +22,56 @@ const ATTENTION_HELP = `普通周期观察开启时，第一条待观察消息�
 读到不等于会说。沉默可以结束本次处理并保留有限观察期；无新输入时不调用模型。睡眠、权限、额度和每群单轮执行仍生效。`
 
 const props = defineProps({sceneId:{type:String,required:true}})
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved', 'loaded'])
+const route = useRoute()
 const record = ref(null), draft = ref(null), original = ref('null')
 const sendFile = ref([]), sendFileOriginal = ref('[]'), extraUid = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), message = ref(''), readAt = ref(null)
 const pluginProblems = ref({}), baseline = ref(null), conflict = ref(null)
-let requestId = 0
+const conflictCurrent = ref(null), conflictReadError = ref(''), conflictReadAt = ref(null)
+const runtimeFacts = ref(null), factsLoading = ref(false), factsError = ref('')
+const selection = () => JSON.stringify([props.sceneId, route.name, route.params.sceneId, route.query.tab])
+const readGuard = useRequestGuard(selection), factsGuard = useRequestGuard(selection), operationGuard = useRequestGuard(selection)
+const focusGuard = useRequestGuard(selection), pluginPanels = ref({}), pluginRows = new Map(), pluginFields = new Map()
+const setPluginRef = (collection,id,value) => value ? collection.set(id,value) : collection.delete(id)
+const pluginErrors = computed(()=>Object.entries(pluginProblems.value).flatMap(([id,items])=>items.map(item=>({id,...item}))))
+async function focusPlugin(id, path) {
+  const fresh=focusGuard();pluginPanels.value[id]=0
+  await nextTick()
+  if(!fresh())return
+  pluginRows.get(id)?.scrollIntoView({block:'center'})
+  await pluginFields.get(id)?.focus(path)
+}
 const dirty = computed(()=>draft.value!==null&&(JSON.stringify(draft.value)!==original.value||JSON.stringify(sendFile.value)!==sendFileOriginal.value))
 const {confirmLeave} = useUnsavedChanges(dirty)
 onBeforeRouteUpdate((to,from)=>to.params.sceneId===from.params.sceneId&&to.query.tab===from.query.tab||confirmLeave())
 const isGroup = computed(()=>/^group:[1-9]\d*$/.test(props.sceneId))
 const pluginById = computed(()=>Object.fromEntries((record.value?.plugins||[]).map(item=>[item.id,item])))
+const pluginSections = computed(() => {
+  const seen = new Set(), sections = []
+  for (const card of record.value?.capability_cards || []) {
+    const plugins = card.plugins.filter(plugin => {
+      if (seen.has(plugin.id)) return false
+      seen.add(plugin.id); return true
+    })
+    if (plugins.length || ['files', 'account'].includes(card.id)) sections.push({...card, plugins})
+  }
+  const others = (record.value?.plugins || []).filter(plugin => !seen.has(plugin.id))
+  if (others.length) sections.push({id:'other-plugins', title:'其他已声明插件', plugins:others})
+  return sections
+})
+function sceneSchema(id, source = record.value) {
+  const plugin = source?.plugins?.find(item => item.id === id)
+  if (!plugin?.scene_config_schema) throw new Error(`当前目录缺少 ${id} 的群参数定义；保留原草稿，不用空参数替代。请先核对插件目录。`)
+  return plugin.scene_config_schema
+}
 function pluginFact(plugin) {
-  if (!plugin?.configured) return '全局参数尚未填写，本群开关保存后也不会装载'
-  if (!plugin.enabled) return '全局已停用，本群开关保存后不会生效'
-  return '全局已配置并启用；这里决定本群是否使用'
+  if (!plugin?.configured) return '全局尚缺保存参数；本群开关不能补齐缺项'
+  if (!plugin.enabled) return '全局保存为停用；本群开关不改变全局设置'
+  return '全局已保存启用；当前装载与使用资格见运行事实'
 }
 const readyToAdd = plugin => Boolean(plugin?.configured)
-function makeDraft(settings) {
+function makeDraft(settings, source = record.value) {
   if (!settings) return null
   return {
     enabled: settings.enabled, chat: settings.chat, listen: settings.listen,
@@ -43,9 +79,18 @@ function makeDraft(settings) {
     attention: settings.attention ? {...settings.attention} : null,
     expression: settings.expression ? {...settings.expression} : null,
     plugins: Object.fromEntries(Object.entries(settings.plugins||{}).map(([id,item])=>[id,
-      {...item,config:configDraft(item.config,pluginById.value[id]?.scene_config_schema||{})}])),
+      {...item,config:configDraft(item.config,sceneSchema(id, source))}])),
   }
 }
+const filePrincipals = source => (source.send_file_grants||[]).filter(item=>item.enabled).map(item=>item.principal_id)
+function adoptRecord(source) {
+  const next = makeDraft(source.settings, source), principals = filePrincipals(source)
+  baseline.value={settings:source.settings,send_file_grants:source.send_file_grants}
+  draft.value=next;original.value=JSON.stringify(next)
+  sendFile.value=principals;sendFileOriginal.value=JSON.stringify(principals)
+  extraUid.value='';pluginProblems.value={}
+}
+function clearConflict() { conflict.value=null;conflictCurrent.value=null;conflictReadError.value='';conflictReadAt.value=null }
 function addPlugin(plugin, enabled=false) {
   draft.value.plugins[plugin.id]={enabled,config:blankConfigDraft(plugin.scene_config_schema)}
 }
@@ -68,11 +113,11 @@ const draftEffect = computed(()=>{
   return '普通成员闲聊仅保存原话，不总结也不形成记忆；白名单可正常提问，命令与公告照常。'
 })
 const attentionPreview = computed(()=>{
-  const effective = record.value?.attention?.effective
-  if (!effective) return null
+  const global = record.value?.attention?.global
+  if (!global) return null
   const current = draft.value?.attention
-  const p = current?.observation_enabled ?? effective.observation_enabled
-  const w = current?.observation_interval_seconds ?? effective.observation_interval_seconds
+  const p = current?.observation_enabled ?? global.observation_enabled
+  const w = current?.observation_interval_seconds ?? global.observation_interval_seconds
   // This is only a periodic scheduling frequency, not a model-call budget.
   return {p, w, density: p && w ? 3600/w : 0}
 })
@@ -118,92 +163,125 @@ const changeList = computed(()=>{
   if (JSON.stringify(sendFile.value)!==sendFileOriginal.value) items.push('本群文件申请者')
   return items
 })
-async function load() {
-  const own = ++requestId
+async function load({ accept = () => true } = {}) {
+  const current = readGuard(), fresh = () => current() && accept(), id = props.sceneId
   if (!isGroup.value) return
   loading.value=true; error.value=''
+  if(conflict.value){conflictCurrent.value=null;conflictReadError.value='';conflictReadAt.value=null}
   try {
-    const data=await api(`/api/setup/group-quick?scene_id=${encodeURIComponent(props.sceneId)}`)
-    if (own!==requestId) return
+    const data=await api(`/api/setup/group-quick?scene_id=${encodeURIComponent(id)}`)
+    if (!fresh()) return
+    if(data.scene_id!==id)throw new Error('返回的本群设置身份与读取目标不一致，未采用。')
     record.value=data; readAt.value=Date.now()/1000
-    if (!dirty.value) {
-      baseline.value={settings:data.settings, send_file_grants:data.send_file_grants}
-      draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value)
-      sendFile.value=(data.send_file_grants||[]).filter(item=>item.enabled).map(item=>item.principal_id)
-      sendFileOriginal.value=JSON.stringify(sendFile.value)
-      conflict.value=null
-    }
-  } catch(e) { if (own===requestId) error.value=e.message }
-  finally { if (own===requestId) loading.value=false }
+    if(conflict.value){conflictCurrent.value=data;conflictReadAt.value=readAt.value}
+    else if (!dirty.value) adoptRecord(data)
+  } catch(e) { if(fresh()){error.value=e.message;if(conflict.value)conflictReadError.value=e.message} }
+  finally { if (fresh()) { loading.value=false; emit('loaded', {sceneId:id,ok:!error.value}) } }
 }
+async function loadRuntimeFacts({ accept = () => true } = {}) {
+  const current = factsGuard(), fresh = () => current() && accept(), id = props.sceneId
+  if (!isGroup.value) return
+  factsLoading.value = true; factsError.value = ''
+  try {
+    const data = await api(`/api/overview/capabilities?scene_id=${encodeURIComponent(id)}`)
+    if (fresh()) runtimeFacts.value = data
+  } catch (problem) { if (fresh()) factsError.value = problem.message }
+  finally { if (fresh()) factsLoading.value = false }
+}
+function refresh() { if(!saving.value)return Promise.all([load(), loadRuntimeFacts()]) }
 function beginConfiguration() {
+  if(saving.value||record.value?.settings!==null)return
   draft.value={enabled:false,chat:false,listen:false,semantic_retrieval:false,attention:null,expression:null,plugins:{}}
-  sendFile.value=[]
 }
 async function save() {
-  if (saving.value||!draft.value) return
-  pluginProblems.value=Object.fromEntries(Object.entries(draft.value.plugins).map(([id,item])=>[id,
-    draftProblems(pluginById.value[id]?.scene_config_schema||{},item.config,{requirePresent:true})]))
-  if (Object.values(pluginProblems.value).some(items=>items.length)) {
-    error.value='本群插件参数尚未填写完整，请修正对应字段后保存。'
-    return
-  }
-  const id=props.sceneId
-  saving.value=true; error.value=''; message.value=''; conflict.value=null
+  if (saving.value||conflict.value||!draft.value) return
+  const id=props.sceneId, fresh=operationGuard()
+  readGuard();loading.value=false;factsGuard();factsLoading.value=false
+  saving.value=true; error.value=''; message.value=''; clearConflict()
   try {
+    pluginProblems.value=Object.fromEntries(Object.entries(draft.value.plugins).map(([pluginId,item])=>[pluginId,
+      draftProblems(sceneSchema(pluginId),item.config,{requirePresent:true})]))
+    if (Object.values(pluginProblems.value).some(items=>items.length)) {
+      error.value='本群插件参数尚未填写完整，请修正对应字段后保存。'
+      return
+    }
     const settings={...draft.value,plugins:Object.fromEntries(Object.entries(draft.value.plugins).map(([pluginId,item])=>[pluginId,
-      {...item,config:configValue(item.config,pluginById.value[pluginId]?.scene_config_schema||{})}]))}
+      {...item,config:configValue(item.config,sceneSchema(pluginId))}]))}
     const data=await api('/api/setup/group-quick',{method:'PUT',body:JSON.stringify({
-      scene_id:id, baseline:baseline.value, values:{settings, send_file_principals:sendFile.value}})})
-    if (id!==props.sceneId) return
-    record.value=data; baseline.value={settings:data.settings, send_file_grants:data.send_file_grants}
-    draft.value=makeDraft(data.settings); original.value=JSON.stringify(draft.value)
-    sendFile.value=(data.send_file_grants||[]).filter(item=>item.enabled).map(item=>item.principal_id)
-    sendFileOriginal.value=JSON.stringify(sendFile.value)
+      scene_id:id, baseline:baseline.value, values:{settings,
+        ...(JSON.stringify(sendFile.value)!==sendFileOriginal.value?{send_file_principals:sendFile.value}:{})}})})
+    if (!fresh()) return
+    if(data.scene_id!==id)throw new Error('保存响应的群身份与提交目标不一致；结果须回原群核对，未采用返回草稿。')
+    record.value=data;adoptRecord(data)
     message.value=data.message; readAt.value=Date.now()/1000; emit('saved')
+    await loadRuntimeFacts({accept:fresh})
   } catch(e) {
-    if (id!==props.sceneId) return
-    if (e.status===409) {
-      conflict.value=e.details||{message:e.message, path:e.details?.path}
-      try {
-        const current=await api(`/api/setup/group-quick?scene_id=${encodeURIComponent(id)}`)
-        record.value=current
-      } catch {}
-      error.value='配置已被其他操作修改；草稿未保存。'
+    if (!fresh()) return
+    if (e.status===409 && e.details?.config_saved===false) {
+      conflict.value={message:e.message,path:e.details.path}
+      await load({accept:fresh})
     } else error.value=e.message
   }
-  finally { saving.value=false }
+  finally { if(fresh())saving.value=false }
 }
-function keepMine() { conflict.value=null; baseline.value={settings:record.value.settings, send_file_grants:record.value.send_file_grants} }
+function keepMine() {
+  if(saving.value||loading.value||conflictCurrent.value?.scene_id!==props.sceneId)return
+  try {
+    const source=conflictCurrent.value, savedDraft=makeDraft(source.settings,source), principals=filePrincipals(source)
+    const previous=JSON.parse(original.value), next=rebaseConfigDraft(previous,draft.value,savedDraft)
+    for(const id of Object.keys(next?.plugins||{})){
+      if(previous?.plugins?.[id]&&draft.value?.plugins?.[id]&&savedDraft?.plugins?.[id]){
+        next.plugins[id].config=rebasePluginDraft(previous.plugins[id].config,draft.value.plugins[id].config,savedDraft.plugins[id].config,sceneSchema(id,source))
+      }
+    }
+    const nextPrincipals=rebaseConfigDraft(JSON.parse(sendFileOriginal.value),sendFile.value,principals)
+    record.value=source;adoptRecord(source)
+    draft.value=next;sendFile.value=nextPrincipals
+    clearConflict();error.value='';message.value='已保留实际改过的字段，未改字段采用当前值；请核对草稿后保存本群设置。'
+  }catch(e){error.value=e.message}
+}
 function takeCurrent() {
-  baseline.value={settings:record.value.settings, send_file_grants:record.value.send_file_grants}
-  draft.value=makeDraft(record.value.settings); original.value=JSON.stringify(draft.value)
-  sendFile.value=(record.value.send_file_grants||[]).filter(item=>item.enabled).map(item=>item.principal_id)
-  sendFileOriginal.value=JSON.stringify(sendFile.value)
-  conflict.value=null
+  if(saving.value||loading.value)return
+  const source=conflict.value?conflictCurrent.value:record.value
+  if(source?.scene_id!==props.sceneId)return
+  if(dirty.value&&!window.confirm('放弃本页未保存的修改，采用已读取的本群保存值？'))return
+  try{record.value=source;adoptRecord(source);clearConflict();error.value='';message.value='已采用本次读取的保存值，没有再次保存或启用。'}catch(e){error.value=e.message}
 }
-watch(()=>props.sceneId,()=>{++requestId;record.value=null;draft.value=null;original.value='null';sendFile.value=[];sendFileOriginal.value='[]';message.value='';pluginProblems.value={};readAt.value=null;conflict.value=null;load()},{immediate:true})
-onBeforeUnmount(()=>{++requestId})
+watch(()=>props.sceneId,()=>{
+  readGuard();factsGuard();operationGuard();focusGuard();saving.value=false;loading.value=false
+  record.value=null;draft.value=null;baseline.value=null;original.value='null';sendFile.value=[];sendFileOriginal.value='[]';extraUid.value=''
+  error.value='';message.value='';pluginProblems.value={};pluginPanels.value={};readAt.value=null;clearConflict()
+  runtimeFacts.value=null;factsError.value='';factsLoading.value=false;refresh()
+},{immediate:true,flush:'sync'})
 </script>
 
 <template>
   <div class="scene-settings">
     <v-alert v-if="!isGroup" type="info" variant="tonal">分群设置只用于 QQ 群；私聊不使用这些字段。</v-alert>
     <template v-else>
-      <div class="settings-heading"><div><h3>本群快速配置</h3><p class="muted-copy">加入群后在本页开关能力、旁听和申请者；高级插件字段仍可展开。</p></div><v-btn variant="text" :loading="loading" :disabled="saving" @click="load">刷新设置</v-btn></div>
+      <div class="settings-heading"><div><h3>本群设置</h3><p class="muted-copy">编辑只改变草稿；保存本群规则不会自动执行工具、重启或发送消息。</p></div><v-btn variant="text" :loading="loading||factsLoading" :disabled="saving" @click="refresh">刷新设置与事实</v-btn></div>
       <div v-if="record" class="status-row mb-4">
         <v-chip size="small" :color="record.joined?'success':record.joined===false?'warning':'default'">{{ record.joined?'已加入':record.joined===false?'待确认加入':'加入状态未知' }}</v-chip>
         <v-chip size="small" :color="record.configured?'primary':'default'">{{ record.configured?'已保存':'未配置' }}</v-chip>
+        <v-chip v-if="dirty" size="small" color="warning">有未保存草稿</v-chip>
         <span class="muted-copy">群号 {{ sceneId.replace('group:','') }}</span>
       </div>
       <v-alert v-if="record?.discovery?.error" type="warning" variant="tonal" class="mb-4">群列表读取失败，保留已知列表：{{ record.discovery.error }}<span v-if="record.discovery.sampled_at"> · 样本 {{ fmtTime(record.discovery.sampled_at) }}</span></v-alert>
-      <ConfigConflictBanner :conflict="conflict" :current="record?.settings" path-label="本群设置或文件授予" @keep="keepMine" @take="takeCurrent" />
+      <ConfigConflictBanner exclusive-backend :conflict="conflict" :current="conflictCurrent" :path-label="conflict?.path?.join('.') || '本群设置或文件授予'" :busy="saving||loading" :read-error="conflictReadError" :read-at="conflictReadAt" @keep="keepMine" @take="takeCurrent" @reload="refresh" />
       <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}<div v-if="readAt">上次读取 {{ fmtTime(readAt) }}</div></v-alert>
+      <v-alert v-if="pluginErrors.length" type="error" variant="tonal" class="mb-4"><p>点击具体字段定位并修正；修正前没有提交保存。</p><ul class="field-errors"><li v-for="item in pluginErrors" :key="item.id+item.key"><button type="button" :disabled="saving" @click="focusPlugin(item.id,item.key)">{{ pluginById[item.id]?.name || item.id }} · {{ item.message }}</button></li></ul></v-alert>
       <v-alert v-if="message" type="success" variant="tonal" class="mb-4">{{ message }}</v-alert>
       <v-progress-linear v-if="loading" indeterminate class="mb-4" />
+      <v-expansion-panels class="mb-4"><v-expansion-panel title="当前运行、能力缺项与最近结果"><v-expansion-panel-text>
+        <p class="muted-copy mb-3">下面是独立只读事实，不使用当前草稿推算。开关、装载、部署、申请者资格和实际结果分别显示。</p>
+        <v-progress-linear v-if="factsLoading" indeterminate aria-label="正在读取能力事实" />
+        <v-alert v-if="factsError" type="error" variant="tonal" class="my-3">运行事实读取失败：{{ factsError }}<p v-if="runtimeFacts">保留 {{ fmtTime(runtimeFacts.sampled_at) }} 的记录。</p></v-alert>
+        <template v-if="runtimeFacts"><p class="muted-copy mb-3">采样于 {{ fmtTime(runtimeFacts.sampled_at) }} · {{ runtimeFacts.evidence_note }}</p><v-alert v-if="runtimeFacts.requires_restart" type="info" variant="tonal" class="mb-3">另有已保存配置等待手动重启；各插件当前装载情况如下，保存成功不代表全部运行条件已满足。</v-alert><CapabilityCards :data="runtimeFacts" /></template>
+        <v-btn variant="text" class="mt-3" :to="withReturn(route,{name:'capabilities',query:{scene:sceneId}})">选择本群发起者，核对其使用资格</v-btn>
+      </v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
       <template v-if="record">
-        <v-alert type="info" variant="tonal" class="mb-4">{{ dirty?'未保存草稿：':'' }}{{ draftEffect }}</v-alert>
-        <v-btn v-if="!draft" color="primary" variant="tonal" @click="beginConfiguration">为本群填写设置</v-btn>
+        <v-alert type="info" variant="tonal" class="mb-4">{{ dirty?'未保存草稿：':'已保存规则：' }}{{ draftEffect }}</v-alert>
+        <v-btn v-if="!draft&&record.settings===null" color="primary" variant="tonal" :disabled="saving||loading" @click="beginConfiguration">为本群填写设置</v-btn>
         <v-form v-if="draft" :disabled="saving" @submit.prevent="save">
           <section class="config-block">
             <h4>本群参与</h4>
@@ -223,7 +301,7 @@ onBeforeUnmount(()=>{++requestId})
                 </v-chip>
               </div>
               <p class="muted-copy">
-                普通周期观察{{ record.attention.effective.observation_enabled ? '开启' : '关闭' }}，间隔
+                已保存规则下，普通周期观察{{ record.attention.effective.observation_enabled ? '开启' : '关闭' }}，间隔
                 {{ record.attention.effective.observation_interval_seconds }} 秒，冷却
                 {{ record.attention.effective.keyword_cooldown_seconds }} 秒 · 间隔折算约
                 {{ (record.attention.raise_two_steps.density.current_per_hour||0).toFixed(1) }} 次/小时
@@ -231,8 +309,8 @@ onBeforeUnmount(()=>{++requestId})
               <AdvancedSection title="仅本群覆盖旁听参数" note="会让本群偏离统一聊天参数">
                 <p class="muted-copy">聊天参数默认全局统一，新群自动继承。只有这个群确实需要不同节奏时才覆盖。</p>
                 <div class="settings-actions">
-                  <v-btn size="small" color="primary" variant="tonal" @click="applyRaise">开启并将观察间隔减半</v-btn>
-                  <v-btn size="small" variant="text" @click="inheritAttention">恢复继承全局</v-btn>
+                  <v-btn size="small" color="primary" variant="tonal" :disabled="saving" @click="applyRaise">按已保存值开启并将观察间隔减半</v-btn>
+                  <v-btn size="small" variant="text" :disabled="saving" @click="inheritAttention">恢复继承全局</v-btn>
                 </div>
                 <div v-if="draft.attention" class="form-grid mt-3">
                   <v-select v-model="draft.attention.observation_enabled" label="本群普通周期观察" :items="[{title:'继承全局',value:null},{title:'开启',value:true},{title:'关闭',value:false}]" />
@@ -253,25 +331,26 @@ onBeforeUnmount(()=>{++requestId})
           <section class="config-block">
             <h4>能力与来源</h4>
             <p class="muted-copy mb-3">每行只改本群是否使用已配置插件。全局缺失条件不会被一个开关补齐。</p>
-            <div v-for="card in record.capability_cards" :key="card.id" class="plugin-setting">
+            <div v-for="card in pluginSections" :key="card.id" class="plugin-setting">
               <h5>{{ card.title }}</h5>
               <p v-if="card.id==='files'" class="muted-copy">生成文件走工作空间；上传还需要下方申请者和已核对的平台协议。当前：{{ record.file_delivery.blocked_reason || (record.file_delivery.can_upload_to_target ? '上传条件已具备（仍取决于申请者）' : '尚未具备上传条件') }}</p>
               <p v-if="card.id==='account'" class="muted-copy">账号动作需要独立授予，本页不会因为打开本群而授予点赞/收藏。</p>
-              <div v-for="plugin in card.plugins" :key="plugin.id" class="plugin-row">
+              <div v-for="plugin in card.plugins" :key="plugin.id" :ref="node=>setPluginRef(pluginRows,plugin.id,node)" class="plugin-row">
                 <div class="settings-heading">
                   <div>
                     <strong>{{ plugin.name }}</strong>
                     <p class="muted-copy">{{ pluginFact(pluginById[plugin.id]||plugin) }}</p>
                   </div>
-                  <v-switch v-if="draft.plugins[plugin.id]" v-model="draft.plugins[plugin.id].enabled" :disabled="!plugin.configured" label="在本群启用" color="primary" hide-details />
-                  <v-btn v-else variant="tonal" size="small" :disabled="!readyToAdd(plugin)" @click="setPluginEnabled(plugin,true)">{{ readyToAdd(plugin)?'添加并启用':'需先填全局参数' }}</v-btn>
+                  <v-switch v-if="draft.plugins[plugin.id]" v-model="draft.plugins[plugin.id].enabled" :disabled="saving||(!plugin.configured&&!draft.plugins[plugin.id].enabled)" label="在本群启用" color="primary" hide-details />
+                  <v-btn v-else variant="tonal" size="small" :disabled="saving||!readyToAdd(plugin)" @click="setPluginEnabled(plugin,true)">{{ readyToAdd(plugin)?'添加到本群草稿并启用':plugin.missing?'当前目录无此实现':'需先填全局参数' }}</v-btn>
                 </div>
+                <RouterLink v-if="pluginById[plugin.id]" :to="withReturn(route,{name:'plugins',query:{id:plugin.id}})">查看 {{ plugin.name }} 的全局配置与装载状态</RouterLink>
                 <template v-if="draft.plugins[plugin.id]">
                   <p v-if="!Object.keys(plugin.scene_config_schema.properties||{}).length" class="muted-copy">没有额外群参数。</p>
-                  <v-expansion-panels v-else class="mt-2">
+                  <v-expansion-panels v-else v-model="pluginPanels[plugin.id]" class="mt-2">
                     <v-expansion-panel title="本群参数">
                       <v-expansion-panel-text>
-                        <PluginConfigFields v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" :problems="pluginProblems[plugin.id]||[]" />
+                        <PluginConfigFields :ref="node=>setPluginRef(pluginFields,plugin.id,node)" :disabled="saving" v-model="draft.plugins[plugin.id].config" :schema="plugin.scene_config_schema" :problems="pluginProblems[plugin.id]||[]" />
                       </v-expansion-panel-text>
                     </v-expansion-panel>
                   </v-expansion-panels>
@@ -282,7 +361,7 @@ onBeforeUnmount(()=>{++requestId})
           <section class="config-block">
             <h4>申请者与资料范围</h4>
             <v-select v-model="sendFile" :items="sendChoices" label="可申请发送文件的成员" multiple chips closable-chips />
-            <div class="settings-actions mt-2"><v-text-field v-model="extraUid" label="追加 QQ 号" inputmode="numeric" hide-details @keyup.enter.prevent="addUid" /><v-btn variant="tonal" @click="addUid">添加</v-btn></div>
+            <div class="settings-actions mt-2"><v-text-field v-model="extraUid" label="追加 QQ 号" inputmode="numeric" hide-details @keyup.enter.prevent="addUid" /><v-btn variant="tonal" :disabled="saving" @click="addUid">添加</v-btn></div>
             <p class="muted-copy mt-2">不会把本群文件开关翻译成所有人已授权，也不会创建通配主体。兴趣分享和研究仍使用各自授予，本页不代为创建系统研究。</p>
           </section>
           <div class="save-bar">
@@ -290,7 +369,7 @@ onBeforeUnmount(()=>{++requestId})
               <p v-if="changeList.length" class="muted-copy">将写入：{{ changeList.join('、') }}。只影响本群；旁听 +2 保存具体数值，不会每次再乘一次。</p>
               <p v-if="record.file_delivery.blocked_reason" class="muted-copy">文件平台：{{ record.file_delivery.blocked_reason }}</p>
             </div>
-            <div class="settings-actions"><v-btn variant="text" :disabled="saving||!dirty" @click="takeCurrent">取消本次修改</v-btn><v-btn type="submit" color="primary" :loading="saving" :disabled="saving||!dirty">保存本群全部改动</v-btn></div>
+            <div class="settings-actions"><v-btn variant="text" :disabled="saving||loading||!dirty||(!!conflict&&!conflictCurrent)" @click="takeCurrent">取消本次修改</v-btn><v-btn type="submit" color="primary" :loading="saving" :disabled="saving||!!conflict||!dirty">保存本群设置</v-btn></div>
           </div>
         </v-form>
       </template>
@@ -309,6 +388,7 @@ onBeforeUnmount(()=>{++requestId})
 .attention-box{margin:12px 0;padding:12px;border:1px solid rgba(var(--v-border-color),var(--v-border-opacity));border-radius:8px}
 .save-bar{position:sticky;bottom:0;padding:16px 0 8px;background:rgb(var(--v-theme-surface));display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid rgba(var(--v-border-color),var(--v-border-opacity))}
 .muted-copy{font-size:13px;color:rgb(var(--v-theme-on-surface-variant));line-height:1.7}
+.field-errors{padding-left:20px;margin-top:8px}.field-errors button{text-align:left;text-decoration:underline;overflow-wrap:anywhere;padding:4px 0}.field-errors button:focus-visible{outline:2px solid currentColor;outline-offset:3px}
 h4{font-size:16px;margin:16px 0 8px}h5{font-size:14px;margin:8px 0}
 @media(max-width:650px){.settings-grid{grid-template-columns:minmax(0,1fr)}.save-bar{position:static}}
 </style>

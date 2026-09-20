@@ -1,11 +1,12 @@
 from enum import StrEnum
-from typing import Optional, Any, Literal
+from typing import Annotated, Optional, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from len_bot.cognition.jobs import JobProposal
+from len_bot.cognition.jobs import JobProposal, ResultSpan
 from len_bot.media.models import MessageSegment, segment_text
 from len_bot.cognition.providers import ModelProfile
 from len_bot.events.models import PluginOrigin
 from len_bot.plugins.agent import PluginAgentRequest
+from len_bot.scheduler.models import ReminderControlSnapshot
 
 class FinalDisposition(StrEnum):
     SILENCE = "SILENCE"
@@ -78,6 +79,59 @@ class OperationReceipt(BaseModel):
         return self
 
 
+AnswerBasisKind = Literal['social', 'general', 'observed', 'work_result', 'mixed', 'unverified']
+AnswerGap = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class AnswerWorkResult(BaseModel):
+    """Host-resolved source links for the work revision used by one answer."""
+    model_config = ConfigDict(extra='forbid')
+    job_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    status: Literal['completed', 'partial']
+    result_ids: list[str] = Field(default_factory=list)
+    evidence_spans: list[ResultSpan] = Field(default_factory=list)
+
+    @classmethod
+    def from_job(cls, job):
+        result = job.get('result') or {}
+        if result.get('status') not in {'completed', 'partial'}:
+            raise ValueError('答复所引工作尚无完整或部分结果；进度或失败不能声明为工作成果依据')
+        return cls(job_id=job['id'], revision=job['revision'], status=result['status'],
+            result_ids=result.get('result_ids', []), evidence_spans=result.get('evidence_spans', []))
+
+
+class AnswerBasis(BaseModel):
+    """A declared basis with resolved identities, not a truth assessment."""
+    model_config = ConfigDict(extra='forbid')
+    kind: AnswerBasisKind
+    event_ids: list[str] = Field(default_factory=list, max_length=16)
+    result_spans: list[ResultSpan] = Field(default_factory=list, max_length=16)
+    unresolved: list[AnswerGap] = Field(default_factory=list, max_length=12)
+    work_result: AnswerWorkResult | None = None
+
+    @model_validator(mode='after')
+    def evidence_shape(self):
+        direct = bool(self.event_ids or self.result_spans)
+        if len(set(self.event_ids)) != len(self.event_ids):
+            raise ValueError('答复依据不能重复引用同一原话')
+        if any(span.end <= span.start for span in self.result_spans):
+            raise ValueError('答复资料依据需要非空的实际展示区间')
+        if self.kind == 'observed' and not direct:
+            raise ValueError('observed 需要已读原话或资料范围，不能只填写依据类别')
+        if self.kind == 'work_result' and self.work_result is None:
+            raise ValueError('work_result 需要本条关联工作的真实成果')
+        if self.kind == 'mixed' and not (direct or self.work_result):
+            raise ValueError('mixed 需要至少一项原话、资料或工作成果关联')
+        if self.work_result and self.kind not in {'work_result', 'mixed'}:
+            raise ValueError('工作成果关系只能用于 work_result 或 mixed')
+        if self.kind in {'social', 'general'} and direct:
+            raise ValueError('带实际资料的答复应使用 observed 或 mixed，不标为无资料的社交/一般知识')
+        if self.kind == 'unverified' and not self.unresolved:
+            raise ValueError('unverified 需要说明当前答复具体未核实的内容')
+        return self
+
+
 class MessageProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     segments: list[MessageSegment] = Field(default_factory=list)
@@ -95,6 +149,7 @@ class MessageProposal(BaseModel):
     requester_qq_uid: str | None = None
     addressed_to: list[str] = Field(default_factory=list, description="Actual addressed member actor IDs, separate from source and quote")
     plugin_origin: PluginOrigin | None = None
+    answer_basis: AnswerBasis | None = None
 
     @model_validator(mode="after")
     def validate_body(self):
@@ -107,6 +162,10 @@ class MessageProposal(BaseModel):
             raise ValueError("Creation acknowledgement, operation confirmation and fulfilment are separate message relations")
         if (self.job_id is None) != (self.job_revision is None):
             raise ValueError("A job message needs its actual work ID and observed revision together")
+        if self.answer_basis and self.answer_basis.work_result:
+            work = self.answer_basis.work_result
+            if (work.job_id, work.revision) != (self.job_id, self.job_revision) or self.operation_ref or self.task_ref:
+                raise ValueError('答复工作依据必须对应本条实际工作版本，不能借创建或控制确认交付旧成果')
         return self
 
     @property
@@ -116,6 +175,7 @@ class MessageProposal(BaseModel):
 class TaskProposal(BaseModel):
     operation: str = "create"
     task_id: str | None = None
+    expected: ReminderControlSnapshot | None = None
     proposal_id: str | None = None
     due_at: float | None = None
     requester_id: str | None = None

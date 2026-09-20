@@ -2,44 +2,54 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
-import { mdiViewDashboardOutline, mdiForumOutline, mdiBriefcaseSearchOutline, mdiCalendarClockOutline, mdiBookOpenPageVariantOutline, mdiLightbulbOutline, mdiImageOutline, mdiChip, mdiPuzzleOutline, mdiCogOutline, mdiChartTimelineVariant, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown } from '@mdi/js'
+import { mdiViewDashboardOutline, mdiForumOutline, mdiBriefcaseSearchOutline, mdiBookOpenPageVariantOutline, mdiCogOutline, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown, mdiArrowLeft } from '@mdi/js'
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
-import { logout } from '../composables/useAuth.js'
+import { logout, useAuth } from '../composables/useAuth.js'
+import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { fmtTime } from '../api.js'
 import markUrl from '../assets/lenbot-mark.svg'
+import { returnTarget, sourcePath } from '../router/navigation.js'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
+const logoutGuard=useRequestGuard()
 const sections=[
-  {id:'overview',label:'总览',icon:mdiViewDashboardOutline,to:{name:'overview'},items:[]},
-  {id:'scenes',label:'群聊',icon:mdiForumOutline,to:{name:'groups'},items:[
-    ['群与权限',{name:'groups'}],['群聊消息',{name:'scenes'}]]},
-  {id:'agent',label:'Agent',icon:mdiChip,to:{name:'capabilities'},items:[
-    ['工具能力',{name:'capabilities'}],['人格与表达',{name:'agent-settings',query:{tab:'persona'}}],
-    ['参与方式',{name:'agent-settings',query:{tab:'attention'}}],['睡眠与时间',{name:'agent-settings',query:{tab:'time'}}]]},
+  {id:'overview',label:'运行概览',icon:mdiViewDashboardOutline,to:{name:'overview'},items:[]},
+  {id:'scenes',label:'群聊',icon:mdiForumOutline,to:{name:'scenes'},items:[]},
   {id:'work',label:'工作与交付',icon:mdiBriefcaseSearchOutline,to:{name:'jobs'},items:[
     ['信息工作与文件',{name:'jobs'}],['提醒与等待',{name:'tasks'}]]},
-  {id:'memory',label:'记忆与资料',icon:mdiBookOpenPageVariantOutline,to:{name:'memories'},items:[
-    ['认识与公共兴趣',{name:'memories'}],['方法技能',{name:'skills'}],['媒体资产',{name:'media'}]]},
-  {id:'system',label:'系统',icon:mdiCogOutline,to:{name:'models'},items:[
+  {id:'memory',label:'记忆与方法',icon:mdiBookOpenPageVariantOutline,to:{name:'memories'},items:[
+    ['认识与公共兴趣',{name:'memories'}],['方法技能',{name:'skills'}],['媒体与素材',{name:'media'}]]},
+  {id:'system',label:'系统设置',icon:mdiCogOutline,to:{name:'settings',query:{tab:'connection'}},items:[
     ['模型与额度',{name:'models'}],['连接与设置',{name:'settings',query:{tab:'connection'}}],
+    ['人格与参与',{name:'agent-settings'}],['能力状态',{name:'capabilities'}],
     ['插件与开发',{name:'plugins'}],['运行诊断',{name:'activity'}]]},
 ]
 const activeSection=computed(()=>{
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
-  if(['capabilities','agent-settings'].includes(route.name))return 'agent'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
   if(['memories','skills','media'].includes(route.name))return 'memory'
   return 'system'
 })
 const section=computed(()=>sections.find(item=>item.id===activeSection.value))
+const origin=computed(()=>{const target=returnTarget(route.query.return_to);return target&&target!==sourcePath(route)&&router.resolve(target).name!=='not-found'?target:''})
+const originLabel=computed(()=>/^\/(scenes|groups)\//.test(origin.value)?'返回群聊原位置':'返回来源页面')
+function isSectionItem(to) {
+  if (to.name === 'jobs') return ['jobs','job'].includes(route.name)
+  return to.name === route.name
+}
 const statusText=computed(()=>app.error?'状态读取失败':!app.status?'读取状态中':app.status.running?'运行时已启动':'运行时已停止')
 watch(mobile,value=>drawer.value=!value)
 watch(()=>route.fullPath,()=>{if(mobile.value)drawer.value=false})
 function visible(){if(document.visibilityState==='visible')refreshStatus()}
 onMounted(()=>{refreshStatus();document.addEventListener('visibilitychange',visible)})
 onUnmounted(()=>document.removeEventListener('visibilitychange',visible))
-async function exit(){busy.value=true;error.value='';try{await logout();await router.replace({name:'login'})}catch(e){error.value=e.message}finally{busy.value=false}}
+async function exit(){
+  if(busy.value||!window.confirm('退出登录？当前页面未保存的修改和临时浏览位置会丢失；已提交操作不会被取消。'))return
+  const fresh=logoutGuard();busy.value=true;error.value=''
+  try{await logout();if(useAuth().status==='unauthenticated')await router.replace({name:'login'})}
+  catch(e){if(fresh())error.value=e.message}finally{if(fresh())busy.value=false}
+}
 </script>
 <template>
   <v-navigation-drawer v-model="drawer" :permanent="!mobile" :temporary="mobile" :width="224" aria-label="主导航" class="app-navigation">
@@ -64,7 +74,7 @@ async function exit(){busy.value=true;error.value='';try{await logout();await ro
     <v-divider vertical class="toolbar-divider" />
     <v-chip v-if="app.status" size="small" variant="tonal" :color="app.status.shadow_mode?'secondary':'warning'" class="mode-chip">{{ app.status.shadow_mode?'Shadow':'按群规则发送' }}</v-chip>
   </v-app-bar>
-  <v-main tag="div"><main class="app-page" id="main-content"><v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert><nav v-if="section?.items.length" class="section-navigation" aria-label="当前区域"><v-btn v-for="[label,to] in section.items" :key="label" :to="to" variant="text" size="small">{{ label }}</v-btn></nav><slot /></main></v-main>
+  <v-main tag="div"><main class="app-page" id="main-content"><v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert><nav v-if="section?.items.length" class="section-navigation" aria-label="当前区域"><v-btn v-for="[label,to] in section.items" :key="label" :to="to" :active="isSectionItem(to)" :aria-current="isSectionItem(to)?'page':undefined" :variant="isSectionItem(to)?'tonal':'text'" size="small">{{ label }}</v-btn></nav><v-btn v-if="origin" :to="origin" :prepend-icon="mdiArrowLeft" variant="text" class="mb-4">{{ originLabel }}</v-btn><slot /></main></v-main>
 </template>
 <style scoped>
 .section-navigation{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid var(--line)}.app-navigation{border-right:1px solid var(--line)}.app-brand{display:flex;gap:12px;align-items:center;padding:24px 20px 16px}.app-brand strong{display:block;letter-spacing:-.03em;font-size:21px}.app-brand span:not(.app-mark){font-size:12px;color:var(--muted)}.app-mark{width:38px;height:38px;border-radius:10px;display:block;flex:none}.nav-groups{padding:4px 12px 12px}.nav-section{font-size:11px;letter-spacing:.08em;color:var(--muted);margin:16px 12px 2px;font-weight:600}.nav-groups :deep(.v-list){padding-top:4px;padding-bottom:0}.nav-groups :deep(.v-list-item){min-height:42px;border-radius:8px;margin-bottom:3px}.nav-groups :deep(.v-list-item__prepend > .v-icon){margin-inline-end:14px;font-size:20px;opacity:.85}.nav-groups :deep(.v-list-item-title){font-size:14px}.navigation-footer{padding:12px;border-top:1px solid var(--line)}.app-toolbar{border-bottom:1px solid var(--line)}.toolbar-title{font-size:14px;font-weight:600}.toolbar-status{font-size:12px;color:var(--muted)}.status-indicator{width:6px;height:6px;border-radius:50%;background:#bd8340;display:inline-block;margin-right:8px}.status-indicator.healthy{background:#16845c}.mode-chip{margin-inline:16px 24px}.toolbar-divider{height:20px;align-self:center;margin-left:8px}.status-details p{margin:0 0 12px;line-height:1.6}.status-details{display:grid;gap:4px}

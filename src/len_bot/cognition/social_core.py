@@ -142,12 +142,9 @@ class SocialCognitionCore:
         def terminal_definition():
             return ledger.terminal_definition()
         def request_definitions():
-            if next_is_final():return [terminal_definition()]
             return [*definitions(),terminal_definition()]
         def next_is_final():
-            # `force_terminal` is the one place that knows every stopping
-            # dimension, so the request's tool set and the terminal's own
-            # action set both ask it rather than comparing counts here.
+            # Closing changes execution eligibility, not the tool catalog.
             return execution.budget.force_terminal(execution.budget.local_state())
         try:
             initial_budget,_=execution_budget_message({
@@ -245,6 +242,10 @@ class SocialCognitionCore:
         async def finalize_request(trajectory,definitions):
             nonlocal pending_presentations
             context.trajectory=trajectory
+            # Expiry does not increment the scene's knowledge revision. Refresh
+            # the existing local preference projection even without new input.
+            if not plugin_request or plugin_request.input_mode=='conversation':
+                await context.install_preferences(trajectory)
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
             context.reconcile_original_reads(trajectory)
             pending_presentations=toolkit.read_presentations(trajectory)
@@ -275,6 +276,10 @@ class SocialCognitionCore:
                 if input_prepared:
                     input_prepared(context.provided_event_ids, context.refs.read_events)
                 toolkit.adopt_presentations(pending_presentations)
+                context.confirm_work_result_reads()
+                if mailbox is not None:
+                    mailbox.provided_result_ranges=copy.deepcopy(toolkit.presented_ranges)
+                    mailbox.provided_work_results=set(context.confirmed_work_results)
                 actual=copy.deepcopy(pending_presentations)
                 pending_presentations=[]
                 step=audit['steps'][-1]
@@ -291,7 +296,7 @@ class SocialCognitionCore:
             owner_call=owner_call or plugin_call
             owner_request=owner_request or plugin_request
             owner_binding=owner_binding or binding
-            outcome=await ledger.finish(arguments)
+            outcome=await ledger.finish(arguments,result_reads=toolkit.presented_ranges)
             if owner_call:
                 await runtime.plugin_host.validate_call(owner_call)
                 for message in outcome.message_proposals:

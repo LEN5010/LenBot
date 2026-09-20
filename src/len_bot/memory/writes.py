@@ -5,12 +5,13 @@ import time
 
 import aiosqlite
 
+from len_bot.actions.models import receipt_delivery_status
+from len_bot.events.models import Event, EventType, human_event_uid
 from len_bot.memory.models import MemoryBasis, MemoryItem, MemoryKind, MemoryProposal, MemoryStatus
 from len_bot.memory.store import MEMORY_COLUMNS, memory_from_row
 
 
-_HUMAN_MESSAGES = {"GROUP_MESSAGE_RECEIVED", "PRIVATE_MESSAGE_RECEIVED"}
-_EXTERNAL_EVENTS = {"USER_JOINED", "USER_LEFT", "LIVE_STARTED", "LIVE_ENDED"}
+_EXTERNAL_EVENTS = {EventType.USER_JOINED, EventType.USER_LEFT, EventType.LIVE_STARTED, EventType.LIVE_ENDED}
 
 
 async def _load_target(db: aiosqlite.Connection, memory_id: str, scene_id: str) -> MemoryItem:
@@ -50,40 +51,52 @@ async def validate_memory_proposal(
         mp.subject, mp.kind, mp.basis = target.subject, target.kind, target.basis
     if any(item.subject != mp.subject or item.kind != mp.kind for item in targets):
         raise ValueError("A revision preserves subject and kind; refute and create to correct attribution")
-    if mp.subject == bot_actor_id:
+    # A retraction validates the old target and its new correction evidence;
+    # it must not require proving the assertion it is removing.
+    if mp.operation != "refute" and mp.subject == bot_actor_id:
         raise ValueError("Bot capabilities and real-world experiences belong to runtime facts, not social memory")
-    if mp.subject != scene_id:
-        sql = "SELECT 1 FROM events WHERE scene_id=? AND actor_id=? AND event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED','USER_JOINED')"
+    if mp.operation != "refute" and mp.subject != scene_id:
+        sql = """SELECT 1 FROM events WHERE scene_id=? AND actor_id=?
+            AND event_type IN ('GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED','USER_JOINED')
+            AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
+            AND COALESCE(json_extract(payload,'$.origin_mode'),'')!='simulated'"""
         params: list = [scene_id, mp.subject]
         if through_rowid is not None:
             sql += " AND rowid<=?"
             params.append(through_rowid)
         if await (await db.execute(sql + " LIMIT 1", params)).fetchone() is None:
             raise ValueError("Memory subject is not an observed participant in this scene")
-    if mp.kind == MemoryKind.GROUP_NORM and mp.subject != scene_id:
+    if mp.operation != "refute" and mp.kind == MemoryKind.GROUP_NORM and mp.subject != scene_id:
         raise ValueError("Group norms use the scene ID as subject")
 
     originals = []
     operator_refutation = False
     for event_id in mp.evidence:
         row = await (await db.execute(
-            "SELECT rowid,event_type,actor_id,payload FROM events WHERE id=? AND scene_id=?", (event_id, scene_id),
+            "SELECT rowid,event_type,actor_id,timestamp,payload,metadata FROM events WHERE id=? AND scene_id=?", (event_id, scene_id),
         )).fetchone()
         if row is None or (through_rowid is not None and row[0] > through_rowid):
             raise ValueError("Memory evidence is outside this scene or the actual read cutoff")
-        _rowid, event_type, actor_id, raw_payload = row
-        human = event_type in _HUMAN_MESSAGES and actor_id != bot_actor_id
+        _rowid, event_type, actor_id, timestamp, raw_payload, raw_metadata = row
+        event = Event(id=event_id, event_type=event_type, actor_id=actor_id, scene_id=scene_id,
+                      timestamp=timestamp, payload=json.loads(raw_payload), metadata=json.loads(raw_metadata))
+        event_type, actor_id = event.event_type, event.actor_id
+        if event.metadata.get('simulated') or event.payload.get('origin_mode') == 'simulated':
+            raise ValueError("Simulated events are not original memory evidence")
+        human = human_event_uid(event) is not None and event.actor_id != bot_actor_id
         if human or event_type in _EXTERNAL_EVENTS:
             originals.append((event_type, actor_id, human))
         elif event_type == "TOOL_OBSERVATION_RECORDED":
-            payload = json.loads(raw_payload)
-            if not payload.get("independent_evidence"):
+            if event.payload.get("independent_evidence") is not True:
                 raise ValueError("Derived tool output is not independent memory evidence")
             originals.append((event_type, actor_id, False))
         elif event_type == "MESSAGE_SENT" and actor_id == bot_actor_id and mp.kind == MemoryKind.RELATIONSHIP:
+            if (event.payload.get('origin_mode') != 'live'
+                    or receipt_delivery_status(event.event_type, event.payload, event.metadata) != 'sent'):
+                raise ValueError("A relationship context requires a real delivered Bot message")
             originals.append((event_type, actor_id, False))
         elif event_type == "OPERATOR_ACTION" and mp.operation == "refute":
-            payload = json.loads(raw_payload)
+            payload = event.payload
             operator = payload.get("operator")
             if (not isinstance(operator, str) or not operator or actor_id != f"operator:{operator}"
                     or payload.get("operation") != "memory_refute"

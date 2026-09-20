@@ -61,12 +61,16 @@ class SceneReducer:
         elif (event.event_type == EventType.MESSAGE_SENT
               and event.payload.get('wake_confirmation_request_id') and result.wake_confirmation
               and event.payload['wake_confirmation_request_id'] == result.wake_confirmation.request_event_id):
-            result.wake_confirmation.prompt_event_id = event.id
-            result.wake_confirmation.prompted_at = event.timestamp
+            from len_bot.runtime.attention import is_real_send
+            if is_real_send(event, bot_actor_id):
+                result.wake_confirmation.prompt_event_id = event.id
+                result.wake_confirmation.prompted_at = event.timestamp
         elif (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
               and not event.metadata.get('conversation_excluded')):
-            result.last_bot_message_at = event.timestamp
-            result.last_bot_message_event_id = event.id
-            result.consecutive_bot_messages += 1
-            result.human_messages_since_bot = 0
+            from len_bot.runtime.attention import is_real_send
+            if is_real_send(event, bot_actor_id):
+                result.last_bot_message_at = event.timestamp
+                result.last_bot_message_event_id = event.id
+                result.consecutive_bot_messages += 1
+                result.human_messages_since_bot = 0
         return result

@@ -1,7 +1,8 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
 import { api, fmtTime } from '../api.js'
+import { withReturn } from '../router/navigation.js'
 import { loadScopes, useAppState } from '../composables/useAppState.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import PageHeader from '../components/PageHeader.vue'
@@ -10,7 +11,7 @@ import ResourceViewer from '../components/ResourceViewer.vue'
 import PluginConfigFields from '../components/PluginConfigFields.vue'
 import ConfigConflictBanner from '../components/ConfigConflictBanner.vue'
 import HelpHint from '../components/HelpHint.vue'
-import {blankConfigDraft,configDraft,draftProblems,configValue} from '../lib/pluginConfig.js'
+import {blankConfigDraft,configDraft,draftProblems,configValue,rebasePluginDraft} from '../lib/pluginConfig.js'
 
 const SCENE_SCOPE_HELP = `全局启用只是让插件可用，还要在目标群单独加入它才会生效。
 
@@ -27,12 +28,16 @@ const sceneName=id=>appState.scenes.find(item=>item.scene_id===id)?.display_name
 const plugins=ref([]), loading=ref(false), loaded=ref(false), readAt=ref(null), error=ref(''), message=ref(''), busy=ref('')
 const selected=ref(null), draft=ref(null), original=ref('null')
 const baseline=ref(null), conflict=ref(null), currentSaved=ref(null)
+const readbackId=ref('')
 const search=ref(''), filter=ref('all')
 const detailTab=ref('config')
 const dirty=computed(()=>draft.value!==null&&JSON.stringify(draft.value)!==original.value)
 const {confirmLeave}=useUnsavedChanges(dirty)
 onBeforeRouteUpdate((to,from)=>to.query.id===from.query.id||confirmLeave())
-let requestId=0
+let requestId=0, selectionGeneration=0, mutationId=0, alive=true
+const selectedKey=()=>typeof route.query.id==='string'?route.query.id:''
+const beginMutation=()=>{++requestId;loading.value=false;return {id:++mutationId,generation:selectionGeneration,selection:selectedKey()}}
+const isCurrent=operation=>alive&&operation.id===mutationId&&operation.generation===selectionGeneration&&operation.selection===selectedKey()
 const permissionLabels={emit_event:'提交观察事件',register_tool:'提供原生工具'}
 const labels=(values,dictionary)=>values.map(value=>dictionary[value]||value).join('、')
 // A purpose label answers "what is this for"; it is not a second plugin
@@ -77,7 +82,7 @@ const configFieldsRef=ref(null)
 const secretPaths=computed(()=>selected.value?.secret_paths||[])
 // A summary that names a field is only a summary if the field can be reached
 // from it; the field itself carries the same explanation.
-const configuredSaved=computed(()=>Boolean(selected.value?.configured)&&!dirty.value)
+const configuredSaved=computed(()=>Boolean(selected.value?.configured)&&!dirty.value&&!readbackId.value)
 const saveHint=computed(()=>{
   if (!selected.value) return ''
   return selected.value.config_apply==='restart_plugin'
@@ -109,54 +114,66 @@ function setDraft(plugin) {
   original.value=JSON.stringify(draft.value)
 }
 function beginConfiguration() {
+  if(busy.value||readbackId.value)return
   draft.value=blankConfigDraft(selected.value.config_schema,selected.value.secret_paths||[])
 }
-function selectFromRoute() {
+function selectFromRoute(adopt=false) {
   const plugin=plugins.value.find(item=>item.id===route.query.id)||null
-  if (!plugin) { selected.value=null; draft.value=null; original.value='null'; return }
-  const preserve=selected.value?.id===plugin.id&&dirty.value
+  if (!plugin) { selected.value=null; draft.value=null; baseline.value=null; original.value='null'; return }
+  const preserve=selected.value?.id===plugin.id&&(dirty.value||conflict.value)&&!adopt
   selected.value=plugin
   detailTab.value=['config','scenes','diagnostics'].includes(route.query.pane)?route.query.pane:'config'
   if (!preserve) setDraft(plugin)
 }
 function setPane(value) { router.replace({query:{...route.query,pane:value==='config'?undefined:value}}) }
-async function load() {
+async function load({accept=()=>alive}={}) {
   const request=++requestId
   loading.value=true; error.value=''
+  if(conflict.value)currentSaved.value=null
   try {
     const result=await api('/api/plugins/list')
-    if (request!==requestId) return
-    plugins.value=result; loaded.value=true; readAt.value=Date.now()/1000; selectFromRoute()
+    if (request!==requestId||!alive||!accept()) return false
+    plugins.value=result; loaded.value=true; readAt.value=Date.now()/1000
+    const acceptSaved=readbackId.value===selectedKey()&&result.some(item=>item.id===selectedKey())
+    selectFromRoute(acceptSaved)
+    if(acceptSaved){readbackId.value='';conflict.value=null;currentSaved.value=null}
+    if (conflict.value) currentSaved.value=result.find(item=>item.id===selectedKey())||null
     return true
-  } catch(e) { if (request===requestId) error.value=e.message }
-  finally { if (request===requestId) loading.value=false }
+  } catch(e) { if (request===requestId&&alive&&accept()) error.value=e.message }
+  finally { if (request===requestId&&alive) loading.value=false }
   return false
 }
-async function showApplyError(problem) {
+async function showApplyError(problem,operation,submittedDraft=null) {
+  if (!isCurrent(operation)) return false
   serverProblems.value=locate(problem)
-  const refreshed=await load()
-  if(refreshed && problem.details?.config_saved && selected.value) setDraft(selected.value)
+  if(problem.details?.config_saved===true&&submittedDraft!==null)readbackId.value=operation.selection
+  const refreshed=await load({accept:()=>isCurrent(operation)})
+  if (!isCurrent(operation)) return false
   error.value=problem.message+(refreshed?'':'；当前状态刷新失败：'+error.value)
+  return refreshed
 }
-function close() {
+async function close() {
   const openedFrom=selected.value?.id
-  router.push({name:'plugins'})
+  await router.push({name:'plugins',query:{return_to:route.query.return_to}})
   // The dialog is opened from a card in the list behind it, so the trigger is
   // still there to receive focus back.
-  nextTick(()=>document.querySelector(`[data-plugin-trigger="${openedFrom}"]`)?.focus?.())
+  await nextTick()
+  if (alive&&!selectedKey()) document.querySelector(`[data-plugin-trigger="${openedFrom}"]`)?.focus?.()
 }
 async function toggle(plugin,enabled=!plugin.enabled) {
-  if (busy.value||!plugin.configured) return
+  if (busy.value||readbackId.value||!plugin.configured) return
+  const operation=beginMutation()
   busy.value=`toggle:${plugin.id}`; error.value=''; message.value=''
   try {
     await api('/api/plugins/toggle',{method:'POST',body:JSON.stringify({plugin_id:plugin.id,enabled,baseline:plugin.enabled})})
+    if (!isCurrent(operation)) return
     message.value=enabled?'启用状态已写入根配置并应用到运行时':'停用状态已写入根配置并从运行时卸下'
-    await load()
-  } catch(e) { await showApplyError(e) }
-  finally { busy.value='' }
+    await load({accept:()=>isCurrent(operation)})
+  } catch(e) { await showApplyError(e,operation) }
+  finally { if (isCurrent(operation)) busy.value='' }
 }
 async function save() {
-  if (busy.value||!selected.value||!draft.value) return
+  if (busy.value||readbackId.value||conflict.value||!selected.value||!draft.value) return
   error.value=''; message.value=''
   serverProblems.value=[]
   if (localProblems.value.length) {
@@ -165,6 +182,7 @@ async function save() {
     return
   }
   busy.value='config'
+  const operation=beginMutation(), submittedDraft=JSON.stringify(draft.value)
   const restart=selected.value.config_apply==='restart_plugin'
   const savedEnabled=selected.value.enabled
   try {
@@ -183,7 +201,8 @@ async function save() {
       return
     }
     await api('/api/plugins/config',{method:'POST',body:JSON.stringify({plugin_id:selected.value.id,config,baseline:baseline.value})})
-    original.value=JSON.stringify(draft.value)
+    if (!isCurrent(operation)) return
+    readbackId.value=operation.selection
     // Reaching here means the file was written and the runtime apply did not
     // raise; whether the plugin is actually loaded still depends on the saved
     // enable flag, which the refreshed 运行时 row states.
@@ -193,39 +212,57 @@ async function save() {
         ? '参数已写入根配置，该插件已按新参数重新装载；加载结果见下方运行时一行'
         : '参数已写入根配置，该插件已原位应用新参数；加载结果见下方运行时一行'
     serverProblems.value=[]
-    await load()
-    conflict.value=null
+    await load({accept:()=>isCurrent(operation)})
+    if (isCurrent(operation)) { conflict.value=null; currentSaved.value=null }
   } catch(e) {
+    if(!isCurrent(operation))return
+    if(e.status===409&&e.details?.config_saved===false){
+      conflict.value={message:e.message,path:e.details.path};currentSaved.value=null
+    }
+    const refreshed=await showApplyError(e,operation,submittedDraft)
+    if (!isCurrent(operation)) return
     if (e.status===409 && e.details?.config_saved===false) {
       conflict.value={message:e.message, path:e.details.path}
-      const latest=(await api('/api/plugins/list')).find(item=>item.id===selected.value?.id)
-      currentSaved.value=latest||null
+      currentSaved.value=refreshed?plugins.value.find(item=>item.id===operation.selection)||null:null
     }
-    await showApplyError(e)
   }
-  finally { busy.value='' }
+  finally { if (isCurrent(operation)) busy.value='' }
 }
 function keepMine() {
-  if (!currentSaved.value) return
-  baseline.value={config:JSON.parse(JSON.stringify(currentSaved.value.config)),config_set:JSON.parse(JSON.stringify(currentSaved.value.config_set)),credential_revision:currentSaved.value.credential_revision||1}
-  conflict.value=null
+  if (busy.value||loading.value||!currentSaved.value||currentSaved.value.id!==selected.value?.id) return
+  try {
+    const saved=currentSaved.value
+    const nextDraft=saved.config===null?null:configDraft(saved.config,saved.config_schema,saved.secret_paths||[])
+    const next=rebasePluginDraft(JSON.parse(original.value),draft.value,nextDraft,saved.config_schema)
+    setDraft(saved);draft.value=next
+    conflict.value=null;currentSaved.value=null;serverProblems.value=[];error.value=''
+    message.value='已保留实际改过的字段，未改字段采用当前保存值；请核对草稿后再保存插件参数。'
+  }catch(e){error.value=e.message}
 }
 function takeCurrent() {
-  if (!currentSaved.value) return
+  if (busy.value||loading.value||!currentSaved.value||currentSaved.value.id!==selected.value?.id) return
+  if(dirty.value&&!window.confirm('放弃未保存的插件参数，采用本次读取的保存值？'))return
   setDraft(currentSaved.value)
-  conflict.value=null
+  conflict.value=null;currentSaved.value=null;serverProblems.value=[];error.value=''
+  message.value='已采用本次读取的保存值，没有再次保存或重新装载。'
 }
-watch(()=>route.query.id,selectFromRoute)
+watch(()=>route.query.id,()=>{
+  ++selectionGeneration; ++mutationId
+  busy.value=''; error.value=''; message.value=''; serverProblems.value=[]
+  conflict.value=null; currentSaved.value=null;readbackId.value=''
+  selectFromRoute()
+},{flush:'sync'})
+watch(()=>route.query.pane,()=>{detailTab.value=['config','scenes','diagnostics'].includes(route.query.pane)?route.query.pane:'config'})
+onBeforeUnmount(()=>{alive=false;++requestId;++mutationId})
 load()
 loadScopes()
 </script>
 
 <template>
   <div class="page-stack">
-    <PageHeader title="能力与插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" @click="load">刷新</v-btn></PageHeader>
-    <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
-    <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
-    <ConfigConflictBanner :conflict="conflict" :current="currentSaved" :path-label="conflict?.path?.join?.('.')" @keep="keepMine" @take="takeCurrent" />
+    <PageHeader title="能力与插件" description="按用途查找，逐项确认“已配置、已保存、已加载、已开放群”。启用不代表来源可用，刷新页面不会抓取源数据或调用模型。"><v-btn variant="outlined" :loading="loading" :disabled="!!busy" @click="load">刷新</v-btn></PageHeader>
+    <v-alert v-if="error&&!route.query.id" type="error" variant="tonal">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
+    <v-alert v-if="message&&!route.query.id" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <div class="plugin-toolbar">
       <v-text-field v-model="search" label="查找插件" hide-details clearable density="comfortable" class="toolbar-search" />
       <v-chip-group v-model="filter" mandatory class="toolbar-filters">
@@ -239,7 +276,7 @@ loadScopes()
         <p class="clamp-2 plugin-description">{{ plugin.description }}</p>
         <ul class="state-list"><li v-for="item in states(plugin)" :key="item.label"><span class="state-label">{{ item.label }}</span><span :class="item.ok?'state-ok':'state-warn'">{{ item.text }}</span></li></ul>
         <v-alert v-if="problem(plugin)" type="warning" variant="tonal" density="compact" class="my-3">{{ problem(plugin) }}</v-alert>
-        <div class="actions mt-4"><v-btn :data-plugin-trigger="plugin.id" color="primary" variant="tonal" :to="{name:'plugins',query:{id:plugin.id}}">详情与配置</v-btn><v-btn :color="plugin.enabled?'error':'primary'" variant="outlined" :disabled="!!busy||!plugin.configured" :loading="busy===`toggle:${plugin.id}`" @click="toggle(plugin)">{{ !plugin.configured?'先填写配置':plugin.enabled?'停用':'启用' }}</v-btn><v-btn v-if="plugin.enabled&&!plugin.active_enabled" color="primary" variant="outlined" :disabled="!!busy" @click="toggle(plugin,true)">重新启用</v-btn></div>
+        <div class="actions mt-4"><v-btn :data-plugin-trigger="plugin.id" color="primary" variant="tonal" :to="{name:'plugins',query:{return_to:route.query.return_to,id:plugin.id}}">详情与配置</v-btn><v-btn :color="plugin.enabled?'error':'primary'" variant="outlined" :disabled="!!busy||!!readbackId||!plugin.configured" :loading="busy===`toggle:${plugin.id}`" @click="toggle(plugin)">{{ !plugin.configured?'先填写配置':plugin.enabled?'停用':'启用' }}</v-btn><v-btn v-if="plugin.enabled&&!plugin.active_enabled" color="primary" variant="outlined" :disabled="!!busy" @click="toggle(plugin,true)">重新启用</v-btn></div>
       </v-card>
     </div>
     <v-card v-if="loaded&&!error&&!filtered.length" class="pa-8 text-center muted">{{ plugins.length?'没有符合当前筛选的插件。':'当前没有已声明插件' }}</v-card>
@@ -248,7 +285,8 @@ loadScopes()
         <v-card-title class="dialog-title">插件详情<v-btn variant="text" :disabled="!!busy" @click="close">关闭</v-btn></v-card-title>
         <v-card-text>
           <v-progress-linear v-if="loading" indeterminate />
-          <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
+          <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}<span v-if="readAt"> · 上次读取 {{ fmtTime(readAt) }}</span></v-alert>
+          <v-alert v-if="message" type="success" variant="tonal" class="mb-4">{{ message }}</v-alert>
           <v-alert v-if="loaded&&!selected&&!error" type="warning" variant="tonal">此插件不在当前声明目录中。</v-alert>
           <template v-if="selected">
             <div class="plugin-heading"><div><h2>{{ selected.name }}</h2><p class="muted mt-2">{{ purpose(selected) }} · {{ selected.id }}<span v-if="selected.version"> · v{{ selected.version }}</span></p></div><StatusBadge domain="plugin" :status="selected.state" /></div>
@@ -257,23 +295,26 @@ loadScopes()
             <v-alert v-if="problem(selected)" type="warning" variant="tonal" class="my-4">{{ problem(selected) }}</v-alert>
             <v-tabs :model-value="detailTab" color="primary" @update:model-value="setPane"><v-tab v-for="item in detailTabs" :key="item.value" :value="item.value">{{ item.title }}</v-tab></v-tabs>
             <template v-if="detailTab==='config'">
+              <ConfigConflictBanner exclusive-backend :conflict="conflict" :current="currentSaved" :path-label="conflict?.path?.join?.('.')" :busy="!!busy||loading" :read-error="currentSaved?'':error" :read-at="currentSaved?readAt:null" @keep="keepMine" @take="takeCurrent" @reload="load" />
+              <v-alert v-if="readbackId" type="warning" variant="tonal" class="my-4">参数已写入，当前保存值尚未读回；不会把旧草稿标成新基线或再次提交。<v-btn variant="text" :disabled="!!busy||loading" @click="load">重新读取保存值</v-btn></v-alert>
               <p class="muted my-4">{{ selected.config_apply==='restart_plugin'?'该插件保存后会重新装载：未提交的工作可能中断；其他插件继续运行。':'保存后由本插件原位应用新参数。' }}</p>
+              <p class="muted my-4">切换对象或离开页面只停止采用旧响应，不取消服务器已经接受的保存或启停。</p>
               <v-alert v-if="!selected.configured" type="info" variant="tonal" class="mb-4">尚未配置，当前不装载此插件或建立源连接。参数由运营实际填写后保存，保存不会自动启用。</v-alert>
-              <v-btn v-if="!draft" color="primary" variant="tonal" :disabled="!!busy" @click="beginConfiguration">填写插件参数</v-btn>
-              <v-form v-if="draft" :disabled="!!busy" @submit.prevent="save">
+              <v-btn v-if="!draft" color="primary" variant="tonal" :disabled="!!busy||!!readbackId" @click="beginConfiguration">填写插件参数</v-btn>
+              <v-form v-if="draft" :disabled="!!busy||!!readbackId" @submit.prevent="save">
                 <v-alert v-if="problems.length" type="error" variant="tonal" class="mb-4">
                   <p class="mb-2">请先修正以下参数；修正前不会提交保存。</p>
                   <ul class="error-summary"><li v-for="item in problems" :key="item.key+item.message"><button type="button" class="error-link" @click="focusField(item.key)">{{ item.message }}</button></li></ul>
                 </v-alert>
-                <PluginConfigFields ref="configFieldsRef" v-model="draft" :schema="selected.config_schema" :secrets="selected.secret_paths" :config-set="selected.config_set" :problems="problems" />
+                <PluginConfigFields :disabled="!!busy||!!readbackId" ref="configFieldsRef" v-model="draft" :schema="selected.config_schema" :secrets="selected.secret_paths" :config-set="selected.config_set" :problems="problems" />
                 <p v-if="selected.secret_paths.length" class="muted my-4">凭据仅显示是否已保存。已保存的凭据留空时保留；首次配置必需凭据须实际填写。</p>
-                <div class="actions mt-5"><v-btn type="submit" color="primary" :loading="busy==='config'" :disabled="!!busy">{{ selected.config_apply==='restart_plugin'?'保存并重新装载该插件':'保存插件参数' }}</v-btn><span v-if="dirty" class="muted">有未保存的修改，保存后会写入根配置</span><span v-else-if="configuredSaved" class="muted">当前显示的是已写入根配置的值</span></div>
+                <div class="actions mt-5"><v-btn type="submit" color="primary" :loading="busy==='config'" :disabled="!!busy||!!readbackId||!!conflict">{{ selected.config_apply==='restart_plugin'?'保存并重新装载该插件':'保存插件参数' }}</v-btn><span v-if="dirty" class="muted">有未保存的修改，保存后会写入根配置</span><span v-else-if="configuredSaved" class="muted">当前显示的是已写入根配置的值</span></div>
                 <p class="muted mt-3">{{ saveHint }}</p>
               </v-form>
             </template>
             <template v-else-if="detailTab==='scenes'">
               <h3 class="my-4 heading-with-hint">配置开放的群<HelpHint :text="SCENE_SCOPE_HELP" /></h3>
-              <div class="open-scenes"><v-btn v-for="scene in selected.open_scenes" :key="scene.scene_id" variant="text" :to="{name:'scene',params:{sceneId:scene.scene_id},query:{tab:'settings'}}">{{ sceneName(scene.scene_id)||scene.scene_id }}<span v-if="sceneName(scene.scene_id)" class="scene-id">{{ scene.scene_id }}</span> · {{ scene.enabled?'群已启用':'群已停用' }}</v-btn><p v-if="!selected.open_scenes.length" class="muted">尚未向任何群开放此插件。</p></div>
+              <div class="open-scenes"><v-btn v-for="scene in selected.open_scenes" :key="scene.scene_id" variant="text" :to="withReturn(route,{name:'scene',params:{sceneId:scene.scene_id},query:{tab:'settings'}})">{{ sceneName(scene.scene_id)||scene.scene_id }}<span v-if="sceneName(scene.scene_id)" class="scene-id">{{ scene.scene_id }}</span> · {{ scene.enabled?'群已启用':'群已停用' }}</v-btn><p v-if="!selected.open_scenes.length" class="muted">尚未向任何群开放此插件。</p></div>
               <p class="muted mt-3">本群开关与业务参数在“本群设置”里保存。</p>
               <RouterLink :to="{name:'scenes'}">打开群列表</RouterLink>
             </template>

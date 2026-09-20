@@ -5,6 +5,7 @@ import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import ResourceViewer from './ResourceViewer.vue'
 import PluginOrigin from './PluginOrigin.vue'
+import ObservationCoverage from './ObservationCoverage.vue'
 
 const props = defineProps({ observation: { type: Object, required: true }, sceneId: String, rangeLabel: { type: String, default: '本次页面阅读范围' } })
 const unit = computed(() => ({ characters: '字符', records: '记录' }[props.observation.coordinate_unit] || props.observation.coordinate_unit || '单位未记录'))
@@ -31,11 +32,13 @@ async function copySpan() {
     <div v-if="observation.error_details?.length" class="field-errors"><h4>具体字段错误</h4><dl><template v-for="(detail,index) in observation.error_details" :key="index"><dt><code>{{ fieldPath(detail.loc) }}</code><span>{{ detail.type }}</span></dt><dd>{{ detail.message }}</dd></template></dl></div>
     <ResourceViewer v-if="observation.correction" title="未提交候选的可纠正范围与续读位置" :content="observation.correction" />
     <p v-if="observation.coverage" class="coverage">覆盖记录：{{ observation.coverage }}</p>
+    <ObservationCoverage :details="observation.coverage_details" :scene-id="sceneId" />
     <p v-if="observation.provenance">资料范围：{{ provenanceLabels[observation.provenance.access] || '未确认' }}<span v-if="observation.provenance.source_result_ids?.length"> · 来源 {{ observation.provenance.source_result_ids.join('、') }}</span></p>
     <p v-if="observation.displayed_range">{{ rangeLabel }}：{{ observation.displayed_range.start }}–{{ observation.displayed_range.end }} / {{ observation.displayed_range.total }} {{ unit }}（起含止不含）。</p>
     <p v-if="observation.source_truncated" class="text-warning">源端资料有未取得的部分，当前保存正文不代表源全文。</p>
     <p v-else-if="observation.truncated && observation.source_truncated===undefined" class="muted">原记录带截断标记，未分别记录源端和本地正文覆盖。</p>
-    <p v-if="observation.attachments?.length" class="muted">媒体引用 {{ observation.attachments.length }} 项；仅登记引用不表示模型已看到原图。</p>
+    <p v-if="observation.attachments?.length" class="muted">媒体引用 {{ observation.attachments.length }} 项；仅登记引用不表示模型已收到图片像素、音轨或连续画面。</p>
+    <div v-if="observation.attachments?.length" class="source-list"><EntityLink v-for="id in observation.attachments" :key="id" type="media" :id="id" :scene-id="sceneId" :label="`打开已登记媒体 ${id}`" /></div>
     <details v-if="observation.evidence_span"><summary>本次展示范围的来源引用</summary><p class="muted">页面阅读不增加工作模型的已读范围；结论仍须符合该工作已保存的实际采用范围。</p><ResourceViewer title="来源范围 JSON" :content="observation.evidence_span"><template #actions><v-btn variant="text" size="small" @click="copySpan">{{ copied?'已复制':'复制范围' }}</v-btn></template></ResourceViewer><p v-if="copyError" role="alert">{{ copyError }}</p></details>
     <div v-if="observation.sources?.length" class="source-list"><div v-for="(source,index) in observation.sources" :key="index" class="source-item"><a v-if="sourceLink(source.url)" :href="sourceLink(source.url)" target="_blank" rel="noopener noreferrer">{{ source.title || source.url }}</a><span v-else-if="source.title || source.url">{{ source.title || source.url }}</span><EntityLink v-if="source.event_id" type="event" :id="source.event_id" :scene-id="sceneId" label="来源记录" /><span v-if="source.published_at" class="muted">源发布时间 {{ source.published_at }}</span></div></div>
     <details v-if="observation.next_call"><summary>{{ localLabel }}</summary><ResourceViewer :title="localLabel" :content="observation.next_call" /></details>

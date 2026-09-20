@@ -5,6 +5,7 @@ import asyncio
 import json
 
 from len_bot.events.models import EventType
+from len_bot.actions.models import receipt_delivery_status
 from len_bot.plugins.base import BasePlugin
 from len_bot.runtime.heartbeat import SLOT_SECONDS, slot_id
 from len_bot.runtime.interest_publication import check_publication, publication_for, scene_permission
@@ -95,10 +96,9 @@ class InterestShare(BasePlugin):
             if actor.session.consecutive_bot_messages >= MAX_CONSECUTIVE_BOT_MESSAGES:
                 outcome = 'skipped_anti_loop'
                 return
-            candidates = await runtime.interest_store.list_public(limit=20, considered_in_scene=event.scene_id)
+            candidates = await runtime.interest_store.list_public(limit=20, considered_in_scene=event.scene_id,
+                topics=config.topics, publishable_only=True)
             for item in candidates:
-                if item.record_type == 'research_intent' or config.topics and item.topic not in config.topics:
-                    continue
                 _, publication = await publication_for(store, item.id, item.revision)
                 try:
                     await check_publication(store, event.scene_id, publication)
@@ -160,15 +160,24 @@ class InterestShare(BasePlugin):
                 'meaning': '研究形成的公共候选，评价与事实已标注；不是本群成员原话。引用范围以 evidence_spans 为准。'}, ensure_ascii=False),
                 coverage='公共兴趣及已验证的来源关系，不代表重新读取完整资源', evidence_kind='retrieval',
                 provenance=ObservationProvenance(access='derived', source_result_ids=publication.source_result_ids))
-            rows = await (await self.context.event_store._db.execute("""SELECT id,timestamp,payload FROM events
+            rows = await (await self.context.event_store._db.execute("""SELECT id,timestamp,payload,metadata FROM events
                 WHERE scene_id=? AND rowid<=? AND event_type='MESSAGE_SENT'
+                  AND actor_id=? AND json_extract(payload,'$.origin_mode')='live'
+                  AND COALESCE(json_extract(payload,'$.delivery_status'),'sent')='sent'
+                  AND COALESCE(json_extract(payload,'$.delivery_unknown'),0)=0
+                  AND json_type(payload,'$.message_id') IN ('text','integer')
+                  AND length(trim(CAST(json_extract(payload,'$.message_id') AS TEXT)))>0
                   AND COALESCE(json_extract(metadata,'$.simulated'),0)=0
-                ORDER BY rowid DESC LIMIT 4""", (call.scene_id, call.cutoff_rowid))).fetchall()
-            recent = ToolResult(content=json.dumps({'recent_deliveries': [
-                {'event_id': ident, 'at': at, 'text_excerpt': json.loads(raw).get('raw_text', '')[:300]}
-                for ident, at, raw in rows], 'meaning': '本群最近实际送达的 Bot 表达，每条只呈现前300字符，不是外部事实证据'}, ensure_ascii=False),
-                evidence_kind='retrieval', coverage='本群最近八条真实送达记录的文字节选',
-                provenance=ObservationProvenance(access='scene', source_event_ids=[row[0] for row in rows]))
+                ORDER BY rowid DESC LIMIT 4""", (call.scene_id, call.cutoff_rowid, self.context._runtime.bot_actor_id))).fetchall()
+            recent_deliveries = []
+            for ident, at, raw, metadata in rows:
+                payload = json.loads(raw)
+                if receipt_delivery_status(EventType.MESSAGE_SENT, payload, json.loads(metadata)) == 'sent':
+                    recent_deliveries.append({'event_id': ident, 'at': at, 'text_excerpt': payload.get('raw_text', '')[:300]})
+            recent = ToolResult(content=json.dumps({'recent_deliveries': recent_deliveries,
+                'meaning': '本群近期实际送达的 Bot 表达，每条只呈现前300字符，不是外部事实证据'}, ensure_ascii=False),
+                evidence_kind='retrieval', coverage='本群最多四条真实送达记录的文字节选，每条前300字符',
+                provenance=ObservationProvenance(access='scene', source_event_ids=[row['event_id'] for row in recent_deliveries]))
             result = await call.run_agent(instructions=(
                 '这是本群本时段的一次自主分享机会，使用当前群的必要语境与近期已发内容判断相关性。'
                 '不相关、已知、证据不足或会打扰时用 respond 保持沉默。研究完成不意味着应当发布。'

@@ -6,18 +6,19 @@ import time
 import uuid
 import re
 from typing import Any, Optional
-from len_bot.events.models import Event, EventType, PluginOrigin
+from len_bot.events.models import Event, EventType, PluginOrigin, human_event_uid
 from len_bot.memory.writes import validate_memory_proposal, commit_memory_proposal_core
 from len_bot.memory.models import MemoryProposal, MemoryItem
 from len_bot.tools.observations import ObservationStoreMixin
 from len_bot.actions.delivery_store import DeliveryStoreMixin
+from len_bot.actions.models import receipt_delivery_status
 from len_bot.runtime.job_store import JobStoreMixin
 from len_bot.execution.journal import ExecutionJournalMixin
 from len_bot.media.store import MediaStoreMixin
 from len_bot.cognition.call_store import ModelCallStoreMixin
-from len_bot.cognition.models import EpisodeOutcome, MessageProposal, OperationReceipt
+from len_bot.cognition.models import AnswerBasis, AnswerWorkResult, EpisodeOutcome, MessageProposal, OperationReceipt
 from len_bot.memory.history import HistoryStoreMixin
-from len_bot.scheduler.models import TaskItem, TaskStatus
+from len_bot.scheduler.models import ReminderControlSnapshot, TaskItem, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -811,22 +812,24 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             if changed.rowcount!=1:
                 raise ValueError('The sent wait was already consumed, expired or changed')
         task_id = event.payload.get("fulfils_task_id")
+        delivery_status = receipt_delivery_status(event.event_type, event.payload, event.metadata)
         if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED):
-            status = ("shadow_observed" if event.event_type == EventType.ACTION_SHADOWED else "completed" if event.event_type in {EventType.MESSAGE_SENT, EventType.FILE_UPLOADED}
-                      else "delivery_unknown" if event.payload.get("delivery_unknown") else "failed")
+            status = {'sent': 'completed', 'shadow': 'shadow_observed', 'simulated': 'shadow_observed',
+                      'unknown': 'delivery_unknown'}.get(delivery_status, 'failed')
             if event.payload.get('cancelled'):
                 status = 'cancelled'
             await self._db.execute(
-                """UPDATE tasks SET status=?,payload=json_set(payload,'$.delivery_event_id',?,'$.error',?) WHERE id=? AND scene_id=?
+                """UPDATE tasks SET status=?,payload=json_set(payload,'$.delivery_event_id',?,'$.error',?,'$.delivery_status',?) WHERE id=? AND scene_id=?
                    AND status='awaiting_delivery'
                    AND json_extract(payload, '$.delivery_action_id')=?""",
-                (status, event.id, event.payload.get("error", ""), task_id, event.scene_id, event.payload.get("action_id")),
+                (status, event.id, event.payload.get("error", ""), delivery_status, task_id, event.scene_id, event.payload.get("action_id")),
             )
 
         await self.finish_deferred_in_transaction(event)
 
         # 4. Item 3: If message sent event has associated open loop, activate it atomically in the same transaction!
-        if associated_open_loop:
+        if (associated_open_loop and event.event_type == EventType.MESSAGE_SENT and delivery_status == 'sent'
+                and event.payload.get('origin_mode') == 'live'):
             await self._db.execute(
                 """
                 INSERT INTO open_loops (id, scene_id, target_actor_id, intent, source_event_id, source_stimulus_id, status, created_at, expires_at)
@@ -1239,6 +1242,49 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                 await self._db.commit()
             return expired_ids
 
+    async def validate_answer_basis(self, basis: AnswerBasis, scene_id, *, through_rowid,
+                                    read_event_ids, result_reads, bot_actor_id):
+        """Validate one answer's explicit source links against host read facts."""
+        if not set(basis.event_ids).issubset(read_event_ids):
+            raise ValueError('答复依据包含未完整读取的原话')
+        originals = await self.events_by_ids(scene_id, basis.event_ids, through_rowid)
+        if len(originals) != len(basis.event_ids) or any(
+                human_event_uid(event) is None or event.actor_id == bot_actor_id or event.metadata.get('simulated')
+                for event in originals):
+            raise ValueError('答复原话依据须是本场景截点内的真实人类输入，不能引用摘要、系统事件或Bot发言')
+        for span in basis.result_spans:
+            result = await self.read_tool_observation(span.result_id, [scene_id])
+            if result is None:
+                raise ValueError('答复资料不存在或不属于本场景')
+            call = await self.tool_observation_call(span.result_id, scene_id)
+            if call and call[0] in {'recall_chat', 'search_messages', 'read_context', 'read_message_range',
+                    'read_pending_wakes', 'query_timeline', 'query_person_history', 'query_memory',
+                    'search_history_summaries', 'query_jobs'}:
+                raise ValueError('群原话使用 event_refs，工作成果使用 work_result；不把内部目录或序列化记录作为直接资料证据')
+            if (result.evidence_kind == 'model' or 'locator' in result.coverage
+                    or result.coverage.startswith(('memory_ledger', 'history_summary'))):
+                raise ValueError('摘要、认识与模型产出不是原始资料依据；先按位置读取原话或真实资料')
+            if result.coverage == 'search_snippets' and basis.kind != 'unverified':
+                raise ValueError('搜索摘要只定位正文；尚未读取支持结论的正文时使用 unverified 并说明缺口')
+            if result.status in {'error', 'unsupported'} and basis.kind != 'unverified':
+                raise ValueError('工具失败不能声明为已核实资料；保留 unverified 及具体缺口')
+            if span.coordinate_unit == 'characters':
+                total = len(result.content)
+            else:
+                records = json.loads(result.content)
+                if not isinstance(records, list):
+                    raise ValueError('答复资料的 records 坐标必须对应原始记录数组')
+                total = len(records)
+            ranges = result_reads.get(span.result_id, {}).get(span.coordinate_unit, [])
+            if not (0 <= span.start < span.end <= total) or not any(
+                    left <= span.start < span.end <= right for left, right in ranges):
+                raise ValueError('答复资料范围超出实际提供给本次模型的正文，不能把目录或取得记录当成已读')
+        if basis.work_result:
+            work = basis.work_result
+            job = await self.validate_job_message(scene_id, work.job_id, work.revision)
+            if AnswerWorkResult.from_job(job) != work:
+                raise ValueError('答复工作依据与当前修订保存的结果来源不一致')
+
     async def commit_proposal_transaction(
         self,
         episode_id: str,
@@ -1315,6 +1361,8 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                         raise ValueError("Use typed job_proposals for information work")
                     if tp.operation not in {"create", "update", "cancel", "result", "fail"}:
                         raise ValueError("Unknown task operation")
+                    if tp.expected is not None and tp.operation not in {'update', 'cancel'}:
+                        raise ValueError('提醒原值只用于修改或取消，不能用于创建或结果提交')
                     if tp.source_event_ids:
                         placeholders = ",".join("?" for _ in set(tp.source_event_ids))
                         evidence = await self._db.execute(
@@ -1339,14 +1387,20 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                         continue
                     if tp.task_id in task_states:
                         raise ValueError("One transaction cannot control the same reminder more than once")
-                    existing = await (await self._db.execute(
-                        "SELECT status,payload,due_at FROM tasks WHERE id=? AND scene_id=?",
-                        (tp.task_id, scene_id))).fetchone()
-                    if existing is None:
+                    existing = await self.get_task(tp.task_id)
+                    if existing is None or existing.scene_id != scene_id:
                         raise ValueError("Task not found in this scene")
-                    status, payload, due_at = existing[0], json.loads(existing[1]), existing[2]
+                    if tp.operation in {'update', 'cancel'}:
+                        if tp.expected is None:
+                            raise ValueError('提醒控制缺少实际读取的原值，请重新读取后提出操作')
+                        current = ReminderControlSnapshot.from_task(existing.model_dump(mode='json'))
+                        if current != tp.expected:
+                            raise ValueError('提醒自读取后已变化，请核对当前事项、时间、状态与触发条件；本次控制未提交')
+                    status, payload, due_at = existing.status.value, existing.payload, existing.due_at
                     if payload.get("kind") == "agent_job":
                         raise ValueError("Use versioned job controls for information work")
+                    if payload.get('kind') in {'deferred_delivery', 'heartbeat', 'heartbeat_occupancy', 'interest_share'}:
+                        raise ValueError('延期交付与系统调度槽不能通过提醒提案修改')
                     if status not in {"pending", "claimed", "processing", "review_required", "result_ready"}:
                         raise ValueError("Task no longer editable")
                     if tp.operation == "update" and (tp.due_at is None or tp.due_at < now):
@@ -1362,6 +1416,16 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                     if mp.operation != "refute" and mp.expires_at is not None and mp.expires_at <= now:
                         raise ValueError("An already expired preference or belief cannot become active")
                 for message in job_messages:
+                    if message.answer_basis:
+                        if scene_commit is None:
+                            raise ValueError('答复依据必须随有实际阅读记录的场景提交保存')
+                        source_facts = scene_commit['event'].payload
+                        await self.validate_answer_basis(message.answer_basis, scene_id,
+                            through_rowid=through_rowid, read_event_ids=source_facts['source_event_ids'],
+                            result_reads=source_facts['provided_result_ranges'], bot_actor_id=bot_actor_id)
+                        work = message.answer_basis.work_result
+                        if work and [work.job_id, work.revision] not in source_facts['provided_work_results']:
+                            raise ValueError('工作结果只提供了位置，不能声明为已读答复依据')
                     if message.file_asset_id:
                         from len_bot.media.files import validate_file_action
                         from len_bot.actions.models import ActionItem, ActionType
@@ -1640,11 +1704,15 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
 
     async def scene_tasks(self, scene_id: str) -> list[dict]:
         cursor = await self._db.execute(
-            "SELECT id,description,due_at,status,payload,origin_mode FROM tasks WHERE scene_id=? ORDER BY created_at",
+            "SELECT id,description,due_at,status,payload,origin_mode,created_at,source_event_id,"
+            "wake_event_type,wake_match_json,trigger_event_id FROM tasks WHERE scene_id=? ORDER BY created_at",
             (scene_id,),
         )
         return [dict(id=r[0], description=r[1], due_at=r[2], status=r[3],
-                     payload=json.loads(r[4]), origin_mode=r[5]) for r in await cursor.fetchall()]
+                     payload=json.loads(r[4]), origin_mode=r[5], scene_id=scene_id,
+                     created_at=r[6], source_event_id=r[7], wake_event_type=r[8],
+                     wake_match=json.loads(r[9]) if r[9] else None,
+                     trigger_event_id=r[10]) for r in await cursor.fetchall()]
 
     async def pending_runtime_events(self) -> list[Event]:
         cursor = await self._db.execute("SELECT event_json FROM pending_runtime_events ORDER BY rowid")
@@ -1665,9 +1733,15 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         rows = await (await self._db.execute('SELECT scene_id FROM scene_sessions')).fetchall()
         return [row[0] for row in rows]
 
-    async def claim_task_event(self, task_id: str, scene_id: str, event: Event) -> bool:
+    async def claim_task_event(self, task_id: str, scene_id: str, event: Event, *, expected_task: TaskItem) -> bool:
         async with self._write_lock:
             try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                current = await self.get_task(task_id)
+                if (current is None or current.scene_id != scene_id or current.status != TaskStatus.PENDING
+                        or current != expected_task):
+                    await self._db.rollback()
+                    return False
                 cursor = await self._db.execute(
                     "UPDATE tasks SET status='claimed',trigger_event_id=? WHERE id=? AND scene_id=? AND status='pending'",
                     (event.payload.get("trigger_event_id") or event.id, task_id, scene_id),

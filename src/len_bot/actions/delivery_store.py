@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from len_bot.actions.models import ActionItem
+from len_bot.actions.models import ActionItem, receipt_delivery_status
 from len_bot.events.models import EventType
 from len_bot.scheduler.models import TaskItem
 
@@ -71,15 +71,17 @@ class DeliveryStoreMixin:
             raise DeliveryDeferred(waiting_until, '等待同一请求的前序延期行动取得真实回执')
 
     async def delivery_fact(self, action_id, scene_id):
-        row = await (await self._db.execute("""SELECT id,event_type,payload FROM events
+        row = await (await self._db.execute("""SELECT id,event_type,payload,metadata FROM events
             WHERE scene_id=? AND json_extract(payload,'$.action_id')=?
               AND event_type IN ('MESSAGE_SENT','MESSAGE_SEND_FAILED','FILE_UPLOADED','FILE_UPLOAD_FAILED','ACTION_SHADOWED')
             ORDER BY rowid DESC LIMIT 1""", (scene_id, action_id))).fetchone()
         if row:
             data = json.loads(row[2])
-            status = ('sent' if row[1] in {'MESSAGE_SENT', 'FILE_UPLOADED'} else 'shadow' if row[1] == 'ACTION_SHADOWED'
-                      else 'unknown' if data.get('delivery_unknown') else data.get('delivery_status', 'not_sent'))
-            return status, row[0], data.get('error', '')
+            status = receipt_delivery_status(row[1], data, json.loads(row[3]))
+            detail = data.get('error', '')
+            if status == 'unknown' and not detail:
+                detail = '原回执未能确认平台送达身份或明确记录结果未知，不自动重发'
+            return status, row[0], detail
         attempted = await (await self._db.execute('SELECT 1 FROM events WHERE id=? AND scene_id=?',
             ('send-attempt:' + action_id, scene_id))).fetchone()
         return ('unknown', None, '发送尝试已登记，但没有可靠终态回执') if attempted else None
@@ -185,10 +187,9 @@ class DeliveryStoreMixin:
     async def finish_deferred_in_transaction(self, event):
         if event.event_type not in {EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED}:
             return
-        status = ('sent' if event.event_type in {EventType.MESSAGE_SENT, EventType.FILE_UPLOADED} else
-                  'shadow' if event.event_type == EventType.ACTION_SHADOWED else
-                  'unknown' if event.payload.get('delivery_unknown') else event.payload.get('delivery_status', 'not_sent'))
-        task_status = {'sent': 'completed', 'shadow': 'shadow_observed', 'unknown': 'delivery_unknown'}.get(status, 'failed')
+        status = receipt_delivery_status(event.event_type, event.payload, event.metadata)
+        task_status = {'sent': 'completed', 'shadow': 'shadow_observed', 'simulated': 'shadow_observed',
+                       'unknown': 'delivery_unknown'}.get(status, 'failed')
         if event.payload.get('cancelled'):
             task_status = 'cancelled'
         await self._db.execute("""UPDATE tasks SET status=?,payload=json_set(payload,
@@ -221,7 +222,8 @@ class DeliveryStoreMixin:
                         status, payload.delivery_phase, payload.error = 'cancelled', 'terminal', '被同一行动的较新延期意图替代'
                     elif fact or legacy_unknown or data.get('delivery_phase') == 'attempted':
                         result, receipt, error = fact or ('unknown', None, '旧领取缺少未尝试证据，需人工核对')
-                        status = {'sent': 'completed', 'shadow': 'shadow_observed', 'unknown': 'delivery_unknown'}.get(result, 'failed')
+                        status = {'sent': 'completed', 'shadow': 'shadow_observed', 'simulated': 'shadow_observed',
+                                  'unknown': 'delivery_unknown'}.get(result, 'failed')
                         payload.delivery_phase, payload.delivery_status = 'terminal', result
                         payload.delivery_event_id, payload.error = receipt, error
                         await self._db.execute("""UPDATE tasks SET status=? WHERE scene_id=? AND status='awaiting_delivery'

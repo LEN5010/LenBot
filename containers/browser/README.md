@@ -1,6 +1,6 @@
 # 独立浏览器 worker
 
-本目录提供 C14 的固定容器入口。它复用 Worker Gateway 的执行、期限、取消和产物接口，逐条浏览器命令另记在同一执行日志的 `execution_commands`。本目录存在不代表 C13/C14 已验收；当前放行状态见 [当前任务](../../docs/iteration.md)。
+本目录提供独立浏览器的固定容器入口。它复用 Worker Gateway 的执行、期限、取消和产物接口，逐条命令另记在同一执行日志的 `execution_commands`。本目录存在不代表出口与浏览器部署已验收；当前放行状态见 [当前任务](../../docs/iteration.md)。
 
 在获准的 Linux 构建环境，从项目根目录正常构建：
 

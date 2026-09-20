@@ -16,7 +16,7 @@ from urllib.parse import urldefrag
 import httpx
 from PIL import Image, ImageOps
 
-from len_bot.media.models import PreparedMediaContext
+from len_bot.media.models import CuratedMediaBaseline, CuratedMediaSavedError, PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
 from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
@@ -271,8 +271,22 @@ class MediaService:
         asset_id = "image_" + uuid.uuid4().hex
         event = await self.runtime.event_store.save_media_file(asset_id, scope, mime, path,
             description=description, tags=tags, curated=True)
-        await self.runtime.commit_tool_observation(event)
-        return await self.runtime.event_store.get_media(asset_id, [scope])
+        return await self._finish_curated_save(event, asset_id, scope)
+
+    async def _finish_curated_save(self, event, asset_id, scope):
+        # The original media transaction has already committed. A subsequent
+        # event/read failure must not invite another upload of the same file.
+        try:
+            await self.runtime.commit_tool_observation(event)
+        except Exception as error:
+            raise CuratedMediaSavedError(asset_id, scope, event.id, 'event', type(error).__name__) from error
+        try:
+            asset = await self.runtime.event_store.get_media(asset_id, [scope], include_disabled=True)
+            if asset is None:
+                raise ValueError('Saved asset no longer available')
+        except Exception as error:
+            raise CuratedMediaSavedError(asset_id, scope, event.id, 'readback', type(error).__name__) from error
+        return asset
 
     async def save_generated(self, data: bytes, scene_id: str, source_event_id: str, description: str):
         """Store a command image as source-owned output, never as a curated example."""
@@ -283,11 +297,10 @@ class MediaService:
         await self.runtime.commit_tool_observation(event)
         return await self.runtime.event_store.get_media(asset_id, [scene_id])
 
-    async def edit(self, asset_id, scope, description, tags, enabled, *, palette_order=PALETTE_UNCHANGED):
+    async def edit(self, asset_id, scope, description, tags, enabled, *, baseline: CuratedMediaBaseline, palette_order=PALETTE_UNCHANGED):
         event = await self.runtime.event_store.edit_media(asset_id, scope, description, tags, enabled,
-            palette_order=palette_order)
-        await self.runtime.commit_tool_observation(event)
-        return await self.runtime.event_store.get_media(asset_id, [scope], include_disabled=True)
+            baseline=baseline, palette_order=palette_order)
+        return await self._finish_curated_save(event, asset_id, scope)
 
     async def _prepare_asset(self, asset_id, scene_id):
         asset, data = await self.get_bytes(asset_id, scene_id)
@@ -336,12 +349,19 @@ class MediaService:
         result: PreparedMediaContext = {"blocks": [], "manifest": []}
         reads = read_cache if read_cache is not None else {}
         for asset_id in dict.fromkeys(asset_ids):
+            if not self.runtime.config.media_enabled:
+                result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "media_disabled"})
+                continue
+            asset = await self.runtime.event_store.get_media(asset_id, [scene_id, 'global-safe'])
+            mime = (asset or {}).get('mime_type') or ''
+            if mime.startswith(('audio/', 'video/')):
+                result['manifest'].append({'asset_id': asset_id, 'status': 'available', 'media_type': mime,
+                    'source_event_id': asset['source_event_id'], 'coverage': 'registered_media_reference_only',
+                    'note': '音视频引用已登记；本请求未装入音轨或连续画面。可用的转写与采样帧须沿各自实际工具结果核对。'})
+                continue
             if asset_id.startswith('segment_') and not supports_segment_vision:
                 result['manifest'].append({'asset_id': asset_id, 'status': 'omitted', 'reason': 'capability_missing',
                     'note': '当前模型绑定尚未确认视觉能力；采样帧已保存但未向模型装配图片'})
-                continue
-            if not self.runtime.config.media_enabled:
-                result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "media_disabled"})
                 continue
             if len(result["blocks"]) >= limit:
                 result["manifest"].append({"asset_id": asset_id, "status": "omitted", "reason": "image_limit"})

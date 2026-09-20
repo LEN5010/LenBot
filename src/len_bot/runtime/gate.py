@@ -236,6 +236,7 @@ class RuntimeGate:
             if (operator_control or mailbox.plugin_origin or pending is None
                     or pending.request_event_id != wake.request_event_id or pending.expires_at <= self.event_store.clock()
                     or source is None or source.id not in read_ids or source.event_type.value not in {'GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED'}
+                    or source.metadata.get('simulated')
                     or source.actor_id != pending.actor_id or source.actor_id == self.bot_actor_id
                     or not self.scene_policy.chat_allowed(current_scene_state.scene_id, source.actor_id.removeprefix('user:'))
                     or outcome.task_proposals or outcome.job_proposals or outcome.memory_proposals or outcome.resolve_open_loop_ids
@@ -246,6 +247,15 @@ class RuntimeGate:
             if wake.decision in {'confirm', 'decline'} and (not pending.prompt_event_id or pending.prompted_at is None
                     or source.id == pending.request_event_id or source.timestamp <= pending.prompted_at):
                 return GateDecision(FinalDisposition.SILENCE, '叫醒需要确认提问送达后的真实人类答复', accepted=False)
+            if wake.decision in {'confirm', 'decline'}:
+                from len_bot.runtime.attention import is_real_send
+                prompts = await self.event_store.events_by_ids(current_scene_state.scene_id,
+                    {pending.prompt_event_id}, current_scene_state.last_observed_event_rowid)
+                prompt = prompts[0] if prompts else None
+                if (prompt is None or not is_real_send(prompt, self.bot_actor_id)
+                        or prompt.payload.get('wake_confirmation_request_id') != pending.request_event_id
+                        or source.timestamp <= prompt.timestamp):
+                    return GateDecision(FinalDisposition.SILENCE, '原确认提问没有可核对的真实送达回执', accepted=False)
             if wake.decision in {'decline', 'uncertain'} and outcome.message_proposals:
                 return GateDecision(FinalDisposition.SILENCE, '未确认叫醒时不附带普通表达', accepted=False)
         elif (not operator_control and not mailbox.plugin_origin
@@ -533,6 +543,7 @@ class RuntimeGate:
                 associated_open_loop=associated_loop,
                 origin_mode=action_origin,
                 job_id=job_id, job_revision=job_revision,
+                answer_basis=msg.answer_basis,
             )
             actions.append(action)
 

@@ -7,8 +7,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentError
-from len_bot.cognition.jobs import JobProposal
-from len_bot.cognition.models import EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal
+from len_bot.cognition.jobs import JobProposal, ResultSpan
+from len_bot.cognition.models import (AnswerBasis, AnswerBasisKind, AnswerGap, AnswerWorkResult,
+    EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal)
 from len_bot.memory.models import MemoryProposal
 from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
 from len_bot.scheduler.models import task_delivery_available
@@ -36,6 +37,14 @@ class ReplyExpectation(StrictModel):
     target: str=Field(description='期待回应的人物U引用')
     intent: str=Field(min_length=1)
 
+class TurnAnswerBasis(StrictModel):
+    kind: AnswerBasisKind
+    event_refs: list[str]=Field(default_factory=list,max_length=16,
+        description='支持本条答复的已完整读取的人类原话M；与回应来源source分开，不填摘要或Bot发言')
+    result_spans: list[ResultSpan]=Field(default_factory=list,max_length=16,
+        description='复制实际已读资料的evidence_span；result_id用R或真实ID，范围非空，保留坐标单位；目录不算正文')
+    unresolved: list[AnswerGap]=Field(default_factory=list,max_length=12)
+
 class TurnMessage(StrictModel):
     intent:Literal['reply','ack','operation','delivery','work','file']|None=Field(
         default=None,description='互斥业务形状：普通回复、创建确认、操作确认、成果交付、工作说明或文件上传。宿主从已登记句柄派生工作修订、原请求者和回执关系。')
@@ -49,6 +58,7 @@ class TurnMessage(StrictModel):
     work_ref: str|None=Field(default=None,description='本条进展或结果所依据的工作J')
     expect_reply: ReplyExpectation|None=None
     addressed_to:list[str]=Field(default_factory=list,description='实际对谁说话的成员U引用；与source、reply_to和期待回答者分别填写')
+    answer_basis: TurnAnswerBasis|None=None
 
     @model_validator(mode='after')
     def one_message_relation(self):
@@ -182,31 +192,78 @@ def _object(properties, required=()):
     return {'type':'object','properties':properties,'required':list(required),'additionalProperties':False}
 
 
-# The model sees one small object shape, not Pydantic's discriminator/ref graph.
+def _message_schema():
+    source={'type':'string','minLength':1,
+        'description':'本条回应的已读来源M；普通回复和操作确认须来自人类原话。delivery_ref可省略以沿用已读原委托，不填到期/完成事件；插件来源保留原类型'}
+    relations={
+        'ack_ref':{'type':'string','minLength':1,
+            'description':'本轮新建事项回执的ack_ref；仅确认创建，不表示结果完成'},
+        'operation_ref':{'type':'string','minLength':1,
+            'description':'本轮控制或认识操作回执的proposal_ref；只确认这一项操作'},
+        'work_ref':{'type':'string','minLength':1,
+            'description':'runtime_facts或已读工作目录中的J；首次待交付结果使用delivery_ref，不引用本轮待控制的旧版本'},
+        'delivery_ref':{'type':'string','minLength':1,
+            'description':'当前可交付工作J或提醒T；runtime_facts须表明可交付，无句柄不填。真实送达后才履约，sources关联本次到期/完成事件'},
+    }
+    basis=_object({
+        'kind':{'type':'string','enum':['social','general','observed','work_result','mixed','unverified'],
+            'description':'本条依据类别，不是真假评定。资料答复填写；闲聊或一般知识可以省略'},
+        'event_refs':{'type':'array','maxItems':16,'uniqueItems':True,'items':{'type':'string','minLength':1},
+            'description':'已完整读过的人类原话M；不是回应来源source的自动副本，不填Bot发言或摘要'},
+        'result_spans':{'type':'array','maxItems':16,'items':_object({
+            'result_id':{'type':'string','minLength':1,'description':'本轮资料R或其真实ID'},
+            'start':{'type':'integer','minimum':0},'end':{'type':'integer','minimum':1},
+            'coordinate_unit':{'type':'string','enum':['characters','records']},
+        },('result_id','start','end','coordinate_unit')),
+            'description':'复制已读资料的evidence_span；[start,end)非空，不能扩大到未展示正文'},
+        'unresolved':{'type':'array','maxItems':12,'items':{'type':'string','minLength':1,'maxLength':500},
+            'description':'当前答复的具体未核实缺口，unverified必须填写；不写长推理过程'},
+    },('kind',))
+    basis['description']='资料性答复填写。work_result须绑定本条work_ref/delivery_ref的真实成果，mixed可同时引用直接资料；宿主解析身份，不将元数据发到群。'
+    text=_object({
+        'intent':{'type':'string','enum':['reply','ack','operation','delivery','work'],
+            'description':'互斥业务形状；普通短答用reply，不带无关事项引用'},
+        'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
+            **_object({'text':{'type':'string','minLength':1},
+                'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
+                'video':{'type':'string','minLength':1,'description':'本轮已保存视频I引用'},
+                'audio':{'type':'string','minLength':1,'description':'本轮已保存音频I引用'},
+                'at':{'type':'string','minLength':1,'description':'真实提及本轮成员U'}}),
+            'description':'每片段恰好一个字段，按顺序混排'}},
+        'reply_to':{'type':'string','minLength':1,'description':'可选已读消息M引用'},
+        'source':source,
+        'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
+            'description':'实际回应的成员U；请求者和引用作者不自动成为回应对象'},
+        'expect_reply':_object({'target':{'type':'string','minLength':1,'description':'等待回应的成员U'},
+            'intent':{'type':'string','minLength':1}},('target','intent')),
+        'answer_basis':basis,
+        **relations,
+    },('segments',))
+    names=list(relations)
+    text['allOf']=[{'not':{'required':[left,right]}}
+        for index,left in enumerate(names) for right in names[index+1:]]
+    file=_object({
+        'intent':{'type':'string','enum':['file']},
+        'file_asset_id':{'type':'string','minLength':1,
+            'description':'runtime_facts.files中当前可交付的真实资产ID；无候选时不可上传，不填路径'},
+        'answer_basis':basis,
+        'source':source,
+        'delivery_ref':relations['delivery_ref'],
+        'work_ref':relations['work_ref'],
+    },('intent','file_asset_id'))
+    file['oneOf']=[{'required':['delivery_ref']},{'required':['work_ref']}]
+    return {'oneOf':[text,file]}
+
+
+# The model sees fixed business shapes, not a per-turn reference enum.
 # Local validation remains authoritative, including exactly one content field.
 RESPOND={
     'type':'function',
     'function':{
         'name':'respond',
-        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。每条消息用intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。文件形状只在本轮列出可交付 file_asset_id 时出现，且不得带 segments。宿主从已登记句柄派生工作修订、原请求者与回执关系。未准备好交付的旧任务没有delivery句柄。普通片段只填text、image、video、audio或at，不填type。',
+        'description':'提交剩余暂存提案及零至三条消息；空messages表示沉默，但仍提交提案。intent选择互斥形状：reply普通回复、ack创建确认、operation操作确认、delivery成果交付、work工作说明、file文件上传。定义固定不表示当前有目标或权限；引用只取本轮事实与真实工具回执。文件独占行动，不带segments。宿主核对原请求者、工作修订、当前资格与回执关系。',
         'parameters':_object({
-            'messages':{'type':'array','maxItems':3,'items':_object({
-                'intent':{'type':'string','enum':['reply','ack','operation','delivery','work','file'],
-                          'description':'互斥业务形状；普通短答用reply，不要带无关工作字段'},
-                'segments':{'type':'array','minItems':1,'maxItems':12,'items':{
-                    **_object({'text':{'type':'string','minLength':1},
-                               'image':{'type':'string','minLength':1,'description':'本轮图片I或运营表情P引用'},
-                               'video':{'type':'string','minLength':1,'description':'本轮已保存视频媒体I引用'},
-                               'audio':{'type':'string','minLength':1,'description':'本轮已保存音频媒体I引用'},
-                               'at':{'type':'string','minLength':1,'description':'真实成员提及，填写本轮人物U引用'}}),
-                    'description':'恰好一个字段：text、image、video、audio或at；按顺序混排。'}},
-                'reply_to':{'type':'string','description':'可选的已读消息M引用'},
-                'source':{'type':'string','description':'本条回应对应的已读来源M；普通聊天和操作确认须来自人类原话。delivery_ref交付可省略，沿用事项原始委托；不要填写到期或工作完成的系统事件。插件系统来源保留原类型'},
-                'addressed_to':{'type':'array','items':{'type':'string'},'uniqueItems':True,
-                                'description':'本条实际回应的成员U；请求者和引用作者不自动成为回应对象'},
-                'expect_reply':_object({'target':{'type':'string','description':'等待回应的人物U引用'},
-                                        'intent':{'type':'string','minLength':1}},('target','intent')),
-            },('segments',))},
+            'messages':{'type':'array','maxItems':3,'items':_message_schema()},
             'note':{'type':'string','maxLength':500,'description':'内部参与判断；不处理任何待处理来源时必须说明等待条件或结束原因，不发送'},
             'sources':{'type':'array','items':_object({
                 'source':{'type':'string','description':'本次处理的原话M'},
@@ -295,97 +352,11 @@ class ProposalLedger:
                 'note':'工作尚未提交；respond提交后才进入原工作运行器，确认消息使用本轮ack_ref。'}
 
     def terminal_definition(self):
-        result=copy.deepcopy(RESPOND)
-        refs=self.context.refs
-        message=result['function']['parameters']['properties']['messages']['items']
-        props=message['properties']
-        # Tool schemas sit at the head of the cached prefix, so anything
-        # per-turn written into them costs the whole request its cache. The
-        # three facts that used to live here are already carried elsewhere:
-        # the resolvable sources by `input_status.pending_sources`, the
-        # remaining message and call allowance by `execution_budget`, and all
-        # three are enforced after the fact — bogus refs by the ledger's own
-        # subset check, the message count by the Gate. A rejected argument
-        # comes back as a correctable observation, not a lost turn, which is
-        # what `messages[].source` has always relied on.
-        parameters=result['function']['parameters']['properties']
-        if self.plugin_source_ids:
-            parameters.pop('observation', None)
-        if self.proposal_refs:
-            props['ack_ref']={'type':'string','enum':sorted(self.proposal_refs),
-                'description':'仅对应新建事项的确认消息填写；复制实际暂存回执S，每个回执只确认一次。其他人的普通回复不填；不提前写工作结论'}
-        operation_refs = sorted(ref for ref,(collection,value) in self.staged.items()
-            if collection=='memories' or collection in {'jobs','tasks'} and value.operation!='create')
-        if operation_refs:
-            props['operation_ref']={'type':'string','enum':operation_refs,
-                'description':'复制本轮控制或记忆操作已返回的proposal_ref；只确认这一项实际操作，不能与ack_ref/work_ref/delivery_ref组合'}
-        controlled_jobs={proposal.job_id for proposal in self.jobs if proposal.operation!='create'}
-        job_refs=sorted(ref for ref,job in refs.jobs.items() if job['id'] not in controlled_jobs
-            if not (job['status']=='result_ready' and job['execution_status'] in {'completed','partial'}
-                     and job['delivery_action_id'] is None))
-        if job_refs:
-            props['work_ref']={'type':'string','enum':job_refs,
-                'description':'本条状态说明或按需引用的实际工作J；旧事项不因此重开。首次待交付结果用delivery_ref，暂存回执S只填ack_ref'}
-        controlled_tasks={proposal.task_id for proposal in self.tasks if proposal.operation!='create'}
-        delivery_refs=sorted([ref for ref, task_id in refs.tasks.items()
-                             if task_id in refs.deliverable_tasks and task_id not in controlled_tasks]
-            + [ref for ref,job in refs.jobs.items() if job['id'] not in controlled_jobs and job['status']=='result_ready'
-               and job['execution_status'] in {'completed','partial'} and job['delivery_action_id'] is None])
-        if delivery_refs:
-            props['delivery_ref']={'type':'string','enum':delivery_refs,
-                'description':'本条真实送达后完成的实际工作J或提醒T；可省略消息source沿用已读的原始人类委托，在sources中把本次到期或完成事件M标为replied。暂存回执S只能填ack_ref'}
-        relations=[name for name in ('ack_ref','operation_ref','work_ref','delivery_ref') if name in props]
-        intents=['reply']
-        if 'ack_ref' in props:intents.append('ack')
-        if 'operation_ref' in props:intents.append('operation')
-        if 'work_ref' in props:intents.append('work')
-        if 'delivery_ref' in props:intents.append('delivery')
-        props['intent']={'type':'string','enum':intents,
-            'description':'本轮实际可提交的业务形状；宿主填充工作修订、原请求者和回执关联'}
-        if len(relations)>1:
-            message['allOf']=[{'not':{'required':[left,right]}}
-                for index,left in enumerate(relations) for right in relations[index+1:]]
-        file_ids=sorted(refs.deliverable_file_ids())
-        if file_ids:
-            intents.append('file')
-            props['intent']={'type':'string','enum':intents,
-                'description':'本轮实际可提交的业务形状；file 只用于当前可见且尚未上传的文件资产'}
-            text_message=copy.deepcopy(message)
-            text_message['properties']['intent']={'type':'string','enum':[name for name in intents if name!='file'],
-                'description':'普通文字或确认形状；不要填写 file_asset_id'}
-            file_props={'intent':{'type':'string','enum':['file'],
-                    'description':'上传本轮可见文件；不填 segments、图片、提及或等待回应'},
-                'file_asset_id':{'type':'string','enum':file_ids,
-                    'description':'runtime_facts.files 中当前可交付资产；不能发明路径或其它工作的文件'},
-                'source':props.get('source',{'type':'string'})}
-            if 'delivery_ref' in props:
-                file_props['delivery_ref']=props['delivery_ref']
-            if 'work_ref' in props:
-                file_props['work_ref']=copy.deepcopy(props['work_ref'])
-                file_props['work_ref']['description']='非首次最终履约时绑定原工作；与 delivery_ref 二选一'
-            file_required=['intent','file_asset_id']
-            file_one_of=[]
-            if 'delivery_ref' in file_props:
-                file_one_of.append({'required':[*file_required,'delivery_ref']})
-            if 'work_ref' in file_props:
-                file_one_of.append({'required':[*file_required,'work_ref']})
-            file_message=_object(file_props, file_required)
-            if file_one_of:
-                file_message['oneOf']=file_one_of
-            parameters['messages']['items']={'oneOf':[text_message,file_message]}
-        return result
+        # Current targets live in runtime facts and tool receipts, not enums.
+        return copy.deepcopy(RESPOND)
 
     def definitions(self):
-        refs=self.context.refs
-        names={'start_work','schedule_reminder','remember'}
-        if any(job.get('status') not in {'completed','cancelled','shadow_observed'} for job in refs.jobs.values()):
-            names.update({'revise_work','cancel_work'})
-        if any(job.get('can_resume') for job in refs.jobs.values()):names.add('resume_work')
-        if refs.editable_tasks:names.update({'update_reminder','cancel_reminder'})
-        if refs.editable_memories:names.update({'refute_memory','supersede_memory'})
-        if refs.active_loops:names.add('resolve_wait')
-        if self.staged:names.add('discard_proposal')
-        return [definition(name,*value) for name,value in TOOLS.items() if name in names]
+        return [definition(name,*value) for name,value in TOOLS.items()]
 
     async def stage(self,name,arguments):
         try:
@@ -417,6 +388,10 @@ class ProposalLedger:
                     initiator=self.human_source(source))
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
+                if name=='resume_work' and not job.get('can_resume'):
+                    raise ValueError('该工作当前不能继续；先读取当前工作状态、剩余预算与恢复原因')
+                if name!='resume_work' and job['status'] in {'completed','cancelled','shadow_observed','delivery_unknown'}:
+                    raise ValueError('该工作当前不可修订或取消；不能用旧工作引用重新建立执行资格')
                 collection='jobs'
                 parameters=None
                 revised_goal=None
@@ -442,21 +417,33 @@ class ProposalLedger:
                     request_source_event_id=source.id,source_event_ids=list(dict.fromkeys([source.id,*evidence])),
                     payload={'kind':'reminder','requester_qq_uid':source.actor_id.removeprefix('user:')},origin_episode_id=self.episode_id)
             elif name in {'update_reminder','cancel_reminder'}:
+                task_id=refs.task_id(model.reminder_ref)
+                if task_id not in refs.editable_tasks:
+                    raise ValueError('该提醒不在当前可编辑目录；先读取当前状态，不能控制已终结事项')
                 collection='tasks'
                 value=TaskProposal(proposal_id=proposal_ref,operation='update' if name=='update_reminder' else 'cancel',
-                    task_id=refs.task_id(model.reminder_ref),due_at=getattr(model,'due_at',None),description=getattr(model,'description',''),source_event_ids=evidence)
+                    task_id=task_id,expected=refs.task_snapshots[task_id].model_copy(deep=True),
+                    due_at=getattr(model,'due_at',None),description=getattr(model,'description',''),source_event_ids=evidence)
             elif name in {'remember','supersede_memory'}:
+                memory_ids=[refs.memory_id(r) for r in getattr(model,'memory_refs',[])]
+                if set(memory_ids)-refs.editable_memories:
+                    raise ValueError('待修订认识尚未作为可编辑内容读取；先查询当前有效认识及其来源')
                 collection='memories'
                 value=MemoryProposal(proposal_id=proposal_ref,operation='create' if name=='remember' else 'supersede',
                     subject=refs.actor_id(model.subject),kind=model.kind,statement=model.statement,basis='reported',
                     evidence=evidence,expires_at=model.expires_at,scope=refs.scene_id,reason=getattr(model,'reason',''),
-                    target_memory_ids=[refs.memory_id(r) for r in getattr(model,'memory_refs',[])])
+                    target_memory_ids=memory_ids)
             elif name=='refute_memory':
+                memory_id=refs.memory_id(model.memory_ref)
+                if memory_id not in refs.editable_memories:
+                    raise ValueError('待撤销认识尚未作为可编辑内容读取；先查询当前有效认识及其来源')
                 collection='memories'
-                value=MemoryProposal(proposal_id=proposal_ref,operation='refute',target_memory_ids=[refs.memory_id(model.memory_ref)],
+                value=MemoryProposal(proposal_id=proposal_ref,operation='refute',target_memory_ids=[memory_id],
                     reason=model.reason,evidence=evidence,scope=refs.scene_id)
             elif name=='resolve_wait':
                 collection='loops';value=refs.loop_id(model.wait_ref)
+                if value not in refs.active_loops:
+                    raise ValueError('该等待不在本轮活动目录；不能通过旧引用结束未确认的等待')
                 existing=next((ref for ref,entry in self.staged.items() if entry==(collection,value)),None)
                 if existing:return {'status':'staged','proposal_ref':existing,'note':'该关闭提案已在本轮暂存，尚未提交'}
             self._next_handle+=1
@@ -471,7 +458,7 @@ class ProposalLedger:
         except (ValueError,KeyError) as error:
             raise ToolArgumentError(str(error)) from error
 
-    async def finish(self,arguments):
+    async def finish(self,arguments,*,result_reads=None):
         try:
             result=Respond.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
             refs=self.context.refs;messages=[]
@@ -554,6 +541,9 @@ class ProposalLedger:
                             raise ValueError(f'提醒{item.delivery_ref}当前不可交付（{state}）；不能填写delivery_ref。待核对事项保留未完成原因，有明确人类要求时重新安排或取消；其他独立请求可继续提交')
                     else:
                         target=refs.job(item.delivery_ref)
+                        if (target['status']!='result_ready' or target['execution_status'] not in {'completed','partial'}
+                                or target['delivery_action_id'] is not None):
+                            raise ValueError('该工作当前没有可首次交付的完整或部分结果；状态说明用work_ref，不能重复履约')
                         if job and job['id']!=target['id']:raise ValueError('履约与工作引用不一致')
                         job=target;delivery=job['id']
                 if item.file_asset_id:
@@ -561,7 +551,7 @@ class ProposalLedger:
                         raise ValueError('文件上传只用于群聊')
                     info=refs.file_assets.get(item.file_asset_id)
                     if info is None or item.file_asset_id not in refs.deliverable_file_ids():
-                        raise ValueError('file_asset_id 不是本轮可见、未过期且尚未上传的文件')
+                        raise ValueError('file_asset_id 不是本轮当前修订中已审查、未过期且没有已提交或未知上传行动的文件')
                     if job is None or job['id']!=info['job_id'] or job['revision']!=info['job_revision']:
                         raise ValueError('文件必须绑定其所属工作的当前修订')
                 if job and job['id'] in controlled_jobs and not item.operation_ref:
@@ -630,10 +620,25 @@ class ProposalLedger:
                             if row['id']==delivery),None)
                         if delivered_task and delivered_task['payload'].get('plugin_origin'):
                             message_owner=PluginOrigin.model_validate(delivered_task['payload']['plugin_origin'])
+                basis=None
+                if item.answer_basis is not None:
+                    declared=item.answer_basis
+                    basis=AnswerBasis(kind=declared.kind,
+                        event_ids=[refs.event_id(ref) for ref in declared.event_refs],
+                        result_spans=[span.model_copy(update={'result_id':refs.result_id(span.result_id)})
+                                      for span in declared.result_spans],
+                        unresolved=declared.unresolved,
+                        work_result=(AnswerWorkResult.from_job(job) if job and declared.kind in {'work_result','mixed'} else None))
+                    if basis.work_result and (job['id'],job['revision']) not in self.context.confirmed_work_results:
+                        raise ValueError('该工作结果尚未实际提供；先读取当前工作详情，目录位置不是结果正文')
+                    await self.context.runtime.event_store.validate_answer_basis(basis,refs.scene_id,
+                        through_rowid=refs.cutoff,read_event_ids=refs.read_events,result_reads=result_reads or {},
+                        bot_actor_id=refs.bot_actor_id)
                 messages.append(MessageProposal(segments=parts,file_asset_id=item.file_asset_id,reply_to=reply,task_ref=item.ack_ref,operation_ref=item.operation_ref,fulfils_task_id=delivery,
                     source_event_id=source.id,requester_qq_uid=requester,
                     plugin_origin=message_owner,
                     addressed_to=addressed,
+                    answer_basis=basis,
                     job_id=job['id'] if job else None,job_revision=job['revision'] if job else None,
                     expect_reply=bool(expectation),reply_target=refs.member_id(expectation.target) if expectation else None,
                     reply_intent=expectation.intent if expectation else None))

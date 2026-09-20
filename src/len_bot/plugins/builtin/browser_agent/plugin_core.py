@@ -7,11 +7,13 @@ from len_bot.browser.models import BrowserCaptureInput, BrowserInteractInput, Br
 from len_bot.browser.worker_v2 import BrowserWorkerV2
 from len_bot.execution.models import WorkspaceScope
 from len_bot.execution.admission import require_execution_job
-from len_bot.execution.client import WorkerGatewayConfig
 from len_bot.browser.gateway_service import GatewayBrowserService
+from len_bot.browser.protocol import BrowserSnapshot
 from len_bot.plugins.api import BasePlugin, PluginCallContext, PluginContext, ToolResult, ToolSource
+from len_bot.tools.results import ToolNextCall
 
 from .config import BrowserPluginConfig
+from ..workspace.config import configured_workspace
 
 
 class BrowserAgentPlugin(BasePlugin):
@@ -19,25 +21,25 @@ class BrowserAgentPlugin(BasePlugin):
         super().__init__(context.manifest)
         self.context = context
         self.config: BrowserPluginConfig = context.config
-        workspace = context._runtime.config_store.current.plugins.get('workspace')
-        gateway = (getattr(workspace, 'config', None) or {}).get('gateway')
-        self.gateway = GatewayBrowserService(context, self.config, WorkerGatewayConfig.model_validate(gateway)) if gateway else None
+        workspace = configured_workspace(context._runtime.config_store.current)
+        gateway = workspace[1].gateway if workspace else None
+        self.gateway = GatewayBrowserService(context, self.config, gateway, workspace_plugin_id=workspace[0]) if gateway else None
         self.worker = None if self.gateway else BrowserWorkerV2(self.config.browser)
         self._local_scopes = {}
 
     async def on_load(self, context: PluginContext):
         context.register_tool('browser_open', '在当前信息工作中打开白名单公开网页并返回可见 DOM 文本与临时元素引用。',
             BrowserOpenInput, self.open, purpose='观察公开网页', aliases=('打开网页', '看看网页'),
-            keywords=('网页', '浏览器', '网站'), kind='read', roles=('work',), deferred=True)
+            keywords=('网页', '浏览器', '网站'), kind='read', roles=('work',), deferred=True, ordered=True)
         context.register_tool('browser_snapshot', '读取当前工作浏览器页的 DOM 文本和元素引用；可用 text_offset 接续读取长正文。',
             BrowserPageInput, self.snapshot, purpose='读取网页状态', aliases=('网页状态',), keywords=('网页', '浏览器', '页面'),
-            kind='read', roles=('work',), deferred=True)
+            kind='read', roles=('work',), deferred=True, ordered=True)
         context.register_tool('browser_interact', '按配置执行带观察版本校验的滚动或元素点击，默认关闭。',
             BrowserInteractInput, self.interact, purpose='操作受控网页', aliases=('操作网页',), keywords=('网页', '点击', '滚动'),
-            kind='read', roles=('work',), deferred=True)
+            kind='read', roles=('work',), deferred=True, ordered=True)
         context.register_tool('browser_capture', '读取当前工作浏览器页的视图截图并登记场景资产。',
             BrowserCaptureInput, self.capture, purpose='读取网页像素', aliases=('网页截图',), keywords=('网页', '截图', '浏览器'),
-            kind='read', roles=('work',), deferred=True)
+            kind='read', roles=('work',), deferred=True, ordered=True)
 
     async def on_unload(self):
         await (self.gateway or self.worker).close()
@@ -53,17 +55,12 @@ class BrowserAgentPlugin(BasePlugin):
                 await self.worker.close_scope(key)
 
     def _refuse_host_when_gateway(self):
-        workspace = self.context._runtime.config_store.current.plugins.get('workspace')
-        config = getattr(workspace, 'config', None) or {}
-        if isinstance(config, dict) and config.get('gateway'):
+        workspace = configured_workspace(self.context._runtime.config_store.current)
+        if workspace and workspace[1].gateway is not None:
             raise RuntimeError('Gateway 已选为执行后端，宿主浏览器入口已关闭；请重新加载浏览器插件采用独立 worker')
 
     async def _execute(self, operation, values, call):
         if self.gateway:
-            workspace = self.context._runtime.config_store.current.plugins.get('workspace')
-            gateway = (getattr(workspace, 'config', None) or {}).get('gateway')
-            if gateway is None or WorkerGatewayConfig.model_validate(gateway) != self.gateway.gateway_config:
-                raise ValueError('执行后端配置已变化，请重新加载浏览器插件')
             return await self.gateway.execute(operation, values, call)
         scope = await self._scope(call)
         key = f'{scope.workspace_id}:r{call.job_revision}'
@@ -87,21 +84,21 @@ class BrowserAgentPlugin(BasePlugin):
     async def open(self, values: BrowserOpenInput, call: PluginCallContext):
         try:
             value = await self._execute('open', values, call)
-            return self._result(value, values.url)
+            return self._result(value)
         except (ValueError, RuntimeError, PermissionError) as error:
             return ToolResult.failure(str(error), 'browser_unavailable')
 
     async def snapshot(self, values: BrowserPageInput, call: PluginCallContext):
         try:
             value = await self._execute('snapshot', values, call)
-            return self._result(value, value['url'])
+            return self._result(value)
         except (ValueError, RuntimeError, PermissionError) as error:
             return ToolResult.failure(str(error), 'browser_unavailable')
 
     async def interact(self, values: BrowserInteractInput, call: PluginCallContext):
         try:
             value = await self._execute('interact', values, call)
-            return self._result(value, value['url'])
+            return self._result(value)
         except (ValueError, RuntimeError, PermissionError) as error:
             return ToolResult.failure(str(error), 'browser_unavailable')
 
@@ -111,13 +108,21 @@ class BrowserAgentPlugin(BasePlugin):
             asset_id = await call.save_image(png, '受控浏览器网页截图')
             return ToolResult(status='ok', coverage='browser_pixels', attachments=[asset_id],
                 content=json.dumps({'page_ref': values.page_ref, 'asset_id': asset_id,
-                    'area': values.area, 'asset_registered': True, 'pixels_loaded': False},
+                    'area': values.area, 'requested_snapshot_revision': values.snapshot_revision,
+                    'asset_registered': True, 'pixels_loaded': False},
                     ensure_ascii=False), evidence_kind='external')
         except (ValueError, RuntimeError, PermissionError) as error:
             return ToolResult.failure(str(error), 'browser_unavailable')
 
     @staticmethod
-    def _result(value: dict, url: str):
-        return ToolResult(status='ok', coverage=value.pop('coverage', 'browser_dom_text'),
-            content=json.dumps(value, ensure_ascii=False), evidence_kind='external',
-            sources=[ToolSource(url=url, title='受控浏览器公开页面')])
+    def _result(value: dict):
+        snapshot = BrowserSnapshot.model_validate(value)
+        saved_full = snapshot.collected_text is not None
+        incomplete = snapshot.collection_truncated or (not saved_full and (snapshot.text_offset > 0 or snapshot.text_truncated))
+        continuation = (ToolNextCall(name='browser_snapshot', arguments={'page_ref': snapshot.page_ref,
+            'text_offset': snapshot.text_next_offset, 'text_limit': snapshot.text_limit, 'refresh': False})
+            if not saved_full and snapshot.text_next_offset is not None else None)
+        return ToolResult(status='partial' if incomplete else 'ok', coverage=snapshot.coverage,
+            content=json.dumps(snapshot.model_dump(exclude={'coverage'}), ensure_ascii=False), evidence_kind='external',
+            source_truncated=incomplete, source_next_call=continuation,
+            sources=[ToolSource(url=snapshot.url, title=snapshot.title or '受控浏览器公开页面')])

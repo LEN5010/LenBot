@@ -96,7 +96,7 @@ class LLMReflector:
         messages = self.messages(batch, context)
         terminal = self.terminal_definition()
         forced_final = self.max_steps == 1 or self.max_tool_calls == 0
-        definitions = [] if forced_final else self.tool_definitions()
+        definitions = self.tool_definitions()
         definitions.append(terminal)
         if forced_final:
             messages.append(final_step_message(terminal['function']['name']))
@@ -228,6 +228,10 @@ class LLMReflector:
             evidence_lists.extend(item.source_event_ids for item in parsed.review_items)
             if any(not set(ids).issubset(known) for ids in evidence_lists):
                 raise TerminalArgumentError("Cite original Event IDs from this reflection batch; old beliefs and summaries are not evidence")
+            simulated = {segment['event_id'] for segment in batch.segments
+                         if segment.get('source_context', {}).get('simulated')}
+            if any(set(ids) & simulated for ids in evidence_lists):
+                raise TerminalArgumentError("Simulated records cannot support memory proposals or current review items")
             return ReflectionResult(
                 summary=parsed.summary, key_event_ids=parsed.key_event_ids,
                 memory_proposals=[MemoryProposal(scope=scene_id, **item.model_dump()) for item in parsed.memory_proposals],
@@ -253,7 +257,7 @@ class LLMReflector:
                 call_store=self.call_store, scene_id=scene_id, batch_id=batch.id, purpose="history_maintenance")).run(
                 messages=self.messages(batch, context or {}), tool_definitions=self.tool_definitions, execute_tool=execute,
                 terminal=terminal, finish=finish, max_steps=self.max_steps,
-                max_tool_calls=self.max_tool_calls, trace=trace, prepare_request=prepare_request,
+                max_tool_calls=self.max_tool_calls, trace=trace, finalize_request=prepare_request,
                 prepare_tool_results=prepare_tool_results,
             )
         except Exception as error:
@@ -280,12 +284,15 @@ class LLMReflector:
                 "summary约800至1200文本token，保留主体、否定、时间、条件和未决项，不虚构完成；短批次可更短。"
                 "key_event_ids只标关键原文定位；摘要不是证据、不是任务授权。不要总结未提供区间。"
                 "每个原文片段前的位置记录包含event_id和complete；只有complete=true的原文可以作为认识和review_items的证据。"
+                "位置记录的source_context来自原事件，包含event_type、actor_id、simulated；发送记录另含delivery_status和origin_mode。"
+                "simulated=true只作为模拟记录描述，不能用作认识或review_items的真实来源；消息事件类型本身不证明是人类或已经送达。"
                 "start_offset非零或end_offset未到total_characters表示单条原文分段，明确未覆盖部分；图片只有引用，禁止声称看过像素。"
                 "通常无需新增认识，不产出话题树、心情或自我状态。"
                 "称呼、偏好、关系观察、人物/群体事实可以记录；明确说过用reported，互动推测用inferred。"
                 "群内术语只有在原话明确解释或约定时才记录为subject=当前scene_id、kind=fact；相同词在不同群可有不同含义。重复出现、Bot自己常说或无人反对都不能单独升级为明确事实。"
                 "一句模糊抵触不够建立长期性格或互怼关系；临时反馈保留原话，明确有期限的偏好填写expires_at。"
-                "Bot自己的发言只证明说过；不记录Bot现实能力、履历、注册状态或共同参与经历。"
+                "只有delivery_status=sent且origin_mode=live的Bot消息才有真实送达依据；它仍只能在有人类原话时补充关系语境，不能独立证明任何事实。"
+                "未知、模拟、Shadow或缺消息身份的发送记录不当作真实互动；不记录Bot现实能力、履历、注册状态或共同参与经历。"
                 "任务、工作、送达和承诺事实以运行账本为准，不复制为认识。"
                 "已有认识需要修正时用真实ID执行supersede/refute并给出原因，原始证据只能引用这批Event ID。"
                 "finish_history_maintenance的memory_proposals每项只使用operation、subject、kind、statement、basis、evidence、target_memory_ids、reason、expires_at；不要使用certainty、object、predicate或source_event_ids字段。"

@@ -8,7 +8,7 @@ import uuid
 from pydantic import TypeAdapter
 
 from len_bot.events.models import Initiator
-from len_bot.execution.client import WorkerGatewayClient, WorkerGatewayConfig
+from len_bot.execution.client import WorkerGatewayClient
 from len_bot.execution.protocol import ExecutionRequest, ExecutionState, is_terminal
 from len_bot.execution.service import GatewayWorkspaceService
 from len_bot.media.bilibili_segment import BilibiliSegmentSource
@@ -26,25 +26,27 @@ class MediaScope:
 class SegmentService:
     def __init__(self, context, config):
         self.context, self.config, self.store = context, config, context.event_store
-        self.gateway_config = self.current_gateway()
+        self.workspace_plugin_id, self.gateway_config = self.current_gateway()
         self.client = WorkerGatewayClient(self.gateway_config)
         self.mirror = GatewayWorkspaceService(self.client, self.gateway_config, self.store, 'media_analysis')
         self.source = BilibiliSegmentSource()
         self._live = {}
 
     def current_gateway(self):
-        workspace = self.context._runtime.config_store.current.plugins.get('workspace')
-        value = (getattr(workspace, 'config', None) or {}).get('gateway')
-        if value is None:
+        from len_bot.plugins.builtin.workspace.config import configured_workspace
+        workspace = configured_workspace(self.context._runtime.config_store.current)
+        if workspace is None or workspace[1].gateway is None:
             raise ValueError('媒体处理需要已配置的 Gateway')
-        return WorkerGatewayConfig.model_validate(value)
+        return workspace[0], workspace[1].gateway
+
+    def check_backend(self):
+        if self.current_gateway() != (self.workspace_plugin_id, self.gateway_config):
+            raise ValueError('Gateway 配置或所属插件已改变，请重新加载媒体插件；不切换原执行后端')
 
     async def job(self, call):
         await self.context._host.validate_call(call)
         if not self.context._runtime.config.media_enabled:
             raise ValueError('媒体能力已停用')
-        if self.current_gateway() != self.gateway_config:
-            raise ValueError('Gateway 配置已改变，请重新加载媒体插件')
         if call.role != 'work' or not call.job_id or not call.tool_call_id:
             raise ValueError('媒体需要当前工作和原生调用身份')
         job = await self.store.get_job(call.job_id, call.scene_id)
@@ -56,6 +58,7 @@ class SegmentService:
         deadline = (job.get('budget') or {}).get('deadline_at')
         if deadline is not None and deadline <= self.store.clock():
             raise ValueError('工作期限已结束')
+        self.check_backend()
         return job
 
     async def close_job(self, job):
@@ -132,6 +135,12 @@ class SegmentService:
                     image_ref=self.config.image_ref, network_policy=self.config.network_policy,
                     egress_authorized=True, deadline_seconds=seconds, deadline_at=deadline)
                 record, _ = await self.store.record_execution(request)
+                try:
+                    self.check_backend()
+                except ValueError as error:
+                    await self.store.append_execution_event(record.execution_id, 'submission_refused', str(error),
+                        state=ExecutionState.FAILED, error=str(error))
+                    raise
                 self._live[record.execution_id] = scope
                 await self.mirror._submit_once(request, scope)
             final = await self.mirror._await_result(record.execution_id, record.deadline_at, scope)

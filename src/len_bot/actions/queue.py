@@ -87,6 +87,7 @@ class ActionQueue:
                 "batch_id": action.batch_id, "batch_index": action.batch_index, "batch_size": action.batch_size,
                 "episode_id":action.episode_id,"checkpoint_index":action.checkpoint_index,
                 "job_id": action.job_id, "job_revision": action.job_revision,
+                "answer_basis": action.answer_basis.model_dump(mode='json') if action.answer_basis else None,
                 "acknowledges_task_id": action.acknowledges_task_id,
                 "operation_ref": action.operation_ref,
                 "reply_to": action.reply_to, "fulfils_task_id": action.fulfils_task_id,
@@ -198,6 +199,12 @@ class ActionQueue:
             except Exception as error:
                 delivery = DeliveryResult(status=DeliveryStatus.UNKNOWN, transport="adapter", error_code=type(error).__name__, error="发送适配器异常，结果不确定")
         send_ms = round((time.monotonic()-send_started)*1000, 2)
+        if delivery.status == DeliveryStatus.SENT and not self.simulated:
+            platform_id = delivery.file_id if action.file_asset_id else delivery.message_id
+            if not platform_id or not platform_id.strip():
+                delivery = delivery.model_copy(update={'status': DeliveryStatus.UNKNOWN,
+                    'error_code': 'missing_platform_receipt',
+                    'error': '发送适配器声称成功，但没有对应的平台文件或消息 ID；结果未知，不自动重发'})
         success = delivery.status == DeliveryStatus.SENT
         event = Event(event_type=(EventType.FILE_UPLOADED if success else EventType.FILE_UPLOAD_FAILED) if action.file_asset_id
             else (EventType.MESSAGE_SENT if success else EventType.MESSAGE_SEND_FAILED),
@@ -211,7 +218,7 @@ class ActionQueue:
                 "file_id": delivery.file_id, "file_receipt": delivery.file_receipt,
                 "event_to_delivery_ms": round(max(0, self.event_store.clock()-action.source_started_at)*1000)
                     if action.source_started_at is not None else None})
-        if success and action.associated_open_loop:
+        if success and not self.simulated and action.origin_mode == 'live' and action.associated_open_loop:
             loop=dict(action.associated_open_loop)
             ttl=loop['expires_at']-loop['created_at']
             loop.update(created_at=event.timestamp,expires_at=event.timestamp+ttl)

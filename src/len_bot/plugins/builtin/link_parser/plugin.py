@@ -96,16 +96,14 @@ class LinkParserPlugin(BasePlugin):
             return ToolResult.failure('parse_link 媒体项类型或地址无效', 'invalid_source')
         allowed, reason = validate_url(url)
         if not allowed: return ToolResult.failure(f'安全拦截: {reason}', 'blocked')
+        cached = None
         try:
             cached = await runtime.event_store.media_by_locator(call_context.scene_id, url)
             if cached:
-                try:
-                    cached_asset, cached_data = await runtime.media_service.get_file_bytes(cached['id'], call_context.scene_id)
-                    if not (cached_asset.get('mime_type') or '').startswith(media_type + '/'):
-                        raise ValueError('缓存媒体类型与本次提案不一致')
-                    return ToolResult(content=json.dumps({'asset_id':cached_asset['id'],'type':media_type,'mime_type':cached_asset.get('mime_type'),'bytes':len(cached_data),'coverage':'downloaded_media','cached':True},ensure_ascii=False), attachments=[cached_asset['id']], sources=[ToolSource(url=url)], evidence_kind='external', coverage='downloaded_media', cached=True)
-                except Exception:
-                    pass
+                cached_asset, cached_data = await runtime.media_service.get_file_bytes(cached['id'], call_context.scene_id)
+                if not (cached_asset.get('mime_type') or '').startswith(media_type + '/'):
+                    raise ValueError('缓存媒体类型与本次提案不一致')
+                return ToolResult(content=json.dumps({'asset_id':cached_asset['id'],'type':media_type,'mime_type':cached_asset.get('mime_type'),'bytes':len(cached_data),'coverage':'downloaded_media','cached':True},ensure_ascii=False), attachments=[cached_asset['id']], sources=[ToolSource(url=url)], evidence_kind='external', coverage='downloaded_media', cached=True)
             final_url, headers, data = await fetch_public(self.client, url, max_bytes=runtime.config.media_max_file_bytes)
             mime = headers.get('content-type', '').split(';',1)[0].lower()
             asset_id = 'media_' + uuid.uuid4().hex
@@ -116,6 +114,9 @@ class LinkParserPlugin(BasePlugin):
             actual_type = 'video' if actual_mime.startswith('video/') else 'audio'
             return ToolResult(content=json.dumps({'asset_id':asset['id'],'type':actual_type,'mime_type':actual_mime,'bytes':len(data),'coverage':'downloaded_media'},ensure_ascii=False), attachments=[asset['id']], sources=[ToolSource(url=final_url)], evidence_kind='external', coverage='downloaded_media')
         except Exception as error:
+            if cached:
+                return ToolResult.failure(f'已保存媒体本次不可读或类型不符：{type(error).__name__}；未重新下载来源。',
+                    'cached_media_unavailable', stage='execution')
             return ToolResult.failure(f'媒体下载失败：{type(error).__name__}', 'download_failed')
     async def on_link(self, call: PluginCallContext):
         url = self._extract_url(call.event.raw_text.strip())

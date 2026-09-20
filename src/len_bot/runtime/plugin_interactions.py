@@ -535,6 +535,10 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
                 execution.mailbox.provided_original_ranges = {ident: OriginalCoverage.model_validate(span)
                     for ident, span in context.confirmed_original_ranges.items()}
             toolkit.adopt_presentations(pending_presentations)
+            context.confirm_work_result_reads()
+            if nested_respond and execution.mailbox is not None:
+                execution.mailbox.provided_result_ranges=copy.deepcopy(toolkit.presented_ranges)
+                execution.mailbox.provided_work_results=set(context.confirmed_work_results)
             if execution.record_presentations:
                 await execution.record_presentations(pending_presentations)
             execution.audit['steps'][-1]['presentations']=list(pending_presentations)

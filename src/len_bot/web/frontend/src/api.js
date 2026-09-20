@@ -3,20 +3,34 @@ import { ref } from 'vue'
 const displayTimezone = ref(null)
 export function setDisplayTimezone(value) { displayTimezone.value = value }
 let onUnauthorized = () => {}
+let sessionGeneration = 0
 export function setUnauthorizedHandler(handler) { onUnauthorized = handler }
+export function resetApiSession() { ++sessionGeneration }
 
 export async function api(path, options = {}) {
+  const session = sessionGeneration
   const headers = { ...(options.headers || {}) }
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json'
   }
   const res = await fetch(path, { ...options, headers, credentials: 'same-origin' })
-  const data = await res.json()
+  if (res.status === 401 && path !== '/api/auth/login' && session === sessionGeneration) onUnauthorized()
+  let data
+  try { data = await res.json() }
+  catch {
+    const error = new Error(`HTTP ${res.status}：接口未返回可读取的 JSON，本次请求结果需核对；没有自动重试。`)
+    error.status = res.status
+    throw error
+  }
+  if (session !== sessionGeneration) {
+    const error = new Error('请求所属登录状态已变化，未采用旧响应；已提交操作是否完成须回到原对象核对。')
+    error.status = res.status
+    throw error
+  }
   if (!res.ok) {
     const error = new Error(Array.isArray(data.detail) ? data.detail.map(item => `${item.loc?.join('.') || '参数'}: ${item.msg}`).join('；') : data.detail?.message || data.detail || `HTTP ${res.status}`)
     error.status = res.status
     error.details = data.detail
-    if (res.status === 401 && path !== '/api/auth/login') onUnauthorized()
     throw error
   }
   return data

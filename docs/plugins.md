@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，后续目标见[完整计划](LenBot_社会Agent_完整实施计划_7a4152d.md)，最新进度只记在[当前任务](iteration.md)。
+面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更见[完整改造计划](LenBot_群聊体验与可靠执行_完整改造计划_20260920.md)，最新进度只记在[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。
 
 ## 目录、描述符与配置
 
@@ -8,13 +8,17 @@
 
 `PluginSpec` 是唯一元数据，包含 ID、名称、版本、描述、全局 config_model、scene_config_model 和 `create(context)`。已有资源权限与类型在同一处声明；工具清单从实际 `register_tool` 生成。描述符导入只定义类型和入口，不能建立 HTTP 客户端、启动轮询或请求模型。参照[日历描述符](../src/len_bot/plugins/builtin/asoul_calendar/__init__.py)和[网页描述符](../src/len_bot/plugins/builtin/web_search/__init__.py)，不再编辑中央插件清单或配置类型映射。
 
-根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后解析一次专有参数，启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。同一个插件在全局与某个群各有一份开关：本群条目只有在全局已配置、全局已启用、本群已启用且本群启用的场景都成立时才生效，面板据此逐项说明，不把“在本群打开”写成已经可用。
+根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后先分别解析所有已配置插件的参数，再执行依赖校验；依赖使用 parsed_config，不按 JSON 排列顺序重猜或重复解析原字段。启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。同一个插件在全局与某个群各有一份开关：本群条目只有在全局已配置、全局已启用、本群已启用且本群启用的场景都成立时才生效，面板据此逐项说明，不把“在本群打开”写成已经可用。
 
 面板表单由 `config_model` 生成的 JSON Schema 驱动，不手写字段清单。互斥的配置形状（例如 workspace 的 `worker` 与 `gateway`）用 `json_schema_extra` 的 `x-lenbot-exclusive` 声明字段组，表单据此渲染成一次单选，不构造同时给出两个分支的草稿；该键只是表单提示，服务端的模型校验仍然是准入依据。列表与详情按 Schema 字段逐个渲染：布尔、枚举、数字、文本和按 JSON 编辑的对象／列表；`title`、`description` 与上下限来自 Schema，前端不另写一份字段说明。枚举在界面上显示中文名，保存的仍是 Schema 里的原值；中文名用 `x-lenbot-enum-labels` 写在声明该字段的模型上，新枚举值没有中文名时回落显示原值，不会从选项里消失。取值封闭的简单列表（link_parser 的平台）用 `x-lenbot-list-choices` 声明成勾选项，没有声明的列表仍是可增删的行。三个扩展键都只是表单提示，不参与服务端校验。保存前表单先核对必填项与 JSON 结构，服务端拒绝时按其返回路径把错误落到对应字段并保留草稿。
 
 实现类继承 `BasePlugin`，构造时使用 `super().__init__(context.manifest)`；取得的 `context.config` 已通过该插件模型解析。插件文件和资源相对于 `context.directory`，运行数据需要时写入 `context.data_directory`。目录不自动创建空数据文件。项目依赖继续由 uv 管理，插件不自行安装依赖。
 
 可直接阅读独立目录中的[业务时钟](../local_plugins/local_clock/__init__.py)：一个文件完成描述符、配置、读取工具和两个命令，README 只说明[本插件用法](../local_plugins/local_clock/README.md)。它没有核心注册补丁；添加根目录、全局配置和目标群条目后，由同一个宿主发现。样例包含停用的参数条目，实际开放须在目标部署保存。
+
+插件面板保存与启停的迟到响应只能更新原打开对象；配置冲突在详情内处理，刷新失败时不能用另一插件或未重读的值替换基线。离开页面不会取消服务器已接受的配置操作。凭据仍只在原根配置，由原配置锁和凭据世代处理并发编辑，未新增凭据存储。
+
+本群设置按原 catalog 投影编辑全部已声明插件，不要求外部插件加入固定能力卡才能配置；同一 ID 只呈现一份群参数。缺少群 Schema 会明确阻止空参数替代。全局和本群的冲突选择只重建草稿：未改字段采用新读取值，修改列表按整组保留，JSON 按实际值比较；互斥分支不由属性顺序决定。嵌套字段和增删按钮继承保存中禁用状态，写入后的全局参数须读回同一插件再建立新基线。以上均不代替服务端 Schema、根配置锁、凭据代次或插件装载准入。
 
 ## 工具与读取
 
@@ -24,13 +28,25 @@
 
 工具 timeout 可由描述符的 `call_timeout(config)` 从实际配置读取，也可在注册时明确传入。工具定义和调用时均检查当前角色、场景与启用状态；工具名冲突会报告实际注册双方，不覆盖前者。
 
-WorkspaceCancelled 属于取消信号，当前 Host 继续传播以结束等待它的 Agent；插件不要将其统一转成普通失败结果后继续循环。执行与清理期限分别有界，终止是否确认需要原执行回执，不能仅凭收到取消就声明容器已停止。插件描述符目前不声明逐工具的 `required_capabilities`；能力要求在每项能力落地时逐个工具加入，不预先声明一套并假定它已经生效。
+核心提案和 respond 使用固定结构，不将当前目标或回执写入 Schema 枚举。低频插件仍沿 deferred 渐进发现，显式插件调用仍受原 tool_names 子集限制，before_model hook 只能选择当前获准目录并保留终结工具。终结步骤不再缩成单工具表，但宿主在执行前禁止非终结调用；定义可见不等于当前可执行，也不放宽来源、版本或预算。
+
+respond 的 `messages[].answer_basis` 是可选增量字段，详见[单条答复的依据](architecture.md#单条答复的依据)。嵌套表达共享原实际阅读记录与工作版本，但导入资料 ID 不表示已读；result_only 的结果类型和直接确定性发送入口不变，不自动给它们补造依据。钩子仍不能重写原始工具回执或增加消息归属，依据穿过提交/队列时保留，不能借它改变权限或发送参数。
+
+`kind` 区分读取与提案，`ordered` 独立声明兄弟调用是否必须串行；工作区执行和文件操作共用状态，不能因 kind=read 就并发。原始观察按 result_id 保存、分页展示，不按参数相同盲目复用旧结果。
+
+浏览器的 open/snapshot/interact/capture 也声明 `ordered=True`；内部页面锁保留，但不代替模型响应内的调用顺序。正文结果以实际快照地址为来源，区分采集截断和仅保存当次正文页。宿主续取 DOM 使用 `source_next_call`；Gateway 已保存的受限正文使用原 R 的本地续读，不把两种偏移混用。截图附件只说明已登记，是否装入像素仍看最终请求清单。
+
+工具 attachments 可同时包含图片和已登记音视频。现有媒体准备器按登记 MIME 分流，音视频只提供引用说明，不调用图片解码，也不冒充视觉证据或转写。插件必须继续在正文保存采样时间、音轨范围和派生限制；面板读取这些已保存字段，不为显示覆盖而重新请求源端。
+
+`register_tool` 已支持 `required_capabilities`、`side_effect`、`input_scope`、`output_scope`，声明与 PluginHost 当前可用性检查共同生效；具体源身份、工作修订和资源边界仍由原 handler 核对，不能只靠声明扩大资格。
+
+WorkspaceCancelled 是取消信号，Host 继续传播以结束等待它的运行；不要统一转成普通失败后继续循环。执行与清理期限分别有界，终止是否确认需要原执行回执，不能仅凭收到取消就声明容器已停止。
 
 ### 日历：同一服务供工具和精确消息调用
 
 [现有日历实现](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py)是共用读取服务的最小业务示例。on_load 把 get_live_schedule 注册为工具，同时为配置中的命令词注册 ExactText、consume=True 的 handler。两者都调用 get_live_schedule；精确命令不需要普通聊天先决定是否查询。
 
-request 由 command_request 使用原命令时间及业务时区计算。[on_command](../src/len_bot/plugins/builtin/asoul_calendar/plugin.py#L106) 随后调用同一工具，按以下分支处理；完整代码直接以该实现为准。
+request 由 command_request 使用原命令时间及业务时区计算。on_command 随后调用同一工具，按以下分支处理；完整代码以该实现为准。
 
 | 工具结果 | 处理路径 |
 |---|---|
@@ -38,7 +54,7 @@ request 由 command_request 使用原命令时间及业务时区计算。[on_com
 | ok 或 no_results | 解析 ScheduleResult，使用共享 HTML 日历模板生成正常或空日程卡，保存并提交图片 |
 | 其他错误 | 在该 handler 结束并保留错误，不转成空日程或普通对话 |
 
-今日、明日与本周直播共用粉色详细日历模板，按日期分组，展示头像、源标题与非链接描述；直播间、动态等含 HTTP(S) 链接的说明行和独立 URL 不进入图片，时间块含开始、日期与结束时刻；跨日结束显示日期。图片不再展示查询区间、抓取时刻、来源地址与重复免责声明，这些事实仍保留在 ScheduleResult 观察中。空日程只表述源日历未收录。现有 HTML 渲染失败路径仍记录原错误并使用 Pillow 卡片，后者也删除同样的页脚说明。
+日历按业务模板渲染，查询区间、抓取时间和来源保留在 ScheduleResult；空日程只表示源日历未收录。现有 HTML 渲染失败路径记录原错误并使用已有 Pillow 卡片，不增加模型调用。具体样式留在插件模板，不在公共开发合同重复维护。
 
 未知成员返回 invalid_member 和配置内可选名称/别名，不记插件执行异常；未提供成员表示全部日程。上述确定性分支不新增模型调用，渲染失败与发送失败仍分别处理。自然语言读取取得同一 ToolResult，由当前 Agent 继续使用。业务时钟的“现在几点”直接提交文字，“时间简报”则显式调用 run_agent。所有提交均经原发送链，工具返回或图片登记不等于送达。
 
@@ -67,6 +83,8 @@ output_mode=result_only 必须提供 output_model。Agent 调用 return_result �
 返回结果不改变普通对话 disposition；模型 status 与 plugin_agent 用途保留实际调用，提交和送达另查回执。input_observations 不会被下一步钩子的临时资料清理移除。专用循环的图片读取与普通对话共用正文、附件和阅读范围装配，实际像素及资料位置可在对应步骤中核对。
 
 output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、respond、Actor 和 ActionQueue。source 或 conversation 投影给出真实来源 M，插件可按 tool_names 明确开放已有工作、提醒或记忆提案；这些操作仍须满足原人类请求和证据契约。全部 checkpoint 共用消息额度，continue 继续当前运行，wait 在真实送达后由 open loop 等待目标的回复。恢复保留原插件、入口、模型绑定、请求参数、已存资料及累计预算；旧进程或已变化的入口不能被当作一次新运行重做。
+
+提醒修改／取消的原值由已有上下文登记并由 ProposalLedger 放入内部 expected，插件不自行猜测或补当前值。原事务会拒绝缺失／过期原值，不能绕过它直改任务表；创建和结果提交不使用控制原值。该变化不新增模型工具参数或赋予原本没有的提醒资格。
 
 工具内部调用 Agent 时共享父运行的调用账户，并借用已经持有的模型并发位；后台工作由原 JobStore 记录调用与活动时长。专用 Agent 串行使用父账户，有限模型次数下为父调用留一次收尾调用；这不等于 token 已原子预留。不支持 Agent 内再次递归启动插件 Agent。read 工具只能取得结果；主动表达须使用 proposal 工具和父运行的真实 Ledger。工具提交的等待同时结束父运行，真实回复由原插件恢复。确定性 invoke_tool 保留真实父来源，不制造模型 tool_call。
 
@@ -111,6 +129,12 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 
 直播插件的公告指令通过 before_model 加入；其 before_commit 按当前插件合同核对邀请与卡片片段。确定性图片提交也经过 before_commit，真实队列回执保存后才调用 after_delivery。工具错误、未知回执和模型生成内容的事实含义仍见[架构](architecture.md)。
 
+消息发送适配器返回 sent 时必须携带平台 message_id，文件上传则须有 file_id；缺对应身份会沿原发送尝试保存 unknown，不由宿主补 ID、重试或换通道。模拟回执只记隔离观察，不激活真实等待或满足后续行动的送达依赖。deferred_delivery 属于原行动的专属调度，不能用普通提醒提案改写或提前触发；插件仍使用原 Scheduler 和生命周期入口，不直接修改任务表。
+
+workspace 与 python_workspace 保留同一实现及各自已有数据目录。共享配置以唯一启用项为准；都停用时只可有一份已配置项，歧义明确失败。只读产物面板优先取原 run_python 注册所有者，无装载入口时才按此规则读取，不跨目录猜产物。两项不是可同时启用的独立执行器，原同名工具冲突仍拒绝装载。
+
+浏览器和媒体也按同一规则取得已解析 Gateway，绑定原 ID 与参数；配置变化须显式重新装载所属插件，不将已存执行或页面引用带去另一个后端。无 Gateway 时仅浏览器保留原本机试用分支，媒体仍拒绝。共享连接并不启用 Python 或扩大公共研究工具目录，场景／主体／工作资格继续各自核对。提交前本地拒绝写入原执行日志，不能当作网关已收到请求。
+
 ## 公共资料与外部执行
 
 B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端；既有账号动态接口使用自己的账号客户端，字幕资源 URL 不携带默认账号 Cookie。cid 必须属于指定视频；字幕范围为 [start_ms,end_ms)，end 必须大于 start。need_login_subtitle 返回 authentication_required，匿名空轨道只说明本次未取得。字幕 JSON 在下载时按 max_subtitle_bytes 限制，不截 80 条或 400 字后冒充完整；完整取得的匹配时间轴写 R，经已有本地分页续读，sources 保留视频/轨道。评论保留源分页计数及 source_next_call，不把评论者观点当视频事实。
@@ -119,11 +143,15 @@ B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端�
 
 工具获取产生的 provenance 是来源事实，不能让模型自填公开标记。未知来源的文件、计算或模型摘要不会因放在 system 场景成为公共证据。公共兴趣候选通过 finish_work.public_interests 交回宿主，在完成事务按实际读取范围采用；插件不直接写兴趣表或发布群消息。工具执行异常只由所属宿主边界记录一次，等待中的插件任务不再重复记同一错误。
 
+link_parser 的 parse_link 只获取 metadata，明确 download_media 才进入媒体字节读取。命中同场景缓存但字节不可读或类型不符时返回 cached_media_unavailable；不吞掉该错误后重新下载。没有缓存的正常下载仍通过原字节上限、容器格式验证和资产登记；登记不证明播放、模型阅读或群发送。
+
 ### 公共兴趣分享
 
 内置 `interest_share` 插件在全局未配置时为 unconfigured。全局参数为 `max_steps`、`context_tokens`、`output_tokens`；模型使用现有 conversation 绑定。本群参数为 `topics`（空表示所有有效主题）、`daily_limit`（0 不发）、`cooldown_seconds`。还需通过原能力授予向 `principal_type=plugin`、`principal_id=interest_share`、具体 `scene_id` 授予 `interest_share`，不使用 system 公共研究 grant 代替。场景表单按插件 Schema 呈现这些字段。
 
 插件只接受原 Scheduler 的真实槽及自己声明的 candidate 事件，不消费人类普通消息。社会表达复用 `run_agent(..., input_mode='conversation', output_mode='respond')`；仅能读取当前材料、提交至多一条短文字或沉默。此入口不授权文件上传、B 站账号写入或全体提及。候选表达和发送过程均复核当前版本与权限；发出的记录保留兴趣来源，候选被采用不等于消息已送达。
+
+本群主题和排除研究意图先参与候选查询，数量上限在匿名来源核对后生效；采用前回读原修订与有效期。近期表达只引用当前 Bot、同群、原截点内至多四条真实 live 送达记录的前 300 字符，来源 IDs 与实际节选一致。调度候选、表达提交与逐群发送仍是三个事实；面板回读发布记录不触发分享或重放。
 
 ### 媒体片段
 
@@ -131,13 +159,17 @@ B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端�
 
 Gateway 的固定 media worker 与 Python/browser 共用原执行协议，但分支互斥，不混入脚本或凭据。新下载动作使用原 ActionReviewer，转写使用同一 ProviderRegistry 的能力绑定并计入原工作，不引入第二个 Agent。前者来源为 anonymous_public，后者保留 derived 及原片段 source_result_ids；宿主不会把 ASR 强制标成匿名原始事实。插件关闭与工作结束回收原执行，结果未知不重新提交同一调用。
 
-### 文件产物（C23）
+### 文件产物
 
-workspace 新增 `prepare_workspace_file(path, execution_id, display_name, for_upload=false)`；只用于人类当前工作。返回持久 `file_asset`，不增加媒体 I 引用，也不直接发送。`for_upload` 审查消耗原工作预算。保存的资产 ID 经原对话提案/Gate 才能进入上传队列；通知文字须是另一条行动，不能在上传失败后直接声称成功。支持格式由工具 Schema 明列，不以任意扩展名开放新格式。
+workspace 的 `prepare_workspace_file(path, execution_id, display_name, for_upload=false)` 只用于人类当前工作。返回持久 `file_asset`，不增加媒体 I 引用，也不直接发送。`for_upload` 审查消耗原工作预算。资产经原对话提案/Gate 才能进入上传队列；通知文字须是另一条行动，不能在上传失败后声称成功。支持格式由工具 Schema 明列，不以任意扩展名开放新格式。
 
-C24 文件回执会进入原 `after_delivery`，事件类型是 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，字段使用 `file_asset_id/file_id/file_receipt`。插件不得将其 `file_id` 当成 QQ `message_id`。上传适配默认缺失，失败应保留资产供下载。
+该登记入口只接受 Gateway 已确认不可变产物，本机 worker 的普通导出不能冒充持久文件资产。状态读取按原 action_id 区分提交、尝试、真实回执、模拟和 Shadow；只有非模拟且带平台 file_id 的上传回执证明成功。插件不能用 message_id、宿主路径、资产存在或另一行动的旧回执替代它，也不为未知上传重新运行原工作。
 
-### 登录资料工具（C25）
+工作区的“当前文件”仅指最新 Python 执行的已确认产物；同一工作内的浏览器截图与媒体片段仍走原观察及媒体入口，不按执行时间挤占 Python 快照。显式 execution_id 必须属于该工作的已确认 Python 执行；宿主 worker 不支持该参数并明确拒绝，不能忽略它读取当前目录。输入清单保留导出版本与来源范围，脚本不得把导出成功理解为模型已读或资料正确。工具结果中的原执行结局与产物清单是否可读分别保留，未确认终止和读取失败不变成空目录。
+
+文件回执进入原 `after_delivery`，事件类型是 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，字段使用 `file_asset_id/file_id/file_receipt`。插件不得将 file_id 当成 QQ message_id。上传适配默认缺失，失败保留资产供下载；部署、路径与开启条件统一见运行手册。
+
+### 登录资料工具
 
 `get_dynamic_feed(mid, offset="")` 只在已配置并获准的人类工作可发现/执行。connector 按工作工具预算及原动作审查执行，返回 account 范围的动态正文观察和显式下一页调用。公共研究没有此工具；没有 `desc` 的动态保留其真实身份并说明未读附件，不伪装成已读完整动态。
 
@@ -145,10 +177,10 @@ C24 文件回执会进入原 `after_delivery`，事件类型是 `FILE_UPLOADED/F
 
 工具声明增量包括 required_capabilities、side_effect、input_scope、output_scope。当前账号写入组合限定为 kind=proposal、roles=(work,)、side_effect=account_write、current_work 输入和 account 输出，并声明独立能力；PluginHost 的发现/schema/执行复用同一权限检查。数据范围声明描述所属边界，不能代替 handler 的真实来源、工作修订、具体资源和审查校验。账号写工具在工作循环中串行执行，返回持久平台动作的 ToolResult；不能调用 QQ 适配器冒充平台回执。B站 connector 独占凭据并执行固定点赞/收藏端点，无 URL、任意 Cookie、任意请求或 toggle 入口。
 
-### C27 Core 支持范围
+### Core 支持范围
 
 沿现有 GSUID Core 插件与连接锁，只匹配完整前缀词（默认 `/gs`），上行包含该条命令与直接引用，保留 `onebot` 和与当前适配器一致的实际 `bot_self_id`。命令首次发送前以原消息登记持久身份；WebSocket 提交只表示已转发，不能当游戏业务完成。断线和重启不重放已有命令。
 
-下行首版支持已配置群的文字、at、URL/base64 图片，经过原资产/Gate/发送队列。必须携带 echo 作为稳定帧身份；同 echo 不再次提交群消息。无 echo、语音/视频、普通文件、合并转发、按钮、撤回控制、私聊/频道和私聊登录均明确未支持，整帧拒绝。图片文字形式的登录提示没有独立登录能力，不自动执行账号流程。`after_delivery` 从持久源事件恢复 echo，只有 sent 且有真实 message_id 才回填 ID；unknown/失败/Shadow 不伪造 ID。回传本身先登记尝试，未知回传不自动重放。
+下行首版支持已配置群的文字、at、URL/base64 图片，经过原资产/Gate/发送队列。必须携带 echo 作为稳定帧身份；同 echo 不再次提交群消息。无 echo、语音/视频、普通文件、合并转发、按钮、撤回控制、私聊/频道和私聊登录均明确未支持，整帧拒绝。图片文字形式的登录提示没有独立登录能力，不自动执行账号流程。`after_delivery` 从持久源事件恢复 echo，按完整回执及 metadata 判定真实 sent 后才回填 message_id；unknown、失败、Shadow、模拟或缺身份均不回填成功 ID。回传本身先登记尝试，未知回传不自动重放。
 
 Core 可选，未配置不加载、不建立连接。面板列出代码支持矩阵、现场版本与身份状态；所有已接入项仍标记待现场联调，不能仅填写版本便宣称已验证。

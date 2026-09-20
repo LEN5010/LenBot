@@ -125,6 +125,7 @@ class TaskScheduler:
     ) -> bool:
         """Emit immutable TASK_DUE Event (ADR-0009 & ADR-0018 & ADR-0029).
         Durable task claim is enforced before emitting TASK_DUE."""
+        task = task.model_copy(deep=True)
         if task.payload.get("kind") == "agent_job" and not self.jobs_enabled_probe():
             return False
         event = Event(
@@ -141,7 +142,7 @@ class TaskScheduler:
                 "origin_mode": task.origin_mode,
             }
         )
-        if not await self.event_store.claim_task_event(task.id, task.scene_id, event):
+        if not await self.event_store.claim_task_event(task.id, task.scene_id, event, expected_task=task):
             return False
         logger.info("Task due! Triggering task %s (%s) for scene %s (origin=%s)",
                     task.id, task.description, task.scene_id, task.origin_mode)

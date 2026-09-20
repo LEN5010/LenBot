@@ -1,3 +1,5 @@
+import { hasConfigDraftChanges, rebaseConfigDraft } from './configDraft.js'
+
 // Plugin schemas own the fields; compound values remain explicit JSON.
 //
 // A field is rendered from its own declaration, not from a list kept here:
@@ -103,6 +105,56 @@ export function configDraft(config, schema, secrets = [], prefix = '', definitio
       : field.json ? JSON.stringify(source[field.key], null, 2) : source[field.key]
   }
   return draft
+}
+
+// Compare compound fields as their saved JSON values, not textarea formatting.
+// Credential drafts remain their explicit keep/replace/clear values; this
+// transform never reads a stored secret or submits a configuration.
+function draftValues(draft, schema, toEditor, prefix = '', definitions) {
+  if (draft === null) return null
+  const defs = definitions || definitionsOf(schema), next = {...draft}
+  for (const field of configFields(schema, defs)) {
+    if (!Object.hasOwn(draft, field.key)) continue
+    const value = draft[field.key], path = fieldPath(prefix, field.key)
+    if (value === null) continue
+    if (field.nested) next[field.key] = draftValues(value, field.schema, toEditor, path, defs)
+    else if (field.json) {
+      if (toEditor) next[field.key] = JSON.stringify(value, null, 2)
+      else {
+        try { next[field.key] = JSON.parse(value) }
+        catch { throw new Error(`${field.schema.title || path} 需要合法 JSON；请先修正草稿，或选择采用现值。`) }
+      }
+    }
+  }
+  return next
+}
+
+function rebasePluginValues(original, draft, current, schema, definitions) {
+  let next = rebaseConfigDraft(original, draft, current)
+  if (next === null) return null
+  const defs = definitions || definitionsOf(schema)
+  for (const group of exclusiveGroups(schema)) {
+    const choice = value => Object.fromEntries(group.fields.filter(key=>Object.hasOwn(value||{},key)).map(key=>[key,value[key]]))
+    const before = choice(original), own = choice(draft), saved = choice(current)
+    // A concurrently switched backend cannot leave both branches present and
+    // let their Schema order silently select which one the operator will save.
+    if (hasConfigDraftChanges(before, own) && selectedBranch(own, group) !== selectedBranch(saved, group)) {
+      for (const key of group.fields) delete next[key]
+      next = {...next, ...JSON.parse(JSON.stringify(own))}
+    }
+  }
+  for (const field of configFields(schema, defs)) {
+    if (field.nested && next[field.key] && original?.[field.key] && draft?.[field.key] && current?.[field.key]) {
+      next[field.key] = rebasePluginValues(original[field.key], draft[field.key], current[field.key], field.schema, defs)
+    }
+  }
+  return next
+}
+
+export function rebasePluginDraft(original, draft, current, schema) {
+  return draftValues(rebasePluginValues(
+    draftValues(original, schema, false), draftValues(draft, schema, false), draftValues(current, schema, false), schema,
+  ), schema, true)
 }
 
 // A first configuration starts from the schema, not from a shape the form

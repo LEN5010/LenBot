@@ -150,7 +150,8 @@ async def restore_trajectory(messages, media_service, scene_id, *, image_limit, 
     restored = copy.deepcopy(messages)
     current_assets = synchronize_image_window(restored, image_limit, max_bytes)
     for content, manifest_block, prefix, facts, manifest in _image_contexts(restored):
-        if not any(block.get("type") == "work_image_reference" for block in content):
+        image_assets = {block['asset_id'] for block in content if block.get('type') == 'work_image_reference'}
+        if not image_assets:
             continue
         image_indices = {}
         image_metadata = {}
@@ -171,6 +172,8 @@ async def restore_trajectory(messages, media_service, scene_id, *, image_limit, 
                     content[index] = {"type": "text", "text": f"此处保留原图 {asset} 定位；像素未装入该位置，需要时可用 read_media 回读。"}
         # Keep the manifest's coverage aligned with the actual restored pixels.
         for item in manifest:
+            if item['asset_id'] not in image_assets:
+                continue
             item.pop("block_index", None)
             item.update(image_metadata.get(item.get("asset_id"), {}))
             if item.get("asset_id") in image_indices:

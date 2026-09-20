@@ -1,5 +1,6 @@
 from len_bot.plugins.api import PluginPermission, PluginSpec, PluginType
 from .config import MediaAnalysisConfig
+from ..workspace.config import configured_workspace
 
 
 def create(context):
@@ -8,9 +9,10 @@ def create(context):
 
 
 def validate(config, root):
-    workspace = root.plugins.get('workspace')
-    if root.plugins['media_analysis'].enabled and not (workspace and workspace.config.get('gateway')):
-        raise ValueError('媒体分析需要已配置的 workspace Gateway；没有宿主解码入口')
+    if root.plugins['media_analysis'].enabled:
+        workspace = configured_workspace(root)
+        if workspace is None or workspace[1].gateway is None:
+            raise ValueError('媒体分析需要明确配置的工作空间 Gateway；没有宿主解码入口')
     if config.transcription and config.transcription.provider_id not in {p.id for p in root.models.providers}:
         raise ValueError('转写绑定引用了不存在的供应商')
 

@@ -329,6 +329,8 @@ class SceneActor:
         for message in item.outcome.message_proposals:
             if message.source_event_id:
                 refs.add(message.source_event_id)
+            if message.answer_basis:
+                refs.update(message.answer_basis.event_ids)
         for proposal in item.outcome.memory_proposals:
             refs.update(proposal.evidence)
         if not refs.issubset(read):
@@ -350,6 +352,8 @@ class SceneActor:
                                'source_outcomes': [source.model_dump(mode='json') for source in item.outcome.source_outcomes],
                                'provided_original_ranges': {ident: span.model_dump(mode='json')
                                    for ident, span in item.mailbox.provided_original_ranges.items()},
+                               'provided_result_ranges': item.mailbox.provided_result_ranges,
+                               'provided_work_results': [list(work) for work in sorted(item.mailbox.provided_work_results)],
                                'episode_id':item.mailbox.episode_id,'checkpoint_index':item.outcome.checkpoint_index,
                                'output_kind': item.mailbox.output_kind,
                                'plugin_origin': item.mailbox.plugin_origin.model_dump() if item.mailbox.plugin_origin else None,

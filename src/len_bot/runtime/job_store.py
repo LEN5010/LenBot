@@ -754,7 +754,7 @@ class JobStoreMixin(SkillStoreMixin):
                 await self._db.rollback()
                 raise
 
-    async def complete_job(self, job_id, scene_id, revision, result: JobResult, *, work_state=None, skill_candidate=None):
+    async def complete_job(self, job_id, scene_id, revision, result: JobResult, *, work_state=None, skill_candidate=None, bot_actor_id=''):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -796,7 +796,7 @@ class JobStoreMixin(SkillStoreMixin):
                             raise ValueError('公共研究不从此入口生成场景技能')
                         if spec and not spec.allow_learning:
                             raise ValueError('This plugin work does not create procedural skills')
-                        await self.add_skill_candidate_in_transaction(job, skill_candidate)
+                        await self.add_skill_candidate_in_transaction(job, skill_candidate, bot_actor_id=bot_actor_id)
                 except ValueError as error:
                     raise JobResultRejected(str(error)) from error
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
@@ -832,7 +832,7 @@ class JobStoreMixin(SkillStoreMixin):
         for step in state.completed_steps:
             await self._validate_evidence_spans(job, step.evidence_spans, step.result_ids)
 
-    async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None):
+    async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None, *, bot_actor_id=''):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -849,7 +849,7 @@ class JobStoreMixin(SkillStoreMixin):
                     spec=self.plugin_work(job)
                     if spec and not spec.allow_learning:
                         raise ValueError('This plugin work does not create procedural skills')
-                    await self.add_skill_candidate_in_transaction(job, skill_candidate)
+                    await self.add_skill_candidate_in_transaction(job, skill_candidate, bot_actor_id=bot_actor_id)
                 await self._db.execute("UPDATE agent_jobs SET work_state_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (state.model_dump_json(), self.clock(), job_id, scene_id))
                 await self._db.commit()

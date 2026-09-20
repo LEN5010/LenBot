@@ -54,6 +54,9 @@ htmlcov/
 node_modules/
 .vite/
 
+# Frontend source helpers are not Python installation output.
+!/src/len_bot/web/frontend/src/lib/
+
 # ZCode session artifacts
 .zcode/
 

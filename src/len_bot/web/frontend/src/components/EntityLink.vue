@@ -1,29 +1,45 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { mdiContentCopy } from '@mdi/js'
 import { sceneName } from '../api.js'
-const props = defineProps({ type:{type:String,required:true}, id:String, sceneId:String, label:String, version:[String,Number], copyable:{type:Boolean,default:true} })
+import { withReturn } from '../router/navigation.js'
+const props = defineProps({ type:{type:String,required:true}, id:String, sceneId:String, jobId:String, taskKind:String, label:String, version:[String,Number], span:Object, copyable:{type:Boolean,default:true} })
 const copied=ref(false), error=ref('')
-const to = computed(() => {
+const route = useRoute()
+const destination = computed(() => {
   const query={}
+  const sceneQuery = route.name === 'scene' && route.params.sceneId === props.sceneId ? route.query : {}
   if(props.sceneId)query.scene=props.sceneId
   if(props.id)query.id=props.id
   if(props.version)query.version=String(props.version)
   if(props.type==='scene')return /^(group|private):/.test(props.id||'')
-    ? {name:'scene',params:{sceneId:props.id}}
+    ? {name:'scene',params:{sceneId:props.id},query:route.name==='scene'&&route.params.sceneId===props.id?route.query:{}}
     : {name:'activity',query:{scene:props.id,tab:'events'}}
   if(props.type==='job')return {name:'job',params:{jobId:props.id},query:props.sceneId?{scene:props.sceneId}:{}}
-  if(props.type==='task')return {name:'tasks',query:{...query,tab:'reminders'}}
-  if(props.type==='memory')return {name:'memories',query}
-  if(props.type==='skill')return {name:'skills',query}
-  if(props.type==='media')return {name:'media',query}
-  if(props.type==='event' && /^(group|private):/.test(props.sceneId||''))return {name:'scene',params:{sceneId:props.sceneId},query:{event:props.id}}
+  if(props.type==='file' && props.jobId)return {name:'job',params:{jobId:props.jobId},query:{
+    ...(route.name==='job' && route.params.jobId===props.jobId ? route.query : {}),scene:props.sceneId,tab:'progress',file:props.id}}
+  if(props.type==='task')return {name:'tasks',query:{...query,tab:{deferred_delivery:'deferred',heartbeat:'system',heartbeat_occupancy:'system',interest_share:'system'}[props.taskKind] || 'reminders'}}
+  if(props.type==='memory')return {name:'memories',query:route.name==='memories'
+    ? {...route.query,...query,tab:'social',list_scene:route.query.list_scene ?? route.query.scene ?? ''}
+    : query}
+  if(props.type==='skill')return {name:'skills',query:route.name==='skills'
+    ? {...route.query,...query,list_scene:route.query.list_scene ?? route.query.scene ?? ''}
+    : query}
+  if(props.type==='media')return {name:'media',query:route.name==='media'
+    ? {...route.query,...query,list_scene:route.query.list_scene ?? route.query.scene ?? 'global-safe'}
+    : query}
+  if(props.type==='event' && /^(group|private):/.test(props.sceneId||''))return {name:'scene',params:{sceneId:props.sceneId},query:{...sceneQuery,event:props.id}}
   if(props.type==='event')return {name:'activity',query:{...query,tab:'events'}}
   if(props.type==='call')return {name:'activity',query:{...query,tab:'calls'}}
+  if(props.type==='trace')return {name:'activity',query:{...query,tab:'turns'}}
   if(props.type==='episode')return {name:'activity',query:{...query,tab:'turns',episode:props.id,id:undefined}}
-  if(props.type==='result')return {name:'activity',query:{scene:props.sceneId,tab:'events',result:props.id}}
+  if(props.type==='result')return {name:'activity',query:{scene:props.sceneId,tab:'events',result:props.id,
+    result_start:props.span?.start,result_end:props.span?.end,result_unit:props.span?.coordinate_unit}}
   return {name:'activity',query:{...query,tab:'events'}}
 })
+const to = computed(() => props.type==='file' && route.name==='job' && route.params.jobId===props.jobId
+  ? destination.value : withReturn(route, destination.value))
 const text = computed(()=>props.label || (props.type==='scene'?sceneName(props.id):props.id))
 async function copy() { try { await navigator.clipboard.writeText(props.id); copied.value=true;error.value='' } catch { error.value='未能复制，请在详情中选择编号复制' } }
 </script>

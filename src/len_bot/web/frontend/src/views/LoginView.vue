@@ -3,9 +3,22 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { login } from '../composables/useAuth.js'
 import { returnPath } from '../router/index.js'
+import { useRequestGuard } from '../composables/useRequestGuard.js'
 const route=useRoute(),router=useRouter()
 const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
-async function submit(){if(busy.value)return;busy.value=true;error.value='';try{await login(username.value,password.value);password.value='';await router.replace(returnPath(route.query.redirect))}catch(e){error.value=e.status===401?'用户名或密码不正确':e.message}finally{busy.value=false}}
+const guard=useRequestGuard()
+async function submit(){
+  if(busy.value)return
+  const fresh=guard(), destination=returnPath(route.query.redirect)
+  busy.value=true;error.value=''
+  try{
+    const accepted=await login(username.value,password.value)
+    if(!fresh())return
+    password.value=''
+    if(accepted)await router.replace(destination)
+  }catch(e){if(fresh())error.value=e.status===401?'用户名或密码不正确':e.message}
+  finally{if(fresh())busy.value=false}
+}
 </script>
 <template>
   <main class="login-page"><v-card class="login-card"><v-card-text>
