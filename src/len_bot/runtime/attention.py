@@ -6,6 +6,7 @@ import re
 
 from len_bot.cognition.projection import project_onebot_text
 from len_bot.events.models import EventType
+from len_bot.actions.models import receipt_delivery_status
 from len_bot.scenes.models import OriginalCoverage, PendingWake
 
 HUMAN_INPUTS = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED}
@@ -26,8 +27,8 @@ RUNTIME_INPUTS = {
 
 def is_real_send(event, bot_actor_id):
     return (event.event_type == EventType.MESSAGE_SENT and event.actor_id == bot_actor_id
-            and not event.metadata.get('simulated') and event.payload.get('delivery_status') == 'sent'
-            and not event.payload.get('delivery_unknown') and event.payload.get('origin_mode') == 'live')
+            and receipt_delivery_status(event.event_type, event.payload, event.metadata) == 'sent'
+            and event.payload.get('origin_mode') == 'live')
 
 
 class AttentionPolicy:

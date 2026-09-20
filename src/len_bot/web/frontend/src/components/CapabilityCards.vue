@@ -1,8 +1,12 @@
 <script setup>
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { fmtTime } from '../api.js'
 import EntityLink from './EntityLink.vue'
+import StatusBadge from './StatusBadge.vue'
+import { withReturn } from '../router/navigation.js'
 const props = defineProps({ data:Object, compact:Boolean })
+const route = useRoute()
 const items = computed(()=>props.data?.items || [])
 const lifecycle = value => ({enabled:'已装载',disabled:'未装载',unconfigured:'未配置',failed:'装载失败',error:'运行错误'}[value] || value)
 const requestStatus = value => ({callable:'请求资格通过，执行仍需当前工作与预算',unconfigured:'缺全局参数',plugin_disabled:'运行插件未启用',scene_not_enabled:'本群或发起者未开放',capability_denied:'缺当前授权'}[value] || value || '选择群后核对')
@@ -11,7 +15,7 @@ const requestStatus = value => ({callable:'请求资格通过，执行仍需当�
   <div class="capability-grid" :class="{compact}">
     <v-card v-for="item in items" :key="item.id" class="capability-card" variant="outlined">
       <v-card-text>
-        <div class="card-heading"><h2>{{ item.title }}</h2><v-chip size="small" variant="tonal">{{ item.recent_observation || item.recent_execution || item.recent_delivery ? '有历史记录' : '未验证' }}</v-chip></div>
+        <div class="card-heading"><h2>{{ item.title }}</h2><v-chip size="small" variant="tonal">{{ item.recent_observation || item.recent_execution || item.recent_delivery || item.recent_platform_action ? '有历史记录' : '未验证' }}</v-chip></div>
         <p class="muted mt-2">{{ item.entry }}</p>
         <div v-for="plugin in item.plugins" :key="plugin.id" class="plugin-fact">
           <strong>{{ plugin.name }}</strong>
@@ -20,7 +24,7 @@ const requestStatus = value => ({callable:'请求资格通过，执行仍需当�
           <p v-if="data.scene_id">本群：{{ plugin.scene_open?'已开放':'未开放' }} · {{ requestStatus(plugin.request_status) }}</p>
           <p v-if="plugin.last_error" class="error-text">{{ plugin.last_error }}</p>
           <ul v-if="plugin.actions?.length" class="plugin-actions"><li v-for="action in plugin.actions" :key="action.name">{{ action.name }} · {{ action.purpose }}</li></ul>
-          <v-btn v-if="!compact && plugin.state!=='absent'" size="small" variant="text" :to="{name:'plugins',query:{id:plugin.id}}">配置 {{ plugin.name }}</v-btn>
+          <v-btn v-if="!compact && plugin.state!=='absent'" size="small" variant="text" :to="withReturn(route,{name:'plugins',query:{id:plugin.id}})">配置 {{ plugin.name }}</v-btn>
         </div>
         <p v-if="item.missing_owners?.length" class="error-text">有未装入的实现：{{ item.missing_owners.join('、') }}</p>
         <dl v-if="!compact && item.deployment.length" class="facts"><template v-for="(fact,index) in item.deployment" :key="index"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></template></dl>
@@ -31,12 +35,13 @@ const requestStatus = value => ({callable:'请求资格通过，执行仍需当�
             <h3>最近事实</h3>
             <p v-if="item.recent_observation">工具 {{ item.recent_observation.tool_name }}：{{ item.recent_observation.status }} · {{ fmtTime(item.recent_observation.created_at) }} <EntityLink type="result" :id="item.recent_observation.id" :scene-id="item.recent_observation.scene_id" label="查看返回" :copyable="false" /></p>
             <p v-if="item.recent_execution">{{ item.recent_execution.worker_type }} 执行：{{ item.recent_execution.state }} · {{ fmtTime(item.recent_execution.accepted_at) }} <EntityLink type="job" :id="item.recent_execution.job_id" :scene-id="item.recent_execution.scene_id" label="查看原工作与执行" :copyable="false" /></p>
-            <p v-if="item.recent_delivery">平台行动：{{ item.recent_delivery.status || item.recent_delivery.event_type }} · {{ fmtTime(item.recent_delivery.timestamp) }} <EntityLink type="event" :id="item.recent_delivery.id" :scene-id="item.recent_delivery.scene_id" label="查看真实回执" :copyable="false" /></p>
-            <p v-if="!item.recent_observation&&!item.recent_execution&&!item.recent_delivery" class="muted">当前范围没有可展示的调用、执行或交付记录。</p>
+            <p v-if="item.recent_delivery">平台行动：<StatusBadge domain="delivery" :status="item.recent_delivery.status" /> · {{ fmtTime(item.recent_delivery.timestamp) }} <EntityLink type="event" :id="item.recent_delivery.id" :scene-id="item.recent_delivery.scene_id" label="查看原回执或观察记录" :copyable="false" /><span v-if="item.recent_delivery.status==='sent'&&item.recent_delivery.file_id"> · 平台文件 ID：{{ item.recent_delivery.file_id }}</span></p>
+            <p v-if="item.recent_platform_action">账号动作：<StatusBadge domain="platform_action" :status="item.recent_platform_action.status" /> · {{ fmtTime(item.recent_platform_action.updated_at) }}<br />账号 {{ item.recent_platform_action.account_uid }} · av{{ item.recent_platform_action.resource_id }} · {{ {bilibili_like:'点赞',bilibili_favorite:'收藏'}[item.recent_platform_action.action_type] || item.recent_platform_action.action_type }} · {{ item.recent_platform_action.reason }} <EntityLink type="job" :id="item.recent_platform_action.job_id" :scene-id="item.recent_platform_action.scene_id" label="查看原工作中的平台动作" :copyable="false" /><br /><span class="muted">这是当前场景范围最近的历史动作，不按所选请求者筛选，也不表示当前账号配置可用或 QQ 已送达。</span></p>
+            <p v-if="!item.recent_observation&&!item.recent_execution&&!item.recent_delivery&&!item.recent_platform_action" class="muted">当前范围没有可展示的调用、执行或交付记录。</p>
           </div>
         </template>
         <div class="actions mt-4">
-          <v-btn v-if="data.scene_id" size="small" variant="tonal" :to="{name:'scene',params:{sceneId:data.scene_id},query:{tab:'settings'}}">本群设置</v-btn>
+          <v-btn v-if="data.scene_id?.startsWith('group:') && !(route.name==='scene'&&route.params.sceneId===data.scene_id&&route.query.tab==='settings')" size="small" variant="tonal" :to="withReturn(route,{name:'scene',params:{sceneId:data.scene_id},query:{tab:'settings'}})">本群设置</v-btn>
         </div>
       </v-card-text>
     </v-card>

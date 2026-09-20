@@ -10,6 +10,7 @@ from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposit
 from len_bot.cognition.jobs import JobProposal
 from len_bot.config_store import SceneSettings
 from len_bot.config_edit import ConfigEdit, ConfigEditConflict
+from len_bot.scheduler.models import ReminderControlSnapshot
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -32,11 +33,13 @@ async def tool_results(scene_id: str, request: Request, page: int = Query(1,ge=1
     return await _service(request).tool_results(scene_id,page,page_size)
 
 @router.get("/tool-results/{result_id}")
-async def tool_result(result_id: str, scene_id: str, request: Request, offset: int = 0, user: str = Depends(get_current_user)):
+async def tool_result(result_id: str, scene_id: str, request: Request, offset: int = 0,
+                      end: Optional[int] = Query(None, ge=0), coordinate_unit: Literal['characters', 'records'] = 'characters',
+                      user: str = Depends(get_current_user)):
     if offset < 0:
         raise HTTPException(400, "offset must be nonnegative")
     try:
-        result = await _service(request).tool_result(scene_id, result_id, offset)
+        result = await _service(request).tool_result(scene_id, result_id, offset, end=end, coordinate_unit=coordinate_unit)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     if result is None:
@@ -102,7 +105,7 @@ async def pending_wakes(scene_id: str, request: Request, page: int = Query(1,ge=
 
 
 @router.get("/tasks")
-async def list_tasks(request: Request, status: str | None = None, scene_id: str | None = None, kind: Literal["reminder","agent_job","system"] = "reminder",
+async def list_tasks(request: Request, status: str | None = None, scene_id: str | None = None, kind: Literal["reminder","agent_job","system","deferred"] = "reminder",
                      page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
     return await _service(request).list_tasks(status=status,scene_id=scene_id,kind=kind,page=page,page_size=page_size)
 
@@ -141,6 +144,15 @@ async def job_detail(job_id: str, request: Request, scene_id: str | None = None,
     return result
 
 
+@router.get('/jobs/{job_id}/executions/{execution_id}')
+async def job_execution(job_id: str, execution_id: str, scene_id: str, request: Request,
+                        user: str = Depends(get_current_user)):
+    result = await _service(request).job_execution(scene_id, job_id, execution_id)
+    if result is None:
+        raise HTTPException(404, '未找到属于该场景及工作的执行记录')
+    return result
+
+
 @router.get("/jobs/{job_id}/files/{asset_id}/download")
 async def download_file_asset(job_id: str, asset_id: str, scene_id: str, request: Request,
                               user: str = Depends(get_current_user)):
@@ -163,6 +175,10 @@ async def workspace_artifact(job_id: str, scene_id: str, path: str, request: Req
             scene_id, job_id, path, offset, limit, execution_id=execution_id)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    except OSError as error:
+        raise HTTPException(409, '工作产物当前不可读取，未改读其他文件') from error
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作产物')
     return result
@@ -173,10 +189,12 @@ async def workspace_artifacts(job_id: str, scene_id: str, request: Request,
                               user: str = Depends(get_current_user)):
     try:
         result = await _service(request).workspace_artifacts(scene_id, job_id)
-    except RuntimeError as error:
+    except (ValueError, RuntimeError) as error:
         # A work without a confirmed snapshot is a state, not a server fault:
         # the panel should read the sentence, not a 500 and a traceback.
         raise HTTPException(409, str(error)) from error
+    except OSError as error:
+        raise HTTPException(409, '工作目录当前不可读取，不能据此报告没有产物') from error
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作目录')
     return result
@@ -190,6 +208,10 @@ async def workspace_artifact_download(job_id: str, scene_id: str, path: str, req
             scene_id, job_id, path, execution_id=execution_id)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    except OSError as error:
+        raise HTTPException(409, '工作产物当前不可下载，未改读其他文件') from error
     if result is None:
         raise HTTPException(404, '未找到属于该工作的工作产物')
     data, media_type = result
@@ -254,29 +276,42 @@ async def control_job(job_id: str, operation: str, req: JobControlRequest, reque
     return {"success": True, "job": await _service(request).job(job_id)}
 
 
-@router.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _edit_task(request, task_id, TaskProposal(operation="cancel", task_id=task_id), user)
+class TaskControlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    baseline: ReminderControlSnapshot
 
 
-class TaskUpdateRequest(BaseModel):
+class TaskUpdateRequest(TaskControlRequest):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     due_at: float = Field(allow_inf_nan=False)
-    description: str = ""
+    description: str = Field(min_length=1)
 
 
-async def _edit_task(request, task_id, proposal, operator, *, trigger_now=False):
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, req: TaskControlRequest, request: Request, user: str = Depends(get_current_user)):
+    return await _edit_task(request, task_id, TaskProposal(operation="cancel", task_id=task_id), user, baseline=req.baseline)
+
+
+async def _edit_task(request, task_id, proposal, operator, *, baseline: ReminderControlSnapshot, trigger_now=False):
     runtime = request.app.state.runtime
-    task = await _service(request).get_task(task_id)
+    if baseline.id != task_id:
+        raise HTTPException(422, '提醒原值必须属于本次选择的对象')
+    task = await _service(request).get_task(task_id, baseline.scene_id)
     if task is None:
         raise HTTPException(status_code=404, detail="未找到这个任务")
     if task["payload"].get("kind") == "agent_job":
         raise HTTPException(409, "信息工作需要通过带版本号的工作控制接口修改")
     if task['payload'].get('kind') in {'heartbeat', 'heartbeat_occupancy', 'interest_share'}:
         raise HTTPException(409, '系统调度槽由心跳或兴趣分享配置管理，不能当作提醒修改')
+    if task['payload'].get('kind') == 'deferred_delivery':
+        raise HTTPException(409, '这是原行动的延期交付，不是新提醒；沿原工作或提醒控制，不能在此修改或立即重放')
     if trigger_now and task["status"] != "pending":
         raise HTTPException(409, "只有待执行任务可以立即触发")
+    proposal.expected = baseline
+    changes = proposal.model_dump(mode='json', exclude_none=True, exclude={"source_event_ids", "origin_mode"})
+    changes['expected'] = baseline.model_dump(mode='json')
     event = await runtime.record_operator_event(task["scene_id"], "task_trigger_now" if trigger_now else f"task_{proposal.operation}", operator,
-        {"task_id": task_id, "changes": proposal.model_dump(exclude_none=True, exclude={"source_event_ids", "origin_mode"})})
+        {"task_id": task_id, "changes": changes})
     proposal.source_event_ids = [event.id]
     if trigger_now:
         proposal.due_at = _service(request).current_time() + 1.0
@@ -291,12 +326,12 @@ async def _edit_task(request, task_id, proposal, operator, *, trigger_now=False)
 @router.post("/tasks/{task_id}/update")
 async def update_task(task_id: str, req: TaskUpdateRequest, request: Request, user: str = Depends(get_current_user)):
     return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id,
-                                                         due_at=req.due_at, description=req.description), user)
+                                                         due_at=req.due_at, description=req.description), user, baseline=req.baseline)
 
 
 @router.post("/tasks/{task_id}/trigger_now")
-async def trigger_task_now(task_id: str, request: Request, user: str = Depends(get_current_user)):
-    return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id), user, trigger_now=True)
+async def trigger_task_now(task_id: str, req: TaskControlRequest, request: Request, user: str = Depends(get_current_user)):
+    return await _edit_task(request, task_id, TaskProposal(operation="update", task_id=task_id), user, baseline=req.baseline, trigger_now=True)
 
 
 @router.get("/loops")
@@ -327,8 +362,9 @@ async def resolve_loop(loop_id: str, request: Request, user: str = Depends(get_c
 
 @router.get("/memories")
 async def list_memories(request: Request, status: str | None = None, scope: str | None = None, subject: str | None = None, kind: str | None = None,
-                        query: str = "", page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
-    return await _service(request).list_memories(status=status,scope=scope,subject=subject,kind=kind,query=query,page=page,page_size=page_size)
+                        query: str = "", validity: Literal['current', 'expired'] | None = None,
+                        page: int = Query(1,ge=1), page_size: int = Query(30,ge=1,le=100), user: str = Depends(get_current_user)):
+    return await _service(request).list_memories(status=status,scope=scope,subject=subject,kind=kind,query=query,validity=validity,page=page,page_size=page_size)
 
 @router.get("/memory-index")
 async def memory_index_status(scene_id: str, request: Request, user: str = Depends(get_current_user)):
@@ -341,12 +377,18 @@ async def rebuild_memory_index(scene_id: str, request: Request, user: str = Depe
         raise HTTPException(409, "索引尚未初始化")
     if not runtime.semantic_retrieval_enabled(scene_id):
         raise HTTPException(409, "该场景未开启语义检索；不会向第三方发送其文本")
+    if runtime.memory_index.profile is None or runtime.memory_index.retrieval_models is None:
+        raise HTTPException(409, "嵌入绑定或检索客户端未配置；未开始重建")
     result = await runtime.memory_index.rebuild(scene_id, request_guard=runtime.semantic_index_guard(scene_id))
+    await runtime.event_store.save_trace(kind='memory_index_rebuild', scene_id=scene_id,
+        ref_id='memory-rebuild:'+uuid.uuid4().hex, payload=result)
     if result.get('status') == 'cancelled':
         await runtime.event_store.save_trace(kind='memory_index_cancelled', scene_id=scene_id,
             ref_id='memory-rebuild:'+uuid.uuid4().hex, payload=result)
         raise HTTPException(409, "重建期间场景已关闭语义检索；未开始的批次已停止")
-    if result.get('status') not in {'indexed', 'disabled'}:
+    if result.get('status') == 'disabled':
+        raise HTTPException(409, "嵌入绑定或检索客户端已不可用；未完成重建")
+    if result.get('status') != 'indexed':
         raise HTTPException(502, result.get('error') or '索引构建失败')
     return result
 
@@ -359,10 +401,11 @@ async def memory_detail(memory_id: str, request: Request, scope: str | None = No
 
 @router.get("/memories/{memory_id}/chain")
 async def memory_chain(memory_id: str, request: Request, scope: str | None = None, user: str = Depends(get_current_user)):
+    sampled_at = _service(request).current_time()
     chain = await _service(request).memory_chain(memory_id,scope)
     if not chain:
         raise HTTPException(status_code=404, detail="Memory not found")
-    return {"chain": chain}
+    return {"chain": chain, "sampled_at": sampled_at}
 
 
 @router.post("/memories/{memory_id}/refute")
@@ -490,11 +533,20 @@ async def publish_skill(skill_id: str, req: SkillPublishRequest, request: Reques
         raise HTTPException(404, "未找到本场景的技能版本")
     await runtime.record_operator_event(req.scene_id, "skill_publish", user,
         {"skill_id": skill_id, "expected_version": req.expected_version})
+    target = {"skill_id":skill_id, "scene_id":req.scene_id, "version":req.expected_version}
     try:
         await runtime.event_store.publish_skill(skill_id, req.scene_id, req.expected_version)
     except ValueError as error:
-        raise HTTPException(409, str(error)) from error
-    return {"success": True, "skill": await _service(request).skill(skill_id, req.scene_id)}
+        raise HTTPException(409, {"message":str(error), "skill_published":False, **target}) from error
+    try:
+        saved = await _service(request).skill(skill_id, req.scene_id, req.expected_version)
+        if (saved is None or saved['id'] != skill_id or saved['scene_id'] != req.scene_id
+                or saved['version'] != req.expected_version or saved['scope'] != 'global-safe'):
+            raise ValueError('Published skill version no longer readable as public')
+    except Exception as error:
+        raise HTTPException(409, {"message":"指定方法版本已公开，但保存值读回失败：" + type(error).__name__,
+            "skill_published":True, **target, "phase":"readback"}) from error
+    return {"success": True, "skill": saved}
 
 
 class HistoryRetryRequest(BaseModel):

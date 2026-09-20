@@ -5,6 +5,7 @@ import uuid
 from html import unescape
 
 from len_bot.events.models import Event, EventType
+from len_bot.media.models import CuratedMediaBaseline, MediaEditConflict
 
 
 PALETTE_UNCHANGED = object()
@@ -178,22 +179,39 @@ class MediaStoreMixin:
                 raise
         return event
 
-    async def edit_media(self, asset_id, scope, description, tags, enabled, *, palette_order=PALETTE_UNCHANGED):
+    async def edit_media(self, asset_id, scope, description, tags, enabled, *, baseline: CuratedMediaBaseline, palette_order=PALETTE_UNCHANGED):
+        if baseline.id != asset_id or baseline.scope != scope:
+            raise ValueError('素材原值不属于本次编辑对象与范围')
         if palette_order is not PALETTE_UNCHANGED and palette_order is not None:
             if isinstance(palette_order, bool) or not isinstance(palette_order, int) or palette_order < 0:
                 raise ValueError("Palette order must be a nonnegative integer or null")
-        payload = {"asset_id": asset_id, "enabled": enabled, "description": description, "tags": tags}
+        desired = {"enabled": enabled, "description": description, "tags": tags}
         if palette_order is not PALETTE_UNCHANGED:
-            payload["palette_order"] = palette_order
-        event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scope, actor_id="operator:media", timestamp=self.clock(),
-            payload=payload)
+            desired["palette_order"] = palette_order
         async with self._write_lock:
             try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                current = await self.get_media(asset_id, [scope], include_disabled=True)
+                if current is None or not current['curated']:
+                    raise ValueError('Curated media asset not found in selected scope')
+                if current['source_event_id'] != baseline.source_event_id or current['created_at'] != baseline.created_at:
+                    raise MediaEditConflict('identity')
+                merged = {}
+                for field, value in desired.items():
+                    original = getattr(baseline, field)
+                    if value == original:
+                        merged[field] = current[field]
+                    elif current[field] != original:
+                        raise MediaEditConflict(field)
+                    else:
+                        merged[field] = value
+                event = Event(event_type=EventType.MEDIA_UPDATED, scene_id=scope, actor_id='operator:media', timestamp=self.clock(),
+                    payload={'asset_id':asset_id, **merged})
                 fields = "description=?,tags_json=?,enabled=?"
-                params = [description, json.dumps(tags, ensure_ascii=False), int(enabled)]
+                params = [merged['description'], json.dumps(merged['tags'], ensure_ascii=False), int(merged['enabled'])]
                 if palette_order is not PALETTE_UNCHANGED:
                     fields += ",palette_order=?"
-                    params.append(palette_order)
+                    params.append(merged['palette_order'])
                 cursor = await self._db.execute(f"UPDATE media_assets SET {fields} WHERE id=? AND scope=? AND curated=1",
                     (*params, asset_id, scope))
                 if cursor.rowcount != 1:

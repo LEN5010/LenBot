@@ -167,7 +167,7 @@ LOCAL_TOOLS = [
     read_tool('query_timeline', '读取本群指定时间内的消息。'),
     read_tool('query_person_history', '读取本群人物U以前说过的话。'),
     read_tool('find_person', '按账号、昵称、群名片或已保存称呼定位本群人物；返回身份U和来源位置，同名分别列出，不读取全群原话。'),
-    read_tool('query_memory', '按语义读取本群认识及其来源，包括很久以前形成的；已撤销的认识不是当前事实。'),
+    read_tool('query_memory', '按对象、类型、时间与有效状态读取本群认识及来源，包括很久以前形成的。以词面查询为基础，只在当前启用且有绑定时补语义候选；历史版本不是当前事实。'),
     read_tool('list_public_interests', '读取已允许公共发布的兴趣；与本群认识分开，不含群成员或私聊资料。'),
     read_tool('search_history_summaries', '按语义定位较早的已完成历史摘要，可及远早于当前窗口的对话；结果只是定位，精确原话仍需回读。窗口里找不到的旧事先用它定位，再回读原话。'),
     read_tool('query_jobs', '对话中省略job_id读取本群工作的简短控制目录；指定已提供工作J读取详情字符页。目录不是完整结果，按detail_next_call或next_call继续已保存正文。'),
@@ -257,17 +257,13 @@ class RetrievalToolkit:
 
     def get_tool_definitions(self):
         definitions=copy.deepcopy(LOCAL_TOOLS)
-        # search_history_summaries is the only semantic route to conversations older
-        # than the window, so hiding it behind tool_search left it at zero calls in
-        # 923 turns while the window kept sliding. It stays on the list.
+        # High-frequency recall stays visible; discovery expands low-frequency reads.
         deferred_local = {'search_messages', 'query_timeline', 'query_person_history'}
         if self.call_context().role == 'conversation':
             definitions = [item for item in definitions if item['function']['name'] not in deferred_local
                            or item['function']['name'] in self.discovered_tools]
-        if self.context and self.context.pending_wakes():
+        if self.context:
             definitions.append(copy.deepcopy(READ_PENDING_WAKES))
-        if self.context and (self.references.partial_events
-                             or set(self.references.events.values()) - self.references.read_events):
             definitions.append(copy.deepcopy(READ_MESSAGE_RANGE))
         for definition in definitions:
             function = definition['function']
@@ -399,7 +395,7 @@ class RetrievalToolkit:
                         '资料不是记录数组或offset超出记录数；按返回的坐标单位续读。','invalid_arguments', stage='arguments',
                         details=[ToolFieldError(loc=['coordinate_unit','offset'],type='invalid_record_range',
                             message='记录坐标与所读资料或范围不一致')]), tool_call_id=tool_call_id)
-            return ObservationPage(call[0] if call and (args['coordinate_unit']=='records' or call[0]=='query_jobs') else 'read_tool_result',result,offset=offset,limit=limit,
+            return ObservationPage(call[0] if call and (args['coordinate_unit']=='records' or call[0] in {'query_jobs','query_memory'}) else 'read_tool_result',result,offset=offset,limit=limit,
                                    coordinate_unit=args['coordinate_unit'])
         if name=='tool_search':
             matches, categories = self.plugin_host.search_tools(args['query'], self.call_context(),
@@ -607,6 +603,22 @@ class RetrievalToolkit:
     async def _present(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
+        if name == 'query_memory' and result.status in {'ok', 'partial', 'no_results'}:
+            if not self.memory_store:
+                return ToolResult.failure('认识账本不可用，不能确认保存查询的当前状态', 'memory_unavailable', stage='presentation')
+            saved = json.loads(result.content)
+            current = {item.id: item for item in await self.memory_store.get_memories_by_ids(
+                [item['id'] for item in saved], self.allowed_scopes, include_superseded=True)}
+            now = self.memory_store.clock()
+            changed = [item['id'] for item in saved
+                       if item['id'] not in current or current[item['id']].revision != item['revision']
+                       or (item['status'] == 'active' and item['expires_at'] is not None
+                           and result.fetched_at < item['expires_at'] <= now)]
+            if changed:
+                return ToolResult.failure(
+                    f'保存查询中有 {len(changed)} 条认识已修订、到期或不再可读；旧正文不能当作当前认识。'
+                    '请按原对象与范围重新 query_memory；保存快照与原话仍保留，不自动重查。',
+                    'stale_memory_result', stage='presentation')
         if (self.context and name == 'query_jobs' and coordinate_unit == 'characters'
                 and result.status in {'ok', 'partial', 'no_results'}):
             return self._job_character_page(result, offset, limit)
@@ -721,7 +733,7 @@ class RetrievalToolkit:
                 item['subject']=refs.register_actor(item['subject'])
                 item['evidence']=[refs.register_event_locator(e) for e in item['evidence']]
                 item['revision_evidence']=[refs.register_event_locator(e) for e in item['revision_evidence']]
-                return {'ref':ref,**item}
+                return {'ref':ref,**item,'effective_at_presentation':editable}
             if name == 'search_history_summaries':
                 item['batch_id'] = item.pop('id')
                 item['result_id'] = shown.result_id
@@ -843,6 +855,14 @@ class RetrievalToolkit:
                 if merged and start<=merged[-1][1]:merged[-1]=(merged[-1][0],max(merged[-1][1],end))
                 else:merged.append((start,end))
             units[item['coordinate_unit']]=merged
+            original = self.observations.get(item['result_id'])
+            if self.context and original is not None and original.coverage == 'current_jobs':
+                jobs = json.loads(original.content)
+                for index, (job, (left, right)) in enumerate(zip(jobs, self._record_ranges(original.content))):
+                    covered = (any(start <= left and right <= end for start, end in units.get('characters', []))
+                        or any(start <= index < end for start, end in units.get('records', [])))
+                    if covered and job.get('result'):
+                        self.context.confirmed_work_results.add((job['id'], job['revision']))
 
     def restore_presentations(self,reads):
         self.adopt_presentations([{'result_id':ident,'coordinate_unit':unit,'start':start,'end':end}
@@ -1078,6 +1098,9 @@ class RetrievalToolkit:
                 start_time=args['start_time'],end_time=args['end_time'],subject_aliases=aliases)
             semantic_used = False
             semantic_partial = False
+            rerank_used = False
+            lexical_ids = [item.id for item in memories]
+            semantic = []
             if args.get('query') and retrieval and profiles and profiles.embedding and self.context.runtime.memory_index and self.context.runtime.semantic_retrieval_enabled(self.default_scene_id):
                 semantic_guard = self.context.runtime.semantic_index_guard(self.default_scene_id)
                 if not semantic_guard():
@@ -1097,7 +1120,6 @@ class RetrievalToolkit:
                     subject=args.get('subject'), kind=args.get('kind'),
                     start_time=args.get('start_time'), end_time=args.get('end_time'))
                 by_id = {item.id:item for item in memories}
-                lexical_ids = [item.id for item in memories]
                 for item in semantic:
                     by_id.setdefault(item.id, item)
                 lexical_rank = {item_id: index + 1 for index, item_id in enumerate(lexical_ids)}
@@ -1113,19 +1135,38 @@ class RetrievalToolkit:
                         scene_id=self.default_scene_id, request_guard=semantic_guard)
                     ordered = list(by_id.values())
                     memories = [ordered[index] for index in ranked_ids[:self.config.retrieval_default_limit]]
+                    rerank_used = True
                 if not semantic_guard():
                     raise RetrievalOptOut('该场景已关闭语义检索')
-                await self.event_store.save_trace(kind='memory_retrieval', scene_id=self.default_scene_id,
-                    ref_id='memory-query:'+uuid.uuid4().hex,
-                    payload={'query': args['query'], 'subject': args.get('subject'), 'kind': args.get('kind'),
-                             'start_time': args.get('start_time'), 'end_time': args.get('end_time'),
-                             'lexical_candidates': len(lexical_ids), 'semantic_candidates': len(semantic),
-                             'rerank': bool(profiles.rerank and len(by_id) > self.config.retrieval_default_limit),
-                             'index_partial': semantic_partial,
-                             'candidate_memory_ids': [item.id for item in memories]})
-            return ToolResult(status='partial' if semantic_partial else ('ok' if memories else 'no_results'),
+            # Candidate selection can span remote embedding/rerank calls. Only
+            # the same still-eligible ledger revision may become this result.
+            candidates = {item.id: item.revision for item in memories}
+            rechecked_at = self.memory_store.clock()
+            latest = await self.memory_store.get_memories_by_ids(
+                list(candidates), scopes, include_superseded=args['include_history'],
+                subject=args.get('subject'), kind=args.get('kind'),
+                start_time=args.get('start_time'), end_time=args.get('end_time'))
+            memories = [item for item in latest if item.revision == candidates[item.id]]
+            returned = {item.id for item in memories}
+            changed_ids = [ident for ident in candidates if ident not in returned]
+            await self.event_store.save_trace(kind='memory_retrieval', scene_id=self.default_scene_id,
+                ref_id='memory-query:'+uuid.uuid4().hex,
+                payload={'query': args.get('query'), 'subject': args.get('subject'), 'kind': args.get('kind'),
+                         'start_time': args.get('start_time'), 'end_time': args.get('end_time'),
+                         'include_history': args['include_history'],
+                         'lexical_candidates': len(lexical_ids), 'semantic_candidates': len(semantic),
+                         'semantic_used': semantic_used, 'rerank': rerank_used, 'index_partial': semantic_partial,
+                         'candidate_memory_ids': list(candidates), 'candidate_revisions': candidates,
+                         'returned_memory_ids': [item.id for item in memories],
+                         'discarded_changed_memory_ids': changed_ids})
+            coverage = 'memory_ledger+semantic' if semantic_used else 'memory_ledger'
+            if args['include_history']:
+                coverage += '; includes historical states, only active and unexpired records are current'
+            if changed_ids:
+                coverage += '; changed candidates omitted, not proof of no relevant memory'
+            return ToolResult(status='partial' if semantic_partial or changed_ids else ('ok' if memories else 'no_results'),
                               content=json.dumps([m.model_dump(mode='json') for m in memories], ensure_ascii=False),
-                              coverage='memory_ledger+semantic' if semantic_used else 'memory_ledger', evidence_kind='retrieval')
+                              coverage=coverage, evidence_kind='retrieval', fetched_at=rechecked_at)
         if rows is not None:
             enriched=await store.project_reply_context(self.default_scene_id,[Event.model_validate(r) for r in rows],through_rowid=self.cutoff)
             if self.context:

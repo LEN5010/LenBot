@@ -4,7 +4,7 @@
 
 ## 开始
 
-从项目根目录安装依赖，复制样例作为实际根配置，再启动：
+首次初始化时，从项目根目录安装依赖，仅在尚无实际配置时复制样例。填写实际连接和身份后，取得当次启动授权再运行：
 
 ```sh
 uv sync
@@ -46,12 +46,11 @@ uv run len-bot
 |---|---|
 | 消息、资料、工作、执行、提交与回执如何衔接 | [当前架构](docs/architecture.md) |
 | 每轮请求怎么拼、窗口为什么是锯齿、丢掉的原话怎么取回 | [上下文装配](docs/context.md) |
-| 缓存命中率的未决问题、已否定的假设与测量口径缺陷 | [待决问题](docs/serious-issue.md) |
+| 缓存调查结论、统计口径与尚未确定的原因 | [缓存问题交接](docs/serious-issue.md) |
 | 配置、启动、停机、备份与回退 | [运行手册](docs/operations.md) |
 | Linux Compose、Gateway 服务、卷映射与发布记录 | [部署材料](deploy/linux/README.md) |
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
 | 工程约束 | [AGENTS.md](AGENTS.md) |
-| 社会 Agent 后续目标与提交依赖 | [完整实施计划](docs/LenBot_社会Agent_完整实施计划_7a4152d.md) |
-| 本轮文件交付、旁听与群配置施工合同 | [本轮计划](docs/LenBot_文件交付与群聊快速配置实施计划_3eadcad.md) |
+| 群聊体验、前端、查证、记忆与全部模块的改造设计、批次和验收 | [完整改造计划](docs/LenBot_群聊体验与可靠执行_完整改造计划_20260920.md) |
 | 本轮状态、下一步和实际核对结果 | [当前任务](docs/iteration.md) |
 | 人格与素材的原始资料 | [人格来源资料](docs/persona/diana/README.md) |

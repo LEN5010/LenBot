@@ -175,13 +175,16 @@ class SkillCandidate(BaseModel):
     expected_version: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=100)
     lesson: str = Field(min_length=1, max_length=2000)
-    result_ids: list[str] = Field(min_length=1, max_length=12)
+    result_ids: list[str] = Field(default_factory=list, max_length=12,
+        description="本工作实际已读的工具观察；只有明确纠正时可为空，方法正文不独立证明方法正确")
     correction_event_ids: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def revision_pair(self):
         if (self.skill_id is None) != (self.expected_version is None):
             raise ValueError("Skill revision needs skill_id and expected_version together")
+        if not self.result_ids and not self.correction_event_ids:
+            raise ValueError("Skill candidate needs an actual observation or original correction")
         return self
 
 

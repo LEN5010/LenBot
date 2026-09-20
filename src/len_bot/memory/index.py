@@ -164,7 +164,7 @@ class MemoryIndex:
         prefix = f"{self.profile.provider_id}:{self.profile.model}:"
         if self.profile.dimension:
             return f" AND {alias}.profile_generation=? AND {alias}.dimension=?", [f"{prefix}{self.profile.dimension}", self.profile.dimension]
-        return f" AND {alias}.profile_generation LIKE ?", [f"{prefix}%"]
+        return f" AND substr({alias}.profile_generation,1,?)=?", [len(prefix), prefix]
 
     async def coverage(self, scene_id):
         now = self.clock()

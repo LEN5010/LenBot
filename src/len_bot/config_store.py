@@ -197,9 +197,15 @@ class RootConfig(BaseModel):
                 raise ValueError(f"plugins.{name}.config: {details}") from None
             setting.config = parsed.model_dump()
             setting._parsed_config = parsed
+        # Resolve dependencies only after every plugin's own parameters have
+        # been parsed, regardless of their order in the root JSON object.
+        for name, setting in self.plugins.items():
+            if setting.parsed_config is None:
+                continue
+            spec = self._catalog.entries[name].spec
             if spec.validate_config:
                 try:
-                    spec.validate_config(parsed, self)
+                    spec.validate_config(setting.parsed_config, self)
                 except ValueError as error:
                     raise ValueError(f'plugins.{name}: {error}') from None
         for scene_id, scene in self.scenes.items():

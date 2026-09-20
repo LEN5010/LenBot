@@ -24,6 +24,9 @@ class EpisodeMailbox:
         self.handled_source_ids: set[str] = set()
         # Filled only after a real model response confirms the final request.
         self.provided_original_ranges: dict[str, OriginalCoverage] = {}
+        # Confirmed tool-body ranges, projected from the current retrieval loop.
+        self.provided_result_ranges: dict[str, dict[str, list[tuple[int, int]]]] = {}
+        self.provided_work_results: set[tuple[str, int]] = set()
         self.messages_committed = 0
         self.next_checkpoint = 0
         self._cancelled: bool = False

@@ -17,6 +17,25 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReminderControlSnapshot(BaseModel):
+    """The existing reminder facts an editor actually selected, not a new version."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    id: str
+    scene_id: str
+    description: str
+    due_at: float = Field(allow_inf_nan=False)
+    status: TaskStatus
+    created_at: float = Field(allow_inf_nan=False)
+    source_event_id: str
+    wake_event_type: str | None
+    wake_match: dict[str, Any] | None
+    trigger_event_id: str | None
+
+    @classmethod
+    def from_task(cls, task: dict):
+        return cls.model_validate({name: task[name] for name in cls.model_fields})
+
+
 def task_delivery_available(status: TaskStatus | str, payload: dict[str, Any]) -> bool:
     """Mirror the existing delivery claim; seeing a task never makes it ready."""
     return (status in {TaskStatus.PROCESSING, TaskStatus.RESULT_READY}

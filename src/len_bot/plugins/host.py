@@ -505,9 +505,15 @@ class PluginHost:
         """Public membership lookup for lifecycle and configuration callers."""
         return plugin_id in self._plugins
 
+    def _workspace_plugin_for_panel(self):
+        tool = self._tools.get('run_python')
+        if tool is None or tool.plugin_id not in {'workspace', 'python_workspace'}:
+            return None
+        return self._plugins.get(tool.plugin_id)
+
     async def read_workspace_artifact(self, scene_id: str, job_id: str, path: str, offset: int, limit: int,
                                       execution_id: str | None = None):
-        plugin = self._plugins.get('workspace')
+        plugin = self._workspace_plugin_for_panel()
         if plugin is not None and hasattr(plugin, 'artifact_for_job'):
             return await plugin.artifact_for_job(scene_id, job_id, path, offset, limit,
                                                  execution_id=execution_id)
@@ -516,7 +522,7 @@ class PluginHost:
                                               execution_id=execution_id) if service else None
 
     async def list_workspace_artifacts(self, scene_id: str, job_id: str):
-        plugin = self._plugins.get('workspace')
+        plugin = self._workspace_plugin_for_panel()
         if plugin is not None and hasattr(plugin, 'artifacts_for_job'):
             return await plugin.artifacts_for_job(scene_id, job_id)
         async with self._workspace_service_for_panel() as service:
@@ -524,7 +530,7 @@ class PluginHost:
 
     async def read_workspace_artifact_bytes(self, scene_id: str, job_id: str, path: str,
                                            execution_id: str | None = None):
-        plugin = self._plugins.get('workspace')
+        plugin = self._workspace_plugin_for_panel()
         if plugin is not None and hasattr(plugin, 'artifact_bytes_for_job'):
             return await plugin.artifact_bytes_for_job(scene_id, job_id, path,
                                                        execution_id=execution_id)
@@ -558,16 +564,18 @@ class PluginHost:
         read media refuses such an import instead of exporting less than the
         caller asked for.
         """
-        setting = self.runtime.config_store.current.plugins.get('workspace')
-        if not setting or setting.config is None or setting.parsed_config is None:
+        from len_bot.plugins.builtin.workspace.config import configured_workspace
+        selected = configured_workspace(self.runtime.config_store.current)
+        if selected is None:
             yield None
             return
+        plugin_id, config = selected
         from len_bot.plugins.builtin.workspace.plugin import build_workspace_service
         context_dir = self.runtime.config.db_path
         service = build_workspace_service(
-            setting.parsed_config,
-            Path(context_dir).resolve().parent / 'plugins' / 'workspace',
-            self.runtime.event_store, 'workspace')
+            config,
+            Path(context_dir).resolve().parent / 'plugins' / plugin_id,
+            self.runtime.event_store, plugin_id)
         try:
             yield service
         finally:
