@@ -156,7 +156,9 @@ PluginAgentRequest, PluginWorkSpec, PluginWorkRevision, PluginWorkContext,
 JobResult, PreparedWorkDelivery
 ```
 
-**没有版本号、没有兼容性声明、没有 deprecated 标记。** 路线书第 6.1 节要求保留
+共 **28** 个符号（脚本按 `__all__` 逐项核对；与 `api.py:2-11` 的导入完全一致，
+无「导入未导出」项）。**没有版本号、没有兼容性声明、没有 deprecated 标记**：
+全仓 `api_version` 只出现在两份计划文本中。路线书第 6.1 节要求保留
 `plugins/api.py`、`PluginSpec`、`BasePlugin`、`PluginCallContext` 及已存在的工具、事件、
 Agent 调用、工作和提交入口，**不重新发明 SDK、不新增重复 manifest**。
 
@@ -180,7 +182,17 @@ Agent 调用、工作和提交入口，**不重新发明 SDK、不新增重复 m
 ### 待维护者确认
 
 1. 是否采纳 `api_version` 世代，以及首版世代号与支持政策。
-2. 现有 29 个导出符号中，哪些属于「常用能力入口」（建议收窄），哪些降级为内部实现。
+2. 28 个导出符号中，哪些属于「常用能力入口」（建议收窄），哪些降级为内部实现。
+   按 AST 核对，**28 个里只有 13 个被任何地方以 `from len_bot.plugins.api import …`
+   的方式导入**；其余 15 个（六个 Hook 视图类、`Command`、`RegexText`、`EventType`、
+   `PluginOrigin`、`PluginAgentRequest`、`PluginWorkSpec`、`PluginWorkRevision`、
+   `PluginWorkContext`、`ToolNextCall`）从未经公共入口被导入。其中一部分是经
+   `plugins.work` / `plugins.agent` 等内部模块使用的（例如
+   `group_summary/work.py:9`、`cognition/models.py:8`），恰好说明**公共面与内部面
+   当前重叠**：同一样本既能从 `api.py` 取，也能从内部模块取，边界未收敛。
+3. 公共面已泄漏内核对象：`PluginContext.event_store`（`base.py:97`）、
+   `PluginContext.media_service`（`base.py:102`）、`PluginCallContext.ledger`
+   （`models.py:34`）。是否在为插件提供限定范围服务的同时收回这些直接引用。
 
 ---
 
@@ -191,6 +203,21 @@ Agent 调用、工作和提交入口，**不重新发明 SDK、不新增重复 m
 - 未替维护者决定许可证、保留政策或发布范围（见
   [授权清点](s0-04-06-license-and-support.md) 的「需要维护者决定的事项」）。
 - 未把本草案当作实现完成或发布授权。
+
+## 五之补：S0-03 核对暴露的一处静态差异（需维护者决定是否另开任务）
+
+`tests/test_persona_upgrade.py` 与当前 `src/len_bot/cognition/diana.py`、
+`src/len_bot/events/store.py` **静态不一致**：
+
+- `:12` import `PREVIOUS_PERSONA, PREVIOUS_EXAMPLES`，但 `diana.py` 中没有这两个名字。
+- `:56` 使用 `PREVIOUS_EXAMPLES['diana-v2:1']`。
+- `:60` 起调用 `store.apply_diana_persona(...)`，但 `events/store.py` 只有
+  `preview_diana_persona`（`:988`），没有 `apply_` 前缀的方法。
+
+本批遵守当前工程约束（不新增、不修改、**不运行**测试），因此这里只登记**静态差异**，
+不判断实际失败原因，也不据此推断人格升级路径已损坏。它的意义在于：任务卡 S0-03 的验收
+条件之一是「现有人格原文和资源绑定不自动改动」。该验收若要成立，需要先由维护者决定这是
+废弃测试、待补实现，还是已迁移到别处；这属于维护者决定，不由开发者自行改测试或补实现。
 
 ## 六、下一步
 
