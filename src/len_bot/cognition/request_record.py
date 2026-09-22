@@ -1,0 +1,66 @@
+"""Per-call locations at the client boundary, without message bodies."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class _RequestLocation:
+    event_id: str | None = None
+    ref: str | None = None
+    text_range: dict[str, int] | None = None
+    original_ranges: list[dict[str, str | int]] = field(default_factory=list)
+    omitted: bool = False
+    omission_reason: str | None = None
+    image_assets: dict[int, str] = field(default_factory=dict)
+
+
+def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
+    """Remove the private sidecar from a copied request before estimation/send.
+
+    Locations are attached after final context fitting. Other callers have no
+    sidecar: their final roles and media positions are still observable, while
+    source references stay absent. No body is parsed to guess a source.
+    """
+    messages = []
+    for index, message in enumerate(request['messages']):
+        location = message.pop('_request_location', None)
+        if location is not None and not isinstance(location, _RequestLocation):
+            raise TypeError('Invalid internal request location')
+        content = message.get('content')
+        images = []
+        if isinstance(content, list):
+            for part_index, part in enumerate(content):
+                if isinstance(part, dict) and part.get('type') in {'image_url', 'input_image'}:
+                    images.append({'part_index': part_index, 'type': part['type'],
+                        'asset_id': location.image_assets.get(part_index) if location else None})
+        messages.append({
+            'index': index, 'role': message['role'], 'section': message.get('_context_section'),
+            'event_id': location.event_id if location else None,
+            'ref': location.ref if location else None,
+            'text_range': location.text_range if location else None,
+            'original_ranges': location.original_ranges if location else None,
+            'omitted': location.omitted if location else None,
+            'omission_reason': location.omission_reason if location else None,
+            'tool_call_id': message.get('tool_call_id'),
+            'assistant_tool_calls': [{'id': call.get('id'), 'name': (call.get('function') or {}).get('name')}
+                for call in message.get('tool_calls') or []],
+            'text_chars': len(content) if isinstance(content, str) else None,
+            'part_types': [part.get('type') if isinstance(part, dict) else None for part in content]
+                if isinstance(content, list) else None,
+            'images': images,
+        })
+    choice = request['tool_choice']
+    return {
+        'format_version': 1,
+        'boundary': 'before_client_send',
+        'settings': {key: request.get(key) for key in ('model', 'reasoning_effort', 'max_completion_tokens', 'stream')},
+        'tool_choice': ({'type': choice.get('type'), 'name': (choice.get('function') or {}).get('name')}
+            if isinstance(choice, dict) else choice),
+        'messages': messages,
+        'tools': [{'index': index, 'type': tool.get('type'), 'name': (tool.get('function') or {}).get('name')}
+            for index, tool in enumerate(request['tools'])],
+        'not_retained': ['message_bodies', 'prompt_versions', 'tool_definition_versions',
+                         'tool_arguments', 'media_bodies', 'provider_wire_body'],
+    }

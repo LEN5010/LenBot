@@ -1,5 +1,7 @@
 # S4—S7 现状索引（只读源码核对）
 
+> 基线资料：以下事实与源码行号限定于文中标明的核对时点；任务当前状态只见[路线入口](README.md)，后续实施见[当前任务](../iteration.md)。草案未确认部分不视为已采用。
+
 - **核对 commit**：`ad41a5a71a4b5ec3693f4cc846342964c5b0b8c6`（分支 `feat/s0-product-contract`，基线业务代码 `9178c34`）
 - **核对时间**：2026-09-21T14:32Z（本机 23:32 JST）
 - **只读方式**：`git rev-parse/log/show/branch/tag/ls-files/check-ignore`、`grep`、`read`、`ls`、`find`、`wc`。未运行测试／夹具／探针／回放／截图／压力／故障注入，未启动服务，未调用模型或平台，未读 `len_bot.db`（1 GB）或媒体内容，未执行 `uv sync`／`npm install`／`docker build`——安装路径只做**文档与文件比对**。唯一写操作是本文件。

@@ -1,0 +1,62 @@
+<script setup>
+import { computed, ref, watch } from 'vue'
+import EntityLink from './EntityLink.vue'
+import ResourceViewer from './ResourceViewer.vue'
+
+const props = defineProps({ record: Object, sceneId: String })
+const visibleCount = ref(25)
+const rawOpen = ref(false)
+watch(() => props.record, () => { visibleCount.value = 25; rawOpen.value = false })
+const messages = computed(() => props.record?.format_version === 1 ? props.record.messages : [])
+const images = computed(() => messages.value.flatMap(message => message.images))
+const omitted = computed(() => messages.value.filter(message => message.omitted === true).length)
+const omissionUnknown = computed(() => messages.value.filter(message => message.omitted === null).length)
+const toolChoice = computed(() => typeof props.record.tool_choice === 'string'
+  ? props.record.tool_choice : `${props.record.tool_choice.type} · ${props.record.tool_choice.name || '未记录名称'}`)
+const gaps = {
+  message_bodies: '消息正文及动态提示', prompt_versions: '提示版本',
+  tool_definition_versions: '工具完整定义及版本', tool_arguments: '工具调用参数',
+  media_bodies: '媒体正文', provider_wire_body: '客户端序列化后的请求正文',
+}
+</script>
+
+<template>
+  <section class="request-record" aria-label="调用登记时的请求材料">
+    <h3>调用登记时的请求材料</h3>
+    <p v-if="!record" class="request-note">未保存本次调用的独立材料记录。旧调用和未接入此记录的调用入口不回填，也不以轮次最终清单替代。</p>
+    <template v-else-if="record.format_version === 1">
+      <p class="request-note">记录取自最终装配之后、进入客户端之前，与本次调用一同登记。登记不证明请求已经发出或材料已被模型接收；执行结果见调用状态与传输记录。</p>
+      <dl class="request-facts">
+        <div><dt>消息位置</dt><dd>{{ messages.length }}</dd></div>
+        <div><dt>省略标记</dt><dd>{{ omitted }}；{{ omissionUnknown }} 个位置未记录该标记</dd></div>
+        <div><dt>图像块</dt><dd>{{ images.length }}；{{ images.filter(image => !image.asset_id).length }} 个缺少资产定位</dd></div>
+        <div><dt>工具定义数量</dt><dd>{{ record.tools.length }}</dd></div>
+        <div><dt>最大输出 tokens</dt><dd>{{ record.settings.max_completion_tokens }}</dd></div>
+        <div><dt>工具选择</dt><dd>{{ toolChoice }}</dd></div>
+      </dl>
+      <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
+      <details><summary>当次工具顺序</summary><ol class="request-tools"><li v-for="tool in record.tools" :key="tool.index">{{ tool.name || '未记录名称' }} · {{ tool.type }}</li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
+      <div class="request-table-wrap"><table>
+        <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
+        <thead><tr><th scope="col">位置 / 角色</th><th scope="col">类别</th><th scope="col">来源与范围</th><th scope="col">省略 / 图像</th></tr></thead>
+        <tbody><tr v-for="message in messages.slice(0,visibleCount)" :key="message.index">
+          <th scope="row">{{ message.index + 1 }} · {{ message.role }}</th>
+          <td>{{ message.section || '未记录类别' }}</td>
+          <td><EntityLink v-if="message.event_id" type="event" :id="message.event_id" :scene-id="sceneId" label="查看原始事件" /><span v-else>未记录直接事件来源</span>
+            <p v-if="message.text_range">原文字符 [{{ message.text_range.start }}, {{ message.text_range.end }}) / {{ message.text_range.total }}</p>
+            <p v-if="message.tool_call_id">工具调用 {{ message.tool_call_id }}；资料范围见原轨迹</p>
+          </td>
+          <td>{{ message.omitted === null ? '省略状态未记录' : message.omitted ? '标记省略' : '未标记省略' }}<p v-if="message.omitted">{{ message.omission_reason || '省略原因未单独记录' }}</p><p>图像块 {{ message.images.length }}</p></td>
+        </tr></tbody>
+      </table></div>
+      <v-btn v-if="visibleCount < messages.length" variant="text" size="small" @click="visibleCount += 25">继续显示 25 个位置（已显示 {{ visibleCount }} / {{ messages.length }}）</v-btn>
+      <details :open="rawOpen" @toggle="rawOpen=$event.target.open"><summary>完整定位字段</summary><ResourceViewer v-if="rawOpen" title="该调用已保存的材料记录" :content="record" /></details>
+    </template>
+    <p v-else class="request-note">已有材料记录，但当前页面不支持其格式版本 {{ record.format_version }}；未将它解释成空清单。</p>
+  </section>
+</template>
+
+<style scoped>
+.request-record{min-width:0}.request-record h3{font-size:15px;margin:0 0 12px}.request-note{font-size:12px;color:var(--muted);line-height:1.7;overflow-wrap:anywhere}.request-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;font-size:12px}.request-facts dt{color:var(--muted)}.request-facts dd{margin:4px 0 0;overflow-wrap:anywhere}.request-record summary{cursor:pointer;font-size:12px;line-height:1.7}.request-record details{margin:12px 0}.request-tools{font-size:12px;line-height:1.7;overflow-wrap:anywhere}.request-table-wrap{overflow-x:auto;margin-top:12px}.request-record table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}.request-record caption{text-align:left;color:var(--muted);padding:8px 0}.request-record th,.request-record td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;min-width:90px}.request-record td p{margin:5px 0 0;color:var(--muted)}.request-record th{font-weight:500}.request-record :deep(.entity-link){max-width:180px;font-size:12px}
+@media(max-width:600px){.request-facts{grid-template-columns:minmax(0,1fr)}}
+</style>

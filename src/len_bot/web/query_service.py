@@ -313,6 +313,9 @@ class RuntimeQueryService:
         if 'transport_json' in item:
             transport = item.pop('transport_json')
             item['transport'] = json.loads(transport) if transport is not None else None
+        if 'request_record_json' in item:
+            request_record = item.pop('request_record_json')
+            item['request_record'] = json.loads(request_record) if request_record is not None else None
         return RuntimeQueryService._public(item)
 
     async def model_reservations(self, scene_id=None, *, subject=None):
@@ -440,9 +443,13 @@ class RuntimeQueryService:
         rows = await self._rows("SELECT * FROM model_calls WHERE id=? AND (? IS NULL OR scene_id=?)", [call_id,scene_id,scene_id])
         if not rows:
             return None
-        traces = await self._rows("""SELECT payload FROM traces WHERE id=? AND kind='model_call_transport'
-            AND ref_id=? AND scene_id=?""", ['trc_model_transport_' + call_id, call_id, rows[0]['scene_id']])
-        return self._call({**rows[0], 'transport_json': traces[0]['payload'] if traces else None})
+        traces = await self._rows("""SELECT kind,payload FROM traces WHERE
+            ((id=? AND kind='model_call_transport') OR (id=? AND kind='model_call_request'))
+            AND ref_id=? AND scene_id=?""",
+            ['trc_model_transport_' + call_id, 'trc_model_request_' + call_id, call_id, rows[0]['scene_id']])
+        records = {trace['kind']: trace['payload'] for trace in traces}
+        return self._call({**rows[0], 'transport_json': records.get('model_call_transport'),
+                           'request_record_json': records.get('model_call_request')})
 
     async def history_batches(self, scene_id, page=1, page_size=30):
         result = await self._page("SELECT *", "FROM history_batches WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)
@@ -1189,6 +1196,25 @@ class RuntimeQueryService:
             item['error_phase'] = payload.get('error_phase')
             item['publication_error'] = publication.get('error')
             item['publication_phase'] = publication.get('phase')
+            # Only project a saved per-call request; the latest run plan cannot
+            # stand in for an earlier call or a failed transport without an ID.
+            item['requests'] = []
+            for run in runs:
+                for step in run.get('steps', []):
+                    request = (step.get('context_plan') or {}).get('request')
+                    if not step.get('call_id') or request is None:
+                        continue
+                    messages = request.get('messages')
+                    pixels = request.get('current_pixel_assets')
+                    tools = step.get('available_tools')
+                    item['requests'].append({
+                        'call_id': step['call_id'],
+                        'message_count': len(messages) if messages is not None else None,
+                        'omitted_message_count': sum(bool(message.get('omitted')) for message in messages)
+                            if messages is not None else None,
+                        'pixel_asset_count': len(pixels) if pixels is not None else None,
+                        'tool_count': len(tools) if tools is not None else None,
+                    })
         calls = [call for run in runs
                  for step in run.get("steps", []) for call in step.get("tool_calls", [])]
         direct=[call for run in runs for call in run.get('tool_results',[])]

@@ -1,5 +1,7 @@
 # S0-04 / S0-06 事实底稿：开源授权清点与验收边界
 
+> 基线资料：以下事实与源码行号限定于文中标明的核对时点；任务当前状态只见[路线入口](README.md)，后续实施见[当前任务](../iteration.md)。草案未确认部分不视为已采用。
+
 - **核对 commit**：任务下发时 `ad41a5a71a4b5ec3693f4cc846342964c5b0b8c6`（`feat/s0-product-contract`）；核对过程中工作区被其他批次推进到 `f5279f88b80f31734af4fad77c7c96c4a0c5e107`。`git diff --name-only ad41a5a..f5279f8` 只含 `docs/plan/*` 与 `.github/ISSUE_TEMPLATE/*`、`.github/PULL_REQUEST_TEMPLATE.md`，**没有任何业务源码、配置、依赖或素材变化**，因此下列源码结论对两个 commit 同样成立。
 - **核对时间**：2026-09-21 23:42 (+0900)。
 - **只读方式**：仅 `git` / `grep` / `glob` / `read` / `ls`。未改业务文件，未 commit/checkout/stash，未跑测试/夹具/探针/截图，未启服务，未调用模型或平台，未读 `len_bot.db`，未联网。唯一写操作是本文件。

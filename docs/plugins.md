@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更见[完整改造计划](LenBot_群聊体验与可靠执行_完整改造计划_20260920.md)，最新进度只记在[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。
+面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。
 
 ## 目录、描述符与配置
 

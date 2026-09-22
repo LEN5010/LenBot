@@ -13,6 +13,7 @@ from len_bot.actions.models import receipt_delivery_status
 from len_bot.cognition.projection import estimate_tokens, project_onebot_text
 from len_bot.cognition.input_window import prefix_end, original_prefix
 from len_bot.cognition.call_store import estimate_request
+from len_bot.cognition.request_record import _RequestLocation
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.work_context import exchange_spans
 from len_bot.scheduler.models import ReminderControlSnapshot, task_delivery_available
@@ -536,6 +537,7 @@ class ConversationContext:
                     # keep a just-over-budget exchange failing.
                     message['content'] = ''
                     message['_context_omitted'] = True
+                    message['_omission_reason'] = reason
                     self.omit(section, reason, event_id=message.get('_source_event_id'))
 
     def pending_wakes(self):
@@ -1231,11 +1233,22 @@ class ConversationContext:
     def model_messages(messages):
         prepared=copy.deepcopy(messages)
         for message in prepared:
+            location = _RequestLocation(
+                event_id=message.get('_source_event_id'), ref=message.get('_source_ref'),
+                text_range=message.get('_source_range'),
+                original_ranges=message.get('_original_ranges', []) if not message.get('_context_omitted') else [],
+                omitted=bool(message.get('_context_omitted')),
+                omission_reason=message.get('_omission_reason'),
+                image_assets={index: part['_asset_id'] for index, part in enumerate(message['content'])
+                    if isinstance(part, dict) and part.get('_asset_id')}
+                    if isinstance(message.get('content'), list) else {},
+            )
             for key in list(message):
                 if key.startswith('_') and key != '_context_section':
                     message.pop(key)
             if message.get('role')=='user' and isinstance(message.get('content'),list):
                 for part in message['content']:part.pop('_asset_id',None)
+            message['_request_location'] = location
         return prepared
 
     def request_manifest(self, messages):

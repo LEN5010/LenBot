@@ -1,5 +1,7 @@
 # S0-03 依赖边界测绘（静态，只读）
 
+> 基线资料：以下事实与源码行号限定于文中标明的核对时点；任务当前状态只见[路线入口](README.md)，后续实施见[当前任务](../iteration.md)。草案未确认部分不视为已采用。
+
 核对基线：commit `ad41a5a71a4b5ec3693f4cc846342964c5b0b8c6`，分支 `feat/s0-product-contract`。
 测绘时间：2026-09-21T14:21Z。代码基线为同 commit；工作区另有并行产出的
 `docs/plan/README.md`、`delegation-plan.md`、`s0-02-...md` 未被本报告引用为证据。

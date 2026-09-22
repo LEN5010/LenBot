@@ -5,6 +5,7 @@ import { fmtTime } from '../api.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import AnswerBasisDetails from './AnswerBasisDetails.vue'
+import { purposeLabel } from '../domain/activity.js'
 const props = defineProps({ event: Object, relations: Object, loading: Boolean })
 const applicable = computed(() => supportsMessageProgress(props.event))
 const progress = computed(() => messageProgress(props.event, props.relations))
@@ -14,6 +15,10 @@ const states = {
   failed: { text: '有失败', color: 'error' }, unknown: { text: '未确认', color: 'default' },
 }
 const phaseLabel = value => ({ pre_commit: '首次提交前', after_checkpoint: '阶段提交之后', post_commit: '事务提交之后' }[value] || value || '阶段未单独记录')
+const number = value => Number.isFinite(value) && value >= 0 ? value.toLocaleString() : '未记录'
+const duration = call => Number.isFinite(call.started_at) && Number.isFinite(call.ended_at) && call.ended_at >= call.started_at
+  ? `${(call.ended_at - call.started_at).toFixed(2)} 秒` : '未记录完整起止'
+const requests = call => progress.value.requestRecords.filter(record => record.call_id === call.id)
 </script>
 
 <template>
@@ -34,6 +39,34 @@ const phaseLabel = value => ({ pre_commit: '首次提交前', after_checkpoint: 
         <template v-if="index===5 && progress.deliveryProblems.length"><p>本页保存的未成功或未知记录（不覆盖后续回执）：</p><article v-for="receipt in progress.deliveryProblems" :key="receipt.id" class="delivery-problem"><div class="step-heading"><StatusBadge domain="delivery" :status="receipt.delivery_status" /><StatusBadge v-if="receipt.simulated" domain="delivery" status="simulated" /><span>{{ fmtTime(receipt.timestamp) }}</span></div><p>{{ receipt.payload.error }}</p><EntityLink type="event" :id="receipt.id" :scene-id="event.scene_id" label="查看这份发送记录" /></article></template>
       </div>
     </li></ol>
+    <section class="progress-calls" aria-label="关联轮次的模型调用">
+      <h4>关联轮次的模型调用 <span>{{ progress.calls.length }}</span></h4>
+      <p class="progress-note">按本条来源的处理轮次或表达所属轮次关联，按调用开始时间排列。同轮可能处理多条消息，用量不能归为本条独占；后台工作的调用请从工作详情查看。</p>
+      <p v-if="!progress.calls.length" class="progress-note">本页未取得明确归属轮次的调用记录，不能据此判断没有调用或没有费用。</p>
+      <p v-else class="progress-note">耗时来自调用账的起止时间，不是消息到送达的总延迟。供应商用量与本地估算分别显示；缓存是输入子项，缺失值不按零计。金额未核实。</p>
+      <article v-for="call in progress.calls" :key="call.id" class="progress-call">
+        <div class="step-heading"><strong>{{ purposeLabel(call.purpose) }}</strong><StatusBadge domain="call" :status="call.status" /><time>{{ fmtTime(call.started_at) }}</time></div>
+        <p class="progress-note">{{ call.provider_id }} / {{ call.model }}</p>
+        <dl class="call-metrics">
+          <div><dt>调用耗时</dt><dd>{{ duration(call) }}</dd></div>
+          <div><dt>供应商输入 tokens</dt><dd>{{ number(call.usage?.prompt_tokens) }}</dd></div>
+          <div><dt>供应商输出 tokens</dt><dd>{{ number(call.usage?.completion_tokens) }}</dd></div>
+          <div><dt>其中缓存输入 tokens</dt><dd>{{ number(call.usage?.prompt_tokens_details?.cached_tokens) }}</dd></div>
+          <div><dt>本地估算输入 tokens</dt><dd>{{ number(call.estimate?.input_tokens) }}</dd></div>
+          <div v-if="call.usage?.type==='duration'"><dt>供应商音频用量</dt><dd>{{ number(call.usage.seconds) }} 秒</dd></div>
+        </dl>
+        <p v-if="call.error_type" class="call-error">{{ call.error_type }}</p>
+        <details><summary>轮次轨迹中的装配摘要</summary>
+          <p class="progress-note">仅展示轨迹中与本次调用编号明确关联的装配清单；位置、图像和工具数量不证明逐项采用，也不能逐字还原请求。提示与工具定义版本尚未完整留存。</p>
+          <p v-if="!requests(call).length" class="progress-note">轮次轨迹未提供该调用的装配摘要；不以本轮最后一份清单替代。调用登记时的独立材料请从调用详情查看。</p>
+          <div v-for="(request,index) in requests(call)" :key="`${request.trace_id}:${index}`" class="progress-links">
+            <p class="progress-note">消息位置 {{ number(request.message_count) }} · 标记省略 {{ number(request.omitted_message_count) }} · 图像资产 {{ number(request.pixel_asset_count) }} · 工具定义 {{ number(request.tool_count) }}</p>
+            <EntityLink type="trace" :id="request.trace_id" :scene-id="event.scene_id" label="查看已保存的清单与来源范围" />
+          </div>
+        </details>
+        <div class="progress-links"><EntityLink type="call" :id="call.id" :scene-id="event.scene_id" label="查看调用与登记材料" /><EntityLink type="episode" :id="call.episode_id" :scene-id="event.scene_id" label="查看所属轮次" /></div>
+      </article>
+    </section>
     <details v-if="progress.problems.length" class="progress-problems"><summary>本页另有 {{ progress.problems.length }} 份关联轮次问题记录</summary><p class="progress-note">这些轮次明确包含本条来源或表达提交；整轮错误不等于本条最终失败，也不撤销先前的提交或送达。按原记录逐次核对，不按时间猜因果。</p><article v-for="problem in progress.problems" :key="problem.id"><strong>{{ fmtTime(problem.created_at) }} · {{ phaseLabel(problem.error_phase) }}</strong><p v-if="problem.error">{{ problem.error }}</p><p v-if="problem.publication_error">发布步骤 {{ problem.publication_phase || '未记录' }}：{{ problem.publication_error }}</p><EntityLink type="trace" :id="problem.id" :scene-id="event.scene_id" label="查看这次轮次的问题与调用" /></article></details>
   </section>
 </template>
@@ -42,4 +75,6 @@ const phaseLabel = value => ({ pre_commit: '首次提交前', after_checkpoint: 
 .message-progress{min-width:0;margin:18px 0}.message-progress h3{font-size:15px;margin:0 0 10px}.progress-note{font-size:12px;color:var(--muted);line-height:1.7;margin:8px 0}.progress-steps{list-style:none;padding:0;margin:16px 0}.progress-steps>li{display:flex;gap:12px;padding:0 0 18px;min-width:0}.step-number{display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:12px;color:var(--muted)}.step-body{min-width:0;flex:1}.step-heading{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.step-heading h4{font-size:12px;margin:0;color:var(--muted)}.step-summary{display:block;font-size:13px;line-height:1.7;margin-top:6px;overflow-wrap:anywhere}.step-body p{font-size:12px;color:var(--muted);line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.step-body :deep(.entity-link){font-size:12px}
 .message-progress summary{cursor:pointer;font-size:12px;line-height:1.7}.message-progress details{margin-top:10px}.progress-work,.progress-problems article{border-top:1px solid var(--line);padding:12px 0;margin-top:10px;font-size:12px;min-width:0}.progress-work .step-heading{margin-top:8px}.progress-links{display:grid;gap:8px;margin:10px 0;min-width:0}.progress-problems p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.progress-problems strong{font-size:12px}
 .delivery-problem{border-left:2px solid var(--line);padding-left:12px;margin:10px 0;font-size:12px}.delivery-problem .step-heading>span{color:var(--muted)}
+.progress-calls{border-top:1px solid var(--line);padding-top:16px}.progress-calls h4{font-size:13px;margin:0}.progress-calls h4 span,.progress-call time{color:var(--muted);font-weight:400}.progress-call{border-top:1px solid var(--line);padding:14px 0;font-size:12px;min-width:0}.call-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}.call-metrics dt{color:var(--muted);font-size:11px}.call-metrics dd{margin:4px 0 0;overflow-wrap:anywhere}.call-error{color:rgb(var(--v-theme-error));white-space:pre-wrap;overflow-wrap:anywhere}.progress-call .progress-note{overflow-wrap:anywhere}.progress-call :deep(.entity-link){font-size:12px}
+@media(max-width:600px){.call-metrics{grid-template-columns:minmax(0,1fr)}}
 </style>

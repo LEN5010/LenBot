@@ -12,6 +12,7 @@ from typing import Any
 from len_bot.cognition.providers import RouteResolution, capture_model_transport
 from len_bot.cognition.call_store import estimate_request
 from len_bot.cognition.projection import estimate_tokens
+from len_bot.cognition.request_record import prepare_request_record
 
 
 class ModelProtocolError(RuntimeError):
@@ -76,12 +77,13 @@ class ModelGateway:
             "model": self.binding.model,
             "messages": copy.deepcopy(messages),
             "tools": copy.deepcopy(tools),
-            "tool_choice": tool_choice,
+            "tool_choice": copy.deepcopy(tool_choice),
             "stream": False,
             "max_completion_tokens": self.max_output_tokens,
         }
         if self.binding.reasoning_effort is not None:
             request["reasoning_effort"] = self.binding.reasoning_effort
+        request_record = prepare_request_record(request)
         estimate = estimate_request(request["messages"], request["tools"])
         for message in request['messages']:
             message.pop('_context_section', None)
@@ -96,6 +98,7 @@ class ModelGateway:
                 model=self.binding.model, reasoning_effort=self.binding.reasoning_effort, estimate=estimate,
                 output_tokens=self.max_output_tokens,
                 admission=None if admission is None else admit_call,
+                request_record=request_record,
             )
 
         started = time.monotonic()

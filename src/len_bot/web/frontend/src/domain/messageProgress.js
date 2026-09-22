@@ -47,8 +47,19 @@ export function messageRecords(event, relations) {
     && (actionId ? selectedAction.commit_event_id && trace.commit_event_ids?.includes(selectedAction.commit_event_id)
       : sourceId && (trace.source_event_ids?.includes(sourceId) || trace.read_source_event_ids?.includes(sourceId))))
   const problems = attempts.filter(trace => trace.error || trace.publication_error)
+  const episodeIds = new Set([
+    ...readTurns.map(turn => turn.episode_id),
+    ...actions.map(action => action.episode_id),
+    ...attempts.map(trace => trace.ref_id),
+  ].filter(Boolean))
+  // A shared episode is a round-level relation, not per-message accounting.
+  const calls = [...new Map((relations?.calls || [])
+    .filter(call => call.scene_id === event?.scene_id && !call.job_id && episodeIds.has(call.episode_id))
+    .map(call => [call.id, call])).values()]
+    .sort((left, right) => left.started_at - right.started_at || left.id.localeCompare(right.id))
+  const requestRecords = attempts.flatMap(trace => (trace.requests || []).map(request => ({ ...request, trace_id: trace.id })))
   return {
-    sourceId, source, readTurns, handlingTurn, outcome, jobs, actions, committed, problems, deliveryProblems, isReceipt: Boolean(actionId),
+    sourceId, source, readTurns, handlingTurn, outcome, jobs, actions, committed, problems, deliveryProblems, calls, requestRecords, isReceipt: Boolean(actionId),
     pending: relations?.source_handling?.event_id === sourceId && relations.source_handling.pending === true,
     limited: Object.values(relations?.truncated || {}).some(Boolean),
   }
