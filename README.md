@@ -30,7 +30,7 @@ uv run len-bot
 
 以下是当前实际状态，不是目标：
 
-- 全局 Shadow 与样例默认均为停用：样例配置里群列表为空，所有插件默认停用。不显式启用并加入群，不会有任何回复或发送。
+- 样例配置开启 Shadow，群列表和模型供应商为空；插件中仅 `web_search_tool` 启用，其余停用。样例不能直接收发群消息；实际运行状态以根配置及面板为准。
 - `workspace`、`browser_agent`、`gscore_adapter` 在样例中都是停用状态，需要运营者按各自 Schema 配置后才可能生效。
 - Python 与浏览器**尚不构成已验收的生产隔离**。worker 后端需要宿主容器运行时，Gateway 后端需要单独部署网关进程；源码已接线不等于已完成正式切换，也不是已通过实机验收。
 - 社会 Agent 的主动参与、公共兴趣、心跳、睡眠与延期、媒体片段、持久文件、专用 B 站账号动作和可选 Core 桥接已接入源码。新增能力仍需明确配置、授权与实际部署核对；默认未配置/关闭不代表线上已开放，见[当前任务](docs/iteration.md)。
@@ -40,7 +40,7 @@ uv run len-bot
 
 ## 文档
 
-当前行为、开发目标和执行进度分别维护；历史文档不作为新能力的启用依据。
+完整目录见[文档入口](docs/README.md)。接手项目先读[当前任务](docs/iteration.md)和[路线状态](docs/plan/README.md)，再按模块读当前合同；历史文档不作为新能力的启用依据。
 
 | 要了解什么 | 入口 |
 |---|---|
@@ -51,6 +51,7 @@ uv run len-bot
 | Linux Compose、Gateway 服务、卷映射与发布记录 | [部署材料](deploy/linux/README.md) |
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
 | 工程约束 | [AGENTS.md](AGENTS.md) |
-| 群聊体验、前端、查证、记忆与全部模块的改造设计、批次和验收 | [完整改造计划](docs/LenBot_群聊体验与可靠执行_完整改造计划_20260920.md) |
+| 产品化 S0—S7 路线、任务状态与决策草案 | [产品路线入口](docs/plan/README.md) |
+| 旧 P／N 批次的设计、验收与真实观察 | [历史与原始资料](docs/README.md#历史依据与原始资料) |
 | 本轮状态、下一步和实际核对结果 | [当前任务](docs/iteration.md) |
-| 人格与素材的原始资料 | [人格来源资料](docs/persona/diana/README.md) |
+| 人格与素材的原始资料 | [人物素材交接](docs/persona/asoul/README.md)、[人格来源资料](docs/persona/diana/README.md) |

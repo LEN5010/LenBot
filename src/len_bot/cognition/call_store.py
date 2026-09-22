@@ -411,7 +411,7 @@ class ModelCallStoreMixin:
 
     async def begin_model_call(self, *, scene_id, episode_id, job_id, batch_id, role, purpose,
                                provider_id, model, reasoning_effort, estimate, output_tokens=0,
-                               admission=None):
+                               admission=None, request_record=None):
         """Register one logical call and hold what it may spend.
 
         `admission` runs inside this write transaction, before the call row
@@ -438,6 +438,13 @@ class ModelCallStoreMixin:
                      None if held is None else max(0, int(held))))
                 if job_id:
                     await self._reopen_settled_reservation_in_transaction(job_id)
+                if request_record is not None:
+                    # Admission and this call's locations commit together. A
+                    # refused request leaves neither a call nor a manifest.
+                    await self._db.execute("""INSERT INTO traces (id,kind,scene_id,ref_id,payload,created_at)
+                        VALUES(?,'model_call_request',?,?,?,?)""",
+                        ('trc_model_request_' + call_id, scene_id, call_id,
+                         json.dumps(request_record, ensure_ascii=False, allow_nan=False), self.clock()))
                 await self._db.commit()
             except BaseException:
                 await self._db.rollback()

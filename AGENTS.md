@@ -1,6 +1,6 @@
 # LenBot 工程约束
 
-[架构](docs/architecture.md) 定行为与执行边界，[上下文装配](docs/context.md) 定每轮请求怎么拼与窗口取舍，[运行手册](docs/operations.md) 定起停、配置与备份，[插件开发](docs/plugins.md) 定插件，本轮状态只记在 [当前任务](docs/iteration.md)。产品目标、B01—B12 边界、M01—M24 模块、P00—P11 批次与人工验收统一见 [完整改造计划](docs/LenBot_群聊体验与可靠执行_完整改造计划_20260920.md)。计划是待实现合同：未实现的目标只能记为待办，不是已有能力或权限。
+[文档入口](docs/README.md) 说明各文件职责。[架构](docs/architecture.md) 定行为与执行边界，[上下文装配](docs/context.md) 定请求装配与窗口取舍，[运行手册](docs/operations.md) 定配置、起停与备份，[插件开发](docs/plugins.md) 定现有插件合同。当前批次只记在 [当前任务](docs/iteration.md)，详细过程按日期归 [历史记录](docs/history/README.md)。产品化 S0—S7 的任务状态只在 [产品路线入口](docs/plan/README.md) 维护；原 B／M／P 边界与验收保留在 [完整改造计划](docs/LenBot_群聊体验与可靠执行_完整改造计划_20260920.md)。计划不代表已有能力或操作权限。
 
 ## 修改方式
 
