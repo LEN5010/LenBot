@@ -681,25 +681,56 @@ class RetrievalToolkit:
             shown.evidence_ref=reference
         return shown
 
+    async def _memory_presentation_failure(self, result: ToolResult) -> ToolResult | None:
+        if not self.memory_store:
+            return ToolResult.failure('认识账本不可用，不能确认保存查询的当前状态', 'memory_unavailable', stage='presentation')
+        saved = json.loads(result.content)
+        current = {item.id: item for item in await self.memory_store.get_memories_by_ids(
+            [item['id'] for item in saved], self.allowed_scopes, include_superseded=True)}
+        now = self.memory_store.clock()
+        changed = [item['id'] for item in saved
+                   if item['id'] not in current or current[item['id']].revision != item['revision']
+                   or (item['status'] == 'active' and item['expires_at'] is not None
+                       and result.fetched_at < item['expires_at'] <= now)]
+        if changed:
+            return ToolResult.failure(
+                f'保存查询中有 {len(changed)} 条认识已修订、到期或不再可读；旧正文不能当作当前认识。'
+                '请按原对象与范围重新 query_memory；保存快照与原话仍保留，不自动重查。',
+                'stale_memory_result', stage='presentation')
+        return None
+
+    async def invalidate_memory_presentations(self, messages: list[dict[str, Any]]) -> None:
+        """Remove stale saved memory pages from the next request, not the audit."""
+        failures = {}
+        for message in messages:
+            for presentation in self.read_presentations([message]):
+                ident = presentation['result_id']
+                original = self.observations[ident]
+                if original.tool_name != 'query_memory':
+                    continue
+                if ident not in failures:
+                    failures[ident] = await self._memory_presentation_failure(original)
+                failure = failures[ident]
+                if failure is None:
+                    continue
+                content = json.loads(message['content'])
+                material = message.get('_context_section') in {'plugin_material', 'plugin_hook_material'}
+                shown = content['observation'] if material else content
+                replacement = failure.model_copy(update={'result_id': shown['result_id'],
+                    'tool_name': original.tool_name, 'tool_call_id': original.tool_call_id})
+                if material:
+                    content['observation'] = replacement.model_dump(mode='json', exclude_none=True)
+                    message['content'] = json.dumps(content, ensure_ascii=False)
+                else:
+                    message['content'] = replacement.model_dump_json(exclude_none=True)
+
     async def _render_page(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
         if name == 'query_memory' and result.status in {'ok', 'partial', 'no_results'}:
-            if not self.memory_store:
-                return ToolResult.failure('认识账本不可用，不能确认保存查询的当前状态', 'memory_unavailable', stage='presentation')
-            saved = json.loads(result.content)
-            current = {item.id: item for item in await self.memory_store.get_memories_by_ids(
-                [item['id'] for item in saved], self.allowed_scopes, include_superseded=True)}
-            now = self.memory_store.clock()
-            changed = [item['id'] for item in saved
-                       if item['id'] not in current or current[item['id']].revision != item['revision']
-                       or (item['status'] == 'active' and item['expires_at'] is not None
-                           and result.fetched_at < item['expires_at'] <= now)]
-            if changed:
-                return ToolResult.failure(
-                    f'保存查询中有 {len(changed)} 条认识已修订、到期或不再可读；旧正文不能当作当前认识。'
-                    '请按原对象与范围重新 query_memory；保存快照与原话仍保留，不自动重查。',
-                    'stale_memory_result', stage='presentation')
+            failure = await self._memory_presentation_failure(result)
+            if failure is not None:
+                return failure
         if (self.context and name == 'query_jobs' and coordinate_unit == 'characters'
                 and result.status in {'ok', 'partial', 'no_results'}):
             return self._job_character_page(result, offset, limit)

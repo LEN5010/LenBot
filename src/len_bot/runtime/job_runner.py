@@ -949,6 +949,7 @@ class InformationJobRunner:
                             # Preserve the whole current exchange, free old
                             # bodies and use the existing compressor before the
                             # shared packer decides any new display ranges.
+                            await toolkit.invalidate_memory_presentations(prepared)
                             await compressor.prepare(prepared,request_definitions(),reserved=reserved)
                             tool_end = len(prepared)
                             tool_start = tool_end - len(entries)
@@ -969,11 +970,13 @@ class InformationJobRunner:
                             nonlocal current_assets
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             require_current_access()
+                            await toolkit.invalidate_memory_presentations(trajectory)
                             await compressor.prepare(trajectory, definitions)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
 
                         async def finalize_request(trajectory, definitions):
                             nonlocal current_assets
+                            await toolkit.invalidate_memory_presentations(trajectory)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             presentation.check_request(trajectory,definitions)
                             pending_presentations[:]=toolkit.read_presentations(trajectory)
