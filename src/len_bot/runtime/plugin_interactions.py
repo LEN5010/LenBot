@@ -20,6 +20,7 @@ from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.models import ConversationResume
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.proposals import TOOLS
+from len_bot.cognition.request_record import _PromptComponent
 from len_bot.plugins.agent import PluginAgentRequest, PluginExecution, RESULT_ONLY_NOTICE, result_definition
 from len_bot.events.models import EventType, PluginOrigin
 from len_bot.media.models import MessageSegment
@@ -545,7 +546,8 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         can_read_body='read_tool_result' in request.tool_names,
         can_read_media='read_media' in request.tool_names)
     if not nested_respond:
-        messages.append({'role':'developer','content':RESULT_ONLY_NOTICE})
+        messages.append({'role':'developer','content':RESULT_ONLY_NOTICE,
+            '_prompt_components':(_PromptComponent('plugin_agent.result_only_notice',1,0,RESULT_ONLY_NOTICE),)})
     pending_presentations=[]
 
     async def checkpoint(stage,payload):

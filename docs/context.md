@@ -368,6 +368,8 @@ Trace 的 `context_plan.request.messages` 保存角色、类别、事件与范�
 | skill_maintenance | `skill_maintenance.contract` | 继续使用已有 save_skill／skip_skill 定义快照，不重复注册 |
 | action_review | `action_review.contract` | ReviewDecision Schema 本来就在固定 system 文本内，随该组件保存；工具列表仍为空，不新增审查模型或工具 |
 
+独立插件 Agent 的 result_only 分支还在原 developer 消息上标记源码固定的 `plugin_agent.result_only_notice`（修订 1）。在原最终裁剪及合法 Hook 后，仍由同一 _PromptComponent 定位和比较；文本改变则不把声明片段当本次快照。respond 分支不加这条通知，也不因为模板存在而取得发送资格。动态 `return_result` 输出 Schema 与插件指令仍未单独留存，来源和权限照旧归宿主。旧调用不回填。
+
 历史维护在原最终容量核对后，为本次发送复制消息列表和固定首消息再附定位，不污染后续轮次复用的轨迹与估算。方法维护和动作审查在原输入容量核对之后附定位，原网关在估算、登记与传输边界取出它。动态批次原话、既有认识、候选方法、工作目标／要求和动作参数仍只在原所属记录中；缺少引用或正文的请求范围仍明确缺档。固定提示含 Schema 时，任一固定文案或 Schema 改变都应递增组件修订；旧调用不回填，登记失败仍随原事务／调用失败结束。
 
 普通对话、独立插件表达及普通工作还在最终裁剪和合法 Hook 之后，逐消息复用 RetrievalToolkit.read_presentations 的原判定，向清单的 `tool_presentations` 写入 result_id、coordinate_unit、start/end/total 和已匹配的 evidence_ref。只有原正文片段或宿主已登记投影与保留内容一致才有范围；目录、搜索定位、失败结果和复制坐标的改写正文不能据此成为原文提供。原判定可确认已有原生页的引用名，但本批不调用 adopt_presentations，已读资格仍等待模型响应后的原确认入口。
