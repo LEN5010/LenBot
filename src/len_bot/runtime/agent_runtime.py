@@ -774,6 +774,12 @@ class AgentRuntime:
         human = event.event_type in {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED} and event.actor_id != self.bot_actor_id
         if human:
             self.metrics.inc_social("human_messages")
+        if event.metadata.get('conversation_resume_error'):
+            await self.event_store.save_trace(kind='observation', scene_id=event.scene_id, ref_id=event.id,
+                payload={'source_event_ids': [event.id], 'status': 'not_started', 'at': self.clock(),
+                    'error': event.metadata['conversation_resume_error'],
+                    'rejections': [{'event_id': event.id, 'reason': 'wait_claim_rejected'}]})
+            return
         self.plugin_host.dispatch_event(event, session.last_observed_event_rowid)
         self.plugin_host.notify_delivery(event, session.last_observed_event_rowid)
         kind = (event.payload.get("payload") or {}).get("kind")
@@ -1071,6 +1077,9 @@ class AgentRuntime:
             if rejections is not None:
                 rejections.append({'event_id': event.id, 'reason': reason})
         for original in events:
+            if original.metadata.get('conversation_resume_error'):
+                rejected(original, 'wait_claim_rejected')
+                continue
             if (original.metadata.get('interaction') != 'chat' or not self.scene_policy.chat_allowed(
                     original.scene_id, original.metadata.get('requester_qq_uid'))):
                 rejected(original, 'chat_not_allowed')

@@ -548,6 +548,7 @@ class SceneActor:
             if source.payload.get('message_id') is not None:
                 message_ids.add(str(source.payload['message_id']))
         pending = await self.event_store.events_by_ids(self.scene_id, unread_ids, state.last_observed_event_rowid)
+        pending = [event for event in pending if not event.metadata.get('conversation_resume_error')]
         if scene_policy:
             pending = [event for event in pending if event.metadata.get('interaction') == 'chat'
                        and scene_policy.chat_allowed(self.scene_id,event.metadata.get('requester_qq_uid'))]

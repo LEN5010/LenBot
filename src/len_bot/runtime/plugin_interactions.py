@@ -298,9 +298,10 @@ async def _respond_agent(runtime, call, request, *, resume=None, resume_event=No
         observed_cutoff=new.last_observed_event_rowid
         originals={event.actor_id for event in events}
         message_ids={str(event.payload['message_id']) for event in events if event.payload.get('message_id') is not None}
-        related=[event for event in related if event.actor_id in originals
+        related=[event for event in related if not event.metadata.get('conversation_resume_error') and (
+            event.actor_id in originals
             or str(event.payload.get('reply_to_message_id')) in message_ids
-            or ((event.metadata.get('quote_context') or {}).get('plugin_origin') or {}).get('run_id')==call.origin.run_id]
+            or ((event.metadata.get('quote_context') or {}).get('plugin_origin') or {}).get('run_id')==call.origin.run_id)]
         if not related:return None
         mailbox.plugin_source_ids.update(event.id for event in related)
         new.pending_wakes=[wake for wake in new.pending_wakes if wake.event_id in mailbox.plugin_source_ids]
