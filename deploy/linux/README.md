@@ -103,7 +103,7 @@ docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 
 ## OneBot 文件与可选项
 
-OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。文件协议按显式实现分别选择 NapCat `upload_group_file_data_file_id` 或 SnowLuma `upload_group_file`；实际版本、路径映射与 `data.file_id` 均确认后才置 `onebot_file_upload.deployment_verified: true`，文本发送成功不证明上传成功。
+OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。文件协议按显式实现分别选择 NapCat `upload_group_file_data_file_id` 或 SnowLuma `upload_group_file`；实际版本与只读挂载核对后才置 `onebot_file_upload.deployment_verified: true`，不要求先成功上传。授权后的正常上传另以真实 `data.file_id` 确认，文本发送成功不证明上传成功。
 
 Core、转写、B 站账号/允许收藏夹缺失均单列“未配置/未放行”，不阻塞已确认的普通聊天。Core 首版只接带 echo 的群文字/at/图片帧；实际版本无 echo 时不能声称接通。B 站动作另需 grant 和额度，Cookie 可读不代表可写。转写保留原绑定和实际计量协议，费用未核实不填价格。
 
@@ -142,6 +142,6 @@ sudo sqlite3 /var/lib/lenbot-gateway/gateway.db ".backup '$release_backup/gatewa
 
 ## 发布记录
 
-用[现场记录模板](release-evidence.template.md)，在本地运维目录记录一个获准聊天群与一个获准播报群的输入、调用、工作、资产、表达与真实回执。阶段状态只归纳到 docs/iteration.md，不提交私人原话和凭据。未观察模块写未确认，可选缺失单列；编译、Compose 解析和镜像构建都不等于实群通过。
+用[现场记录模板](release-evidence.template.md)，先明确同一候选提交、配置选择、渠道、插件与镜像，再在本地运维目录记录一个获准聊天群与一个获准播报群的输入、调用、工作、资产、表达与真实回执。S0—S7 状态只在 docs/plan/README.md 维护，当批观察摘要归 docs/iteration.md，不提交私人原话和凭据。首个方向已选择 Linux 容器群报告与文件交付，未观察模块仍写未确认，可选缺失单列；编译、Compose 解析和镜像构建都不等于实群通过。
 
 语法依据：[Compose 服务定义](https://docs.docker.com/reference/compose-file/services/)、[uv 镜像构建](https://docs.astral.sh/uv/guides/integration/docker/)。目标执行网另核对[Docker DNS 行为](https://docs.docker.com/engine/network/#dns-services)；文档不是实机证据。
