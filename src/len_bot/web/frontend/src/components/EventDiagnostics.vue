@@ -6,15 +6,17 @@ import ResourceViewer from './ResourceViewer.vue'
 const props = defineProps({ eventId: { type: String, required: true }, sceneId: { type: String, required: true } })
 const record = ref(null), loading = ref(false), error = ref('')
 let sequence = 0
-watch(() => [props.eventId, props.sceneId], () => { ++sequence; record.value = null; error.value = ''; loading.value = false })
+watch(() => [props.eventId, props.sceneId], () => { ++sequence; record.value = null; error.value = ''; loading.value = false }, {flush:'sync'})
 onBeforeUnmount(() => { ++sequence })
 
 async function load() {
-  const own = ++sequence
+  const own = ++sequence, eventId=props.eventId, sceneId=props.sceneId
   loading.value = true; error.value = ''; record.value = null
   try {
-    const value = await api(`/api/cockpit/events/${encodeURIComponent(props.eventId)}/diagnostics?${queryString({ scene_id: props.sceneId })}`)
-    if (own === sequence) record.value = value
+    const value = await api(`/api/cockpit/events/${encodeURIComponent(eventId)}/diagnostics?${queryString({ scene_id: sceneId })}`)
+    if (own !== sequence) return
+    if(value.root?.event_id!==eventId||value.root?.scene_id!==sceneId)throw new Error('诊断材料不属于本次事件与场景，未开放下载。')
+    record.value = value
   } catch (failure) { if (own === sequence) error.value = failure.message }
   finally { if (own === sequence) loading.value = false }
 }

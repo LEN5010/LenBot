@@ -23,6 +23,7 @@ const memory = ref(null), chain = ref([]), detailLoading = ref(false), detailErr
 const indexPanel = ref(null)
 const refuteOpen = ref(false), reason = ref(''), saving = ref(false), actionError = ref(''), feedback = ref('')
 const refuteReadback = ref(false)
+const refuteUncertain=ref(null), uncertainReadAt=ref(null), refuteReceipt=ref(null)
 const selection = () => JSON.stringify([route.name, route.query.tab, id.value, route.query.scene])
 const listGuard = useRequestGuard(() => JSON.stringify([selection(), route.query.subject, route.query.status, route.query.kind, route.query.query, page.value]))
 const detailGuard = useRequestGuard(selection), actionGuard = useRequestGuard(selection)
@@ -61,35 +62,55 @@ async function loadDetail({ reset = false, accept = () => true } = {}) {
   if (!id.value) return
   const current = id.value, own = detailGuard(), fresh = () => own() && accept(), scope = scalar(route.query.scene)
   detailLoading.value = true; detailError.value = ''; detailMissing.value = false
+  if(refuteUncertain.value)uncertainReadAt.value=null
   if (reset) { memory.value = null; chain.value = []; detailReadAt.value = null }
   try {
     const revisions = await api(`/api/cockpit/memories/${encodeURIComponent(current)}/chain` + (scope ? '?scope=' + encodeURIComponent(scope) : ''))
     if (!fresh()) return
     const item = revisions.chain.find(record => record.id === current)
-    if (!item) throw new Error('修订链未包含所选认识；未用其他记录替代详情。')
+    if (!item || (scope&&item.scope!==scope) || (refuteUncertain.value&&item.scope!==refuteUncertain.value.scope)) throw new Error('修订链未包含所选认识；未用其他记录替代详情。')
     memory.value = item; chain.value = revisions.chain; detailReadAt.value = revisions.sampled_at
+    if(refuteUncertain.value)uncertainReadAt.value=Date.now()/1000
     if (refuteReadback.value) {
-      if (item.status === 'active') detailError.value = '已取得撤销回执，但重读记录仍为有效；请核对原修订记录，未再次提交撤销。'
+      if (item.status !== 'refuted') detailError.value = '已取得撤销回执，但重读记录不是已撤销；请核对原修订记录，未再次提交撤销。'
       else refuteReadback.value = false
     }
   } catch (error) { if (fresh()) { detailError.value = error.message; detailMissing.value = error.status === 404; if (detailMissing.value) { memory.value = null; chain.value = [] } } }
   finally { if (fresh()) detailLoading.value = false }
 }
-function startRefute() { if (memory.value?.status === 'active' && !saving.value && !detailLoading.value && !detailError.value && !refuteReadback.value) { refuteOpen.value = true; reason.value = ''; actionError.value = ''; feedback.value = '' } }
+function startRefute() { if (memory.value?.status === 'active' && !saving.value && !detailLoading.value && !detailError.value && !refuteReadback.value && !refuteUncertain.value) { refuteOpen.value = true; reason.value = ''; actionError.value = ''; feedback.value = '' } }
 function cancelRefute() { if (!saving.value && confirmLeave()) { refuteOpen.value = false; reason.value = '' } }
+function endUncertainRefute() {
+  if(saving.value||detailLoading.value||detailError.value||!refuteUncertain.value||uncertainReadAt.value===null)return
+  if(!window.confirm('结束原撤销确认并放弃其依据草稿，按当前认识重新决定？这不重复撤销，也不追认或取消旧请求。'))return
+  refuteUncertain.value=null;uncertainReadAt.value=null;refuteOpen.value=false;reason.value='';actionError.value=''
+  feedback.value='已结束原撤销草稿；旧请求结果仍以原管理事件、提交与修订链核对。'
+}
 async function refute() {
-  if (saving.value || detailLoading.value || detailError.value || refuteReadback.value || !reason.value.trim() || !memory.value || memory.value.status !== 'active') return
-  const current = memory.value.id, fresh = actionGuard()
-  saving.value = true; detailGuard(); detailLoading.value = false; actionError.value = ''; feedback.value = ''
+  if (saving.value || detailLoading.value || detailError.value || refuteReadback.value || refuteUncertain.value || !reason.value.trim() || !memory.value || memory.value.status !== 'active') return
+  const current = memory.value.id, scope=memory.value.scope, submittedReason=reason.value.trim(), fresh = actionGuard()
+  saving.value = true; detailGuard(); detailLoading.value = false; actionError.value = ''; feedback.value = '';refuteReceipt.value=null
+  let submitted=false
   try {
-    const result = await api(`/api/cockpit/memories/${encodeURIComponent(current)}/refute`, { method: 'POST', body: JSON.stringify({ reason: reason.value.trim() }) })
+    const body=JSON.stringify({reason:submittedReason})
+    submitted=true
+    const result = await api(`/api/cockpit/memories/${encodeURIComponent(current)}/refute`, { method: 'POST', body })
     if (!fresh()) return
-    if (result.memory_id !== current || result.status !== 'refuted') throw new Error('撤销响应没有确认同一认识已撤销；请重读修订链核对，不直接重复提交。')
-    refuteReadback.value = true; refuteOpen.value = false; reason.value = ''
+    if (result.success!==true||result.memory_id !== current || result.scope!==scope || result.control_accepted!==true || result.status !== 'refuted') throw new Error('撤销响应没有确认同一认识已撤销；请重读修订链核对，不直接重复提交。')
+    refuteReceipt.value=result;refuteReadback.value = true; refuteOpen.value = false; reason.value = ''
     feedback.value = '已收到该认识的撤销回执；原记录、原始证据和撤销依据均保留。'
     await loadDetail({ accept:fresh })
-  } catch (error) { if (fresh()) { actionError.value = error.message; if (error.status === 409 && error.details != null) await loadDetail({ accept:fresh }) } }
-  finally { if (fresh()) saving.value = false }
+  } catch (error) {
+    if(!fresh())return
+    actionError.value=error.message
+    const matching=error.details?.memory_id===current&&error.details.scope===scope
+    if(matching)refuteReceipt.value=error.details
+    if(matching&&error.details.control_accepted===false)await loadDetail({accept:fresh})
+    else if(submitted&&!(error.status===422&&Array.isArray(error.details))){
+      refuteUncertain.value={id:current,scope,reason:submittedReason};uncertainReadAt.value=null
+      await loadDetail({accept:fresh})
+    }
+  } finally { if (fresh()) saving.value = false }
 }
 function refresh() { if (saving.value) return; indexPanel.value?.refresh(); return id.value ? loadDetail() : loadList() }
 function onVisible() { if (document.visibilityState === 'visible') refresh() }
@@ -98,6 +119,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisible
 onBeforeRouteUpdate((to, from) => to.query.id !== from.query.id || to.query.scene !== from.query.scene || to.query.tab !== from.query.tab ? confirmLeave() : true)
 watch(() => [route.query.tab, route.query.id, route.query.scene], () => {
   listGuard(); detailGuard(); actionGuard(); saving.value = false; refuteReadback.value = false
+  refuteUncertain.value=null;uncertainReadAt.value=null;refuteReceipt.value=null
   memory.value = null; chain.value = []; detailReadAt.value = null; detailLoading.value = false
   refuteOpen.value = false; reason.value = ''; actionError.value = ''; feedback.value = ''
   if (id.value) loadDetail({ reset: true })
@@ -119,6 +141,16 @@ watch(() => [route.query.tab, route.query.id, route.query.scene, route.query.sub
     </PageHeader>
     <p v-if="id" class="auxiliary">切换对象或离页不撤销已经提交的操作；返回原认识后须重新核对修订链，旧操作不会清除后来填写的依据。</p>
     <v-alert v-if="refuteReadback" type="warning" variant="tonal" class="section-gap">已收到撤销回执，但尚未取得一致的修订链读回；下面仍按各自采样时间展示，不能把旧的“有效”标记当作撤销失败并再次提交。<v-btn variant="text" :disabled="saving" :loading="detailLoading" @click="refresh">重读修订链</v-btn></v-alert>
+    <v-alert v-if="refuteUncertain" type="warning" variant="tonal" class="section-gap" role="alert">
+      <p>认识 {{ refuteUncertain.id }} 的撤销结果未知，原依据草稿保留。先核对原来源与修订链，不重复提交。</p>
+      <p v-if="uncertainReadAt!==null">当前修订链读取于 {{ fmtTime(uncertainReadAt) }}；当前状态不等于旧请求回执。</p>
+      <v-btn variant="text" :disabled="saving||detailLoading" @click="refresh">重读修订链</v-btn>
+      <v-btn variant="text" :disabled="saving||detailLoading||!!detailError||uncertainReadAt===null" @click="endUncertainRefute">结束原确认，按当前认识决定</v-btn>
+    </v-alert>
+    <div v-if="refuteReceipt" class="identity-line section-gap">
+      <EntityLink v-if="refuteReceipt.source_event_id" type="event" :id="refuteReceipt.source_event_id" :scene-id="refuteReceipt.scope" label="本次撤销的管理来源" />
+      <EntityLink v-if="refuteReceipt.commit_event_id" type="event" :id="refuteReceipt.commit_event_id" :scene-id="refuteReceipt.scope" label="本次撤销的提交记录" />
+    </div>
     <template v-if="!id">
       <v-card><v-card-text><v-form class="memory-filters" @submit.prevent="applyFilters"><ScopeSelect v-model="filters.scene" clearable /><v-text-field v-model="filters.subject" label="对象账号或场景 ID" hide-details clearable /><v-text-field v-model="filters.query" label="查找认识内容" hide-details clearable /><v-select v-model="filters.status" label="有效性与原状态" :items="statuses" hide-details /><v-select v-model="filters.kind" label="认识类型" :items="kinds" hide-details /><v-btn type="submit" color="primary">筛选</v-btn></v-form></v-card-text></v-card>
       <v-alert v-if="listError" type="error" variant="tonal" title="认识列表读取失败" class="section-gap">{{ listError }}<div v-if="readAt">保留上次读取结果：{{ fmtTime(readAt) }}</div></v-alert><v-progress-linear v-if="loading" indeterminate class="section-gap" aria-label="正在读取认识" />
@@ -133,8 +165,8 @@ watch(() => [route.query.tab, route.query.id, route.query.scene, route.query.sub
       <v-card v-if="!memory&&refuteOpen" class="section-gap"><v-card-text><p>当前认识详情不可读取，撤销依据草稿仍保留，未改投其他认识。</p><ResourceViewer title="未保存的撤销依据" :content="reason" /><v-btn variant="text" :disabled="saving" @click="cancelRefute">放弃撤销草稿</v-btn></v-card-text></v-card>
       <v-alert v-if="feedback" type="success" variant="tonal" class="section-gap" role="status">{{ feedback }}</v-alert><v-alert v-if="actionError" type="error" variant="tonal" class="section-gap" role="alert">{{ actionError }}</v-alert>
       <template v-if="memory">
-        <v-card><v-card-text><div class="detail-heading"><div><h2>{{ kindName(memory.kind) }} · {{ memory.subject }}</h2><div class="identity-line"><EntityLink type="memory" :id="memory.id" :scene-id="memory.scope" /><EntityLink type="scene" :id="memory.scope" :scene-id="memory.scope" /></div></div><v-btn v-if="memory.status === 'active'" variant="outlined" color="error" :prepend-icon="mdiTextBoxRemoveOutline" :disabled="saving || refuteOpen || detailLoading || !!detailError || refuteReadback" @click="startRefute">撤销认识</v-btn></div><div class="status-line"><StatusBadge domain="basis" :status="memory.basis" /><StatusBadge domain="memory" :status="memory.status" /><v-chip v-if="expired(memory)" color="warning" variant="tonal">现已过期，保留原状态</v-chip></div><p class="auxiliary">创建于 {{ fmtTime(memory.created_at) }} · {{ memory.expires_at === null ? '未设到期时间' : '到期于 ' + fmtTime(memory.expires_at) }} · 读取于 {{ fmtTime(detailReadAt) }}</p><ResourceViewer title="完整认识" :content="memory.statement" /></v-card-text></v-card>
-        <v-card v-if="refuteOpen" class="section-gap refute-card"><v-card-title>确认撤销这条认识</v-card-title><v-card-text><p class="mb-4">记录具体理由后撤销当前认识。原文、证据和修订链会继续保留。</p><v-form @submit.prevent="refute"><v-textarea v-model="reason" label="撤销依据" placeholder="说明哪里不准确，以及已确认的纠正信息" rows="4" auto-grow maxlength="2000" counter :disabled="saving" /><div class="action-row"><v-btn type="submit" color="error" :loading="saving" :disabled="saving || detailLoading || !!detailError || refuteReadback || !reason.trim() || memory.status !== 'active'">记录依据并撤销</v-btn><v-btn variant="text" :disabled="saving" @click="cancelRefute">保留认识</v-btn></div></v-form></v-card-text></v-card>
+        <v-card><v-card-text><div class="detail-heading"><div><h2>{{ kindName(memory.kind) }} · {{ memory.subject }}</h2><div class="identity-line"><EntityLink type="memory" :id="memory.id" :scene-id="memory.scope" /><EntityLink type="scene" :id="memory.scope" :scene-id="memory.scope" /></div></div><v-btn v-if="memory.status === 'active'" variant="outlined" color="error" :prepend-icon="mdiTextBoxRemoveOutline" :disabled="saving || refuteOpen || detailLoading || !!detailError || !!refuteUncertain || refuteReadback" @click="startRefute">撤销认识</v-btn></div><div class="status-line"><StatusBadge domain="basis" :status="memory.basis" /><StatusBadge domain="memory" :status="memory.status" /><v-chip v-if="expired(memory)" color="warning" variant="tonal">现已过期，保留原状态</v-chip></div><p class="auxiliary">创建于 {{ fmtTime(memory.created_at) }} · {{ memory.expires_at === null ? '未设到期时间' : '到期于 ' + fmtTime(memory.expires_at) }} · 读取于 {{ fmtTime(detailReadAt) }}</p><ResourceViewer title="完整认识" :content="memory.statement" /></v-card-text></v-card>
+        <v-card v-if="refuteOpen" class="section-gap refute-card"><v-card-title>确认撤销这条认识</v-card-title><v-card-text><p class="mb-4">记录具体理由后撤销当前认识。原文、证据和修订链会继续保留。</p><v-form :disabled="saving||!!refuteUncertain||refuteReadback" @submit.prevent="refute"><v-textarea v-model="reason" label="撤销依据" placeholder="说明哪里不准确，以及已确认的纠正信息" rows="4" auto-grow maxlength="2000" counter :disabled="saving" /><div class="action-row"><v-btn type="submit" color="error" :loading="saving" :disabled="saving || detailLoading || !!detailError || !!refuteUncertain || refuteReadback || !reason.trim() || memory.status !== 'active'">记录依据并撤销</v-btn><v-btn variant="text" :disabled="saving" @click="cancelRefute">保留认识</v-btn></div></v-form></v-card-text></v-card>
         <v-card class="section-gap"><v-card-title>原始证据</v-card-title><v-card-text><div class="link-list"><EntityLink v-for="eventId in memory.evidence" :key="eventId" type="event" :id="eventId" :scene-id="memory.scope" /></div><p v-if="!memory.evidence.length" class="auxiliary">此记录没有附原始证据。</p></v-card-text></v-card>
         <v-card class="section-gap">
           <v-card-title>此修订链当前采用什么</v-card-title>
