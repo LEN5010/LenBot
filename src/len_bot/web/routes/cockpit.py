@@ -437,11 +437,19 @@ async def refute_memory(memory_id: str, req: MemoryActionRequest, request: Reque
         {"target_memory_id": memory_id, "reason": req.reason})
     proposal = MemoryProposal(operation="refute", scope=memory["scope"], evidence=[event.id],
                               target_memory_ids=[memory_id], reason=req.reason)
-    decision = await runtime.operator_outcome(memory["scope"], EpisodeOutcome(
-        disposition=FinalDisposition.SILENCE, decision_reason="运营撤销认识", memory_proposals=[proposal]), source_event_ids=[event.id])
+    identity = {'memory_id': memory_id, 'scope': memory['scope'], 'source_event_id': event.id}
+    try:
+        decision = await runtime.operator_outcome(memory["scope"], EpisodeOutcome(
+            disposition=FinalDisposition.SILENCE, decision_reason="运营撤销认识", memory_proposals=[proposal]), source_event_ids=[event.id])
+    except Exception as error:
+        detail = '认识撤销未取得完整提交与发布确认，请沿原管理事件核对：' + error_message(f'{type(error).__name__}: {error}')
+        logger.error('%s [%s]', detail, event.id)
+        raise HTTPException(409, {**identity, 'control_accepted': None, 'message': detail}) from error
     if not decision.accepted:
-        raise HTTPException(409, decision.reason)
-    return {"success": True, "memory_id": memory_id, "status": "refuted"}
+        raise HTTPException(409, {**identity, 'control_accepted': False, 'message': decision.reason})
+    return {'success': True, **identity, 'control_accepted': True,
+            'commit_event_id': decision.commit_event_id, 'status': 'refuted'}
+
 
 
 @router.get("/event-types")
