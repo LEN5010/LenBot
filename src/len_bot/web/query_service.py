@@ -1203,6 +1203,10 @@ class RuntimeQueryService:
         item['publication_status'] = publication.get('status')
         item["summary"]=(payload.get("error") or result.get("decision_reason") or result.get("reason")
                          or conversation.get("failure_reason") or result.get("summary") or payload.get("kind") or item["kind"])[:300]
+        if item['kind'] == 'conversation_wait':
+            item['wait_state'] = payload.get('state')
+            item['summary'] = {'acquired':'已取得对话执行槽位', 'cancelled':'等待对话执行槽位时取消',
+                'failed':'等待对话执行槽位失败'}.get(payload.get('state'),'对话执行槽位等待记录')
         item["result_status"] = result.get("status")
         origin=payload.get('plugin_origin')
         plugin_id=origin['plugin_id'] if origin else payload.get('plugin_id')
@@ -1229,6 +1233,7 @@ class RuntimeQueryService:
         if detail or identities:
             item['timings'] = {'elapsed_ms': payload.get('elapsed_ms'), 'runs': [
                 {'index': index + 1, 'job_revision': run.get('job_revision'),
+                 'cognition_slot_wait_ms': run.get('cognition_slot_wait_ms'),
                  'initial_source_reads_ms': run.get('initial_source_reads_ms'),
                  'initial_context_ms': run.get('initial_context_ms'),
                  'commit_ms': (run.get('timings_ms') or {}).get('commit'),
@@ -1242,8 +1247,8 @@ class RuntimeQueryService:
                                       for tool in step.get('tool_calls', [])]}
                            for step in run.get('steps', [])]}
                 for index, run in enumerate(runs)
-                if any(key in run for key in ('steps', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
-        if (detail or identities) and item['kind'] in {'conversation', 'conversation_error'}:
+                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
+        if (detail or identities) and item['kind'] in {'conversation', 'conversation_error', 'conversation_wait'}:
             # These are stored identities, not inferred from the trace time.
             # A source may belong to an attempt that failed before any commit.
             item['source_event_ids'] = sorted(set(payload.get('source_event_ids', []))
@@ -1456,7 +1461,7 @@ class RuntimeQueryService:
                     episode_ids.add(item["ref_id"])
 
         source_clause, source_values = membership('value', event_ids)
-        conversation_sources = [("kind IN ('conversation','conversation_error') AND EXISTS("
+        conversation_sources = [("kind IN ('conversation','conversation_error','conversation_wait') AND EXISTS("
             "SELECT 1 FROM json_each(payload,'" + path + "') WHERE " + source_clause + ")", source_values)
             for path in ('$.source_event_ids', '$.burst.source_event_ids', '$.conversation.references.read_messages')]
         seed_traces=await linked('SELECT *','FROM traces WHERE scene_id=?',[
