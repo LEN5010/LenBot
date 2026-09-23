@@ -1205,7 +1205,7 @@ class RuntimeQueryService:
     @staticmethod
     def _trace_runs(kind, payload):
         def collect(record):
-            return [record, *(child for key in ('runs','agents') for run in record.get(key,[]) for child in collect(run))]
+            return [record, *(child for key in ('runs','agents','model_slot_waits') for run in record.get(key,[]) for child in collect(run))]
         return collect(payload.get('conversation') or payload.get('cognition') or payload)
 
     def _trace(self, item, detail=False, *, identities=False):
@@ -1249,6 +1249,7 @@ class RuntimeQueryService:
             item['timings'] = {'elapsed_ms': payload.get('elapsed_ms'), 'runs': [
                 {'index': index + 1, 'job_revision': run.get('job_revision'),
                  'cognition_slot_wait_ms': run.get('cognition_slot_wait_ms'),
+                 'cognition_slot_wait_state': run.get('state') if 'cognition_slot_wait_ms' in run else None,
                  'initial_source_reads_ms': run.get('initial_source_reads_ms'),
                  'initial_context_ms': run.get('initial_context_ms'),
                  'commit_ms': (run.get('timings_ms') or {}).get('commit'),
