@@ -7,7 +7,7 @@ def create(context):
     return WorkspacePlugin(context)
 
 
-PLUGIN = PluginSpec(id='workspace', name='隔离 Python 工作空间', version='0.2.0',
+PLUGIN = PluginSpec(api_version=1, id='workspace', name='隔离 Python 工作空间', version='0.2.0',
     description='为已有信息工作提供有归属的离线 Python 与文件产物工具；默认停用。',
     config_model=WorkspacePluginConfig, create=create, plugin_type=PluginType.TOOL,
     permissions=(PluginPermission.REGISTER_TOOL,),
