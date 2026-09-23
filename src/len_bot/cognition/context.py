@@ -732,7 +732,8 @@ class ConversationContext:
             for position,call in enumerate(page_calls):
                 page=await render(position,pages[call.id].limit)
                 messages[positions[call.id]]['content']=str(page)
-                requested_images.extend(await self.attachments(page.attachments,read_cache=media_reads))
+                requested_images.extend(await self.attachments(page.attachments,read_cache=media_reads,
+                    source_result_id=pages[call.id].result.result_id))
             candidate=copy.deepcopy([*messages,*requested_images,*reserved])
             self.limit_image_window(candidate)
             if self.request_tokens(candidate,definitions())>self.input_budget:
@@ -773,7 +774,8 @@ class ConversationContext:
             shown = await toolkit._present('read_tool_result', original, 0, limit, 'characters')
             shown = shown.model_copy(update={'attachments':[self.refs.register_media(asset) for asset in original.attachments]})
             entries.append({'result_id': result_id, 'observation': shown})
-            images.extend(await self.attachments(original.attachments, read_cache=media_reads))
+            images.extend(await self.attachments(original.attachments, read_cache=media_reads,
+                source_result_id=result_id))
             for asset in original.attachments:
                 media = await self.runtime.event_store.get_media(asset, [self.session.scene_id, 'global-safe'])
                 if media and (media.get('mime_type') or '').startswith('image/'):
@@ -801,33 +803,68 @@ class ConversationContext:
             raise ValueError(f'初始插件资料的图片 {refs} 在最终模型窗口中缺失，且当前入口没有图片续读工具')
         self.check_request(messages, definitions(), phase='initial_plugin_material')
 
-    async def install_segment_result_locators(self, messages, aliases, *, definitions):
+    async def _saved_result_locator(self, ref, result_id, toolkit):
+        saved = await self.runtime.event_store.tool_observation_locator(result_id,self.session.scene_id)
+        available = saved is not None and toolkit.saved_result_issue(*saved) is None
+        return {'ref':ref,'available':available,'tool':saved[0] if available else None}
+
+    @staticmethod
+    def _segment_result_directory(items):
+        return json.dumps({'kind':'saved_result_locators', 'evidence':'locator_only',
+            'read_with':'read_tool_result', 'items':items},ensure_ascii=False)
+
+    async def install_segment_result_locators(self, messages, aliases, *, definitions, toolkit):
         """Offer saved scene results as optional locations, never as prior reads."""
         if not aliases:
             return
         items = []
         available = {}
+        candidates = {}
 
         def directory():
-            content = json.dumps({'kind':'saved_result_locators', 'evidence':'locator_only',
-                'read_with':'read_tool_result', 'items':items},ensure_ascii=False)
+            content = self._segment_result_directory(items)
             return {'role':'user', '_context_section':'saved_result_locators',
+                '_segment_result_candidates':dict(candidates),
                 '_segment_result_refs':dict(available),
                 '_segment_result_locators':[{**item,'result_id':available.get(item['ref'])} for item in items],
                 '_segment_result_content':content, 'content':content}
 
         for ref, result_id in aliases.items():
-            saved = await self.runtime.event_store.tool_observation_call(result_id,self.session.scene_id)
-            items.append({'ref':ref,'available':saved is not None,
-                          'tool':saved[0] if saved is not None else None})
-            if saved is not None:
+            item=await self._saved_result_locator(ref,result_id,toolkit)
+            items.append(item)
+            candidates[ref]=result_id
+            if item['available']:
                 available[ref] = result_id
             if self.request_tokens([*messages,directory()],definitions()) > self.input_budget:
                 items.pop()
+                candidates.pop(ref,None)
                 available.pop(ref,None)
                 self.omit('saved_result_locators','no_capacity',ref=ref)
         if items:
             messages.append(directory())
+
+    async def refresh_segment_result_locators(self, messages, toolkit):
+        """Recheck the optional directory before each model request."""
+        for message in messages:
+            if (message.get('_context_section') != 'saved_result_locators'
+                    or message.get('_context_omitted')
+                    or message.get('content') != message.get('_segment_result_content')):
+                continue
+            items=[]
+            available={}
+            for ref,result_id in message['_segment_result_candidates'].items():
+                item=await self._saved_result_locator(ref,result_id,toolkit)
+                items.append(item)
+                if item['available']:
+                    available[ref]=result_id
+            content=self._segment_result_directory(items)
+            message['_segment_result_refs']=available
+            message['_segment_result_locators']=[{**item,'result_id':available.get(item['ref'])} for item in items]
+            message['_segment_result_content']=content
+            message['content']=content
+
+    def _source_result_id(self, ref):
+        return self.refs.result_id(ref)
 
     async def pack_tool_pages(self, messages, indexes, limits, render, *, definitions, reserved=(), prepared_images=None,
                               on_present=None):
@@ -862,7 +899,9 @@ class ConversationContext:
             while low <= high:
                 self._restore_projection(copy.deepcopy(snapshot))
                 page = await render(position, limit)
-                pixels = await self.attachments(page.attachments,read_cache=prepared_images)
+                source_id = self._source_result_id(page.result_id) if page.attachments else None
+                pixels = await self.attachments(page.attachments,read_cache=prepared_images,
+                    source_result_id=source_id)
                 messages[index]['content'] = str(page)
                 fits = cost(pixels) <= target
                 if fits and page.error_code != 'page_too_small':
@@ -876,7 +915,9 @@ class ConversationContext:
             messages[index]['content'] = original
             if best:
                 page = await render(position, best)
-                images.extend(await self.attachments(page.attachments,read_cache=prepared_images))
+                source_id = self._source_result_id(page.result_id) if page.attachments else None
+                images.extend(await self.attachments(page.attachments,read_cache=prepared_images,
+                    source_result_id=source_id))
                 messages[index]['content'] = str(page)
                 if on_present is not None:
                     on_present(messages[index], page)
@@ -1183,7 +1224,7 @@ class ConversationContext:
                 '_original_ranges':copy.deepcopy(self.refs.range_contributions[range_start:]),
                 'content':json.dumps(view,ensure_ascii=False)}
 
-    async def attachments(self, asset_ids, *, read_cache=None, preparation_stats=None):
+    async def attachments(self, asset_ids, *, read_cache=None, preparation_stats=None, source_result_id=None):
         pending = list(dict.fromkeys(asset for asset in asset_ids if asset not in self.attached))
         if not pending: return []
         for asset in pending: self.refs.register_media(asset)
@@ -1206,7 +1247,9 @@ class ConversationContext:
                 parts.append({'type':'text','text':f"媒体 {ref}（{record['media_type']}）：{record['note']}"})
             else:
                 parts.append({'type':'text','text':f"媒体 {ref} 本次未装入：{record.get('reason',record['status'])}"})
-        return [{'role':'user','_context_section':'original_media','content':parts}] if parts else []
+        return [{'role':'user','_context_section':'original_media',
+            **({'_source_result_id':source_result_id} if source_result_id else {}),
+            'content':parts}] if parts else []
 
     async def own_recent_expression(self):
         """This scene's own recent wording, so a turn can hear itself repeating.

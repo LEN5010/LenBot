@@ -164,7 +164,7 @@ class SocialCognitionCore:
                                          plugin_request=plugin_request)
             if save_segment is not None and session.conversation_segment is not None:
                 await context.install_segment_result_locators(messages,
-                    session.conversation_segment.result_aliases,definitions=request_definitions)
+                    session.conversation_segment.result_aliases,definitions=request_definitions,toolkit=toolkit)
             if plugin_request:
                 await toolkit.import_results(plugin_request.result_ids)
                 for ident in plugin_request.result_ids:
@@ -261,7 +261,9 @@ class SocialCognitionCore:
             # the existing local preference projection even without new input.
             if not plugin_request or plugin_request.input_mode=='conversation':
                 await context.install_preferences(trajectory)
+            await context.refresh_segment_result_locators(trajectory,toolkit)
             await toolkit.invalidate_saved_references(trajectory)
+            await toolkit.invalidate_result_references()
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
             for message in trajectory:
                 if (not message.get('_context_omitted') and '_segment_result_content' in message
