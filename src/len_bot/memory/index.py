@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 
 from len_bot.cognition.retrieval_models import RetrievalOptOut
+from len_bot.memory.history import HISTORY_SOURCES_AVAILABLE_SQL
 
 
 class MemoryIndex:
@@ -132,6 +133,7 @@ class MemoryIndex:
                          ON h.id=i.source_id AND h.scene_id=i.scope
                       WHERE i.scope=? AND i.source_kind='history_summary'
                         AND i.source_revision=h.generation_version AND h.status='completed'"""
+            sql += f" AND {HISTORY_SOURCES_AVAILABLE_SQL}"
             if max_end_rowid is not None:
                 sql += " AND h.end_rowid<=?"; params.append(max_end_rowid)
             if start_time is not None:

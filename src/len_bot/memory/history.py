@@ -30,6 +30,14 @@ RESUMABLE_HISTORY_ERRORS = frozenset({
 })
 
 
+# This predicate reads source identities only; it never projects original bodies.
+HISTORY_SOURCES_AVAILABLE_SQL = """json_array_length(h.source_event_ids_json)>0 AND NOT EXISTS (
+    SELECT 1 FROM json_each(h.source_event_ids_json) source
+    WHERE NOT EXISTS (SELECT 1 FROM events e
+        WHERE e.id=source.value AND e.scene_id=h.scene_id
+          AND e.rowid BETWEEN h.start_rowid AND h.end_rowid))"""
+
+
 class HistoryConflictError(ValueError):
     """Coverage or knowledge changed before an atomic maintenance commit."""
 
@@ -381,11 +389,31 @@ class HistoryStoreMixin:
     def _history_row(item):
         for name in ("source_event_ids", "complete_event_ids", "key_event_ids"):
             item[name] = json.loads(item.pop(name + "_json"))
+        if 'sources_available' in item:
+            item['sources_available'] = bool(item['sources_available'])
         return item
 
-    async def list_history_batches(self, scene_id, limit=20, status=None):
-        cursor = await self._db.execute("""SELECT * FROM history_batches WHERE scene_id=? AND (? IS NULL OR status=?)
-            ORDER BY end_rowid DESC,end_offset DESC LIMIT ?""", (scene_id, status, status, limit))
+    async def available_history_summaries(self, scene_id: str, batch_ids: list[str], through_rowid: int) -> dict[str, str]:
+        if not batch_ids:
+            return {}
+        cursor = await self._db.execute(f"""SELECT h.id,h.generation_version FROM history_batches h
+            WHERE h.scene_id=? AND h.id IN (SELECT value FROM json_each(?))
+              AND h.status='completed' AND h.end_rowid<=? AND {HISTORY_SOURCES_AVAILABLE_SQL}""",
+            (scene_id, json.dumps(batch_ids), through_rowid))
+        return dict(await cursor.fetchall())
+
+    async def list_history_batches(self, scene_id, limit=20, status=None, *, available_only=False, through_rowid=None):
+        sql = f"""SELECT h.*,({HISTORY_SOURCES_AVAILABLE_SQL}) AS sources_available
+            FROM history_batches h WHERE h.scene_id=? AND (? IS NULL OR h.status=?)"""
+        params = [scene_id, status, status]
+        if available_only:
+            sql += f" AND {HISTORY_SOURCES_AVAILABLE_SQL}"
+        if through_rowid is not None:
+            sql += " AND h.end_rowid<=?"
+            params.append(through_rowid)
+        sql += " ORDER BY h.end_rowid DESC,h.end_offset DESC LIMIT ?"
+        params.append(limit)
+        cursor = await self._db.execute(sql, params)
         names = [column[0] for column in cursor.description]
         return [self._history_row(dict(zip(names, row))) for row in await cursor.fetchall()]
 

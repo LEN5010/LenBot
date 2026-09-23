@@ -21,6 +21,7 @@ from len_bot.cognition.jobs import ResultSpan
 from len_bot.config import RuntimeConfig
 from len_bot.events.models import Event, human_event_uid
 from len_bot.media.models import media_purpose
+from len_bot.memory.history import HISTORY_SOURCES_AVAILABLE_SQL
 from len_bot.plugins.models import PluginCallContext
 from len_bot.tools.results import DisplayedRange, ToolFieldError, ToolNextCall, ToolResult
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
@@ -699,36 +700,82 @@ class RetrievalToolkit:
                 'stale_memory_result', stage='presentation')
         return None
 
-    async def invalidate_memory_presentations(self, messages: list[dict[str, Any]]) -> None:
-        """Remove stale saved memory pages from the next request, not the audit."""
+    async def _history_presentation_failure(self, result: ToolResult) -> ToolResult | None:
+        saved = json.loads(result.content)
+        current = await self.event_store.available_history_summaries(
+            self.default_scene_id, [item['id'] for item in saved], self.cutoff)
+        if any(current.get(item['id']) != item['generation_version'] for item in saved):
+            return ToolResult.failure(
+                '保存摘要的批次或本群原话来源已不可用；旧摘要正文不再进入请求。'
+                '原保存记录仍供审计，需要新线索时明确查询，不自动重做摘要。',
+                'stale_history_summary', stage='presentation')
+        return None
+
+    async def invalidate_saved_references(self, messages: list[dict[str, Any]]) -> None:
+        """Recheck saved memory pages and history summaries, without rewriting audit."""
         failures = {}
         for message in messages:
-            for presentation in self.read_presentations([message]):
-                ident = presentation['result_id']
-                original = self.observations[ident]
-                if original.tool_name != 'query_memory':
-                    continue
-                if ident not in failures:
-                    failures[ident] = await self._memory_presentation_failure(original)
-                failure = failures[ident]
-                if failure is None:
-                    continue
+            if message.get('_context_section') == 'history_summary':
+                versions = message['_summary_versions']
+                current = await self.event_store.available_history_summaries(
+                    self.default_scene_id, list(versions), self.cutoff)
+                missing = [ident for ident, version in versions.items() if current.get(ident) != version]
+                if missing:
+                    message['content'] = json.dumps({'kind':'history_summary', 'evidence':'unavailable',
+                        'error_code':'stale_history_summary', 'unavailable_batch_ids':missing, 'summaries':[]}, ensure_ascii=False)
+                    message['_summary_versions'] = {}
+                    message['_summary_ranges'] = []
+                    message['_summary_complete_ids'] = []
+                    if self.context is not None:
+                        self.context.omit('history_summary', 'sources_unavailable', batch_ids=missing)
+                continue
+            material = message.get('_context_section') in {'plugin_material', 'plugin_hook_material'}
+            if message.get('role') != 'tool' and not material:
+                continue
+            if not isinstance(message.get('content'), str):
+                continue
+            try:
                 content = json.loads(message['content'])
-                material = message.get('_context_section') in {'plugin_material', 'plugin_hook_material'}
-                shown = content['observation'] if material else content
-                replacement = failure.model_copy(update={'result_id': shown['result_id'],
-                    'tool_name': original.tool_name, 'tool_call_id': original.tool_call_id})
-                if material:
-                    content['observation'] = replacement.model_dump(mode='json', exclude_none=True)
-                    message['content'] = json.dumps(content, ensure_ascii=False)
-                else:
-                    message['content'] = replacement.model_dump_json(exclude_none=True)
+            except ValueError:
+                continue
+            shown = content.get('observation') if material and isinstance(content, dict) else content
+            if not isinstance(shown, dict) or shown.get('status') not in {'ok','partial','no_results'}:
+                continue
+            ident = shown.get('result_id')
+            if not isinstance(ident, str):
+                continue
+            if self.references and ident in self.references.results:
+                ident = self.references.results[ident]
+            original = self.observations.get(ident)
+            if original is None or original.tool_name not in {'query_memory','search_history_summaries'}:
+                continue
+            if original.tool_name == 'query_memory' and not self.read_presentations([message]):
+                continue
+            if original.status not in {'ok','partial','no_results'}:
+                continue
+            if ident not in failures:
+                failures[ident] = await (self._memory_presentation_failure(original)
+                    if original.tool_name == 'query_memory' else self._history_presentation_failure(original))
+            failure = failures[ident]
+            if failure is None:
+                continue
+            replacement = failure.model_copy(update={'result_id': shown['result_id'],
+                'tool_name': original.tool_name, 'tool_call_id': original.tool_call_id})
+            if material:
+                content['observation'] = replacement.model_dump(mode='json', exclude_none=True)
+                message['content'] = json.dumps(content, ensure_ascii=False)
+            else:
+                message['content'] = replacement.model_dump_json(exclude_none=True)
 
     async def _render_page(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:
             raise ValueError(f'offset must be nonnegative; limit must be 1..{self.max_chars}')
         if name == 'query_memory' and result.status in {'ok', 'partial', 'no_results'}:
             failure = await self._memory_presentation_failure(result)
+            if failure is not None:
+                return failure
+        if name == 'search_history_summaries' and result.status in {'ok', 'partial', 'no_results'}:
+            failure = await self._history_presentation_failure(result)
             if failure is not None:
                 return failure
         if (self.context and name == 'query_jobs' and coordinate_unit == 'characters'
@@ -1227,13 +1274,14 @@ class RetrievalToolkit:
         elif name=='query_timeline':rows=await store.query_timeline(self.default_scene_id,args['start_time'],args['end_time'],scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='query_person_history':rows=await store.query_person_history(args['actor_id'],scopes,args['limit'],through_rowid=self.cutoff)
         elif name=='search_history_summaries':
-            summary_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND end_rowid<=? AND instr(lower(summary),lower(?))>0"
+            summary_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches h WHERE scene_id=? AND status='completed' AND end_rowid<=? AND instr(lower(summary),lower(?))>0"
+            summary_sql += f" AND {HISTORY_SOURCES_AVAILABLE_SQL}"
             summary_params: list[Any] = [self.default_scene_id, self.cutoff, args['query']]
             if args.get('start_time') is not None:
-                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"
+                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp>=?)"
                 summary_params.append(args['start_time'])
             if args.get('end_time') is not None:
-                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp<?)"
+                summary_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp<?)"
                 summary_params.append(args['end_time'])
             summary_sql += " ORDER BY end_rowid DESC LIMIT ?"; summary_params.append(args['limit'])
             cursor = await self.event_store._db.execute(summary_sql, summary_params)
@@ -1256,12 +1304,13 @@ class RetrievalToolkit:
                     source_kind='history_summary', max_end_rowid=self.cutoff,
                     start_time=args.get('start_time'), end_time=args.get('end_time'))
                 if ids:
-                    semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches WHERE scene_id=? AND status='completed' AND end_rowid<=? AND id IN (SELECT value FROM json_each(?))"
+                    semantic_sql = "SELECT id,scene_id,start_rowid,start_offset,end_rowid,end_offset,summary,key_event_ids_json,generation_version FROM history_batches h WHERE scene_id=? AND status='completed' AND end_rowid<=? AND id IN (SELECT value FROM json_each(?))"
+                    semantic_sql += f" AND {HISTORY_SOURCES_AVAILABLE_SQL}"
                     semantic_params: list[Any] = [self.default_scene_id, self.cutoff, json.dumps(ids)]
                     if args.get('start_time') is not None:
-                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp>=?)"; semantic_params.append(args['start_time'])
+                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp>=?)"; semantic_params.append(args['start_time'])
                     if args.get('end_time') is not None:
-                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=history_batches.scene_id AND e.id IN (SELECT value FROM json_each(history_batches.source_event_ids_json)) AND e.timestamp<?)"; semantic_params.append(args['end_time'])
+                        semantic_sql += " AND EXISTS (SELECT 1 FROM events e WHERE e.scene_id=h.scene_id AND e.id IN (SELECT value FROM json_each(h.source_event_ids_json)) AND e.timestamp<?)"; semantic_params.append(args['end_time'])
                     cursor = await self.event_store._db.execute(semantic_sql, semantic_params)
                     semantic_rows = [dict(zip([item[0] for item in cursor.description], row)) for row in await cursor.fetchall()]
                     by_id = {item['id']: item for item in rows}
@@ -1271,10 +1320,17 @@ class RetrievalToolkit:
                     semantic_summary = True
                 if not semantic_guard():
                     raise RetrievalOptOut('该场景已关闭语义检索')
+            current_summaries = await self.event_store.available_history_summaries(
+                self.default_scene_id, [row['id'] for row in rows], self.cutoff)
+            eligible = [row for row in rows if current_summaries.get(row['id']) == row['generation_version']]
+            sources_changed = len(eligible) != len(rows)
+            summary_partial = summary_partial or sources_changed
+            rows = eligible
             for row in rows:
                 row['key_event_ids'] = json.loads(row.pop('key_event_ids_json'))
             return ToolResult(status='partial' if summary_partial else ('ok' if rows else 'no_results'), content=json.dumps(rows, ensure_ascii=False),
-                              coverage='history_summary_locator+semantic' if semantic_summary else 'history_summary_locator', evidence_kind='retrieval')
+                              coverage=('history_summary_locator+semantic' if semantic_summary else 'history_summary_locator')
+                                  + ('; candidates changed or original sources unavailable' if sources_changed else ''), evidence_kind='retrieval')
         elif name=='list_public_interests':
             from len_bot.memory.interests import InterestStore
             items = await InterestStore(self.event_store).list_public(topic=args.get('topic'), limit=args['limit'])
