@@ -1252,6 +1252,7 @@ class RuntimeQueryService:
                  'cognition_slot_wait_state': run.get('state') if 'cognition_slot_wait_ms' in run else None,
                  'initial_source_reads_ms': run.get('initial_source_reads_ms'),
                  'initial_context_ms': run.get('initial_context_ms'),
+                 'request_preparation_failure': run.get('request_preparation_failure'),
                  'commit_ms': (run.get('timings_ms') or {}).get('commit'),
                  'publication_ms': (run.get('timings_ms') or {}).get('publication'),
                  'steps': [{'index': step.get('step'), 'call_id': step.get('call_id'),
