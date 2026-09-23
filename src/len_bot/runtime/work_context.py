@@ -10,6 +10,7 @@ from len_bot.cognition.agent_loop import AgentBudgetExhausted, _error_text
 from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.call_store import estimate_request
+from len_bot.cognition.request_record import _PromptComponent, _RecordedToolDefinition, _RequestLocation
 
 
 class JobContextExhausted(RuntimeError):
@@ -291,7 +292,9 @@ class WorkCompressor:
             return None
         try:
             binding = self.runtime.provider_registry.resolve("maintenance")
-            terminal = {"type": "function", "function": {"name": "summarize_work_segment", "description": "压缩已完成旧工具区间，保留来源、反例、错误与未决项。", "parameters": WorkSegment.model_json_schema()}}
+            terminal = _RecordedToolDefinition(
+                {"type": "function", "function": {"name": "summarize_work_segment", "description": "压缩已完成旧工具区间，保留来源、反例、错误与未决项。", "parameters": WorkSegment.model_json_schema()}},
+                component_id='core.work_compression.summarize_work_segment', revision=1)
             # Select one whole prefix that fits this maintenance profile's own
             # window. This is batching before a single request, not a retry.
             for group_count in range(len(spans)-2, 0, -1):
@@ -322,6 +325,10 @@ class WorkCompressor:
             if failure is not None:
                 raise ValueError(f"压缩输入资料已失效：{failure.error_code}: {failure.content}")
             await self.charge(self.revision, model_steps=1)
+            # Only the code-owned contract is retained, never the work payload.
+            # Bump its revision when the fixed instruction above changes.
+            request[0]['_request_location'] = _RequestLocation(prompt_components=(
+                _PromptComponent('work_compression.contract', 1, 0, request[0]['content']),))
             response = await ModelGateway(binding, max_output_tokens=config.maintenance_output_tokens, call_store=store,
                 scene_id=self.scene_id, job_id=self.job_id, purpose="work_compression",
                 admission=self.admission).complete(request, [terminal], {"type": "function", "function": {"name": "summarize_work_segment"}})
