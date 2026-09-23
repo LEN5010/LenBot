@@ -48,6 +48,8 @@ class _RequestLocation:
     omitted: bool | None = None
     omission_reason: str | None = None
     image_assets: dict[int, str] = field(default_factory=dict)
+    result_locator_status: str | None = None
+    result_locators: list[dict[str, Any]] | None = None
     prompt_components: tuple[_PromptComponent, ...] = ()
     tool_presentations: list[dict[str, str | int]] | None = None
 
@@ -106,7 +108,7 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(part, dict) and part.get('type') in {'image_url', 'input_image'}:
                     images.append({'part_index': part_index, 'type': part['type'],
                         'asset_id': location.image_assets.get(part_index) if location else None})
-        messages.append({
+        entry = {
             'index': index, 'role': message['role'], 'section': message.get('_context_section'),
             'event_id': location.event_id if location else None,
             'ref': location.ref if location else None,
@@ -123,13 +125,17 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
             'images': images,
             'prompt_components': prompt_components,
             'tool_presentations': location.tool_presentations if location else None,
-        })
+        }
+        if location and location.result_locator_status is not None:
+            entry['result_locator_status'] = location.result_locator_status
+            entry['result_locators'] = location.result_locators
+        messages.append(entry)
     choice = request['tool_choice']
     tools = [_tool_record(index, tool) for index, tool in enumerate(request['tools'])]
     # The client receives plain dictionaries without private snapshot attributes.
     request['tools'] = [dict(tool) for tool in request['tools']]
     return {
-        'format_version': 3,
+        'format_version': 4,
         'boundary': 'before_client_send',
         'settings': {key: request.get(key) for key in ('model', 'reasoning_effort', 'max_completion_tokens', 'stream')},
         'tool_choice': ({'type': choice.get('type'), 'name': (choice.get('function') or {}).get('name')}

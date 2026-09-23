@@ -7,11 +7,11 @@ const props = defineProps({ record: Object, sceneId: String })
 const visibleCount = ref(25)
 const rawOpen = ref(false)
 watch(() => props.record, () => { visibleCount.value = 25; rawOpen.value = false })
-const supported = computed(() => [1, 2, 3].includes(props.record?.format_version))
+const supported = computed(() => [1, 2, 3, 4].includes(props.record?.format_version))
 const messages = computed(() => supported.value ? props.record.messages : [])
-const components = computed(() => [2, 3].includes(props.record?.format_version)
+const components = computed(() => [2, 3, 4].includes(props.record?.format_version)
   ? messages.value.flatMap(message => message.prompt_components.map(component => ({ ...component, messageIndex: message.index }))) : [])
-const retainedTools = computed(() => [2, 3].includes(props.record?.format_version)
+const retainedTools = computed(() => [2, 3, 4].includes(props.record?.format_version)
   ? props.record.tools.filter(tool => tool.definition.status === 'retained').length : 0)
 const images = computed(() => messages.value.flatMap(message => message.images))
 const omitted = computed(() => messages.value.filter(message => message.omitted === true).length)
@@ -46,7 +46,7 @@ const gaps = {
       <p v-if="record.request_order?.scope === 'binding_instance_preparation'" class="request-note">同一绑定实例的第 {{ record.request_order.sequence }} 次请求准备（{{ record.request_order.sequence === 1 ? '首次' : '后续' }}）。实例 {{ record.request_order.binding_id }}；不是群首问、段首轮或供应商重试序号。此前准备若未登记，序号可能不连续。</p>
       <p v-else class="request-note">未记录本次请求在绑定实例中的先后顺序。</p>
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
-      <template v-if="[2, 3].includes(record.format_version)">
+      <template v-if="[2, 3, 4].includes(record.format_version)">
         <h4>固定提示组件</h4>
         <p class="request-note">只保留下列固定片段；同一消息中的人格配置、表达偏好及插件动态指令未留存。组件修订号是声明版本，具体内容以本次快照为准。</p>
         <p v-if="!components.length" class="request-note">本次没有单独登记的固定提示组件。</p>
@@ -61,7 +61,7 @@ const gaps = {
       </template>
       <details><summary>当次工具顺序与定义</summary><ol class="request-tools"><li v-for="tool in record.tools" :key="tool.index">
         {{ tool.name || '未记录名称' }} · {{ tool.type }}
-        <template v-if="[2, 3].includes(record.format_version)">
+        <template v-if="[2, 3, 4].includes(record.format_version)">
           <p v-if="tool.definition.plugin" class="request-note">声明来源：{{ tool.definition.plugin.id }} · 插件 v{{ tool.definition.plugin.version }} · 接口世代 {{ tool.definition.plugin.api_version }}。仅定位所属插件，不证明 Schema 恒定或工具已执行。</p>
           <details v-if="tool.definition.status === 'retained'">
             <summary>{{ tool.definition.component_id }} · 修订 {{ tool.definition.revision }} · 查看本次定义</summary>
@@ -72,6 +72,7 @@ const gaps = {
         </template>
       </li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
       <p class="request-note">资料页范围只说明该次最终请求保留了对应原文或宿主投影，不证明模型已经收到或已读。未匹配到资料页不等于工具未执行；原始结果和执行状态仍以所属记录为准。</p>
+      <p v-if="record.format_version === 4" class="request-note">若有上段资料位置，只记录本次请求中保留的编号和目录装配时可用性；它不是正文阅读，也不证明资料现在仍可用。</p>
       <p v-if="images.length" class="request-note">图像定位按消息和内容块展开，位置均从 1 开始显示。资产编号只表示本次请求记录中的关联，不证明模型看到像素、文件仍可用或平台已收到；展开不会加载图片。</p>
       <div class="request-table-wrap"><table>
         <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
@@ -86,6 +87,10 @@ const gaps = {
             <ul v-if="message.tool_presentations?.length"><li v-for="(page,pageIndex) in message.tool_presentations" :key="pageIndex">
               <EntityLink type="result" :id="page.result_id" :scene-id="sceneId" :span="page" label="查看本次保留的资料范围" />
               <p>[{{ page.start }}, {{ page.end }}) / {{ page.total }} · {{ page.coordinate_unit === 'records' ? '记录坐标' : '字符坐标' }}<span v-if="page.evidence_ref"> · {{ page.evidence_ref }}</span></p>
+            </li></ul>
+            <p v-if="message.result_locator_status === 'changed_after_declaration'">旧资料目录在声明后有变化，编号未登记为本次保留位置。</p>
+            <ul v-if="message.result_locator_status === 'retained' && message.result_locators?.length"><li v-for="item in message.result_locators" :key="item.ref">
+              {{ item.ref }} · {{ item.tool || '原工具未记录' }} · <EntityLink v-if="item.result_id" type="result" :id="item.result_id" :scene-id="sceneId" label="查看旧资料" /><span v-else>装配时不可用</span>
             </li></ul>
           </td>
           <td>{{ message.omitted === null ? '省略状态未记录' : message.omitted ? '标记省略' : '未标记省略' }}<p v-if="message.omitted">{{ message.omission_reason || '省略原因未单独记录' }}</p><p>图像块 {{ message.images.length }}</p>
