@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Request, Depends, HTTPException, Body
@@ -9,6 +10,9 @@ from len_bot.config_edit import ConfigEdit, ConfigEditConflict
 from len_bot.config_store import AccessSettings, ResourceSettings, TimeSettings, MemberSettings
 from len_bot.runtime.capabilities import Capability, CapabilityGrant
 from len_bot.web.auth import get_current_user
+from len_bot.tools.results import error_message
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -23,7 +27,7 @@ async def save_runtime_settings(runtime, values, *, live, baseline):
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     except OSError as error:
-        raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
+        raise HTTPException(500, "配置写入未取得完成确认，请核对当前保存值：" + str(error.strerror)) from error
 
 
 async def save_root_section(runtime, section, values, *, baseline):
@@ -36,7 +40,7 @@ async def save_root_section(runtime, section, values, *, baseline):
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     except OSError as error:
-        raise HTTPException(500, "配置文件保存失败，原运行设置未发布：" + str(error.strerror)) from error
+        raise HTTPException(500, "配置写入未取得完成确认，请核对当前保存值：" + str(error.strerror)) from error
 
 
 @router.get("/draft/{domain}")
@@ -195,8 +199,14 @@ async def update_access_settings(edit: ConfigEdit, request: Request, user: str =
         # A grant revision is an operator action; the saved file is the
         # effective version from this point, and an already-sent message
         # cannot be recalled by revoking later.
-        await runtime.record_operator_event("system:settings", "capability_grants", user,
-            {"grant_ids": [grant['grant_id'] for grant in merged['capability_grants']]})
+        try:
+            await runtime.record_operator_event("system:settings", "capability_grants", user,
+                {"grant_ids": [grant['grant_id'] for grant in merged['capability_grants']]})
+        except Exception as error:
+            detail = '访问配置已保存，但管理事件记录未完成：' + error_message(f'{type(error).__name__}: {error}')
+            logger.error('%s', detail)
+            raise HTTPException(409, {'message': detail, 'config_saved': True,
+                                      'domain': 'access', 'stage': 'operator_event'}) from error
     return {"config_saved": True, "settings": runtime.query_service.access_settings(), "requires_restart": False,
             "message": "QQ 回复白名单与能力授予已保存；未配置的能力保持关闭，撤销只阻止后续操作"}
 
@@ -224,7 +234,7 @@ async def update_resource_settings(request: Request, edit: ConfigEdit, user: str
 async def update_time_settings(request: Request, edit: ConfigEdit, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     await save_root_section(runtime, "time", TimeSettings.model_validate(edit.values).model_dump() if edit.values is not None else None, baseline=edit.baseline)
-    return {"settings": runtime.query_service.time_settings(), "requires_restart": runtime.restart_required,
+    return {"config_saved": True, "settings": runtime.query_service.time_settings(), "requires_restart": runtime.restart_required,
             "message": "业务时间设置已写入根文件，按页面提示重启后用于新查询"}
 
 
@@ -294,7 +304,7 @@ async def update_persona_settings(edit: ConfigEdit, request: Request, user: str 
     values = {key: value.strip() if isinstance(value, str) else value
               for key, value in req.model_dump(exclude_none=True).items()}
     await save_runtime_settings(runtime, values, live=True, baseline=edit.baseline)
-    return {"success": True, "message": "人格与说话风格已保存，并立即生效"}
+    return {"success": True, "config_saved": True, "message": "人格与说话风格已保存，并立即生效"}
 
 
 class AttentionSettingsRequest(BaseModel):
@@ -323,7 +333,7 @@ async def update_attention_settings(edit: ConfigEdit, request: Request, user: st
     runtime = request.app.state.runtime
     values = AttentionSettingsRequest.model_validate(edit.values).model_dump(exclude_unset=True)
     await save_runtime_settings(runtime, values, live=True, baseline=edit.baseline)
-    return {"success": True, "message": "注意力参数已写入根配置，下次扫描起生效", "settings": runtime.query_service.attention_settings()}
+    return {"success": True, "config_saved": True, "message": "注意力参数已写入根配置，下次扫描起生效", "settings": runtime.query_service.attention_settings()}
 
 
 @router.get("/runtime")
