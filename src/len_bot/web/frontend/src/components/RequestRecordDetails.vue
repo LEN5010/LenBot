@@ -72,6 +72,7 @@ const gaps = {
         </template>
       </li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
       <p class="request-note">资料页范围只说明该次最终请求保留了对应原文或宿主投影，不证明模型已经收到或已读。未匹配到资料页不等于工具未执行；原始结果和执行状态仍以所属记录为准。</p>
+      <p v-if="images.length" class="request-note">图像定位按消息和内容块展开，位置均从 1 开始显示。资产编号只表示本次请求记录中的关联，不证明模型看到像素、文件仍可用或平台已收到；展开不会加载图片。</p>
       <div class="request-table-wrap"><table>
         <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
         <thead><tr><th scope="col">位置 / 角色</th><th scope="col">类别</th><th scope="col">来源与范围</th><th scope="col">省略 / 图像</th></tr></thead>
@@ -87,7 +88,16 @@ const gaps = {
               <p>[{{ page.start }}, {{ page.end }}) / {{ page.total }} · {{ page.coordinate_unit === 'records' ? '记录坐标' : '字符坐标' }}<span v-if="page.evidence_ref"> · {{ page.evidence_ref }}</span></p>
             </li></ul>
           </td>
-          <td>{{ message.omitted === null ? '省略状态未记录' : message.omitted ? '标记省略' : '未标记省略' }}<p v-if="message.omitted">{{ message.omission_reason || '省略原因未单独记录' }}</p><p>图像块 {{ message.images.length }}</p></td>
+          <td>{{ message.omitted === null ? '省略状态未记录' : message.omitted ? '标记省略' : '未标记省略' }}<p v-if="message.omitted">{{ message.omission_reason || '省略原因未单独记录' }}</p><p>图像块 {{ message.images.length }}</p>
+            <details v-if="message.images.length" class="request-images">
+              <summary>消息 {{ message.index + 1 }} 的图像定位</summary>
+              <ul><li v-for="image in message.images" :key="image.part_index">
+                内容块 {{ image.part_index + 1 }} · {{ image.type }}
+                <p v-if="image.asset_id">资产 <code>{{ image.asset_id }}</code></p>
+                <p v-else>未记录资产定位；不从当前资料反推。</p>
+              </li></ul>
+            </details>
+          </td>
         </tr></tbody>
       </table></div>
       <v-btn v-if="visibleCount < messages.length" variant="text" size="small" @click="visibleCount += 25">继续显示 25 个位置（已显示 {{ visibleCount }} / {{ messages.length }}）</v-btn>
@@ -100,4 +110,5 @@ const gaps = {
 <style scoped>
 .request-record{min-width:0}.request-record h3{font-size:15px;margin:0 0 12px}.request-note{font-size:12px;color:var(--muted);line-height:1.7;overflow-wrap:anywhere}.request-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;font-size:12px}.request-facts dt{color:var(--muted)}.request-facts dd{margin:4px 0 0;overflow-wrap:anywhere}.request-record summary{cursor:pointer;font-size:12px;line-height:1.7}.request-record details{margin:12px 0}.request-tools{font-size:12px;line-height:1.7;overflow-wrap:anywhere}.request-table-wrap{overflow-x:auto;margin-top:12px}.request-record table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}.request-record caption{text-align:left;color:var(--muted);padding:8px 0}.request-record th,.request-record td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;min-width:90px}.request-record td p{margin:5px 0 0;color:var(--muted)}.request-record th{font-weight:500}.request-record :deep(.entity-link){max-width:180px;font-size:12px}
 @media(max-width:600px){.request-facts{grid-template-columns:minmax(0,1fr)}}
+.request-images summary{padding:2px 0}.request-images ul{margin:8px 0;padding-left:16px}.request-images li+li{margin-top:8px}.request-images code{white-space:normal;overflow-wrap:anywhere}
 </style>
