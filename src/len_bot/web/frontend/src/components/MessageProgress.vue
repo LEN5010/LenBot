@@ -58,6 +58,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
         <p v-if="!batch.sources_available">原来源目前不完整；{{ batch.status === 'completed' ? '已保存摘要只保留审计' : '本批次不能形成可用摘要' }}，不作为新请求材料。</p>
       </li></ul>
     </details>
+    <p v-else-if="['GROUP_MESSAGE_RECEIVED','PRIVATE_MESSAGE_RECEIVED'].includes(event.event_type) && relations" class="progress-note">本次关联未找到明确以这条原话为来源的历史维护批次；不据此断言全群没有维护记录。</p>
     <section class="progress-calls" aria-label="关联处理与发送耗时">
       <h4>关联处理与发送耗时</h4>
       <p class="progress-note">处理计时属于关联轮次，同轮可能包含多条来源。等待、并行与嵌套阶段不能相加；没有记录不代表零耗时。</p>
