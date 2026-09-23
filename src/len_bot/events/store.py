@@ -820,6 +820,15 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         advance_session_observation: bool = True,
     ) -> int:
         """Write inside the caller's locked transaction; no commit authority here."""
+        resumed=event.metadata.get('conversation_resume')
+        if resumed:
+            changed=await self._db.execute("""UPDATE open_loops SET status='resolved'
+                WHERE id=? AND scene_id=? AND source_event_id=? AND status='active' AND expires_at>?""",
+                (resumed['loop_id'],event.scene_id,resumed['send_event_id'],self.clock()))
+            if changed.rowcount!=1:
+                # Keep the incoming original even when its proposed wait claim
+                # loses eligibility. Scheduling ends this recovery, not the input.
+                event.metadata['conversation_resume_error'] = 'The sent wait was already consumed, expired or changed'
         await self.register_event_media_in_transaction(event)
         payload_str = json.dumps(event.payload, ensure_ascii=False)
         metadata_str = json.dumps(event.metadata, ensure_ascii=False)
@@ -854,13 +863,6 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
 
         await self._db.execute("DELETE FROM pending_runtime_events WHERE id=? AND scene_id=?",
                                (event.id, event.scene_id))
-        resumed=event.metadata.get('conversation_resume')
-        if resumed:
-            changed=await self._db.execute("""UPDATE open_loops SET status='resolved'
-                WHERE id=? AND scene_id=? AND source_event_id=? AND status='active' AND expires_at>?""",
-                (resumed['loop_id'],event.scene_id,resumed['send_event_id'],self.clock()))
-            if changed.rowcount!=1:
-                raise ValueError('The sent wait was already consumed, expired or changed')
         task_id = event.payload.get("fulfils_task_id")
         delivery_status = receipt_delivery_status(event.event_type, event.payload, event.metadata)
         if task_id and event.event_type in (EventType.MESSAGE_SENT, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOADED, EventType.FILE_UPLOAD_FAILED, EventType.ACTION_SHADOWED):
