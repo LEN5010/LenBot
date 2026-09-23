@@ -343,7 +343,7 @@ class PluginHost:
         aliases: tuple[str, ...] = (),
         keywords: tuple[str, ...] = (),
         kind: Literal["read", "proposal"],
-        ordered: bool = False,
+        ordered: bool = True,
         roles: tuple[Literal["conversation", "work"], ...],
         required_capabilities: tuple[str, ...] = (),
         side_effect: Literal['none', 'account_write'] = 'none',
