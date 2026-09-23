@@ -134,7 +134,7 @@ onBeforeUnmount(()=>{sequence++;detailSequence++;resourceSequence++})
     <v-alert v-if="error" type="error" variant="tonal">读取失败：{{ error }}<span v-if="data">。下方保留 {{ fmtTime(updatedAt) }} 的结果。</span></v-alert>
     <v-progress-linear v-if="loading" indeterminate color="primary" />
     <template v-if="data">
-      <CacheUsageSummary v-if="tab==='calls'" :cache="data.cache" />
+      <CacheUsageSummary v-if="tab==='calls'" :cache="data.cache" :phases="data.request_phases" />
       <template v-if="tab==='calls'"><div class="usage-grid"><v-card><v-card-text><span>匹配请求</span><strong>{{ data.total }}</strong><small>当前全部筛选条件</small></v-card-text></v-card><v-card><v-card-text><span>已知输入 tokens</span><strong>{{ knownUsage.prompt.toLocaleString() }}</strong><small>其中缓存 {{ knownUsage.cached.toLocaleString() }}</small></v-card-text></v-card><v-card><v-card-text><span>已知输出 tokens</span><strong>{{ knownUsage.output.toLocaleString() }}</strong><small>其中推理 {{ knownUsage.reasoning.toLocaleString() }}</small></v-card-text></v-card><v-card><v-card-text><span>token usage 未知</span><strong>{{ knownUsage.unknown }}</strong><small>未知请求不按零费用计算</small></v-card-text></v-card></div><p class="muted usage-note">供应商已报告音频用量 {{ knownUsage.audio.toLocaleString() }} 秒（duration usage，与 token 不相加）。缓存和推理是各自子项，不重复相加。费用未核实：{{ data.cost.reason }}</p></template>
       <p v-if="tab==='logs'" class="muted range-note">本次进程最多保留最近 1,000 条日志；此页读取符合级别的最近 {{ data.length }} 条，最多 200 条。单条日志由服务端保留最多 500 字符，不是无限历史。</p>
       <p v-else-if="tab==='events'" class="muted range-note">本页 {{ data.items.length }} 条，按首次读取截点向前翻页。事件保存在数据库，页面只读取当前范围。</p>
