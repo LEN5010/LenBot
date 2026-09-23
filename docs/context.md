@@ -369,6 +369,8 @@ Trace 的 `context_plan.request.messages` 保存角色、类别、事件与范�
 
 格式 v4 对 `saved_result_locators` 消息增加 `result_locator_status` 与 `result_locators`。仅最终内容与宿主装配的目录完全相同且未被省略时，状态为 `retained`，记录当次呈现的 R、原工具名、最终装配时可用性和可用项的原 result_id；整个目录被容量裁剪时记 `omitted`，声明后内容变化时记 `changed_after_declaration`，后两种都不保留旧编号清单。其他消息不增加空定位数组。定位元数据来自当前段别名和原同群观察的名称／插件归属查询，不复制观察正文或模型请求正文；它不是资料页已读范围，也不表示之后资料仍有效。旧 v1—v3 记录缺字段表示未登记，不能从现时段或整轮最终引用表补造。
 
+格式 v5 继续保留上述字段，并在 `history_summary` 消息旁登记 `summary_ref_status` 与 `summary_refs`。仅最终保留内容与装配时声明的整条摘要目录完全一致，才记录实际列出的批次 ID、generation_version 和原覆盖 rowid／offset 范围，顺序与请求中的摘要顺序相同；容量移除记 `omitted`，来源失效替换或其他声明后改动记 `changed_after_declaration`，均不把原批次列表冒充本次内容。只有覆盖目录而未列出批次时，保留的清单明确为空。摘要正文仍归原 history_batches，调用记录不复制，也不凭批次编号恢复已读原话或未来有效性。旧 v1—v4 没有这些字段是未登记，不是本次没有摘要；这份调用清单不是 S2 活动段摘要基线，后者尚未落库。
+
 工作压缩调用另登记源码固定的 `work_compression.contract` 提示组件和 `core.work_compression.summarize_work_segment` 工具定义，初始修订均为 1；后者 Schema 来自实际解析输出的 WorkSegment。沿同一请求记录比较最终内容，匹配才保存固定快照，组件改动时维护者递增其修订。压缩输入区间选定后才附提示定位，传输前移除私有信息，不参与窗口估算或改变原调用预算。动态目标、要求、归档交换与模型压缩回复没有因此复制进请求快照；原区间／来源与压缩结果仍沿原工作记录，本入口不证明完整请求可还原。旧压缩调用不回填，无新增表或清理策略。
 
 下列维护与审查入口也复用同一机制，组件初始修订为 1，只保存源码固定文本及 Schema，不保存动态资料或动作值：
