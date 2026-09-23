@@ -1653,17 +1653,22 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
 '''
         identity_prefix = '' if plugin_request and not plugin_request.include_identity else identity
         system = identity_prefix + contract
-        # Only the fixed contract is retained; the surrounding configuration
-        # and plugin instructions are deliberately outside this component.
-        contract_component = _PromptComponent('conversation.contract', 2, len(identity_prefix), contract)
+        # Dynamic identity and plugin instructions remain outside the fixed components.
+        prompt_components = [_PromptComponent('conversation.contract', 2, len(identity_prefix), contract)]
         from len_bot.runtime.attention_config import effective_sticker_preference
         if effective_sticker_preference(self.runtime.config_store.current, self.session.scene_id) == 'slightly_more':
-            system += ('本群表达偏好：庆祝、赞同、轻松吐槽、接梗和轻度安慰时，已有合适授权素材则更倾向发一张表情或短文字加表情，而不是默认长文字。'
-                       '指定照发、严肃求助、技术错误、准确数值和文件完成确认仍以清楚文字为准；没有合适素材时不要硬配图。\n')
+            preference_notice = ('本群表达偏好：庆祝、赞同、轻松吐槽、接梗和轻度安慰时，已有合适授权素材则更倾向发一张表情或短文字加表情，而不是默认长文字。'
+                                 '指定照发、严肃求助、技术错误、准确数值和文件完成确认仍以清楚文字为准；没有合适素材时不要硬配图。\n')
+            prompt_components.append(_PromptComponent('conversation.sticker_preference_notice', 1,
+                len(system), preference_notice))
+            system += preference_notice
         if plugin_request:
-            system += '\n本次由插件入口认领，按以下插件指令处理；系统来源保持系统身份。\n' + plugin_request.instructions
+            plugin_notice = '\n本次由插件入口认领，按以下插件指令处理；系统来源保持系统身份。\n'
+            prompt_components.append(_PromptComponent('conversation.plugin_entry_notice', 1,
+                len(system), plugin_notice))
+            system += plugin_notice + plugin_request.instructions
         messages = [{'role':'system','_context_section':'persona','content':system,
-                     '_prompt_components': (contract_component,)}, copy.deepcopy(execution_budget)]
+                     '_prompt_components': tuple(prompt_components)}, copy.deepcopy(execution_budget)]
         if not plugin_request:
             own_recent = await self.own_recent_expression()
             if own_recent is not None:
