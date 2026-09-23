@@ -35,7 +35,7 @@ docker build -f containers/browser/Dockerfile -t lenbot-browser:local .
 docker build -f containers/media/Dockerfile -t lenbot-media:local .
 ```
 
-LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构建需要访问镜像与依赖源。worker 沿各自配方。基础镜像仍使用可变版本标签，不是不可变镜像锁；精确镜像与首个支持组合待确认。记录实际镜像 ID/标签与构建环境，保留旧发布镜像，不用自动 pull 或滚动更新改变已核对版本。
+LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构建需要访问镜像与依赖源。主镜像的 Node 22、Python 3.13 基础镜像及可选 workspace worker 的 Python 基础镜像已在对应 Dockerfile 固定多架构索引 digest；browser／media worker 仍沿各自可变标签。镜像索引固定不锁定后续 apt、pip 仓库内容，workspace 的 Python 包也未逐项锁定；不能称字节一致重建或已确认首个支持组合。记录实际构建平台、镜像 ID 与依赖结果，保留旧发布镜像，不用自动 pull 或滚动更新改变已核对版本。
 
 新部署由运营者准备目录；已有部署先停机备份，不递归重写旧数据身份：
 

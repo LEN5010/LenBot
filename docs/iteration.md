@@ -4,24 +4,21 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `32323cb`，开始时工作区干净；上一批已纠正路线入口的过时顺序与会话段文字，S2 仍仅有原话窗口增量。
-- S1-02 按[任务卡](LenBot_分阶段任务卡_20260921.md)做源码交付复核。其要求是记录可定位的最终请求材料，动态内容没有可还原载体时明确缺口；不是永久复制整个请求。本批不增加快照、表或“全量还原”承诺。
+- 分支 `feat/s0-product-contract`，基线 `f43a1ee`，开始时工作区干净；上一批 S1-02 请求材料清单按任务卡源码范围转待复核，实际调用和页面尚未人工验收。
+- S5-01／首个已选 Linux 容器群报告与文件交付方向：主镜像和可选工作空间 worker 的基础镜像仍为可变标签，同一源码稍后构建可能取得不同底层系统。仅固定这两条本轮相关 Dockerfile 的官方多架构索引；不改模型、业务配置、镜像 tag 操作流程或生产环境。
 
 ## 本批交付与核对
 
-最终边界由原 `AgentLoop` 的合法 `before_model`、`finalize_request`，到 `ModelGateway.complete` 的请求副本、私有旁路移除和 `begin_model_call` 同事务登记组成。记录先于客户端调用；准入拒绝时调用行与请求清单一起回滚。清单登记消息顺序／角色／类别、可证明的原话和资料页范围、省略原因、当次图像块资产、模型设置、工具选择与顺序；固定提示和核心工具定义只在声明后仍匹配时保存原文及修订。插件工具保存宿主归属和接口世代，不把自身版本伪装成动态 Schema 版本。
+`deploy/linux/Dockerfile` 的 Node 22 与 Python 3.13 三个阶段，以及 `containers/workspace/Dockerfile`，从现有标签改为对应 `@sha256` 多架构索引。2026-09-23 只读查询官方镜像仓库得到 node:22-slim 索引 `sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9`、python:3.13-slim 索引 `sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0`。多架构索引不等于固定目标机器平台；当前对应 Python 基础系统为 trixie，旧系统差异与升级须按实际目标核对。browser／media worker 本批不改，apt 仓库与 workspace 的 pip 包也未锁定，不宣称全链字节一致。
 
-`RequestRecordDetails` 已分开显示固定组件、插件归属、逐消息资料范围／图像位置、历史摘要批次及未留存内容。工作、压缩、历史／方法维护和审查沿已接通的固定组件记录；其他入口没有来源旁路时保留空值，不按正文或时间猜关系。动态人格、插件 instructions、插件完整动态定义、工具参数、媒体正文与客户端序列化请求没有可还原载体时，由 `not_retained` 和对应缺字段明确说明；这符合 S1-02 的缺档口径，不等于 S2 活动段已可恢复。
+本机 Docker Desktop `desktop-linux` 的 Linux/arm64 builder 在当前工作树完成两个**构建而非启动**：`docker compose -f deploy/linux/compose.yaml build lenbot` 退出 0，镜像 `sha256:68b3b4424d8ab9e1661e20baf21e4a633c2b03a57bad523716ea0703dae40f87`；`docker build -f containers/workspace/Dockerfile -t lenbot-workspace:local .` 退出 0，镜像 `sha256:310275b27284538a6d816a90b432dd8075b803913d2f52b461d9beb553a276d3`。主镜像内 `npm ci`、491 模块前端构建和 `uv sync --locked --no-dev --no-editable` 均由配方完成；worker 安装本次取得的字体及绘图包。没有运行镜像、读取运行配置、触发工作或上传文件；本机 arm64 构建不代替目标 Linux/amd64、OneBot、模型及群回执验收。
 
-据此将 S1-02 的**源码清单交付**转为待复核，不标已验收。仍须在获准同版环境核对真实调用持久化、合法 Hook 改写、无凭据材料、资料范围、旧格式显示和页面；静态代码无法证明供应商收到内容、秘密绝未从动态输入泄出或全部业务入口都有原话定位。
-
-- 阅读 `AgentLoop.run`、`ModelGateway.complete`、`prepare_request_record`、`ConversationContext.model_messages`、工作最终请求、原调用事务与详情页，对照任务卡逐项核对；已同步[请求记录合同](context.md#7-缓存与诊断边界)的可还原边界。`git diff --check` 退出 0；本批仅文档，不重复编译构建。最近含代码批次 `c14e9bd` 的 Python 编译及前端构建已记录于历史，不能替代本次人工验收。
-- 查找容器配方时一次 shell 通配未匹配，输出原文 `zsh:1: no matches found: Dockerfile*`；随后直接读取 `deploy/linux/Dockerfile`。是路径通配错误，不是业务运行失败。
-- 无同版获准服务与面板。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、依赖安装、服务、模型／平台调用或实发；未读取真实配置和业务库。
+- 首次沙箱只读镜像查询失败原文：`Head "https://registry-1.docker.io/v2/library/node/manifests/22-slim": dial tcp: lookup registry-1.docker.io: no such host`；获准只读访问后取得上列索引。首次沙箱探查 Docker 服务失败原文：`permission denied while trying to connect to the docker API at unix:///Users/len5010/.docker/run/docker.sock`；获准仅构建后两个构建均成功。这些是访问边界，不是业务运行失败。
+- 更新[Linux 配方](../deploy/linux/README.md)、[运行手册](operations.md)、[支持边界](support.md)和路线的镜像可变性说明。`git diff --check` 退出 0；构建产物与本机镜像均不入 Git。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、服务、模型／平台调用或实发；未读取真实配置和业务库。
 
 ## 待决定与接续
 
-1. S1-02 待真实普通回复、插件表达、工作与维护调用的清单和页面复核；不能把格式 v5、固定组件修订或插件自身版本当完整请求版本。S1-04／06 及其他 S1 状态仍待同版链路验收。
-2. S2 只有 `source_window_only`，原生交换、基础摘要与压缩交接未实现；额外原生响应与必要回复片段保存边界待维护者答复。旧摘要未登记的自由依赖不由来源 ID 自动补造。
-3. Linux 容器群报告与文件交付、分类保留期限、代码／素材授权、精确支持版本、远端 CI／升级和外部使用者闭环仍待决定或现场证据；没有生产或发布授权。
+1. S5-01 仍实施中：精确首个支持组合、目标 Linux 架构／运行时、OneBot 文件协议和版本、空环境同版安装与报告／文件真实回执待明确或人工正常验收。基础索引固定不决定发布版本，也不授权替换线上镜像。
+2. S2 仍仅 `source_window_only`，原生交换及必要回复片段的保存边界待维护者答复；基础摘要与压缩交接未完成。S1 源码已交付的部分仍需同版复核，不由容器构建追认。
+3. 数据分类保留期限、代码／素材授权、精确支持版本、S6 远端 CI／升级和 S7 外部使用者闭环仍待相应决定与证据；无生产或发布授权。
 4. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。

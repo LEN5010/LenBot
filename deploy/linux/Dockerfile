@@ -2,7 +2,7 @@
 # asset, so a checked-in bundle turns each frontend change into a delete+add
 # churn of ~40 files and buries the real diff.  web/app.py serves whatever
 # lands in web/static/dist; this stage is what puts it there for a deploy.
-FROM node:22-slim AS frontend
+FROM node:22-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS frontend
 WORKDIR /build/src/len_bot/web/frontend
 COPY src/len_bot/web/frontend/package.json src/len_bot/web/frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -11,7 +11,7 @@ COPY src/len_bot/web/frontend/ ./
 # /build/src/len_bot/web/static/dist and keeps the repository layout.
 RUN npm run build
 
-FROM python:3.13-slim AS build
+FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS build
 RUN python -m pip install --no-cache-dir uv==0.12.13
 WORKDIR /opt/lenbot
 COPY pyproject.toml uv.lock README.md ./
@@ -21,7 +21,7 @@ COPY src ./src
 COPY --from=frontend /build/src/len_bot/web/static/dist ./src/len_bot/web/static/dist
 RUN uv sync --locked --no-dev --no-editable
 
-FROM python:3.13-slim
+FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10000 lenbot \

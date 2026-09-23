@@ -19,7 +19,7 @@
 | OneBot 消息与行动 | v11；forward_ws／reverse_ws 收消息；websocket／http 发送 | 收到原话、连接任务启动、行动提交及真实 message_id 分别验证；不承诺任意适配器的全部消息段 |
 | 平台文件上传 | NapCat → `upload_group_file_data_file_id`；SnowLuma → `upload_group_file`，两者显式选择 | 实现／版本／协议必须匹配，资产目录只读挂载到 `/lenbot-files`。成功需要实际 `data.file_id`；不明确则 unknown，不切协议重传 |
 | 本地源码运行 | Python 3.13、uv 锁文件安装、Node 22 面板构建配方 | 是当前起步配方，未确认所有系统或架构；首个验收方向选择 Linux 容器，不因此承诺本地源码运行的系统支持范围，本批无空环境安装证据 |
-| Linux 容器 | 当前 Compose 与多阶段 Dockerfile，主进程 UID/GID 10000，无 Docker socket 挂载 | 配方存在不等于目标主机验收；基础镜像仍是可变标签，实际镜像身份须记录，精确候选镜像待决定 |
+| Linux 容器 | 当前 Compose 与多阶段 Dockerfile，主进程 UID/GID 10000，无 Docker socket 挂载；主镜像及 workspace worker 的基础镜像索引已固定 | 本机 Docker Desktop 的 Linux/arm64 构建不等于目标主机验收；browser／media 基础镜像与 apt／pip 来源仍可变，实际镜像身份和精确候选组合待确认 |
 | Python 工作空间 | 原 worker 或独立 Gateway 二选一 | 宿主 worker 依赖容器运行时；Gateway 是独立受信服务。已配置后端失败不换另一个后端。隔离和停止事实待对应主机记录 |
 | 浏览器／媒体执行 | 原浏览器入口及 Gateway 配方；媒体使用 Gateway | 插件自身条件、镜像、seccomp、网络与资源限制各自核对；不把环境代理或配置核验布尔值当成隔离证明 |
 | 业务插件与 Core | 现有业务插件按同版 API 世代 2；Core 桥接按原明确消息入口 | 只支持源码已声明的入口，不加载其他框架的任意插件运行时；可选业务、账号动作、联网研究与群表达分别授权 |

@@ -48,7 +48,7 @@ uv sync --locked --no-dev
 (cd src/len_bot/web/frontend && npm ci && npm run build)
 ```
 
-依赖安装或前端构建失败时保留原错误，停在该步处理，不删除锁文件重新解析，也不把旧 dist 当成本版产物。Python 依赖范围见 pyproject.toml，实际解析版本由 uv.lock 固定；前端由 package-lock.json 固定。Linux 基础镜像仍是 node:22-slim / python:3.13-slim 可变标签，不能声称已有不可变镜像锁定；候选环境须记录实际镜像身份，精确基础镜像与支持组合仍待确定。
+依赖安装或前端构建失败时保留原错误，停在该步处理，不删除锁文件重新解析，也不把旧 dist 当成本版产物。Python 依赖范围见 pyproject.toml，实际解析版本由 uv.lock 固定；前端由 package-lock.json 固定。Linux 主镜像与可选 workspace worker 的基础镜像已按多架构索引 digest 固定，其他可选 worker 仍沿各自标签；apt／pip 内容及目标平台结果不因镜像索引固定而锁定。候选环境仍须记录实际镜像身份、安装结果和支持组合，不能凭本机构建宣称目标 Linux 已验收。
 
 仅在尚无实际配置文件时复制样例：
 
