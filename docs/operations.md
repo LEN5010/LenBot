@@ -48,7 +48,7 @@ uv sync --locked --no-dev
 (cd src/len_bot/web/frontend && npm ci && npm run build)
 ```
 
-依赖安装或前端构建失败时保留原错误，停在该步处理，不删除锁文件重新解析，也不把旧 dist 当成本版产物。Python 依赖范围见 pyproject.toml，实际解析版本由 uv.lock 固定；前端由 package-lock.json 固定。Linux 主镜像与可选 workspace worker 的基础镜像已按多架构索引 digest 固定，其他可选 worker 仍沿各自标签；apt／pip 内容及目标平台结果不因镜像索引固定而锁定。候选环境仍须记录实际镜像身份、安装结果和支持组合，不能凭本机构建宣称目标 Linux 已验收。
+依赖安装或前端构建失败时保留原错误，停在该步处理，不删除锁文件重新解析，也不把旧 dist 当成本版产物。Python 依赖范围见 pyproject.toml，实际解析版本由 uv.lock 固定；前端由 package-lock.json 固定。Linux 主镜像与可选 workspace worker 的基础镜像已按多架构索引 digest 固定，workspace worker 的绘图库直接／间接包另由其 requirements.txt 固定；其他可选 worker 仍沿各自标签。apt 仓库和 wheel 文件不因索引与包版本固定而字节锁定。首个方向要求 Linux/amd64 与 Linux/arm64，已在本机分别构建主镜像与 workspace worker，但仍须记录目标机器的实际镜像身份、安装结果和支持组合，不能凭交叉构建宣称目标 Linux 已验收。
 
 仅在尚无实际配置文件时复制样例：
 
@@ -548,7 +548,7 @@ TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的
 
 ### 配置 OneBot 文件上传
 
-面板运行参数新增 `onebot_file_upload`（默认 null）。当前支持配置示意如下，版本必须替换为现场值，核对前保留 false：
+面板运行参数新增 `onebot_file_upload`（默认 null）。首个验收方向在本机选 SnowLuma，公开兼容不按它的固定发行版本名单判读；但本字段仍须填写当前连接报告的实际版本，作为这次部署核对的身份事实。当前支持配置示意如下，核对前保留 false：
 
 ```json
 {"implementation":"napcat","version":"填写实际版本","protocol":"upload_group_file_data_file_id","deployment_verified":false,"export_mount_path":"/lenbot-files"}
@@ -560,7 +560,7 @@ SnowLuma 现场示例（版本换成实际值）：
 {"implementation":"snowluma","version":"填写实际版本","protocol":"upload_group_file","deployment_verified":false,"export_mount_path":"/lenbot-files"}
 ```
 
-连接页的「读取平台实现与版本」按当前发送传输只读调用 `get_version_info`，返回现场 app_name、app_version、protocol_version，并与已声明的 `onebot_file_upload` 对照实现名与版本。该按钮不发送任何群消息，也不改配置：填 `deployment_verified` 前先用它核对现场版本，不要用发布目录反推现场。
+连接页的「读取平台实现与版本」按当前发送传输只读调用 `get_version_info`，返回现场 app_name、app_version、protocol_version，并与已声明的 `onebot_file_upload` 对照实现名与版本。该按钮不发送任何群消息，也不改配置：填 `deployment_verified` 前先用它核对当前实例及所选协议，不要用发布目录反推现场。版本对照只防止拿旧配置核对另一实例，不把版本字符串当作协议兼容或上传成功证明。
 
 只将数据库同级 `file_assets/` 只读挂入 OneBot 的 `/lenbot-files`，不得共享完整工作区、控制目录、配置或数据库。宿主运行账号应能创建资产，OneBot 账号通过部署文件组获得 0750/0440 读取权限；核对挂载确实只读。`deployment_verified` 只表示版本与挂载已人工核对，不要求先有成功上传；授权后的第一次正常文件操作才产生真实 `data.file_id`。现有 HTTP/WS 连接模式不变。不要把一种实现填成另一种，也不自动改协议。
 
