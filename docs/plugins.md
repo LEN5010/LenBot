@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。按实际步骤阅读现有实现见[三条参考路径](plugin-examples.md)，其中未独立化的依赖明确列出。
+面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。按实际步骤阅读现有实现见[三条参考路径](plugin-examples.md)，逐插件代码处置、资源依赖与未确认项见[同版兼容与迁移](plugin-compatibility.md)。
 
 ## 目录、描述符与配置
 
@@ -40,6 +40,8 @@
 调用材料清单 v3 由宿主在实际工具定义生成处绑定插件 ID、实例 version 与 api_version，最终登记时保存归属而不保存动态 Schema。声明后变化会单独标记；仅有归属字段不能还原旧参数模型，也不说明工具已执行。插件作者不填另一份审计描述符，不增加公共注册参数；现有 deferred、场景／角色过滤及 Hook 子集保持原合同。
 
 根配置 `plugins.<id>` 明确保存 `enabled` 和 `config`。`config_model` 负责参数类型；可选 `validate_config(config, root)` 只做本地的公共时间、成员及容量关系校验。ConfigStore 在发现目录后先分别解析所有已配置插件的参数，再执行依赖校验；依赖使用 parsed_config，不按 JSON 排列顺序重猜或重复解析原字段。启动和面板保存使用同一入口。未配置的目录仍可展示元数据，但不建立插件实例或连接。同一个插件在全局与某个群各有一份开关：本群条目只有在全局已配置、全局已启用、本群已启用且本群启用的场景都成立时才生效，面板据此逐项说明，不把“在本群打开”写成已经可用。
+
+面板工具项同时显示原注册的 ordered、deferred、timeout_seconds 和 page_chars，handler 显示已声明的延期来源重核；缺失值标为未记录。权限标题明确是声明的资源权限，以上都不代表当前调用已授权。
 
 面板表单由 `config_model` 生成的 JSON Schema 驱动，不手写字段清单。互斥的配置形状（例如 workspace 的 `worker` 与 `gateway`）用 `json_schema_extra` 的 `x-lenbot-exclusive` 声明字段组，表单据此渲染成一次单选，不构造同时给出两个分支的草稿；该键只是表单提示，服务端的模型校验仍然是准入依据。列表与详情按 Schema 字段逐个渲染：布尔、枚举、数字、文本和按 JSON 编辑的对象／列表；`title`、`description` 与上下限来自 Schema，前端不另写一份字段说明。枚举在界面上显示中文名，保存的仍是 Schema 里的原值；中文名用 `x-lenbot-enum-labels` 写在声明该字段的模型上，新枚举值没有中文名时回落显示原值，不会从选项里消失。取值封闭的简单列表（link_parser 的平台）用 `x-lenbot-list-choices` 声明成勾选项，没有声明的列表仍是可增删的行。三个扩展键都只是表单提示，不参与服务端校验。保存前表单先核对必填项与 JSON 结构，服务端拒绝时按其返回路径把错误落到对应字段并保留草稿。
 

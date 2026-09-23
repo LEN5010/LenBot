@@ -654,7 +654,9 @@ class PluginHost:
                 'emitted_events': [name for name, _ in spec.event_models],
                 'registered_tools': [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id],
                 'tools': [{'name': tool.name, 'description': tool.description, 'purpose': tool.purpose,
-                           'kind': tool.kind, 'roles': list(tool.roles), 'required_capabilities': list(tool.required_capabilities),
+                           'kind': tool.kind, 'ordered': tool.ordered, 'deferred': tool.deferred,
+                           'timeout_seconds': tool.timeout_seconds, 'page_chars': tool.page_chars,
+                           'roles': list(tool.roles), 'required_capabilities': list(tool.required_capabilities),
                            'side_effect': tool.side_effect, 'input_scope': tool.input_scope, 'output_scope': tool.output_scope} for tool in self._tools.values()
                           if tool.plugin_id == plugin_id],
                 'handlers': [handler.record() for handler in self._handlers.values() if handler.plugin_id == plugin_id],

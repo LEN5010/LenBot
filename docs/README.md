@@ -11,6 +11,7 @@
 | 配置、起停、备份、升级与回退 | [运行手册](operations.md) |
 | 现有插件入口、工具、Hook 和生命周期 | [插件开发](plugins.md) |
 | 按步骤阅读命令、事件表达和后台工作 | [三条插件参考路径](plugin-examples.md) |
+| 核对内置插件的同版适配、资源与兼容 ID | [插件兼容与迁移](plugin-compatibility.md) |
 | Linux 与开发机部署 | [Linux 部署](../deploy/linux/README.md)、[开发机 Gateway](../deploy/dev/README.md) |
 | 缓存调查能支持哪些结论 | [缓存判读口径](serious-issue.md) |
 
