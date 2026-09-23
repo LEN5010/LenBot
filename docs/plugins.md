@@ -2,6 +2,8 @@
 
 面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。按实际步骤阅读现有实现见[三条参考路径](plugin-examples.md)，逐插件代码处置、资源依赖与未确认项见[同版兼容与迁移](plugin-compatibility.md)。
 
+第一次写插件不必从完整合同猜实现：按[业务时钟教程](plugin-examples.md#一读取与确定性命令业务时钟)依次阅读描述符、读取服务、确定性命令和可选表达，实际参数职责见[原插件说明](../local_plugins/local_clock/README.md)。这些文件与本合同应来自同一源码提交；现场操作仍须获准，示例代码存在不等于已启用或已送达。
+
 ## 目录、描述符与配置
 
 一个插件是一个 Python 包。内置包位于 `src/len_bot/plugins/builtin/`；本地插件位于根配置 `plugin_directories` 明确列出的目录下。宿主按根目录顺序、包目录名称顺序发现 `__init__.py` 的 `PLUGIN: PluginSpec`，重复 ID 报告双方路径。
