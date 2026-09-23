@@ -86,15 +86,18 @@ async function save() {
   try {
     const result = await api('/api/settings/character-references', {method:'POST', body:JSON.stringify(body)})
     if (!fresh()) return
-    if (result?.success !== true) throw new Error('未取得属于本次请求的配置保存确认。')
+    if (result?.success !== true || result?.config_saved !== true) throw new Error('未取得属于本次请求的配置保存确认。')
     needsReadback.value = true; message.value = result.message
     await load({accept:fresh})
   } catch (problem) {
     if (!fresh()) return
-    if (conflicts.mark('references', problem)) await load({accept:fresh})
+    if (problem.details?.config_saved===true) {
+      needsReadback.value=true;error.value=problem.message
+    } else if (problem.details?.config_saved===false&&conflicts.mark('references', problem)) await load({accept:fresh})
     else {
       error.value = problem.message
-      if (![400,401,403,422].includes(problem.status)) uncertain.value = {...body, current:null}
+      const rejected=problem.details?.config_saved===false || (problem.status===422&&Array.isArray(problem.details))
+      if (!rejected) uncertain.value = {...body, current:null}
     }
   } finally { if (fresh()) saving.value = false }
 }
