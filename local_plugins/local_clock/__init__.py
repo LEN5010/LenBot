@@ -47,7 +47,7 @@ class LocalClock(BasePlugin):
     async def on_load(self,context: PluginContext):
         context.register_tool('local_time_now','读取 LenBot 的当前时钟，按已配置的业务时区返回日期、星期和时间。',
             EmptySceneConfig,self.read_time,purpose='读取当前业务时间',aliases=('当前时间','现在几点'),
-            keywords=('时间','日期','星期','时区'),kind='read',roles=('conversation','work'))
+            keywords=('时间','日期','星期','时区'),kind='read',ordered=False,roles=('conversation','work'))
         context.register_handler(id='time_now',description='现在几点：直接读取并回复业务时间',
             match=ExactText(('现在几点',)),handler=self.on_now,priority=30,consume=True,
             available=lambda call:'time_now' in call.scene_config.commands)
