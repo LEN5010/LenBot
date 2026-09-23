@@ -299,6 +299,8 @@ docker network create --internal --subnet 172.31.9.0/24 lenbot-egress
 
 ## 停机、备份与结构切换
 
+各类主库记录、文件目录、过期与删除影响见[数据生命周期](data-lifecycle.md)。下列步骤必须同时覆盖数据库和已使用的文件卷，不能只备份消息表或 media。
+
 图片对象关联版本在现有 events 表增加两个定向索引：idx_events_scene_message_id、idx_events_scene_reply_id，不改原事件或业务身份，也不新建纠正数据。按正常停机、备份和获准启动流程，由原初始化入口建立索引；首次建立的时间与文件增长须按实际记录观察。本路径使用 SQLite 的 MATERIALIZED CTE，需要 3.35 及以上版本，继续要求原 JSON／FTS 能力；版本读取不是业务查询验收。索引不重编号历史，不赋予素材可用或像素已读资格。
 
 正常出现带图引用或人物纠正时，核对同版 Trace 中 context_plan.image_discussion 的原事件、图片资产、实际关系与 limited，再结合原请求装配清单、已读范围和媒体 manifest 看哪些材料真正提供。查找耗时单列 image_related_source_reads，属于初始关联读取的组成部分，不与外层总计时相加。只看到目录或锚点不等于已经记住；只看到道歉也不证明后续采用。重新上传取得新 asset_id 的图片不自动匹配旧对象；无明确引用的纠正仍依赖当前原话语境，不补造永久人物关系。
@@ -326,9 +328,13 @@ docker network create --internal --subnet 172.31.9.0/24 lenbot-egress
 
 ```sh
 sqlite3 /绝对路径/len_bot.db '.backup /绝对备份目录/len_bot.db'
-cp -R /绝对路径/media /绝对备份目录/media
+cp -Rp /绝对路径/media /绝对备份目录/media
 cp /项目根目录/lenbot.config.json /绝对备份目录/lenbot.config.json
-# 若已改选 gateway，另备份网关 --config 文件、database_path 与 workspaces_root
+# 以下仅复制本部署已使用的目录，不因不存在而新建空目录充数
+cp -Rp /绝对路径/file_assets /绝对备份目录/file_assets
+cp -Rp /绝对路径/plugins /绝对备份目录/plugins
+# 使用独立网关时，在其正常停机后另做对应 SQLite 普通备份，并复制
+# 网关 --config 文件、workspaces_root、日志库同目录 controls/ 和实际出口日志
 ```
 
 媒体目录位于数据库同目录的 `media`；使用持久文件时同批备份 `file_assets/`，使用本地插件数据时备份 `plugins/`。保留资产 ID、原路径、来源和权限，不重新下载、批量编号或改写历史事件；运行数据不移入插件代码包。
