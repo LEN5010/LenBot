@@ -10,7 +10,6 @@ from len_bot.cognition.agent_loop import AgentBudgetExhausted, _error_text
 from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.call_store import estimate_request
-from len_bot.tools.results import ToolResult
 
 
 class JobContextExhausted(RuntimeError):
@@ -208,23 +207,6 @@ class WorkCompressor:
         return {"role": "user", "content": "旧工作区间摘要（非新增证据，原资料按 result_id 回读）："
             + json.dumps(entry, ensure_ascii=False)}
 
-    async def _source_failure(self, result_ids: list[str]) -> ToolResult | None:
-        for ident in result_ids:
-            source = self.toolkit.observations.get(ident)
-            if source is None:
-                return ToolResult.failure(f'压缩来源资料 {ident} 已不可用', 'source_unavailable', stage='presentation')
-            if source.status not in {'ok', 'partial', 'no_results'}:
-                continue
-            if source.tool_name == 'query_memory':
-                failure = await self.toolkit._memory_presentation_failure(source)
-            elif source.tool_name == 'search_history_summaries':
-                failure = await self.toolkit._history_presentation_failure(source)
-            else:
-                continue
-            if failure is not None:
-                return failure
-        return None
-
     async def revalidate_summaries(self, messages):
         job = await self.runtime.event_store.get_job(self.job_id, self.scene_id)
         if not job or job['revision'] != self.revision or job['status'] != 'processing':
@@ -235,7 +217,7 @@ class WorkCompressor:
                 if message.get('role') == saved['role'] and message.get('content') == saved['content']]
             if not retained:
                 continue
-            failure = await self._source_failure(entry['result_ids'])
+            failure = await self.toolkit.saved_knowledge_failure(entry['result_ids'])
             if failure is None:
                 continue
             unavailable = {key:entry[key] for key in ('start_exchange','end_exchange','goal_revision','result_ids')}
@@ -336,7 +318,7 @@ class WorkCompressor:
                         interval_results.add(result["result_id"])
             if not interval_results.issubset(job["result_ids"]):
                 raise ValueError("Compression input contains an unobserved result")
-            failure = await self._source_failure(sorted(interval_results))
+            failure = await self.toolkit.saved_knowledge_failure(sorted(interval_results))
             if failure is not None:
                 raise ValueError(f"压缩输入资料已失效：{failure.error_code}: {failure.content}")
             await self.charge(self.revision, model_steps=1)
@@ -346,7 +328,7 @@ class WorkCompressor:
             if response.finish_reason not in {"stop", "tool_calls"} or len(response.tool_calls) != 1 or response.tool_calls[0].name != "summarize_work_segment":
                 raise ValueError("Incomplete work compression response")
             segment = WorkSegment.model_validate_json(response.tool_calls[0].arguments)
-            failure = await self._source_failure(sorted(interval_results))
+            failure = await self.toolkit.saved_knowledge_failure(sorted(interval_results))
             if failure is not None:
                 raise ValueError(f"压缩输入资料在生成期间失效：{failure.error_code}: {failure.content}")
             entry = {"start_exchange": start_exchange, "end_exchange": end_exchange, "goal_revision": self.revision,
