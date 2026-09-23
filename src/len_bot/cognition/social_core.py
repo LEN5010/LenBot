@@ -288,8 +288,15 @@ class SocialCognitionCore:
             if save_segment is not None:
                 window_ids=[message['_source_event_id'] for message in trajectory
                     if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
+                summary_refs=[dict(ref) for message in trajectory
+                    if message.get('_context_section') == 'history_summary'
+                    and not message.get('_context_omitted')
+                    and '_summary_content' in message
+                    and message.get('content') == message['_summary_content']
+                    for ref in message['_summary_refs']]
                 segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
                     through_rowid=context.refs.cutoff,event_ids=window_ids,
+                    summary_refs=summary_refs,
                     result_aliases=dict(context.refs.results),
                     job_aliases={ref:job['id'] for ref,job in context.refs.jobs.items()},
                     profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
@@ -303,7 +310,8 @@ class SocialCognitionCore:
                 segment_id=segment.id
                 context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
                     'reason':segment.reason,'through_rowid':segment.through_rowid,
-                    'window_events':len(segment.event_ids),'continuity':'source_window_only'}
+                    'window_events':len(segment.event_ids),'summary_batches':len(segment.summary_refs),
+                    'continuity':'source_window_only'}
                 audit['context_plan']=copy.deepcopy(context.context_plan)
             return context.model_messages(trajectory, toolkit=toolkit)
 
