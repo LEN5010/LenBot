@@ -124,6 +124,7 @@ class ModelGateway:
                 usage = (body.get("usage") or None) if isinstance(body, dict) else None
                 response = self._parse_response(body, round((time.monotonic() - started) * 1000))
             except BaseException as error:
+                transport['client_elapsed_ms'] = round((time.monotonic() - started) * 1000, 2)
                 if call_id is not None:
                     # Client cancellation cannot prove the supplier stopped billing.
                     await asyncio.shield(self.call_store.end_model_call(
@@ -131,6 +132,7 @@ class ModelGateway:
                         usage=usage, error_type=type(error).__name__, transport=transport,
                     ))
                 raise
+            transport['client_elapsed_ms'] = round((time.monotonic() - started) * 1000, 2)
             if call_id is not None:
                 await asyncio.shield(self.call_store.end_model_call(
                     call_id, status="completed", usage=usage, transport=transport,
