@@ -150,6 +150,7 @@ class PluginHandlerDefinition:
     validate: Callable[[PluginCallContext], Awaitable[None]] | None = None
     allow_mention_all: Callable[[PluginCallContext], bool] | None = None
     deterministic_read_only: bool = False
+    refresh_deferred: Callable[[Event, str], Awaitable[str | None]] | None = None
 
     def record(self) -> dict:
         if isinstance(self.match, ExactText):
@@ -164,7 +165,8 @@ class PluginHandlerDefinition:
                 'event_types': [value.value for value in self.event_types],
                 'sources': list(self.sources), 'priority': self.priority,
                 'consume': self.consume, 'require_to_me': self.require_to_me,
-                'deterministic_read_only': self.deterministic_read_only}
+                'deterministic_read_only': self.deterministic_read_only,
+                'refresh_deferred': self.refresh_deferred is not None}
 
 class PluginPermission(StrEnum):
     EMIT_EVENT = "emit_event"

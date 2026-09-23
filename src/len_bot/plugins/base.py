@@ -54,11 +54,13 @@ class PluginContext:
     def register_handler(self, *, id: str, description: str, match, handler,
                          event_types=(EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIVED),
                          sources=('human',), priority=100, consume=False, require_to_me=False,
-                         available=None, validate=None, allow_mention_all=None, deterministic_read_only=False):
+                         available=None, validate=None, allow_mention_all=None, deterministic_read_only=False,
+                         refresh_deferred: Callable[[Event, str], Awaitable[str | None]] | None = None):
         self._host.register_handler(self.spec.id, id=id, description=description, match=match,
             handler=handler, event_types=event_types, sources=sources, priority=priority,
             consume=consume, require_to_me=require_to_me, available=available,
-            validate=validate, allow_mention_all=allow_mention_all, deterministic_read_only=deterministic_read_only)
+            validate=validate, allow_mention_all=allow_mention_all, deterministic_read_only=deterministic_read_only,
+            refresh_deferred=refresh_deferred)
 
     async def invoke_tool(self, call: PluginCallContext, name: str, arguments: BaseModel | dict) -> ToolResult:
         from len_bot.runtime.plugin_interactions import invoke_tool
@@ -176,6 +178,23 @@ class PluginContext:
 
     def has_permission(self, perm: PluginPermission) -> bool:
         return perm in self.manifest.permissions
+
+    async def has_emitted_event(self, event_id: str, *, scene_id: str) -> bool:
+        """Look up this plugin's saved event identity without exposing the store."""
+        if not self.has_permission(PluginPermission.EMIT_EVENT):
+            raise PermissionError(f"Plugin '{self.manifest.id}' lacks 'emit_event' permission.")
+        if not self.manifest.enabled or not self.scene_enabled(scene_id):
+            raise ValueError('Plugin event entry is disabled in this scene')
+        rows = await self._runtime.event_store.events_by_ids(scene_id, [event_id], 2**63-1)
+        if not rows:
+            return False
+        event = rows[0]
+        if event.event_type != EventType.PLUGIN_EVENT or event.actor_id != f'plugin:{self.spec.id}':
+            raise ValueError('The saved event identity belongs to another source')
+        envelope = PluginEventPayload.model_validate(event.payload)
+        if envelope.plugin_id != self.spec.id:
+            raise ValueError('The saved event identity belongs to another plugin')
+        return True
 
     async def emit_event(self, name: str, payload: BaseModel, *, scene_id: str, event_id: str,
                          timestamp: float) -> None:
