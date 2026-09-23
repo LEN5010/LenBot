@@ -1116,8 +1116,27 @@ class AgentRuntime:
                 remaining=[item for item in burst.events if item.id!=event.id]
                 if remaining:self._pending_bursts[scene_id]=self._burst_from_events(remaining,burst)
                 burst=self._burst_from_events([event],burst)
-            async with self._cognition_semaphore:
-                await self._run_conversation(actor, burst)
+            wait_started = time.monotonic()
+            acquired = False
+            try:
+                async with self._cognition_semaphore:
+                    acquired = True
+                    await self.event_store.save_trace(kind='conversation_wait',scene_id=scene_id,ref_id=burst.id,
+                        payload={'source_event_ids':list(burst.source_event_ids),'state':'acquired',
+                            'cognition_slot_wait_ms':round((time.monotonic()-wait_started)*1000,2)})
+                    await self._run_conversation(actor, burst)
+            except BaseException as error:
+                if not acquired:
+                    try:
+                        await self.event_store.save_trace(kind='conversation_wait',scene_id=scene_id,ref_id=burst.id,
+                            payload={'source_event_ids':list(burst.source_event_ids),
+                                'state':'cancelled' if isinstance(error,asyncio.CancelledError) else 'failed',
+                                'error':_error_text(error),'error_type':type(error).__name__,
+                                'error_phase':'cognition_slot_wait',
+                                'cognition_slot_wait_ms':round((time.monotonic()-wait_started)*1000,2)})
+                    except Exception:
+                        logger.exception('Could not record conversation slot wait: stimulus=%s',burst.id)
+                raise
 
     async def _run_conversation(self, actor, burst: Stimulus) -> None:
         scene_id = actor.scene_id

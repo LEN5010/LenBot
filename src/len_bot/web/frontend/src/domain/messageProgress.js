@@ -45,14 +45,14 @@ export function messageRecords(event, relations) {
     && linkedActionIds.has(item.payload.action_id)).map(item => [item.id, item])).values()]
   const deliveryProblems = deliveryReceipts.filter(item => ['MESSAGE_SEND_FAILED', 'FILE_UPLOAD_FAILED'].includes(item.event_type) && item.payload.error)
   const committed = new Set([...readTurns.map(turn => turn.event_id), ...actions.map(action => action.commit_event_id).filter(Boolean)])
-  const attempts = (relations?.traces || []).filter(trace => ['conversation', 'conversation_error'].includes(trace.kind)
+  const attempts = (relations?.traces || []).filter(trace => ['conversation', 'conversation_error', 'conversation_wait'].includes(trace.kind)
     && (actionId ? selectedAction.commit_event_id && trace.commit_event_ids?.includes(selectedAction.commit_event_id)
       : sourceId && (trace.source_event_ids?.includes(sourceId) || trace.read_source_event_ids?.includes(sourceId))))
   const problems = attempts.filter(trace => trace.kind === 'conversation_error' || trace.error || trace.publication_error || trace.gate_accepted === false)
   const episodeIds = new Set([
     ...readTurns.map(turn => turn.episode_id),
     ...actions.map(action => action.episode_id),
-    ...attempts.map(trace => trace.ref_id),
+    ...attempts.filter(trace => trace.kind !== 'conversation_wait').map(trace => trace.ref_id),
   ].filter(Boolean))
   // A shared episode is a round-level relation, not per-message accounting.
   const calls = [...new Map((relations?.calls || [])

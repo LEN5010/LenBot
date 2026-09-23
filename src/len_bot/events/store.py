@@ -267,11 +267,15 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         import uuid
         trace_id = f"trc_{uuid.uuid4().hex[:12]}"
         async with self._write_lock:
-            await self._db.execute(
-                "INSERT INTO traces (id, kind, scene_id, ref_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?);",
-                (trace_id, kind, scene_id, ref_id, json.dumps(payload, ensure_ascii=False, default=str), time.time())
-            )
-            await self._db.commit()
+            try:
+                await self._db.execute(
+                    "INSERT INTO traces (id, kind, scene_id, ref_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?);",
+                    (trace_id, kind, scene_id, ref_id, json.dumps(payload, ensure_ascii=False, default=str), time.time())
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
         return trace_id
 
     async def query_traces(
