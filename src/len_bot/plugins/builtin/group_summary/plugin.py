@@ -65,7 +65,7 @@ class GroupSummaryPlugin(BasePlugin):
         super().__init__(context.manifest)
         self.config: GroupSummaryConfig=context.config
         self.context=context
-        self.service=GroupSummaryService(context.event_store,self.config)
+        self.service=GroupSummaryService(self.config)
 
     async def on_load(self,context: PluginContext):
         if not (Path(context.directory)/self.config.render_font_path).is_file():
@@ -97,14 +97,12 @@ class GroupSummaryPlugin(BasePlugin):
             request=GroupSummaryRange(start_at=start,end_at=end,timezone=timezone,focus=values.focus,
                 snapshot_rowid=call.cutoff_rowid,snapshot_at=call.now,bot_actor_id=self.context.bot_actor_id,
                 analysis_instructions=self.config.output_instructions)
-            for job in await self.context.event_store.list_jobs(call.scene_id):
-                owner=job['plugin_origin']
-                if not owner or owner['plugin_id']!=self.manifest.id or owner['plugin_version']!=self.manifest.version:continue
-                if job['status'] not in {'pending','claimed','processing'}:continue
-                current=GroupSummaryRange.model_validate(job['work_parameters'])
+            for job in await call.list_work():
+                if job.status not in {'pending','claimed','processing'}:continue
+                current=GroupSummaryRange.model_validate(job.parameters)
                 if current.start_at==start and current.end_at==end and current.focus==values.focus:
                     return ToolResult(status='ok',evidence_kind='retrieval',coverage='existing_report_work',
-                        content=json.dumps({'job_id':job['id'],'revision':job['revision'],'status':job['status'],
+                        content=json.dumps({'job_id':job.id,'revision':job.revision,'status':job.status,
                             'range':current.model_dump(mode='json'),
                             'note':'同一范围已有报告工作正在执行，未创建第二份或重置预算；快照仍为所示时间。'},ensure_ascii=False))
             return await call.stage_work(goal=summary_goal(request),request_source=values.request_source,
@@ -119,7 +117,6 @@ class GroupSummaryPlugin(BasePlugin):
         return await self.service.read_window(values.cursor,call)
 
     async def read_report(self,values: ReadReportArguments,call: PluginCallContext):
-        sources=await self.context.event_store.events_by_ids(call.scene_id,[call.source_event_id],call.cutoff_rowid)
-        if len(sources)!=1:raise ValueError('Report lookup requires its real current-scene source')
-        start,end=values.window.bounds(sources[0].timestamp,self.context.time_settings.timezone)
+        source=await call.read_source()
+        start,end=values.window.bounds(source.timestamp,self.context.time_settings.timezone)
         return await self.service.read_report(call,start,end,values.revision)

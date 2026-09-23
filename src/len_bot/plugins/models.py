@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from len_bot.cognition.proposals import ProposalLedger
     from len_bot.plugins.base import PluginContext
     from len_bot.plugins.agent import PluginExecution
+    from len_bot.plugins.work import PluginWorkSnapshot
 
 
 class EmptySceneConfig(BaseModel):
@@ -58,6 +59,27 @@ class PluginCallContext:
 
     async def read_observation(self, result_id: str) -> ToolResult | None:
         return await self.plugin.read_observation(self, result_id)
+
+    async def read_source(self) -> Event:
+        return await self.plugin.read_source(self)
+
+    async def list_observations(self, coverage: str, *, limit: int,
+                                before_rowid: int | None = None) -> list[tuple[int, ToolResult]]:
+        return await self.plugin.list_observations(self, coverage, limit=limit, before_rowid=before_rowid)
+
+    async def read_group_messages(self, *, start_at: float, end_at: float,
+                                  after_rowid: int, limit: int) -> list[Event]:
+        return await self.plugin.read_group_messages(self, start_at=start_at, end_at=end_at,
+            after_rowid=after_rowid, limit=limit)
+
+    async def read_work(self, job_id: str) -> PluginWorkSnapshot | None:
+        return await self.plugin.read_work(self, job_id)
+
+    async def list_work(self) -> tuple[PluginWorkSnapshot, ...]:
+        return await self.plugin.list_work(self)
+
+    async def media_available(self, asset_id: str) -> bool:
+        return await self.plugin.media_available(self, asset_id)
 
     async def submit_message(self, segments, *, mention_all=False):
         return await self.plugin.submit_message(self, segments, mention_all=mention_all)

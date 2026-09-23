@@ -212,7 +212,7 @@ async def _merge(context,service,batches):
 
 async def run_report(context):
     call=context.call
-    service=GroupSummaryService(call.plugin.event_store,call.plugin.config)
+    service=GroupSummaryService(call.plugin.config)
     request=context.parameters
     progress=await context.progress()
     requirements=analysis_requirements(request,context.goal,context.constraints)
@@ -227,7 +227,7 @@ async def run_report(context):
         progress.phase='analyzing';progress=await context.save_progress(progress)
     try:
         if progress.report_result_id is None:
-            messages=await service.source_messages(call.scene_id,request)
+            messages=await service.source_messages(call,request)
             if len(messages)!=progress.matched_messages:raise ValueError('Fixed source count changed after the work snapshot')
             batches=await _batches(context,service,messages)
             merged=await _merge(context,service,batches)

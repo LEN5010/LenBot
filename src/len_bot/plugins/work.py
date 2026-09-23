@@ -14,6 +14,17 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class PluginWorkSnapshot:
+    """Read-only ownership projection; not a job control or execution checkpoint."""
+    id: str
+    revision: int
+    status: str
+    operation: str
+    requester_qq_uid: str | None
+    parameters: BaseModel
+
+
+@dataclass(frozen=True)
 class PluginWorkContext:
     """One existing job's execution services; none of this is model input."""
     call: PluginCallContext
