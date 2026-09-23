@@ -103,7 +103,7 @@ docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 
 ## OneBot 文件与可选项
 
-OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。文件协议当前只接 NapCat `upload_group_file_data_file_id`；实际版本、路径映射与 `data.file_id` 均确认后才置 `onebot_file_upload.deployment_verified: true`，文本发送成功不证明上传成功。
+OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。文件协议按显式实现分别选择 NapCat `upload_group_file_data_file_id` 或 SnowLuma `upload_group_file`；实际版本、路径映射与 `data.file_id` 均确认后才置 `onebot_file_upload.deployment_verified: true`，文本发送成功不证明上传成功。
 
 Core、转写、B 站账号/允许收藏夹缺失均单列“未配置/未放行”，不阻塞已确认的普通聊天。Core 首版只接带 echo 的群文字/at/图片帧；实际版本无 echo 时不能声称接通。B 站动作另需 grant 和额度，Cookie 可读不代表可写。转写保留原绑定和实际计量协议，费用未核实不填价格。
 
