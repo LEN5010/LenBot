@@ -1,6 +1,6 @@
 # 插件开发
 
-面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。
+面向维护 LenBot 业务插件的开发者。导出见 [plugins/api.py](../src/len_bot/plugins/api.py)，执行与事实边界见[架构](architecture.md)，部署与保存见[运行手册](operations.md)，待实施变更与状态见[产品路线](plan/README.md)，本批实际核对见[当前任务](iteration.md)。本文不把新计划中的字段或接口当作已提供。按实际步骤阅读现有实现见[三条参考路径](plugin-examples.md)，其中未独立化的依赖明确列出。
 
 ## 目录、描述符与配置
 
@@ -195,6 +195,12 @@ output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、re
 context.scene_config(scene_id)、scene_configs()、members、time_settings、now() 提供只读公共输入；长期实例不读取私有 Runtime。on_enable 用 context.start_task(coroutine, name=...) 启动所属任务，停用由宿主取消并等待，on_unload 释放客户端。config_apply 默认 restart_plugin；仅实现 apply_config 的插件可显式声明 in_place。面板由实际工具、handler 与两种配置 Schema 生成，没有单独手写的业务清单。
 
 原始 HTTP 超时、状态码与网络错误在宿主执行边界形成失败观察；服务自己的“无结果”和协议解析错误由插件明确返回。核心不按工具名称改写失败正文或在一次失败后隐藏工具。若允许下一步读取，应在插件结果中准确说明已知资料与可用入口，由调用者在剩余预算内选择。
+
+### 纯绘图辅助入口
+
+`plugins.api.CARD_THEME` 是既有冻结主题常量，包含颜色、边距、圆角与 theme_version；`split_card_pages(items, page_height, item_height, keep_one=True)` 是既有语义分页函数的直接导出。它按 item_height 的整型高度累计，至少按 1 计，一个元素不拆页；超高元素仍单独保留，空输入默认保留一个空页，keep_one=False 时为空列表。不保证像素内容自动缩放或字体适配。
+
+两项只提供确定性绘图数据和分页，不生成文件、不加载字体、不登记或上传资产，不调用网络／模型。插件自己的业务版式和字体配置仍归插件；主题不可原位修改。群报告现通过此公共入口复用原主题与分页，像素生成算法未变，接口世代仍为 2；这不表示模板、字体或其他素材已获公开授权。
 
 ## 长期工作
 
