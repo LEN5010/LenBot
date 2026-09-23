@@ -295,7 +295,7 @@ class HistoryStoreMixin:
 
     async def commit_history_batch(self, scene_id, batch_id, proposals, summary, key_event_ids,
                                    review_event, expected_revision, scene_state_data, *, bot_actor_id,
-                                   expected_memories):
+                                   expected_memories, validate_access: Callable[[], None]):
         """Atomically save coverage, adopted memories and any stale candidates."""
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("History summary must be nonempty")
@@ -363,6 +363,9 @@ class HistoryStoreMixin:
                 review_event.payload["memory_receipts"] = [
                     await self._memory_receipt(proposal, item) for proposal, item in zip(adopted, committed)]
                 scene_state_data['knowledge_revision'] = current_revision + bool(committed)
+                # Adopt only while the original maintenance entry remains allowed;
+                # rejection rolls back candidate writes in this same transaction.
+                validate_access()
                 rowid = await self._write_scene_event(review_event, scene_state_data,
                     advance_session_observation=bool(review_event.payload.get("review_items")))
                 await self._db.execute("""UPDATE history_batches SET status='completed',summary=?,
