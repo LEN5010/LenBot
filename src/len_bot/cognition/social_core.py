@@ -162,6 +162,9 @@ class SocialCognitionCore:
                                          execution_budget=initial_budget, recent_event_ids=recent_event_ids,
                                          terminal_hint=final_step_message('respond') if next_is_final() else None,
                                          plugin_request=plugin_request)
+            if save_segment is not None and session.conversation_segment is not None:
+                await context.install_segment_result_locators(messages,
+                    session.conversation_segment.result_aliases,definitions=request_definitions)
             if plugin_request:
                 await toolkit.import_results(plugin_request.result_ids)
                 for ident in plugin_request.result_ids:
@@ -260,6 +263,9 @@ class SocialCognitionCore:
                 await context.install_preferences(trajectory)
             await toolkit.invalidate_saved_references(trajectory)
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
+            for message in trajectory:
+                if not message.get('_context_omitted'):
+                    context.refs.results.update(message.get('_segment_result_refs',{}))
             context.reconcile_original_reads(trajectory)
             pending_presentations=toolkit.read_presentations(trajectory)
             sections={}
