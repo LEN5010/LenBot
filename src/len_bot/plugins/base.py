@@ -62,6 +62,13 @@ class PluginContext:
         from len_bot.runtime.plugin_interactions import invoke_tool
         return await invoke_tool(self._runtime, call, name, arguments)
 
+    async def read_observation(self, call: PluginCallContext, result_id: str) -> ToolResult | None:
+        """Read a saved local result without granting model presentation or execution."""
+        if call.plugin is not self:
+            raise ValueError('Saved-observation reading requires this plugin call context')
+        await self._host.validate_call(call)
+        return await self._runtime.event_store.read_tool_observation(result_id, [call.scene_id])
+
     async def submit_message(self, call: PluginCallContext, segments, *, mention_all=False):
         from len_bot.runtime.plugin_interactions import submit_message
         return await submit_message(self._runtime, call, segments, mention_all=mention_all)

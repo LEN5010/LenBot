@@ -31,7 +31,7 @@ MERGE_INSTRUCTIONS = '''根据本次输入的批次候选合并为一个单群�
 
 
 async def _resource(context,ident,model,coverage):
-    result=await context.call.plugin.event_store.read_tool_observation(ident,[context.call.scene_id])
+    result=await context.call.read_observation(ident)
     if result is None or result.coverage!=coverage:raise ValueError('Saved report resource is missing or has the wrong kind')
     return result,model.model_validate_json(result.content)
 
@@ -89,7 +89,7 @@ async def _batches(context,service,messages):
             cached=None
             for resource,batch in reusable.get(messages[index].event_id,[]):
                 if batch.source_event_ids!=expected[index:index+len(batch.source_event_ids)]:continue
-                source=await context.call.plugin.event_store.read_tool_observation(batch.input_result_id,[context.call.scene_id])
+                source=await context.call.read_observation(batch.input_result_id)
                 if source is None or source.coverage!='group_summary_input':raise ValueError('Saved batch lost its original analysis input')
                 header,records=service.parse_input(source)
                 if header['scene_id']!=context.call.scene_id:raise ValueError('Saved batch has a foreign scene')
@@ -121,7 +121,7 @@ async def _batches(context,service,messages):
         # bound here and the work's deadline or token allowance stops the loop.
         if remaining is not None and (remaining<1 or batches and remaining<2):break
         if progress.pending_input_id:
-            source=await context.call.plugin.event_store.read_tool_observation(progress.pending_input_id,[context.call.scene_id])
+            source=await context.call.read_observation(progress.pending_input_id)
             if source is None:raise ValueError('Pending analysis input is missing')
         else:
             source=await _new_input(context,service,messages,index)

@@ -260,6 +260,8 @@ Gate 在同一提案事务中保存确认的 ack_action_id 与结果交付的 de
 
 插件描述符的 `api_version` 独立声明宿主接口世代，当前只接受整数 1；目录导入后、配置解析及实例创建前明确拒绝不匹配。插件自身 `version` 仍用于原事件／工作／出站归属核对，不因世代相同而跳过。发现是可信 Python 包导入，不是代码隔离；接口声明和迁移见[插件开发](plugins.md#接口世代-1-与迁移)。
 
+插件读取已保存观察可通过当次 PluginCallContext.read_observation：宿主核对调用归属与原准入，固定使用该调用场景查询原观察，不向作者暴露任意 allowed_scopes。它不是工具执行或已读登记；业务内容、工作修订与公共研究来源仍由原入口核对，其他内部存储依赖尚未全部迁移。
+
 专用工作仍走 JobStore：PluginSpec.work 只提供本插件参数、进度和时限内的 execute，不授予发送或额外工具额度。
 
 群报告 2.0 在 group_summary 内按真实 request_source 固定范围分析并渲染 PNG；read_group_report 只读本群成品，不调用模型或发送。复用分析不计入当前已读，也不成为长期事实。

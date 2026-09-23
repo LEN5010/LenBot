@@ -123,7 +123,7 @@ class GroupSummaryService:
             artifact=ReportArtifact.model_validate_json(resource.content)
             if artifact.start_at!=start_at or artifact.end_at!=end_at:continue
             if revision is not None and artifact.job_revision!=revision:continue
-            observed=await self.event_store.read_tool_observation(artifact.report_result_id,[call.scene_id])
+            observed=await call.read_observation(artifact.report_result_id)
             if observed is None:raise ValueError('Saved report artifact has no structured result')
             report=SingleGroupReport.model_validate_json(observed.content)
             asset_ids=artifact.image_asset_ids or [artifact.image_asset_id]
