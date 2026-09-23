@@ -187,7 +187,7 @@ class AsoulDynamicsPlugin(BasePlugin):
 
     async def _card_snapshot(self, result_id, item_id, obtained_id, call_context):
         if result_id:
-            observation = await call_context.plugin.event_store.read_tool_observation(result_id, [call_context.scene_id])
+            observation = await call_context.read_observation(result_id)
             if observation is None:
                 raise DynamicsLookupError('卡片资料不属于当前场景或已不存在。', 'invalid_result_id')
             try:

@@ -72,7 +72,7 @@ class LinkParserPlugin(BasePlugin):
 
     async def download_media(self, args: DownloadMediaArguments, call_context: PluginCallContext) -> ToolResult:
         runtime = call_context.plugin._runtime
-        stored = await runtime.event_store.read_tool_observation(args.result_id, [call_context.scene_id])
+        stored = await call_context.read_observation(args.result_id)
         if stored is None or stored.tool_name != 'parse_link':
             return ToolResult.failure('只能下载本场景已保存的 parse_link 结果', 'invalid_source')
         try:
