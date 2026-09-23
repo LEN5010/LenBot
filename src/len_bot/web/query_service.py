@@ -13,6 +13,7 @@ import re
 from len_bot.runtime.platform_actions import actions_for
 from len_bot.cognition.budget import ReservationPolicy
 from len_bot.cognition.models import AnswerBasis
+from len_bot.memory.history import HISTORY_SOURCES_AVAILABLE_SQL
 from len_bot.events.models import Event, EventType
 from len_bot.tools.results import ToolResult, DisplayedRange, error_message
 from typing import Optional
@@ -496,7 +497,7 @@ class RuntimeQueryService:
                            'request_record_json': records.get('model_call_request')})
 
     async def history_batches(self, scene_id, page=1, page_size=30):
-        result = await self._page("SELECT *", "FROM history_batches WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)
+        result = await self._page(f"SELECT h.*,({HISTORY_SOURCES_AVAILABLE_SQL}) AS sources_available", "FROM history_batches h WHERE scene_id=?", [scene_id], "end_rowid DESC,end_offset DESC,id DESC", page,page_size)
         items = []
         for item in result["items"]:
             item = self.runtime.event_store._history_row(item)
@@ -513,7 +514,7 @@ class RuntimeQueryService:
         return result
 
     async def history_batch(self, batch_id):
-        rows = await self._rows("SELECT * FROM history_batches WHERE id=?", [batch_id])
+        rows = await self._rows(f"SELECT h.*,({HISTORY_SOURCES_AVAILABLE_SQL}) AS sources_available FROM history_batches h WHERE id=?", [batch_id])
         if not rows:
             return None
         item = self.runtime.event_store._history_row(rows[0])

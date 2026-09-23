@@ -1670,14 +1670,17 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
         # rather than inside them: anchor_window_start needs it, the model does
         # not, and an underscore key never reaches the request.
         summary_complete = []
+        summary_versions = {}
         def history_message():
             return {'role':'user','_context_section':'history_summary',
+                    '_summary_versions':dict(summary_versions),
                     '_summary_ranges':[item['range'] for item in summary_views],
                     '_summary_complete_ids':[ident for ids in summary_complete for ident in ids], 'content':
                     json.dumps({'kind':'history_summary','evidence':'locator_only',
                         'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
         summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
-            limit=config.conversation_summary_limit, status='completed')
+            limit=config.conversation_summary_limit, status='completed',
+            available_only=True, through_rowid=self.refs.cutoff)
         summary_tokens = 0
         for summary in summaries:
             size = estimate_tokens(summary['summary'])
@@ -1688,11 +1691,13 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
             summary_views.append({'range':[summary['start_rowid'],summary['start_offset'],summary['end_rowid'],summary['end_offset']],
                 'summary':summary['summary'], 'sources':[self.refs.register_event_locator(ident) for ident in summary['key_event_ids']]})
             summary_complete.append(summary['complete_event_ids'])
+            summary_versions[summary['id']] = summary['generation_version']
             if self.request_tokens([*messages,history_message()]) <= self.input_budget:
                 summary_tokens += size
             else:
                 summary_views.pop()
                 summary_complete.pop()
+                summary_versions.pop(summary['id'])
                 self._restore_projection(snapshot)
                 self.omit('history_summary', 'no_capacity', batch_id=summary['id'])
         history = history_message()
