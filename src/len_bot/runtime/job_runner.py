@@ -527,10 +527,21 @@ class InformationJobRunner:
                 job['tool_calls'] += tool_calls
                 await runtime.commit_tool_observation(event)
 
+        async def validate_knowledge_sources(result_ids: list[str]) -> None:
+            # Called inside the existing work write transaction. Read the saved
+            # scene observation, not only a request's retained in-memory copy.
+            for ident in result_ids:
+                source = await store.read_tool_observation(ident, [scene_id])
+                if source is None:
+                    raise ValueError(f'本次采用的资料 {ident} 已不可用或不属于本群')
+                failure = await toolkit.knowledge_presentation_failure(source)
+                if failure is not None:
+                    raise ValueError(f'{failure.error_code}: {failure.content}')
+
         async def commit_result(result, expected, *, work_state=None, skill_candidate=None):
             await charge(expected, enforce=False)
             event = await store.complete_job(job_id, scene_id, expected, result, validate_access=require_current_access,
-                work_state=work_state, skill_candidate=skill_candidate, bot_actor_id=runtime.bot_actor_id)
+                validate_sources=validate_knowledge_sources, work_state=work_state, skill_candidate=skill_candidate, bot_actor_id=runtime.bot_actor_id)
             if event is None:
                 raise JobChanged("Job changed before result commit")
             result=JobResult.model_validate(event.payload['result'])
@@ -620,7 +631,7 @@ class InformationJobRunner:
                     update = WorkStateUpdate.model_validate_json(json.dumps(arguments,ensure_ascii=False),strict=True)
                     await charge(revision)
                     await store.update_work_state(job_id, scene_id, revision, update.state, update.skill_candidate,
-                        bot_actor_id=runtime.bot_actor_id)
+                        validate_sources=validate_knowledge_sources, bot_actor_id=runtime.bot_actor_id)
                 except ValueError as error:
                     raise ToolArgumentError(str(error)) from error
                 return ToolResult(content="工作进度已保存；现实完成和发送状态仍由运行时决定。", evidence_kind="model")
