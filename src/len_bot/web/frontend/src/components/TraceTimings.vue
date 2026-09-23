@@ -8,11 +8,12 @@ defineProps({ timings: Object, sceneId: String })
   <section class="trace-timings" aria-label="已保存的阶段耗时">
     <h4>已保存的阶段耗时</h4>
     <p class="timing-note">按原轨迹逐段列出，缺失不按零计。嵌套调用、并行工具和装配中的压缩可能重叠，不相加为总延迟；模型计时不是首字延迟，发布也不等于平台送达。</p>
-    <p v-if="timings?.elapsed_ms !== null && timings?.elapsed_ms !== undefined" class="timing-note">轨迹记录的外层耗时：{{ duration(timings.elapsed_ms) }}；不含未记录的入场等待，也不是这条消息的独占耗时。</p>
+    <p v-if="timings?.elapsed_ms !== null && timings?.elapsed_ms !== undefined" class="timing-note">轨迹记录的外层耗时：{{ duration(timings.elapsed_ms) }}；不是这条消息的独占耗时，执行槽位等待另列，不据此相加为总延迟。</p>
     <p v-if="!timings?.runs?.length" class="timing-note">该轨迹没有可展示的分阶段计时。</p>
     <article v-for="run in timings?.runs || []" :key="run.index" class="timing-run">
-      <h5>执行段 {{ run.index }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
+      <h5>{{ run.cognition_slot_wait_ms != null ? '槽位等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
       <dl class="timing-facts">
+        <div v-if="run.cognition_slot_wait_ms !== null && run.cognition_slot_wait_ms !== undefined"><dt>对话执行槽位等待</dt><dd>{{ duration(run.cognition_slot_wait_ms) }}</dd></div>
         <div><dt>初始来源读取</dt><dd>{{ duration(run.initial_source_reads_ms) }}</dd></div>
         <div><dt>初始上下文装配</dt><dd>{{ duration(run.initial_context_ms) }}</dd></div>
         <div><dt>本段提交累计</dt><dd>{{ duration(run.commit_ms) }}</dd></div>
