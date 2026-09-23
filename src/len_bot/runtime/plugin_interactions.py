@@ -209,10 +209,13 @@ async def deliver_work_result(runtime,event):
     sources=await runtime.event_store.events_by_ids(event.scene_id,read_ids,cutoff)
     source=next((item for item in sources if item.id==origin.source_event_id),None)
     if source is None:raise ValueError('Prepared work delivery lost its real plugin source')
+    from len_bot.runtime.job_runner import job_initiator
     call=replace(_execution(runtime,source,origin,cutoff),requester_qq_uid=job['requester_qq_uid'],
-        job_id=job['id'],work_operation=job['work_operation'])
+        job_id=job['id'],job_revision=job['revision'],work_operation=job['work_operation'],
+        episode_id=f'work-delivery:{job["id"]}:{job["revision"]}',initiator=job_initiator(job))
+    call.execution.toolkit.call_context=lambda: replace(call,now=runtime.clock())
     mailbox=call.execution.mailbox
-    mailbox.episode_id=f'work-delivery:{job["id"]}:{job["revision"]}'
+    mailbox.episode_id=call.episode_id
     mailbox.origin_stimulus_id=event.id
     mailbox.requester_qq_uid=job['requester_qq_uid']
     mailbox.origin_mode='shadow' if runtime.shadow_mode or job['origin_mode']=='shadow' else 'live'
