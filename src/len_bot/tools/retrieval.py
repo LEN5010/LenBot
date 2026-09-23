@@ -771,6 +771,7 @@ class RetrievalToolkit:
                     message['_summary_versions'] = {}
                     message['_summary_ranges'] = []
                     message['_summary_complete_ids'] = []
+                    message['_summary_refs'] = []
                     if self.context is not None:
                         self.context.omit('history_summary', 'sources_unavailable', batch_ids=missing)
                 continue

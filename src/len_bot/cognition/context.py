@@ -1314,6 +1314,14 @@ class ConversationContext:
                     else 'changed_after_declaration')
                 if locator_status == 'retained':
                     locators = message['_segment_result_locators']
+            summary_status = None
+            summary_refs = None
+            if '_summary_content' in message:
+                summary_status = ('omitted' if message.get('_context_omitted') else
+                    'retained' if message.get('content') == message['_summary_content']
+                    else 'changed_after_declaration')
+                if summary_status == 'retained':
+                    summary_refs = message['_summary_refs']
             location = _RequestLocation(
                 event_id=message.get('_source_event_id'), ref=message.get('_source_ref'),
                 text_range=message.get('_source_range'),
@@ -1321,6 +1329,7 @@ class ConversationContext:
                 omitted=bool(message.get('_context_omitted')),
                 omission_reason=message.get('_omission_reason'),
                 result_locator_status=locator_status, result_locators=locators,
+                summary_ref_status=summary_status, summary_refs=summary_refs,
                 prompt_components=message.get('_prompt_components', ()),
                 tool_presentations=toolkit.read_presentations([message]) if toolkit is not None else None,
                 image_assets={index: part['_asset_id'] for index, part in enumerate(message['content'])
@@ -1752,13 +1761,15 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
         # not, and an underscore key never reaches the request.
         summary_complete = []
         summary_versions = {}
+        summary_refs = []
         def history_message():
+            content = json.dumps({'kind':'history_summary','evidence':'locator_only',
+                'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)
             return {'role':'user','_context_section':'history_summary',
                     '_summary_versions':dict(summary_versions),
                     '_summary_ranges':[item['range'] for item in summary_views],
-                    '_summary_complete_ids':[ident for ids in summary_complete for ident in ids], 'content':
-                    json.dumps({'kind':'history_summary','evidence':'locator_only',
-                        'coverage':coverage,'summaries':list(reversed(summary_views))},ensure_ascii=False)}
+                    '_summary_complete_ids':[ident for ids in summary_complete for ident in ids],
+                    '_summary_refs':list(reversed(summary_refs)), '_summary_content':content, 'content':content}
         summaries = await self.runtime.event_store.list_history_batches(self.session.scene_id,
             limit=config.conversation_summary_limit, status='completed',
             available_only=True, through_rowid=self.refs.cutoff)
@@ -1773,12 +1784,15 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
                 'summary':summary['summary'], 'sources':[self.refs.register_event_locator(ident) for ident in summary['key_event_ids']]})
             summary_complete.append(summary['complete_event_ids'])
             summary_versions[summary['id']] = summary['generation_version']
+            summary_refs.append({'batch_id':summary['id'],'generation_version':summary['generation_version'],
+                'range':[summary['start_rowid'],summary['start_offset'],summary['end_rowid'],summary['end_offset']]})
             if self.request_tokens([*messages,history_message()]) <= self.input_budget:
                 summary_tokens += size
             else:
                 summary_views.pop()
                 summary_complete.pop()
                 summary_versions.pop(summary['id'])
+                summary_refs.pop()
                 self._restore_projection(snapshot)
                 self.omit('history_summary', 'no_capacity', batch_id=summary['id'])
         history = history_message()
