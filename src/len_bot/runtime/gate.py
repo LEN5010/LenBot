@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Optional, Any, Callable, Literal
@@ -63,6 +64,8 @@ class PublicationRecord:
     actions: list[ActionPublication] = field(default_factory=list)
     error: str | None = None
     error_type: str | None = None
+    lock_wait_ms: float | None = None
+    lock_wait_state: Literal["acquired", "cancelled", "failed"] | None = None
 
 class GateDecision:
     def __init__(
@@ -441,11 +444,15 @@ class RuntimeGate:
         if committed.episode_id != mailbox.episode_id or committed.scene_id != mailbox.scene_id:
             raise ValueError("Publication mailbox does not belong to the committed turn")
         publication.phase = "awaiting_publication"
+        lock_wait_started = None
         try:
             # Actor commits are ordered; keep their publication in the same
             # per-scene order when preparation or Scheduler sync must await.
             lock = self._publication_locks.setdefault(committed.scene_id, asyncio.Lock())
+            lock_wait_started = time.monotonic()
             async with lock:
+                publication.lock_wait_ms = round((time.monotonic() - lock_wait_started) * 1000, 2)
+                publication.lock_wait_state = "acquired"
                 publication.phase = "action_preparation"
                 # Complete every action before any is enqueued. No partial batch is
                 # published merely because a later message cannot be assembled.
@@ -474,6 +481,9 @@ class RuntimeGate:
                 publication.status = "completed"
         except (Exception, asyncio.CancelledError) as error:
             interrupted = isinstance(error, asyncio.CancelledError)
+            if lock_wait_started is not None and publication.lock_wait_state is None:
+                publication.lock_wait_ms = round((time.monotonic() - lock_wait_started) * 1000, 2)
+                publication.lock_wait_state = "cancelled" if interrupted else "failed"
             publication.status = "interrupted" if interrupted else "failed"
             publication.error = str(error) or type(error).__name__
             publication.error_type = type(error).__name__

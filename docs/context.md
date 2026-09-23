@@ -313,6 +313,7 @@ request_estimation 包含其触发的工具定义准备，optional_release 内�
 | steps.latency_ms | 网关登记完成后，客户端请求至读取响应正文；不是首字时间，不含全部登记和结算，失败时可能没有此字段 |
 | tool_calls.execution_ms／steps.tool_presentation_ms | 逐工具执行／本步工具结果装配；不包含全部回执保存，工具可能并行或调用嵌套工作 |
 | timings_ms.commit／publication | 本执行段内提交／发布累计，包含各自等待及失败前时间；不表示提交成功或平台收到 |
+| gate.publication.lock_wait_ms／lock_wait_state | 按原持久提交逐次记录本群发布串行锁申请至取得、取消或失败的时间及状态；属于发布累计的内层，正值不证明发生争用，取得锁不表示入队或送达 |
 
 外层 elapsed_ms 只在原轨迹有字段时展示，不用已知子项补总数。缺少入场等待、失败请求细分或其他阶段时显示未记录；嵌套阶段、并行工具与运行段不能相加为一条消息的耗时。
 

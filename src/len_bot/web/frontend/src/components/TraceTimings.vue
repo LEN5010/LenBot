@@ -3,6 +3,7 @@ import EntityLink from './EntityLink.vue'
 import { formatDurationMs as duration } from '../domain/activity.js'
 defineProps({ timings: Object, sceneId: String })
 const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: '已取得槽位', cancelled: '等待期间已取消', failed: '等待失败' }
+const publicationWaitStates = { acquired: '已取得锁', cancelled: '取得前已取消', failed: '取得失败' }
 </script>
 
 <template>
@@ -18,6 +19,7 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
       <p v-if="run.work_selection_ms != null" class="timing-note">工作目录读取与选择属于本群这次调度，不是所选工作的创建后总排队时间。</p>
       <p v-if="run.maintenance_slot_wait_state" class="timing-note">{{ slotStates[run.maintenance_slot_wait_state] || run.maintenance_slot_wait_state }}。只属于本场景方法维护调度，不归给尚未选定的候选或工作。</p>
       <p v-if="run.agent_lock_wait_state" class="timing-note">{{ slotStates[run.agent_lock_wait_state] || run.agent_lock_wait_state }}。仅说明本次插件子调用等待原父执行的串行锁，不代表取得模型槽位或执行成功。</p>
+      <p v-if="run.publication_waits.length" class="timing-note">发布串行锁按本群提交身份逐次登记；从申请到取得或中断的时间包含调度开销，正值不证明发生争用。取得锁也不代表入队或送达。</p>
       <p v-if="run.request_preparation_failure" class="timing-note">
         第 {{ run.request_preparation_failure.step + 1 }} 步请求准备{{ run.request_preparation_failure.state === 'cancelled' ? '被取消' : '失败' }}：{{ duration(run.request_preparation_failure.elapsed_ms) }} · {{ run.request_preparation_failure.error_type }}。
         未进入本步模型请求；准备可能包含压缩等嵌套调用，不能据此判断没有调用或费用。
@@ -28,6 +30,7 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
         <div v-if="run.work_selection_ms !== null && run.work_selection_ms !== undefined"><dt>本群工作目录读取与选择</dt><dd>{{ duration(run.work_selection_ms) }}</dd></div>
         <div v-if="run.maintenance_slot_wait_ms !== null && run.maintenance_slot_wait_ms !== undefined"><dt>方法维护槽位等待</dt><dd>{{ duration(run.maintenance_slot_wait_ms) }}</dd></div>
         <div v-if="run.agent_lock_wait_ms !== null && run.agent_lock_wait_ms !== undefined"><dt>插件子调用串行锁等待</dt><dd>{{ duration(run.agent_lock_wait_ms) }}</dd></div>
+        <div v-for="(wait,index) in run.publication_waits" :key="`${wait.commit_event_id || 'missing'}:${index}`"><dt>第 {{ index + 1 }} 次发布串行锁申请</dt><dd>{{ duration(wait.elapsed_ms) }} · {{ publicationWaitStates[wait.state] || wait.state }}<EntityLink v-if="wait.commit_event_id" type="event" :id="wait.commit_event_id" :scene-id="sceneId" label="查看对应提交" /></dd></div>
         <div><dt>初始来源读取</dt><dd>{{ duration(run.initial_source_reads_ms) }}</dd></div>
         <div><dt>初始上下文装配</dt><dd>{{ duration(run.initial_context_ms) }}</dd></div>
         <div><dt>本段提交累计</dt><dd>{{ duration(run.commit_ms) }}</dd></div>

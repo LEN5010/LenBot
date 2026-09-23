@@ -1253,6 +1253,14 @@ class RuntimeQueryService:
         elif gate.get('committed') and item['kind'] == 'conversation_error':
             item['summary'] = '已提交，后续处理异常 · ' + item['summary']
         runs=self._trace_runs(item['kind'],payload)
+        def publication_waits(run):
+            records = [*(checkpoint.get('gate') or {} for checkpoint in run.get('checkpoints', [])),
+                       *(run.get('commits') or [])]
+            return [{'commit_event_id': record.get('commit_event_id'),
+                     'state': record['publication']['lock_wait_state'],
+                     'elapsed_ms': record['publication'].get('lock_wait_ms')}
+                    for record in records
+                    if (record.get('publication') or {}).get('lock_wait_state') is not None]
         if detail or identities:
             item['timings'] = {'elapsed_ms': payload.get('elapsed_ms'), 'runs': [
                 {'index': index + 1, 'job_revision': run.get('job_revision'),
@@ -1270,6 +1278,7 @@ class RuntimeQueryService:
                  'request_preparation_failure': run.get('request_preparation_failure'),
                  'commit_ms': (run.get('timings_ms') or {}).get('commit'),
                  'publication_ms': (run.get('timings_ms') or {}).get('publication'),
+                 'publication_waits': publication_waits(run),
                  'steps': [{'index': step.get('step'), 'call_id': step.get('call_id'),
                             'request_preparation_ms': step.get('request_preparation_ms'),
                             'model_ms': step.get('latency_ms'),
@@ -1279,7 +1288,8 @@ class RuntimeQueryService:
                                       for tool in step.get('tool_calls', [])]}
                            for step in run.get('steps', [])]}
                 for index, run in enumerate(runs)
-                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'work_slot_wait_ms', 'maintenance_slot_wait_ms', 'agent_lock_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
+                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'work_slot_wait_ms', 'maintenance_slot_wait_ms', 'agent_lock_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))
+                or publication_waits(run)]}
         if (detail or identities) and item['kind'] in {'conversation', 'conversation_error', 'conversation_wait'}:
             # These are stored identities, not inferred from the trace time.
             # A source may belong to an attempt that failed before any commit.
