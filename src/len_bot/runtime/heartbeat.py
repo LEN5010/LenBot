@@ -44,17 +44,29 @@ async def admit_cycle_in_transaction(store, proposal, scene_id, job_id):
     task = await store.get_task(initiator.cycle_id)
     if task is None or task.status != TaskStatus.PROCESSING or task.trigger_event_id != initiator.trigger_event_id:
         raise ValueError('心跳槽没有当前有效领取')
-    if int(slot['slot']) != slot_id(store.clock()):
-        raise ValueError('错过的心跳槽不能创建工作')
     occupied = await (await store._db.execute("""SELECT 1 FROM tasks WHERE scene_id=?
         AND json_extract(payload,'$.kind')='heartbeat_occupancy'
         AND status IN ('pending','claimed','processing','review_required','delivery_unknown') LIMIT 1""", (scene_id,))).fetchone()
     if occupied:
         raise ValueError('已有心跳工作或未确认终止仍占用本轮')
-    config = store.budget_config
     active = await (await store._db.execute("SELECT COUNT(*) FROM tasks WHERE json_extract(payload,'$.kind')='agent_job' AND status IN ('pending','claimed','processing')")).fetchone()
-    if config.job_max_concurrent < 2 or active[0] >= config.job_max_concurrent - 1:
+    authority = store.capability_authority
+    if authority is None:
+        raise ValueError('心跳公共研究缺少当前能力授权')
+    root = authority.config_store.current
+    if not root.runtime.heartbeat_enabled or not root.runtime.jobs_enabled:
+        raise ValueError('心跳或后台工作已关闭，不采用待建立的公共研究')
+    now = store.clock()
+    if int(slot['slot']) != slot_id(now):
+        raise ValueError('错过的心跳槽不能创建工作')
+    if root.runtime.job_max_concurrent < 2 or active[0] >= root.runtime.job_max_concurrent - 1:
         raise ValueError('工作容量不足，至少保留一个人类工作位置')
+    if in_sleep_window(root.time, now):
+        raise ValueError('当前已进入睡眠，不采用待建立的公共研究')
+    from len_bot.runtime.capabilities import Capability, subject_for
+    permission = authority.check(Capability.PUBLIC_RESEARCH, subject_for(initiator, scene_id), now=now)
+    if not permission.allowed:
+        raise ValueError(permission.reason)
     ident = occupancy_id(slot['agent_id'], slot['slot'])
     origin = {'seed_event_id': initiator.trigger_event_id, 'cycle_id': initiator.cycle_id, 'occupancy_id': ident}
     payload = {'kind': 'heartbeat_occupancy', 'slot': slot['slot'], 'job_id': job_id,
