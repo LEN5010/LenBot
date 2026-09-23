@@ -809,10 +809,12 @@ class ConversationContext:
         available = {}
 
         def directory():
+            content = json.dumps({'kind':'saved_result_locators', 'evidence':'locator_only',
+                'read_with':'read_tool_result', 'items':items},ensure_ascii=False)
             return {'role':'user', '_context_section':'saved_result_locators',
-                '_segment_result_refs':dict(available), 'content':json.dumps({
-                    'kind':'saved_result_locators', 'evidence':'locator_only',
-                    'read_with':'read_tool_result', 'items':items},ensure_ascii=False)}
+                '_segment_result_refs':dict(available),
+                '_segment_result_locators':[{**item,'result_id':available.get(item['ref'])} for item in items],
+                '_segment_result_content':content, 'content':content}
 
         for ref, result_id in aliases.items():
             saved = await self.runtime.event_store.tool_observation_call(result_id,self.session.scene_id)
@@ -1261,12 +1263,21 @@ class ConversationContext:
     def model_messages(messages, *, toolkit=None):
         prepared=copy.deepcopy(messages)
         for message in prepared:
+            locator_status = None
+            locators = None
+            if '_segment_result_content' in message:
+                locator_status = ('omitted' if message.get('_context_omitted') else
+                    'retained' if message.get('content') == message['_segment_result_content']
+                    else 'changed_after_declaration')
+                if locator_status == 'retained':
+                    locators = message['_segment_result_locators']
             location = _RequestLocation(
                 event_id=message.get('_source_event_id'), ref=message.get('_source_ref'),
                 text_range=message.get('_source_range'),
                 original_ranges=message.get('_original_ranges', []) if not message.get('_context_omitted') else [],
                 omitted=bool(message.get('_context_omitted')),
                 omission_reason=message.get('_omission_reason'),
+                result_locator_status=locator_status, result_locators=locators,
                 prompt_components=message.get('_prompt_components', ()),
                 tool_presentations=toolkit.read_presentations([message]) if toolkit is not None else None,
                 image_assets={index: part['_asset_id'] for index, part in enumerate(message['content'])
