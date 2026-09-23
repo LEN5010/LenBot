@@ -23,6 +23,7 @@ export function messageRecords(event, relations) {
   } : null
   const sourceId = actionId ? selectedAction.origin_event_id || event.payload.origin_event_id : inputTypes.has(event?.event_type) ? event.id : null
   const source = actionId ? relations?.events?.find(item => item.id === sourceId) : event
+  const batches = sourceId === event?.id ? relations?.batches || [] : []
   const readTurns = sourceId ? allTurns.filter(turn => turn.read_source_event_ids?.includes(sourceId)
     && (!actionId || Boolean(selectedAction?.commit_event_id) && turn.event_id === selectedAction.commit_event_id)) : []
   const handlingTurn = readTurns.find(turn => turn.source_outcomes?.some(item => item.source_event_id === sourceId)
@@ -61,7 +62,7 @@ export function messageRecords(event, relations) {
     .sort((left, right) => left.started_at - right.started_at || left.id.localeCompare(right.id))
   const requestRecords = attempts.flatMap(trace => (trace.requests || []).map(request => ({ ...request, trace_id: trace.id })))
   return {
-    sourceId, source, readTurns, handlingTurn, outcome, jobs, actions, committed, attempts, problems, deliveryProblems, deliveryReceipts, calls, requestRecords, isReceipt: Boolean(actionId),
+    sourceId, source, batches, readTurns, handlingTurn, outcome, jobs, actions, committed, attempts, problems, deliveryProblems, deliveryReceipts, calls, requestRecords, isReceipt: Boolean(actionId),
     pending: relations?.source_handling?.event_id === sourceId && relations.source_handling.pending === true,
     limited: Object.values(relations?.truncated || {}).some(Boolean),
   }
