@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.request_record import _RecordedToolDefinition, _RequestLocation
+from len_bot.cognition.request_record import _PromptComponent, _RecordedToolDefinition, _RequestLocation
 from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, PublicInterestCandidate
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
@@ -414,13 +414,17 @@ class InformationJobRunner:
             "committed=false表示候选尚未生效；在原剩余预算内依照具体错误缩小引用或续读，再用新调用ID提交。"
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
             {"role": "user", "_context_section":"work_facts", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
+        prompt_components = [_PromptComponent('work.contract', 1, 0, messages[0]['content'])]
         from len_bot.runtime.public_research import has_public_context
         if has_public_context(job):
-            messages[0]['content'] += ('\n本次是干净的系统公共研究，仅按配置主题、当前公共兴趣与未决项研究。'
+            public_notice = ('\n本次是干净的系统公共研究，仅按配置主题、当前公共兴趣与未决项研究。'
                 '不读取群史、成员资料或既有场景技能，不学习群资料。没有可核实结果可零成果结束。'
                 '可以在finish_work.public_interests提交有实际读取证据的公共兴趣候选；'
                 '区分public_fact事实、agent_evaluation评价和research_intent意向，修订或撤回说明原因。'
                 '不选择发布群，不发消息，不把兴趣摘要当作新的来源证据。')
+            prompt_components.append(_PromptComponent('work.public_research_notice', 1,
+                len(messages[0]['content']), public_notice))
+            messages[0]['content'] += public_notice
         if checkpoint:
             messages = await restore_trajectory([*messages, *checkpoint["messages"][2:]], self.runtime.media_service,
                 job["scene_id"], image_limit=self.runtime.config.max_context_images,
@@ -433,7 +437,7 @@ class InformationJobRunner:
                       f'目标已从版本 {checkpoint["goal_revision"]} 更新为 {job["revision"]}。以上交换保留旧版观察与结论，须按当前目标重新核对完成步骤。')
                 messages.append({'role':'developer','content':note})
         return messages, synchronize_image_window(messages, self.runtime.config.max_context_images,
-                                                  self.runtime.config.media_context_max_bytes)
+            self.runtime.config.media_context_max_bytes), tuple(prompt_components)
 
     def work_config(self, job):
         """This work's own execution limits, from the record it was created under.
@@ -968,7 +972,7 @@ class InformationJobRunner:
                         await save_result(result,revision)
                         return
                     async with asyncio.timeout(remaining):
-                        messages, current_assets = await self._context(job)
+                        messages, current_assets, prompt_components = await self._context(job)
                         exchange_count = (job["checkpoint"] or {}).get("exchange_count", 0)
                         pending_exchange_saved = False
 
@@ -1075,8 +1079,9 @@ class InformationJobRunner:
                                 'omitted':[{'section':'skill_catalog','reason':'read_on_demand'},*presentation.omissions],
                                 'current_pixel_assets':sorted(current_assets)}
                             prepared = copy.deepcopy(trajectory)
-                            for message in prepared:
+                            for index, message in enumerate(prepared):
                                 message['_request_location'] = _RequestLocation(
+                                    prompt_components=prompt_components if index == 0 else (),
                                     tool_presentations=toolkit.read_presentations([message]),
                                     image_assets=request_image_assets(message))
                             return prepared
