@@ -74,7 +74,8 @@ class LocalClock(BasePlugin):
         observed=await call.invoke_tool('local_time_now',EmptySceneConfig())
         if observed.status!='ok':raise ValueError(observed.content)
         await call.run_agent(instructions='根据本次真实时钟读取，向命令发起者简短说明日期、星期、时间和时区。'
-            '通过respond提交一条文字，sources记录该命令为replied，next=end。',
+            '通过respond提交一条普通文字消息，messages[].source引用当前命令的实际已读来源M，next=end。'
+            'sources只填写silent或incomplete；已回复状态由实际消息归属生成，不填写replied。',
             input_observations=[observed],tool_names=(),input_mode='source',include_identity=False,
             output_mode='respond',model_role=self.config.model_role,max_steps=self.config.max_steps,
             max_tool_calls=self.config.max_tool_calls,context_tokens=self.config.context_tokens,

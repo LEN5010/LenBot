@@ -10,6 +10,8 @@ from len_bot.plugins.work import PluginWorkSpec, PluginWorkRevision, PluginWorkC
 from len_bot.cognition.jobs import JobResult, PreparedWorkDelivery, ResultPresentation, JobChanged, JobBudgetExhausted
 from len_bot.tools.results import ToolResult, ToolSource, ToolNextCall
 from len_bot.cognition.projection import project_onebot_text
+from len_bot.cards.tokens import THEME as CARD_THEME
+from len_bot.cards.layout import split_pages as split_card_pages
 
 __all__ = ['BasePlugin', 'PluginContext', 'PluginSpec', 'PluginCallContext',
            'PluginPermission', 'PluginType', 'ToolResult', 'ToolSource', 'ToolNextCall']
@@ -20,3 +22,4 @@ __all__ += ['PluginWorkSpec','PluginWorkRevision','PluginWorkContext','JobResult
 __all__ += ['Event', 'PluginWorkSnapshot', 'PluginWorkPreparation', 'ResultPresentation']
 __all__ += ['JobChanged', 'JobBudgetExhausted']
 __all__ += ['project_onebot_text']
+__all__ += ['CARD_THEME', 'split_card_pages']

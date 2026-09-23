@@ -10,8 +10,7 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 from .report import SingleGroupReport
-from len_bot.cards.tokens import THEME
-from len_bot.cards.layout import split_pages
+from len_bot.plugins.api import CARD_THEME as THEME, split_card_pages as split_pages
 
 
 WIDTH=1080
