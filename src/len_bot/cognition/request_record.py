@@ -1,8 +1,31 @@
-"""Per-call locations at the client boundary, without message bodies."""
+"""Per-call locations and explicitly declared static components."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any
+
+
+@dataclass(frozen=True)
+class _PromptComponent:
+    component_id: str
+    revision: int
+    start: int
+    text: str
+
+
+class _RecordedToolDefinition(dict):
+    """Keep a code-owned definition beside its ordinary wire dictionary.
+
+    Only fixed core declarations use this type. Attributes survive copying
+    but do not participate in JSON serialization or token estimation.
+    """
+
+    def __init__(self, definition: dict, *, component_id: str, revision: int):
+        super().__init__(definition)
+        self.component_id = component_id
+        self.revision = revision
+        self.definition_json = json.dumps(definition, ensure_ascii=False, allow_nan=False)
 
 
 @dataclass(frozen=True)
@@ -14,6 +37,33 @@ class _RequestLocation:
     omitted: bool = False
     omission_reason: str | None = None
     image_assets: dict[int, str] = field(default_factory=dict)
+    prompt_components: tuple[_PromptComponent, ...] = ()
+
+
+def _prompt_record(content, components):
+    records = []
+    for component in components:
+        if not isinstance(component, _PromptComponent):
+            raise TypeError('Invalid internal prompt component')
+        end = component.start + len(component.text)
+        matches = (isinstance(content, str) and 0 <= component.start <= end <= len(content)
+                   and content[component.start:end] == component.text)
+        records.append({'component_id': component.component_id, 'revision': component.revision,
+            'status': 'retained' if matches else 'changed_after_declaration',
+            'text_range': {'start': component.start, 'end': end} if matches else None,
+            'snapshot_text': component.text if matches else None})
+    return records
+
+
+def _tool_record(index, tool):
+    record = {'index': index, 'type': tool.get('type'), 'name': (tool.get('function') or {}).get('name'),
+              'definition': {'status': 'not_recorded'}}
+    if isinstance(tool, _RecordedToolDefinition):
+        matches = json.loads(tool.definition_json) == tool
+        record['definition'] = {'component_id': tool.component_id, 'revision': tool.revision,
+            'status': 'retained' if matches else 'changed_after_declaration',
+            'snapshot_json': tool.definition_json if matches else None}
+    return record
 
 
 def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
@@ -29,6 +79,7 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
         if location is not None and not isinstance(location, _RequestLocation):
             raise TypeError('Invalid internal request location')
         content = message.get('content')
+        prompt_components = _prompt_record(content, location.prompt_components if location else ())
         images = []
         if isinstance(content, list):
             for part_index, part in enumerate(content):
@@ -50,17 +101,20 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
             'part_types': [part.get('type') if isinstance(part, dict) else None for part in content]
                 if isinstance(content, list) else None,
             'images': images,
+            'prompt_components': prompt_components,
         })
     choice = request['tool_choice']
+    tools = [_tool_record(index, tool) for index, tool in enumerate(request['tools'])]
+    # The client receives plain dictionaries without private snapshot attributes.
+    request['tools'] = [dict(tool) for tool in request['tools']]
     return {
-        'format_version': 1,
+        'format_version': 2,
         'boundary': 'before_client_send',
         'settings': {key: request.get(key) for key in ('model', 'reasoning_effort', 'max_completion_tokens', 'stream')},
         'tool_choice': ({'type': choice.get('type'), 'name': (choice.get('function') or {}).get('name')}
             if isinstance(choice, dict) else choice),
         'messages': messages,
-        'tools': [{'index': index, 'type': tool.get('type'), 'name': (tool.get('function') or {}).get('name')}
-            for index, tool in enumerate(request['tools'])],
-        'not_retained': ['message_bodies', 'prompt_versions', 'tool_definition_versions',
+        'tools': tools,
+        'not_retained': ['dynamic_message_bodies', 'undeclared_prompt_components', 'undeclared_tool_definitions',
                          'tool_arguments', 'media_bodies', 'provider_wire_body'],
     }

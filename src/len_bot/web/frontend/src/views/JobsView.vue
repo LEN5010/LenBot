@@ -9,6 +9,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
 import ScopeSelect from '../components/ScopeSelect.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
+import CacheUsageSummary from '../components/CacheUsageSummary.vue'
 import ObservationDetails from '../components/ObservationDetails.vue'
 import OperationReceipts from '../components/OperationReceipts.vue'
 import PluginWorkDetails from '../components/PluginWorkDetails.vue'
@@ -461,6 +462,7 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
             <v-progress-linear v-if="usageLoading" indeterminate aria-label="正在读取本工作调用账" />
             <v-alert v-if="usageError" type="error" variant="tonal">{{ usageError }}<v-btn variant="text" size="small" @click="loadUsage(usagePage)">重新读取账目</v-btn></v-alert>
             <template v-if="usage">
+              <CacheUsageSummary :cache="usage.cache" />
               <p class="muted-copy">共 {{ usage.total }} 条调用记录 · 读取于 {{ fmtTime(usageReadAt) }}。缓存是输入的子项，推理是输出的子项，不重复相加；未知 usage 不按零消耗或零成本处理。</p>
               <article v-for="group in usage.totals" :key="`${group.purpose}:${group.disposition}`" class="adopted-range">
                 <strong>{{ purposeLabel(group.purpose) }} · {{ group.disposition || '处置未记录' }} · {{ group.calls }} 次</strong>

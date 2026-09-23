@@ -7,6 +7,7 @@ const traces={interest_share:'公共兴趣分享机会',heartbeat:'心跳周期'
 Object.assign(traces, { memory_index_rebuild:'认识索引显式重建', memory_index_error:'认识索引错误', memory_index_cancelled:'认识索引已停止' })
 export const traceOptions=Object.entries(traces).map(([value,title])=>({value,title}))
 export function traceLabel(value){return traces[value] || value}
+export function formatDurationMs(value){return Number.isFinite(value) && value >= 0 ? `${value.toLocaleString()} ms` : '未记录'}
 export function traceRuns(payload){
   const collect=record=>[record,...['runs','agents'].flatMap(key=>(record[key] || []).flatMap(collect))]
   return collect(payload.conversation || payload.cognition || payload)

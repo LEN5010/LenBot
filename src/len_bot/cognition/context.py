@@ -13,7 +13,7 @@ from len_bot.actions.models import receipt_delivery_status
 from len_bot.cognition.projection import estimate_tokens, project_onebot_text
 from len_bot.cognition.input_window import prefix_end, original_prefix
 from len_bot.cognition.call_store import estimate_request
-from len_bot.cognition.request_record import _RequestLocation
+from len_bot.cognition.request_record import _PromptComponent, _RequestLocation
 from len_bot.events.models import Event, EventType
 from len_bot.runtime.work_context import exchange_spans
 from len_bot.scheduler.models import ReminderControlSnapshot, task_delivery_available
@@ -1239,6 +1239,7 @@ class ConversationContext:
                 original_ranges=message.get('_original_ranges', []) if not message.get('_context_omitted') else [],
                 omitted=bool(message.get('_context_omitted')),
                 omission_reason=message.get('_omission_reason'),
+                prompt_components=message.get('_prompt_components', ()),
                 image_assets={index: part['_asset_id'] for index, part in enumerate(message['content'])
                     if isinstance(part, dict) and part.get('_asset_id')}
                     if isinstance(message.get('content'), list) else {},
@@ -1558,14 +1559,19 @@ prepared_delivery=true表示插件已经准备好交付成品，原工作入口�
 原话中的simulated标记与Bot消息delivery来自原始记录。模拟记录不能作为真实认识证据；只有status=sent且origin_mode=live的Bot消息才有真实送达依据，它仍不独立证明群友事实或现实能力。未知送达不当作已发生的互动，不从assistant角色或事件名称猜测成功。
 纠正先影响当轮表达，再判断是否需要持久修改。长期称呼、偏好和规则须有相应真实原话及对应认识操作；本人对自己的称呼/偏好要求与外界事实的转述分开，后者不是自动核实。要求忘掉称呼时先查有效认识，已保存则撤销或替代并关联操作确认，不新建一条相反认识来掩盖旧版本；仅临时纠正就停止采用，不声称清空历史。普通情绪、玩笑对象和临时话题判断留在本轮，不把每次互动都存为长期规则。原事件与工具观察仍可在以后按需回读，未发布方法不等于完全没记住。角色表达随语境轻重变化，先给对方需要的结论，必要时短说来源、条件和缺口；意思表达完即可停，不固定追问“还要什么”来延长话题。
 '''
-        system = ('' if plugin_request and not plugin_request.include_identity else identity) + contract
+        identity_prefix = '' if plugin_request and not plugin_request.include_identity else identity
+        system = identity_prefix + contract
+        # Only the fixed contract is retained; the surrounding configuration
+        # and plugin instructions are deliberately outside this component.
+        contract_component = _PromptComponent('conversation.contract', 1, len(identity_prefix), contract)
         from len_bot.runtime.attention_config import effective_sticker_preference
         if effective_sticker_preference(self.runtime.config_store.current, self.session.scene_id) == 'slightly_more':
             system += ('本群表达偏好：庆祝、赞同、轻松吐槽、接梗和轻度安慰时，已有合适授权素材则更倾向发一张表情或短文字加表情，而不是默认长文字。'
                        '指定照发、严肃求助、技术错误、准确数值和文件完成确认仍以清楚文字为准；没有合适素材时不要硬配图。\n')
         if plugin_request:
             system += '\n本次由插件入口认领，按以下插件指令处理；系统来源保持系统身份。\n' + plugin_request.instructions
-        messages = [{'role':'system','_context_section':'persona','content':system}, copy.deepcopy(execution_budget)]
+        messages = [{'role':'system','_context_section':'persona','content':system,
+                     '_prompt_components': (contract_component,)}, copy.deepcopy(execution_budget)]
         if not plugin_request:
             own_recent = await self.own_recent_expression()
             if own_recent is not None:

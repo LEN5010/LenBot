@@ -434,7 +434,33 @@ class RuntimeQueryService:
             fields.append(f"SUM(CASE WHEN json_type(usage_json,'$.{path}') IN ('integer','real') THEN json_extract(usage_json,'$.{path}') ELSE 0 END) AS {name}")
         fields.append("SUM(json_extract(estimate_json,'$.input_tokens')) AS estimated_input_tokens")
         fields.append("SUM(CASE WHEN json_extract(usage_json,'$.type')='duration' AND json_type(usage_json,'$.seconds') IN ('integer','real') THEN json_extract(usage_json,'$.seconds') ELSE 0 END) AS audio_seconds")
+        prompt = "json_extract(usage_json,'$.prompt_tokens')"
+        cached = "json_extract(usage_json,'$.prompt_tokens_details.cached_tokens')"
+        cache_type = "json_type(usage_json,'$.prompt_tokens_details.cached_tokens')"
+        known_input = f"json_type(usage_json,'$.prompt_tokens') IN ('integer','real') AND {prompt}>=0"
+        reported_cache = f"({known_input}) AND {cache_type} IN ('integer','real') AND {cached}>=0 AND {cached}<={prompt}"
+        missing_cache = f"COALESCE({cache_type},'null')='null'"
+        fields.extend([
+            f"SUM(CASE WHEN {known_input} THEN 1 ELSE 0 END) AS known_input_calls",
+            f"SUM(CASE WHEN {known_input} THEN {prompt} ELSE 0 END) AS known_input_tokens",
+            f"SUM(CASE WHEN {reported_cache} THEN 1 ELSE 0 END) AS cache_reported_calls",
+            f"SUM(CASE WHEN {missing_cache} THEN 1 ELSE 0 END) AS cache_missing_calls",
+            f"SUM(CASE WHEN {reported_cache} THEN 0 WHEN {missing_cache} THEN 0 ELSE 1 END) AS cache_unusable_calls",
+            f"SUM(CASE WHEN {reported_cache} THEN {prompt} ELSE 0 END) AS cache_reported_input_tokens",
+            f"SUM(CASE WHEN {reported_cache} THEN {cached} ELSE 0 END) AS cache_reported_tokens",
+        ])
         result["totals"] = await self._rows("SELECT " + ",".join(fields) + " " + source + " GROUP BY purpose,disposition ORDER BY purpose,disposition", params)
+        # Use the same complete filtered ledger as totals, never just this page
+        # or an average of per-call percentages. Missing cache usage is not zero.
+        cache = {key: sum(row[key] for row in result['totals']) for key in (
+            'calls', 'known_input_calls', 'known_input_tokens', 'cache_reported_calls',
+            'cache_missing_calls', 'cache_unusable_calls', 'cache_reported_input_tokens', 'cache_reported_tokens')}
+        cache['hit_rate'] = (cache['cache_reported_tokens'] / cache['cache_reported_input_tokens']
+                             if cache['cache_reported_input_tokens'] > 0 else None)
+        cache['input_coverage'] = (cache['cache_reported_input_tokens'] / cache['known_input_tokens']
+                                   if cache['known_input_tokens'] > 0 else None)
+        cache['call_coverage'] = cache['cache_reported_calls'] / cache['calls'] if cache['calls'] else None
+        result['cache'] = cache
         result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status,"job_id":job_id}
         result["cost"] = {"status":"unverified","amount":None,"reason":"尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}
         return result
@@ -1182,6 +1208,23 @@ class RuntimeQueryService:
         elif gate.get('committed') and item['kind'] == 'conversation_error':
             item['summary'] = '已提交，后续处理异常 · ' + item['summary']
         runs=self._trace_runs(item['kind'],payload)
+        if detail or identities:
+            item['timings'] = {'elapsed_ms': payload.get('elapsed_ms'), 'runs': [
+                {'index': index + 1, 'job_revision': run.get('job_revision'),
+                 'initial_source_reads_ms': run.get('initial_source_reads_ms'),
+                 'initial_context_ms': run.get('initial_context_ms'),
+                 'commit_ms': (run.get('timings_ms') or {}).get('commit'),
+                 'publication_ms': (run.get('timings_ms') or {}).get('publication'),
+                 'steps': [{'index': step.get('step'), 'call_id': step.get('call_id'),
+                            'request_preparation_ms': step.get('request_preparation_ms'),
+                            'model_ms': step.get('latency_ms'),
+                            'tool_presentation_ms': step.get('tool_presentation_ms'),
+                            'tools': [{'id': tool.get('id'), 'name': tool.get('name'),
+                                       'execution_ms': tool.get('execution_ms')}
+                                      for tool in step.get('tool_calls', [])]}
+                           for step in run.get('steps', [])]}
+                for index, run in enumerate(runs)
+                if any(key in run for key in ('steps', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
         if (detail or identities) and item['kind'] in {'conversation', 'conversation_error'}:
             # These are stored identities, not inferred from the trace time.
             # A source may belong to an attempt that failed before any commit.
