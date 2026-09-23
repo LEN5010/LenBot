@@ -15,6 +15,7 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
       <h5>{{ run.cognition_slot_wait_ms != null || run.cognition_slot_wait_state || run.work_slot_wait_ms != null || run.work_slot_wait_state || run.maintenance_slot_wait_ms != null || run.maintenance_slot_wait_state || run.agent_lock_wait_ms != null || run.agent_lock_wait_state ? '等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
       <p v-if="run.cognition_slot_wait_state" class="timing-note">{{ slotStates[run.cognition_slot_wait_state] || run.cognition_slot_wait_state }}。只说明取得执行容量之前的等待；不代表模型或后续业务成功。</p>
       <p v-if="run.work_slot_wait_state" class="timing-note">{{ slotStates[run.work_slot_wait_state] || run.work_slot_wait_state }}。只说明工作执行槽位的取得结局，不代表原工作已被处理或完成。</p>
+      <p v-if="run.work_selection_ms != null" class="timing-note">工作目录读取与选择属于本群这次调度，不是所选工作的创建后总排队时间。</p>
       <p v-if="run.maintenance_slot_wait_state" class="timing-note">{{ slotStates[run.maintenance_slot_wait_state] || run.maintenance_slot_wait_state }}。只属于本场景方法维护调度，不归给尚未选定的候选或工作。</p>
       <p v-if="run.agent_lock_wait_state" class="timing-note">{{ slotStates[run.agent_lock_wait_state] || run.agent_lock_wait_state }}。仅说明本次插件子调用等待原父执行的串行锁，不代表取得模型槽位或执行成功。</p>
       <p v-if="run.request_preparation_failure" class="timing-note">
@@ -24,6 +25,7 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
       <dl class="timing-facts">
         <div v-if="run.cognition_slot_wait_ms !== null && run.cognition_slot_wait_ms !== undefined"><dt>对话执行槽位等待</dt><dd>{{ duration(run.cognition_slot_wait_ms) }}</dd></div>
         <div v-if="run.work_slot_wait_ms !== null && run.work_slot_wait_ms !== undefined"><dt>工作执行槽位等待</dt><dd>{{ duration(run.work_slot_wait_ms) }}</dd></div>
+        <div v-if="run.work_selection_ms !== null && run.work_selection_ms !== undefined"><dt>本群工作目录读取与选择</dt><dd>{{ duration(run.work_selection_ms) }}</dd></div>
         <div v-if="run.maintenance_slot_wait_ms !== null && run.maintenance_slot_wait_ms !== undefined"><dt>方法维护槽位等待</dt><dd>{{ duration(run.maintenance_slot_wait_ms) }}</dd></div>
         <div v-if="run.agent_lock_wait_ms !== null && run.agent_lock_wait_ms !== undefined"><dt>插件子调用串行锁等待</dt><dd>{{ duration(run.agent_lock_wait_ms) }}</dd></div>
         <div><dt>初始来源读取</dt><dd>{{ duration(run.initial_source_reads_ms) }}</dd></div>
