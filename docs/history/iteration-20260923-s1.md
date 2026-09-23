@@ -26,3 +26,30 @@
 - 源码阅读覆盖原登录依赖、同场景存在性查询、各类截断、SourceOutcome 真正字段及导出字段选择；git diff --check 无格式错误。
 - 文档补丁初次使用不存在的 `### 接入与能力` 标题，返回 `Failed to find expected lines`；随后读取实际标题与段落重新定位，没有因此改变文档结构或业务源码。
 - 实际 SQL、鉴权响应、文件下载、对象切换、截断及窄屏页面未人工验收；没有读取业务数据库或执行接口请求。本次没有运行测试、夹具、断言式探针、自动截图、回放、故障注入或压力任务，没有修改真实配置或启动服务。构建产物不入 Git。
+
+## 来源处理与提交送达判读
+
+阶段提交：`84c9d38`。以下保留本批实现与核对。
+
+### 当前批次
+
+- 分支 `feat/s0-product-contract`，本批起点 `dc919e8`，工作区当时干净；上批已提交事件诊断预览与下载。
+- 持续推进授权包括阶段性本地提交，不包括推送、合并、部署、真实模型／平台调用或发送。当前阶段补 S1-03 的具体展示缺口，核对并保留 S1-05 已有实现。
+
+### 交付与源码依据
+
+| 边界 | 已核对的真实路径 | 本批处理 |
+|---|---|---|
+| 来源处理 | cognition/models.py 的 SourceOutcome；events/store.py 同事务保存 source_outcomes；scenes/reducer.py 按处理来源移除 pending_wakes | 保留五种来源状态，消息详情补原 unfinished；不因读过或整轮沉默改变本条结局 |
+| 失败与拒绝 | agent_loop.py 保存终结参数失败、新输入冲突、预算异常等；agent_runtime.py 保存异常类型与阶段；GateDecision.record 保存 accepted/reason | 查询投影原 error_type、gate_accepted、gate_reason；页面按原类型显示，缺错误原文的 conversation_error 也保留问题入口 |
+| 提交与发布 | scenes/actor.py 已有 checkpoint 返回 not_repeated；event_store 同事务提交；RuntimeGate.publish_committed 限原 pending 状态，失败保留持久提交 | 未改运行代码；补状态判读表和运营步骤，不重建事务或发布队列 |
+| 发送与未知 | actions/delivery_store.py 尝试先落库；delivery_fact 无终态时返回 unknown；ActionQueue 先读事实且不自动重放；receipt_delivery_status 核对平台消息／文件 ID | 未改既有实现，不用事件名称冒充真实送达；保持模拟／Shadow 与线上分离 |
+
+新增展示只说明本次候选或关联轨迹，不能覆盖先前已提交 checkpoint。工具错误统计从原 tool_outcomes 读取，属于整轨迹而非本条独占。解释和未完成项只展示已保存文本，不生成心理过程，不扫描错误正文猜分类。诊断下载继续不含错误原文，仅补原 Gate 接受状态。
+
+### 核对结果与未确认
+
+- uv compileall 编译本批 query_service.py，退出 0；前端 npm run build 退出 0，491 个模块、1.65 秒，日志 /private/tmp/lenbot-s1-outcomes-build.log。
+- git diff --check 无格式错误。本批没有新增定位或编译失败，也没有运行业务故障观察。
+- S1-03 本阶段展示源码完成；S1-05 现有实现已核对并保留，未为重复完成而改代码。两项记待复核，不记已验收。
+- 没有可用同版面板，实际 Gate 拒绝、失败后继续、发布中断、发送未知及重复提交均待人工验收。未运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力任务；未读业务库、改真实配置或启动服务。阶段代码与文档一起本地提交，构建产物不入 Git。

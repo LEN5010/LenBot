@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
+from len_bot.cognition.request_record import _RecordedToolDefinition
 from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, PublicInterestCandidate
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
@@ -155,21 +156,21 @@ class ReadSkillArguments(BaseModel):
     skill_id:str=Field(min_length=1)
 
 
-FINISH_WORK = {
+FINISH_WORK = _RecordedToolDefinition({
     "type": "function", "function": {
         "name": "finish_work", "description": "提交结论、资料引用和未完成事项；unresolved 非空表示部分结果，空列表表示全部完成。资料回到对话，由对话模型决定表达。",
         "parameters": WorkConclusion.model_json_schema(),
     },
-}
-REPORT_PROGRESS = {
+}, component_id='core.work.finish_work', revision=1)
+REPORT_PROGRESS = _RecordedToolDefinition({
     "type": "function", "function": {
         "name": "report_progress", "description": "记录有证据的有用发现，由对话模型决定是否回应，不直接发送。",
         "parameters": ReportProgressArguments.model_json_schema(),
     },
-}
-UPDATE_WORK_STATE = {"type": "function", "function": {"name": "update_work_state",
+}, component_id='core.work.report_progress', revision=1)
+UPDATE_WORK_STATE = _RecordedToolDefinition({"type": "function", "function": {"name": "update_work_state",
     "description": "保存简短计划、已完成步骤及观察依据、未决项与下一步；不改变目标、执行/送达状态或预算。可稀疏提出有实际证据的方法技能候选。",
-    "parameters": WorkStateUpdate.model_json_schema()}}
+    "parameters": WorkStateUpdate.model_json_schema()}}, component_id='core.work.update_work_state', revision=1)
 SKILL_TOOLS = [
     {"type": "function", "function": {"name": "find_skills", "description": "按名称与适用条件发现当前场景可用的方法文档，只返回可分页目录。", "parameters": FindSkillsArguments.model_json_schema()}},
     {"type": "function", "function": {"name": "read_skill", "description": "按需读取方法正文；同一工作固定首次读取的技能版本。长正文按read_tool_result续读，方法不授予工具、发送或其他权限。", "parameters": ReadSkillArguments.model_json_schema()}},
@@ -908,6 +909,8 @@ class InformationJobRunner:
                             reads = toolkit.get_tool_definitions()
                             skills=copy.deepcopy(SKILL_TOOLS)
                             skills[0]['function']['parameters']=find_arguments.model_json_schema()
+                            skills = [_RecordedToolDefinition(item,
+                                component_id=f"core.work.{item['function']['name']}", revision=1) for item in skills]
                             available=[*reads,*skills,REPORT_PROGRESS,UPDATE_WORK_STATE]
                             if public_research:
                                 available = [item for item in available if item['function']['name'] in PUBLIC_WORK_TOOLS]
