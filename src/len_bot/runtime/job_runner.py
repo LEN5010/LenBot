@@ -269,12 +269,29 @@ class InformationJobRunner:
         task.add_done_callback(lambda done: self._learning_tasks.pop(scene_id, None) if self._learning_tasks.get(scene_id) is done else None)
 
     async def _learn_scene(self, scene_id):
-        async with self._slots:
-            while self.running:
-                self._learning_dirty.discard(scene_id)
-                processed = await maintain_candidates(self.runtime, scene_id)
-                if not processed and scene_id not in self._learning_dirty:
-                    return
+        started = time.monotonic()
+        acquired = False
+        try:
+            async with self._slots:
+                acquired = True
+                await self.runtime.event_store.save_trace(kind='skill_maintenance_wait', scene_id=scene_id,
+                    ref_id=scene_id, payload={'state': 'acquired',
+                        'maintenance_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
+                while self.running:
+                    self._learning_dirty.discard(scene_id)
+                    processed = await maintain_candidates(self.runtime, scene_id)
+                    if not processed and scene_id not in self._learning_dirty:
+                        return
+        except BaseException as error:
+            if not acquired:
+                try:
+                    await self.runtime.event_store.save_trace(kind='skill_maintenance_wait', scene_id=scene_id,
+                        ref_id=scene_id, payload={'state': 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
+                            'error_type': type(error).__name__, 'error_phase': 'maintenance_slot_wait',
+                            'maintenance_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
+                except Exception:
+                    logger.exception('Could not record maintenance slot wait: scene=%s', scene_id)
+            raise
 
     async def _run_scene(self, scene_id):
         while self.running and self.runtime.config.jobs_enabled:
