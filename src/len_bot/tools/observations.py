@@ -2,7 +2,7 @@
 import json
 import uuid
 
-from len_bot.events.models import Event, EventType
+from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.tools.results import ToolResult
 
 
@@ -65,6 +65,15 @@ class ObservationStoreMixin:
         row = await (await self._db.execute(
             "SELECT tool_name,arguments_json FROM tool_observations WHERE id=? AND scene_id=?", (result_id, scene_id))).fetchone()
         return (row[0], json.loads(row[1])) if row else None
+
+    async def tool_observation_locator(self, result_id, scene_id):
+        """Read only the saved tool name and owner for a scene-local locator."""
+        row = await (await self._db.execute(
+            "SELECT tool_name,json_extract(result_json,'$.plugin_origin') FROM tool_observations "
+            "WHERE id=? AND scene_id=?", (result_id, scene_id))).fetchone()
+        if row is None:
+            return None
+        return row[0], PluginOrigin.model_validate(json.loads(row[1])) if row[1] is not None else None
 
     async def plugin_observations(self,scene_id,plugin_id,plugin_version,coverage,*,limit,before_rowid=None):
         """Read this scene's saved plugin resources in stable storage order."""

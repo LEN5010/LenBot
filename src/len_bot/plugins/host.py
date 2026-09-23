@@ -851,10 +851,13 @@ class PluginHost:
         for owner in (origin,origin.handler_origin):
             if owner is None:continue
             plugin=self._plugins.get(owner.plugin_id)
-            if (plugin is None or not plugin.manifest.enabled or plugin.manifest.version!=owner.plugin_version
+            configured=self.runtime.config_store.current.plugins.get(owner.plugin_id)
+            if (configured is None or not configured.enabled or plugin is None or not plugin.manifest.enabled
+                    or plugin.manifest.version!=owner.plugin_version
                     or not self.runtime.scene_policy.plugin_allowed(scene_id,owner.plugin_id,owner.scene_entry)):
                 return 'The responsible plugin is disabled, unavailable in this scene, or changed version'
-            if owner.entry_kind=='tool' and owner.entry_id not in self._tools:
+            tool=self._tools.get(owner.entry_id) if owner.entry_kind=='tool' else None
+            if owner.entry_kind=='tool' and (tool is None or tool.plugin_id!=owner.plugin_id):
                 return 'The responsible tool is no longer registered'
             if owner.entry_kind=='handler' and (owner.plugin_id,owner.entry_id) not in self._handlers:
                 return 'The responsible handler is no longer registered'
