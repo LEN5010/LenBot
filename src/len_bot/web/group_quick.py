@@ -13,6 +13,10 @@ from len_bot.runtime.sleep_policy import in_sleep_window
 from len_bot.web.capability_status import CARDS
 
 
+class GroupSettingsApplyError(RuntimeError):
+    """The root save finished, but applying the group changes did not."""
+
+
 class GroupQuickValues(BaseModel):
     model_config = ConfigDict(extra='forbid')
     settings: dict
