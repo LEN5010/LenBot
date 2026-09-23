@@ -10,6 +10,7 @@ from len_bot.cognition.agent_loop import TerminalArgumentError, ToolArgumentErro
 from len_bot.cognition.jobs import JobProposal, ReusedWorkResult
 from len_bot.cognition.models import (AnswerBasis, AnswerGap, AnswerWorkResult,
     EpisodeOutcome, FinalDisposition, MessageProposal, SourceOutcome, TaskProposal)
+from len_bot.cognition.request_record import _RecordedToolDefinition
 from len_bot.memory.models import MemoryProposal
 from len_bot.events.models import PluginOrigin, human_event_uid, human_initiator_for
 from len_bot.scheduler.models import task_delivery_available
@@ -262,7 +263,11 @@ TOOLS={
 
 
 def definition(name,model,description):
-    return {'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}}
+    # Increment this declaration revision when these fixed schemas or their
+    # descriptions change. The per-call snapshot remains the actual evidence.
+    return _RecordedToolDefinition(
+        {'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}},
+        component_id=f'core.proposals.{name}', revision=1)
 
 # The same fixed business models define the public schema and local parsing.
 RESPOND=definition('respond',Respond,

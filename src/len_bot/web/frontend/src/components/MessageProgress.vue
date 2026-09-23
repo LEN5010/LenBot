@@ -5,7 +5,8 @@ import { fmtTime } from '../api.js'
 import EntityLink from './EntityLink.vue'
 import StatusBadge from './StatusBadge.vue'
 import AnswerBasisDetails from './AnswerBasisDetails.vue'
-import { purposeLabel } from '../domain/activity.js'
+import TraceTimings from './TraceTimings.vue'
+import { purposeLabel, formatDurationMs } from '../domain/activity.js'
 const props = defineProps({ event: Object, relations: Object, loading: Boolean })
 const applicable = computed(() => supportsMessageProgress(props.event))
 const progress = computed(() => messageProgress(props.event, props.relations))
@@ -39,6 +40,27 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
         <template v-if="index===5 && progress.deliveryProblems.length"><p>本页保存的未成功或未知记录（不覆盖后续回执）：</p><article v-for="receipt in progress.deliveryProblems" :key="receipt.id" class="delivery-problem"><div class="step-heading"><StatusBadge domain="delivery" :status="receipt.delivery_status" /><StatusBadge v-if="receipt.simulated" domain="delivery" status="simulated" /><span>{{ fmtTime(receipt.timestamp) }}</span></div><p>{{ receipt.payload.error }}</p><EntityLink type="event" :id="receipt.id" :scene-id="event.scene_id" label="查看这份发送记录" /></article></template>
       </div>
     </li></ol>
+    <section class="progress-calls" aria-label="关联处理与发送耗时">
+      <h4>关联处理与发送耗时</h4>
+      <p class="progress-note">处理计时属于关联轮次，同轮可能包含多条来源。等待、并行与嵌套阶段不能相加；没有记录不代表零耗时。</p>
+      <p v-if="!progress.attempts.length" class="progress-note">本页未取得明确关联的处理轨迹，阶段耗时未确认。</p>
+      <details v-for="attempt in progress.attempts" :key="attempt.id">
+        <summary>{{ fmtTime(attempt.created_at) }} · {{ attempt.kind === 'conversation_error' ? '有异常的处理轨迹' : '处理轨迹' }}</summary>
+        <TraceTimings :timings="attempt.timings" :scene-id="event.scene_id" />
+        <EntityLink type="trace" :id="attempt.id" :scene-id="event.scene_id" label="查看原轨迹与阶段状态" />
+      </details>
+      <p class="progress-note">发送排队从本次入队计至开始发送，包含准备、校验与等待发送名额；发送处理计时包含尝试登记和适配器返回。原记录起点可能是该轮最早来源，不是本条消息的独占起点，也不证明成功送达。</p>
+      <p v-if="!progress.deliveryReceipts.length" class="progress-note">本页未取得归属这些行动的发送结果，发送计时未确认。</p>
+      <article v-for="receipt in progress.deliveryReceipts" :key="receipt.id" class="progress-call">
+        <div class="step-heading"><StatusBadge domain="delivery" :status="receipt.delivery_status" /><StatusBadge v-if="receipt.simulated" domain="delivery" status="simulated" /><time>{{ fmtTime(receipt.timestamp) }}</time></div>
+        <dl class="call-metrics">
+          <div><dt>发送前排队与准备</dt><dd>{{ formatDurationMs(receipt.payload.queue_ms) }}</dd></div>
+          <div><dt>发送处理至适配器返回</dt><dd>{{ formatDurationMs(receipt.payload.send_ms) }}</dd></div>
+          <div><dt>原记录起点至本次回执</dt><dd>{{ formatDurationMs(receipt.payload.event_to_delivery_ms) }}</dd></div>
+        </dl>
+        <EntityLink type="event" :id="receipt.id" :scene-id="event.scene_id" label="核对原回执与计时字段" />
+      </article>
+    </section>
     <section class="progress-calls" aria-label="关联轮次的模型调用">
       <h4>关联轮次的模型调用 <span>{{ progress.calls.length }}</span></h4>
       <p class="progress-note">按本条来源的处理轮次或表达所属轮次关联，按调用开始时间排列。同轮可能处理多条消息，用量不能归为本条独占；后台工作的调用请从工作详情查看。</p>

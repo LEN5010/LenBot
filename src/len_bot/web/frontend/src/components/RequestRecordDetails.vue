@@ -7,7 +7,12 @@ const props = defineProps({ record: Object, sceneId: String })
 const visibleCount = ref(25)
 const rawOpen = ref(false)
 watch(() => props.record, () => { visibleCount.value = 25; rawOpen.value = false })
-const messages = computed(() => props.record?.format_version === 1 ? props.record.messages : [])
+const supported = computed(() => [1, 2].includes(props.record?.format_version))
+const messages = computed(() => supported.value ? props.record.messages : [])
+const components = computed(() => props.record?.format_version === 2
+  ? messages.value.flatMap(message => message.prompt_components.map(component => ({ ...component, messageIndex: message.index }))) : [])
+const retainedTools = computed(() => props.record?.format_version === 2
+  ? props.record.tools.filter(tool => tool.definition.status === 'retained').length : 0)
 const images = computed(() => messages.value.flatMap(message => message.images))
 const omitted = computed(() => messages.value.filter(message => message.omitted === true).length)
 const omissionUnknown = computed(() => messages.value.filter(message => message.omitted === null).length)
@@ -17,6 +22,9 @@ const gaps = {
   message_bodies: '消息正文及动态提示', prompt_versions: '提示版本',
   tool_definition_versions: '工具完整定义及版本', tool_arguments: '工具调用参数',
   media_bodies: '媒体正文', provider_wire_body: '客户端序列化后的请求正文',
+  dynamic_message_bodies: '动态消息正文（人格、配置与插件指令等）',
+  undeclared_prompt_components: '未单独登记的提示组件及版本',
+  undeclared_tool_definitions: '未单独登记的工具完整定义及版本',
 }
 </script>
 
@@ -24,7 +32,7 @@ const gaps = {
   <section class="request-record" aria-label="调用登记时的请求材料">
     <h3>调用登记时的请求材料</h3>
     <p v-if="!record" class="request-note">未保存本次调用的独立材料记录。旧调用和未接入此记录的调用入口不回填，也不以轮次最终清单替代。</p>
-    <template v-else-if="record.format_version === 1">
+    <template v-else-if="supported">
       <p class="request-note">记录取自最终装配之后、进入客户端之前，与本次调用一同登记。登记不证明请求已经发出或材料已被模型接收；执行结果见调用状态与传输记录。</p>
       <dl class="request-facts">
         <div><dt>消息位置</dt><dd>{{ messages.length }}</dd></div>
@@ -35,7 +43,29 @@ const gaps = {
         <div><dt>工具选择</dt><dd>{{ toolChoice }}</dd></div>
       </dl>
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
-      <details><summary>当次工具顺序</summary><ol class="request-tools"><li v-for="tool in record.tools" :key="tool.index">{{ tool.name || '未记录名称' }} · {{ tool.type }}</li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
+      <template v-if="record.format_version === 2">
+        <h4>固定提示组件</h4>
+        <p class="request-note">只保留下列固定片段；同一消息中的人格配置、表达偏好及插件动态指令未留存。组件修订号是声明版本，具体内容以本次快照为准。</p>
+        <p v-if="!components.length" class="request-note">本次没有单独登记的固定提示组件。</p>
+        <details v-for="component in components" :key="`${component.messageIndex}:${component.component_id}`">
+          <summary>位置 {{ component.messageIndex + 1 }} · {{ component.component_id }} · 修订 {{ component.revision }} · {{ component.status === 'retained' ? '已留存' : '声明后内容有变化，未留存' }}</summary>
+          <template v-if="component.status === 'retained'">
+            <p class="request-note">该消息中的字符范围 [{{ component.text_range.start }}, {{ component.text_range.end }})；字符从 0 开始计数。</p>
+            <ResourceViewer title="本次固定提示片段" :content="component.snapshot_text" />
+          </template>
+        </details>
+        <p class="request-note">工具定义快照已留存 {{ retainedTools }} / {{ record.tools.length }}。其余工具只保留名称和顺序，不能用当前定义还原旧调用。</p>
+      </template>
+      <details><summary>当次工具顺序与定义</summary><ol class="request-tools"><li v-for="tool in record.tools" :key="tool.index">
+        {{ tool.name || '未记录名称' }} · {{ tool.type }}
+        <template v-if="record.format_version === 2">
+          <details v-if="tool.definition.status === 'retained'">
+            <summary>{{ tool.definition.component_id }} · 修订 {{ tool.definition.revision }} · 查看本次定义</summary>
+            <ResourceViewer title="本次工具定义" :content="tool.definition.snapshot_json" />
+          </details>
+          <p v-else class="request-note">{{ tool.definition.status === 'changed_after_declaration' ? '定义在声明后有变化，未将声明快照作为本次定义。' : '未保存该工具的定义版本。' }}</p>
+        </template>
+      </li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
       <div class="request-table-wrap"><table>
         <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
         <thead><tr><th scope="col">位置 / 角色</th><th scope="col">类别</th><th scope="col">来源与范围</th><th scope="col">省略 / 图像</th></tr></thead>

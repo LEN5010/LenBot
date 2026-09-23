@@ -10,6 +10,7 @@ import OperationReceipts from './OperationReceipts.vue'
 import SourceOutcomes from './SourceOutcomes.vue'
 import { publicationActionLabel,traceRuns } from '../domain/activity.js'
 import PluginOrigin from './PluginOrigin.vue'
+import TraceTimings from './TraceTimings.vue'
 const props=defineProps({trace:{type:Object,required:true}})
 const isConversation=computed(()=>['conversation','conversation_error'].includes(props.trace.kind))
 const isPlugin=computed(()=>props.trace.kind.startsWith('plugin_'))
@@ -53,6 +54,7 @@ function messageText(message){return (message.segments || []).map(part=>part.tex
         <div class="trace-links"><code>{{ action.action_id }}</code><EntityLink type="episode" :id="trace.payload.gate.commit_event_id?.slice(5)" :scene-id="trace.scene_id" label="同轮行动与回执" /><EntityLink v-if="action.origin_event_id" type="event" :id="action.origin_event_id" :scene-id="trace.scene_id" label="本条请求来源" /></div>
       </article>
     </section>
+    <TraceTimings v-if="trace.timings?.runs?.length || trace.timings?.elapsed_ms !== null && trace.timings?.elapsed_ms !== undefined" :timings="trace.timings" :scene-id="trace.scene_id" />
     <BudgetDetails v-for="item in budgets" :key="item.index" :budget="item.budget" :title="`执行段 ${item.index} 的预算快照`" />
     <OperationReceipts :items="trace.operation_receipts || []" :scene-id="trace.scene_id" />
     <section v-if="checkpoints.length"><h3>逐阶段提交</h3><article v-for="checkpoint in checkpoints" :key="checkpoint.index" class="candidate-message"><strong>Checkpoint {{ checkpoint.index }} · {{ {end:'本轮结束',continue:'继续执行',wait:'等待外部回应'}[checkpoint.result.next_action] }}</strong><div class="trace-links"><EntityLink type="event" :id="checkpoint.gate.commit_event_id" :scene-id="trace.scene_id" label="查看本阶段提交与回执" /><span>{{ checkpoint.gate.actions_enqueued }} 条已入队</span></div><p v-if="checkpoint.gate.publication?.error" class="text-error">{{ checkpoint.gate.publication.error }}</p><p v-for="(message,index) in checkpoint.result.message_proposals" :key="index">{{ messageText(message) }}</p><SourceOutcomes :items="checkpoint.result.source_outcomes" :scene-id="trace.scene_id" /></article></section>

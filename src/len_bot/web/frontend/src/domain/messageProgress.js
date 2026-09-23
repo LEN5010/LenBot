@@ -39,9 +39,11 @@ export function messageRecords(event, relations) {
   }
   const actions = actionId ? [selectedAction] : allActions.filter(action => sourceId && (action.origin_event_id === sourceId || actionIds.has(action.id)))
   const linkedActionIds = new Set(actions.map(action => action.id))
-  const deliveryProblems = [...new Map([...(relations?.events || []), event].filter(item => item
-    && ['MESSAGE_SEND_FAILED', 'FILE_UPLOAD_FAILED'].includes(item.event_type)
-    && linkedActionIds.has(item.payload.action_id) && item.payload.error).map(item => [item.id, item])).values()]
+  const deliveryReceipts = [...new Map([...(relations?.events || []), event].filter(item => item
+    && item.scene_id === event?.scene_id
+    && ['MESSAGE_SENT', 'MESSAGE_SEND_FAILED', 'FILE_UPLOADED', 'FILE_UPLOAD_FAILED', 'ACTION_SHADOWED'].includes(item.event_type)
+    && linkedActionIds.has(item.payload.action_id)).map(item => [item.id, item])).values()]
+  const deliveryProblems = deliveryReceipts.filter(item => ['MESSAGE_SEND_FAILED', 'FILE_UPLOAD_FAILED'].includes(item.event_type) && item.payload.error)
   const committed = new Set([...readTurns.map(turn => turn.event_id), ...actions.map(action => action.commit_event_id).filter(Boolean)])
   const attempts = (relations?.traces || []).filter(trace => ['conversation', 'conversation_error'].includes(trace.kind)
     && (actionId ? selectedAction.commit_event_id && trace.commit_event_ids?.includes(selectedAction.commit_event_id)
@@ -59,7 +61,7 @@ export function messageRecords(event, relations) {
     .sort((left, right) => left.started_at - right.started_at || left.id.localeCompare(right.id))
   const requestRecords = attempts.flatMap(trace => (trace.requests || []).map(request => ({ ...request, trace_id: trace.id })))
   return {
-    sourceId, source, readTurns, handlingTurn, outcome, jobs, actions, committed, problems, deliveryProblems, calls, requestRecords, isReceipt: Boolean(actionId),
+    sourceId, source, readTurns, handlingTurn, outcome, jobs, actions, committed, attempts, problems, deliveryProblems, deliveryReceipts, calls, requestRecords, isReceipt: Boolean(actionId),
     pending: relations?.source_handling?.event_id === sourceId && relations.source_handling.pending === true,
     limited: Object.values(relations?.truncated || {}).some(Boolean),
   }
