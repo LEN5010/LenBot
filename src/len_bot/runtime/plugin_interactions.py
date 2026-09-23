@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import copy
+import time
 from dataclasses import replace
 from contextlib import asynccontextmanager
 
@@ -258,8 +259,20 @@ async def _model_slot(runtime, execution):
     if execution.model_slot_owned:
         yield
     else:
-        async with runtime._cognition_semaphore:
-            yield
+        wait = {'state': 'waiting', 'cognition_slot_wait_ms': None}
+        execution.audit.setdefault('model_slot_waits', []).append(wait)
+        started = time.monotonic()
+        try:
+            async with runtime._cognition_semaphore:
+                wait.update(state='acquired', cognition_slot_wait_ms=round((time.monotonic()-started)*1000, 2))
+                yield
+        except BaseException as error:
+            # Errors after acquisition belong to the body, not to slot waiting.
+            if wait['state'] == 'waiting':
+                wait.update(state='cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
+                    cognition_slot_wait_ms=round((time.monotonic()-started)*1000, 2),
+                    error_type=type(error).__name__, error_phase='cognition_slot_wait')
+            raise
 
 
 async def _source_events(runtime, call, request, *, resume_event=None, resume=None):
