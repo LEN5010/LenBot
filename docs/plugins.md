@@ -230,7 +230,7 @@ context.scene_config(scene_id)、scene_configs()、members、time_settings、now
 | `len_bot.cards.HtmlCardRenderer` | 为可信、自包含的卡片 HTML 生成 PNG；初始化只建本地对象，首次 render／warmup 才启动浏览器，拥有者在 on_unload 调 close。只读截图是产品渲染实现，本次交付没有启动或运行它 |
 | `len_bot.cards.bilibili` | 可选 B 站业务卡片，使用包的既有显式导出清单。直播使用 CardNotification、fetch_profile、render_notification；不把原始平台响应结构当卡片模型 |
 
-BUNDLED_CARD_FONT 是宿主发行包内现有字体的 Path，当前实际文件仍位于内置日历资源目录；不再从调用插件目录猜相邻日历路径。这里只定位同一文件，不读取、复制或下载字体，不要求启用日历插件。文件缺失时直播仍报告原字体缺失错误，不扫描机器字体或自动换字体。群报告仍用自身明确配置的 render_font_path，不被这个常量覆盖。字体、模板、品牌图和其他素材授权尚未因此确认。
+BUNDLED_CARD_FONT 是宿主发行包内现有字体的 Path，当前实际文件仍位于内置日历资源目录；直播与动态简图均使用此公共定位，不再从调用插件目录猜相邻日历路径。这里只定位同一文件，不读取、复制或下载字体，不要求启用日历插件。文件缺失时两条简图路径各自报告明确错误，不扫描机器字体或自动换字体。群报告仍用自身明确配置的 render_font_path，不被这个常量覆盖。字体、模板、品牌图和其他素材授权尚未因此确认。
 
 富卡并非全程离线：fetch_profile 请求原固定个人卡片端点，render_notification 先沿现有图片内联路径取图，再调用持有的 HtmlCardRenderer。模板与品牌图由业务卡片包在实际构造时读取；Jinja、二维码、Pillow 为既有依赖，浏览器渲染另需已有 browser 可选依赖及可用浏览器。核心插件入口不导入 B 站业务卡片包，不隐式创建联网客户端或渲染浏览器。
 

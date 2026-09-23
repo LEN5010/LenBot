@@ -21,7 +21,7 @@
 | 插件 ID／描述符目录 | 自身版本 | 路线实施以来的代码处置 | 部署依赖与现场待确认 |
 |---|---|---|---|
 | [asoul_calendar](../src/len_bot/plugins/builtin/asoul_calendar/__init__.py) | 1.0.0 | 接口世代适配；业务文件无须额外修改，保留读取＋精确命令与既有卡片路径 | 根 time、唯一 ICS 来源、CalendarConfig 中字体／头像资源及群 commands；真实空日程、读取失败和图像送达分别确认 |
-| [asoul_dynamics](../src/len_bot/plugins/builtin/asoul_dynamics/__init__.py) | 1.0.0 | 接口世代适配；已保存资料改用 call.read_observation，其他业务路径保留 | 已配置动态站、根 time／members；富卡／简图仍有内部资源依赖，不是独立插件范例。当前简图先找相邻日历字体，再找自身资源，不宣称已完成与直播相同的字体迁移 |
+| [asoul_dynamics](../src/len_bot/plugins/builtin/asoul_dynamics/__init__.py) | 1.0.0 | 接口世代适配；已保存资料改用 call.read_observation；简图沿公共 BUNDLED_CARD_FONT 定位随包字体，不再扫描相邻插件或不存在的自身资源 | 已配置动态站、根 time／members；富卡／简图仍依赖随包卡片资源，不是独立插件范例。字体原件没有移走或取得新分发许可，现场仍待确认 |
 | [bilibili_content](../src/len_bot/plugins/builtin/bilibili_content/__init__.py) | 1.0.0 | 接口世代适配；业务文件无须额外修改；账号连接器仍为同版内部集成 | 匿名读取与账号读取／写入边界分开；账号、凭据、能力授权、工作审查和写入额度只能沿已有配置与流程。未实测账号操作，不以公共 API 世代授予写权限 |
 | [bilibili_live_sensor](../src/len_bot/plugins/builtin/bilibili_live/__init__.py)（目录 bilibili_live） | 0.1.0 | 接口适配：真实事件身份查询、handler 延期重核、卡片公共导入、宿主随包字体定位；已移除直接 Runtime／存储／队列访问 | 根 time／members、群订阅、实际房间来源、表达模型路由、可选浏览器与卡片资源；真实新场次、取消、延期替代、邀请和送达待确认 |
 | [browser_agent](../src/len_bot/plugins/builtin/browser_agent/__init__.py) | 0.1.0 | 接口世代适配；业务文件无须额外修改，四类网页工具维持显式 ordered=True；执行仍依赖内部工作合同 | 现有信息工作、域名白名单、交互开关；按既有配置选择工作空间 Gateway 或本地浏览器。页面引用／版本、取消与截图资产需同版确认，不为验收自动截图 |
@@ -62,6 +62,8 @@ workspace 和 python_workspace 是同一实现的两个既有 ID，不是允许�
 ## 六、版本对齐与升级判读
 
 `8730431` 到 `f259a42` 之间，公共 api.py、catalog.py、models.py、work.py、内置业务源码及 local_clock 无差异，未再次改变世代或插件自身版本。PluginHost 的面板投影增加原工具 ordered／deferred／timeout_seconds／page_chars；宿主其他路径仍有工作交付身份和配置回执修复，不能仅凭插件文件未变就套用旧宿主的运行结论。
+
+该段 Git 比较限定在上述两个旧提交，不覆盖其后增量。当前 asoul_dynamics 简图已改用与直播相同的公共随包字体定位；这只改变路径归属和缺字体时的明确错误，不改变接口世代、自身版本、图片来源或字体授权。完整候选确定后仍须按实际提交重做差异核对。
 
 本次阅读核对沿下表定位；它是兼容判断入口，不是新的接口定义或运行通过清单：
 
