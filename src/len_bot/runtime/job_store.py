@@ -1,5 +1,6 @@
 """Work detail belongs to tasks; budgets and observations survive revision/restart."""
 import json
+from collections.abc import Callable
 import uuid
 
 from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResultRejected, JobResult, ResultPresentation, WorkState, ReusedWorkResult
@@ -784,7 +785,8 @@ class JobStoreMixin(SkillStoreMixin):
                 await self._db.rollback()
                 raise
 
-    async def complete_job(self, job_id, scene_id, revision, result: JobResult, *, work_state=None, skill_candidate=None, bot_actor_id=''):
+    async def complete_job(self, job_id, scene_id, revision, result: JobResult, *,
+                           validate_access: Callable[[], None], work_state=None, skill_candidate=None, bot_actor_id=''):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -829,6 +831,11 @@ class JobStoreMixin(SkillStoreMixin):
                         await self.add_skill_candidate_in_transaction(job, skill_candidate, bot_actor_id=bot_actor_id)
                 except ValueError as error:
                     raise JobResultRejected(str(error)) from error
+                # Preparation and evidence reads may await while access changes.
+                # Reuse the caller's current authority before adopting a result;
+                # the surrounding rollback also removes staged derived records.
+                if result.status in {'completed', 'partial'}:
+                    validate_access()
                 await self._db.execute("UPDATE agent_jobs SET result_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (result.model_dump_json(), self.clock(), job_id, scene_id))
                 from len_bot.runtime.public_research import has_public_context
