@@ -16,6 +16,11 @@ const states = {
   failed: { text: '有失败', color: 'error' }, unknown: { text: '未确认', color: 'default' },
 }
 const phaseLabel = value => ({ pre_commit: '首次提交前', after_checkpoint: '阶段提交之后', post_commit: '事务提交之后' }[value] || value || '阶段未单独记录')
+const failureLabel = value => ({ AgentBudgetExhausted: '预算用尽', CommitConflict: '提交冲突',
+  FreshInputConflict: '提交时有新输入', SceneCommitConflict: '场景提交冲突',
+  TerminalArgumentError: '终结提案参数未通过', TruncatedModelOutput: '模型输出被截断',
+  ModelProtocolError: '模型响应协议错误', AgentProtocolError: '执行响应协议错误',
+  CancelledError: '执行被取消' }[value] || value || '异常类型未记录')
 const number = value => Number.isFinite(value) && value >= 0 ? value.toLocaleString() : '未记录'
 const duration = call => Number.isFinite(call.started_at) && Number.isFinite(call.ended_at) && call.ended_at >= call.started_at
   ? `${(call.ended_at - call.started_at).toFixed(2)} 秒` : '未记录完整起止'
@@ -32,6 +37,10 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
     <ol class="progress-steps"><li v-for="(item,index) in progress.steps" :key="item.name">
       <span class="step-number" aria-hidden="true">{{ index+1 }}</span>
       <div class="step-body"><div class="step-heading"><h4>{{ item.name }}</h4><v-chip size="x-small" variant="tonal" :color="states[item.state].color">{{ states[item.state].text }}</v-chip></div><strong class="step-summary">{{ item.summary }}</strong><p v-if="item.detail">{{ item.detail }}</p><EntityLink v-if="index===2 && progress.handlingTurn" type="event" :id="progress.handlingTurn.event_id" :scene-id="event.scene_id" label="查看对应处理提交" />
+        <template v-if="index===2 && progress.outcome">
+          <p v-for="(unfinished, unfinishedIndex) in progress.outcome.unfinished || []" :key="unfinishedIndex">未完成：{{ unfinished }}</p>
+          <p>这里只展示已提交的来源处理说明，不是模型完整思考过程；已组织回应也不等于实际送达。</p>
+        </template>
         <template v-if="index===3">
           <div v-for="job in progress.jobs" :key="job.id" class="progress-work"><EntityLink type="job" :id="job.id" :scene-id="event.scene_id" :label="job.goal" /><div class="step-heading"><StatusBadge domain="job_execution" :status="job.execution_status" /><StatusBadge domain="job_delivery" :status="job.delivery_required === false ? 'not_required' : job.status" /></div><p>工作当前版本 v{{ job.revision }}，不是答复当时采用版本。</p></div>
           <details v-if="!progress.isReceipt && progress.actions.length"><summary>查看对应表达的依据（{{ progress.actions.length }}）</summary><article v-for="(action,position) in progress.actions" :key="action.id"><p>关联表达 {{ position+1 }}</p><AnswerBasisDetails :basis="action.answer_basis" :scene-id="event.scene_id" /><EntityLink v-if="action.commit_event_id" type="event" :id="action.commit_event_id" :scene-id="event.scene_id" label="查看本条表达提交" /></article></details>
@@ -46,6 +55,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
       <p v-if="!progress.attempts.length" class="progress-note">本页未取得明确关联的处理轨迹，阶段耗时未确认。</p>
       <details v-for="attempt in progress.attempts" :key="attempt.id">
         <summary>{{ fmtTime(attempt.created_at) }} · {{ attempt.kind === 'conversation_error' ? '有异常的处理轨迹' : '处理轨迹' }}</summary>
+        <p v-if="attempt.tool_outcomes" class="progress-note">本轨迹工具记录：返回 {{ attempt.tool_outcomes.returned }}，错误／不支持 {{ attempt.tool_outcomes.errors }}，无结果 {{ attempt.tool_outcomes.no_results }}。这是整轨迹统计，不表示这些工具均用于本条来源；工具失败也不自动等于消息最终失败。</p>
         <TraceTimings :timings="attempt.timings" :scene-id="event.scene_id" />
         <EntityLink type="trace" :id="attempt.id" :scene-id="event.scene_id" label="查看原轨迹与阶段状态" />
       </details>
@@ -89,7 +99,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
         <div class="progress-links"><EntityLink type="call" :id="call.id" :scene-id="event.scene_id" label="查看调用与登记材料" /><EntityLink type="episode" :id="call.episode_id" :scene-id="event.scene_id" label="查看所属轮次" /></div>
       </article>
     </section>
-    <details v-if="progress.problems.length" class="progress-problems"><summary>本页另有 {{ progress.problems.length }} 份关联轮次问题记录</summary><p class="progress-note">这些轮次明确包含本条来源或表达提交；整轮错误不等于本条最终失败，也不撤销先前的提交或送达。按原记录逐次核对，不按时间猜因果。</p><article v-for="problem in progress.problems" :key="problem.id"><strong>{{ fmtTime(problem.created_at) }} · {{ phaseLabel(problem.error_phase) }}</strong><p v-if="problem.error">{{ problem.error }}</p><p v-if="problem.publication_error">发布步骤 {{ problem.publication_phase || '未记录' }}：{{ problem.publication_error }}</p><EntityLink type="trace" :id="problem.id" :scene-id="event.scene_id" label="查看这次轮次的问题与调用" /></article></details>
+    <details v-if="progress.problems.length" class="progress-problems"><summary>本页另有 {{ progress.problems.length }} 份关联轮次问题记录</summary><p class="progress-note">这些轮次明确包含本条来源或表达提交；整轮错误不等于本条最终失败，也不撤销先前的提交或送达。按原记录逐次核对，不按时间猜因果。</p><article v-for="problem in progress.problems" :key="problem.id"><strong>{{ fmtTime(problem.created_at) }} · {{ phaseLabel(problem.error_phase) }}</strong><p v-if="problem.gate_accepted === false">本次 Gate 拒绝：{{ problem.gate_reason || '拒绝原因未记录' }}。不覆盖先前阶段的持久提交。</p><p v-if="problem.error">{{ failureLabel(problem.error_type) }}：{{ problem.error }}</p><p v-if="problem.publication_error">发布步骤 {{ problem.publication_phase || '未记录' }}：{{ problem.publication_error }}</p><EntityLink type="trace" :id="problem.id" :scene-id="event.scene_id" label="查看这次轮次的问题与调用" /></article></details>
   </section>
 </template>
 
