@@ -207,6 +207,8 @@ TOOL_SEARCH = read_tool('tool_search',
     '按名称、中文别名或用途发现当前场景、职责与入口子集中的工具。工作用途及其前置见runtime_facts.capabilities，按需通过本入口提供的start_work委托。结果含用途与关键参数提示，选中项加入展开目录；下一次请求仍核对入口可用状态，目录满时移除较早展开项，可再次发现。')
 CORE_READ_TOOLS = [*LOCAL_TOOLS, READ_PENDING_WAKES, READ_MESSAGE_RANGE, READ_WEB_MEDIA,
                    TOOL_SEARCH, CALCULATE_TOOL, FINITE_CHECK_TOOL]
+CORE_SAVED_OBSERVATION_NAMES = frozenset(item['function']['name'] for item in CORE_READ_TOOLS) | {
+    'find_skills', 'read_skill'}
 
 
 @dataclass(frozen=True)
@@ -343,6 +345,22 @@ class RetrievalToolkit:
             while len(self.discovered_tools)>self.config.tool_discovery_limit:
                 self.discovered_tools.pop(next(iter(self.discovered_tools)))
 
+    def saved_result_issue(self, tool_name, origin):
+        """Keep stored bodies behind their current owner without rewriting audit."""
+        if origin is None:
+            return None if tool_name in CORE_SAVED_OBSERVATION_NAMES else 'The saved result has no verifiable owner'
+        if self.plugin_host is None:
+            return 'The saved result owner is unavailable'
+        return self.plugin_host.origin_issue(origin, self.default_scene_id)
+
+    async def invalidate_result_references(self):
+        if self.references is None:
+            return
+        for ref, result_id in list(self.references.results.items()):
+            saved=await self.event_store.tool_observation_locator(result_id,self.default_scene_id)
+            if saved is None or self.saved_result_issue(*saved) is not None:
+                del self.references.results[ref]
+
     def is_read_only(self,name):
         if name in {t['function']['name'] for t in LOCAL_TOOLS}|{'calculate','finite_check','read_web_media','tool_search','read_message_range','read_pending_wakes','list_public_interests','recall_chat'}: return True
         return bool(self.plugin_host and self.plugin_host.has_tool(name, self.call_context())
@@ -422,10 +440,14 @@ class RetrievalToolkit:
             if result is None:
                 return await self.error_observation(name, args, ToolResult.failure(
                     '资料不存在或不属于本群','not_found', stage='references'), tool_call_id=tool_call_id)
+            call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
+            if call is None or self.saved_result_issue(call[0],result.plugin_origin) is not None:
+                return await self.error_observation(name, args, ToolResult.failure(
+                    '原资料的所属入口当前不可用；保存记录仍可供审计，正文不进入本次请求。',
+                    'saved_source_unavailable', stage='availability'), tool_call_id=tool_call_id)
             self.observations[result.result_id]=result
             if result.result_id not in self.result_ids:self.result_ids.append(result.result_id)
             self._discover_continuation(result)
-            call=await self.event_store.tool_observation_call(result.result_id,self.default_scene_id)
             if args['coordinate_unit']=='characters' and offset>len(result.content):
                 return await self.error_observation(name, args, ToolResult.failure(
                     'offset超出已保存正文长度','invalid_arguments', stage='arguments',
@@ -725,14 +747,18 @@ class RetrievalToolkit:
             source = self.observations.get(ident)
             if source is None:
                 return ToolResult.failure(f'已登记资料 {ident} 已不可用', 'source_unavailable', stage='presentation')
+            if self.saved_result_issue(source.tool_name,source.plugin_origin) is not None:
+                return ToolResult.failure('已登记资料的所属入口当前不可用，不能采用其旧正文或摘要。',
+                    'saved_source_unavailable',stage='presentation')
             failure = await self.knowledge_presentation_failure(source)
             if failure is not None:
                 return failure
         return None
 
     async def invalidate_saved_references(self, messages: list[dict[str, Any]]) -> None:
-        """Recheck saved memory pages and history summaries, without rewriting audit."""
+        """Recheck retained owner and knowledge pages without rewriting audit."""
         failures = {}
+        unavailable_results = set()
         for message in messages:
             if message.get('_context_section') == 'history_summary':
                 versions = message['_summary_versions']
@@ -766,7 +792,23 @@ class RetrievalToolkit:
             if self.references and ident in self.references.results:
                 ident = self.references.results[ident]
             original = self.observations.get(ident)
-            if original is None or original.tool_name not in {'query_memory','search_history_summaries'}:
+            if original is None:
+                continue
+            issue=self.saved_result_issue(original.tool_name,original.plugin_origin)
+            if issue is not None:
+                unavailable_results.add(ident)
+                replacement=ToolResult.failure(
+                    '原资料的所属入口当前不可用；旧正文不进入新请求。',
+                    'saved_source_unavailable',stage='presentation').model_copy(update={
+                    'result_id':shown['result_id'],'tool_name':original.tool_name,
+                    'tool_call_id':original.tool_call_id})
+                if material:
+                    content['observation']=replacement.model_dump(mode='json',exclude_none=True)
+                    message['content']=json.dumps(content,ensure_ascii=False)
+                else:
+                    message['content']=replacement.model_dump_json(exclude_none=True)
+                continue
+            if original.tool_name not in {'query_memory','search_history_summaries'}:
                 continue
             if original.tool_name == 'query_memory' and not self.read_presentations([message]):
                 continue
@@ -785,6 +827,36 @@ class RetrievalToolkit:
                 message['content'] = json.dumps(content, ensure_ascii=False)
             else:
                 message['content'] = replacement.model_dump_json(exclude_none=True)
+
+        for message in messages:
+            content=message.get('content')
+            if message.get('role')!='user' or not isinstance(content,list):
+                continue
+            source_id=message.get('_source_result_id')
+            work_tool_media=False
+            for part in content:
+                if not isinstance(part,dict) or part.get('type')!='text':
+                    continue
+                try:
+                    manifest=json.loads(part.get('text',''))
+                except ValueError:
+                    continue
+                if isinstance(manifest,dict) and isinstance(manifest.get('image_manifest'),list):
+                    work_tool_media=True
+                    source_id=source_id or manifest.get('source_result_id')
+                    break
+            if source_id:
+                saved=await self.event_store.tool_observation_locator(source_id,self.default_scene_id)
+                unavailable=saved is None or self.saved_result_issue(*saved) is not None
+            else:
+                # Earlier work checkpoints did not associate a tool-media
+                # message with its saved result. Do not keep its pixels when
+                # another result in the retained trajectory was just revoked.
+                unavailable=work_tool_media and bool(unavailable_results)
+            if unavailable:
+                message['content']=[{'type':'text','text':'原资料的所属入口当前不可用；本次不提供旧媒体。'}]
+                if self.context is not None:
+                    self.context.omit('tool_media','owner_unavailable',result_id=source_id)
 
     async def _render_page(self, name, result, offset, limit, coordinate_unit='characters'):
         if offset < 0 or not 1 <= limit <= self.max_chars:

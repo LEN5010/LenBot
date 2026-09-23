@@ -104,6 +104,10 @@ class WorkToolPresentation:
     def request_tokens(self, messages, definitions):
         return request_tokens(messages, definitions)
 
+    @staticmethod
+    def _source_result_id(result_id):
+        return result_id
+
     def check_request(self, messages, definitions):
         self.limit_image_window(messages)
         tokens = self.request_tokens(messages, definitions)
@@ -111,7 +115,7 @@ class WorkToolPresentation:
             raise JobContextExhausted("工作原文、图片与完整工具定义超过本次输入额度")
         return tokens
 
-    async def attachments(self, asset_ids, *, read_cache=None):
+    async def attachments(self, asset_ids, *, read_cache=None, source_result_id=None):
         pending = [asset for asset in dict.fromkeys(asset_ids) if asset not in self.attached]
         if not pending:
             return []
@@ -121,6 +125,7 @@ class WorkToolPresentation:
         self.attached.update(item["asset_id"] for item in prepared["manifest"] if item["status"] == "included")
         return [{"role":"user", "content":[
             {"type":"text", "text":json.dumps({'image_manifest': prepared['manifest'],
+                **({'source_result_id':source_result_id} if source_result_id else {}),
                 'note': '工具媒体装配清单：只有 included 才附有本次图片像素；音视频登记不表示已听过音轨或看过连续画面。'}, ensure_ascii=False)},
             *prepared["blocks"]]}]
 
@@ -573,6 +578,8 @@ class InformationJobRunner:
                 source = await store.read_tool_observation(ident, [scene_id])
                 if source is None:
                     raise ValueError(f'本次采用的资料 {ident} 已不可用或不属于本群')
+                if toolkit.saved_result_issue(source.tool_name,source.plugin_origin) is not None:
+                    raise ValueError(f'saved_source_unavailable: 本次采用的资料 {ident} 的所属入口当前不可用')
                 failure = await toolkit.knowledge_presentation_failure(source)
                 if failure is not None:
                     raise ValueError(f'{failure.error_code}: {failure.content}')
