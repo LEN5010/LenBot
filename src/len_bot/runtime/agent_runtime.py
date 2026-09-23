@@ -450,7 +450,7 @@ class AgentRuntime:
         from len_bot.config_edit import merge_edit
         from len_bot.config_store import SceneSettings
         from len_bot.runtime.capabilities import CapabilityGrant
-        from len_bot.web.group_quick import apply_send_file_grants
+        from len_bot.web.group_quick import GroupSettingsApplyError, apply_send_file_grants
         settings = SceneSettings.model_validate(values['settings']).model_dump()
         was_enabled = self.semantic_retrieval_enabled(scene_id)
         async with self.config_update_lock:
@@ -463,7 +463,12 @@ class AgentRuntime:
                                                 baseline.get('send_file_grants'), operator_id)
                 data['access']['capability_grants'] = [grant.model_dump() for grant in grants]
             self.config_store.save(self.config_store.parse(data))
-        await self._apply_scene_settings(scene_id, was_enabled)
+        try:
+            await self._apply_scene_settings(scene_id, was_enabled)
+        except Exception as error:
+            detail = '本群设置已保存，但运行应用未完成：' + _error_text(error)
+            logger.error('%s [%s]', detail, scene_id)
+            raise GroupSettingsApplyError(detail) from error
 
     async def _apply_scene_settings(self, scene_id: str, was_enabled: bool) -> None:
         if was_enabled != self.semantic_retrieval_enabled(scene_id):
