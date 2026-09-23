@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from len_bot.plugins.base import BasePlugin, PluginContext
 
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResultReje
 from len_bot.events.models import Event, EventType
 from len_bot.scheduler.models import TaskItem
 from len_bot.skills.store import SkillStoreMixin
+from len_bot.plugins.work import PluginWorkPreparation
 
 
 def _typed_initiator(task_payload):
@@ -305,7 +306,11 @@ class JobStoreMixin(SkillStoreMixin):
         parameters=spec.parameters_model.model_validate(proposal.work_parameters)
         prior=(spec.parameters_model.model_validate(previous['work_parameters']),
             spec.progress_model.model_validate(previous['work_progress'])) if previous else None
-        progress=await spec.new_progress(self,scene_id,parameters,prior)
+        async def group_statistics(start_at, end_at, cutoff_rowid, bot_actor_id):
+            return await self.group_message_statistics(scene_id, start_at=start_at, end_at=end_at,
+                cutoff_rowid=cutoff_rowid, bot_actor_id=bot_actor_id)
+        preparation=PluginWorkPreparation(scene_id=scene_id,group_statistics=group_statistics)
+        progress=await spec.new_progress(preparation,parameters,prior)
         return spec.progress_model.model_validate(progress).model_dump(mode='json')
 
     async def initialize_jobs(self):
@@ -649,8 +654,14 @@ class JobStoreMixin(SkillStoreMixin):
                     (json.dumps(reads, ensure_ascii=False), job_id, scene_id))
                 spec=self.plugin_work(job)
                 if spec:
-                    progress=await spec.adopt_reads(self,job,spec.parameters_model.model_validate(job['work_parameters']),
-                        spec.progress_model.model_validate(job['work_progress']),shown)
+                    materials=[]
+                    for presentation in shown:
+                        observation=await self.read_tool_observation(presentation.result_id,[scene_id])
+                        if observation is None:
+                            raise ValueError('A presented range has no stored observation')
+                        materials.append((presentation,observation))
+                    progress=spec.adopt_reads(scene_id,spec.parameters_model.model_validate(job['work_parameters']),
+                        spec.progress_model.model_validate(job['work_progress']),materials)
                     progress=spec.progress_model.model_validate(progress).model_dump(mode='json')
                     await self._db.execute("UPDATE tasks SET payload=json_set(payload,'$.work_progress',json(?)) WHERE id=? AND scene_id=?",
                         (json.dumps(progress,ensure_ascii=False),job_id,scene_id))
