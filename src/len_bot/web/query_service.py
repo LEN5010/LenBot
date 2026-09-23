@@ -1222,6 +1222,10 @@ class RuntimeQueryService:
             item['wait_state'] = payload.get('state')
             item['summary'] = {'acquired':'已取得对话执行槽位', 'cancelled':'等待对话执行槽位时取消',
                 'failed':'等待对话执行槽位失败'}.get(payload.get('state'),'对话执行槽位等待记录')
+        if item['kind'] == 'agent_job_wait':
+            item['wait_state'] = payload.get('state')
+            item['summary'] = {'acquired':'已取得工作执行槽位', 'cancelled':'等待工作执行槽位时取消',
+                'failed':'等待工作执行槽位失败'}.get(payload.get('state'),'工作执行槽位等待记录')
         item["result_status"] = result.get("status")
         origin=payload.get('plugin_origin')
         plugin_id=origin['plugin_id'] if origin else payload.get('plugin_id')
@@ -1250,6 +1254,8 @@ class RuntimeQueryService:
                 {'index': index + 1, 'job_revision': run.get('job_revision'),
                  'cognition_slot_wait_ms': run.get('cognition_slot_wait_ms'),
                  'cognition_slot_wait_state': run.get('state') if 'cognition_slot_wait_ms' in run else None,
+                 'work_slot_wait_ms': run.get('work_slot_wait_ms'),
+                 'work_slot_wait_state': run.get('state') if 'work_slot_wait_ms' in run else None,
                  'initial_source_reads_ms': run.get('initial_source_reads_ms'),
                  'initial_context_ms': run.get('initial_context_ms'),
                  'request_preparation_failure': run.get('request_preparation_failure'),
@@ -1264,7 +1270,7 @@ class RuntimeQueryService:
                                       for tool in step.get('tool_calls', [])]}
                            for step in run.get('steps', [])]}
                 for index, run in enumerate(runs)
-                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
+                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'work_slot_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
         if (detail or identities) and item['kind'] in {'conversation', 'conversation_error', 'conversation_wait'}:
             # These are stored identities, not inferred from the trace time.
             # A source may belong to an attempt that failed before any commit.
