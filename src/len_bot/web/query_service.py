@@ -1605,6 +1605,15 @@ class RuntimeQueryService:
             membership("id",result_ids),membership("event_id",event_ids)],"created_at DESC,id DESC","tool_results")
         for row in observations:plugin_origin(json.loads(row['result_json']).get('plugin_origin'))
         event_ids.update(row["event_id"] for row in observations)
+        batches=await linked(
+            f"SELECT h.id,h.scene_id,h.status,h.start_rowid,h.start_offset,h.end_rowid,h.end_offset,"
+            f"h.generation_version,({HISTORY_SOURCES_AVAILABLE_SQL}) AS sources_available",
+            "FROM history_batches h WHERE h.scene_id=?",
+            [("EXISTS(SELECT 1 FROM json_each(h.source_event_ids_json) WHERE value=?)",[event_id])]
+                if event_id else [("0",[])],
+            "h.end_rowid DESC,h.end_offset DESC,h.id DESC","batches")
+        batch_views=[{**row,'sources_available':bool(row['sources_available']),
+            'offset_basis':'history_source_text'} for row in batches]
         event_ids.update('turn:'+ident for ident in episode_ids)
         events=await linked("SELECT *,rowid","FROM events WHERE scene_id=?",[
             membership("id",event_ids),membership("json_extract(payload,'$.job_id')",job_ids),
@@ -1711,10 +1720,10 @@ class RuntimeQueryService:
                            if event_id else None)
         truncated['operation_receipts'] = len(operations) > limit
         return {"events":event_views,"traces":[self._trace(row, identities=True) for row in trace_rows],"calls":[self._call(row) for row in calls],
-                "jobs":jobs,"actions":list(actions.values())[:limit],"tool_results":tools,"batches":[],
+                "jobs":jobs,"actions":list(actions.values())[:limit],"tool_results":tools,"batches":batch_views,
                 "turns":turns,"source_handling":source_handling,'operation_receipts':operations[:limit],
                 "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches","operation_receipts")},
-                "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
+                "truncated":{**truncated,"actions":len(actions)>limit}}
 
     async def event_diagnostics(self, event_id: str, scene_id: str):
         """Export a bounded identity/status projection, never whole objects.
@@ -1749,15 +1758,16 @@ class RuntimeQueryService:
                     'reasoning_tokens': (usage.get('completion_tokens_details') or {}).get('reasoning_tokens')},
                 'estimated_input_tokens': (call.get('estimate') or {}).get('input_tokens'),
                 'error_recorded': bool(call.get('error_type'))})
-        return {'format_version': 1, 'root': {'scene_id': scene_id, 'event_id': event_id},
+        return {'format_version': 2, 'root': {'scene_id': scene_id, 'event_id': event_id},
             'read_started_at': started, 'read_finished_at': self.current_time(),
             'scope': 'bounded_related_records',
             'limitations': ['关联可能包含同轮其他来源，不是单条消息的独占消耗或依据。',
                 '读取跨多个查询，不是数据库原子快照；读取期间状态可能变化。',
+                '历史批次只按本条事件在已保存来源列表中的身份关联，不证明摘要完成、模型采用或原话已读。',
                 '缺字段不表示零消耗、未执行或已成功；截断类别仅包含当前受限结果。',
                 '只读导出不执行模型、工具或平台动作，不证明材料已读或平台送达。',
                 '文件仍含场景和业务记录编号，分享前须人工核对接收范围。'],
-            'not_exported': ['message_bodies', 'personas', 'tool_arguments', 'tool_bodies',
+            'not_exported': ['message_bodies', 'personas', 'tool_arguments', 'tool_bodies', 'history_summary_bodies',
                 'error_text', 'request_snapshots', 'provider_continuations', 'configuration', 'media', 'credentials'],
             'limits': related['limits'], 'truncated': related['truncated'],
             'source_handling': related['source_handling'], 'events': events, 'calls': calls,
@@ -1782,7 +1792,10 @@ class RuntimeQueryService:
                 'request_source_event_id', 'ack_action_id', 'delivery_action_id', 'delivery_event_id'))
                 for job in related['jobs']],
             'tool_results': [fields(result, ('id', 'event_id', 'tool_name', 'status', 'content_length', 'created_at'))
-                for result in related['tool_results']]}
+                for result in related['tool_results']],
+            'batches': [fields(batch, ('id', 'status', 'start_rowid', 'start_offset', 'end_rowid',
+                'end_offset', 'generation_version', 'sources_available', 'offset_basis'))
+                for batch in related['batches']]}
 
     @staticmethod
     def _participation(event, metadata, delivery):

@@ -49,6 +49,15 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
         <template v-if="index===5 && progress.deliveryProblems.length"><p>本页保存的未成功或未知记录（不覆盖后续回执）：</p><article v-for="receipt in progress.deliveryProblems" :key="receipt.id" class="delivery-problem"><div class="step-heading"><StatusBadge domain="delivery" :status="receipt.delivery_status" /><StatusBadge v-if="receipt.simulated" domain="delivery" status="simulated" /><span>{{ fmtTime(receipt.timestamp) }}</span></div><p>{{ receipt.payload.error }}</p><EntityLink type="event" :id="receipt.id" :scene-id="event.scene_id" label="查看这份发送记录" /></article></template>
       </div>
     </li></ol>
+    <details v-if="progress.batches.length" class="progress-batches">
+      <summary>该条来源参与的历史维护批次（{{ progress.batches.length }}）</summary>
+      <p class="progress-note">仅按批次已保存的来源事件身份关联；状态属于整批，不证明本条原话完整覆盖、摘要进入后续请求或原话已读。批次编号可到本群“历史摘要覆盖”核对。</p>
+      <ul><li v-for="batch in progress.batches" :key="batch.id">
+        <StatusBadge domain="summary" :status="batch.status" />
+        <code>{{ batch.id }}</code> · 版本 {{ batch.generation_version }} · 范围 {{ batch.start_rowid }}:{{ batch.start_offset }} → {{ batch.end_rowid }}:{{ batch.end_offset }}
+        <p v-if="!batch.sources_available">原来源目前不完整；{{ batch.status === 'completed' ? '已保存摘要只保留审计' : '本批次不能形成可用摘要' }}，不作为新请求材料。</p>
+      </li></ul>
+    </details>
     <section class="progress-calls" aria-label="关联处理与发送耗时">
       <h4>关联处理与发送耗时</h4>
       <p class="progress-note">处理计时属于关联轮次，同轮可能包含多条来源。等待、并行与嵌套阶段不能相加；没有记录不代表零耗时。</p>
@@ -108,6 +117,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
 .message-progress{min-width:0;margin:18px 0}.message-progress h3{font-size:15px;margin:0 0 10px}.progress-note{font-size:12px;color:var(--muted);line-height:1.7;margin:8px 0}.progress-steps{list-style:none;padding:0;margin:16px 0}.progress-steps>li{display:flex;gap:12px;padding:0 0 18px;min-width:0}.step-number{display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:12px;color:var(--muted)}.step-body{min-width:0;flex:1}.step-heading{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.step-heading h4{font-size:12px;margin:0;color:var(--muted)}.step-summary{display:block;font-size:13px;line-height:1.7;margin-top:6px;overflow-wrap:anywhere}.step-body p{font-size:12px;color:var(--muted);line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.step-body :deep(.entity-link){font-size:12px}
 .message-progress summary{cursor:pointer;font-size:12px;line-height:1.7}.message-progress details{margin-top:10px}.progress-work,.progress-problems article{border-top:1px solid var(--line);padding:12px 0;margin-top:10px;font-size:12px;min-width:0}.progress-work .step-heading{margin-top:8px}.progress-links{display:grid;gap:8px;margin:10px 0;min-width:0}.progress-problems p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.progress-problems strong{font-size:12px}
 .delivery-problem{border-left:2px solid var(--line);padding-left:12px;margin:10px 0;font-size:12px}.delivery-problem .step-heading>span{color:var(--muted)}
+.progress-batches{margin:0 0 18px;border-top:1px solid var(--line);padding-top:12px;font-size:12px}.progress-batches ul{padding-left:18px}.progress-batches li{margin:10px 0;line-height:1.7;overflow-wrap:anywhere}.progress-batches code{overflow-wrap:anywhere}.progress-batches li p{margin:4px 0;color:var(--muted)}
 .progress-calls{border-top:1px solid var(--line);padding-top:16px}.progress-calls h4{font-size:13px;margin:0}.progress-calls h4 span,.progress-call time{color:var(--muted);font-weight:400}.progress-call{border-top:1px solid var(--line);padding:14px 0;font-size:12px;min-width:0}.call-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}.call-metrics dt{color:var(--muted);font-size:11px}.call-metrics dd{margin:4px 0 0;overflow-wrap:anywhere}.call-error{color:rgb(var(--v-theme-error));white-space:pre-wrap;overflow-wrap:anywhere}.progress-call .progress-note{overflow-wrap:anywhere}.progress-call :deep(.entity-link){font-size:12px}
 @media(max-width:600px){.call-metrics{grid-template-columns:minmax(0,1fr)}}
 </style>
