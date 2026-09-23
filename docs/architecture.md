@@ -28,6 +28,19 @@
 
 Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Session，再由调用者发布 Scheduler 和 Action。发布按同一场景顺序执行，完整准备行动后才入队；Trace 单独保存 committed、commit_event_id、发布阶段、已调度任务及逐条 not_enqueued／enqueued／enqueue_unknown。发布异常不改变 accepted 或把终结调用标成 rejected，不重做事务、不补发；取消发生在等待提交期间时，等待同一次事务的实际结局，已提交则记录发布中断。重复读取已提交轮次只返回原结果和行动身份。未提交候选目录排除存在真实 CONVERSATION_COMMITTED 的轮次。
 
+### 关联身份与阶段
+
+| 身份 | 原归属与连接方式 | 不能据此推断 |
+|---|---|---|
+| `event_id`、`source_event_id` | EventStore 保存每条原始／业务事件；提交的逐来源 `source_outcomes` 和每条消息的来源仍指向原事件 | 来源被引用不表示原话已完整提供或已处理；覆盖来源与答复证据是两种关系 |
+| `episode_id`、`checkpoint_index` | Runtime 为普通对话建本轮身份，真实等待恢复沿用同一身份；Actor 以检查点提交 `CONVERSATION_COMMITTED`，模型调用和 Trace 记录原身份 | episode 不是独立持久表、会话段或新预算；一个 episode 可以有多个检查点与行动 |
+| `call_id`、原生 `tool_call_id`、`result_id` | ModelGateway 在原调用账登记 `call_id`；原生工具 ID 连接 assistant 调用和回复，保存观察另有 `result_id` 与观察事件 | 工具注册或结果保存不表示执行成功、正文进入最终请求或模型已读；调用登记不证明供应商已收到 |
+| `job_id`、`revision` | 工作沿原任务／工作行保持身份，修订、取消与恢复按当前版本核对；工作调用及资料引用原 job | 旧修订的结果、文件或预算不能变成当前版本的完成资格 |
+| `action_id`、`commit_event_id` | Gate 为每条表达分配行动 ID，原提交事件保存同序列表；发布、发送尝试和回执均沿同一行动身份关联 | 提交、发布或入队不等于平台送达；重复读取不分配第二个发送身份 |
+| 回执 `event_id`、平台 `message_id`／`file_id` | ActionQueue 在一次尝试后保存消息／文件事件，payload 回指 `action_id`；只有状态和对应平台 ID 一起成立才判真实送达 | 生成文字或文件、Shadow、模拟及 unknown 都不是对方已取得；无法从时间接近或文本相似补造回执 |
+
+`answer_basis` 的原话位置和资料页范围只说明本条答复所声明并实际核对的依据，不由 `source`／`covers` 自动推导。只读关联查询沿上述已存身份扩展事件、调用、工作、行动与回执，不按时间或文本相似匹配；旧记录缺关系时显示未记录，不补造 ID。当前会话段 ID 只定位活动上下文，不替代 episode、工作或发送身份。
+
 ### 普通对话租约与取消
 
 普通对话先通过 SceneActor 的 EpisodeLeaseCommand 取得独占 mailbox，再读取本轮快照、准备模型请求和提交。尚未取得租约不表示来源已读或已处理；已授租约也不是持久业务提交。
