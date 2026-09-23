@@ -28,6 +28,17 @@ class _RecordedToolDefinition(dict):
         self.definition_json = json.dumps(definition, ensure_ascii=False, allow_nan=False)
 
 
+class _LocatedPluginToolDefinition(dict):
+    """Carry host-owned provenance, never persist a plugin's dynamic schema."""
+
+    def __init__(self, definition: dict, *, plugin_id: str, plugin_version: str, api_version: int):
+        super().__init__(definition)
+        self.plugin_id = plugin_id
+        self.plugin_version = plugin_version
+        self.api_version = api_version
+        self.declared_json = json.dumps(definition, ensure_ascii=False, allow_nan=False)
+
+
 @dataclass(frozen=True)
 class _RequestLocation:
     event_id: str | None = None
@@ -63,6 +74,14 @@ def _tool_record(index, tool):
         record['definition'] = {'component_id': tool.component_id, 'revision': tool.revision,
             'status': 'retained' if matches else 'changed_after_declaration',
             'snapshot_json': tool.definition_json if matches else None}
+    elif isinstance(tool, _LocatedPluginToolDefinition):
+        matches = json.loads(tool.declared_json) == tool
+        record['definition'] = {
+            'status': 'origin_recorded' if matches else 'changed_after_declaration',
+            'plugin': {'id': tool.plugin_id, 'version': tool.plugin_version,
+                       'api_version': tool.api_version},
+            'snapshot_json': None,
+        }
     return record
 
 
@@ -108,7 +127,7 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
     # The client receives plain dictionaries without private snapshot attributes.
     request['tools'] = [dict(tool) for tool in request['tools']]
     return {
-        'format_version': 2,
+        'format_version': 3,
         'boundary': 'before_client_send',
         'settings': {key: request.get(key) for key in ('model', 'reasoning_effort', 'max_completion_tokens', 'stream')},
         'tool_choice': ({'type': choice.get('type'), 'name': (choice.get('function') or {}).get('name')}
@@ -116,5 +135,6 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
         'messages': messages,
         'tools': tools,
         'not_retained': ['dynamic_message_bodies', 'undeclared_prompt_components', 'undeclared_tool_definitions',
+                         'dynamic_plugin_tool_definitions',
                          'tool_arguments', 'media_bodies', 'provider_wire_body'],
     }
