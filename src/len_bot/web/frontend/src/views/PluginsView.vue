@@ -320,7 +320,7 @@ loadScopes()
               <RouterLink :to="{name:'scenes'}">打开群列表</RouterLink>
             </template>
             <template v-else>
-              <dl class="facts my-4"><dt>已获权限</dt><dd>{{ labels(selected.permissions,permissionLabels)||'尚未装载或无特殊权限' }}</dd><dt>来源目录</dt><dd>{{ selected.directory }}</dd><dt>最近使用</dt><dd>{{ fmtTime(selected.last_run_at) }}</dd><dt>运行错误</dt><dd>{{ selected.error_count }} 次</dd></dl>
+              <dl class="facts my-4"><dt>声明的资源权限</dt><dd>{{ labels(selected.permissions,permissionLabels)||'未声明特殊资源权限' }}</dd><dt>来源目录</dt><dd>{{ selected.directory }}</dd><dt>最近使用</dt><dd>{{ fmtTime(selected.last_run_at) }}</dd><dt>运行错误</dt><dd>{{ selected.error_count }} 次</dd></dl>
               <v-alert v-if="selected.last_error" type="error" variant="tonal" class="my-4">{{ selected.last_error }}</v-alert>
               <h3 class="mb-4">源状态</h3>
               <p class="muted mb-4">此处只展示已经取得的状态。缓存到期刷新失败时，本次查询失败；旧快照不延长有效期。Python 计算类插件没有源，不因为没有“最近成功获取源”而算故障。</p>
@@ -335,12 +335,14 @@ loadScopes()
               </section>
               <h3 class="mt-5 mb-3">已注册入口（功能项）</h3>
               <div class="entry-list">
-                <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p><p>所需授权：{{ tool.required_capabilities?.join('、') || '沿入口现有权限' }} · 副作用：{{ tool.side_effect === 'account_write' ? '账号写入提案' : '无账号写入' }}</p><p>输入范围 {{ tool.input_scope }} · 输出范围 {{ tool.output_scope }}</p></div>
-                <div v-for="handler in selected.handlers" :key="handler.id" class="entry-row"><strong>{{ handler.description }}</strong><p class="entity-id">{{ handler.id }} · 优先级 {{ handler.priority }} · {{ handler.consume?'消费消息':'继续传播' }} · {{ handler.require_to_me?'需要提及':'无需提及' }}</p><p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}</p><ResourceViewer title="匹配规则" :content="handler.match" /></div>
+                <div v-for="tool in selected.tools" :key="tool.name" class="entry-row"><strong>{{ tool.purpose }}</strong><p class="entity-id">{{ tool.name }} · {{ tool.kind }} · {{ tool.roles.join(' / ') }}</p><p>{{ tool.description }}</p><p>所需授权：{{ tool.required_capabilities?.join('、') || '沿入口现有权限' }} · 副作用：{{ tool.side_effect === 'account_write' ? '账号写入提案' : '无账号写入' }}</p><p>输入范围 {{ tool.input_scope }} · 输出范围 {{ tool.output_scope }}</p>
+                  <p>{{ tool.ordered === true ? '同轮顺序执行' : tool.ordered === false ? '允许并行（非保证）' : '执行顺序未记录' }} · {{ tool.deferred === true ? '发现后展开' : tool.deferred === false ? '无需发现展开' : '发现策略未记录' }}</p>
+                  <p>工具超时 {{ tool.timeout_seconds == null ? '未记录' : tool.timeout_seconds + ' 秒' }} · 展示页长 {{ tool.page_chars === null ? '使用宿主页长' : tool.page_chars === undefined ? '未记录' : tool.page_chars + ' 字符' }}</p></div>
+                <div v-for="handler in selected.handlers" :key="handler.id" class="entry-row"><strong>{{ handler.description }}</strong><p class="entity-id">{{ handler.id }} · 优先级 {{ handler.priority }} · {{ handler.consume?'消费消息':'继续传播' }} · {{ handler.require_to_me?'需要提及':'无需提及' }}</p><p>来源 {{ handler.sources.join(' / ') }} · {{ handler.event_types.join(' / ') }}</p><p v-if="handler.refresh_deferred === true">已声明延期来源重核；替代事件保存不等于新行动已送达。</p><ResourceViewer title="匹配规则" :content="handler.match" /></div>
                 <div v-for="hook in selected.hooks" :key="'hook:'+hook.id" class="entry-row"><strong>{{ hook.phase }}</strong><p>{{ hook.id }} · 作用范围 {{ hook.scope }} · 优先级 {{ hook.priority }}</p></div>
                 <p v-if="!selected.tools.length&&!selected.handlers.length&&!selected.hooks.length" class="muted">当前未装载入口。启用时按插件声明注册。</p>
               </div>
-              <p class="muted mt-3">模型是否会调用某个工具由 Agent 决定；入口存在不等于一定被使用。</p>
+              <p class="muted mt-3">这里展示注册声明，不是当前调用授权；执行仍复核场景、角色和能力。同一响应含有序调用或提案时整批串行，允许并行不保证同时执行。展示页长不等于原始资料总长。</p>
               <ResourceViewer v-if="selected.work" title="已声明的长期工作" :content="selected.work" class="my-4" /><ResourceViewer v-if="selected.active_tasks.length" title="当前所属任务" :content="selected.active_tasks" class="my-4" />
               <v-expansion-panels class="mt-4"><v-expansion-panel title="声明与配置结构"><v-expansion-panel-text><ResourceViewer title="声明与配置结构" :content="{id:selected.id,emitted_events:selected.emitted_events,registered_tools:selected.registered_tools,config_schema:selected.config_schema,scene_config_schema:selected.scene_config_schema}" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
             </template>
