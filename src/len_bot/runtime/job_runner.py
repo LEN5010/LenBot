@@ -300,7 +300,9 @@ class InformationJobRunner:
 
     async def _run_scene(self, scene_id):
         while self.running and self.runtime.config.jobs_enabled:
+            selection_started = time.monotonic()
             pending = [job for job in await self.runtime.event_store.list_jobs(scene_id) if job["status"] == "processing"]
+            selection_ms = round((time.monotonic() - selection_started) * 1000, 2)
             if not pending:
                 return
             job_id = pending[0]['id']
@@ -311,7 +313,8 @@ class InformationJobRunner:
                     acquired = True
                     await self.runtime.event_store.save_trace(kind='agent_job_wait', scene_id=scene_id,
                         ref_id=job_id, payload={'job_id': job_id, 'job_revision': pending[0]['revision'],
-                            'state': 'acquired', 'work_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
+                            'state': 'acquired', 'work_selection_ms': selection_ms,
+                            'work_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
                     self._active_jobs[scene_id]=job_id
                     try:await self._run_job(job_id, scene_id)
                     finally:self._active_jobs.pop(scene_id,None)
@@ -322,6 +325,7 @@ class InformationJobRunner:
                             ref_id=job_id, payload={'job_id': job_id, 'job_revision': pending[0]['revision'],
                                 'state': 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
                                 'error_type': type(error).__name__, 'error_phase': 'work_slot_wait',
+                                'work_selection_ms': selection_ms,
                                 'work_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
                     except Exception:
                         logger.exception('Could not record work slot wait: job=%s', job_id)

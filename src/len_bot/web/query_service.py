@@ -1260,6 +1260,7 @@ class RuntimeQueryService:
                  'cognition_slot_wait_state': run.get('state') if 'cognition_slot_wait_ms' in run else None,
                  'work_slot_wait_ms': run.get('work_slot_wait_ms'),
                  'work_slot_wait_state': run.get('state') if 'work_slot_wait_ms' in run else None,
+                 'work_selection_ms': run.get('work_selection_ms'),
                  'maintenance_slot_wait_ms': run.get('maintenance_slot_wait_ms'),
                  'maintenance_slot_wait_state': run.get('state') if 'maintenance_slot_wait_ms' in run else None,
                  'agent_lock_wait_ms': run.get('agent_lock_wait_ms'),
