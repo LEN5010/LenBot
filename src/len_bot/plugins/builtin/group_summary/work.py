@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from len_bot.plugins.work import PluginWorkSpec, PluginWorkRevision
+from len_bot.plugins.api import PluginWorkSpec, PluginWorkRevision
 
 
 class GroupSummaryRange(BaseModel):

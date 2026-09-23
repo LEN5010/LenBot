@@ -5,9 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from len_bot.cognition.budget import count_remaining
-from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged
-from len_bot.plugins.api import JobResult, MessageSegment, PreparedWorkDelivery, ToolResult, ToolSource
+from len_bot.plugins.api import JobBudgetExhausted, JobChanged, JobResult, MessageSegment, PreparedWorkDelivery, ToolResult, ToolSource
 
 from .report import (BatchAnalysis, BatchChoices, MergedAnalysis, ReportArtifact, ReportChoices,
     ReportCoverage, SingleGroupReport, adopt_batch, adopt_merge, statistics)
@@ -114,8 +112,7 @@ async def _batches(context,service,messages):
                 progress=await context.save_progress(progress)
                 batches.append(batch)
                 continue
-        budget=await context.budget()
-        remaining=count_remaining(budget['model_calls_limit'],budget['model_calls_used'])
+        remaining=await context.remaining_model_calls()
         # Each further batch needs one call to analyse it and, unless it closes
         # the range, the merge calls after it.  An unlimited count is not a
         # bound here and the work's deadline or token allowance stops the loop.
@@ -195,8 +192,7 @@ async def _merge(context,service,batches):
                 best,selected=end,(material,topics,quotes);low=end+1
             else:high=end-1
         if selected is None:raise ValueError('Saved topic candidates exceed the configured merge input capacity')
-        budget=await context.budget()
-        if count_remaining(budget['model_calls_limit'],budget['model_calls_used'])==0:
+        if await context.remaining_model_calls()==0:
             raise JobBudgetExhausted('批次分析已保存，剩余合并尚未完成；不能重置原工作预算')
         material,topics,quotes=selected
         source=await context.save_result('group_summary_merge_input',material)
