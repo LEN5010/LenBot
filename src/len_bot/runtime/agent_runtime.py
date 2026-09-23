@@ -1048,6 +1048,13 @@ class AgentRuntime:
         required = [original_remainder(event, wakes[event.id].observation)
                     if not AttentionPolicy._is_obligation(wakes[event.id]) else event for event in required]
         recent = await self.event_store.get_recent_events(session.scene_id,limit=self.config.conversation_history_limit,through_rowid=cutoff,conversation_only=True)
+        if session.conversation_segment is not None:
+            remembered = await self.event_store.events_by_ids(session.scene_id,
+                session.conversation_segment.event_ids,cutoff)
+            if {event.id for event in remembered} != set(session.conversation_segment.event_ids):
+                raise SceneCommitConflict('Saved conversation window has unavailable original events')
+            recent = sorted({event.id:event for event in [*remembered,*recent]}.values(),
+                            key=lambda event:event.metadata['_rowid'])[-self.config.conversation_history_limit:]
         recent_ids = frozenset(event.id for event in recent)
         events = sorted({event.id:event for event in [*recent,*required] if conversation_visible(event)
                          and (not event.metadata.get('conversation_resume') or event.id in preferred)}.values(),
@@ -1295,6 +1302,7 @@ class AgentRuntime:
                     session, events, observed, episode_id, source_ids, observe=observe, commit=commit, trace=trace,
                     input_prepared=input_prepared, requester_qq_uid=mailbox.requester_qq_uid, recent_event_ids=recent_ids,
                     publish=publish,resume=resume,mailbox=mailbox,
+                    save_segment=actor.save_conversation_segment if mailbox.origin_mode == 'live' else None,
                 )
             if decision is None:
                 raise RuntimeError("Conversation finished without a terminal commit")

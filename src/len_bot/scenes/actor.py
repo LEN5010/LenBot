@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import copy
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +14,8 @@ from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.history import HistoryConflictError
 from len_bot.memory.models import MemoryItem
 from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
-from len_bot.scenes.models import SceneSession
+from len_bot.scenes.models import SceneSession, ConversationSegment
+from len_bot.cognition.providers import ModelProfile
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
 
@@ -47,6 +50,17 @@ class CommitCommand:
 
 
 @dataclass
+class SegmentCommand:
+    episode_id: str
+    expected_id: str | None
+    through_rowid: int
+    event_ids: list[str]
+    profile: ModelProfile
+    basis: dict
+    future: asyncio.Future
+
+
+@dataclass
 class HistoryCommand:
     kwargs: dict
     future: asyncio.Future
@@ -64,6 +78,7 @@ class SceneActor:
         self._queue = asyncio.Queue()
         self._worker_task = None
         self._active_mailbox = None
+        self._segment_basis = None
         self._episode_idle = asyncio.Event()
         self._episode_idle.set()
 
@@ -72,6 +87,7 @@ class SceneActor:
             return
         saved = await self.event_store.load_scene_session(self.scene_id)
         self.session = SceneSession.model_validate(saved) if saved else SceneSession(scene_id=self.scene_id)
+        self._segment_basis = None
         self._worker_task = asyncio.create_task(self._process_loop())
 
     async def stop(self):
@@ -137,6 +153,47 @@ class SceneActor:
         self._queue.put_nowait(HistoryCommand(kwargs, future))
         return await asyncio.shield(future)
 
+    async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis):
+        future = asyncio.get_running_loop().create_future()
+        self._queue.put_nowait(SegmentCommand(episode_id, expected_id, through_rowid,
+            list(event_ids), profile, copy.deepcopy(basis), future))
+        return await asyncio.shield(future)
+
+    async def _save_conversation_segment(self, command):
+        mailbox = self._active_mailbox
+        if (mailbox is None or mailbox.episode_id != command.episode_id or mailbox.is_cancelled()
+                or mailbox.plugin_origin is not None or mailbox.origin_mode != 'live'):
+            raise SceneCommitConflict('Source-window checkpoint needs the active live conversation lease')
+        previous = self.session.conversation_segment
+        if (previous.id if previous else None) != command.expected_id:
+            raise SceneCommitConflict('The conversation segment changed before its checkpoint')
+        if not 0 <= command.through_rowid <= self.session.last_observed_event_rowid:
+            raise SceneCommitConflict('Conversation segment is outside the scene read cutoff')
+        if previous and command.through_rowid < previous.through_rowid:
+            raise SceneCommitConflict('Conversation segment cannot move its read cutoff backwards')
+        if len(set(command.event_ids)) != len(command.event_ids):
+            raise ValueError('Conversation window contains repeated event identities')
+        events = await self.event_store.events_by_ids(self.scene_id, command.event_ids, command.through_rowid)
+        if [event.id for event in events] != command.event_ids:
+            raise SceneCommitConflict('Conversation window has missing or reordered source events')
+        reason = ('initial' if previous is None else 'process_restart' if self._segment_basis is None
+            else 'binding_changed' if self._segment_basis != command.basis
+                or previous.model_profile != command.profile
+                or previous.knowledge_revision != self.session.knowledge_revision
+            else 'window_trimmed' if not set(previous.event_ids).issubset(command.event_ids) else None)
+        segment = ConversationSegment(
+            id=f'segment:{uuid.uuid4().hex}' if reason else previous.id,
+            previous_id=previous.id if reason and previous else previous.previous_id if previous else None,
+            opened_at=self.event_store.clock() if reason else previous.opened_at,
+            reason=reason or previous.reason, model_profile=command.profile,
+            knowledge_revision=self.session.knowledge_revision, through_rowid=command.through_rowid,
+            event_ids=command.event_ids)
+        await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
+            segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
+        self.session.conversation_segment = segment
+        self._segment_basis = command.basis
+        return segment.model_copy(deep=True)
+
     async def _process_loop(self):
         while True:
             item = await self._queue.get()
@@ -152,6 +209,9 @@ class SceneActor:
                     if not item.future.done(): item.future.set_result(result)
                 elif isinstance(item, HistoryCommand):
                     result = await self._commit_history(item.kwargs)
+                    if not item.future.done(): item.future.set_result(result)
+                elif isinstance(item, SegmentCommand):
+                    result = await self._save_conversation_segment(item)
                     if not item.future.done(): item.future.set_result(result)
                 else:
                     await self._commit_event(item)

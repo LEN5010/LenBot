@@ -16,6 +16,7 @@ from len_bot.tools.results import ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.cognition.models import ConversationResume
 from len_bot.cognition.providers import ModelProfile
+from len_bot.cognition.request_record import _LocatedPluginToolDefinition, _RecordedToolDefinition
 from len_bot.cognition.budget import AgentBudget, count_remaining, terminal_seconds_reserve, window_deadline
 from len_bot.plugins.agent import PluginExecution
 
@@ -25,7 +26,7 @@ class SocialCognitionCore:
         self.runtime=runtime
 
     async def run(self,session,events,through_rowid,episode_id,source_event_ids,observe=None,commit=None,trace=None,input_prepared=None, *, requester_qq_uid, recent_event_ids: frozenset[str], publish=None, resume:ConversationResume|None=None,
-                  mailbox=None, plugin_call=None, plugin_request=None):
+                  mailbox=None, plugin_call=None, plugin_request=None, save_segment=None):
         runtime=self.runtime
         config=runtime.config.model_copy(deep=True)
         if plugin_request:
@@ -58,6 +59,7 @@ class SocialCognitionCore:
                                          'elapsed_seconds_limit':config.conversation_window_seconds,
                                          'resumed_elapsed_seconds':resume.elapsed_seconds if resume else 0}})
         context=ConversationContext(runtime,session,through_rowid)
+        segment_id=session.conversation_segment.id if session.conversation_segment else None
         context.supports_segment_vision = binding.supports_vision
         context.config=config
         context.input_budget=config.conversation_context_tokens-config.conversation_output_tokens
@@ -247,7 +249,7 @@ class SocialCognitionCore:
             return None
 
         async def finalize_request(trajectory,definitions):
-            nonlocal pending_presentations
+            nonlocal pending_presentations,segment_id
             context.trajectory=trajectory
             # Expiry does not increment the scene's knowledge revision. Refresh
             # the existing local preference projection even without new input.
@@ -270,6 +272,24 @@ class SocialCognitionCore:
             audit['output_reserved_tokens']=config.conversation_output_tokens
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
+            if save_segment is not None:
+                window_ids=[message['_source_event_id'] for message in trajectory
+                    if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
+                segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
+                    through_rowid=context.refs.cutoff,event_ids=window_ids,
+                    profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
+                        reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
+                    basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],
+                           'tools':[dict(definition) for definition in definitions],
+                           'tool_sources':[(definition.plugin_id,definition.plugin_version,definition.api_version)
+                               if isinstance(definition,_LocatedPluginToolDefinition)
+                               else (definition.component_id,definition.revision)
+                               if isinstance(definition,_RecordedToolDefinition) else None for definition in definitions]})
+                segment_id=segment.id
+                context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
+                    'reason':segment.reason,'through_rowid':segment.through_rowid,
+                    'window_events':len(segment.event_ids),'continuity':'source_window_only'}
+                audit['context_plan']=copy.deepcopy(context.context_plan)
             return context.model_messages(trajectory, toolkit=toolkit)
 
         async def checkpoint(stage,payload):
