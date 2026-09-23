@@ -497,7 +497,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
         context.context_plan['request']={'input_tokens':tokens,'input_budget_tokens':context.input_budget,
             'current_pixel_assets':sorted(context.loaded_media),'messages':context.request_manifest(trajectory)}
         pending_presentations[:]=toolkit.read_presentations(trajectory)
-        return context.model_messages(trajectory)
+        return context.model_messages(trajectory, toolkit=toolkit)
 
     state=await execution.budget.state()
     # One model call is held back when this Agent runs inside a tool call: the

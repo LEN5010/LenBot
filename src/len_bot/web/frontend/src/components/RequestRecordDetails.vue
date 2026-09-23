@@ -69,6 +69,7 @@ const gaps = {
           <p v-else class="request-note">{{ tool.definition.status === 'changed_after_declaration' ? '定义在声明后有变化，未将声明来源或快照作为本次完整定义依据。' : '未保存该工具的定义版本。' }}</p>
         </template>
       </li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
+      <p class="request-note">资料页范围只说明该次最终请求保留了对应原文或宿主投影，不证明模型已经收到或已读。未匹配到资料页不等于工具未执行；原始结果和执行状态仍以所属记录为准。</p>
       <div class="request-table-wrap"><table>
         <caption>消息顺序与来源定位（从第 1 个位置开始显示）</caption>
         <thead><tr><th scope="col">位置 / 角色</th><th scope="col">类别</th><th scope="col">来源与范围</th><th scope="col">省略 / 图像</th></tr></thead>
@@ -77,7 +78,12 @@ const gaps = {
           <td>{{ message.section || '未记录类别' }}</td>
           <td><EntityLink v-if="message.event_id" type="event" :id="message.event_id" :scene-id="sceneId" label="查看原始事件" /><span v-else>未记录直接事件来源</span>
             <p v-if="message.text_range">原文字符 [{{ message.text_range.start }}, {{ message.text_range.end }}) / {{ message.text_range.total }}</p>
-            <p v-if="message.tool_call_id">工具调用 {{ message.tool_call_id }}；资料范围见原轨迹</p>
+            <p v-if="message.tool_call_id">工具调用 {{ message.tool_call_id }}</p>
+            <p v-if="message.tool_call_id && message.tool_presentations == null">本次请求未单独记录资料页范围；整轮已读范围见原轨迹。</p>
+            <ul v-if="message.tool_presentations?.length"><li v-for="(page,pageIndex) in message.tool_presentations" :key="pageIndex">
+              <EntityLink type="result" :id="page.result_id" :scene-id="sceneId" :span="page" label="查看本次保留的资料范围" />
+              <p>[{{ page.start }}, {{ page.end }}) / {{ page.total }} · {{ page.coordinate_unit === 'records' ? '记录坐标' : '字符坐标' }}<span v-if="page.evidence_ref"> · {{ page.evidence_ref }}</span></p>
+            </li></ul>
           </td>
           <td>{{ message.omitted === null ? '省略状态未记录' : message.omitted ? '标记省略' : '未标记省略' }}<p v-if="message.omitted">{{ message.omission_reason || '省略原因未单独记录' }}</p><p>图像块 {{ message.images.length }}</p></td>
         </tr></tbody>

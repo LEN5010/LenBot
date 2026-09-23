@@ -1230,7 +1230,7 @@ class ConversationContext:
         self.loaded_media=set(self.attached)
 
     @staticmethod
-    def model_messages(messages):
+    def model_messages(messages, *, toolkit=None):
         prepared=copy.deepcopy(messages)
         for message in prepared:
             location = _RequestLocation(
@@ -1240,6 +1240,7 @@ class ConversationContext:
                 omitted=bool(message.get('_context_omitted')),
                 omission_reason=message.get('_omission_reason'),
                 prompt_components=message.get('_prompt_components', ()),
+                tool_presentations=toolkit.read_presentations([message]) if toolkit is not None else None,
                 image_assets={index: part['_asset_id'] for index, part in enumerate(message['content'])
                     if isinstance(part, dict) and part.get('_asset_id')}
                     if isinstance(message.get('content'), list) else {},

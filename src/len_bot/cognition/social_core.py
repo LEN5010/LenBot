@@ -270,7 +270,7 @@ class SocialCognitionCore:
             audit['output_reserved_tokens']=config.conversation_output_tokens
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
-            return context.model_messages(trajectory)
+            return context.model_messages(trajectory, toolkit=toolkit)
 
         async def checkpoint(stage,payload):
             nonlocal pending_presentations

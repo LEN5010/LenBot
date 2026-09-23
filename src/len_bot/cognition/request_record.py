@@ -45,10 +45,11 @@ class _RequestLocation:
     ref: str | None = None
     text_range: dict[str, int] | None = None
     original_ranges: list[dict[str, str | int]] = field(default_factory=list)
-    omitted: bool = False
+    omitted: bool | None = None
     omission_reason: str | None = None
     image_assets: dict[int, str] = field(default_factory=dict)
     prompt_components: tuple[_PromptComponent, ...] = ()
+    tool_presentations: list[dict[str, str | int]] | None = None
 
 
 def _prompt_record(content, components):
@@ -121,6 +122,7 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(content, list) else None,
             'images': images,
             'prompt_components': prompt_components,
+            'tool_presentations': location.tool_presentations if location else None,
         })
     choice = request['tool_choice']
     tools = [_tool_record(index, tool) for index, tool in enumerate(request['tools'])]

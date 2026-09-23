@@ -58,6 +58,8 @@ respond 的 `messages[].answer_basis` 是可选增量字段，详见[单条答�
 
 资料页的 evidence_ref 由宿主投影生成。respond.answer_basis 和普通工作 finish_work 用 evidence_refs 选择页，内部仍解析为原 ResultSpan；原始 ToolResult 保存时不接受插件自带的页名作为读取资格。原生正文或合法宿主投影必须实际进入最终请求，并在模型响应后确认。独立插件读取通过既有工作 record_presentations 回调保存页名和范围，工作恢复从 observation_reads 重建；result_only 的自定义输出类型、专用工作的 JobResult 以及 work_state 的范围合同保持不变。
 
+最终请求材料清单可逐位置记录上述原判定认可的资料范围，包含独立插件表达中的工具回复与合法材料；不另外发起读取、不采用资料正文或改写 after_tool 的回执。保存了范围不表示模型已经响应或已取得引用资格，失败／定位结果没有原文范围也不等于工具没运行。
+
 `kind` 区分读取与提案，`ordered` 独立声明兄弟调用是否必须串行；工作区执行和文件操作共用状态，不能因 kind=read 就并发。原始观察按 result_id 保存、分页展示，不按参数相同盲目复用旧结果。
 
 浏览器的 open/snapshot/interact/capture 也声明 `ordered=True`；内部页面锁保留，但不代替模型响应内的调用顺序。正文结果以实际快照地址为来源，区分采集截断和仅保存当次正文页。宿主续取 DOM 使用 `source_next_call`；Gateway 已保存的受限正文使用原 R 的本地续读，不把两种偏移混用。截图附件只说明已登记，是否装入像素仍看最终请求清单。
