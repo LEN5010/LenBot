@@ -56,6 +56,9 @@ class PluginCallContext:
     async def invoke_tool(self, name: str, arguments: BaseModel | dict) -> ToolResult:
         return await self.plugin.invoke_tool(self, name, arguments)
 
+    async def read_observation(self, result_id: str) -> ToolResult | None:
+        return await self.plugin.read_observation(self, result_id)
+
     async def submit_message(self, segments, *, mention_all=False):
         return await self.plugin.submit_message(self, segments, mention_all=mention_all)
 
