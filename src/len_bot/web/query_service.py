@@ -1205,7 +1205,7 @@ class RuntimeQueryService:
     @staticmethod
     def _trace_runs(kind, payload):
         def collect(record):
-            return [record, *(child for key in ('runs','agents','model_slot_waits') for run in record.get(key,[]) for child in collect(run))]
+            return [record, *(child for key in ('runs','agents','model_slot_waits','agent_lock_waits') for run in record.get(key,[]) for child in collect(run))]
         return collect(payload.get('conversation') or payload.get('cognition') or payload)
 
     def _trace(self, item, detail=False, *, identities=False):
@@ -1262,6 +1262,8 @@ class RuntimeQueryService:
                  'work_slot_wait_state': run.get('state') if 'work_slot_wait_ms' in run else None,
                  'maintenance_slot_wait_ms': run.get('maintenance_slot_wait_ms'),
                  'maintenance_slot_wait_state': run.get('state') if 'maintenance_slot_wait_ms' in run else None,
+                 'agent_lock_wait_ms': run.get('agent_lock_wait_ms'),
+                 'agent_lock_wait_state': run.get('state') if 'agent_lock_wait_ms' in run else None,
                  'initial_source_reads_ms': run.get('initial_source_reads_ms'),
                  'initial_context_ms': run.get('initial_context_ms'),
                  'request_preparation_failure': run.get('request_preparation_failure'),
@@ -1276,7 +1278,7 @@ class RuntimeQueryService:
                                       for tool in step.get('tool_calls', [])]}
                            for step in run.get('steps', [])]}
                 for index, run in enumerate(runs)
-                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'work_slot_wait_ms', 'maintenance_slot_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
+                if any(key in run for key in ('steps', 'cognition_slot_wait_ms', 'work_slot_wait_ms', 'maintenance_slot_wait_ms', 'agent_lock_wait_ms', 'initial_source_reads_ms', 'initial_context_ms', 'timings_ms'))]}
         if (detail or identities) and item['kind'] in {'conversation', 'conversation_error', 'conversation_wait'}:
             # These are stored identities, not inferred from the trace time.
             # A source may belong to an attempt that failed before any commit.
