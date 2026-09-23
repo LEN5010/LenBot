@@ -1016,23 +1016,6 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
     # ADR-0038 §5: curated bot voice exemplars
     # ------------------------------------------------------------------
 
-    async def preview_diana_persona(self, *, palette_limit: int) -> dict:
-        """Fill an operator draft; reading a template never changes saved values."""
-        from len_bot.cognition.diana import PERSONA, MEDIA_REF_TAGS, build_examples
-        palette = await self.list_palette("global-safe", limit=palette_limit)
-        media_refs = {
-            name: asset["id"]
-            for name, tag in MEDIA_REF_TAGS.items()
-            if (asset := next((item for item in palette if tag in item["tags"]), None)) is not None
-        }
-        examples = build_examples(media_refs)
-        return {
-            "fields": dict(PERSONA),
-            "examples": examples,
-            "missing_media": sorted({MEDIA_REF_TAGS[name] for item in examples
-                                     for name in item["missing_media_refs"]}),
-        }
-
     async def add_voice_example(
         self,
         scene_id: str,
