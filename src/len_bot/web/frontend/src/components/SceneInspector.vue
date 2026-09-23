@@ -40,7 +40,7 @@ const records = computed(() => messageRecords(props.event, props.relations))
 const readTurns = computed(() => supportsMessageProgress(props.event) ? records.value.readTurns : props.relations?.turns || [])
 const jobs = computed(() => [...(props.relations?.jobs || [])].sort((left,right)=>Number(right.request_source_event_id===records.value.sourceId)-Number(left.request_source_event_id===records.value.sourceId)))
 const currentAnswerBasis = computed(() => props.event?.payload.answer_basis ?? props.relations?.actions?.find(action => action.id === props.event?.payload.action_id)?.answer_basis)
-const truncated = computed(() => Object.entries(props.relations?.truncated || {}).filter(([, value]) => value).map(([key]) => ({ events: '事件', traces: '轨迹', calls: '模型请求', jobs: '工作', actions: '行动', tool_results: '工具资料', operation_receipts: '操作回执' }[key] || key)))
+const truncated = computed(() => Object.entries(props.relations?.truncated || {}).filter(([, value]) => value).map(([key]) => ({ events: '事件', traces: '轨迹', calls: '模型请求', jobs: '工作', actions: '行动', tool_results: '工具资料', batches: '历史批次', operation_receipts: '操作回执' }[key] || key)))
 const disposition = value => ({ SILENCE: 'silence', ACTION: 'expression' }[value] || value)
 function handledStatus(turn) { const ids=turn.source_outcomes?.map(item=>item.source_event_id) ?? turn.handled_source_event_ids;return records.value.sourceId && Array.isArray(ids) ? (ids.includes(records.value.sourceId) ? 'handled' : 'unhandled') : null }
 </script>
