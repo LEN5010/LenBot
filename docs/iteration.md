@@ -4,25 +4,24 @@
 
 ## 当前批次
 
-- 分支 feat/s0-product-contract，基线 f0b9fd4，开始时工作区干净；上一阶段压缩固定合同已本地提交，属于实际进展。
-- S1-02：历史维护、方法维护与动作审查的固定提示及历史工具定义缺档，复用原请求记录，不新增存储、模型或执行路径。
+- 分支 feat/s0-product-contract，基线 a4e3e89，开始时工作区干净；上一阶段维护固定合同已提交，属于实际进展。
+- S1-02：普通工作最终请求中已知图片资产未进入逐位置记录。原窗口只返回 current_pixel_assets 集合，不能对应每条消息的具体位置；在原工作上下文模块补局部映射函数，不新增表、状态或媒体读取路径。
 
 ## 本批交付与核对
 
-LLMReflector 的 finish_history_maintenance 与 query_memory 使用已有 _RecordedToolDefinition，Schema 仍来自 ReflectionOutput／MemoryLookup；未提供认识存储时仍不注册查询工具。原 finalize_request 容量核对之后返回消息列表与固定首消息的副本，附 history_maintenance.contract 定位；原轨迹不被写入侧带信息，不改变下一轮估算。无新回调层、工具或请求。
+新增 request_image_assets 复用 _image_contexts 对原工作清单的读取，将 image_manifest 的图片序号转换为 content 的实际块位置。只消费当前位置的 image_url 和已同步的 block_index，不用 URL、文件名、全轮资产集合或未保留目录项猜映射。它不改窗口内容、清单、资产、已读状态、模型资格或容量限制。
 
-maintain_candidates 在原输入与预算核对后为固定 system 文本附 skill_maintenance.contract；原 save_skill／skip_skill 已有定义快照，不重复改写。ActionReviewer.approve 在原上下文核对后附 action_review.contract，覆盖源码固定说明及原来已在该文本内的 ReviewDecision Schema。审查工具仍为空，绑定、权限、预算、期限、动作结论与重用规则不变，没有新增审查模型。
+InformationJobRunner 原 finalize_request 在来源核对、图片同步和容量检查之后，对发送副本逐消息填写已有 _RequestLocation.image_assets；tool_presentations 同时保留。原网关继续剥离私有信息，将位置和资产 ID 写到既有请求记录。被移出或 included_elsewhere 的目录项不会被登记成本位置像素；不保存 base64、读取文件或发起下载，旧记录不回填。
 
-组件与定义初始修订均为 1；提示／Schema 改变由维护者递增，原网关剥离定位并比较最终内容后保存匹配快照。沿原调用登记事务和既有界面呈现，不批量回填旧调用。动态批次原话、既有认识、方法候选、工作要求、动作参数及原生回复不进入这些新增快照，待确认的活动段保存边界没有被扩张。
-
-- 阅读三条真实组装路径、AgentLoop 的最终回调顺序、固定模型 Schema 和原窗口／预算检查；历史固定 system 文本没有运行值插入，动作的实际参数仅在 user 消息中，本批不保存它。
-- 原 _PromptComponent／_RequestLocation 与 _RecordedToolDefinition 不新增格式版本；原估算先完成，私有信息在网关计量／传输前移除；历史工具附属属性不参与 JSON。请求内容、工具名、参数模型和解析不变。
-- uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/skills/learning.py src/len_bot/cognition/action_review.py src/len_bot/memory/reflector.py 退出 0；git diff --check 无格式错误。未修改前端，不重跑前端构建；实际调用记录与页面显示仍待同版人工观察。
-- 本批无源码路径定位失败、编译失败或业务失败原文。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、依赖安装、服务或模型／平台调用；未读取真实配置／业务库或实发。
+- 阅读工作图片清单生成、同步时的序号重排／移出／异处保留、原 finalize_request、prepare_request_record 的图像位置投影，以及现有 RequestRecordDetails 的图像缺定位计数。两种序号不同，不能直接把 block_index 当作 content 索引。
+- 局部函数的业务缺口是最终请求逐位置关联，原集合无法表达；未改变 synchronize_image_window 返回合同、工作归属或重启恢复路径，也未增加新的图片协议。
+- 源码初查包含不存在的 tools/media.py，输出被截断；随后按实际工作模块及导入定位，不据缺失路径新增文件或推导能力。无本批实际业务失败原文。
+- uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/runtime/work_context.py src/len_bot/runtime/job_runner.py 退出 0；git diff --check 无格式错误。无前端改动，未重跑前端构建；实际像素位置记录与页面计数仍待同版人工观察。
+- 未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、依赖安装、服务或模型／平台调用；未读取真实配置／业务库、图片字节或实发。
 
 ## 待决定与接续
 
-1. 接续 S1 剩余请求定位与耗时缺口，动态内容无可还原载体时继续明确缺档，不用静态组件快照宣称完整请求可重建。
+1. 继续 S1 的请求定位展示与耗时缺口；当前图片逐位置数据已登记，原界面主要展示图片数量和缺定位数量，详细可读性仍可沿现有组件完善。
 2. S2 完整活动段／未登记依赖仍有源码工作；额外原生字段保存、分类期限、许可证／素材授权、精确支持组合与公开承诺仍待决定。
-3. S6 的候选、同版现场、远端 CI、升级、外部插件迁移与发布依赖未完成，S7 独立使用者／作者记录尚未取得；原 S3／S4／S5 待人工复核项保持。
-4. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标进行中。
+3. S6 候选／现场／远端 CI／升级／外部迁移／发布及 S7 独立使用者／作者记录未完成；原 S3／S4／S5 待人工复核项保持，不以静态记录代替现场。
+4. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。

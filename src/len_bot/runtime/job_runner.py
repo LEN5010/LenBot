@@ -24,7 +24,7 @@ from len_bot.plugins.agent import PluginExecution
 from len_bot.plugins.work import PluginWorkContext, PluginWorkSnapshot
 from len_bot.cognition.budget import AgentBudget, count_remaining, seconds_left_to, terminal_seconds_reserve, tightest, work_call_admission
 from len_bot.execution.workspace import parked_termination
-from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
+from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window, request_image_assets
 from len_bot.skills.learning import maintain_candidates
 
 
@@ -1027,7 +1027,8 @@ class InformationJobRunner:
                             prepared = copy.deepcopy(trajectory)
                             for message in prepared:
                                 message['_request_location'] = _RequestLocation(
-                                    tool_presentations=toolkit.read_presentations([message]))
+                                    tool_presentations=toolkit.read_presentations([message]),
+                                    image_assets=request_image_assets(message))
                             return prepared
 
                         pending_presentations.clear()
