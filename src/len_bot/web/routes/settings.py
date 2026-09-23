@@ -290,7 +290,7 @@ async def update_character_references(edit: ConfigEdit, request: Request, user: 
     except ValidationError as error:
         raise HTTPException(422,error.errors(include_input=False,include_context=False)) from error
     await save_runtime_settings(runtime,values,live=True,baseline=edit.baseline)
-    return {'success':True,'message':'人物参考绑定已保存，后续新对话按原范围和图片预算使用；未读取像素或发送图片'}
+    return {'success':True,'config_saved':True,'message':'人物参考绑定已保存，后续新对话按原范围和图片预算使用；未读取像素或发送图片'}
 
 
 @router.get("/persona")
