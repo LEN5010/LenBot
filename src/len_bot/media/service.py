@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urldefrag
 
 import httpx
@@ -19,6 +20,7 @@ from PIL import Image, ImageOps
 
 from len_bot.media.models import CHARACTER_REFERENCE_TAG, CuratedMediaBaseline, CuratedMediaSavedError, PreparedMediaContext
 from len_bot.media.store import PALETTE_UNCHANGED
+from len_bot.plugins.net_policy import validate_url
 from len_bot.tools.http import PublicReadError, fetch_public
 from len_bot.tools.pdf_reader import MAX_PDF_BYTES, read_pdf
 from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource, error_message, error_source_url
@@ -223,6 +225,46 @@ class MediaService:
             await self.runtime.commit_tool_observation(event)
             asset.update(mime_type=mime, path=path)
             return asset, data
+
+    async def download_public_media(self, client: httpx.AsyncClient, url: str, scene_id: str, *,
+                                    expected_type: Literal['video', 'audio'], description: str,
+                                    source_event_id: str | None) -> ToolResult:
+        """Reuse a scoped cached file or fetch and register requested audio/video."""
+        if expected_type not in {'video', 'audio'}:
+            raise ValueError('Downloaded media must be video or audio')
+        allowed, reason = validate_url(url)
+        if not allowed: return ToolResult.failure(f'安全拦截: {reason}', 'blocked')
+        cached = None
+        try:
+            cached = await self.runtime.event_store.media_by_locator(scene_id, url)
+            if cached:
+                cached_asset, cached_data = await self.get_file_bytes(cached['id'], scene_id)
+                if not (cached_asset.get('mime_type') or '').startswith(expected_type + '/'):
+                    raise ValueError('缓存媒体类型与本次提案不一致')
+                return ToolResult(content=json.dumps({
+                    'asset_id': cached_asset['id'], 'type': expected_type,
+                    'mime_type': cached_asset.get('mime_type'), 'bytes': len(cached_data),
+                    'coverage': 'downloaded_media', 'cached': True}, ensure_ascii=False),
+                    attachments=[cached_asset['id']], sources=[ToolSource(url=url)],
+                    evidence_kind='external', coverage='downloaded_media', cached=True)
+            final_url, headers, data = await fetch_public(client, url, max_bytes=self.runtime.config.media_max_file_bytes)
+            mime = headers.get('content-type', '').split(';',1)[0].lower()
+            asset_id = 'media_' + uuid.uuid4().hex
+            asset = await self.save_downloaded(
+                asset_id, scene_id, final_url, data, mime, description,
+                source_event_id=source_event_id, expected_type=expected_type)
+            actual_mime = asset['mime_type']
+            actual_type = 'video' if actual_mime.startswith('video/') else 'audio'
+            return ToolResult(content=json.dumps({
+                'asset_id': asset['id'], 'type': actual_type, 'mime_type': actual_mime,
+                'bytes': len(data), 'coverage': 'downloaded_media'}, ensure_ascii=False),
+                attachments=[asset['id']], sources=[ToolSource(url=final_url)],
+                evidence_kind='external', coverage='downloaded_media')
+        except Exception as error:
+            if cached:
+                return ToolResult.failure(f'已保存媒体本次不可读或类型不符：{type(error).__name__}；未重新下载来源。',
+                    'cached_media_unavailable', stage='execution')
+            return ToolResult.failure(f'媒体下载失败：{type(error).__name__}', 'download_failed')
 
     async def save_downloaded(self, asset_id: str, scene_id: str, source_url: str, data: bytes, mime_type: str, description: str, *, source_event_id: str | None = None, expected_type: str | None = None):
         if not source_url.startswith(("https://", "http://")):

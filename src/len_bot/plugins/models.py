@@ -9,6 +9,7 @@ from len_bot.events.models import Event, EventType, Initiator, PluginOrigin
 from len_bot.tools.results import ToolResult
 
 if TYPE_CHECKING:
+    import httpx
     from len_bot.cognition.proposals import ProposalLedger
     from len_bot.plugins.base import PluginContext
     from len_bot.plugins.agent import PluginExecution
@@ -83,6 +84,11 @@ class PluginCallContext:
 
     async def submit_message(self, segments, *, mention_all=False):
         return await self.plugin.submit_message(self, segments, mention_all=mention_all)
+
+    async def download_public_media(self, client: httpx.AsyncClient, url: str, *,
+                                    expected_type: Literal['video', 'audio'], description: str) -> ToolResult:
+        return await self.plugin.download_public_media(self, client, url,
+            expected_type=expected_type, description=description)
 
     async def save_image(self, png: bytes, description: str) -> str:
         return await self.plugin.save_image(self, png, description)
