@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from len_bot.cognition.jobs import JobResult, ResultPresentation
-    from len_bot.events.store import EventStore
     from len_bot.tools.results import ToolNextCall, ToolResult
     from len_bot.plugins.models import PluginCallContext
 
@@ -22,6 +21,13 @@ class PluginWorkSnapshot:
     operation: str
     requester_qq_uid: str | None
     parameters: BaseModel
+
+
+@dataclass(frozen=True)
+class PluginWorkPreparation:
+    """Preparation can count a source window, not write the enclosing transaction."""
+    scene_id: str
+    group_statistics: Callable[[float, float, int, str], Awaitable[dict[str, int]]]
 
 
 @dataclass(frozen=True)
@@ -76,10 +82,10 @@ class PluginWorkSpec:
     allowed_tools: tuple[str,...]
     input_cutoff: Callable[[BaseModel, int], int]
     revise: Callable[[BaseModel, BaseModel, int, float], PluginWorkRevision]
-    new_progress: Callable[[EventStore, str, BaseModel, tuple[BaseModel, BaseModel] | None], Awaitable[BaseModel]]
-    adopt_reads: Callable[[EventStore, dict, BaseModel, BaseModel, list[ResultPresentation]], Awaitable[BaseModel]]
+    new_progress: Callable[[PluginWorkPreparation, BaseModel, tuple[BaseModel, BaseModel] | None], Awaitable[BaseModel]]
+    adopt_reads: Callable[[str, BaseModel, BaseModel, list[tuple[ResultPresentation, ToolResult]]], BaseModel]
     finalize: Callable[[BaseModel, BaseModel, JobResult], JobResult]
-    continuation: Callable[[dict, ToolResult], ToolNextCall | None]
+    continuation: Callable[[PluginWorkSnapshot, ToolResult], ToolNextCall | None]
     project_progress: Callable[[BaseModel], dict]
     execute: Callable[[PluginWorkContext], Awaitable[JobResult]] | None = None
-    needs_model: Callable[[dict], bool] | None = None
+    needs_model: Callable[[BaseModel, BaseModel, str, tuple[str, ...]], bool] | None = None

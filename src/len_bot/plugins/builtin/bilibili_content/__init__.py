@@ -7,7 +7,7 @@ def create(context):
     return BilibiliContentPlugin(context)
 
 
-PLUGIN = PluginSpec(api_version=1, id='bilibili_content', name='哔哩哔哩内容查询工具', version='1.0.0',
+PLUGIN = PluginSpec(api_version=2, id='bilibili_content', name='哔哩哔哩内容查询工具', version='1.0.0',
     description='读取公开视频与已授权账号动态；当前工作可提案设置独立授权的点赞和收藏状态。',
     config_model=BilibiliPluginConfig, create=create, private_tools=True,
     plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),

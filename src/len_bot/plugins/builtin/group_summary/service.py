@@ -111,11 +111,11 @@ class GroupSummaryService:
         if observation.coverage!='group_summary_input' or observation.source_next_call is None:return None
         if observation.source_next_call.name!='read_group_chat_window':raise ValueError('Saved report input has a foreign continuation')
         header,_=GroupSummaryService.parse_input(observation)
-        if header['job_id']!=job['id'] or not same_source(GroupSummaryRange.model_validate(header['range']),GroupSummaryRange.model_validate(job['work_parameters'])):return None
+        if header['job_id']!=job.id or not same_source(GroupSummaryRange.model_validate(header['range']),job.parameters):return None
         cursor=WindowCursor.model_validate_json(observation.source_next_call.arguments['cursor'])
-        if cursor.job_id!=job['id'] or cursor.revision!=header['job_revision']:raise ValueError('Saved cursor does not match its original input')
+        if cursor.job_id!=job.id or cursor.revision!=header['job_revision']:raise ValueError('Saved cursor does not match its original input')
         return ToolNextCall(name='read_group_chat_window',arguments={'cursor':WindowCursor(
-            job_id=job['id'],revision=job['revision'],index=cursor.index).model_dump_json()})
+            job_id=job.id,revision=job.revision,index=cursor.index).model_dump_json()})
 
     async def read_report(self,call,start_at,end_at,revision=None):
         async for resource in self.saved_resources(call,'group_summary_artifact'):

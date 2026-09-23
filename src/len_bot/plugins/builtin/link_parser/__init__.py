@@ -5,7 +5,7 @@ from .config import LinkParserConfig
 def create(context):
     return LinkParserPlugin(context)
 
-PLUGIN = PluginSpec(api_version=1, id='link_parser', name='原生链接解析', version='1.0.0',
+PLUGIN = PluginSpec(api_version=2, id='link_parser', name='原生链接解析', version='1.0.0',
     description='解析 B 站视频链接并通过既有工具与发送队列交付结果。', config_model=LinkParserConfig,
     create=create, plugin_type=PluginType.HYBRID, permissions=(PluginPermission.REGISTER_TOOL,),
     call_timeout=lambda config: config.request_timeout_seconds)

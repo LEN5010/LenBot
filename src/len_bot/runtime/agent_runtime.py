@@ -228,7 +228,9 @@ class AgentRuntime:
         issue=self.plugin_host.work_issue(job)
         if issue:return issue
         work=self.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
-        needs_model=not work or work.needs_model is None or work.needs_model(job)
+        needs_model=not work or work.needs_model is None or work.needs_model(
+            work.parameters_model.model_validate(job['work_parameters']),
+            work.progress_model.model_validate(job['work_progress']),job['goal'],tuple(job['constraints']))
         from len_bot.cognition.budget import WorkBudgetSnapshot
         stored = job.get('budget')
         limits = (self.config.model_copy(update=WorkBudgetSnapshot.model_validate(stored).runtime_values())

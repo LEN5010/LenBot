@@ -22,7 +22,7 @@ def validate_scene(config, root):
         raise ValueError('live_subscriptions references unknown members: ' + ', '.join(sorted(unknown)))
 
 
-PLUGIN = PluginSpec(api_version=1, id='bilibili_live_sensor', name='哔哩哔哩直播监测', version='0.1.0',
+PLUGIN = PluginSpec(api_version=2, id='bilibili_live_sensor', name='哔哩哔哩直播监测', version='0.1.0',
     description='采集共享房间状态，为订阅群的真实新场次生成开播邀请。',
     config_model=LivePluginConfig, create=create, validate_config=validate,
     scene_config_model=LiveSceneConfig, validate_scene_config=validate_scene,

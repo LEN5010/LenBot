@@ -16,7 +16,7 @@ def validate(config, root):
 
 
 PLUGIN = PluginSpec(
-    api_version=1,
+    api_version=2,
     id='gscore_adapter', name='GSUID Core 游戏桥接', version='0.1.0',
     description='只把明确 /gs 命令桥接到独立 GSUID Core；默认停用。',
     config_model=GscoreConfig, create=create, validate_config=validate,
