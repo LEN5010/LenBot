@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -26,6 +27,8 @@ from len_bot.cognition.budget import AgentBudget, count_remaining, seconds_left_
 from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window, request_image_assets
 from len_bot.skills.learning import maintain_candidates
+
+logger = logging.getLogger(__name__)
 
 
 def job_initiator(job: dict) -> Initiator | None:
@@ -278,10 +281,29 @@ class InformationJobRunner:
             pending = [job for job in await self.runtime.event_store.list_jobs(scene_id) if job["status"] == "processing"]
             if not pending:
                 return
-            async with self._slots:
-                self._active_jobs[scene_id]=pending[0]['id']
-                try:await self._run_job(pending[0]["id"], scene_id)
-                finally:self._active_jobs.pop(scene_id,None)
+            job_id = pending[0]['id']
+            started = time.monotonic()
+            acquired = False
+            try:
+                async with self._slots:
+                    acquired = True
+                    await self.runtime.event_store.save_trace(kind='agent_job_wait', scene_id=scene_id,
+                        ref_id=job_id, payload={'job_id': job_id, 'job_revision': pending[0]['revision'],
+                            'state': 'acquired', 'work_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
+                    self._active_jobs[scene_id]=job_id
+                    try:await self._run_job(job_id, scene_id)
+                    finally:self._active_jobs.pop(scene_id,None)
+            except BaseException as error:
+                if not acquired:
+                    try:
+                        await self.runtime.event_store.save_trace(kind='agent_job_wait', scene_id=scene_id,
+                            ref_id=job_id, payload={'job_id': job_id, 'job_revision': pending[0]['revision'],
+                                'state': 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
+                                'error_type': type(error).__name__, 'error_phase': 'work_slot_wait',
+                                'work_slot_wait_ms': round((time.monotonic()-started)*1000, 2)})
+                    except Exception:
+                        logger.exception('Could not record work slot wait: job=%s', job_id)
+                raise
 
     async def _context(self, job):
         store = self.runtime.event_store
