@@ -325,17 +325,20 @@ class ProposalLedger:
         if parameters is not None and (work is None or not isinstance(parameters,work.parameters_model)):
             raise ToolArgumentError('Plugin work parameters require the owning descriptor model')
         encoded=parameters.model_dump(mode='json') if parameters is not None else None
+        constraints = list(constraints)
+        result_ids = [refs.result_id(reference) for reference in result_refs]
         for proposal in self.jobs:
             if (proposal.operation=='create' and proposal.plugin_origin
                     and proposal.plugin_origin.plugin_id==call.origin.plugin_id
                     and proposal.plugin_origin.plugin_version==call.origin.plugin_version
                     and proposal.request_source_event_id==source.id and proposal.goal==goal
-                    and proposal.work_parameters==encoded):
+                    and proposal.work_parameters==encoded and proposal.constraints_add==constraints
+                    and proposal.source_event_ids==sources and proposal.result_ids==result_ids):
                 return {'status':'staged','proposal_ref':proposal.proposal_id,'ack_ref':proposal.proposal_id,
                     'work_parameters':encoded,'note':'同一请求的这项工作已暂存；使用原引用，不重复创建或确认。'}
         proposal_ref = f'S{self._next_handle}'
         proposal = JobProposal(proposal_id=proposal_ref,
-            goal=goal,constraints_add=list(constraints),result_ids=[refs.result_id(reference) for reference in result_refs],
+            goal=goal,constraints_add=constraints,result_ids=result_ids,
             source_event_ids=sources, requester_qq_uid=source.actor_id.removeprefix('user:'),
             request_source_event_id=source.id, initiator=self.human_source(source),
             work_operation=work.operation if work else 'information',plugin_origin=call.origin,
@@ -391,6 +394,14 @@ class ProposalLedger:
                     source_event_ids=list(dict.fromkeys([source.id,*evidence])),result_ids=result_ids,reused_work=reused,
                     requester_qq_uid=source.actor_id.removeprefix('user:'),request_source_event_id=source.id,
                     initiator=self.human_source(source))
+                for proposal in self.jobs:
+                    if (proposal.operation=='create' and proposal.plugin_origin is None
+                            and proposal.request_source_event_id==value.request_source_event_id
+                            and proposal.goal==value.goal and proposal.constraints_add==value.constraints_add
+                            and proposal.source_event_ids==value.source_event_ids and proposal.result_ids==value.result_ids
+                            and proposal.reused_work==value.reused_work):
+                        return {'status':'staged','proposal_ref':proposal.proposal_id,'ack_ref':proposal.proposal_id,
+                            'note':'同一输入的这项工作已暂存；使用原引用，不重复创建或确认。'}
             elif name in {'revise_work','cancel_work','resume_work'}:
                 job=refs.job(model.work_ref)
                 if name=='resume_work' and not job.get('can_resume'):
