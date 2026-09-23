@@ -18,7 +18,17 @@ const tab = computed(() => tabs.some(item=>item.value===route.query.tab) ? route
 const baselines = ref({})
 const conflicts = useConfigConflicts()
 const currentConflict = computed(()=>conflicts.entries[tab.value])
-const saveDraft = (domain,path,values,method) => api(path,{method,body:JSON.stringify({baseline:baselines.value[domain],values})})
+const saveOutcomes=ref({}), currentSaveOutcome=computed(()=>saveOutcomes.value[tab.value])
+async function saveDraft(domain,path,values,method,progress) {
+  const body=JSON.stringify({baseline:baselines.value[domain],values})
+  progress.submitted=true
+  const result=await api(path,{method,body})
+  if(result?.config_saved!==true||typeof result.message!=='string'||
+    (domain==='persona'?result.success!==true:!Object.hasOwn(result,'settings')))
+    throw new Error('配置响应缺少本次写入确认，结果待核对，未采用新基线。')
+  progress.confirmed=true
+  return result
+}
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
@@ -105,14 +115,33 @@ function adoptSnapshot(domain, snapshot) {
   else if(domain==='attention')attentionOriginal.value=JSON.stringify(attention.value)
   else timeOriginal.value=JSON.stringify(timeDraft.value)
 }
-async function saveError(problem,domain,fresh) {
+async function saveError(problem,domain,fresh,progress) {
   if(!fresh())return
-  if(conflicts.mark(domain,problem))await load({accept:fresh})
-  else error.value=problem.message
+  if(problem.details?.config_saved===false&&conflicts.mark(domain,problem)){
+    await load({accept:fresh});return
+  }
+  const rejected=problem.details?.config_saved===false||(problem.status===422&&Array.isArray(problem.details))
+  if(progress.submitted&&!rejected){
+    saveOutcomes.value[domain]={confirmed:progress.confirmed||problem.details?.config_saved===true,
+      message:problem.message,snapshot:null,readAt:null}
+    await load({accept:fresh})
+    if(!fresh())return
+  }
+  error.value=problem.message+(error.value?'；当前读取：'+error.value:'')
+}
+function adoptSaveOutcome() {
+  const domain=tab.value,outcome=currentSaveOutcome.value
+  if(busy.value||loading.value||!outcome?.snapshot)return
+  if(!window.confirm('放弃本标签原配置草稿，采用本次读取值继续编辑？不会重新保存、填入模板或重试运行应用。'))return
+  try {
+    adoptSnapshot(domain,outcome.snapshot)
+    delete saveOutcomes.value[domain];conflicts.clear(domain);error.value=''
+    message.value='已采用当前保存值，未重发保存或采用模板；未知的旧请求没有因此变成成功。'
+  }catch(problem){error.value=problem.message}
 }
 function resolveConflict(keep) {
   const domain=tab.value,snapshot=currentConflict.value?.snapshot
-  if(busy.value||loading.value||!snapshot)return
+  if(busy.value||loading.value||currentSaveOutcome.value||!snapshot)return
   if(!keep&&!window.confirm('放弃本标签未保存的配置，采用本次读取的保存值？其他标签草稿不变。'))return
   try {
     const next=keep?rebaseConfigDraft(baselines.value[domain],formValues(domain),snapshot.saved):null
@@ -126,6 +155,7 @@ async function load({accept=()=>true}={}) {
   const currentTab = tab.value, current = readGuard(), fresh=()=>current()&&accept()
   loading.value = true; error.value = ''
   conflicts.beginRead(currentTab)
+  if(saveOutcomes.value[currentTab]){saveOutcomes.value[currentTab].snapshot=null;saveOutcomes.value[currentTab].readAt=null}
   try {
     const snapshot=await api(`/api/settings/draft/${currentTab}`)
     if(!fresh())return
@@ -135,7 +165,9 @@ async function load({accept=()=>true}={}) {
       timeRestart.value=snapshot.requires_restart
     }
     const dirtyNow={persona:personaDirty.value,attention:attentionDirty.value,time:timeDirty.value}[currentTab]
-    if(!conflicts.capture(currentTab,snapshot)&&(!dirtyNow||(currentTab==='persona'&&personaNeedsReadback.value))) {
+    if(saveOutcomes.value[currentTab]){
+      saveOutcomes.value[currentTab].snapshot=snapshot;saveOutcomes.value[currentTab].readAt=Date.now()/1000
+    }else if(!conflicts.capture(currentTab,snapshot)&&(!dirtyNow||(currentTab==='persona'&&personaNeedsReadback.value))) {
       adoptSnapshot(currentTab,snapshot)
     }
     readAt.value[currentTab]=Date.now()/1000
@@ -156,35 +188,39 @@ async function refresh() {
   await Promise.all([load(), ...(tab.value==='persona'?[loadExamples()]:[])])
 }
 async function savePersona() {
-  if(busy.value||personaNeedsReadback.value||conflicts.entries.persona)return
+  if(busy.value||personaNeedsReadback.value||saveOutcomes.value.persona||conflicts.entries.persona)return
   const fresh = beginOperation('persona')
+  const progress={submitted:false,confirmed:false}
   try {
-    const result=await saveDraft('persona','/api/settings/persona',formValues('persona'),'POST')
+    const result=await saveDraft('persona','/api/settings/persona',formValues('persona'),'POST',progress)
     if(!fresh())return
     personaNeedsReadback.value=true;message.value=result.message;await load({accept:fresh})
-  }catch(e){await saveError(e,'persona',fresh)}finally{if(fresh())busy.value=''}
+  }catch(e){await saveError(e,'persona',fresh,progress)}finally{if(fresh())busy.value=''}
 }
 async function saveAttention() {
-  if(busy.value||conflicts.entries.attention)return
+  if(busy.value||saveOutcomes.value.attention||conflicts.entries.attention)return
   const fresh = beginOperation('attention')
+  const progress={submitted:false,confirmed:false}
   try {
-    const result=await saveDraft('attention','/api/settings/attention',formValues('attention'),'PATCH')
+    const result=await saveDraft('attention','/api/settings/attention',formValues('attention'),'PATCH',progress)
     if(!fresh())return
     adoptSnapshot('attention',{saved:result.settings,baseline:result.settings});readAt.value.attention=Date.now()/1000;message.value=result.message
-  }catch(e){await saveError(e,'attention',fresh)}finally{if(fresh())busy.value=''}
+  }catch(e){await saveError(e,'attention',fresh,progress)}finally{if(fresh())busy.value=''}
 }
 function beginTimeConfiguration() {
+  if(busy.value||saveOutcomes.value.time)return
   timeDraft.value = {timezone:'',week_start:null,afternoon_start:'',afternoon_end:'',sleep_start:null,sleep_end:null}
 }
 async function saveTime() {
-  if (busy.value || conflicts.entries.time || !timeDraft.value) return
+  if (busy.value || saveOutcomes.value.time||conflicts.entries.time || !timeDraft.value) return
   const fresh = beginOperation('time')
+  const progress={submitted:false,confirmed:false}
   try {
     const payload = formValues('time')
-    const result = await saveDraft('time','/api/settings/time',payload,'PUT')
+    const result = await saveDraft('time','/api/settings/time',payload,'PUT',progress)
     if(!fresh())return
     adoptSnapshot('time',{saved:result.settings,baseline:result.settings});readAt.value.time=Date.now()/1000;timeConfigured.value=result.settings!==null; timeRestart.value=result.requires_restart; message.value=result.message
-  } catch(e) { await saveError(e,'time',fresh) } finally { if(fresh())busy.value='' }
+  } catch(e) { await saveError(e,'time',fresh,progress) } finally { if(fresh())busy.value='' }
 }
 function editExample(item=null) {
   if(busy.value)return
@@ -256,7 +292,7 @@ async function previewPreset(){
   }
 }
 function fillPresetFields(){
-  if (busy.value || personaNeedsReadback.value || !preset.value || !persona.value) return
+  if (busy.value || saveOutcomes.value.persona || personaNeedsReadback.value || !preset.value || !persona.value) return
   for (const key of selectedPresetFields.value) {
     persona.value[key] = preset.value.fields[key]
   }
@@ -304,18 +340,25 @@ watch(mediaOpen,open=>{if(!open){mediaGuard();mediaLoading.value=false;mediaRows
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt[tab]"> · 上次读取 {{ fmtTime(readAt[tab]) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <p class="muted">切换标签保留配置草稿，但不继续跟踪旧操作；已提交的保存不会因此取消，请回原对象刷新核对。</p>
     <v-alert v-if="tab==='persona'&&personaNeedsReadback" type="warning" variant="tonal">人格已保存，但尚未读回保存值；草稿基线没有更新，请刷新核对后再编辑。</v-alert>
-    <ConfigConflictBanner :conflict="currentConflict?.problem" :current="currentConflict?.snapshot" :path-label="currentConflict?.problem.path?.join('.')" :busy="!!busy||loading" :read-error="currentConflict?.readError" :read-at="currentConflict?.readAt" @keep="resolveConflict(true)" @take="resolveConflict(false)" @reload="load"><template #current><p v-if="currentConflict?.snapshot?.saved===null">本次读取明确为未配置，不是读取失败。</p><ResourceViewer v-else title="本次读取的保存值（不是草稿）" :content="currentConflict?.snapshot?.saved" /></template></ConfigConflictBanner>
-    <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'agent-settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}<span v-if="conflicts.entries[item.value]"> · 待处理冲突</span></v-tab></v-tabs>
+    <v-alert v-if="currentSaveOutcome" type="warning" variant="tonal">
+      <p>{{ currentSaveOutcome.confirmed?'配置已取得写入确认，后续结果仍需核对。':'本次配置保存结果未知。' }}{{ currentSaveOutcome.message }}不要重复提交原草稿。</p>
+      <p v-if="currentSaveOutcome.snapshot">当前保存值读取于 {{ fmtTime(currentSaveOutcome.readAt) }}；不代表原操作回执。</p>
+      <ResourceViewer v-if="currentSaveOutcome.snapshot" title="当前保存值（不是草稿）" :content="currentSaveOutcome.snapshot.saved" />
+      <v-btn variant="text" :disabled="!!busy||loading" @click="load">读取当前保存值</v-btn>
+      <v-btn variant="text" :disabled="!!busy||loading||!currentSaveOutcome.snapshot" @click="adoptSaveOutcome">采用当前值继续编辑</v-btn>
+    </v-alert>
+    <ConfigConflictBanner :conflict="currentConflict?.problem" :current="currentConflict?.snapshot" :path-label="currentConflict?.problem.path?.join('.')" :busy="!!busy||loading||!!currentSaveOutcome" :read-error="currentConflict?.readError" :read-at="currentConflict?.readAt" @keep="resolveConflict(true)" @take="resolveConflict(false)" @reload="load"><template #current><p v-if="currentConflict?.snapshot?.saved===null">本次读取明确为未配置，不是读取失败。</p><ResourceViewer v-else title="本次读取的保存值（不是草稿）" :content="currentConflict?.snapshot?.saved" /></template></ConfigConflictBanner>
+    <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'agent-settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}<span v-if="conflicts.entries[item.value]"> · 待处理冲突</span><span v-if="saveOutcomes[item.value]"> · 保存待核对</span></v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
     <template v-if="tab==='persona'">
       <p class="muted">人物文字资料在本页保存；常服图片在<v-btn variant="text" :to="{name:'media',query:{scene:'global-safe',purpose:'character_reference',return_to:route.fullPath}}">媒体与素材 → 人物与服装参考</v-btn>单独绑定。查看该入口不会修改人格字段。</p>
-      <v-card v-if="persona" class="pa-5 form-card"><div class="section-header"><div><h2>人格与说话方式</h2><p class="muted mt-2">角色资料用于表达，不能作为群友事实或现实能力的依据。</p></div><v-btn variant="tonal" :loading="presetLoading" :disabled="!!busy||personaNeedsReadback" @click="previewPreset">查看嘉然模板</v-btn></div><v-form :disabled="!!busy||personaNeedsReadback" class="form-grid mt-5" @submit.prevent="savePersona"><v-text-field v-model="persona.identity_name" label="机器人名字" /><v-text-field v-model="persona.addressNames" label="呼唤昵称" hint="用逗号或顿号分隔；呼唤提供观察机会，是否回应由模型决定。" persistent-hint /><v-textarea v-for="key in ['identity_persona','identity_core','character_context','conversation_style']" :key="key" v-model="persona[key]" :label="personaLabels[key]" :rows="key==='character_context'?6:4" auto-grow class="wide" /><v-btn type="submit" color="primary" :loading="busy==='persona'" :disabled="!!busy||personaNeedsReadback||!!conflicts.entries.persona||!personaDirty">保存人格并立即生效</v-btn><span v-if="personaDirty" class="muted">有未保存修改</span></v-form></v-card>
+      <v-card v-if="persona" class="pa-5 form-card"><div class="section-header"><div><h2>人格与说话方式</h2><p class="muted mt-2">角色资料用于表达，不能作为群友事实或现实能力的依据。</p></div><v-btn variant="tonal" :loading="presetLoading" :disabled="!!busy||personaNeedsReadback" @click="previewPreset">查看嘉然模板</v-btn></div><v-form :disabled="!!currentSaveOutcome||!!busy||personaNeedsReadback" class="form-grid mt-5" @submit.prevent="savePersona"><v-text-field v-model="persona.identity_name" label="机器人名字" /><v-text-field v-model="persona.addressNames" label="呼唤昵称" hint="用逗号或顿号分隔；呼唤提供观察机会，是否回应由模型决定。" persistent-hint /><v-textarea v-for="key in ['identity_persona','identity_core','character_context','conversation_style']" :key="key" v-model="persona[key]" :label="personaLabels[key]" :rows="key==='character_context'?6:4" auto-grow class="wide" /><v-btn type="submit" color="primary" :loading="busy==='persona'" :disabled="!!currentSaveOutcome||!!busy||personaNeedsReadback||!!conflicts.entries.persona||!personaDirty">保存人格并立即生效</v-btn><span v-if="personaDirty" class="muted">有未保存修改</span></v-form></v-card>
       <v-card class="pa-5"><v-alert v-if="examplesError" type="error" variant="tonal" class="mb-4">样例读取失败：{{ examplesError }}<span v-if="examplesReadAt">；保留 {{ fmtTime(examplesReadAt) }} 的列表</span></v-alert><v-progress-linear v-if="examplesLoading" indeterminate class="mb-4" /><p v-if="examplesReadAt" class="muted mb-3">样例读取于 {{ fmtTime(examplesReadAt) }}</p><div class="section-header"><div><h2>表达样例</h2><p class="muted mt-2">按保存顺序提供，可使用文字、单图或混排。这些是人工表达示范。</p></div><v-btn color="primary" variant="tonal" :disabled="!!busy" @click="editExample()">添加样例</v-btn></div><v-card variant="tonal" class="pa-4 mb-5"><h3>从真实送达消息创建</h3><p class="muted my-2">只接受已确认真实发送的 Bot 消息；Shadow、草稿和 unknown 回执会被拒绝。</p><div class="form-grid"><v-text-field :disabled="!!busy" v-model="sourceExample.scene_id" label="场景 ID" placeholder="group:123" /><v-text-field :disabled="!!busy" v-model="sourceExample.event_id" label="MESSAGE_SENT 事件 ID" /><v-text-field :disabled="!!busy" v-model="sourceExample.context" label="表达语境" /><v-text-field :disabled="!!busy" v-model="sourceExample.tag" label="标签" /><v-btn color="primary" variant="outlined" :loading="busy==='example-source'" :disabled="!!busy||!sourceExample.scene_id.trim()||!sourceExample.event_id.trim()" @click="createFromSentMessage">创建并进入样例列表</v-btn></div></v-card><p v-if="!examplesReadAt&&!examplesLoading&&!examplesError" class="muted py-6">尚未取得样例列表，请刷新当前设置后核对，不能据此判断没有样例。</p><p v-if="examplesReadAt&&!examplesLoading&&!examplesError&&!exemplars.length" class="muted py-6">尚无人工表达样例</p><article v-for="(item,index) in exemplars" :key="item.id" class="example-row"><div class="example-main"><div class="meta mb-3"><v-chip size="small">第 {{ index+1 }} 条</v-chip><v-chip size="small" :color="item.enabled?'success':'default'">{{ item.enabled?'已启用':'已停用' }}</v-chip><span>{{ item.scene_id||'所有场景' }}</span><span v-if="item.tag">{{ item.tag }}</span></div><p class="example-context clamp-2">{{ item.context||'通用表达' }}</p><div class="example-body"><template v-for="(part,partIndex) in item.segments" :key="partIndex"><p v-if="part.type==='text'">{{ part.text }}</p><img v-else :src="imageUrl(part.asset_id,item.scene_id)" alt="运营表达样例" loading="lazy" /></template></div><v-alert v-if="item.available===false" type="warning" variant="tonal" density="compact">{{ item.unavailable_reason }}</v-alert></div><div class="actions"><v-btn variant="outlined" :disabled="!!busy" @click="editExample(item)">编辑</v-btn><v-btn variant="text" :disabled="!!busy" @click="changeExample(item)">{{ item.enabled?'停用':'启用' }}</v-btn><v-btn color="error" variant="text" :disabled="!!busy" @click="changeExample(item,true)">删除</v-btn></div></article></v-card>
     </template>
     <v-card v-if="tab==='attention'&&attention" class="pa-5 form-card">
       <h2>注意力与旁听</h2>
       <p class="muted my-3">普通原话有截止时间，按容量分批读取；真实搭话和短时观察使用较短合并等待。模型可以沉默；没有新输入不调用。观察间隔不是总调用次数或回复延迟上限。</p>
-      <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveAttention">
+      <v-form :disabled="!!currentSaveOutcome||!!busy" class="form-grid" @submit.prevent="saveAttention">
         <v-switch v-model="attention.attention_observation_enabled" label="启用普通消息的周期观察" color="primary" hint="关闭不影响真实搭话、名称/关键词的独立机会和短时观察期" persistent-hint class="wide" />
         <v-textarea v-model="attention.keywords" label="运营关键词（每行一项）" rows="4" class="wide" />
         <v-text-field v-model.number="attention.attention_observation_interval_seconds" type="number" min="0.1" step="0.1" label="普通观察间隔（秒）" required />
@@ -330,7 +373,7 @@ watch(mediaOpen,open=>{if(!open){mediaGuard();mediaLoading.value=false;mediaRows
           <v-text-field v-model.number="attention.attention_keyword_cooldown_seconds" type="number" min="0" step="1" label="名称与关键词提速冷却（秒）" required />
           <v-text-field v-model.number="attention.conversation_recent_tokens" type="number" min="500" step="100" label="近期原话预算（文本 token）" required />
         </div></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
-        <v-btn type="submit" color="primary" :loading="busy==='attention'" :disabled="!!busy||!!conflicts.entries.attention||!attentionDirty">保存注意力参数</v-btn>
+        <v-btn type="submit" color="primary" :loading="busy==='attention'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.attention||!attentionDirty">保存注意力参数</v-btn>
       </v-form>
     </v-card>
 
@@ -339,15 +382,15 @@ watch(mediaOpen,open=>{if(!open){mediaGuard();mediaLoading.value=false;mediaRows
       <p class="muted my-3">日程与群总结按照这里填写的时区、自然周和下午范围解释日期，不自动选择时区或补全天段。睡眠窗口成对填写；留空表示不启用睡眠。</p>
       <v-alert v-if="!timeConfigured" type="info" variant="tonal" class="mb-4">尚未保存业务时间；需要时间口径的新插件不能启用。</v-alert>
       <v-alert v-if="timeRestart" type="info" variant="tonal" class="mb-4">系统另有已保存配置等待手动重启。本页读取业务时间的保存值，当前查询与采集使用的时间口径仍须按对应组件核对。</v-alert>
-      <v-btn v-if="!timeDraft&&!loading" variant="tonal" color="primary" :disabled="!!busy" @click="beginTimeConfiguration">填写业务时间</v-btn>
-      <v-form v-if="timeDraft" :disabled="!!busy" class="form-grid" @submit.prevent="saveTime">
+      <v-btn v-if="!timeDraft&&!loading" variant="tonal" color="primary" :disabled="!!busy||!!saveOutcomes.time" @click="beginTimeConfiguration">填写业务时间</v-btn>
+      <v-form v-if="timeDraft" :disabled="!!currentSaveOutcome||!!busy" class="form-grid" @submit.prevent="saveTime">
         <v-text-field v-model="timeDraft.timezone" label="IANA 时区" hint="填写业务实际采用的 IANA 时区名称。" persistent-hint required />
         <v-select v-model="timeDraft.week_start" label="自然周第一天" :items="weekdays" required />
         <v-text-field v-model="timeDraft.afternoon_start" label="下午开始" type="time" required />
         <v-text-field v-model="timeDraft.afternoon_end" label="下午结束（不含）" type="time" required />
         <v-text-field v-model="timeDraft.sleep_start" label="睡眠开始（可选）" type="time" clearable hint="与睡眠结束成对；跨日窗口允许开始晚于结束。" persistent-hint />
         <v-text-field v-model="timeDraft.sleep_end" label="睡眠结束（可选）" type="time" clearable hint="到点后各群按叫醒状态决定是否恢复普通发送。" persistent-hint />
-        <v-btn type="submit" color="primary" :loading="busy==='time'" :disabled="!!busy||!!conflicts.entries.time||!timeDirty">保存业务时间</v-btn>
+        <v-btn type="submit" color="primary" :loading="busy==='time'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.time||!timeDirty">保存业务时间</v-btn>
       </v-form>
     </v-card>
 
@@ -367,7 +410,7 @@ watch(mediaOpen,open=>{if(!open){mediaGuard();mediaLoading.value=false;mediaRows
               <ResourceViewer title="当前草稿" :content="persona[key]" />
             </v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
           </div>
-          <v-btn color="primary" variant="tonal" class="mt-4" :disabled="!!busy||personaNeedsReadback||!selectedPresetFields.length" @click="fillPresetFields">将所选字段填入草稿</v-btn>
+          <v-btn color="primary" variant="tonal" class="mt-4" :disabled="!!busy||!!saveOutcomes.persona||personaNeedsReadback||!selectedPresetFields.length" @click="fillPresetFields">将所选字段填入草稿</v-btn>
           <v-divider class="my-6" />
           <h3>表达样例</h3>
           <v-alert v-if="preset.missing_media.length" type="warning" variant="tonal" class="mt-4">固定目录缺少素材：{{ preset.missing_media.join('、') }}。补充素材后重新查看模板，可选用对应图文样例。</v-alert>
