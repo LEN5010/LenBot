@@ -6,10 +6,10 @@ import copy
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from len_bot.cards import BUNDLED_CARD_FONT
 from len_bot.cards.bilibili import AuthorProfile, render_notification
 from len_bot.cards.bilibili.source import ProfileCache
 from len_bot.cards.html_render import HtmlCardRenderer
@@ -94,9 +94,9 @@ class AsoulDynamicsPlugin(BasePlugin):
             logger.warning('Rich dynamic card failed (%s: %s); using the plain card',
                            type(error).__name__, error)
         from .render import render_dynamic_card
-        font = Path(self.context.directory).parent / 'asoul_calendar' / 'resources' / 'font.ttf'
+        font = BUNDLED_CARD_FONT
         if not font.is_file():
-            font = Path(self.context.directory) / 'resources' / 'font.ttf'
+            raise ValueError('动态卡片字体文件不存在')
         return await asyncio.to_thread(render_dynamic_card, data, font, kind=fallback_kind)
 
     def _result(self, snapshot: SourceSnapshot, *, cached: bool, coverage: str, data: dict | None = None,
