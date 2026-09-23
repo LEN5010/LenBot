@@ -158,7 +158,6 @@ async def update_access_settings(edit: ConfigEdit, request: Request, user: str =
                 if not isinstance(baseline, dict) or field not in baseline:
                     raise HTTPException(422, '缺少访问设置草稿基线')
                 if saved[field] != baseline[field]:
-                    from len_bot.config_edit import ConfigEditConflict
                     raise ConfigEditConflict(('access', field))
         if values.capability_grants is None:
             grants = list(current.capability_grants)
@@ -177,7 +176,7 @@ async def update_access_settings(edit: ConfigEdit, request: Request, user: str =
                         'msg': '不能用未知 ID 新建授予；新建请留空，由服务端生成 ID',
                         'type': 'value_error'}])
                 if edit.revision != stored.revision:
-                    raise HTTPException(409, '授予已被其他操作更新，请保留草稿并刷新已保存值后重试')
+                    raise ConfigEditConflict(('access', 'capability_grants', edit.grant_id, 'revision'))
                 candidate = _grant_from_edit(edit, operator_id=user, revision=edit.revision)
                 if _grant_content(stored) == _grant_content(candidate):
                     grants.append(stored)
@@ -198,7 +197,7 @@ async def update_access_settings(edit: ConfigEdit, request: Request, user: str =
         # cannot be recalled by revoking later.
         await runtime.record_operator_event("system:settings", "capability_grants", user,
             {"grant_ids": [grant['grant_id'] for grant in merged['capability_grants']]})
-    return {"settings": runtime.query_service.access_settings(), "requires_restart": False,
+    return {"config_saved": True, "settings": runtime.query_service.access_settings(), "requires_restart": False,
             "message": "QQ 回复白名单与能力授予已保存；未配置的能力保持关闭，撤销只阻止后续操作"}
 
 
@@ -217,7 +216,7 @@ async def update_resource_settings(request: Request, edit: ConfigEdit, user: str
     """Quota policies live with the capabilities that reference them by name."""
     runtime = request.app.state.runtime
     await save_root_section(runtime, "resources", ResourceSettings.model_validate(edit.values).model_dump(), baseline=edit.baseline)
-    return {"settings": runtime.query_service.resource_settings(),
+    return {"config_saved": True, "settings": runtime.query_service.resource_settings(),
             "message": "额度策略已写入根文件；新策略用于此后新建的工作，已预占的工作保留自己的策略"}
 
 
@@ -238,7 +237,7 @@ async def member_settings(request: Request, user: str = Depends(get_current_user
 async def update_member_settings(request: Request, edit: ConfigEdit, user: str = Depends(get_current_user)):
     runtime = request.app.state.runtime
     await save_root_section(runtime, "members", [member.model_dump() for member in TypeAdapter(list[MemberSettings]).validate_python(edit.values)], baseline=edit.baseline)
-    return {"settings": runtime.query_service.member_settings(), "requires_restart": runtime.restart_required,
+    return {"config_saved": True, "settings": runtime.query_service.member_settings(), "requires_restart": runtime.restart_required,
             "message": "成员名称、别名与 B 站身份已写入根文件，重启后用于新查询与采集"}
 
 
@@ -339,5 +338,5 @@ async def update_runtime_parameters(edit: ConfigEdit, request: Request, user: st
     if not isinstance(edit.values, dict) or not set(edit.values) <= set(current):
         raise HTTPException(422, "只允许修改页面提供的运行参数字段")
     await save_runtime_settings(runtime, edit.values, live=False, baseline=edit.baseline)
-    return {**runtime.query_service.runtime_settings(),
+    return {**runtime.query_service.runtime_settings(), "config_saved": True,
             "message": "运行参数已写入根配置；五项执行预算用于新对话和新工作执行段，其他待生效改动需手动重启"}
