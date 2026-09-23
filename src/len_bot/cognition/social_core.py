@@ -60,6 +60,9 @@ class SocialCognitionCore:
                                          'resumed_elapsed_seconds':resume.elapsed_seconds if resume else 0}})
         context=ConversationContext(runtime,session,through_rowid)
         segment_id=session.conversation_segment.id if session.conversation_segment else None
+        if save_segment is not None and session.conversation_segment is not None:
+            context.refs.result_aliases=dict(session.conversation_segment.result_aliases)
+            context.refs.job_aliases=dict(session.conversation_segment.job_aliases)
         context.supports_segment_vision = binding.supports_vision
         context.config=config
         context.input_budget=config.conversation_context_tokens-config.conversation_output_tokens
@@ -277,6 +280,8 @@ class SocialCognitionCore:
                     if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
                 segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
                     through_rowid=context.refs.cutoff,event_ids=window_ids,
+                    result_aliases=dict(context.refs.results),
+                    job_aliases={ref:job['id'] for ref,job in context.refs.jobs.items()},
                     profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
                         reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
                     basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],

@@ -87,6 +87,8 @@ class ConversationSegment(BaseModel):
     knowledge_revision: int = Field(ge=0)
     through_rowid: int = Field(ge=0)
     event_ids: list[str]
+    result_aliases: dict[str, str] = Field(default_factory=dict)
+    job_aliases: dict[str, str] = Field(default_factory=dict)
 
 
 class SceneSession(BaseModel):

@@ -56,7 +56,9 @@ class TurnReferences:
         self.memories = {}
         self.editable_memories = set()
         self.results = {}
+        self.result_aliases = {}
         self.jobs = {}
+        self.job_aliases = {}
         self.tasks = {}
         self.task_snapshots = {}
         self.editable_tasks = set()
@@ -156,14 +158,12 @@ class TurnReferences:
         return self._register(self.memories, memory_id, 'B')
 
     def register_result(self, result_id):
-        return self._register(self.results, result_id, 'R')
+        ref = self._register(self.result_aliases, result_id, 'R')
+        self.results[ref] = result_id
+        return ref
 
     def register_job(self, job):
-        for ref, current in self.jobs.items():
-            if current['id'] == job['id']:
-                self.jobs[ref] = dict(job)
-                return ref
-        ref = f'J{len(self.jobs)+1}'
+        ref = self._register(self.job_aliases, job['id'], 'J')
         self.jobs[ref] = dict(job)
         return ref
 
@@ -719,6 +719,7 @@ class ConversationContext:
             # A historical job query must not replace newer facts already
             # projected after this tool group.
             self.refs.jobs.update(current_jobs)
+            self.refs.job_aliases.update({ref:job['id'] for ref,job in current_jobs.items()})
             return result
 
         # Prefer the newly requested bodies over optional old conversation
