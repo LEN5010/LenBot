@@ -27,6 +27,7 @@
 | 按步骤阅读命令、事件表达和后台工作 | [三条插件参考路径](plugin-examples.md) |
 | 核对内置插件的同版适配、资源与兼容 ID | [插件兼容与迁移](plugin-compatibility.md) |
 | 整理同一候选版本的源码、构建与人工证据 | [发布现场记录模板](../deploy/linux/release-evidence.template.md)；真实材料留在受控运维目录 |
+| 了解尚未发布的变更与版本化交付顺序 | [未发布说明](release-notes.md)、[贡献流程](../CONTRIBUTING.md#从开发提交到版本发布) |
 | Linux 与开发机部署 | [Linux 部署](../deploy/linux/README.md)、[开发机 Gateway](../deploy/dev/README.md) |
 | 缓存调查能支持哪些结论 | [缓存判读口径](serious-issue.md) |
 
