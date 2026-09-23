@@ -504,8 +504,8 @@ class InformationJobRunner:
 
         async def commit_result(result, expected, *, work_state=None, skill_candidate=None):
             await charge(expected, enforce=False)
-            event = await store.complete_job(job_id, scene_id, expected, result, work_state=work_state,
-                skill_candidate=skill_candidate, bot_actor_id=runtime.bot_actor_id)
+            event = await store.complete_job(job_id, scene_id, expected, result, validate_access=require_current_access,
+                work_state=work_state, skill_candidate=skill_candidate, bot_actor_id=runtime.bot_actor_id)
             if event is None:
                 raise JobChanged("Job changed before result commit")
             result=JobResult.model_validate(event.payload['result'])
