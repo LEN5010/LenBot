@@ -867,6 +867,8 @@ class JobStoreMixin(SkillStoreMixin):
             raise ValueError("Completed work steps require this work's actual observations")
         await self._validate_evidence_spans(job, state.evidence_spans, state.key_result_ids)
         for step in state.completed_steps:
+            if not set(step.result_ids).issubset(span.result_id for span in step.evidence_spans):
+                raise ValueError('Completed work steps require actual read spans for every cited observation')
             await self._validate_evidence_spans(job, step.evidence_spans, step.result_ids)
 
     async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None, *, bot_actor_id=''):
