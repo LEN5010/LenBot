@@ -45,6 +45,7 @@ const workspaceFileTarget = ref(null)
 const usage = ref(null), usageLoading = ref(false), usageError = ref(''), usageReadAt = ref(null), usagePage = ref(1)
 const editing = ref(false), draft = ref({ goal: '', constraints: '', parameters:{} }), baseline = ref(null), conflict = ref(false)
 const confirmation = ref(null), saving = ref(false), actionError = ref(''), feedback = ref('')
+const pendingControl=ref(null), controlReadAt=ref(null), controlReceipt=ref(null)
 let listRequest = 0, detailRequest = 0, recordsRequest = 0, resourceRequest = 0, artifactsRequest = 0, fileRequest = 0, usageRequest = 0
 const actionGuard = useRequestGuard(() => JSON.stringify([route.name, jobId.value, route.query.scene]))
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -117,12 +118,16 @@ async function loadJob({ reset = false, accept = () => true } = {}) {
   const fresh = () => request === detailRequest && id === jobId.value && scope === scalar(route.query.scene) && accept()
   if (!id) return
   detailLoading.value = true; detailError.value = ''; detailMissing.value = false
+  if(pendingControl.value)controlReadAt.value=null
   if (reset) { job.value = null; detailReadAt.value = null; resetRelated() }
   try {
     const value = await api(`/api/cockpit/jobs/${encodeURIComponent(id)}` + (scope ? '?scene_id=' + encodeURIComponent(scope) : ''))
     if (!fresh()) return
+    if(value.id!==id||(scope&&value.scene_id!==scope))throw new Error('当前工作读取的身份与目标不符，未采用。')
+    if(pendingControl.value&&value.scene_id!==pendingControl.value.scene)throw new Error('当前工作不属于原控制场景，未采用。')
     if (job.value && value.revision !== job.value.revision) resetRelated()
     job.value = value; imageErrors.value=new Set(); detailReadAt.value = Date.now() / 1000
+    if(pendingControl.value)controlReadAt.value=detailReadAt.value
     if (editing.value && baseline.value && (value.revision !== baseline.value.revision || changedWorkContract())) conflict.value = true
     await Promise.all([loadWorkspaceArtifacts(), tab.value === 'records' ? loadRecords() : null,
       tab.value === 'budget' ? loadUsage(usagePage.value) : null,
@@ -212,7 +217,7 @@ function changedWorkContract() {
     || hasConfigDraftChanges(baseline.value.schema, job.value.work_revision_schema ?? null))
 }
 function startEdit() {
-  if (!editable.value || saving.value || detailLoading.value || detailError.value) return
+  if (pendingControl.value || !editable.value || saving.value || detailLoading.value || detailError.value) return
   baseline.value = currentBaseline()
   draft.value = { goal: job.value.goal, constraints: job.value.constraints.join('\n'), parameters:{} }
   conflict.value = false; actionError.value = ''; feedback.value = ''; editing.value = true
@@ -223,7 +228,7 @@ function discardParameterChanges() {
   draft.value.parameters = {}; actionError.value = ''
 }
 function reviewLatestVersion(keep = true) {
-  if (saving.value || detailLoading.value || detailError.value || !job.value || !baseline.value || !editable.value) return
+  if (saving.value || pendingControl.value || detailLoading.value || detailError.value || !job.value || !baseline.value || !editable.value) return
   if (job.value.id !== baseline.value.id || job.value.scene_id !== baseline.value.scene) return
   if (!keep && !window.confirm('放弃本页未保存的工作修订，采用刚读到的目标、要求和业务参数？')) return
   if (keep && Object.keys(draft.value.parameters).length && changedWorkContract()) {
@@ -242,7 +247,7 @@ function reviewLatestVersion(keep = true) {
   feedback.value = keep ? `已将实际改动重建到版本 ${job.value.revision}；未编辑的目标和要求采用现值。请核对后再保存，尚未提交。` : `已采用版本 ${job.value.revision}，没有提交修订。`
 }
 function askAction(operation) {
-  if (saving.value || detailLoading.value || detailError.value || !job.value) return
+  if (saving.value || pendingControl.value || detailLoading.value || detailError.value || !job.value) return
   if (operation === 'cancel' && !editable.value || operation === 'resume' && !job.value.can_resume) return
   const current = job.value
   if (operation === 'revise') {
@@ -263,29 +268,54 @@ function askAction(operation) {
   actionError.value = ''
 }
 const confirmationTitle = computed(() => ({ revise: '确认修改工作要求', resume: '确认恢复执行', cancel: '确认停止工作' }[confirmation.value?.operation] || '确认操作'))
+function sameControl(value,attempt) {
+  return value?.job_id===attempt.id&&value.scene_id===attempt.scene&&value.operation===attempt.operation
+    && value.expected_revision===attempt.expected_revision
+}
+function continueFromCurrent() {
+  if(saving.value||detailLoading.value||detailError.value||!pendingControl.value||controlReadAt.value===null)return
+  if(!window.confirm('放弃原控制确认和修订草稿，按当前工作重新选择操作？这不重发、撤销或追认旧请求，也不补充预算。'))return
+  pendingControl.value=null;controlReadAt.value=null;confirmation.value=null
+  editing.value=false;baseline.value=null;conflict.value=false;actionError.value=''
+  feedback.value='已结束原控制草稿，请按当前工作重新选择；原操作与外部停止／发送结果仍需分别核对。'
+}
 async function submitAction() {
-  if (saving.value || detailLoading.value || detailError.value || !confirmation.value || !job.value) return
-  const { operation, id, scene, displayGoal, ...body } = confirmation.value
+  if (saving.value || pendingControl.value || detailLoading.value || detailError.value || !confirmation.value || !job.value) return
+  const attempt=clone(confirmation.value)
+  const { operation, id, scene, displayGoal, ...body } = attempt
   if (id !== job.value.id || scene !== job.value.scene_id || body.expected_revision !== job.value.revision) {
     actionError.value = '确认期间工作已变化，未提交旧确认。请核对当前版本后重新选择操作。'
     if (operation === 'revise') conflict.value = true
     confirmation.value = null; return
   }
   const fresh = actionGuard()
-  saving.value = true; ++detailRequest; detailLoading.value = false; actionError.value = ''; feedback.value = ''
+  saving.value = true; ++detailRequest; detailLoading.value = false; actionError.value = ''; feedback.value = '';controlReceipt.value=null
+  let submitted=false, accepted=false
   try {
-    const result = await api(`/api/cockpit/jobs/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body: JSON.stringify(body) })
+    const payload=JSON.stringify(body)
+    submitted=true
+    const result = await api(`/api/cockpit/jobs/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body: payload })
     if (!fresh()) return
-    if (!result.job || result.job.id !== id || result.job.scene_id !== scene) throw new Error('控制响应未返回同一工作的保存值；操作结果需沿原工作记录核对，未自动重复提交。')
+    if(result.success!==true||!sameControl(result,attempt)||result.control_accepted!==true)throw new Error('控制响应缺少原操作的明确提交确认，结果待核对。')
+    accepted=true;controlReceipt.value=result
+    if (!result.job || result.job.id !== id || result.job.scene_id !== scene) throw new Error('工作控制已提交，但未返回同一工作的保存值；请读取当前工作，不重复提交。')
     resetRelated(); job.value = result.job; detailReadAt.value = Date.now() / 1000; confirmation.value = null
     if (operation === 'revise') { editing.value = false; baseline.value = null; conflict.value = false }
     feedback.value = { revise: '要求已保存，工作版本已更新。', resume: '恢复请求已提交，预算和模型绑定保留。', cancel: '取消请求已提交；实际执行停止状态和历史记录请继续核对。' }[operation]
     await Promise.all([loadWorkspaceArtifacts(), tab.value === 'budget' ? loadUsage() : null, tab.value === 'records' ? loadRecords() : null])
   } catch (error) {
     if (!fresh()) return
-    actionError.value = error.message
-    confirmation.value = null
-    if (error.status === 409 && error.details != null) { if (operation === 'revise') conflict.value = true; await loadJob({ accept:fresh }) }
+    actionError.value = error.message;confirmation.value = null
+    const matching=sameControl(error.details,attempt)
+    if(matching)controlReceipt.value=error.details
+    if(matching&&error.details.control_accepted===false){
+      if(operation==='revise')conflict.value=true
+      await loadJob({accept:fresh})
+    }else if(submitted&&!(error.status===422&&Array.isArray(error.details))){
+      pendingControl.value={...attempt,accepted:accepted||(matching&&error.details.control_accepted===true)}
+      controlReadAt.value=null
+      await loadJob({accept:fresh})
+    }
   } finally { if (fresh()) saving.value = false }
 }
 function refresh() { if (saving.value) return; return jobId.value ? loadJob() : loadList() }
@@ -296,6 +326,7 @@ onBeforeRouteUpdate((to, from) => to.params.jobId !== from.params.jobId || to.qu
 watch(() => [route.params.jobId, route.query.scene], () => {
   ++listRequest; ++detailRequest; actionGuard(); saving.value = false
   editing.value = false; baseline.value = null; conflict.value = false; confirmation.value = null; actionError.value = ''; feedback.value = ''
+  pendingControl.value=null;controlReadAt.value=null;controlReceipt.value=null
   if (jobId.value) loadJob({ reset: true })
   else { job.value = null; resetRelated() }
 }, { immediate: true, flush:'sync' })
@@ -344,9 +375,19 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
       <v-card v-if="editing&&!job" class="section-gap"><v-card-text><p>当前工作详情不可读取，原版本 {{ baseline.revision }} 的修订草稿仍保留，未套用到其他工作。</p><ResourceViewer title="未保存的工作修订" :content="draft" /><v-btn variant="text" :disabled="saving" @click="cancelEdit">放弃修订草稿</v-btn></v-card-text></v-card>
       <v-alert v-if="feedback" type="success" variant="tonal" class="section-gap" role="status">{{ feedback }}</v-alert>
       <v-alert v-if="actionError" type="error" variant="tonal" class="section-gap" role="alert">{{ actionError }}</v-alert>
+      <v-alert v-if="pendingControl" type="warning" variant="tonal" class="section-gap">
+        <p>{{ pendingControl.accepted?'原控制已取得提交确认，当前工作仍需核对。':'原控制结果未知。' }}{{ pendingControl.operation }} · {{ pendingControl.id }} · 基于版本 {{ pendingControl.expected_revision }}。不能以再次修订、恢复或取消代替核对。</p>
+        <p v-if="controlReadAt!==null">当前工作已于 {{ fmtTime(controlReadAt) }} 读取；当前状态不是原请求回执。</p>
+        <v-btn variant="text" :disabled="saving||detailLoading" @click="refresh">读取当前工作</v-btn>
+        <v-btn variant="text" :disabled="saving||detailLoading||!!detailError||controlReadAt===null" @click="continueFromCurrent">结束原确认，按当前工作操作</v-btn>
+      </v-alert>
+      <div v-if="controlReceipt" class="identity-line section-gap">
+        <EntityLink v-if="controlReceipt.source_event_id" type="event" :id="controlReceipt.source_event_id" :scene-id="controlReceipt.scene_id" label="本次控制的管理来源" />
+        <EntityLink v-if="controlReceipt.commit_event_id" type="event" :id="controlReceipt.commit_event_id" :scene-id="controlReceipt.scene_id" label="本次控制的提交记录" />
+      </div>
       <template v-if="job">
         <v-card class="job-heading">
-          <v-card-text><h2 class="full-title">{{ job.goal }}</h2><div class="identity-line"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" /><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /><span>目标版本 {{ job.revision }}</span></div><div class="identity-line"><span>发起人 {{ job.initiator?.principal_type === 'human' ? '用户 ' + job.initiator.user_id : job.initiator?.principal_type === 'system' ? '系统 ' + job.initiator.agent_id : job.initiator?.principal_type === 'plugin' ? '插件 ' + job.initiator.plugin_id : '未记录' }}</span><span>付额账户 {{ job.reservation?.subject || '未记录' }}</span><EntityLink v-if="job.request_source_event_id" type="event" :id="job.request_source_event_id" :scene-id="job.scene_id" label="发起此工作的来源事件" /><span v-else class="muted-copy">旧工作未单独保存请求来源</span></div><div class="detail-status"><span>执行 <StatusBadge domain="job_execution" :status="job.execution_status" /></span><span>交付 <StatusBadge domain="job_delivery" :status="job.delivery_required === false ? 'not_required' : job.status" /></span><span class="read-time">读取于 {{ fmtTime(detailReadAt) }}</span></div><div class="action-row"><v-btn :disabled="!editable || job.plugin_issue || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiPencilOutline" variant="outlined" @click="startEdit">修改要求</v-btn><v-btn :disabled="!job.can_resume || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiPlayOutline" variant="outlined" @click="askAction('resume')">{{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}</v-btn><v-btn :disabled="!editable || saving || editing || detailLoading || !!detailError" :prepend-icon="mdiStopCircleOutline" color="error" variant="outlined" @click="askAction('cancel')">停止工作</v-btn></div></v-card-text>
+          <v-card-text><h2 class="full-title">{{ job.goal }}</h2><div class="identity-line"><EntityLink type="job" :id="job.id" :scene-id="job.scene_id" /><EntityLink type="scene" :id="job.scene_id" :scene-id="job.scene_id" /><span>目标版本 {{ job.revision }}</span></div><div class="identity-line"><span>发起人 {{ job.initiator?.principal_type === 'human' ? '用户 ' + job.initiator.user_id : job.initiator?.principal_type === 'system' ? '系统 ' + job.initiator.agent_id : job.initiator?.principal_type === 'plugin' ? '插件 ' + job.initiator.plugin_id : '未记录' }}</span><span>付额账户 {{ job.reservation?.subject || '未记录' }}</span><EntityLink v-if="job.request_source_event_id" type="event" :id="job.request_source_event_id" :scene-id="job.scene_id" label="发起此工作的来源事件" /><span v-else class="muted-copy">旧工作未单独保存请求来源</span></div><div class="detail-status"><span>执行 <StatusBadge domain="job_execution" :status="job.execution_status" /></span><span>交付 <StatusBadge domain="job_delivery" :status="job.delivery_required === false ? 'not_required' : job.status" /></span><span class="read-time">读取于 {{ fmtTime(detailReadAt) }}</span></div><div class="action-row"><v-btn :disabled="!editable || job.plugin_issue || saving || editing || detailLoading || !!detailError || !!pendingControl" :prepend-icon="mdiPencilOutline" variant="outlined" @click="startEdit">修改要求</v-btn><v-btn :disabled="!job.can_resume || saving || editing || detailLoading || !!detailError || !!pendingControl" :prepend-icon="mdiPlayOutline" variant="outlined" @click="askAction('resume')">{{ job.execution_status==='partial'?'继续未完成部分':'核对后恢复' }}</v-btn><v-btn :disabled="!editable || saving || editing || detailLoading || !!detailError || !!pendingControl" :prepend-icon="mdiStopCircleOutline" color="error" variant="outlined" @click="askAction('cancel')">停止工作</v-btn></div></v-card-text>
         </v-card>
         <v-card v-if="job.reused_work || job.followup_work?.total" class="section-gap">
           <v-card-title>成果复用关系</v-card-title>
@@ -372,12 +413,12 @@ watch(() => route.query.resource, value => { if (value && job.value) loadResourc
               <ResourceViewer title="本次读取的目标" :content="job.goal" class="mt-3" /><ResourceViewer title="本次读取的要求" :content="job.constraints" class="mt-3" />
               <details v-if="Object.keys(draft.parameters).length" class="mt-3"><summary>核对业务参数和本次修改</summary><ResourceViewer title="原编辑基线的业务参数" :content="baseline.parameters" /><ResourceViewer title="本次读取的业务参数" :content="job.work_parameters" /><ResourceViewer title="尚未提交的参数修改" :content="draft.parameters" /></details>
               <p class="mt-3">保留只重建实际编辑的目标与要求增删，其他人的新增要求不会变成删除。参数修改仍交给原插件基于明确选择的新版本解释；选择本身不提交。</p>
-              <div class="action-row"><v-btn variant="outlined" :disabled="!editable||saving||detailLoading||!!detailError" @click="reviewLatestVersion(true)">保留实际改动，采用新基线</v-btn><v-btn variant="text" :disabled="!editable||saving||detailLoading||!!detailError" @click="reviewLatestVersion(false)">放弃草稿，采用现值</v-btn></div>
+              <div class="action-row"><v-btn variant="outlined" :disabled="!editable||saving||detailLoading||!!detailError || !!pendingControl" @click="reviewLatestVersion(true)">保留实际改动，采用新基线</v-btn><v-btn variant="text" :disabled="!editable||saving||detailLoading||!!detailError || !!pendingControl" @click="reviewLatestVersion(false)">放弃草稿，采用现值</v-btn></div>
             </v-alert>
             <v-textarea v-model="draft.goal" label="工作目标" rows="2" auto-grow :disabled="saving" /><v-textarea v-model="draft.constraints" label="要求（每行一项）" rows="4" auto-grow :disabled="saving" />
             <template v-if="baseline.schema"><h4>修改插件业务参数</h4><p class="muted-copy">只填写需要改变的字段；未填写字段由所属插件保留。本表单仍使用开始编辑时的修订接口，范围和快照由所属插件处理。</p><PluginConfigFields v-model="draft.parameters" :schema="baseline.schema" :disabled="saving" /></template>
             <v-btn v-if="Object.keys(draft.parameters).length" class="mt-3" variant="text" :disabled="saving" @click="discardParameterChanges">只放弃业务参数修改</v-btn>
-            <div class="action-row"><v-btn color="primary" :disabled="!editable || !dirty || !draft.goal.trim() || conflict || saving || detailLoading || !!detailError" @click="askAction('revise')">保存修改</v-btn><v-btn variant="text" :disabled="saving" @click="cancelEdit">取消编辑</v-btn></div>
+            <div class="action-row"><v-btn color="primary" :disabled="!editable || !dirty || !draft.goal.trim() || conflict || saving || detailLoading || !!detailError || !!pendingControl" @click="askAction('revise')">保存修改</v-btn><v-btn variant="text" :disabled="saving" @click="cancelEdit">取消编辑</v-btn></div>
           </v-card-text>
         </v-card>
         <v-card class="section-gap">
