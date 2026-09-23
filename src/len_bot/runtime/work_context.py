@@ -73,6 +73,23 @@ def _image_contexts(messages):
                 raise ValueError("Work image lacks a stored asset manifest")
 
 
+def request_image_assets(message):
+    """Locate final pixel blocks using the work window's existing manifest.
+
+    A set of current assets cannot distinguish positions in one request. The
+    manifest indexes images only; the request record indexes all content parts.
+    """
+    assets = {}
+    for content, _, _, _, manifest in _image_contexts([message]):
+        by_index = {item['block_index']: item['asset_id'] for item in manifest if 'block_index' in item}
+        image_index = 0
+        for part_index, block in enumerate(content):
+            if block.get('type') == 'image_url':
+                assets[part_index] = by_index[image_index]
+                image_index += 1
+    return assets
+
+
 def synchronize_image_window(messages, image_limit, max_bytes):
     """Retain the newest asset pixels within the configured image window.
 
