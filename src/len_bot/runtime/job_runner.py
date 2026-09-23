@@ -902,7 +902,7 @@ class InformationJobRunner:
                             return count_remaining(config.job_max_steps, current["model_steps"])
 
                         compressor = WorkCompressor(runtime, job_id, scene_id, revision, charge, lambda: exchange_count, config=config,
-                            admission=work_admission)
+                            toolkit=toolkit, admission=work_admission)
                         presentation = WorkToolPresentation(runtime, scene_id, config, supports_segment_vision=binding.supports_vision)
 
                         def work_definitions():
@@ -976,6 +976,7 @@ class InformationJobRunner:
 
                         async def finalize_request(trajectory, definitions):
                             nonlocal current_assets
+                            await compressor.revalidate_summaries(trajectory)
                             await toolkit.invalidate_saved_references(trajectory)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             presentation.check_request(trajectory,definitions)
