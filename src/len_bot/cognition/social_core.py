@@ -264,7 +264,8 @@ class SocialCognitionCore:
             await toolkit.invalidate_saved_references(trajectory)
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
             for message in trajectory:
-                if not message.get('_context_omitted'):
+                if (not message.get('_context_omitted') and '_segment_result_content' in message
+                        and message.get('content') == message['_segment_result_content']):
                     context.refs.results.update(message.get('_segment_result_refs',{}))
             context.reconcile_original_reads(trajectory)
             pending_presentations=toolkit.read_presentations(trajectory)
