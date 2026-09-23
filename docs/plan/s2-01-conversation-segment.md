@@ -2,7 +2,7 @@
 
 面向内核与存储维护者。依据 2026-09-23 已确认的[宿主所有权方向](s0-02-product-positioning-and-decisions.md)，核对源码基线 `a0d07c8`。本文给出结构选择与后续实现约束，**不是当前已具备的持续会话能力**；状态只见[产品路线](README.md)，现有装配仍见[上下文](../context.md)。本批不转换数据、不改变保留期限。
 
-实施增量：当前已在原 state_json 接通 `ConversationSegment` 的原话窗口身份与引用回读，并保存 R／J 编号预留；普通对话可把上一轮已存 R 资料作为同群、定位级候选放入新请求，正文仍须本轮重读。运行覆盖仍为 source_window_only，见[现有合同](../context.md#当前段的原话窗口引用)。具体保存字段使用 id、previous_id、through_rowid、event_ids、result_aliases、job_aliases；下文的有序材料、摘要基线、其他稳定别名和完整原生交换仍是后续设计，并非都已落库。新程序保存 Session 后即可能出现可空新字段，旧程序回退约束已经实际适用；本轮未运行服务，因此没有修改真实业务数据。
+实施增量：当前已在原 state_json 接通 `ConversationSegment` 的原话窗口身份与引用回读、最终请求保留的摘要批次引用，并保存 R／J 编号预留；普通对话可把上一轮已存 R 资料作为同群、定位级候选放入新请求，正文仍须本轮重读。运行覆盖仍为 source_window_only，见[现有合同](../context.md#当前段的原话窗口引用)。具体保存字段使用 id、previous_id、through_rowid、event_ids、summary_refs、result_aliases、job_aliases；下文的有序材料、固定材料持久版本、其他稳定别名和完整原生交换仍是后续设计，并非都已落库。新程序保存 Session 后即可能出现可空新字段，旧程序回退约束已经实际适用；本轮未运行服务，因此没有修改真实业务数据。
 
 ## 1. 四种身份不得合并
 
@@ -44,6 +44,8 @@
 | summary_refs | 已完成 history_batch ID、generation_version 和原覆盖范围；摘要正文仍归原批次 |
 | ordered_items | 按接入顺序排列的事件范围、资料页、媒体引用及完整交换；只覆盖当前容量内的段 |
 | stable_refs | 渲染所需的事件／成员／资料别名对应真实身份；不保存一份可跨轮复用的权限表 |
+
+当前 `summary_refs` 只收录最终请求未被省略、未被改写且经过本次来源可用性复核的 history_summary 批次；每项保留批次 ID、字符串 generation_version 与四个位置值，不存摘要文本。Actor 将这些引用的变化视为装配变化并换段；旧段无此字段时读取为空列表。下一轮仍由原 history_batches 和当前读取截点重新选取与核对摘要，不能把保存引用当成本次已读或永久可用的正文。这是摘要基线的窄身份增量，不是 `ordered_items`、压缩或完整段恢复。
 
 `ordered_items` 至少区分以下材料，不能用一个任意消息数组混装事实和草稿：
 

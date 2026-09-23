@@ -75,6 +75,14 @@ class WakeConfirmationRequest(BaseModel):
     prompted_at: float | None = None
 
 
+class SegmentSummaryRef(BaseModel):
+    """One completed history batch selected into the final request."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    batch_id: str
+    generation_version: str
+    range: tuple[int, int, int, int]
+
+
 class ConversationSegment(BaseModel):
     """Current source-window references, not a provider transcript or read grant."""
     model_config = ConfigDict(extra='forbid', frozen=True)
@@ -87,6 +95,7 @@ class ConversationSegment(BaseModel):
     knowledge_revision: int = Field(ge=0)
     through_rowid: int = Field(ge=0)
     event_ids: list[str]
+    summary_refs: list[SegmentSummaryRef] = Field(default_factory=list)
     result_aliases: dict[str, str] = Field(default_factory=dict)
     job_aliases: dict[str, str] = Field(default_factory=dict)
 
