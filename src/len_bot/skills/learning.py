@@ -5,7 +5,7 @@ import time
 
 from len_bot.cognition.budget import seconds_left_to, work_call_admission
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.request_record import _RecordedToolDefinition
+from len_bot.cognition.request_record import _PromptComponent, _RecordedToolDefinition, _RequestLocation
 from len_bot.cognition.agent_loop import _error_text
 from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged, SkillCandidate
 from len_bot.runtime.work_context import request_tokens
@@ -129,6 +129,9 @@ async def maintain_candidates(runtime, scene_id):
                          else config.job_max_seconds-balance["elapsed_seconds"]-(time.monotonic()-budget_clock))
             if remaining is None or remaining <= 0:
                 raise JobBudgetExhausted("No work runtime remains for skill maintenance",budget_kind='elapsed_time')
+            # Retain only the fixed contract; increment its revision on edits.
+            messages[0]['_request_location'] = _RequestLocation(prompt_components=(
+                _PromptComponent('skill_maintenance.contract', 1, 0, messages[0]['content']),))
             async with asyncio.timeout(remaining):
                 response = await ModelGateway(binding, max_output_tokens=config.maintenance_output_tokens, call_store=store,
                     scene_id=scene_id, job_id=job["id"], purpose="skill_maintenance",

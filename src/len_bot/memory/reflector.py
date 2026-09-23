@@ -11,6 +11,7 @@ from len_bot.cognition.agent_loop import (
 )
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.call_store import estimate_request
+from len_bot.cognition.request_record import _PromptComponent, _RecordedToolDefinition, _RequestLocation
 from len_bot.cognition.projection import estimate_tokens
 from len_bot.memory.history import HistoryBatch
 from len_bot.memory.models import MemoryChange, MemoryModel, MemoryProposal
@@ -63,19 +64,19 @@ class LLMReflector:
 
     @staticmethod
     def terminal_definition() -> dict:
-        return {
+        return _RecordedToolDefinition({
             "type": "function",
             "function": {
                 "name": "finish_history_maintenance",
                 "description": "Submit a source-located contextual summary and only useful evidence-backed knowledge revisions; empty memory and review lists are normal.",
                 "parameters": ReflectionOutput.model_json_schema(),
             },
-        }
+        }, component_id='core.history_maintenance.finish_history_maintenance', revision=1)
 
     def tool_definitions(self) -> list[dict]:
         if self.memory_store is None:
             return []
-        return [{
+        return [_RecordedToolDefinition({
             "type": "function",
             "function": {
                 "name": "query_memory",
@@ -89,7 +90,7 @@ class LLMReflector:
                 ),
                 "parameters": MemoryLookup.model_json_schema(),
             },
-        }]
+        }, component_id='core.history_maintenance.query_memory', revision=1)]
 
     def input_tokens(self, batch: HistoryBatch, context: dict) -> int:
         """Size the same first request used by AgentLoop before saving a batch."""
@@ -247,7 +248,12 @@ class LLMReflector:
             trace['input_budget_tokens'] = budget
             if estimate['input_tokens'] > budget:
                 raise ValueError(f"历史维护请求需要 {estimate['input_tokens']} token，可用输入容量为 {budget}；原区间未推进")
-            return None
+            # Keep metadata off the reusable trajectory and its next estimate.
+            # This fixed contract's revision changes with the instruction below.
+            prepared = list(trajectory)
+            prepared[0] = {**trajectory[0], '_request_location': _RequestLocation(prompt_components=(
+                _PromptComponent('history_maintenance.contract', 1, 0, trajectory[0]['content']),))}
+            return prepared
 
         try:
             binding = self.resolver()

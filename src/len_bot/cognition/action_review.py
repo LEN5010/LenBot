@@ -139,6 +139,7 @@ class ActionReviewer:
         from len_bot.cognition.budget import WorkBudgetSnapshot, work_call_admission
         from len_bot.cognition.gateway import ModelGateway, ModelProtocolError
         from len_bot.cognition.call_store import estimate_request
+        from len_bot.cognition.request_record import _PromptComponent, _RequestLocation
         from len_bot.cognition.providers import ModelProfile
         store = self.runtime.event_store
         current = await store.get_job(request.job_id, request.scene_id)
@@ -202,6 +203,10 @@ class ActionReviewer:
             gateway = ModelGateway(binding, max_output_tokens=snapshot.work_output_tokens, call_store=store,
                 scene_id=request.scene_id, job_id=request.job_id, purpose='action_review', admission=admission)
             remaining = None if snapshot.deadline_at is None else max(0, snapshot.deadline_at - self.runtime.clock())
+            # The fixed instruction includes the code-owned output schema,
+            # not the action values. Increment the revision when either changes.
+            messages[0]['_request_location'] = _RequestLocation(prompt_components=(
+                _PromptComponent('action_review.contract', 1, 0, messages[0]['content']),))
             async with asyncio.timeout(remaining):
                 response = await gateway.complete(messages, [], 'none')
             if response.tool_calls or not isinstance(response.continuation.get('content'), str):

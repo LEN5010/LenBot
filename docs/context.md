@@ -342,6 +342,16 @@ Trace 的 `context_plan.request.messages` 保存角色、类别、事件与范�
 
 工作压缩调用另登记源码固定的 `work_compression.contract` 提示组件和 `core.work_compression.summarize_work_segment` 工具定义，初始修订均为 1；后者 Schema 来自实际解析输出的 WorkSegment。沿同一请求记录比较最终内容，匹配才保存固定快照，组件改动时维护者递增其修订。压缩输入区间选定后才附提示定位，传输前移除私有信息，不参与窗口估算或改变原调用预算。动态目标、要求、归档交换与模型压缩回复没有因此复制进请求快照；原区间／来源与压缩结果仍沿原工作记录，本入口不证明完整请求可还原。旧压缩调用不回填，无新增表或清理策略。
 
+下列维护与审查入口也复用同一机制，组件初始修订为 1，只保存源码固定文本及 Schema，不保存动态资料或动作值：
+
+| 调用用途 | 固定提示组件 | 工具定义／输出合同 |
+|---|---|---|
+| history_maintenance | `history_maintenance.contract` | `core.history_maintenance.finish_history_maintenance` 与 `core.history_maintenance.query_memory`，Schema 分别来自 ReflectionOutput／MemoryLookup；没有认识查询工具时不虚增其记录 |
+| skill_maintenance | `skill_maintenance.contract` | 继续使用已有 save_skill／skip_skill 定义快照，不重复注册 |
+| action_review | `action_review.contract` | ReviewDecision Schema 本来就在固定 system 文本内，随该组件保存；工具列表仍为空，不新增审查模型或工具 |
+
+历史维护在原最终容量核对后，为本次发送复制消息列表和固定首消息再附定位，不污染后续轮次复用的轨迹与估算。方法维护和动作审查在原输入容量核对之后附定位，原网关在估算、登记与传输边界取出它。动态批次原话、既有认识、候选方法、工作目标／要求和动作参数仍只在原所属记录中；缺少引用或正文的请求范围仍明确缺档。固定提示含 Schema 时，任一固定文案或 Schema 改变都应递增组件修订；旧调用不回填，登记失败仍随原事务／调用失败结束。
+
 普通对话、独立插件表达及普通工作还在最终裁剪和合法 Hook 之后，逐消息复用 RetrievalToolkit.read_presentations 的原判定，向清单的 `tool_presentations` 写入 result_id、coordinate_unit、start/end/total 和已匹配的 evidence_ref。只有原正文片段或宿主已登记投影与保留内容一致才有范围；目录、搜索定位、失败结果和复制坐标的改写正文不能据此成为原文提供。原判定可确认已有原生页的引用名，但本批不调用 adopt_presentations，已读资格仍等待模型响应后的原确认入口。
 
 资料范围来自各消息的最终保留内容，不使用整轮累计阅读账替代；同页在两个位置出现则两个位置各自记录。字段为 null 或旧记录缺字段表示该入口未登记，为空列表仅表示此位置没有匹配到原判定认可的资料页，并不说明工具没有执行。工作入口只补资料定位，未记录的省略标记仍为未知；原话来源与媒体字节不猜补。面板可沿原资料页入口查看该范围，资料被清理或当前不可见时仍按原查询边界处理。归属字段与页范围没有补齐动态正文或原生响应，不能据此宣称完整请求或跨轮交换可还原。
