@@ -445,11 +445,10 @@ class AgentLoop:
                     terminal_calls = [entry for entry in parsed if entry[0].name == terminal_name]
                 trajectory.append(response.continuation)
                 seen_call_ids.update(call.id for call in calls)
-                # Read tools may run concurrently. Proposals and work-state updates
-                # remain ordered; a later model response can use their returned refs.
-                # So do tools that declare an order of their own: running a script
-                # and reading its output in one response is two steps, not two
-                # independent reads, whatever `kind` they were registered under.
+                # A batch runs concurrently only when none of its tools require
+                # order. Plugin reads default to ordered; kind alone does not
+                # grant parallel execution. One ordered call serializes the whole
+                # response in model order, including its otherwise parallel reads.
                 executions = [entry for entry in parsed if entry[0].name != terminal_name]
                 serialized = set(proposal_tool_names) | set(ordered_tool_names)
                 results: list[Any] = []
