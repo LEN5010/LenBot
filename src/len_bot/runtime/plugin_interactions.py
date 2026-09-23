@@ -256,6 +256,23 @@ async def deliver_work_result(runtime,event):
 
 
 @asynccontextmanager
+async def _agent_lock(execution):
+    wait = {'state': 'waiting', 'agent_lock_wait_ms': None}
+    execution.audit.setdefault('agent_lock_waits', []).append(wait)
+    started = time.monotonic()
+    try:
+        async with execution.agent_lock:
+            wait.update(state='acquired', agent_lock_wait_ms=round((time.monotonic()-started)*1000, 2))
+            yield
+    except BaseException as error:
+        if wait['state'] == 'waiting':
+            wait.update(state='cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
+                agent_lock_wait_ms=round((time.monotonic()-started)*1000, 2),
+                error_type=type(error).__name__, error_phase='agent_lock_wait')
+        raise
+
+
+@asynccontextmanager
 async def _model_slot(runtime, execution):
     if execution.model_slot_owned:
         yield
@@ -372,7 +389,7 @@ async def run_agent(runtime, call, *, input_observations: list[ToolResult], outp
         raise ValueError('Plugin Agent invoked outside a loop needs a model-call or tool-call limit; '
                          'without a borrowed account there is no stopping condition')
     parent.budget=parent.budget or AgentBudget(request.max_steps,request.max_tool_calls)
-    async with parent.agent_lock:
+    async with _agent_lock(parent):
         async with _model_slot(runtime,parent):
             audit={'plugin_origin':call.origin.model_dump(),'output_mode':request.output_mode,'input_mode':request.input_mode,
                 'requested_budget':{'model_calls_limit':request.max_steps,'tool_calls_limit':request.max_tool_calls,
