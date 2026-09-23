@@ -3,7 +3,7 @@ const events={CORE_BRIDGE_ATTEMPTED:'Core 桥接尝试',PLATFORM_ACTION_ATTEMPTE
 export const purposeOptions=Object.entries(purposes).map(([value,title])=>({value,title}))
 export function purposeLabel(value){return purposes[value] || value}
 export function eventLabel(value){return value==='PLUGIN_EVENT'?'插件事件':events[value] || value}
-const traces={interest_share:'公共兴趣分享机会',heartbeat:'心跳周期',action_review:'动作审查',browser_cleanup:'浏览器回收',history_projection_error:'维护提交后的投影失败',conversation:'对话',conversation_error:'对话失败',plugin_run:'插件运行',plugin_work_delivery:'插件工作交付',plugin_hook:'插件回执钩子',plugin_lifecycle:'插件起停',calendar_command:'旧日程命令',live_announcement:'旧开播邀请',agent_job:'信息工作',agent_job_error:'工作失败',history_maintenance:'历史维护',history_maintenance_error:'历史维护失败',work_compression:'工作压缩',skill_maintenance:'技能整理',memory_retrieval:'认识召回'}
+const traces={interest_share:'公共兴趣分享机会',heartbeat:'心跳周期',action_review:'动作审查',browser_cleanup:'浏览器回收',history_projection_error:'维护提交后的投影失败',conversation:'对话',conversation_error:'对话失败',plugin_run:'插件运行',plugin_work_delivery:'插件工作交付',plugin_hook:'插件回执钩子',plugin_lifecycle:'插件起停',calendar_command:'旧日程命令',live_announcement:'旧开播邀请',agent_job:'信息工作',agent_job_wait:'工作槽位等待',agent_job_error:'工作失败',history_maintenance:'历史维护',history_maintenance_error:'历史维护失败',work_compression:'工作压缩',skill_maintenance:'技能整理',memory_retrieval:'认识召回'}
 Object.assign(traces, { memory_index_rebuild:'认识索引显式重建', memory_index_error:'认识索引错误', memory_index_cancelled:'认识索引已停止' })
 export const traceOptions=Object.entries(traces).map(([value,title])=>({value,title}))
 export function traceLabel(value){return traces[value] || value}
