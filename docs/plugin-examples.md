@@ -92,4 +92,6 @@ live_started 的 register_handler 已声明 refresh_deferred 回调。宿主只�
 
 图像字节由 call.save_image 登记，产物说明用 context.save_result 保存。最终 JobResult.delivery 使用 PreparedWorkDelivery，把本次结果 ID 与已保存图片片段交给原完成事件及交付链；后台工作不调用 submit_message。结构化报告存在、图片生成、资产登记、准备交付和真实送达逐项区分，不以本地路径证明平台收到文件。
 
+宿主的 deliver_work_result 为这份成品建立工作交付调用：原 job/revision、work-delivery 轮次和工作发起者同时用于回调、工具箱及 Mailbox。前置 Hook 看到的不是原处理器的无工作副本；但调用仍使用 conversation 角色进行交付，不恢复工作执行资格。发生新输入冲突时等待原场景重新处理，旧版本成果不能替代修订后的目标。
+
 正常工作应留下真实 job/revision、资料结果、模型调用、进度、资产、完成事件与最终回执。本文未产生这些现场记录；渲染失败、部分报告及跨修订复用仍需在获准环境依真实业务核对，不用伪造输入替代验收。
