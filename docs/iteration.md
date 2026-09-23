@@ -4,23 +4,23 @@
 
 ## 当前批次
 
-- 分支 feat/s0-product-contract，基线 2f8c14d，开始时工作区干净；上一阶段插件固定通知已本地提交，属于实际进展。
-- S1-04：同一父执行的插件 Agent 先等待原 agent_lock，再可能等待共享模型槽位；原审计只记后者，串行锁等待取消缺档。复用父执行 audit 与阶段投影，不新增持久表或通用排队层。
+- 分支 feat/s0-product-contract，基线 e3c76f9，开始时工作区干净；上一阶段插件子调用串行锁等待已本地提交。
+- S2-02：上一轮资料 R 编号虽已保存，但新轮只预留编号，不提供再次读取的定位入口；模型无法从当前请求选用旧资料页。仅补同群、定位级候选，不保存或恢复原生工具交换，不让旧阅读事实继承到新轮。
 
 ## 本批交付与核对
 
-_plugin_interactions._agent_lock 沿原 contextmanager 包裹既有 execution.agent_lock：每次等待向父 audit.agent_lock_waits 追加 waiting 条目，取得更新 acquired 与单调时长；取得前取消／失败更新 cancelled／failed 与异常类型后仍传播。锁体内的模型、工具、提交异常不改写锁等待状态；原锁获取、持有与释放顺序不变。子运行审计建立在锁之后，故早于该时点的取消只能归父执行，不能生成假子调用。
+普通对话初始装配后，按当前段的 result_aliases 调原观察元数据查询，确认资料仍属于本群；在输入容量内追加 saved_result_locators，列出旧 R 编号、原工具名及当前位置可用性，不读取或复制资料正文。目录被裁剪时，既有可选上下文释放路径可撤下整条，省略进入原 context_plan。仅最终请求仍保留的可用目录项成为本轮 read_tool_result 可解析位置；执行该工具时原路径再次按本群读取，只有正文实际呈现后才形成本轮已读范围。不可用项只明示位置已失效，不作为可解析引用；工作 J 的原权限与修订复核不变。旧编号只随本轮保留／重新登记继续保存，不建立永久资料目录。
 
-查询服务沿原父子运行收集新增等待叶项，TraceTimings 显示插件子调用串行锁的真实等待及状态，与共享模型槽位分开。两段可能属于同一插件调用，却不代表整个调用的独占总时长；未记录不补零，不给等锁过程补模型 call_id 或请求数。不存在相应业务来源时不根据等待值推断权限或送达。
+固定对话合同补充 saved_result_locators 的参考属性和本轮续读要求，组件修订从 1 递增到 2；同进程段基础材料比较仍按原 system 内容变化开启新段。source_window_only 仍表示没有完整跨轮原生交换，不据可续读 R 声称完整段能力。无新表、额外配置、模型额度、请求次数、业务状态或发送路径。
 
-- 阅读 run_agent 原 budget、agent_lock、_model_slot、子 audit 构造与父审计保存，以及 _trace_runs 嵌套展开和现有阶段组件；只修改实际锁持有处与现有只读投影。
-- uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/runtime/plugin_interactions.py src/len_bot/web/query_service.py 退出 0；原前端目录 npm run build 退出 0，491 个模块、1.85s，日志 /private/tmp/lenbot-agent-lock-build.log。git diff --check 无格式错误，构建产物不进 Git。
-- 无获准同版面板，也未在本批实际等待或取消；代码与构建不当运行验收。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、依赖安装、服务或真实模型／平台调用；未读取真实配置／业务库或实发。
-- 本批无源码定位、编译构建或实际业务失败原文。
+- 阅读 ConversationSegment、SocialCognitionCore.build/finalize_request、TurnReferences 的别名预留与可解析表、ObservationStoreMixin 的同群定位查询、RetrievalToolkit.read_tool_result 的二次读取与实际呈现边界、可选上下文释放路径；只修改这条业务路径和所属文档。
+- uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/cognition/context.py src/len_bot/cognition/social_core.py 退出 0；git diff --check 无格式错误。无前端改动，未重复构建。
+- 无获准同版服务或自然发生的跨轮资料续读；请求清单、资料回读和页面仍待人工验收。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、依赖安装、服务或真实模型／平台调用；未读取真实配置／业务库或实发。
+- 本批源码定位命令 `python` 返回 `zsh:1: command not found: python`，随后改用既有 uv 入口完成文档编辑；不是业务运行失败。无编译或实际业务失败原文。
 
 ## 待决定与接续
 
-1. S1-04 仍有工作选中前与其他所属锁等待以及同版人工证据缺口；S1-02 动态定义／材料范围仍需来源事实。不要无限加时钟来宣称完整互动延迟。
-2. S2 当前 source_window_only，完整活动交换与 S2-03 压缩交接未完成；额外原生字段保存、分类期限、许可证／素材授权、精确支持组合与公开承诺仍待维护者决定。
-3. S6 候选／现场／远端 CI／升级／外部迁移／发布及 S7 独立使用者／作者记录未完成，原 S3／S4／S5 待人工复核项保持。
+1. S2 仍只有原话窗口与资料定位延续，完整原生工具交换、固定材料持久基线、压缩交接未完成；额外原生字段及必要回复片段的保存边界仍待维护者确认，不先铺无消费状态。
+2. S1 请求材料／阶段延迟还不完整；S3／S4／S5 源码项待同版人工验收。已选 Linux 容器群报告与文件交付方向、私下报告邮箱为 Git 作者邮箱；精确支持版本与发布承诺、分类保留期限及许可证／素材授权仍未定。
+3. S6 候选现场／远端 CI／升级／外部迁移／发布及 S7 独立使用者／作者记录未完成；不把本机编译视为环境或实群通过。
 4. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。
