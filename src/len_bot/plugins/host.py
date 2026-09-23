@@ -403,26 +403,31 @@ class PluginHost:
             await plugin.on_load(context)
             self._status[plugin_id].state = 'loaded'
             logger.info('Loaded plugin %s from %s', plugin_id, entry.directory)
-        except Exception as error:
-            self.record_plugin_error(plugin_id, f'load failed: {error}')
+        except (Exception, asyncio.CancelledError) as error:
+            self.record_plugin_error(plugin_id, f'load failed: {type(error).__name__}: {error}')
             await self._release_plugin(plugin_id)
             raise
 
     async def _release_plugin(self, plugin_id: str) -> None:
+        plugin = self._plugins.get(plugin_id)
+        if plugin is not None:
+            plugin.manifest.enabled = False
         await self._cancel_tasks(plugin_id)
         plugin = self._plugins.pop(plugin_id, None)
-        if plugin is not None:
-            try:
+        try:
+            if plugin is not None:
                 await plugin.on_unload()
-            except Exception as error:
-                self.record_plugin_error(plugin_id, f'unload failed: {error}')
-        self._plugin_contexts.pop(plugin_id, None)
-        for name in [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id]:
-            del self._tools[name]
-        for key in [key for key in self._handlers if key[0] == plugin_id]:
-            del self._handlers[key]
-        for key in [key for key in self._hooks if key[0] == plugin_id]:
-            del self._hooks[key]
+        except (Exception, asyncio.CancelledError) as error:
+            self.record_plugin_error(plugin_id, f'unload failed: {type(error).__name__}: {error}')
+            raise
+        finally:
+            self._plugin_contexts.pop(plugin_id, None)
+            for name in [name for name, tool in self._tools.items() if tool.plugin_id == plugin_id]:
+                del self._tools[name]
+            for key in [key for key in self._handlers if key[0] == plugin_id]:
+                del self._handlers[key]
+            for key in [key for key in self._hooks if key[0] == plugin_id]:
+                del self._hooks[key]
 
     async def unload_plugin(self, plugin_id: str) -> None:
         try:
@@ -456,9 +461,9 @@ class PluginHost:
         plugin.manifest.enabled = True
         try:
             await plugin.on_enable()
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             plugin.manifest.enabled = False
-            self.record_plugin_error(plugin_id, f'enable failed: {error}')
+            self.record_plugin_error(plugin_id, f'enable failed: {type(error).__name__}: {error}')
             await self._release_plugin(plugin_id)
             raise
         self._status[plugin_id].state = 'enabled'
@@ -472,8 +477,8 @@ class PluginHost:
         try:
             await self.stop_scene_work(plugin_id)
             await plugin.on_disable()
-        except Exception as error:
-            self.record_plugin_error(plugin_id, f'disable failed: {error}')
+        except (Exception, asyncio.CancelledError) as error:
+            self.record_plugin_error(plugin_id, f'disable failed: {type(error).__name__}: {error}')
             raise
         self._status[plugin_id].state = 'disabled'
 
@@ -612,8 +617,8 @@ class PluginHost:
             await self._plugins[plugin_id].apply_config(parsed)
             self._plugin_contexts[plugin_id].config = parsed
             self._plugins[plugin_id].manifest.config = parsed.model_dump()
-        except Exception as error:
-            self.record_plugin_error(plugin_id, f'Configuration apply failed: {error}')
+        except (Exception, asyncio.CancelledError) as error:
+            self.record_plugin_error(plugin_id, f'Configuration apply failed: {type(error).__name__}: {error}')
             await self._release_plugin(plugin_id)
             raise
 

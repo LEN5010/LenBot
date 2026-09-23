@@ -1,6 +1,7 @@
 """Typed plugin views at the six existing execution boundaries."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from dataclasses import dataclass, replace
@@ -87,8 +88,9 @@ class PluginRunHooks:
     def __init__(self, host, call: Callable[[], PluginCallContext], audit: dict, *, only_plugin=None):
         self.host, self.call, self.audit, self.only_plugin = host, call, audit, only_plugin
 
-    async def apply(self, phase: HookPhase, view: HookView, *, call_override=None):
+    async def apply(self, phase: HookPhase, view: HookView, *, validate, call_override=None):
         from len_bot.cognition.agent_loop import _trace_value
+        validate(view)
         call = call_override or self.call()
         for hook in self.host.applicable_hooks(phase, call):
             if self.only_plugin is not None and hook.plugin_id != self.only_plugin:
@@ -97,12 +99,16 @@ class PluginRunHooks:
             record = {**hook.record(), 'plugin_id': hook.plugin_id, 'state': 'started'}
             self.audit.setdefault('hooks', []).append(record)
             try:
-                context = replace(call, plugin=self.host.context_for(hook.plugin_id))
-                result = await hook.handler(view.model_copy(deep=True), context)
+                context = replace(call, plugin=self.host.context_for(hook.plugin_id),
+                    event=call.event.model_copy(deep=True) if call.event is not None else None)
+                task = self.host.start_task(hook.plugin_id, hook.handler(view.model_copy(deep=True), context),
+                    name=f'hook:{phase}:{hook.id}', scene_id=call.scene_id, record_error=False)
+                result = await task
                 if result is not None:
                     if not isinstance(result, HOOK_VIEWS[phase]):
                         raise TypeError(f'Hook {hook.id} must return {HOOK_VIEWS[phase].__name__} or None')
                     view = HOOK_VIEWS[phase].model_validate(result.model_dump(), strict=True)
+                validate(view)
                 after = view.model_dump(mode='json')
                 record.update(state='changed' if before != after else 'observed')
                 if before != after:
@@ -110,8 +116,11 @@ class PluginRunHooks:
                 if view.stop_reason:
                     record['state'] = 'stopped'
                     raise PluginHookStopped(f'{hook.plugin_id}/{hook.id}: {view.stop_reason}')
+            except asyncio.CancelledError as error:
+                record.update(state='cancelled', error=str(error), error_type=type(error).__name__)
+                raise
             except Exception as error:
-                record.update(error=str(error))
+                record.update(error=str(error), error_type=type(error).__name__)
                 if record['state'] != 'stopped':
                     record['state'] = 'failed'
                 raise
@@ -119,10 +128,11 @@ class PluginRunHooks:
 
     async def before_model(self, messages, definitions, terminal_name):
         original = [item['function']['name'] for item in definitions]
-        view = await self.apply('before_model', BeforeModel(tool_names=original))
-        if (len(view.tool_names) != len(set(view.tool_names)) or set(view.tool_names) - set(original)
-                or terminal_name not in view.tool_names):
-            raise ValueError('before_model may only select currently allowed tools, retaining the terminal')
+        def validate(view: BeforeModel):
+            if (len(view.tool_names) != len(set(view.tool_names)) or set(view.tool_names) - set(original)
+                    or terminal_name not in view.tool_names):
+                raise ValueError('before_model may only select currently allowed tools, retaining the terminal')
+        view = await self.apply('before_model', BeforeModel(tool_names=original), validate=validate)
         messages = [copy.deepcopy(message) for message in messages
             if message.get('_context_section') not in {'plugin_hook_instructions', 'plugin_hook_material'}]
         for instruction in view.instructions:
@@ -134,28 +144,31 @@ class PluginRunHooks:
         return messages, [item for item in definitions if item['function']['name'] in view.tool_names]
 
     async def after_model(self, entries):
+        def validate(view: AfterModel):
+            if [(item.id, item.name) for item in view.candidates] != [(call.id, call.name) for call, _, _ in entries]:
+                raise ValueError('after_model must preserve actual call identities, names and order')
         view = await self.apply('after_model', AfterModel(candidates=[ToolCandidate(id=call.id,
-            name=call.name, arguments=arguments) for call, arguments, _ in entries]))
-        if [(item.id, item.name) for item in view.candidates] != [(call.id, call.name) for call, _, _ in entries]:
-            raise ValueError('after_model must preserve actual call identities, names and order')
+            name=call.name, arguments=arguments) for call, arguments, _ in entries]), validate=validate)
         return [(call, json.loads(json.dumps(candidate.arguments, allow_nan=False)), record)
                 for (call, _, record), candidate in zip(entries, view.candidates)]
 
     async def before_tool(self, name, arguments, tool_call_id):
-        view = await self.apply('before_tool', BeforeTool(name=name, arguments=arguments),
+        def validate(view: BeforeTool):
+            if view.name != name:
+                raise ValueError('before_tool cannot substitute another tool')
+        view = await self.apply('before_tool', BeforeTool(name=name, arguments=arguments), validate=validate,
             call_override=replace(self.call(), tool_call_id=tool_call_id))
-        if view.name != name:
-            raise ValueError('before_tool cannot substitute another tool')
         return json.loads(json.dumps(view.arguments, allow_nan=False))
 
     async def after_tool(self, name, content, tool_call_id):
         original = json.loads(content)
         if not isinstance(original, dict):
             raise TypeError('The displayed tool receipt must be an object')
-        view = await self.apply('after_tool', AfterTool(name=name, original=copy.deepcopy(original)),
+        def validate(view: AfterTool):
+            if view.name != name or view.original != original:
+                raise ValueError('after_tool cannot rewrite the original observation or operation receipt')
+        view = await self.apply('after_tool', AfterTool(name=name, original=copy.deepcopy(original)), validate=validate,
             call_override=replace(self.call(), tool_call_id=tool_call_id))
-        if view.name != name or view.original != original:
-            raise ValueError('after_tool cannot rewrite the original observation or operation receipt')
         if view.notes or view.view is not None:
             return content, {'role': 'user', '_context_section': 'plugin_tool_view',
                 'content': json.dumps({'kind': 'plugin_tool_view', 'tool_call_id': tool_call_id,
@@ -164,9 +177,11 @@ class PluginRunHooks:
         return content, None
 
     async def before_commit(self, outcome):
-        view = await self.apply('before_commit', BeforeCommit(messages=[message.segments for message in outcome.message_proposals]))
-        if len(view.messages) != len(outcome.message_proposals):
-            raise ValueError('before_commit may change segments, but cannot add or remove message ownership')
+        def validate(view: BeforeCommit):
+            if len(view.messages) != len(outcome.message_proposals):
+                raise ValueError('before_commit may change segments, but cannot add or remove message ownership')
+        view = await self.apply('before_commit', BeforeCommit(messages=[message.segments for message in outcome.message_proposals]),
+            validate=validate)
         data = outcome.model_dump()
         for message, segments in zip(data['message_proposals'], view.messages):
             message['segments'] = [segment.model_dump() for segment in segments]
@@ -174,6 +189,7 @@ class PluginRunHooks:
 
     async def after_delivery(self, event):
         original = event.model_dump(mode='json')
-        view = await self.apply('after_delivery', AfterDelivery(receipt=copy.deepcopy(original)))
-        if view.receipt != original:
-            raise ValueError('after_delivery cannot rewrite the saved receipt')
+        def validate(view: AfterDelivery):
+            if view.receipt != original:
+                raise ValueError('after_delivery cannot rewrite the saved receipt')
+        await self.apply('after_delivery', AfterDelivery(receipt=copy.deepcopy(original)), validate=validate)
