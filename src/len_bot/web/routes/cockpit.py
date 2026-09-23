@@ -1,16 +1,20 @@
 from typing import Optional, Literal
 import json
+import logging
 import uuid
 from urllib.parse import quote
 from fastapi import APIRouter, Request, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from len_bot.web.auth import get_current_user
+from len_bot.tools.results import error_message
 from len_bot.memory.models import MemoryProposal
 from len_bot.cognition.models import TaskProposal, EpisodeOutcome, FinalDisposition
 from len_bot.cognition.jobs import JobProposal
 from len_bot.config_store import SceneSettings
 from len_bot.config_edit import ConfigEdit, ConfigEditConflict
 from len_bot.scheduler.models import ReminderControlSnapshot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cockpit", tags=["cockpit"])
 
@@ -269,11 +273,26 @@ async def control_job(job_id: str, operation: str, req: JobControlRequest, reque
         goal=req.goal or revised_goal, constraints_add=req.constraints_add, constraints_remove=req.constraints_remove,
         source_event_ids=[event.id], requester_qq_uid=job['requester_qq_uid'],work_operation=job['work_operation'],
         plugin_origin=job['plugin_origin'],work_parameters=parameters)
-    decision = await runtime.operator_outcome(job["scene_id"], EpisodeOutcome(disposition=FinalDisposition.SILENCE,
-        decision_reason="运营修改信息工作", job_proposals=[proposal]), source_event_ids=[event.id])
+    identity = {'job_id': job_id, 'scene_id': job['scene_id'], 'operation': operation,
+                'expected_revision': req.expected_revision, 'source_event_id': event.id}
+    try:
+        decision = await runtime.operator_outcome(job["scene_id"], EpisodeOutcome(disposition=FinalDisposition.SILENCE,
+            decision_reason="运营修改信息工作", job_proposals=[proposal]), source_event_ids=[event.id])
+    except Exception as error:
+        detail = '工作控制未取得完整提交与发布确认，请沿原管理事件核对：' + error_message(f'{type(error).__name__}: {error}')
+        logger.error('%s [%s]', detail, event.id)
+        raise HTTPException(409, {**identity, 'control_accepted': None, 'stage': 'commit', 'message': detail}) from error
     if not decision.accepted:
-        raise HTTPException(409, decision.reason)
-    return {"success": True, "job": await _service(request).job(job_id)}
+        raise HTTPException(409, {**identity, 'control_accepted': False, 'message': decision.reason})
+    receipt = {**identity, 'control_accepted': True, 'commit_event_id': decision.commit_event_id}
+    try:
+        current = await _service(request).job(job_id)
+    except Exception as error:
+        detail = '工作控制已提交，但当前工作读取失败：' + error_message(f'{type(error).__name__}: {error}')
+        logger.error('%s [%s]', detail, event.id)
+        raise HTTPException(409, {**receipt, 'stage': 'readback', 'message': detail}) from error
+    return {'success': True, **receipt, 'job': current}
+
 
 
 class TaskControlRequest(BaseModel):
