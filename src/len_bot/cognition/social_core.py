@@ -258,7 +258,7 @@ class SocialCognitionCore:
             # the existing local preference projection even without new input.
             if not plugin_request or plugin_request.input_mode=='conversation':
                 await context.install_preferences(trajectory)
-            await toolkit.invalidate_memory_presentations(trajectory)
+            await toolkit.invalidate_saved_references(trajectory)
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
             context.reconcile_original_reads(trajectory)
             pending_presentations=toolkit.read_presentations(trajectory)

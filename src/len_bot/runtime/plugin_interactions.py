@@ -493,7 +493,7 @@ async def _dedicated_agent(runtime, call, request, output_model, parent):
     async def prepare(trajectory,definitions):
         await runtime.plugin_host.validate_call(call)
         context.trajectory=trajectory
-        await toolkit.invalidate_memory_presentations(trajectory)
+        await toolkit.invalidate_saved_references(trajectory)
         tokens=context.fit_request(trajectory,definitions,phase='plugin_agent')
         context.reconcile_original_reads(trajectory)
         context.context_plan['request']={'input_tokens':tokens,'input_budget_tokens':context.input_budget,
