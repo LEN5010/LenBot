@@ -62,7 +62,7 @@ async def update_onebot_config(
         credential = (edit.baseline['credential_revision'],
                       req.access_token.strip() if req.access_token_action == 'replace' else '')
     await runtime.update_runtime_settings(saved, live=False, baseline=baseline, credential_change=credential)
-    return {"success": True, "requires_restart": True, "message": "OneBot 配置已写入根文件，重启后生效"}
+    return {"success": True, "config_saved": True, "requires_restart": True, "message": "OneBot 配置已写入根文件，重启后生效"}
 
 
 @router.post("/test-http")

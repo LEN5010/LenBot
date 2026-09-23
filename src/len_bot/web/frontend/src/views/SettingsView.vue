@@ -19,8 +19,18 @@ const tab = computed(() => tabs.some(item=>item.value===route.query.tab) ? route
 const baselines = ref({})
 const conflicts = useConfigConflicts()
 const currentConflict = computed(()=>conflicts.entries[tab.value])
+const saveOutcomes=ref({}), currentSaveOutcome=computed(()=>saveOutcomes.value[tab.value])
 const clone = value => JSON.parse(JSON.stringify(value))
-const saveDraft = (domain,path,values,method) => api(path,{method,body:JSON.stringify({baseline:baselines.value[domain],values})})
+async function saveDraft(domain,path,values,method,progress) {
+  const body=JSON.stringify({baseline:baselines.value[domain],values})
+  progress.submitted=true
+  const result=await api(path,{method,body})
+  if(!result||result.config_saved!==true||typeof result.message!=='string'||
+    (domain==='connection'?(result.success!==true||typeof result.requires_restart!=='boolean'):!Object.hasOwn(result,'settings')))
+    throw new Error('配置响应缺少本次保存所需字段，结果待核对，未采用新基线。')
+  progress.confirmed=true
+  return result
+}
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
@@ -288,14 +298,39 @@ function adoptSnapshot(domain, snapshot) {
   else if(domain==='connection'){connectionOriginal.value=JSON.stringify(connection.value);connectionNeedsReadback.value=false}
   else runtimeOriginal.value=runtimeText.value
 }
-async function saveError(problem, domain, fresh) {
+function captureSaveOutcome(domain,snapshot) {
+  const outcome=saveOutcomes.value[domain]
+  if(!outcome)return false
+  outcome.snapshot=snapshot;outcome.readAt=Date.now()/1000
+  return true
+}
+async function saveError(problem, domain, fresh, progress) {
   if(!fresh())return
-  if(conflicts.mark(domain,problem))await load({accept:fresh})
-  else error.value=problem.message
+  if(problem.details?.config_saved===false&&conflicts.mark(domain,problem)){
+    await load({accept:fresh});return
+  }
+  const rejected=problem.details?.config_saved===false || (problem.status===422&&Array.isArray(problem.details))
+  if(progress.submitted&&!rejected){
+    saveOutcomes.value[domain]={confirmed:progress.confirmed||problem.details?.config_saved===true,
+      message:problem.message,snapshot:null,readAt:null}
+    await load({accept:fresh})
+    if(!fresh())return
+  }
+  error.value=problem.message+(error.value?'；读取当前值：'+error.value:'')
+}
+function adoptSaveOutcome() {
+  const domain=tab.value, outcome=currentSaveOutcome.value
+  if(busy.value||loading.value||!outcome?.snapshot)return
+  if(!window.confirm('放弃本标签原草稿（包括未确认的令牌替换或新增授予），采用本次读取值继续编辑？这不重发、撤销或追认原请求，也不重试运行应用。'))return
+  try {
+    adoptSnapshot(domain,outcome.snapshot)
+    delete saveOutcomes.value[domain];conflicts.clear(domain);error.value=''
+    message.value='已采用当前保存值继续编辑；没有再次保存或重试应用。原操作结果仍按原回执与运行记录核对。'
+  }catch(problem){error.value=problem.message}
 }
 function resolveConflict(keep) {
   const domain=tab.value,snapshot=currentConflict.value?.snapshot
-  if(busy.value||loading.value||!snapshot)return
+  if(busy.value||loading.value||currentSaveOutcome.value||!snapshot)return
   if(!keep&&!window.confirm('放弃本标签未保存的配置，采用本次读取的保存值？其他标签草稿不变。'))return
   try {
     let next
@@ -317,32 +352,33 @@ async function load({accept=()=>true}={}) {
   const currentTab = tab.value, current = readGuard(), fresh=()=>current()&&accept()
   loading.value = true; error.value = ''
   conflicts.beginRead(currentTab)
+  if(saveOutcomes.value[currentTab]){saveOutcomes.value[currentTab].snapshot=null;saveOutcomes.value[currentTab].readAt=null}
   try {
     if (currentTab==='access') {
       referenceError.value = ''
       const [snapshot] = await Promise.all([api('/api/settings/draft/access'),loadCapabilityChoices(fresh),loadReferences(fresh)])
       if (!fresh()) return
-      if (!conflicts.capture('access',snapshot)&&!accessDirty.value)adoptSnapshot('access',snapshot)
+      if (!captureSaveOutcome('access',snapshot)&&!conflicts.capture('access',snapshot)&&!accessDirty.value)adoptSnapshot('access',snapshot)
       await Promise.all([...new Set(grants.value.filter(grant=>grant.principal_type!=='system').map(grant=>grant.scene_id))]
         .map(sceneId=>loadParticipants(sceneId, fresh)))
     } else if (currentTab==='resources') {
       const snapshot = await api('/api/settings/draft/resources'); if (!fresh()) return
-      if (!conflicts.capture('resources',snapshot)&&!quotaDirty.value)adoptSnapshot('resources',snapshot)
+      if (!captureSaveOutcome('resources',snapshot)&&!conflicts.capture('resources',snapshot)&&!quotaDirty.value)adoptSnapshot('resources',snapshot)
     } else if (currentTab==='members') {
       const snapshot = await api('/api/settings/draft/members'); if (!fresh()) return
       membersRestart.value=snapshot.requires_restart
-      if (!conflicts.capture('members',snapshot)&&!membersDirty.value)adoptSnapshot('members',snapshot)
+      if (!captureSaveOutcome('members',snapshot)&&!conflicts.capture('members',snapshot)&&!membersDirty.value)adoptSnapshot('members',snapshot)
     } else if (currentTab==='connection') {
       const settings = await api('/api/websocket/status'); if (!fresh()) return
       onebot.value=settings
       const snapshot={saved:settings,baseline:settings}
-      if (!conflicts.capture('connection',snapshot)&&(!connectionDirty.value||connectionNeedsReadback.value))adoptSnapshot('connection',snapshot)
+      if (!captureSaveOutcome('connection',snapshot)&&!conflicts.capture('connection',snapshot)&&(!connectionDirty.value||connectionNeedsReadback.value))adoptSnapshot('connection',snapshot)
     } else if (currentTab==='delivery') {
       const settings=await api('/api/cockpit/shadow'); if(!fresh())return
       shadow.value=settings
     } else if (currentTab==='runtime') {
       const snapshot=await api('/api/settings/draft/runtime');if(!fresh())return
-      if(!conflicts.capture('runtime',snapshot)&&!runtimeDirty.value)adoptSnapshot('runtime',snapshot)
+      if(!captureSaveOutcome('runtime',snapshot)&&!conflicts.capture('runtime',snapshot)&&!runtimeDirty.value)adoptSnapshot('runtime',snapshot)
       runtimeRestart.value=snapshot.requires_restart
       runtimeSavedBudgets.value=snapshot.saved
       runtimeEffectiveBudgets.value=snapshot.effective || {}
@@ -363,7 +399,7 @@ function positiveInteger(value, label) {
   return number
 }
 async function saveAccess() {
-  if (busy.value||conflicts.entries.access) return
+  if (busy.value||saveOutcomes.value.access||conflicts.entries.access) return
   const problems=[]
   accessText.value.split(/[,，\s]+/).filter(Boolean).forEach((value,index)=>{
     try { positiveInteger(value,'QQ 账号') } catch(e) { problems.push({key:'whitelist',message:`第 ${index+1} 项：${e.message}（${value}）`}) }
@@ -383,6 +419,7 @@ async function saveAccess() {
     return
   }
   const fresh = beginOperation('access')
+  const progress={submitted:false,confirmed:false}
   try {
     const values=formValues('access'),previous=editableAccess(baselines.value.access)
     const editedGrants=values.capability_grants.map((grant,index)=>{
@@ -392,7 +429,7 @@ async function saveAccess() {
     })
     const result = await saveDraft('access','/api/settings/access',{
       ...(hasConfigDraftChanges(previous.qq_reply_whitelist,values.qq_reply_whitelist)?{qq_reply_whitelist:values.qq_reply_whitelist}:{}),
-      ...(hasConfigDraftChanges(previous.capability_grants,values.capability_grants)?{capability_grants:editedGrants}:{})},'PUT')
+      ...(hasConfigDraftChanges(previous.capability_grants,values.capability_grants)?{capability_grants:editedGrants}:{})},'PUT',progress)
     if (!fresh()) return
     adoptSnapshot('access',{saved:result.settings,baseline:result.settings});readAt.value.access=Date.now()/1000;message.value=result.message
   } catch(e) {
@@ -405,7 +442,7 @@ async function saveAccess() {
       }
       return {key:parts[0]==='qq_reply_whitelist'?'whitelist':'',message:`${parts.join(' → ')||'提交内容'}：${item.msg}`}
     })
-    await saveError(e,'access',fresh)
+    await saveError(e,'access',fresh,progress)
   } finally { if(fresh())busy.value='' }
 }
 function addGrant() {
@@ -415,12 +452,13 @@ function addGrant() {
 const grantImpact = computed(()=>grants.value.filter(grant=>grant.enabled&&grantCapabilities(grant).length)
   .map(grant=>`${grant.principal_type==='system'?grant.system_scope:grant.scene_id||'未指定范围'} · ${grant.principal_id} · ${grantCapabilities(grant).join('、')}`))
 async function saveQuota() {
-  if (busy.value||conflicts.entries.resources) return
+  if (busy.value||saveOutcomes.value.resources||conflicts.entries.resources) return
   const fresh = beginOperation('resources'); quotaProblems.value=[]
+  const progress={submitted:false,confirmed:false}
   try {
     const values=quotaValues()
     if(values===null)return
-    const result = await saveDraft('resources','/api/settings/resources',values,'PUT')
+    const result = await saveDraft('resources','/api/settings/resources',values,'PUT',progress)
     if (!fresh()) return
     adoptSnapshot('resources',{saved:result.settings,baseline:result.settings});readAt.value.resources=Date.now()/1000;message.value=result.message
   } catch(e) {
@@ -432,25 +470,27 @@ async function saveQuota() {
       const index=quotaRows.value.findIndex(row=>row.name.trim()===name)
       return {key:index>=0?`policy:${index}`:'',message:`${name?`策略“${name}” · `:''}${item.msg}`}
     })
-    await saveError(e,'resources',fresh)
+    await saveError(e,'resources',fresh,progress)
   } finally { if(fresh())busy.value='' }
 }
 async function saveMembers() {
-  if (busy.value || conflicts.entries.members || !members.value) return
+  if (busy.value || saveOutcomes.value.members||conflicts.entries.members || !members.value) return
   const fresh = beginOperation('members')
+  const progress={submitted:false,confirmed:false}
   try {
     const values=formValues('members')
-    const result=await saveDraft('members','/api/settings/members',values,'PUT')
+    const result=await saveDraft('members','/api/settings/members',values,'PUT',progress)
     if (!fresh()) return
     adoptSnapshot('members',{saved:result.settings,baseline:result.settings});readAt.value.members=Date.now()/1000;membersRestart.value=result.requires_restart;message.value=result.message
-  } catch(e) { await saveError(e,'members',fresh) } finally { if(fresh())busy.value='' }
+  } catch(e) { await saveError(e,'members',fresh,progress) } finally { if(fresh())busy.value='' }
 }
 async function saveRuntime() {
-  if (busy.value||conflicts.entries.runtime) return
+  if (busy.value||saveOutcomes.value.runtime||conflicts.entries.runtime) return
   const fresh = beginOperation('runtime')
+  const progress={submitted:false,confirmed:false}
   try {
     const settings = formValues('runtime')
-    const result = await saveDraft('runtime','/api/settings/runtime',settings,'PATCH')
+    const result = await saveDraft('runtime','/api/settings/runtime',settings,'PATCH',progress)
     if (!fresh()) return
     adoptSnapshot('runtime',{saved:result.settings,baseline:result.settings});readAt.value.runtime=Date.now()/1000
     runtimeRestart.value = result.requires_restart
@@ -458,23 +498,24 @@ async function saveRuntime() {
     runtimeEffectiveBudgets.value = result.effective_budgets || {}
     message.value = result.message
   } catch (e) {
-    await saveError(e,'runtime',fresh)
+    await saveError(e,'runtime',fresh,progress)
   } finally {
     if(fresh())busy.value = ''
   }
 }
 async function saveConnection() {
-  if (busy.value || connectionNeedsReadback.value || conflicts.entries.connection) return
+  if (busy.value || connectionNeedsReadback.value || saveOutcomes.value.connection||conflicts.entries.connection) return
   const fresh = beginOperation('connection')
+  const progress={submitted:false,confirmed:false}
   try {
     const body = {...connection.value, access_token:connection.value.access_token.trim() || null}
-    const result = await saveDraft('connection','/api/websocket/config',body,'POST')
+    const result = await saveDraft('connection','/api/websocket/config',body,'POST',progress)
     if (!fresh()) return
     connectionNeedsReadback.value = true
     message.value = result.requires_restart ? `${result.message}；请手动重启服务后使用新连接配置` : result.message
     await load({accept:fresh})
   } catch (e) {
-    await saveError(e,'connection',fresh)
+    await saveError(e,'connection',fresh,progress)
   } finally {
     if(fresh())busy.value = ''
   }
@@ -543,23 +584,30 @@ watch(tab,()=>{
     <v-alert v-if="error" type="error" variant="tonal">{{ error }}<span v-if="readAt[tab]"> · 上次读取 {{ fmtTime(readAt[tab]) }}</span></v-alert><v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">{{ message }}</v-alert>
     <p class="muted">切换标签保留本页配置草稿，但不继续跟踪旧操作；服务器可能已保存，请回到原标签刷新核对后再提交。</p>
     <v-alert v-if="tab==='connection'&&connectionNeedsReadback" type="warning" variant="tonal">连接配置已写入，但保存值尚未读回；请刷新核对后再编辑，不要重复提交令牌。</v-alert>
-    <ConfigConflictBanner :conflict="currentConflict?.problem" :current="currentConflict?.snapshot" :path-label="currentConflict?.problem.path?.join('.')" :busy="!!busy||loading" :read-error="currentConflict?.readError" :read-at="currentConflict?.readAt" @keep="resolveConflict(true)" @take="resolveConflict(false)" @reload="load"><template #current><p v-if="currentConflict?.snapshot?.saved===null">本次读取明确为未配置，不是读取失败。</p><ResourceViewer v-else title="本次读取的保存值（不是草稿）" :content="currentConflict?.snapshot?.saved" /></template></ConfigConflictBanner>
+    <v-alert v-if="currentSaveOutcome" type="warning" variant="tonal">
+      <p>{{ currentSaveOutcome.confirmed?'已取得写入确认，但后续结果仍需核对。':'本次配置保存结果未知。' }}{{ currentSaveOutcome.message }}不要重复提交原草稿，尤其是令牌替换或新增授予。</p>
+      <p v-if="currentSaveOutcome.snapshot">当前保存值读取于 {{ fmtTime(currentSaveOutcome.readAt) }}；这不是原操作回执。</p>
+      <ResourceViewer v-if="currentSaveOutcome.snapshot" title="当前读取值（不是原草稿）" :content="currentSaveOutcome.snapshot.saved" />
+      <v-btn variant="text" :disabled="!!busy||loading" @click="load">读取当前保存值</v-btn>
+      <v-btn variant="text" :disabled="!!busy||loading||!currentSaveOutcome.snapshot" @click="adoptSaveOutcome">采用当前值继续编辑</v-btn>
+    </v-alert>
+    <ConfigConflictBanner :conflict="currentConflict?.problem" :current="currentConflict?.snapshot" :path-label="currentConflict?.problem.path?.join('.')" :busy="!!busy||loading||!!currentSaveOutcome" :read-error="currentConflict?.readError" :read-at="currentConflict?.readAt" @keep="resolveConflict(true)" @take="resolveConflict(false)" @reload="load"><template #current><p v-if="currentConflict?.snapshot?.saved===null">本次读取明确为未配置，不是读取失败。</p><ResourceViewer v-else title="本次读取的保存值（不是草稿）" :content="currentConflict?.snapshot?.saved" /></template></ConfigConflictBanner>
     <p v-if="tab==='access'&&currentConflict" class="muted">白名单与授予列表按整组核对。明确保留后，仍使用当前授予 ID 和修订；已经删除的旧 ID 不会被改成新授予重新签发。</p>
-    <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}<span v-if="conflicts.entries[item.value]"> · 待处理冲突</span></v-tab></v-tabs>
+    <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}<span v-if="conflicts.entries[item.value]"> · 待处理冲突</span><span v-if="saveOutcomes[item.value]"> · 保存待核对</span></v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
-    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.active_connection?.connection_mode==='forward_ws'?'当前运行方式为主动连接；尚未连接，请核对最近错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'当前运行方式等待 OneBot 主动接入。':'尚未取得当前运行连接方式；下方仅是已保存配置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!busy||connectionNeedsReadback" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!busy||connectionNeedsReadback||!!conflicts.entries.connection||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn><v-btn variant="outlined" :loading="busy==='version'" :disabled="!!busy" @click="readVersion">读取平台实现与版本</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p><div v-if="platform" class="wide"><v-alert type="info" variant="tonal"><p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p><p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；填写前先以这里读到的实现与版本为准。</p><template v-else><p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · {{ platform.configured_upload.version }} · {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}</p><p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要用另一种实现的协议上传。</p><p v-else-if="!platform.configured_upload.version_matches" class="mt-2">版本与现场报告不一致，请按实际版本更新后再核验挂载。</p><p v-else class="mt-2">实现与版本一致；只读挂载仍需在主机侧另行核对。</p></template><p class="mt-2">{{ platform.message }}</p></v-alert></div></v-form></v-card>
+    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.active_connection?.connection_mode==='forward_ws'?'当前运行方式为主动连接；尚未连接，请核对最近错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'当前运行方式等待 OneBot 主动接入。':'尚未取得当前运行连接方式；下方仅是已保存配置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback||!!conflicts.entries.connection||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn><v-btn variant="outlined" :loading="busy==='version'" :disabled="!!busy" @click="readVersion">读取平台实现与版本</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p><div v-if="platform" class="wide"><v-alert type="info" variant="tonal"><p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p><p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；填写前先以这里读到的实现与版本为准。</p><template v-else><p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · {{ platform.configured_upload.version }} · {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}</p><p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要用另一种实现的协议上传。</p><p v-else-if="!platform.configured_upload.version_matches" class="mt-2">版本与现场报告不一致，请按实际版本更新后再核验挂载。</p><p v-else class="mt-2">实现与版本一致；只读挂载仍需在主机侧另行核对。</p></template><p class="mt-2">{{ platform.message }}</p></v-alert></div></v-form></v-card>
     <v-card v-if="tab==='access'&&accessText!==null" class="pa-5 form-card">
       <v-alert v-if="referenceError" type="error" variant="tonal" class="mb-4">群、成员、插件或额度策略参考读取失败：{{ referenceError }}；已有草稿保留，未自动选择替代项。</v-alert>
       <h2>QQ 回复白名单</h2>
       <p class="muted my-3">在已启用但关闭普通聊天的群中，白名单成员仍可正常提问和继续互动。白名单不会强制每条消息回复，也不授予管理员、跨群读取或 @全体权限；日程命令及引用评论仍保持安静。</p>
-      <v-form :disabled="!!busy" @submit.prevent="saveAccess">
+      <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveAccess">
         <v-alert v-if="accessProblems.length" type="error" variant="tonal" class="mb-4">
           <p class="mb-2">请先修正以下内容；修正前不会提交保存。</p>
           <ul class="error-summary"><li v-for="(item,index) in accessProblems" :key="index+item.message">{{ item.message }}</li></ul>
         </v-alert>
         <v-textarea v-model="accessText" data-field="whitelist" label="QQ 账号" rows="6" :error="accessProblems.some(item=>item.key==='whitelist')" :error-messages="accessProblems.filter(item=>item.key==='whitelist').map(item=>item.message)" hint="每行一个 QQ 账号，或用逗号分隔。这里填写 QQ 账号，不是 B 站 UID。空列表表示没有额外回复资格。" persistent-hint />
         <v-divider class="my-5" />
-        <div class="section-header"><div><h2>能力授予</h2><p class="muted mt-2">只影响本计划新增的自主能力；普通聊天不需要这里的任何一条。未配置、已停用或已过期的授予一律不放行，撤销只阻止后续操作，已发出的字节无法撤回。</p></div><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addGrant">添加授予</v-btn></div>
+        <div class="section-header"><div><h2>能力授予</h2><p class="muted mt-2">只影响本计划新增的自主能力；普通聊天不需要这里的任何一条。未配置、已停用或已过期的授予一律不放行，撤销只阻止后续操作，已发出的字节无法撤回。</p></div><v-btn variant="tonal" color="primary" :disabled="!!currentSaveOutcome||!!busy" @click="addGrant">添加授予</v-btn></div>
         <p v-if="!grants.length" class="muted py-4">当前没有任何能力授予；新增自主能力保持关闭。</p>
         <section v-for="(grant,index) in grants" :key="index" class="grant-card">
           <h3>{{ index+1 }}. 谁 · 什么范围 · 允许什么</h3>
@@ -579,7 +627,7 @@ watch(tab,()=>{
             <v-text-field v-model.number="grant.concurrency" type="number" min="1" label="并发上限（可留空）" />
             <v-switch v-model="grant.enabled" label="启用这条授予" color="primary" /></div>
           <p class="muted mt-2">授予 ID 与版本由服务端负责：保存时按内容自动递增，签发者取当前登录账号。{{ grant.grant_id?`当前 ID ${grant.grant_id} · 第 ${grant.revision} 版；修改内容后版本自动加一。`:'新建的授予由服务端生成 ID。' }}</p>
-          <v-btn variant="text" color="error" :disabled="!!busy" @click="grants.splice(index,1)">删除这条授予</v-btn>
+          <v-btn variant="text" color="error" :disabled="!!currentSaveOutcome||!!busy" @click="grants.splice(index,1)">删除这条授予</v-btn>
         </section>
         <div v-if="grantImpact.length" class="impact-summary">
           <p><strong>保存后的影响</strong>：这些主体在各自范围内将获准下列能力，下一次执行按新授予判断。</p>
@@ -587,16 +635,16 @@ watch(tab,()=>{
           <p class="muted">撤销或停用只阻止后续操作；已经发出的消息无法撤回，也不会改动其他未编辑的授予。</p>
         </div>
         <p class="muted mb-3">保存把白名单与能力授予一起写入根配置；它不发送消息、不调用模型，也不改动未编辑的授予。</p>
-        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!busy||!!conflicts.entries.access">保存白名单与能力授予</v-btn>
+        <v-btn type="submit" color="primary" :loading="busy==='access'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.access">保存白名单与能力授予</v-btn>
       </v-form>
     </v-card>
     <v-card v-if="tab==='resources'&&quotaText!==null" class="pa-5 form-card">
       <h2>额度策略</h2>
       <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；留空表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
-      <v-form :disabled="!!busy" class="form-grid" @submit.prevent="saveQuota">
+      <v-form :disabled="!!currentSaveOutcome||!!busy" class="form-grid" @submit.prevent="saveQuota">
         <template v-if="!quotaRaw">
           <div v-for="(row,index) in quotaRows" :key="index" class="wide policy-row" :data-policy="`policy:${index}`">
-            <div class="policy-heading"><h3>策略 {{ index+1 }}</h3><v-btn variant="text" color="error" size="small" :disabled="!!busy" @click="quotaRows.splice(index,1)">删除这项策略</v-btn></div>
+            <div class="policy-heading"><h3>策略 {{ index+1 }}</h3><v-btn variant="text" color="error" size="small" :disabled="!!currentSaveOutcome||!!busy" @click="quotaRows.splice(index,1)">删除这项策略</v-btn></div>
             <div class="policy-fields">
               <v-text-field v-model="row.name" label="策略名称" hint="能力授予按这个名字引用；改名等于新建一项策略" persistent-hint required />
               <v-text-field v-model.number="row.work" label="单工作累计 token" type="number" min="1" hint="单个工作累计模型 token 上限，至少为 1；留空表示不设该维度" persistent-hint />
@@ -606,7 +654,7 @@ watch(tab,()=>{
             <p v-for="problem in quotaProblemsFor(index)" :key="problem.message" class="policy-error">{{ problem.message }}</p>
           </div>
           <div v-if="!quotaRows.length" class="wide muted">当前没有具名策略；不配置时各维度不设 token 上限，由期限和消息上限结束。</div>
-          <div class="wide actions"><v-btn variant="tonal" :disabled="!!busy" @click="quotaRows.push({name:'',work:null,user:null,scene:null})">添加一项策略</v-btn></div>
+          <div class="wide actions"><v-btn variant="tonal" :disabled="!!currentSaveOutcome||!!busy" @click="quotaRows.push({name:'',work:null,user:null,scene:null})">添加一项策略</v-btn></div>
           <p class="wide muted">这里改的是往后新建工作的上限；已在执行的工作保留创建时的快照。已保存的精确取值在下方 JSON 里逐字对照。</p>
           <ul v-if="quotaProblems.length" class="wide error-summary">
             <li v-for="problem in quotaProblems" :key="problem.message"><button class="error-link" type="button" @click="focusPolicy(problem.key)">{{ problem.message }}</button></li>
@@ -615,28 +663,28 @@ watch(tab,()=>{
         <template v-if="quotaRaw"><v-textarea :model-value="quotaText" readonly label="策略（JSON）" rows="10" class="wide runtime-json" hint="已保存取值的只读对照，没有保存入口；改数值请返回表单。切换视图不会丢掉未保存的表单草稿。" persistent-hint /><p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p></template>
         <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略的形状不是这三个字段（{{ Object.keys(rawPolicies).join('、') }}），表单原样保留它们，只在保存时一起写回。</p>
         <ResourceViewer v-if="!quotaRaw" class="wide" title="已保存的精确取值（只读对照）" :content="quotaText" />
-        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'查看已保存 JSON' }}</v-btn>
-        <v-btn v-if="!quotaRaw" type="submit" color="primary" :loading="busy==='resources'" :disabled="!!busy||!!conflicts.entries.resources||!quotaDirty">保存额度策略</v-btn>
+        <v-btn v-if="!Object.keys(rawPolicies).length" class="wide" variant="text" :disabled="!!currentSaveOutcome||!!busy" @click="toggleQuotaRaw">{{ quotaRaw?'返回表单编辑':'查看已保存 JSON' }}</v-btn>
+        <v-btn v-if="!quotaRaw" type="submit" color="primary" :loading="busy==='resources'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.resources||!quotaDirty">保存额度策略</v-btn>
         <span v-if="quotaDirty" class="muted">有未保存修改</span>
       </v-form>
     </v-card>
     <v-card v-if="tab==='members'&&members!==null" class="pa-5 form-card">
-      <div class="section-header"><h2>主播与订阅对象</h2><v-btn variant="tonal" color="primary" :disabled="!!busy" @click="addMember">添加对象</v-btn></div>
+      <div class="section-header"><h2>主播与订阅对象</h2><v-btn variant="tonal" color="primary" :disabled="!!currentSaveOutcome||!!busy" @click="addMember">添加对象</v-btn></div>
       <p class="muted my-3">这里登记的是 B 站主播与订阅对象，不是群详情里的 QQ 参与者。名称与别名用于查询，B 站 UID 和直播间号确认实际对象。团体署名保持团体含义，不在这里自动展开。</p>
       <v-alert v-if="membersRestart" type="info" variant="tonal" class="mb-4">系统另有已保存配置等待手动重启。本页编辑已保存的订阅对象，不能据全局重启标记断言当前采集已切换；各插件运行状态另行核对。</v-alert>
       <p v-if="!members.length" class="muted py-4">尚未填写主播与订阅对象；动态与开播插件保持未就绪。</p>
-      <v-form :disabled="!!busy" @submit.prevent="saveMembers">
+      <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveMembers">
         <v-card v-for="(member,index) in members" :key="index" variant="outlined" class="pa-4 mb-4">
-          <div class="section-header mb-3"><h3>对象 {{ index+1 }}</h3><v-btn variant="text" color="error" :disabled="!!busy" @click="members.splice(index,1)">移除</v-btn></div>
+          <div class="section-header mb-3"><h3>对象 {{ index+1 }}</h3><v-btn variant="text" color="error" :disabled="!!currentSaveOutcome||!!busy" @click="members.splice(index,1)">移除</v-btn></div>
           <div class="form-grid"><v-text-field v-model="member.name" label="显示名称" required /><v-text-field v-model="member.aliasText" label="别名（逗号或顿号分隔）" /><v-text-field v-model="member.bilibili_uid" label="B 站 UID" inputmode="numeric" required /><v-text-field v-model="member.room_id" label="直播间号" inputmode="numeric" required /></div>
         </v-card>
         <p class="muted mb-4">已被群订阅的对象需先在相应群中取消订阅，再移除或改名。</p>
-        <v-btn type="submit" color="primary" :loading="busy==='members'" :disabled="!!busy||!!conflicts.entries.members||!membersDirty">保存主播与订阅对象</v-btn>
+        <v-btn type="submit" color="primary" :loading="busy==='members'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.members||!membersDirty">保存主播与订阅对象</v-btn>
       </v-form>
     </v-card>
     <v-card v-if="tab==='delivery'&&shadow" class="pa-5 form-card">
       <h2>全局发送控制</h2>
-      <div class="delivery-state my-4"><v-chip :color="shadow.enabled?'warning':'primary'">{{ shadow.enabled?'Shadow · 不实际发送':'按各群规则发送' }}</v-chip><v-btn :color="shadow.enabled?'warning':'primary'" variant="outlined" :loading="busy==='shadow'" :disabled="!!busy" @click="toggleShadow">{{ shadow.enabled?'关闭 Shadow':'开启 Shadow' }}</v-btn></div>
+      <div class="delivery-state my-4"><v-chip :color="shadow.enabled?'warning':'primary'">{{ shadow.enabled?'Shadow · 不实际发送':'按各群规则发送' }}</v-chip><v-btn :color="shadow.enabled?'warning':'primary'" variant="outlined" :loading="busy==='shadow'" :disabled="!!currentSaveOutcome||!!busy" @click="toggleShadow">{{ shadow.enabled?'关闭 Shadow':'开启 Shadow' }}</v-btn></div>
       <p class="muted mb-5">Shadow 只控制是否实际发送。群启用、普通聊天、命令、公告、主播订阅和 @全体统一在“本群设置”中保存。</p>
       <v-btn variant="tonal" color="primary" :to="{name:'scenes'}">管理各群设置</v-btn>
     </v-card>
@@ -652,7 +700,7 @@ watch(tab,()=>{
         <p v-if="!fileUpload" class="muted my-3">
           未声明上传平台，群文件只能在工作面板下载。
           <v-btn size="small" variant="tonal" color="primary" class="ml-2"
-                 :disabled="!!busy" @click="setFileUpload({})">声明上传平台</v-btn>
+                 :disabled="!!currentSaveOutcome||!!busy" @click="setFileUpload({})">声明上传平台</v-btn>
         </p>
         <template v-else>
           <div class="form-grid my-3">
@@ -672,7 +720,7 @@ watch(tab,()=>{
             persistent-hint
             @update:model-value="value=>setFileUpload({deployment_verified:!!value})" />
           <div class="actions"><v-btn size="small" variant="text" color="error"
-            :disabled="!!busy" @click="setFileUpload(null)">取消声明</v-btn></div>
+            :disabled="!!currentSaveOutcome||!!busy" @click="setFileUpload(null)">取消声明</v-btn></div>
         </template>
       </section>
       <p class="muted my-3">下面对照根配置已保存值与运行时当前发布值。编辑中的 JSON 尚未保存，不计入这两列。</p>
@@ -680,7 +728,7 @@ watch(tab,()=>{
       <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>
       <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表分别显示已保存值与本次读取到的运行值，未提供项不能据此判断已生效。</v-alert>
       <p class="muted my-3">常用执行预算用下面的数字框改；其余字段仍通过完整 JSON。留空表示该维度不设限。改这里会写进同一份草稿。</p>
-      <v-form :disabled="!!busy" @submit.prevent="saveRuntime">
+      <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveRuntime">
         <v-switch :model-value="heartbeatDraft.heartbeat_enabled || false" label="启用公共研究心跳" color="primary" @update:model-value="value=>setHeartbeat('heartbeat_enabled',value)" />
         <v-textarea :model-value="(heartbeatDraft.heartbeat_topics || []).join('\n')" label="公共研究主题（每行一项）" rows="3" hint="最多 20 项，每项 200 字；没有主题或有效兴趣时允许零研究。只保存研究结果与兴趣，不发布群消息。保存后需手动重启。" persistent-hint @update:model-value="value=>setHeartbeat('heartbeat_topics',value.split('\n').map(item=>item.trim()).filter(Boolean))" />
         <div class="form-grid mb-4">
@@ -691,10 +739,10 @@ watch(tab,()=>{
         <AdvancedSection title="其余运行参数（原始 JSON）" note="上面没有控件的字段在这里改">
           <v-textarea v-model="runtimeText" label="运行参数 JSON" rows="16" spellcheck="false" class="runtime-json" />
         </AdvancedSection>
-        <div class="actions"><v-btn type="submit" color="primary" :loading="busy==='runtime'" :disabled="!!busy||!!conflicts.entries.runtime||!runtimeDirty">保存运行参数</v-btn><span v-if="runtimeDirty" class="muted">有未保存修改</span></div>
+        <div class="actions"><v-btn type="submit" color="primary" :loading="busy==='runtime'" :disabled="!!currentSaveOutcome||!!busy||!!conflicts.entries.runtime||!runtimeDirty">保存运行参数</v-btn><span v-if="runtimeDirty" class="muted">有未保存修改</span></div>
       </v-form>
     </v-card>
-    <v-card v-if="tab==='account'&&me" class="pa-5 form-card"><div class="section-header"><h2>登录账户</h2><v-chip :color="me.is_default_password?'warning':'default'">{{ me.is_default_password?'仍使用初始密码':'已修改初始密码' }}</v-chip></div><p class="my-4">{{ me.username }} · 上次登录 {{ fmtTime(me.last_login_at) }}</p><v-form :disabled="!!busy" class="form-grid" @submit.prevent="changePassword"><v-text-field v-model="passwords.current_password" type="password" autocomplete="current-password" label="当前密码" required /><v-text-field v-model="passwords.new_password" type="password" autocomplete="new-password" label="新密码（至少 6 位）" minlength="6" required /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='password'" :disabled="!!busy||!passwords.current_password||passwords.new_password.length<6">更新密码</v-btn><v-btn variant="outlined" :disabled="!!busy" @click="signOut">退出登录</v-btn></div></v-form></v-card>
+    <v-card v-if="tab==='account'&&me" class="pa-5 form-card"><div class="section-header"><h2>登录账户</h2><v-chip :color="me.is_default_password?'warning':'default'">{{ me.is_default_password?'仍使用初始密码':'已修改初始密码' }}</v-chip></div><p class="my-4">{{ me.username }} · 上次登录 {{ fmtTime(me.last_login_at) }}</p><v-form :disabled="!!currentSaveOutcome||!!busy" class="form-grid" @submit.prevent="changePassword"><v-text-field v-model="passwords.current_password" type="password" autocomplete="current-password" label="当前密码" required /><v-text-field v-model="passwords.new_password" type="password" autocomplete="new-password" label="新密码（至少 6 位）" minlength="6" required /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='password'" :disabled="!!currentSaveOutcome||!!busy||!passwords.current_password||passwords.new_password.length<6">更新密码</v-btn><v-btn variant="outlined" :disabled="!!currentSaveOutcome||!!busy" @click="signOut">退出登录</v-btn></div></v-form></v-card>
     <v-expansion-panels v-if="tab==='account'&&me" class="danger-zone">
       <v-expansion-panel title="破坏性操作：重置全部对话数据">
         <v-expansion-panel-text>
@@ -703,12 +751,12 @@ watch(tab,()=>{
             <strong>不要把它当作修复路径。</strong>
             <HelpHint :text="RESET_HELP" />
           </p>
-          <v-btn color="error" variant="outlined" :disabled="!!busy" @click="resetConfirm=true">Reset 对话数据</v-btn>
+          <v-btn color="error" variant="outlined" :disabled="!!currentSaveOutcome||!!busy" @click="resetConfirm=true">Reset 对话数据</v-btn>
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
 
-    <v-dialog v-model="resetConfirm" max-width="620" :persistent="busy==='reset'"><v-card title="确认 Reset 全部对话数据"><v-card-text><v-alert type="error" variant="tonal" class="mb-4">此操作会清空全部群聊和私聊的会话数据，无法从页面撤销。</v-alert><p>先停止认知、维护、工作和投递，再删除对话、认识、任务、工作、工具资料、调用账、聊天图片和场景上下文。</p><p class="mt-3">保留运行配置、人工表达样例与运营表情库（含来源记录），包括模型、OneBot、人格、登录、Shadow、QQ 白名单、各群设置与能力授予。</p><p class="mt-3">额度预占与执行记录不在清理范围内，执行后仍需单独核对归属；页面的成功结果不表示外部容器已经结束。</p><v-alert v-if="error" type="error" variant="tonal" class="mt-3">{{ error }}</v-alert></v-card-text><v-card-actions><v-spacer /><v-btn :disabled="!!busy" @click="resetConfirm=false">取消</v-btn><v-btn color="error" :loading="busy==='reset'" :disabled="!!busy" @click="resetData">确认清空对话数据</v-btn></v-card-actions></v-card></v-dialog>
+    <v-dialog v-model="resetConfirm" max-width="620" :persistent="busy==='reset'"><v-card title="确认 Reset 全部对话数据"><v-card-text><v-alert type="error" variant="tonal" class="mb-4">此操作会清空全部群聊和私聊的会话数据，无法从页面撤销。</v-alert><p>先停止认知、维护、工作和投递，再删除对话、认识、任务、工作、工具资料、调用账、聊天图片和场景上下文。</p><p class="mt-3">保留运行配置、人工表达样例与运营表情库（含来源记录），包括模型、OneBot、人格、登录、Shadow、QQ 白名单、各群设置与能力授予。</p><p class="mt-3">额度预占与执行记录不在清理范围内，执行后仍需单独核对归属；页面的成功结果不表示外部容器已经结束。</p><v-alert v-if="error" type="error" variant="tonal" class="mt-3">{{ error }}</v-alert></v-card-text><v-card-actions><v-spacer /><v-btn :disabled="!!currentSaveOutcome||!!busy" @click="resetConfirm=false">取消</v-btn><v-btn color="error" :loading="busy==='reset'" :disabled="!!currentSaveOutcome||!!busy" @click="resetData">确认清空对话数据</v-btn></v-card-actions></v-card></v-dialog>
   </div>
 </template>
 <style scoped>
