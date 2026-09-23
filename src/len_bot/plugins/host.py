@@ -18,6 +18,7 @@ from len_bot.plugins.base import BasePlugin, PluginContext
 from len_bot.tools.results import ToolResult, ToolSource, error_source_url
 from len_bot.tools.discovery import rank_discovery
 from len_bot.execution.workspace import WorkspaceCancelled
+from len_bot.cognition.request_record import _LocatedPluginToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -871,14 +872,17 @@ class PluginHost:
         defs = []
         for name, ptool in self._tools.items():
             if self.has_tool(name, call_context) and (kind is None or ptool.kind == kind):
-                defs.append({
+                spec = self.runtime.config_store.catalog.entries[ptool.plugin_id].spec
+                defs.append(_LocatedPluginToolDefinition({
                     "type": "function",
                     "function": {
                         "name": name,
                         "description": f"[{ptool.plugin_id}] {ptool.purpose}。{ptool.description}",
                         "parameters": ptool.parameter_model.model_json_schema()
                     }
-                })
+                }, plugin_id=ptool.plugin_id,
+                    plugin_version=self._plugins[ptool.plugin_id].manifest.version,
+                    api_version=spec.api_version))
         return defs
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any], call_context: PluginCallContext) -> ToolResult | dict[str, Any]:

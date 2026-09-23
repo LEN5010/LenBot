@@ -7,11 +7,11 @@ const props = defineProps({ record: Object, sceneId: String })
 const visibleCount = ref(25)
 const rawOpen = ref(false)
 watch(() => props.record, () => { visibleCount.value = 25; rawOpen.value = false })
-const supported = computed(() => [1, 2].includes(props.record?.format_version))
+const supported = computed(() => [1, 2, 3].includes(props.record?.format_version))
 const messages = computed(() => supported.value ? props.record.messages : [])
-const components = computed(() => props.record?.format_version === 2
+const components = computed(() => [2, 3].includes(props.record?.format_version)
   ? messages.value.flatMap(message => message.prompt_components.map(component => ({ ...component, messageIndex: message.index }))) : [])
-const retainedTools = computed(() => props.record?.format_version === 2
+const retainedTools = computed(() => [2, 3].includes(props.record?.format_version)
   ? props.record.tools.filter(tool => tool.definition.status === 'retained').length : 0)
 const images = computed(() => messages.value.flatMap(message => message.images))
 const omitted = computed(() => messages.value.filter(message => message.omitted === true).length)
@@ -25,6 +25,7 @@ const gaps = {
   dynamic_message_bodies: '动态消息正文（人格、配置与插件指令等）',
   undeclared_prompt_components: '未单独登记的提示组件及版本',
   undeclared_tool_definitions: '未单独登记的工具完整定义及版本',
+  dynamic_plugin_tool_definitions: '插件动态工具完整定义（归属版本另列）',
 }
 </script>
 
@@ -43,7 +44,7 @@ const gaps = {
         <div><dt>工具选择</dt><dd>{{ toolChoice }}</dd></div>
       </dl>
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
-      <template v-if="record.format_version === 2">
+      <template v-if="[2, 3].includes(record.format_version)">
         <h4>固定提示组件</h4>
         <p class="request-note">只保留下列固定片段；同一消息中的人格配置、表达偏好及插件动态指令未留存。组件修订号是声明版本，具体内容以本次快照为准。</p>
         <p v-if="!components.length" class="request-note">本次没有单独登记的固定提示组件。</p>
@@ -54,16 +55,18 @@ const gaps = {
             <ResourceViewer title="本次固定提示片段" :content="component.snapshot_text" />
           </template>
         </details>
-        <p class="request-note">工具定义快照已留存 {{ retainedTools }} / {{ record.tools.length }}。其余工具只保留名称和顺序，不能用当前定义还原旧调用。</p>
+        <p class="request-note">工具定义快照已留存 {{ retainedTools }} / {{ record.tools.length }}。未留存完整定义的工具不能用当前 Schema 还原；插件归属版本如有记录则单独列出，不等于完整定义版本。</p>
       </template>
       <details><summary>当次工具顺序与定义</summary><ol class="request-tools"><li v-for="tool in record.tools" :key="tool.index">
         {{ tool.name || '未记录名称' }} · {{ tool.type }}
-        <template v-if="record.format_version === 2">
+        <template v-if="[2, 3].includes(record.format_version)">
+          <p v-if="tool.definition.plugin" class="request-note">声明来源：{{ tool.definition.plugin.id }} · 插件 v{{ tool.definition.plugin.version }} · 接口世代 {{ tool.definition.plugin.api_version }}。仅定位所属插件，不证明 Schema 恒定或工具已执行。</p>
           <details v-if="tool.definition.status === 'retained'">
             <summary>{{ tool.definition.component_id }} · 修订 {{ tool.definition.revision }} · 查看本次定义</summary>
             <ResourceViewer title="本次工具定义" :content="tool.definition.snapshot_json" />
           </details>
-          <p v-else class="request-note">{{ tool.definition.status === 'changed_after_declaration' ? '定义在声明后有变化，未将声明快照作为本次定义。' : '未保存该工具的定义版本。' }}</p>
+          <p v-else-if="tool.definition.status === 'origin_recorded'" class="request-note">已登记插件归属，动态工具完整定义未留存。</p>
+          <p v-else class="request-note">{{ tool.definition.status === 'changed_after_declaration' ? '定义在声明后有变化，未将声明来源或快照作为本次完整定义依据。' : '未保存该工具的定义版本。' }}</p>
         </template>
       </li></ol><p v-if="!record.tools.length" class="request-note">该调用的工具列表为空。</p></details>
       <div class="request-table-wrap"><table>
