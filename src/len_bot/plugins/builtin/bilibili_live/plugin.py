@@ -7,7 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cards.bilibili import CardNotification, fetch_profile, render_notification
-from len_bot.cards.html_render import HtmlCardRenderer
+from len_bot.cards import BUNDLED_CARD_FONT, HtmlCardRenderer
 from len_bot.plugins.api import BasePlugin, PluginContext, Event, EventType, MessageSegment, ToolResult, ToolSource
 from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
@@ -180,7 +180,7 @@ class BilibiliLiveSensor(BasePlugin):
             # dropping a live announcement the group is waiting for.
             logger.warning('Rich live card failed (%s: %s); using the plain card',
                            type(error).__name__, error)
-        font_path = self.context.directory.parent / 'asoul_calendar' / 'resources' / 'font.ttf'
+        font_path = BUNDLED_CARD_FONT
         if not font_path.is_file():
             raise ValueError('直播卡片字体文件不存在')
         return await asyncio.to_thread(render_live, sample, font_path=font_path,

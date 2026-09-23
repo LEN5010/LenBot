@@ -7,7 +7,7 @@
 | 路径 | 现有实现 | 当前参考边界 |
 |---|---|---|
 | 读取＋确定性命令 | [业务时钟](../local_plugins/local_clock/__init__.py) | 全部框架依赖从 plugins.api 导入；正常读取与可选模型表达共用同一观察 |
-| 业务事件＋模型表达 | [真实开播事件](../src/len_bot/plugins/builtin/bilibili_live/plugin.py) | 发布、handler、表达和提交入口已有；延期重核与身份查询已走公共入口，完整传感器的卡片仍含内部依赖，不能整包复制成独立公共接口范例 |
+| 业务事件＋模型表达 | [真实开播事件](../src/len_bot/plugins/builtin/bilibili_live/plugin.py) | 发布、handler、表达和提交入口已有；延期重核、身份查询及卡片均走文档声明的公共入口；卡片另依赖随包资源及可选浏览器，运行仍待验收 |
 | 后台工作＋产物 | [当前群报告](../src/len_bot/plugins/builtin/group_summary/__init__.py) | 全部框架导入从 plugins.api 取得；业务模型、分析和渲染留在原插件内，外部字体由维护者配置 |
 
 ## 一、读取与确定性命令：业务时钟
@@ -38,7 +38,7 @@ on_brief 先取得同一真实时钟观察，再通过 call.run_agent 选择已�
 
 ## 二、业务事件与表达：沿真实开播场次阅读
 
-这是一条已有业务链的阅读教程，不是已完成独立化的传感器模板。公共入口部分可以复用；完整包仍需迁移下述内部依赖。
+这是一条已有业务链的阅读教程。业务采样与模型属于原插件，框架能力从 plugins.api 取得，绘图及 B 站卡片分别使用文档声明的 cards 公共入口；不把完整内置插件复制到本地目录与同名 ID 并存。
 
 ### 1. 先声明业务事件，再发布真实采样
 
@@ -58,11 +58,13 @@ on_live_started 将真实 LiveSample 作为 ToolResult 材料，调用 call.run_
 
 取得文字后，原处理器再次核对当前场次，生成业务卡片，经 call.save_image 登记，再 call.submit_message 提交原场景的文字和图片。登记资产不代表平台已取得图片，提交不代表已送达；最终状态只取真实回执。已结束场次不能靠旧模型正文恢复资格。
 
-### 4. 不掩盖尚未独立化的部分
+### 4. 保留延期语义与资源职责
 
 live_started 的 register_handler 已声明 refresh_deferred 回调。宿主只传真实原事件副本与旧行动 ID，插件重读场次、检查订阅并以原 live-refresh 身份发布替代事件；宿主等待并确认事件保存，旧行动结束，新来源重新经过 handler／Gate。轮询查重使用 context.has_emitted_event，不访问完整存储，不把同一来源的新文案当新场次。
 
-插件已不再直接读取 Runtime、EventStore 或 Actor 队列；但卡片资料获取、HTML 渲染与简图模块仍含非公共入口依赖。本文不重新实现这些业务，不把完整包标成仅依赖公共入口。其迁移与现场运行证据仍是 S3-05／S3-06 的后续工作。
+插件不再直接读取 Runtime、EventStore 或 Actor 队列。简图经 len_bot.cards 的主题、card 与 text_lines 渲染；HtmlCardRenderer 也从该入口取得，富卡仍使用可选 len_bot.cards.bilibili 的既有导出。详见[卡片公共合同](plugins.md#可选卡片公共入口)，不可把“离线 HTML 渲染”误读为资料获取不联网。
+
+简图字体使用 BUNDLED_CARD_FONT 指向宿主随包的同一文件，不再依赖本插件旁边恰好存在日历目录。字体缺失仍报错，字体／模板授权、浏览器安装和真实渲染仍待维护者按发行条件确认；此教程没有新增字体、模板或渲染产物。三条路径的同版现场记录仍未提供。
 
 ## 三、后台工作与产物：当前群增量报告
 
