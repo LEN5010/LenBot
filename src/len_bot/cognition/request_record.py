@@ -50,6 +50,8 @@ class _RequestLocation:
     image_assets: dict[int, str] = field(default_factory=dict)
     result_locator_status: str | None = None
     result_locators: list[dict[str, Any]] | None = None
+    summary_ref_status: str | None = None
+    summary_refs: list[dict[str, Any]] | None = None
     prompt_components: tuple[_PromptComponent, ...] = ()
     tool_presentations: list[dict[str, str | int]] | None = None
 
@@ -129,13 +131,16 @@ def prepare_request_record(request: dict[str, Any]) -> dict[str, Any]:
         if location and location.result_locator_status is not None:
             entry['result_locator_status'] = location.result_locator_status
             entry['result_locators'] = location.result_locators
+        if location and location.summary_ref_status is not None:
+            entry['summary_ref_status'] = location.summary_ref_status
+            entry['summary_refs'] = location.summary_refs
         messages.append(entry)
     choice = request['tool_choice']
     tools = [_tool_record(index, tool) for index, tool in enumerate(request['tools'])]
     # The client receives plain dictionaries without private snapshot attributes.
     request['tools'] = [dict(tool) for tool in request['tools']]
     return {
-        'format_version': 4,
+        'format_version': 5,
         'boundary': 'before_client_send',
         'settings': {key: request.get(key) for key in ('model', 'reasoning_effort', 'max_completion_tokens', 'stream')},
         'tool_choice': ({'type': choice.get('type'), 'name': (choice.get('function') or {}).get('name')}
