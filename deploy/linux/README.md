@@ -4,7 +4,7 @@
 
 ## 服务与卷
 
-LenBot 用 Compose 运行；Gateway 是同一 Linux 主机上的独立 systemd 服务，管理固定执行镜像。OneBot 与可选 Core 沿用运营者已核对版本的独立部署，本目录不安装或登录它们。
+LenBot 用 Compose 运行；只有选用 Gateway 后端的执行能力才另需同一 Linux 主机上的独立 systemd 服务，管理执行镜像。普通文字聊天不要求 Gateway 或 worker 镜像。OneBot 与可选 Core 沿用运营者已核对版本的独立部署，本目录不安装或登录它们。
 
 | 对象 | 主机位置 | 进程中位置／权限 |
 |---|---|---|
@@ -24,18 +24,18 @@ Gateway 模板以 root 管理 Docker 和 worker GID，是受信任的容器管�
 
 先记录实际发行版、架构、内核、CPU/RAM/磁盘、Docker/Compose 与 UID/GID。模板中的资源上限、子网和 UID 是待核对的部署选择，不是目标机器实测值；冲突时离线调整同批材料。
 
-从确定的源码提交构建。前端产物已随代码发布；需要重建时在 `src/len_bot/web/frontend` 执行 `npm run build`。`.dockerignore` 只允许发布源码、锁文件与容器配方进入上下文。
+从确定的源码提交构建。前端产物不进 Git，LenBot Dockerfile 的 Node 阶段通过 package-lock.json 安装并构建，再复制到 Python 安装阶段；镜像不使用本地 dist。`.dockerignore` 只允许发布源码、锁文件与容器配方进入上下文。
 
 ```sh
 # 源码根目录；仅构建，不启动
 docker compose -f deploy/linux/compose.yaml build lenbot
+# 以下仅为本次明确选用的可选执行能力构建
 docker build -f containers/workspace/Dockerfile -t lenbot-workspace:local .
-# 仅为本次启用的可选能力构建
 docker build -f containers/browser/Dockerfile -t lenbot-browser:local .
 docker build -f containers/media/Dockerfile -t lenbot-media:local .
 ```
 
-LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构建需要访问镜像与依赖源。worker 沿各自配方。记录实际镜像 ID/标签与构建环境，保留旧发布镜像，不用自动 pull 或滚动更新改变已核对版本。
+LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构建需要访问镜像与依赖源。worker 沿各自配方。基础镜像仍使用可变版本标签，不是不可变镜像锁；精确镜像与首个支持组合待确认。记录实际镜像 ID/标签与构建环境，保留旧发布镜像，不用自动 pull 或滚动更新改变已核对版本。
 
 新部署由运营者准备目录；已有部署先停机备份，不递归重写旧数据身份：
 
@@ -43,6 +43,7 @@ LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构�
 sudo install -d -o 10000 -g 10000 -m 0700 /srv/lenbot/control /var/lib/lenbot
 sudo install -d -o root -g root -m 0755 /srv/lenbot/local_plugins
 sudo install -d -o 10000 -g 10000 -m 0750 /var/lib/lenbot/file_assets
+# 仅在选用 Gateway 时准备
 sudo install -d -o root -g root -m 0700 /etc/lenbot-gateway /var/lib/lenbot-gateway
 ```
 
@@ -69,6 +70,8 @@ docker network create --driver bridge --subnet 172.31.8.0/24 --gateway 172.31.8.
 
 LenBot 加入该网络，Gateway API 绑定网桥地址。OneBot 按真实部署选择加入同一私网或使用已有可达私网地址，不自动修改其现有连接。worker 永不加入控制网络。
 
+以下 Gateway 与执行网步骤只用于已选用相应执行能力的部署；普通聊天跳过，直接取得当次授权后启动 LenBot。
+
 只需离线 Python 时，人工填写 `gateway.offline.example.json`、替换 token 后保存到 `/etc/lenbot-gateway/gateway.config.json`。它没有公共策略，不会开放联网工作。需要公共 Python、浏览器或媒体时，按根目录[gateway.config.example.json](../../gateway.config.example.json)添加镜像与 public 策略，API host 改为控制网桥地址，并准备独立执行网：
 
 ```sh
@@ -84,10 +87,17 @@ docker network create --internal --subnet 172.31.9.0/24 --gateway 172.31.9.1 --o
 ```sh
 sudo install -m 0644 deploy/linux/lenbot-gateway.service /etc/systemd/system/lenbot-gateway.service
 sudo systemctl daemon-reload
-# 仅在取得当次启动授权后执行
+# 仅在取得当次 Gateway 启动授权后执行
 sudo systemctl start lenbot-gateway
+```
+
+普通聊天部署及已就绪的 Gateway 部署都使用下面的 LenBot 启动入口；取得当次启动授权后执行：
+
+```sh
 docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 ```
+
+启动后的连接、对话资格与真实回执按[首条回复路径](../../docs/operations.md#从面板可用到首条真实回复)分别确认，不用容器 running 替代业务验收。
 
 模板 `Restart=no` / `restart: "no"`，不自动恢复实发；开机启动另按明确部署策略配置。Gateway 日志用 `journalctl -u lenbot-gateway`；LenBot 用 `docker compose -f deploy/linux/compose.yaml logs --since 30m lenbot`。日志不替代 action、file_id 与 OneBot 回执；分享前移除凭据、私人原话和签名地址。
 
