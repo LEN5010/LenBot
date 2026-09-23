@@ -5,20 +5,22 @@ import time
 
 from len_bot.cognition.budget import seconds_left_to, work_call_admission
 from len_bot.cognition.gateway import ModelGateway
+from len_bot.cognition.request_record import _RecordedToolDefinition
 from len_bot.cognition.agent_loop import _error_text
 from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged, SkillCandidate
 from len_bot.runtime.work_context import request_tokens
 from len_bot.skills.store import SkillDraft, SkillSkip
 
 
-MAINTENANCE_TOOLS = [
+MAINTENANCE_TOOLS = [_RecordedToolDefinition(item,
+    component_id=f"core.skill_maintenance.{item['function']['name']}", revision=1) for item in [
     {"type": "function", "function": {"name": "save_skill",
         "description": "保存有实际来源、可复用的新增方法或对已有方法的有效修订；与 skip_skill 二选一。",
         "parameters": SkillDraft.model_json_schema()}},
     {"type": "function", "function": {"name": "skip_skill",
         "description": "正常跳过重复、无新增方法价值、仅有一次性答案、来源不足或源站暂时故障的候选，并保存原因；与 save_skill 二选一。",
         "parameters": SkillSkip.model_json_schema()}},
-]
+]]
 
 
 def _maintenance_access_issue(runtime, store, job) -> str | None:
