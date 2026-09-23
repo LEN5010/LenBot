@@ -26,6 +26,7 @@ from len_bot.tools.results import DisplayedRange, ToolFieldError, ToolNextCall, 
 from len_bot.tools.calculator import CALCULATE_TOOL, calculate
 from len_bot.tools.finite_check import FINITE_CHECK_TOOL, finite_check
 from len_bot.cognition.retrieval_models import RetrievalOptOut
+from len_bot.cognition.request_record import _RecordedToolDefinition
 
 
 class ReadArguments(BaseModel):
@@ -306,6 +307,10 @@ class RetrievalToolkit:
         if self.call_context().role in {'conversation','work'}:
             definitions.append(copy.deepcopy(CALCULATE_TOOL))
             definitions.append(copy.deepcopy(FINITE_CHECK_TOOL))
+        # Capture only core declarations, after their numeric page limits are
+        # fitted. Plugin schemas below remain outside this snapshot boundary.
+        definitions = [_RecordedToolDefinition(item,
+            component_id=f"core.retrieval.{item['function']['name']}", revision=1) for item in definitions]
         plugin_tools = self.plugin_host.get_tool_definitions(self.call_context(), kind=None if self.call_context().role == 'work' else 'read') if self.plugin_host else []
         available_names = {item['function']['name'] for item in plugin_tools}
         local_discovered = {name: None for name in self.discovered_tools
@@ -314,7 +319,8 @@ class RetrievalToolkit:
         self.discovered_tools = {name: None for name in self.discovered_tools if name in available_names}
         self.discovered_tools.update(local_discovered)
         if plugin_tools:
-            definitions.append(copy.deepcopy(TOOL_SEARCH))
+            definitions.append(_RecordedToolDefinition(copy.deepcopy(TOOL_SEARCH),
+                component_id='core.retrieval.tool_search', revision=1))
         for definition in plugin_tools:
             name = definition['function']['name']
             capabilities = self.plugin_host.tool_capabilities(name)
