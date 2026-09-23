@@ -7,8 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from len_bot.cognition.projection import project_onebot_text
-from len_bot.plugins.api import PluginCallContext, ToolNextCall, ToolResult, ToolSource
+from len_bot.plugins.api import PluginCallContext, ToolNextCall, ToolResult, ToolSource, project_onebot_text
 
 from .config import GroupSummaryConfig
 from .report import BatchAnalysis, ReportArtifact, SingleGroupReport, SourceMessage

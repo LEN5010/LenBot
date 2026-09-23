@@ -47,6 +47,12 @@ class PluginWorkContext:
     adopt_results: Callable[[list[str]], Awaitable[None]]
     budget: Callable[[], Awaitable[dict]]
 
+    async def remaining_model_calls(self) -> int | None:
+        """Read the existing count dimension; this does not reserve a call."""
+        from len_bot.cognition.budget import count_remaining
+        current = await self.budget()
+        return count_remaining(current['model_calls_limit'], current['model_calls_used'])
+
     async def run_agent(self, *, instructions, input_observations, output_model):
         return await self.call.run_agent(instructions=instructions,input_observations=input_observations,
             output_model=output_model,output_mode='result_only',input_mode='materials',include_identity=False,
