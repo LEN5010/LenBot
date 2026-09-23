@@ -216,6 +216,14 @@ B 站公共信息、搜索、分 P、评论、字幕使用独立匿名客户端�
 
 link_parser 的 parse_link 只获取 metadata，明确 download_media 才进入媒体字节读取。命中同场景缓存但字节不可读或类型不符时返回 cached_media_unavailable；不吞掉该错误后重新下载。没有缓存的正常下载仍通过原字节上限、容器格式验证和资产登记；登记不证明播放、模型阅读或群发送。
 
+### 当前调用的公开媒体下载
+
+`call.download_public_media(client, url, expected_type='video'|'audio', description=...)` 返回原 `ToolResult`。入口确认调用实例归属并重新走 `Host.validate_call`，场景与 source_event_id 只取当前调用；插件不传本地路径、文件上限或资产编号。宿主沿原媒体服务查询同场景启用缓存、读取真实字节、检查类型并保存资产，文件上限仍来自根配置。
+
+`client` 是插件按自身既有配置建立并负责关闭的 `httpx.AsyncClient`；本方法不新建客户端、不换认证或重试策略。公开地址及重定向仍走现有网络策略与 `fetch_public`。缓存不可读或类型不符返回 `cached_media_unavailable` 且不重新下载；无缓存下载失败返回 `download_failed`，入口地址拦截为 `blocked`。宿主调用准入失败直接抛出，取消仍向外传播，不冒充下载失败继续执行。
+
+链接插件现通过此入口下载，仍自行核对已保存的 `parse_link` 资料并取得 B 站播放地址；不再直接取得 Runtime、媒体存储或文件大小配置。API 世代保持 2，本批为新增窄方法，没有改旧签名或插件自身版本；未迁移插件仍有内部依赖。返回资产只表示保存或读到文件，不表示工具观察已登记、模型已读、平台已取得或消息已发送；工具观察和后续交付仍各走原登记与 Gate／回执路径。
+
 ### 公共兴趣分享
 
 内置 `interest_share` 插件在全局未配置时为 unconfigured。全局参数为 `max_steps`、`context_tokens`、`output_tokens`；模型使用现有 conversation 绑定。本群参数为 `topics`（空表示所有有效主题）、`daily_limit`（0 不发）、`cooldown_seconds`。还需通过原能力授予向 `principal_type=plugin`、`principal_id=interest_share`、具体 `scene_id` 授予 `interest_share`，不使用 system 公共研究 grant 代替。场景表单按插件 Schema 呈现这些字段。

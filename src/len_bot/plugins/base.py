@@ -1,5 +1,6 @@
 from typing import Any, Callable, Awaitable, Literal
 from pathlib import Path
+import httpx
 from pydantic import BaseModel
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
 from len_bot.events.models import Event, EventType, PluginEventPayload
@@ -122,6 +123,14 @@ class PluginContext:
     async def submit_message(self, call: PluginCallContext, segments, *, mention_all=False):
         from len_bot.runtime.plugin_interactions import submit_message
         return await submit_message(self._runtime, call, segments, mention_all=mention_all)
+
+    async def download_public_media(self, call: PluginCallContext, client: httpx.AsyncClient, url: str, *,
+                                    expected_type: Literal['video', 'audio'], description: str) -> ToolResult:
+        if call.plugin is not self:
+            raise ValueError('Media downloading requires this plugin call context')
+        await self._host.validate_call(call)
+        return await self._runtime.media_service.download_public_media(client, url, call.scene_id,
+            expected_type=expected_type, description=description, source_event_id=call.source_event_id)
 
     async def save_image(self, call: PluginCallContext, png: bytes, description: str) -> str:
         await self._host.validate_call(call)
