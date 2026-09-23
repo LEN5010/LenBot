@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from len_bot.plugins.models import PluginCallContext, PluginManifest, PluginPermission
 from len_bot.events.models import Event, EventType, PluginEventPayload
 from len_bot.tools.results import ToolResult
+from len_bot.plugins.work import PluginWorkSnapshot
 
 class PluginContext:
     def __init__(self, manifest: PluginManifest, runtime: Any, host: Any, *, entry, config: BaseModel):
@@ -62,12 +63,61 @@ class PluginContext:
         from len_bot.runtime.plugin_interactions import invoke_tool
         return await invoke_tool(self._runtime, call, name, arguments)
 
+    async def _validate_read_call(self, call: PluginCallContext) -> Event:
+        if call.plugin is not self:
+            raise ValueError('Local reading requires this plugin call context')
+        return await self._host.validate_call(call)
+
+    async def read_source(self, call: PluginCallContext) -> Event:
+        return await self._validate_read_call(call)
+
     async def read_observation(self, call: PluginCallContext, result_id: str) -> ToolResult | None:
         """Read a saved local result without granting model presentation or execution."""
-        if call.plugin is not self:
-            raise ValueError('Saved-observation reading requires this plugin call context')
-        await self._host.validate_call(call)
+        await self._validate_read_call(call)
         return await self._runtime.event_store.read_tool_observation(result_id, [call.scene_id])
+
+    async def list_observations(self, call: PluginCallContext, coverage: str, *,
+                                limit: int, before_rowid: int | None = None) -> list[tuple[int, ToolResult]]:
+        await self._validate_read_call(call)
+        return await self._runtime.event_store.plugin_observations(
+            call.scene_id, self.spec.id, self.manifest.version, coverage,
+            limit=limit, before_rowid=before_rowid)
+
+    async def read_group_messages(self, call: PluginCallContext, *, start_at: float, end_at: float,
+                                  after_rowid: int, limit: int) -> list[Event]:
+        await self._validate_read_call(call)
+        return await self._runtime.event_store.group_message_window(
+            call.scene_id, start_at=start_at, end_at=end_at, cutoff_rowid=call.cutoff_rowid,
+            bot_actor_id=self.bot_actor_id, after_rowid=after_rowid, limit=limit)
+
+    def _work_snapshot(self, job) -> PluginWorkSnapshot | None:
+        if job is None:
+            return None
+        origin = job['plugin_origin']
+        if (not origin or origin['plugin_id'] != self.spec.id
+                or origin['plugin_version'] != self.manifest.version
+                or job['work_operation'] != self.spec.work.operation):
+            return None
+        return PluginWorkSnapshot(id=job['id'], revision=job['revision'], status=job['status'],
+            operation=job['work_operation'], requester_qq_uid=job['requester_qq_uid'],
+            parameters=self.spec.work.parameters_model.model_validate(job['work_parameters']).model_copy(deep=True))
+
+    async def read_work(self, call: PluginCallContext, job_id: str) -> PluginWorkSnapshot | None:
+        await self._validate_read_call(call)
+        if self.spec.work is None:
+            raise ValueError('This plugin has no dedicated work contract')
+        return self._work_snapshot(await self._runtime.event_store.get_job(job_id, call.scene_id))
+
+    async def list_work(self, call: PluginCallContext) -> tuple[PluginWorkSnapshot, ...]:
+        await self._validate_read_call(call)
+        if self.spec.work is None:
+            raise ValueError('This plugin has no dedicated work contract')
+        snapshots = (self._work_snapshot(job) for job in await self._runtime.event_store.list_jobs(call.scene_id))
+        return tuple(snapshot for snapshot in snapshots if snapshot is not None)
+
+    async def media_available(self, call: PluginCallContext, asset_id: str) -> bool:
+        await self._validate_read_call(call)
+        return await self._runtime.event_store.get_media(asset_id, [call.scene_id]) is not None
 
     async def submit_message(self, call: PluginCallContext, segments, *, mention_all=False):
         from len_bot.runtime.plugin_interactions import submit_message
