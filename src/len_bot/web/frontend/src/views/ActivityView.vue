@@ -21,6 +21,7 @@ import MessageProgress from '../components/MessageProgress.vue'
 import ProvidedReads from '../components/ProvidedReads.vue'
 import RequestRecordDetails from '../components/RequestRecordDetails.vue'
 import CacheUsageSummary from '../components/CacheUsageSummary.vue'
+import EventDiagnostics from '../components/EventDiagnostics.vue'
 import { supportsMessageProgress } from '../domain/messageProgress.js'
 const route=useRoute(),router=useRouter(),{smAndDown}=useDisplay()
 const tabs=[{value:'calls',title:'调用账'},{value:'turns',title:'对话轮次'},{value:'events',title:'原始事件'},{value:'logs',title:'运行日志'}]
@@ -157,6 +158,7 @@ onBeforeUnmount(()=>{sequence++;detailSequence++;resourceSequence++})
         <RequestRecordDetails v-if="tab==='calls'" :record="selected.request_record" :scene-id="selected.scene_id" />
         <v-alert v-if="relationError" type="error" variant="tonal">关联读取失败：{{ relationError }}<span v-if="relations">；关联仍为 {{ fmtTime(relationReadAt) }} 的旧采样。</span><div class="mt-3"><v-btn variant="outlined" size="small" :loading="detailLoading" @click="loadDetail">重新读取关联</v-btn></div></v-alert>
         <template v-if="tab==='events'"><MessageItem v-if="selected.display_kind!=='system'" :event="selected" @inspect="inspectEvent" /><ResourceViewer v-else :title="eventLabel(selected.event_type)" :content="supportsMessageProgress(selected) ? selected.payload.content ?? '此记录没有文字正文，完整字段见下方。' : selected.payload" /><MessageProgress :event="selected" :relations="relations" :loading="detailLoading" /><AnswerBasisDetails v-if="selected.payload.action_id" :basis="selected.payload.answer_basis ?? relations?.actions?.find(action=>action.id===selected.payload.action_id)?.answer_basis" :scene-id="selected.scene_id" /><ProvidedReads v-if="selected.event_type==='CONVERSATION_COMMITTED'" :turn="selected.payload" :scene-id="selected.scene_id" /><v-expansion-panels><v-expansion-panel title="完整受控事件字段"><v-expansion-panel-text><ResourceViewer title="事件记录" :content="selected" /></v-expansion-panel-text></v-expansion-panel></v-expansion-panels></template>
+        <EventDiagnostics v-if="tab==='events'" :event-id="selected.id" :scene-id="selected.scene_id" />
         <details :key="`${tab}:${selected.id}`" class="relations-section" :open="tab!=='events'">
           <summary>完整持久关联与原始对象</summary><p class="muted">仅显示记录中明确保存的关联。同轮读取的其他原话可能属于独立请求，各项工作与表达的来源分别列出。</p>
           <p v-if="!relations && !detailLoading && !relationError" class="muted">没有可用于定位的轮次、工作或事件关联。</p>

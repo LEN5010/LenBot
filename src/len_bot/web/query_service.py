@@ -1658,6 +1658,74 @@ class RuntimeQueryService:
                 "limits":{name:limit for name in ("events","traces","calls","jobs","actions","tool_results","batches","operation_receipts")},
                 "truncated":{**truncated,"actions":len(actions)>limit,"batches":False}}
 
+    async def event_diagnostics(self, event_id: str, scene_id: str):
+        """Export a bounded identity/status projection, never whole objects.
+
+        The existing relation query owns scope and limits. Its wider episode
+        context is not evidence that every related object belongs to one input.
+        """
+        started = self.current_time()
+        related = await self.relations(scene_id, event_id=event_id)
+        if related is None:
+            return None
+
+        def fields(record, names):
+            return {name: record[name] for name in names if name in record}
+
+        events = []
+        for event in related['events']:
+            payload = event['payload']
+            events.append({**fields(event, ('id', 'event_type', 'timestamp', 'delivery_status', 'simulated', 'origin_mode')),
+                'references': fields(payload, ('action_id', 'episode_id', 'job_id', 'job_revision',
+                    'origin_event_id', 'covered_source_event_ids', 'file_asset_id', 'file_id')),
+                'timings_ms': fields(payload, ('queue_ms', 'send_ms', 'event_to_delivery_ms')),
+                'error_recorded': bool(payload.get('error'))})
+        calls = []
+        for call in related['calls']:
+            usage = call.get('usage')
+            calls.append({**fields(call, ('id', 'episode_id', 'job_id', 'batch_id', 'purpose', 'status',
+                'disposition', 'started_at', 'ended_at')),
+                'usage': None if usage is None else {
+                    **fields(usage, ('prompt_tokens', 'completion_tokens', 'total_tokens')),
+                    'cached_tokens': (usage.get('prompt_tokens_details') or {}).get('cached_tokens'),
+                    'reasoning_tokens': (usage.get('completion_tokens_details') or {}).get('reasoning_tokens')},
+                'estimated_input_tokens': (call.get('estimate') or {}).get('input_tokens'),
+                'error_recorded': bool(call.get('error_type'))})
+        return {'format_version': 1, 'root': {'scene_id': scene_id, 'event_id': event_id},
+            'read_started_at': started, 'read_finished_at': self.current_time(),
+            'scope': 'bounded_related_records',
+            'limitations': ['关联可能包含同轮其他来源，不是单条消息的独占消耗或依据。',
+                '读取跨多个查询，不是数据库原子快照；读取期间状态可能变化。',
+                '缺字段不表示零消耗、未执行或已成功；截断类别仅包含当前受限结果。',
+                '只读导出不执行模型、工具或平台动作，不证明材料已读或平台送达。',
+                '文件仍含场景和业务记录编号，分享前须人工核对接收范围。'],
+            'not_exported': ['message_bodies', 'personas', 'tool_arguments', 'tool_bodies',
+                'error_text', 'request_snapshots', 'provider_continuations', 'configuration', 'media', 'credentials'],
+            'limits': related['limits'], 'truncated': related['truncated'],
+            'source_handling': related['source_handling'], 'events': events, 'calls': calls,
+            'turns': [{**fields(turn, ('event_id', 'episode_id', 'checkpoint_index', 'read_source_event_ids',
+                        'handled_source_event_ids')),
+                'source_outcomes': None if turn.get('source_outcomes') is None else [
+                    {**fields(outcome, ('source_event_id', 'status', 'action_ids', 'task_ids')),
+                     'reason_recorded': bool(outcome.get('reason')),
+                     'unfinished_count': len(outcome['unfinished']) if 'unfinished' in outcome else None}
+                    for outcome in turn['source_outcomes']]}
+                for turn in related['turns']],
+            'traces': [{**fields(trace, ('id', 'kind', 'ref_id', 'created_at', 'committed',
+                        'publication_status', 'error_phase', 'source_event_ids', 'read_source_event_ids', 'commit_event_ids')),
+                'error_recorded': bool(trace.get('error')),
+                'publication_error_recorded': bool(trace.get('publication_error'))}
+                for trace in related['traces']],
+            'actions': [fields(action, ('id', 'episode_id', 'commit_event_id', 'checkpoint_index',
+                'origin_event_id', 'request_source_event_id', 'job_id', 'job_revision', 'file_asset_id', 'file_id',
+                'publication_status', 'delivery_status', 'origin_mode', 'simulated', 'receipt_event_ids', 'attempt_event_ids'))
+                for action in related['actions']],
+            'jobs': [fields(job, ('id', 'revision', 'status', 'execution_status', 'delivery_required',
+                'request_source_event_id', 'ack_action_id', 'delivery_action_id', 'delivery_event_id'))
+                for job in related['jobs']],
+            'tool_results': [fields(result, ('id', 'event_id', 'tool_name', 'status', 'content_length', 'created_at'))
+                for result in related['tool_results']]}
+
     @staticmethod
     def _participation(event, metadata, delivery):
         reasons = list(metadata.get('attention_reasons') or [])

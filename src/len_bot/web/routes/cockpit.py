@@ -445,6 +445,16 @@ async def event_detail(event_id: str, scene_id: str, request: Request, user: str
     return result
 
 
+@router.get("/events/{event_id}/diagnostics")
+async def event_diagnostics(event_id: str, scene_id: str, request: Request,
+                            user: str = Depends(get_current_user)):
+    result = await _service(request).event_diagnostics(event_id, scene_id)
+    if result is None:
+        raise HTTPException(404, "未找到本场景的事件")
+    return Response(content=json.dumps(result, ensure_ascii=False, allow_nan=False),
+                    media_type='application/json', headers={'Cache-Control': 'no-store'})
+
+
 @router.get("/traces")
 async def list_traces(request: Request, scene_id: str | None = None, kind: str | None = None, ref_id: str | None = None,
                       episode_id: str | None = None,
