@@ -1,6 +1,6 @@
 """Work detail belongs to tasks; budgets and observations survive revision/restart."""
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import uuid
 
 from len_bot.cognition.jobs import JobChanged, JobBudgetExhausted, JobResultRejected, JobResult, ResultPresentation, WorkState, ReusedWorkResult
@@ -786,7 +786,8 @@ class JobStoreMixin(SkillStoreMixin):
                 raise
 
     async def complete_job(self, job_id, scene_id, revision, result: JobResult, *,
-                           validate_access: Callable[[], None], work_state=None, skill_candidate=None, bot_actor_id=''):
+                           validate_access: Callable[[], None], validate_sources: Callable[[list[str]], Awaitable[None]],
+                           work_state=None, skill_candidate=None, bot_actor_id=''):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -816,7 +817,7 @@ class JobStoreMixin(SkillStoreMixin):
                             raise ValueError('未形成成果的工作不能采用公共兴趣')
                         from len_bot.memory.interests import InterestStore
                         await InterestStore(self).adopt_in_transaction(job, result.public_interests)
-                    if result.work_state is not None:
+                    if result.work_state is not None and result.status in {'completed','partial'}:
                         await self._validate_work_state(job, result.work_state)
                     if work_state is not None:
                         if work_state.goal_revision != revision:
@@ -829,6 +830,18 @@ class JobStoreMixin(SkillStoreMixin):
                         if spec and not spec.allow_learning:
                             raise ValueError('This plugin work does not create procedural skills')
                         await self.add_skill_candidate_in_transaction(job, skill_candidate, bot_actor_id=bot_actor_id)
+                    # Failed/interrupted results retain their old state as audit,
+                    # not as newly adopted completed steps or current evidence.
+                    source_ids = list(result.result_ids) if result.status in {'completed','partial'} else []
+                    states = [work_state, result.work_state if result.status in {'completed','partial'} else None]
+                    for state in states:
+                        if state is not None:
+                            source_ids.extend(state.key_result_ids)
+                            source_ids.extend(ident for step in state.completed_steps for ident in step.result_ids)
+                    if skill_candidate is not None:
+                        source_ids.extend(skill_candidate.result_ids)
+                    source_ids.extend(span.result_id for candidate in result.public_interests for span in candidate.evidence_spans)
+                    await validate_sources(list(dict.fromkeys(source_ids)))
                 except ValueError as error:
                     raise JobResultRejected(str(error)) from error
                 # Preparation and evidence reads may await while access changes.
@@ -871,7 +884,8 @@ class JobStoreMixin(SkillStoreMixin):
                 raise ValueError('Completed work steps require actual read spans for every cited observation')
             await self._validate_evidence_spans(job, step.evidence_spans, step.result_ids)
 
-    async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None, *, bot_actor_id=''):
+    async def update_work_state(self, job_id, scene_id, revision, state: WorkState, skill_candidate=None, *,
+                                validate_sources: Callable[[list[str]], Awaitable[None]], bot_actor_id=''):
         async with self._write_lock:
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
@@ -889,6 +903,10 @@ class JobStoreMixin(SkillStoreMixin):
                     if spec and not spec.allow_learning:
                         raise ValueError('This plugin work does not create procedural skills')
                     await self.add_skill_candidate_in_transaction(job, skill_candidate, bot_actor_id=bot_actor_id)
+                source_ids = [*state.key_result_ids, *(ident for step in state.completed_steps for ident in step.result_ids)]
+                if skill_candidate is not None:
+                    source_ids.extend(skill_candidate.result_ids)
+                await validate_sources(list(dict.fromkeys(source_ids)))
                 await self._db.execute("UPDATE agent_jobs SET work_state_json=?,updated_at=? WHERE id=? AND scene_id=?",
                     (state.model_dump_json(), self.clock(), job_id, scene_id))
                 await self._db.commit()
