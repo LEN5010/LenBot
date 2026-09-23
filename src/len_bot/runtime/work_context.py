@@ -6,8 +6,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from len_bot.cognition.agent_loop import _error_text
-from len_bot.cognition.jobs import JobChanged
+from len_bot.cognition.agent_loop import AgentBudgetExhausted, _error_text
+from len_bot.cognition.jobs import JobBudgetExhausted, JobChanged
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.call_store import estimate_request
 
@@ -307,7 +307,9 @@ class WorkCompressor:
             compression = {"segments": [*compression["segments"], entry], "status": "ready", "error": None}
             await store.save_job_compression(self.job_id, self.scene_id, self.revision, compression, trajectory=candidate)
             messages[:] = candidate
-        except JobChanged:
+        except (JobChanged, PermissionError, JobBudgetExhausted, AgentBudgetExhausted):
+            # Admission and revision failures are not failed compression content.
+            # Preserve their boundary and budget dimension for the work runner.
             raise
         except Exception as error:
             compression = {**compression, "status": "failed", "error": f"工作压缩失败：{_error_text(error)}"}

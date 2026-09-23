@@ -917,6 +917,12 @@ class AgentRuntime:
                 self._maintaining_history_scenes.discard(scene_id)
             return
         self._maintaining_history_scenes.add(scene_id)
+        def require_current_maintenance():
+            if not self._running:
+                raise asyncio.CancelledError()
+            if not self._can_maintain_history() or not self.scene_policy.maintenance_allowed(scene_id):
+                raise PermissionError('当前群或维护配置不允许采用历史维护结果')
+
         batch = retry_batch
         stage = 'candidate'
         revision = None
@@ -963,11 +969,12 @@ class AgentRuntime:
                 stage = 'commit'
                 while True:
                     try:
+                        require_current_maintenance()
                         committed_memories = await actor.commit_history(
                             batch_id=batch.id, proposals=result.memory_proposals,
                             summary=result.summary, key_event_ids=result.key_event_ids,
                             review_event=review_event, expected_revision=revision,
-                            expected_memories=memory_versions)
+                            expected_memories=memory_versions, validate_access=require_current_maintenance)
                         break
                     except HistoryCommitDeferred as deferred:
                         await self.event_store.save_trace(kind='history_maintenance_deferred',
