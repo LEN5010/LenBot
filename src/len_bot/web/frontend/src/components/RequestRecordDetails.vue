@@ -48,7 +48,7 @@ const gaps = {
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
       <template v-if="[2, 3, 4, 5].includes(record.format_version)">
         <h4>固定提示组件</h4>
-        <p class="request-note">只保留下列固定片段；同一消息中的人格配置、表达偏好及插件动态指令未留存。组件修订号是声明版本，具体内容以本次快照为准。</p>
+        <p class="request-note">只保留下列已声明的固定片段；人格配置和插件动态指令等仍未留存。条件启用的表达偏好提示如已登记，会单独列出。组件修订号是声明版本，具体内容以本次快照为准。</p>
         <p v-if="!components.length" class="request-note">本次没有单独登记的固定提示组件。</p>
         <details v-for="component in components" :key="`${component.messageIndex}:${component.component_id}`">
           <summary>位置 {{ component.messageIndex + 1 }} · {{ component.component_id }} · 修订 {{ component.revision }} · {{ component.status === 'retained' ? '已留存' : '声明后内容有变化，未留存' }}</summary>
