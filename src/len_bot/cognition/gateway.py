@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,6 +64,8 @@ class ModelGateway:
         self.job_id = job_id
         self.batch_id = batch_id
         self.admission = admission
+        self._request_binding_id = uuid.uuid4().hex
+        self._request_sequence = 0
         self.purpose = purpose or binding.role
         if self.purpose not in {"conversation", "plugin_agent", "announcement", "interest_share", "work", "heartbeat", "action_review", "history_maintenance", "work_compression", "skill_maintenance", "capability_probe"}:
             raise ValueError(f"Unsupported model-call accounting purpose: {self.purpose}")
@@ -73,6 +76,8 @@ class ModelGateway:
         tools: list[dict[str, Any]],
         tool_choice: str | dict[str, Any],
     ) -> GatewayResponse:
+        self._request_sequence += 1
+        request_sequence = self._request_sequence
         request: dict[str, Any] = {
             "model": self.binding.model,
             "messages": copy.deepcopy(messages),
@@ -84,6 +89,8 @@ class ModelGateway:
         if self.binding.reasoning_effort is not None:
             request["reasoning_effort"] = self.binding.reasoning_effort
         request_record = prepare_request_record(request)
+        request_record['request_order'] = {'scope': 'binding_instance_preparation',
+            'binding_id': self._request_binding_id, 'sequence': request_sequence}
         estimate = estimate_request(request["messages"], request["tools"])
         for message in request['messages']:
             message.pop('_context_section', None)

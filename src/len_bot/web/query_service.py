@@ -461,6 +461,24 @@ class RuntimeQueryService:
                                    if cache['known_input_tokens'] > 0 else None)
         cache['call_coverage'] = cache['cache_reported_calls'] / cache['calls'] if cache['calls'] else None
         result['cache'] = cache
+        order = "json_extract(request_order,'$.sequence')"
+        classified = ("json_extract(request_order,'$.scope')='binding_instance_preparation' "
+            f"AND json_type(request_order,'$.sequence')='integer' AND {order}>=1")
+        phase_fields = [f"CASE WHEN {classified} THEN CASE WHEN {order}=1 THEN 'first' ELSE 'followup' END ELSE 'unknown' END AS phase",
+            'COUNT(*) AS calls',
+            f"SUM(CASE WHEN {known_input} THEN 1 ELSE 0 END) AS known_input_calls",
+            f"SUM(CASE WHEN {known_input} THEN {prompt} ELSE 0 END) AS input_tokens",
+            f"SUM(CASE WHEN {reported_cache} THEN 1 ELSE 0 END) AS cache_reported_calls",
+            f"SUM(CASE WHEN {reported_cache} THEN {prompt} ELSE 0 END) AS cache_input_tokens",
+            f"SUM(CASE WHEN {reported_cache} THEN {cached} ELSE 0 END) AS cached_tokens"]
+        result['request_phases'] = await self._rows(
+            "WITH filtered AS (SELECT usage_json,(SELECT json_extract(payload,'$.request_order') FROM traces "
+            "WHERE id='trc_model_request_' || model_calls.id AND kind='model_call_request' "
+            "AND ref_id=model_calls.id AND scene_id=model_calls.scene_id) AS request_order " + source + ") "
+            "SELECT " + ",".join(phase_fields) + " FROM filtered GROUP BY phase ORDER BY phase", params)
+        for phase in result['request_phases']:
+            phase['mean_input_tokens'] = phase['input_tokens'] / phase['known_input_calls'] if phase['known_input_calls'] else None
+            phase['cache_hit_rate'] = phase['cached_tokens'] / phase['cache_input_tokens'] if phase['cache_input_tokens'] else None
         result["filters"] = {"scene_id":scene_id,"since":since,"until":until,"purpose":purpose,"status":status,"job_id":job_id}
         result["cost"] = {"status":"unverified","amount":None,"reason":"尚未提供可核实的供应商价格或账单；未知 usage 不按零成本计入"}
         return result
