@@ -12,7 +12,7 @@ def validate(config, root):
         raise ValueError('requires configured time settings')
 
 
-PLUGIN = PluginSpec(id='asoul_calendar', name='A-SOUL 日程', version='1.0.0',
+PLUGIN = PluginSpec(api_version=1, id='asoul_calendar', name='A-SOUL 日程', version='1.0.0',
     description='读取唯一 ICS 来源的真实日程，提供日程工具和精确日程命令。',
     config_model=CalendarConfig, create=create, validate_config=validate,
     scene_config_model=CalendarSceneConfig,

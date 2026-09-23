@@ -274,6 +274,7 @@ loadScopes()
       <v-card v-for="plugin in filtered" :key="plugin.id" class="pa-5">
         <div class="plugin-heading"><div class="plugin-title"><p class="muted mb-2">{{ purpose(plugin) }}</p><h2>{{ plugin.name }}</h2></div><StatusBadge domain="plugin" :status="plugin.state" /></div>
         <p class="clamp-2 plugin-description">{{ plugin.description }}</p>
+        <p class="plugin-meta">插件 v{{ plugin.version }} · 接口世代 {{ plugin.api_version }}</p>
         <ul class="state-list"><li v-for="item in states(plugin)" :key="item.label"><span class="state-label">{{ item.label }}</span><span :class="item.ok?'state-ok':'state-warn'">{{ item.text }}</span></li></ul>
         <v-alert v-if="problem(plugin)" type="warning" variant="tonal" density="compact" class="my-3">{{ problem(plugin) }}</v-alert>
         <div class="actions mt-4"><v-btn :data-plugin-trigger="plugin.id" color="primary" variant="tonal" :to="{name:'plugins',query:{return_to:route.query.return_to,id:plugin.id}}">详情与配置</v-btn><v-btn :color="plugin.enabled?'error':'primary'" variant="outlined" :disabled="!!busy||!!readbackId||!plugin.configured" :loading="busy===`toggle:${plugin.id}`" @click="toggle(plugin)">{{ !plugin.configured?'先填写配置':plugin.enabled?'停用':'启用' }}</v-btn><v-btn v-if="plugin.enabled&&!plugin.active_enabled" color="primary" variant="outlined" :disabled="!!busy" @click="toggle(plugin,true)">重新启用</v-btn></div>
@@ -289,7 +290,7 @@ loadScopes()
           <v-alert v-if="message" type="success" variant="tonal" class="mb-4">{{ message }}</v-alert>
           <v-alert v-if="loaded&&!selected&&!error" type="warning" variant="tonal">此插件不在当前声明目录中。</v-alert>
           <template v-if="selected">
-            <div class="plugin-heading"><div><h2>{{ selected.name }}</h2><p class="muted mt-2">{{ purpose(selected) }} · {{ selected.id }}<span v-if="selected.version"> · v{{ selected.version }}</span></p></div><StatusBadge domain="plugin" :status="selected.state" /></div>
+            <div class="plugin-heading"><div><h2>{{ selected.name }}</h2><p class="muted mt-2">{{ purpose(selected) }} · {{ selected.id }} · 插件 v{{ selected.version }} · 接口世代 {{ selected.api_version }}</p></div><StatusBadge domain="plugin" :status="selected.state" /></div>
             <p class="full-text mb-4">{{ selected.description }}</p>
             <ul class="state-list"><li v-for="item in states(selected)" :key="item.label"><span class="state-label">{{ item.label }}</span><span :class="item.ok?'state-ok':'state-warn'">{{ item.text }}</span></li></ul>
             <v-alert v-if="problem(selected)" type="warning" variant="tonal" class="my-4">{{ problem(selected) }}</v-alert>

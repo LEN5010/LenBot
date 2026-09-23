@@ -7,7 +7,7 @@ def create(context):
     return BrowserAgentPlugin(context)
 
 
-PLUGIN = PluginSpec(id="browser_agent", name="受控浏览器", version="0.1.0",
+PLUGIN = PluginSpec(api_version=1, id="browser_agent", name="受控浏览器", version="0.1.0",
     description="按域名白名单观察网页和像素；默认停用。", config_model=BrowserPluginConfig,
     create=create, plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),
     call_timeout=lambda config: config.browser.timeout_seconds)

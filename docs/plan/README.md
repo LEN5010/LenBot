@@ -50,7 +50,7 @@
 | S2-04 | K | 处理新输入、恢复与撤销的边界 | 待确认 | — |
 | S2-05 | K | 让纠正与可见范围贯穿记忆和上下文 | 待确认 | — |
 | S2-06 | R | 核对上下文质量、费用与缓存取舍 | 待确认 | — |
-| S3-01 | E | 定义公共 API 版本与兼容规则 | 可实施 | 2026-09-23 用户采纳接口世代与插件版本分离、身份／范围／预算归宿主；公开支持政策仍待确认 |
+| S3-01 | E | 定义公共 API 版本与兼容规则 | 待复核 | 独立必填世代、发现拒绝、14 个描述符和面板已改；v1 合同与迁移见[插件开发](../plugins.md#接口世代-1-与迁移)；编译／构建完成，装载与页面待验收，公开支持政策待确认 |
 | S3-02 | E | 收窄常用能力入口与调用上下文 | 待确认 | — |
 | S3-03 | E | 统一工具声明、发现与执行语义 | 待确认 | — |
 | S3-04 | E | 规定 Hook、加载、卸载与取消行为 | 待确认 | — |
@@ -94,7 +94,7 @@
 | [s0-01-s2-context-inventory.md](s0-01-s2-context-inventory.md) | S0-01 | S2 持续上下文现状 |
 | [s0-01-s3-plugin-inventory.md](s0-01-s3-plugin-inventory.md) | S0-01 | S3 插件公共合同现状 |
 | [s0-01-s4-s7-inventory.md](s0-01-s4-s7-inventory.md) | S0-01 | S4—S7 现状 |
-| [s0-02-product-positioning-and-decisions.md](s0-02-product-positioning-and-decisions.md) | S0-02 | 三项架构决策草案（待维护者确认） |
+| [s0-02-product-positioning-and-decisions.md](s0-02-product-positioning-and-decisions.md) | S0-02 | 会话段及插件所有权方向已确认；其余草案待决定 |
 | [s0-03-dependency-boundary.md](s0-03-dependency-boundary.md) | S0-03 | 依赖边界表与发行配置草案 |
 | [s0-04-06-license-and-support.md](s0-04-06-license-and-support.md) | S0-04 / S0-06 | 授权事实清点与验收边界 |
 

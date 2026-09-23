@@ -15,7 +15,7 @@ def validate(config, root):
             raise ValueError('requires configured members')
 
 
-PLUGIN = PluginSpec(id='asoul_dynamics', name='A-SOUL 动态查询', version='1.0.0',
+PLUGIN = PluginSpec(api_version=1, id='asoul_dynamics', name='A-SOUL 动态查询', version='1.0.0',
     description='读取指定动态站已抓取的内容，提供历史同日与二创查询。',
     config_model=DynamicsConfig, create=create, validate_config=validate,
     plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),

@@ -17,7 +17,7 @@ def validate(config, root):
         raise ValueError('转写绑定引用了不存在的供应商')
 
 
-PLUGIN = PluginSpec(id='media_analysis', name='视频片段与转写', version='0.1.0',
+PLUGIN = PluginSpec(api_version=1, id='media_analysis', name='视频片段与转写', version='0.1.0',
     description='在已有工作中获取明确的公开B站片段，保存采样帧与音频；可选转写默认未配置。',
     config_model=MediaAnalysisConfig, create=create, validate_config=validate,
     plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),
