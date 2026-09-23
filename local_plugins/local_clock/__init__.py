@@ -86,7 +86,7 @@ def validate(config,root):
         raise ValueError('启用业务时钟前需要在根配置中设置 time')
 
 
-PLUGIN=PluginSpec(id='local_clock',name='业务时钟',version='1.0.0',
+PLUGIN=PluginSpec(api_version=1, id='local_clock',name='业务时钟',version='1.0.0',
     description='读取当前业务时间；精确命令可直接回复，时间简报由插件选择既有 Agent 表达。',
     config_model=ClockConfig,scene_config_model=ClockSceneConfig,create=LocalClock,
     validate_config=validate,call_timeout=lambda config:config.tool_timeout_seconds,

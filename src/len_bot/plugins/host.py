@@ -627,7 +627,8 @@ class PluginHost:
                 state='disabled' if configured else 'unconfigured'))
             out.append({
                 'id': plugin_id, 'name': spec.name, 'description': spec.description,
-                'version': spec.version, 'directory': str(entry.directory),
+                'version': spec.version, 'api_version': spec.api_version,
+                'directory': str(entry.directory),
                 'config_apply': spec.config_apply,
                 'work': {'operation':spec.work.operation,'allowed_tools':list(spec.work.allowed_tools),
                     'parameters_schema':spec.work.parameters_model.model_json_schema(),

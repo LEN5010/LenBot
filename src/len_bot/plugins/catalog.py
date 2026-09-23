@@ -18,12 +18,16 @@ if TYPE_CHECKING:
     from len_bot.plugins.base import BasePlugin, PluginContext
 
 
+PLUGIN_API_VERSION = 1
+
+
 @dataclass(frozen=True)
 class PluginSpec:
     id: str
     name: str
     description: str
     version: str
+    api_version: int
     config_model: type[BaseModel]
     create: Callable[[PluginContext], BasePlugin]
     permissions: tuple[PluginPermission, ...] = ()
@@ -83,6 +87,10 @@ class PluginCatalog:
                 spec = getattr(module, 'PLUGIN', None)
                 if not isinstance(spec, PluginSpec) or not spec.id or not spec.id.isidentifier():
                     raise ValueError(f'{entry_file} must export PLUGIN: PluginSpec with a unique identifier')
+                if type(spec.api_version) is not int or spec.api_version != PLUGIN_API_VERSION:
+                    raise ValueError(
+                        f'{entry_file}: plugin {spec.id!r} declares api_version={spec.api_version!r}; '
+                        f'host requires api_version={PLUGIN_API_VERSION}')
                 if not issubclass(spec.config_model, BaseModel):
                     raise TypeError(f'{entry_file}: config_model must be a Pydantic model')
                 if spec.id in entries:
