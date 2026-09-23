@@ -1,5 +1,5 @@
 <script setup>
-defineProps({ cache: Object })
+defineProps({ cache: Object, phases: Array })
 const percent = value => Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : '无法计算'
 const count = value => Number.isFinite(value) && value >= 0 ? value.toLocaleString() : '未记录'
 </script>
@@ -18,6 +18,15 @@ const count = value => Number.isFinite(value) && value >= 0 ? value.toLocaleStri
       <p>使用当前筛选的全部调用，不限本页。缺失字段不按零命中计算；覆盖率只描述已保存记录，不代表上游账单、价格或缓存保留时长。</p>
     </template>
     <p v-else>未取得缓存覆盖统计。</p>
+    <template v-if="phases?.length">
+      <h3>首次与后续请求</h3>
+      <dl v-for="phase in phases" :key="phase.phase">
+        <div><dt>{{ {first:'绑定内首次准备',followup:'绑定内后续准备',unknown:'顺序未记录'}[phase.phase] }}</dt><dd>{{ count(phase.calls) }} 次调用</dd></div>
+        <div><dt>平均输入 token（仅有效报告）</dt><dd>{{ count(phase.mean_input_tokens) }}（{{ count(phase.known_input_calls) }} 次）</dd></div>
+        <div><dt>缓存命中率（按输入量加权）</dt><dd>{{ percent(phase.cache_hit_rate) }}（{{ count(phase.cache_reported_calls) }} 次有报告）</dd></div>
+      </dl>
+      <p>按同一绑定实例进入网关的准备序号分类，不是群首问、会话段首轮或供应商重试。旧调用和缺记录单列未知；失败前未登记的准备会使序号有缺口。不同绑定／用途可能混在筛选结果中，不能把差异直接解释为缓存收益或价格。</p>
+    </template>
   </section>
 </template>
 

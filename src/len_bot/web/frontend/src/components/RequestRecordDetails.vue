@@ -43,6 +43,8 @@ const gaps = {
         <div><dt>最大输出 tokens</dt><dd>{{ record.settings.max_completion_tokens }}</dd></div>
         <div><dt>工具选择</dt><dd>{{ toolChoice }}</dd></div>
       </dl>
+      <p v-if="record.request_order?.scope === 'binding_instance_preparation'" class="request-note">同一绑定实例的第 {{ record.request_order.sequence }} 次请求准备（{{ record.request_order.sequence === 1 ? '首次' : '后续' }}）。实例 {{ record.request_order.binding_id }}；不是群首问、段首轮或供应商重试序号。此前准备若未登记，序号可能不连续。</p>
+      <p v-else class="request-note">未记录本次请求在绑定实例中的先后顺序。</p>
       <p class="request-note">未留存：{{ record.not_retained.map(key => gaps[key] || key).join('、') }}。清单格式版本 {{ record.format_version }} 不是提示或插件版本；来源定位不能逐字还原请求。</p>
       <template v-if="[2, 3].includes(record.format_version)">
         <h4>固定提示组件</h4>
