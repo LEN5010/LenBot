@@ -1236,6 +1236,9 @@ class RuntimeQueryService:
             item['commit_event_ids'] = sorted({record['commit_event_id'] for record in gates
                 if record.get('committed') and record.get('commit_event_id')})
             item['error'] = payload.get('error') or conversation.get('failure_reason')
+            item['error_type'] = payload.get('error_type')
+            item['gate_accepted'] = gate.get('accepted')
+            item['gate_reason'] = gate.get('reason')
             item['error_phase'] = payload.get('error_phase')
             item['publication_error'] = publication.get('error')
             item['publication_phase'] = publication.get('phase')
@@ -1712,7 +1715,7 @@ class RuntimeQueryService:
                     for outcome in turn['source_outcomes']]}
                 for turn in related['turns']],
             'traces': [{**fields(trace, ('id', 'kind', 'ref_id', 'created_at', 'committed',
-                        'publication_status', 'error_phase', 'source_event_ids', 'read_source_event_ids', 'commit_event_ids')),
+                        'publication_status', 'error_phase', 'gate_accepted', 'source_event_ids', 'read_source_event_ids', 'commit_event_ids')),
                 'error_recorded': bool(trace.get('error')),
                 'publication_error_recorded': bool(trace.get('publication_error'))}
                 for trace in related['traces']],

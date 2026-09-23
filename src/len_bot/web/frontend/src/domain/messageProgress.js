@@ -48,7 +48,7 @@ export function messageRecords(event, relations) {
   const attempts = (relations?.traces || []).filter(trace => ['conversation', 'conversation_error'].includes(trace.kind)
     && (actionId ? selectedAction.commit_event_id && trace.commit_event_ids?.includes(selectedAction.commit_event_id)
       : sourceId && (trace.source_event_ids?.includes(sourceId) || trace.read_source_event_ids?.includes(sourceId))))
-  const problems = attempts.filter(trace => trace.error || trace.publication_error)
+  const problems = attempts.filter(trace => trace.kind === 'conversation_error' || trace.error || trace.publication_error || trace.gate_accepted === false)
   const episodeIds = new Set([
     ...readTurns.map(turn => turn.episode_id),
     ...actions.map(action => action.episode_id),

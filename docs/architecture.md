@@ -352,6 +352,28 @@ MediaService 解码与缩放已获准文件，不计算内容校验和；发送�
 | `unknown` | 结果不确定，不自动重试或更换通道 |
 | Shadow／模拟 | 候选或隔离运行事实，不证明真实发送、履约或正常短时关注 |
 
+### 来源处理、提交与送达的判读
+
+三类状态各有权威记录，不合并为一个“成功／失败”。以下是现有源码合同，不是新增状态机：
+
+| 所处边界 | 依据与含义 | 不得推断 |
+|---|---|---|
+| 未进入普通对话 | 原事件 interaction 中的排除标记及实际理由 | 插件认领不证明已回应，没入普通对话不等于发送失败 |
+| 待处理 | 场景 pending_wakes 中仍存在来源 | 计划观察时刻不证明模型正在运行 |
+| 已提供 | 提交事件的 source_event_ids／provided_original_ranges | 读过不自动等于 replied |
+| 正常旁听 | 已提交来源的 source_outcomes.status=silent | 错误、缺档和整轮沉默不能冒充本条来源选择旁听 |
+| 已组织回应／委托 | 来源 replied／delegated 及同事务 action_ids／task_ids | 模型候选不算持久提交，工作创建不算研究完成 |
+| 等待／未完成 | 来源 waiting／incomplete，原 reason 与 unfinished | waiting 的真实等待激活仍需发送回执；说明不是完整心理过程 |
+| 工具错误／预算终止 | 原工具步骤状态、回执与轮次异常类型 | 不按错误文字猜分类，不把整轮错误覆盖已提交来源结局 |
+| Gate 拒绝 | gate.accepted=false 与保存的 reason | 拒绝当前候选不能撤销之前的 checkpoint |
+| 持久提交 | CONVERSATION_COMMITTED 与原 commit_event_id；event_store 事务落库后返回 | 发布失败不能把 committed 改回 false |
+| 发布 | PublicationRecord 的 pending／completed／failed／interrupted；逐行动 not_enqueued／enqueued／enqueue_unknown | completed 仅指发布步骤结束，不证明平台收到 |
+| 已有提交再遇到 | Actor 读取原 checkpoint 并返回 not_repeated | 不重复发布、造新 action_id 或重放外部动作 |
+| 发送尝试 | 持久 DELIVERY_ATTEMPTED；没有终态回执时 delivery_fact 返回 unknown | 不自动重发，不按当前平台状态补造旧尝试成功 |
+| 发送结果 | receipt_delivery_status 按真实消息／文件 ID、状态和模拟标记分类 | MESSAGE_SENT／FILE_UPLOADED 名称本身不足以证明成功；缺平台 ID 保持 unknown |
+
+消息详情展示来源保存的未完成项，关联问题区单列原 Gate 拒绝和异常类型；没有错误原文的 conversation_error 也保留问题入口。类型不认识则展示原标签，不扫描正文猜测。工具统计只属于该关联轨迹，可能涉及其他来源；具体原文原因在原轨迹中阅读，诊断下载仅保留状态与“有错误记录”的标记。
+
 OneBot 只有一个消息连接；发送通道选定后结果不确定不跨通道重试。令牌不在读取 API 中返回。
 
 ## 面板与记录
