@@ -91,26 +91,24 @@ def same_source(left,right):
     return all(getattr(left,key)==getattr(right,key) for key in ('start_at','end_at','snapshot_rowid','bot_actor_id','timezone'))
 
 
-async def new_progress(store,scene_id,request,previous):
+async def new_progress(preparation,request,previous):
     if (previous and same_source(previous[0],request) and previous[0].focus==request.focus
             and previous[0].analysis_instructions==request.analysis_instructions):return previous[1]
-    counts=await store.group_message_statistics(scene_id,start_at=request.start_at.timestamp(),
-        end_at=request.end_at.timestamp(),cutoff_rowid=request.snapshot_rowid,bot_actor_id=request.bot_actor_id)
+    counts=await preparation.group_statistics(request.start_at.timestamp(),request.end_at.timestamp(),
+        request.snapshot_rowid,request.bot_actor_id)
     return SummaryCoverage(matched_messages=counts['message_count'],participants=counts['participant_count'],
         matched_characters=counts['character_count'],complete=counts['message_count']==0)
 
 
-async def adopt_reads(store,job,request,coverage,presentations):
+def adopt_reads(scene_id,request,coverage,presentations):
     read_ids=set(coverage.read_event_ids)
-    for span in presentations:
+    for span,result in presentations:
         if span.coordinate_unit!='characters':continue
-        result=await store.read_tool_observation(span.result_id,[job['scene_id']])
-        if result is None:raise ValueError('Summary presentation has no stored observation')
         if result.coverage!='group_summary_input' or result.status not in {'ok','no_results'}:continue
         lines=result.content.split('\n')
         header=json.loads(lines[0])
         source=GroupSummaryRange.model_validate(header['range'])
-        if header['scene_id']!=job['scene_id'] or not same_source(source,request):continue
+        if header['scene_id']!=scene_id or not same_source(source,request):continue
         merged=[]
         for left,right in sorted([*coverage.read_result_ranges.get(span.result_id,[]),(span.start,span.end)]):
             if merged and left<=merged[-1][1]:merged[-1]=(merged[-1][0],max(merged[-1][1],right))
@@ -152,11 +150,9 @@ async def execute(context):
     return await run_report(context)
 
 
-def needs_model(job):
-    progress=SummaryCoverage.model_validate(job['work_progress'])
-    request=GroupSummaryRange.model_validate(job['work_parameters'])
+def needs_model(request,progress,goal,constraints):
     if not progress.matched_messages:return False
-    if progress.analysis_requirements!=analysis_requirements(request,job['goal'],job['constraints']):return True
+    if progress.analysis_requirements!=analysis_requirements(request,goal,constraints):return True
     if progress.report_result_id and progress.phase in {'report_ready','rendering','render_failed'}:return False
     if progress.merged_result_id and progress.merged_batches==len(progress.batch_result_ids) and progress.phase=='merging':return False
     return progress.phase!='ready' or progress.analyzed_messages<progress.matched_messages

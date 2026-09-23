@@ -16,7 +16,7 @@ def create(context):
     return WorkspacePlugin(context)
 
 
-PLUGIN = PluginSpec(api_version=1, id="python_workspace", name="Python 工作空间", version="0.2.0",
+PLUGIN = PluginSpec(api_version=2, id="python_workspace", name="Python 工作空间", version="0.2.0",
     description="在隔离容器中处理当前任务的工作文件；默认停用。", config_model=WorkspacePluginConfig,
     create=create, plugin_type=PluginType.TOOL, permissions=(PluginPermission.REGISTER_TOOL,),
     call_timeout=lambda config: config.call_timeout_seconds)

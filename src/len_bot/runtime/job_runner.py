@@ -21,7 +21,7 @@ from len_bot.tools.retrieval import ObservationPage, RetrievalToolkit
 from len_bot.tools.results import ToolNextCall, ToolResult
 from len_bot.plugins.models import PluginCallContext
 from len_bot.plugins.agent import PluginExecution
-from len_bot.plugins.work import PluginWorkContext
+from len_bot.plugins.work import PluginWorkContext, PluginWorkSnapshot
 from len_bot.cognition.budget import AgentBudget, count_remaining, seconds_left_to, terminal_seconds_reserve, tightest, work_call_admission
 from len_bot.execution.workspace import parked_termination
 from len_bot.runtime.work_context import JobContextExhausted, WorkCompressor, request_tokens, restore_trajectory, synchronize_image_window
@@ -297,12 +297,15 @@ class InformationJobRunner:
         for event in events:
             media = [*event.metadata.get("media", []), *(event.metadata.get("quote_context") or {}).get("media", [])]
             assets.extend(item["asset_id"] for item in media if item.get("asset_id"))
+        work_snapshot = (PluginWorkSnapshot(id=job['id'],revision=job['revision'],status=job['status'],
+            operation=job['work_operation'],requester_qq_uid=job['requester_qq_uid'],
+            parameters=work.parameters_model.model_validate(job['work_parameters'])) if work else None)
         observations = []
         for result_id in job["result_ids"]:
             result = await store.read_tool_observation(result_id, [job["scene_id"]])
             if result:
                 continuation=result.source_next_call
-                if work:continuation=work.continuation(job,result)
+                if work:continuation=work.continuation(work_snapshot,result)
                 observations.append({"result_id": result_id, "status": result.status, "coverage": result.coverage,
                                      "sources": [source.model_dump() for source in result.sources], "content_length": len(result.content),
                                      'source_next_call':continuation.model_dump(mode='json') if continuation else None,
@@ -825,7 +828,9 @@ class InformationJobRunner:
                 try:
                     require_current_access()
                     work=runtime.plugin_host.work_spec(job['plugin_origin'],job['work_operation'])
-                    needs_model=not work or work.needs_model is None or work.needs_model(job)
+                    needs_model=not work or work.needs_model is None or work.needs_model(
+                        work.parameters_model.model_validate(job['work_parameters']),
+                        work.progress_model.model_validate(job['work_progress']),job['goal'],tuple(job['constraints']))
                     current_cutoff=(await store.load_scene_session(scene_id))['last_observed_event_rowid']
                     work_cutoff=work.input_cutoff(work.parameters_model.model_validate(job['work_parameters']),current_cutoff) if work else current_cutoff
                     if needs_model and config.job_max_steps is not None and job['model_steps']>=config.job_max_steps:
