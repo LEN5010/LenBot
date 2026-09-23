@@ -4,27 +4,30 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，本批基线 `c4120e2`，开始时工作区干净；上一批已本地提交。
-- S4-01：核对现有观察机会、快速搭话、有限关注与沉默。本批未发现需要新增机制的明确源码断点，交付参与策略及判读合同，不为了产生代码改动重复实现既有机制。
+- 分支 `feat/s0-product-contract`，本批基线 `5c2fa10`，开始时工作区干净；上一批已本地提交。
+- S4-02：核对普通查询／计算、分页、长工作选择及宿主可派生的关系。已有同循环工具与语义合同不重复实现；只修复普通工作重复暂存和插件暂存匹配漏掉变化输入的明确缺口。
 
-## 本批核对与交付
+## 本批实现与核对
 
-新增架构中的“接话、有限关注与沉默的判读”，把读取机会、处理结果与真实送达分开。路线 S4-01 进入待复核：这表示现有源码路径和合同已核对，不代表真实群聊表现已验收。依赖的完整活动段交接仍属 S2，未由本批替代。
+ProposalLedger.stage 的普通 start_work，在原来源和资料引用解析后，用当前未提交创建提案逐项比较：同一请求原话、目标、约束、来源列表、资料列表及复用成果快照完全一致，且同属普通工作，返回原 proposal_ref／ack_ref，不再追加第二份提案或分配新句柄。没有按关键词或相似目标合并，也不查询历史工作来自动选择旧成果。
 
-- AttentionPolicy.apply：真实提及、回复及私聊形成直接搭话理由；certain 表示读取优先而不是强制回复。名字和关键词经原冷却生成弱机会，不被提升成明确请求；引用片段不参加当前文字的昵称／关键词匹配。
-- AttentionPolicy 与 BurstAssembler.ingest：普通观察时刻取已有截止与 now+间隔的较早者；缓冲 max_deadline 也只取较早者，后续输入不能不断推迟最大等待。快、观察、弱机会、周期四条车道仍共用一个缓冲；定时任务须匹配原缓冲和任务身份。没有为说明这一点运行计时探针。
-- SceneActor._focus_renewal_actors 与 AttentionPolicy.apply：只有真实 live 送达的关系匹配对象续期 focused_participants，并排除明确释放对象；在途已提交但未回执的关系只作短时线索。observing_until 则可由真实直接输入或本轮新处理原话的明确 continue／end 控制，普通新消息不自行续期。
-- 逐项核对配置和字段：有效 focus_seconds 当前仍继承全局；pending_response_actors 读取的内部 MessageProposal.addressed_to 确实存在，与出站回执 response_actor_ids 是不同阶段字段。未把这些已有正确映射当作缺陷改写。
-- ScenePolicy、睡眠与 Runtime 的入口／最终资格过滤：快速机会仍受场景、主体、睡眠和额度约束；小时限制、sleep、chat_not_allowed 等拒绝不同于模型主动沉默。等待槽位后仍重新过滤，不能用旧来源绕过关闭或限额。
-- ProposalLedger.finish、SceneReducer 与 _preserve_unhandled_bursts：silent 须有理由且不能同时关联实际消息／操作；明确请求不会因为只有原话已读就自动当成处理完毕。普通机会的完整阅读、来源处理及送达是不同事实，空完成不反复购买新一轮预算。
-- 只修改文档和路线，没有修改源码、前端或运行参数；因此未额外运行编译、构建或任何测试。git diff --check 无格式错误。源码核对不能证明现场时延、话题结束后的自然沉默或真实对象关联已经正确运行。
-- 初始路径查找出现 `rg: src/len_bot/scenes/attention.py: No such file or directory (os error 2)`、`rg: src/len_bot/scenes/scene_policy.py: No such file or directory (os error 2)`，沿 actor.py 实际导入定位 runtime/attention.py、runtime/scene_policy.py。另有 `rg: src/len_bot/cognition/ledger.py: No such file or directory (os error 2)`、`rg: src/len_bot/cognition/decision.py: No such file or directory (os error 2)`，以及 `rg: src/len_bot/cognition/social_ledger.py: IO error for operation on src/len_bot/cognition/social_ledger.py: No such file or directory (os error 2)`；最终用类定义定位 cognition/proposals.py。均为源码定位错误，不是运行失败。
-- 没有同版开发面板或授权真实群操作；事件入口、截止冲洗、睡眠／额度拒绝、来源 silent 原因及送达后的关注期限仍待真实记录复核。未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未启动服务、读取业务库、调用模型／平台或真实发送。
+stage_plugin_work 先解析本次 result_refs 和约束，再参与原重复匹配；除原插件身份、请求、目标及专用参数外，还比较约束、原话来源和资料列表。变化输入不再因目标相同被忽略，非法引用也不能靠命中旧提案绕过解析。仍保留不同输入的独立暂存语义，若意图替换旧提案应明确 discard_proposal，不隐式修改旧提案或补参数。
+
+同一输入复用仅限当前未提交 Ledger。提交后 adopt_commit 清空暂存，已提交事项须从原 query_jobs／工作引用读取；丢弃后再次提出可建立新提案。工具调用、原生回执及预算记账不因复用句柄被抹去，不把 staged 说成已创建、执行或发送。
+
+- 阅读固定机器合同、StartWork／TurnMessage／TurnAnswerBasis、核心读取目录与工具发现。一般社交和给定资料足够的解释可直接回答；calculate、finite_check 与原资料续页都能在当前对话循环执行；只有时效、精确或指定来源要求才需要相应资料，未确认项不能填成确定结论。
+- 阅读 read_tool_result 的同群保存观察、字符／记录坐标、原调用及续页返回；没有为了分页隐式创建工作。源端下一批与本地保存页分开，不以当前位置证明已取得或已读。
+- 阅读 request_source、工作控制与 respond 的引用解析，确认请求者、真实来源、工作版本及创建／控制／交付关联由宿主从原引用推导；实际回应对象、展示引用、是否等待仍是不同语义，不把它们合并成同一字段。
+- 阅读 stage、stage_plugin_work、discard_proposal 与 adopt_commit 的实际列表修改位置；重复返回发生在追加列表和递增句柄之前，复用的仍是待提交提案。列表比较保留当前顺序，不额外重排输入来扩大匹配范围。
+- uv compileall 编译 cognition/proposals.py，退出 0；git diff --check 无格式错误。未修改前端，不运行前端构建；人工人格、示例、模型绑定、真实配置和工具预算未改。
+- 源码定位出现 `rg: src/len_bot/plugins/context.py: No such file or directory (os error 2)`；随后沿实际 plugins/models.py 与 plugins/base.py 定位 stage_work 公共入口。属于路径查找错误，不是运行失败。
+- 未实际执行查询、计算、分页、重复暂存或工作创建；短路径选择、重复句柄、变化输入、提交后工作身份及实际预算仍待同版人工验收。编译与源码阅读不等于运行通过。
+- 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未启动服务、读业务库、调用模型／平台或真实发送。
 
 ## 待决定与接续
 
-1. 接续 S4-02 的普通查询／计算、分页和长工作选择，以及可由宿主推导的语义合同去重；先核对现有 ProposalLedger 与工具目录，不新增规划流水线，不改人工人格原文。
+1. S4-02 已进入待复核，不表示实际模型每次都选对长短路径。接续 S4-03 的长工作、明确修订／取消／继续及成果复用，优先核对现有实现而非再建工作状态机。
 2. S2 完整活动段的额外原生字段／必要回复片段保存边界仍待维护者回答；宿主所有权不是额外保存授权，不重复提问。未登记自由文本依赖不作自动推断，S2 不标整体完成。
-3. S1 仍有材料／耗时口径待补；S3 及本批 S4-01 仅待复核，没有同版人工验收或发布。S4 其他项与 S5—S7 仍有工作，不把当前观察路径核对等同整个群聊体验完成。
+3. S1 仍有材料／耗时口径待补；S3 和 S4-01／02 仅待复核，没有同版人工验收或发布。S4 其他项与 S5—S7 仍有计划工作。
 4. 许可证、字体／素材授权、长期数据保留、公开支持承诺仍待维护者决定；人物资料、五张常服与 19 张表情待人工采用，真实成果复用与文件交付仍待业务记录。
 5. 300k／128k 仍为候选，根配置未改；既往令牌轮换与部署条件未复验。仅授权阶段性本地提交，不推送、合并、部署或真实发送。总体目标保持进行中。

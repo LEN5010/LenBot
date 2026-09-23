@@ -240,6 +240,8 @@ HtmlCardRenderer 使用 set_content，不导航远程网页，原 http／https �
 
 提案工具可调用 `call.stage_work(goal=..., request_source=..., evidence=..., parameters=...)`，取得原 Ledger 的暂存引用，再由 respond 提交。request_source 始终是已读人类原话；普通信息工作不填 parameters。专用工作在 PluginSpec.work 提供 PluginWorkSpec，parameters 必须使用其参数模型，不在插件中建立任务队列或写裸连接。
 
+同一未提交 Ledger 内的工作暂存，仅在插件身份、原请求、目标、专用参数、约束以及来源／资料列表都一致时复用原 proposal_ref／ack_ref。本次引用先解析，不因命中旧目标忽略变化输入或无效资料；不同输入不隐式覆盖旧提案，需要替换时明确丢弃旧提案。此复用不代表工作已创建，也不复用已提交事项的确认资格，普通工具路径见[工作暂存合同](architecture.md#普通工具与工作暂存)。
+
 只有需要固定业务范围和独立覆盖的工作才声明该对象。它提供参数、修订和进度模型、allowed_tools、allow_learning，以及截点、修订、新进度、阅读覆盖、结果判定、续页和进度展示函数。这些存储回调只读已保存资料并做本地计算，在原事务中执行，不请求 HTTP/模型、不建立嵌套写事务。
 
 需要插件安排完整执行顺序时，声明 `execute(context: PluginWorkContext) -> JobResult`。它在原工作运行器、取消关系与时限中执行；上下文提供 call、revision、parameters、goal、constraints、输入／输出窗口和 resume_from。`progress()` 读取当前版本，`save_progress(typed_progress)` 保存并核对版本，`save_result(operation, ToolResult)` 将长资料存入原观察库，`adopt_results(ids)` 复用本群已有资料。不要在进度里反复复制长正文。
