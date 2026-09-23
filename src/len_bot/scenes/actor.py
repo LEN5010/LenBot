@@ -57,6 +57,8 @@ class SegmentCommand:
     event_ids: list[str]
     profile: ModelProfile
     basis: dict
+    result_aliases: dict[str, str]
+    job_aliases: dict[str, str]
     future: asyncio.Future
 
 
@@ -153,10 +155,11 @@ class SceneActor:
         self._queue.put_nowait(HistoryCommand(kwargs, future))
         return await asyncio.shield(future)
 
-    async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis):
+    async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis,
+                                        result_aliases, job_aliases):
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(SegmentCommand(episode_id, expected_id, through_rowid,
-            list(event_ids), profile, copy.deepcopy(basis), future))
+            list(event_ids), profile, copy.deepcopy(basis), dict(result_aliases), dict(job_aliases), future))
         return await asyncio.shield(future)
 
     async def _save_conversation_segment(self, command):
@@ -176,6 +179,11 @@ class SceneActor:
         events = await self.event_store.events_by_ids(self.scene_id, command.event_ids, command.through_rowid)
         if [event.id for event in events] != command.event_ids:
             raise SceneCommitConflict('Conversation window has missing or reordered source events')
+        if previous:
+            for old, current in ((previous.result_aliases, command.result_aliases),
+                                 (previous.job_aliases, command.job_aliases)):
+                if any(ref in old and old[ref] != identity for ref, identity in current.items()):
+                    raise SceneCommitConflict('A retained conversation reference cannot change its identity')
         reason = ('initial' if previous is None else 'process_restart' if self._segment_basis is None
             else 'binding_changed' if self._segment_basis != command.basis
                 or previous.model_profile != command.profile
@@ -187,7 +195,7 @@ class SceneActor:
             opened_at=self.event_store.clock() if reason else previous.opened_at,
             reason=reason or previous.reason, model_profile=command.profile,
             knowledge_revision=self.session.knowledge_revision, through_rowid=command.through_rowid,
-            event_ids=command.event_ids)
+            event_ids=command.event_ids,result_aliases=command.result_aliases,job_aliases=command.job_aliases)
         await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
             segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
         self.session.conversation_segment = segment
