@@ -8,8 +8,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 
 from len_bot.cognition.projection import project_onebot_text
-from len_bot.plugins.models import PluginCallContext
-from len_bot.tools.results import ToolNextCall, ToolResult, ToolSource
+from len_bot.plugins.api import PluginCallContext, ToolNextCall, ToolResult, ToolSource
 
 from .config import GroupSummaryConfig
 from .report import BatchAnalysis, ReportArtifact, SingleGroupReport, SourceMessage
@@ -24,16 +23,17 @@ class WindowCursor(BaseModel):
 
 
 class GroupSummaryService:
-    def __init__(self,event_store,config: GroupSummaryConfig):
-        self.event_store,self.config=event_store,config
+    def __init__(self,config: GroupSummaryConfig):
+        self.config=config
 
-    async def source_messages(self,scene_id,request):
+    async def source_messages(self,call: PluginCallContext,request):
+        if request.snapshot_rowid!=call.cutoff_rowid or request.bot_actor_id!=call.plugin.bot_actor_id:
+            raise ValueError('Report source snapshot does not match the current call')
         events=[]
         after=0
         while True:
-            page=await self.event_store.group_message_window(scene_id,start_at=request.start_at.timestamp(),
-                end_at=request.end_at.timestamp(),cutoff_rowid=request.snapshot_rowid,
-                bot_actor_id=request.bot_actor_id,after_rowid=after,limit=self.config.page_messages)
+            page=await call.read_group_messages(start_at=request.start_at.timestamp(),
+                end_at=request.end_at.timestamp(),after_rowid=after,limit=self.config.page_messages)
             if not page:break
             events.extend(page)
             after=page[-1].metadata['_rowid']
@@ -71,8 +71,7 @@ class GroupSummaryService:
     async def saved_resources(self,call,coverage):
         before=None
         while True:
-            rows=await self.event_store.plugin_observations(call.scene_id,call.origin.plugin_id,
-                call.origin.plugin_version,coverage,limit=self.config.page_messages,before_rowid=before)
+            rows=await call.list_observations(coverage,limit=self.config.page_messages,before_rowid=before)
             if not rows:return
             for _,result in rows:yield result
             before=rows[-1][0]
@@ -89,23 +88,23 @@ class GroupSummaryService:
 
     async def read_window(self,cursor: str | None,call: PluginCallContext):
         if call.role!='work' or not call.job_id:raise ValueError('群原话窗口只在已提交的总结工作中读取')
-        job=await self.event_store.get_job(call.job_id,call.scene_id)
-        if not job or job['work_operation']!='group_summary' or job['status']!='processing':
+        job=await call.read_work(call.job_id)
+        if not job or job.operation!='group_summary' or job.status!='processing':
             raise ValueError('当前场景没有对应的运行中总结工作')
-        request=GroupSummaryRange.model_validate(job['work_parameters'])
-        if call.cutoff_rowid!=request.snapshot_rowid or call.requester_qq_uid!=job['requester_qq_uid']:
+        request=GroupSummaryRange.model_validate(job.parameters)
+        if call.cutoff_rowid!=request.snapshot_rowid or call.requester_qq_uid!=job.requester_qq_uid:
             raise ValueError('总结读取上下文与已保存的请求者或快照不一致')
         index=0
         if cursor is not None:
             position=WindowCursor.model_validate_json(cursor)
-            if position.job_id!=job['id'] or position.revision!=job['revision']:
+            if position.job_id!=job.id or position.revision!=job.revision:
                 raise ValueError('游标不属于当前工作版本；使用当前版本提供的续页位置')
             index=position.index
-        records=await self.source_messages(call.scene_id,request)
+        records=await self.source_messages(call,request)
         if index>len(records):raise ValueError('Source cursor exceeds its fixed message range')
         selected=records[index:index+self.config.page_messages]
-        next_cursor=WindowCursor(job_id=job['id'],revision=job['revision'],index=index+len(selected)).model_dump_json() if index+len(selected)<len(records) else None
-        return self.input_result(call.scene_id,job['id'],job['revision'],request,selected,next_cursor=next_cursor)
+        next_cursor=WindowCursor(job_id=job.id,revision=job.revision,index=index+len(selected)).model_dump_json() if index+len(selected)<len(records) else None
+        return self.input_result(call.scene_id,job.id,job.revision,request,selected,next_cursor=next_cursor)
 
     @staticmethod
     def current_continuation(job,observation):
@@ -129,14 +128,14 @@ class GroupSummaryService:
             asset_ids=artifact.image_asset_ids or [artifact.image_asset_id]
             available=[]
             for asset_id in asset_ids:
-                if await self.event_store.get_media(asset_id,[call.scene_id]):
+                if await call.media_available(asset_id):
                     available.append(asset_id)
-            job=await self.event_store.get_job(artifact.job_id,call.scene_id)
+            job=await call.read_work(artifact.job_id)
             return ToolResult(status='ok' if len(available)==len(asset_ids) else 'partial',coverage='saved_group_report',evidence_kind='model',
                 attachments=available,sources=observed.sources,
                 content=json.dumps({'artifact_result_id':resource.result_id,'report_result_id':observed.result_id,
                     'artifact':artifact.model_dump(mode='json'),'report':report.model_dump(mode='json'),'image_available':bool(available),
-                    'delivery_status':job['status'] if job and job['revision']==artifact.job_revision else 'see_historical_receipts',
+                    'delivery_status':job.status if job and job.revision==artifact.job_revision else 'see_historical_receipts',
                     'note':'这是保存的派生报告；读取不会重新分析、渲染或发送。统计和引用由程序提取，话题与点评来自当时模型分析。'},ensure_ascii=False))
         return ToolResult(status='no_results',coverage='saved_group_report',evidence_kind='retrieval',
             content='当前群、该精确范围与所选版本没有已生成的报告图片；此读取不会新建工作。')

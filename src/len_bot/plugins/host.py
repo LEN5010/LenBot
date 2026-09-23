@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Awaitable, Literal
 from pydantic import BaseModel, ValidationError
 from len_bot.plugins.models import ExactText, PluginCallContext, PluginHandlerDefinition, PluginManifest, PluginToolDefinition
-from len_bot.events.models import (EventType, PluginEventPayload, PluginInitiator, PluginOrigin,
+from len_bot.events.models import (Event, EventType, PluginEventPayload, PluginInitiator, PluginOrigin,
                                    human_initiator_for)
 from len_bot.plugins.hooks import HOOK_VIEWS, PluginHookDefinition, PluginRunHooks
 from len_bot.plugins.base import BasePlugin, PluginContext
@@ -247,7 +247,7 @@ class PluginHost:
                 break
         return routes
 
-    async def validate_call(self, call, *, mention_all=False):
+    async def validate_call(self, call, *, mention_all=False) -> Event:
         if call.public_research:
             await self._validate_public_call(call)
         origin = call.entry_origin or call.origin
@@ -274,7 +274,7 @@ class PluginHost:
                 raise ValueError('Plugin tool source is no longer available')
             if mention_all:
                 raise ValueError('Tool runs do not grant all-member mentions')
-            return
+            return source
         definition = self._handlers.get((origin.plugin_id, origin.entry_id))
         if definition is None or not any(route['origin'] == origin.model_dump()
                 for route in source.metadata.get('plugin_routes', ())):
@@ -286,6 +286,7 @@ class PluginHost:
             await definition.validate(current)
         if mention_all and not (definition.allow_mention_all and definition.allow_mention_all(current)):
             raise ValueError('This plugin entry has no current all-member mention setting')
+        return source
 
     async def _validate_public_call(self, call):
         from len_bot.runtime.public_research import verify_public_job
