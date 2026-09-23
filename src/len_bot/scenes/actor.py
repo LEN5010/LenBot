@@ -112,9 +112,13 @@ class SceneActor:
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(EpisodeLeaseCommand(episode_id, mailbox, future))
         try:
-            return await asyncio.shield(future)
+            return await future
         except asyncio.CancelledError:
-            if await asyncio.shield(future):
+            # A lease has no durable effect to recover. Revoke this request
+            # without waiting for the Actor, including a grant just completed
+            # before cancellation reached its caller.
+            mailbox.cancel('Episode lease acquisition was cancelled')
+            if self._active_mailbox is mailbox:
                 self.release_episode_lease(episode_id)
             raise
 
@@ -207,7 +211,8 @@ class SceneActor:
             item = await self._queue.get()
             try:
                 if isinstance(item, EpisodeLeaseCommand):
-                    acquired = self._active_mailbox is None
+                    acquired = (not item.future.cancelled() and not item.mailbox.is_cancelled()
+                                and self._active_mailbox is None)
                     if acquired:
                         self._active_mailbox = item.mailbox
                         self._episode_idle.clear()

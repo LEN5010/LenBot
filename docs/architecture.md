@@ -28,6 +28,14 @@
 
 Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Session，再由调用者发布 Scheduler 和 Action。发布按同一场景顺序执行，完整准备行动后才入队；Trace 单独保存 committed、commit_event_id、发布阶段、已调度任务及逐条 not_enqueued／enqueued／enqueue_unknown。发布异常不改变 accepted 或把终结调用标成 rejected，不重做事务、不补发；取消发生在等待提交期间时，等待同一次事务的实际结局，已提交则记录发布中断。重复读取已提交轮次只返回原结果和行动身份。未提交候选目录排除存在真实 CONVERSATION_COMMITTED 的轮次。
 
+### 普通对话租约与取消
+
+普通对话先通过 SceneActor 的 EpisodeLeaseCommand 取得独占 mailbox，再读取本轮快照、准备模型请求和提交。尚未取得租约不表示来源已读或已处理；已授租约也不是持久业务提交。
+
+acquire_episode_lease 直接等待可取消的 Future。取消时同步标记本次 mailbox；如果 Actor 已授出且当前持有的正是这个对象，立即释放，不再等待队列确认。Actor 消费命令时跳过已取消的 Future 或 mailbox，不为无人等待的请求占住租约。释放仍用原 idle 信号，不抢占另一个 mailbox，也不新建调度、重试或重新投递来源。
+
+这与 commit_turn 的取消边界不同：真正提交可能已经进入独立 Actor 事务，因此仍等待同一次持久决定，已提交则保留 commit_event_id 和发布中断事实，不再次提交／发送。已提交轮次的重复请求仍只返回原结果和 not_repeated 发布记录。后续新输入、逐来源处理、知识版本及工作修订继续由原提交核对决定，不把全局观察截点等同本轮已处理。
+
 ## 配置与持续数据
 
 普通对话当前段的原话窗口引用由 SceneActor 在原执行租约内保存到 scene_sessions.state_json.conversation_segment；下一轮只从原事件回读。它不提升观察截点、不消费唤醒、不记成已读或提交，原生工具跨轮续接仍未接通。开启／换段与引用更新使用同一原存储事务，失败不修改内存段或自动换来源；当前覆盖及重启行为见[原话窗口合同](context.md#当前段的原话窗口引用)。
