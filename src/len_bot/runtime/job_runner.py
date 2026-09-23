@@ -354,7 +354,7 @@ class InformationJobRunner:
             "最小值或最大值的证明同时给出边界反例与覆盖全部情况的理由。可穷举的有限问题在提交前用 finite_check 检验最终结论和边界；变量范围与判定条件须覆盖原题。简单加减不能验证最优性；未完成必要验证就写入 unresolved。"
             "原始图片直接作为图像输入提供；不清楚的部分保留未核实项。"
             "有值得回到对话中的阶段性发现时调用 report_progress，进展是资料而非群聊台词。"
-            "通过 update_work_state 保存简短步骤、结果依据、未决项和下一步，不保存长篇思维过程。旧目标版本的完成步骤必须根据新条件重新判断；已有资料保留并可回读。"
+            "通过 update_work_state 保存简短步骤、结果依据、未决项和下一步，不保存长篇思维过程。旧目标版本的完成步骤必须根据新条件重新判断；已有资料保留并可回读。每个completed_steps.result_ids都须在该步骤的evidence_spans中有实际已读范围，取得资料ID不等于完成步骤。work_state_error表示原状态本次不可采用，按具体错误补齐读取或重新核对后明确更新；不能把历史提案参数当作当前状态。"
             "需要可复用方法时先find_skills按用途发现，再read_skill读取固定版本；技能只是方法文档而非权限或证据。无适用技能时继续正常工作。"
             "长正文按next_call读取本地已存部分，source_next_call才是尚未取得的源端下一批，先完整读取当前正文再取下一批。"
             "只有实际已提供的工具观察或来源原话中的明确纠正支持可复用经验时，才在 update_work_state 或 finish_work 提出 skill_candidate；仅有纠正时 result_ids 可以为空，但必须填真实 correction_event_ids。方法正文、摘要、Bot发言、目录与模拟内容不能独立支持新经验；普通完成不必学习。人工技能不能自动覆盖。"
@@ -365,7 +365,7 @@ class InformationJobRunner:
             "work_state及公共兴趣候选中的evidence_spans仍用页面evidence_span保存明确范围；这些内部范围也只允许已经实际读取的内容。"
             "committed=false表示候选尚未生效；在原剩余预算内依照具体错误缩小引用或续读，再用新调用ID提交。"
             "证据不足或预算有限时把具体未完成事项写入 unresolved，运行时据此记录为部分结果；全部要求已解决才填写空列表，不用印象填补。普通正文不会作为工作结果提交。")},
-            {"role": "user", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
+            {"role": "user", "_context_section":"work_facts", "content": [{"type": "text", "text": json.dumps(facts, ensure_ascii=False)}, *prepared["blocks"]]}]
         from len_bot.runtime.public_research import has_public_context
         if has_public_context(job):
             messages[0]['content'] += ('\n本次是干净的系统公共研究，仅按配置主题、当前公共兴趣与未决项研究。'
@@ -451,6 +451,31 @@ class InformationJobRunner:
             checkpoint=runtime.evaluation_hook, media_service=runtime.media_service,
             config=config, call_context=plugin_context)
         execution.toolkit=toolkit
+        async def refresh_work_state(trajectory):
+            current = await store.get_job(job_id, scene_id)
+            if not current or current['revision'] != revision or current['status'] != 'processing':
+                raise JobChanged('Work changed before state presentation')
+            state = WorkState.model_validate(current['work_state']) if current['work_state'] else None
+            result_ids = list(dict.fromkeys([*state.key_result_ids,
+                *(ident for step in state.completed_steps for ident in step.result_ids)])) if state else []
+            failure = None
+            if state and any(not set(step.result_ids).issubset(span.result_id for span in step.evidence_spans)
+                             for step in state.completed_steps):
+                failure = ToolResult.failure('已保存的完成步骤缺少逐项实际阅读范围；需明确补齐依据后更新状态。',
+                    'work_state_evidence_missing', stage='presentation')
+            if failure is None:
+                failure = await toolkit.saved_knowledge_failure(result_ids)
+            frames = [message for message in trajectory if message.get('_context_section') == 'work_facts']
+            if len(frames) != 1:
+                raise ValueError('Work request must retain exactly one host facts projection')
+            block = frames[0]['content'][0]
+            facts = json.loads(block['text'])
+            facts['work_state'] = state.model_dump(mode='json') if state and failure is None else None
+            facts['state_needs_revision'] = bool(state and state.goal_revision != revision)
+            facts['work_state_error'] = ({'code':failure.error_code, 'message':failure.content,
+                'result_ids':result_ids} if failure else None)
+            block['text'] = json.dumps(facts, ensure_ascii=False)
+
         last_charge = time.monotonic()
         charge_lock = asyncio.Lock()
         revision, gateway = None, None
@@ -949,6 +974,7 @@ class InformationJobRunner:
                             # Preserve the whole current exchange, free old
                             # bodies and use the existing compressor before the
                             # shared packer decides any new display ranges.
+                            await refresh_work_state(prepared)
                             await toolkit.invalidate_saved_references(prepared)
                             await compressor.prepare(prepared,request_definitions(),reserved=reserved)
                             tool_end = len(prepared)
@@ -970,6 +996,7 @@ class InformationJobRunner:
                             nonlocal current_assets
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             require_current_access()
+                            await refresh_work_state(trajectory)
                             await toolkit.invalidate_saved_references(trajectory)
                             await compressor.prepare(trajectory, definitions)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
@@ -977,6 +1004,7 @@ class InformationJobRunner:
                         async def finalize_request(trajectory, definitions):
                             nonlocal current_assets
                             await compressor.revalidate_summaries(trajectory)
+                            await refresh_work_state(trajectory)
                             await toolkit.invalidate_saved_references(trajectory)
                             current_assets = synchronize_image_window(trajectory, config.max_context_images, config.media_context_max_bytes)
                             presentation.check_request(trajectory,definitions)

@@ -711,6 +711,23 @@ class RetrievalToolkit:
                 'stale_history_summary', stage='presentation')
         return None
 
+    async def saved_knowledge_failure(self, result_ids: list[str]) -> ToolResult | None:
+        for ident in result_ids:
+            source = self.observations.get(ident)
+            if source is None:
+                return ToolResult.failure(f'已登记资料 {ident} 已不可用', 'source_unavailable', stage='presentation')
+            if source.status not in {'ok', 'partial', 'no_results'}:
+                continue
+            if source.tool_name == 'query_memory':
+                failure = await self._memory_presentation_failure(source)
+            elif source.tool_name == 'search_history_summaries':
+                failure = await self._history_presentation_failure(source)
+            else:
+                continue
+            if failure is not None:
+                return failure
+        return None
+
     async def invalidate_saved_references(self, messages: list[dict[str, Any]]) -> None:
         """Recheck saved memory pages and history summaries, without rewriting audit."""
         failures = {}
