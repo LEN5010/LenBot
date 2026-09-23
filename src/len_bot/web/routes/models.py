@@ -150,7 +150,7 @@ async def upsert_provider(edit: ConfigEdit, request: Request, user: str = Depend
         models['providers'] = list(providers.values())
 
     await _edit_models(request.app.state.runtime, mutate)
-    return {'success': True, 'message': f'供应商“{req.id}”已保存'}
+    return {'success': True, 'config_saved': True, 'message': f'供应商“{req.id}”已保存'}
 
 
 @router.delete("/providers/{provider_id}")
@@ -165,7 +165,7 @@ async def delete_provider(provider_id: str, edit: ConfigEdit, request: Request, 
         # RootConfig validates all role and retrieval references before save.
         models['providers'] = [item for item in models['providers'] if item['id'] != provider_id]
     await _edit_models(request.app.state.runtime, mutate)
-    return {'success': True, 'message': '供应商已删除'}
+    return {'success': True, 'config_saved': True, 'message': '供应商已删除'}
 
 
 @router.get("/providers/{provider_id}/models")
@@ -199,7 +199,7 @@ async def save_provider_models(provider_id: str, edit: ConfigEdit, request: Requ
         provider['models'] = sorted(set(chosen) | active)
     saved = await _edit_models(request.app.state.runtime, mutate)
     provider = next(item for item in saved.providers if item.id == provider_id)
-    return {'success': True, 'message': '可选模型已保存；当前路由引用的模型保持在目录中', 'models': provider.models}
+    return {'success': True, 'config_saved': True, 'message': '可选模型已保存；当前路由引用的模型保持在目录中', 'models': provider.models}
 
 
 @router.get("/routing")
@@ -213,7 +213,7 @@ async def update_routing(edit: ConfigEdit, request: Request, user: str = Depends
     def mutate(models):
         models['routing'] = _merge_bindings(models['routing'], edit.baseline, desired, ('models', 'routing'))
     await _edit_models(request.app.state.runtime, mutate)
-    return {'success': True, 'message': '模型职责已保存，从下一次运行开始生效'}
+    return {'success': True, 'config_saved': True, 'message': '模型职责已保存，从下一次运行开始生效'}
 
 
 @router.get("/retrieval")
@@ -227,7 +227,7 @@ async def update_retrieval(edit: ConfigEdit, request: Request, user: str = Depen
     def mutate(models):
         models['retrieval'] = _merge_bindings(models['retrieval'], edit.baseline, desired, ('models', 'retrieval'))
     await _edit_models(request.app.state.runtime, mutate)
-    return {'success': True, 'message': '语义检索模型配置已保存；未绑定时不会发起检索请求'}
+    return {'success': True, 'config_saved': True, 'message': '语义检索模型配置已保存；未绑定时不会发起检索请求'}
 
 
 def _probe_tool(name, properties):
