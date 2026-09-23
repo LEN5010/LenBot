@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from len_bot.cognition.agent_loop import AgentLoop, AgentBudgetExhausted, TerminalArgumentError, ToolArgumentError, final_step_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
-from len_bot.cognition.request_record import _RecordedToolDefinition
+from len_bot.cognition.request_record import _RecordedToolDefinition, _RequestLocation
 from len_bot.cognition.jobs import JobResult, JobChanged, JobResultRejected, JobBudgetExhausted, WorkState, SkillCandidate, PublicInterestCandidate
 from len_bot.cognition.providers import ModelProfile
 from len_bot.cognition.projection import project_event
@@ -976,6 +976,11 @@ class InformationJobRunner:
                                 'estimated_input_tokens':request_tokens(trajectory,definitions),
                                 'omitted':[{'section':'skill_catalog','reason':'read_on_demand'},*presentation.omissions],
                                 'current_pixel_assets':sorted(current_assets)}
+                            prepared = copy.deepcopy(trajectory)
+                            for message in prepared:
+                                message['_request_location'] = _RequestLocation(
+                                    tool_presentations=toolkit.read_presentations([message]))
+                            return prepared
 
                         pending_presentations.clear()
                         pending_additions.clear()
