@@ -192,6 +192,20 @@ output_mode=respond 不提供 output_model，使用同一个 ProposalLedger、re
 
 自定义事件在 PluginSpec.event_models 声明名称和 payload 模型。context.emit_event(name, typed_payload, scene_id=..., event_id=..., timestamp=...) 发布 PLUGIN_EVENT；事件身份由插件的真实业务关系确定，不生成内容摘要去重。
 
+`await context.has_emitted_event(event_id, scene_id=...)` 只检查本插件在指定场景已保存的事件身份。要求原 EMIT_EVENT 权限及当前插件／场景启用；未保存返回 False，遇到非插件事件或其他生产者占用同一身份则明确报错，不当成本插件重复事件。查询包含本插件旧版本事件，避免版本升级后重复发布同一真实业务身份；不返回正文、不授予模型阅读资格，也不证明 handler 已执行或消息已发送。原 emit_event 仍走 Actor，存在查询与发布不是新增原子查重事务。
+
+### 事件 handler 的延期来源重核
+
+仅以 event_types=(EventType.PLUGIN_EVENT,)、sources=('plugin_event',) 注册的 handler，可额外声明 `refresh_deferred=callback`。这是 register_handler 的可选增量，不是 PluginSpec 的全插件回调；未声明者继续原延期处理，不能让其他 handler 或工具行动误入此分支。当前 live_started 采用该入口，运行时不再按直播插件 ID 选择重核方法。
+
+回调为异步 `(source: Event, action_id: str) -> str | None`。宿主从真实延期行动定位原 handler，复核插件版本、启用及场景资格，按当前 Actor 已观察截点读取原插件事件并核对生产者归属，然后提供事件深副本与旧行动 ID。没有完整 ActionItem、Actor、队列、数据库或另建的调用预算；重核不能自行修改旧行动或直接发送。
+
+插件按真实业务重新采样。旧来源失效返回 None；仍有效则用原 context.emit_event 发布本场景替代来源，返回该事件 ID。宿主按原 Actor 队列等待处理，再确认返回的非空 ID 不等于原来源且确为本插件已保存事件。返回字符串不是已保存证明，更不表示新邀请已生成、提交或送达；后续 handler、Gate 与出站检查各自执行。
+
+回调任务按原插件和 scene_id 归属管理。重核失败或取消只结束原延期行动并记录原错误／取消，不继续发送旧字节、不自动再采样；取消继续传播，不证明远程请求已停止或替代事件尚未保存。成功保存替代来源也会结束旧行动，防止将旧字节作为新结果发送。拒绝回执保存失败直接传播，不以失败为由再次写一份回执。
+
+直播的 live-start／live-end／live-refresh 事件 ID、原场次比较、supersedes_action_id 和订阅检查保持不变；该插件不再取得 Runtime、EventStore 或 Actor 队列。API 世代仍为 2，未改原必填参数或插件自身版本；其他内部卡片依赖仍需单独处理。
+
 context.scene_config(scene_id)、scene_configs()、members、time_settings、now() 提供只读公共输入；长期实例不读取私有 Runtime。on_enable 用 context.start_task(coroutine, name=...) 启动所属任务，停用由宿主取消并等待，on_unload 释放客户端。config_apply 默认 restart_plugin；仅实现 apply_config 的插件可显式声明 in_place。面板由实际工具、handler 与两种配置 Schema 生成，没有单独手写的业务清单。
 
 原始 HTTP 超时、状态码与网络错误在宿主执行边界形成失败观察；服务自己的“无结果”和协议解析错误由插件明确返回。核心不按工具名称改写失败正文或在一次失败后隐藏工具。若允许下一步读取，应在插件结果中准确说明已知资料与可用入口，由调用者在剩余预算内选择。

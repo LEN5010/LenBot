@@ -120,7 +120,7 @@ ActionRequest 由宿主按 job/revision/native_call_id 建立，具体目标、�
 
 确认提问必须有非模拟、非 Shadow、带平台 message_id 且未标未知的 MESSAGE_SENT。Reducer 不把模拟／不完整回执写成提问送达或实际 Bot 发言；Gate 接受 confirm/decline 前还按原 prompt_event_id 回读同场景回执、核对 request_event_id 与先后时间，不能只信旧 Session 中的提示字段。模拟人类输入不授予叫醒确认，不追加核验模型调用。
 
-发送前依据既有事件和延期任务恢复同 batch、同原请求／事项且 batch_index 更小的行动依赖。前序真实送达才放行；失败或未知拒绝后续表达；前序尚在等待时复用原 Scheduler 延期，不阻塞同群无关事项。发送尝试也保存批次和请求身份，重启无需恢复内存失败字典。每个原 action 仅保留一个 Scheduler deferred_delivery 意图。waiting/queued 阶段才可在重启恢复，发送适配器调用前持久记 DELIVERY_ATTEMPTED，结果未知不重放。原任务与延期任务在同一发送回执事务进入 sent/shadow/not_sent/rejected/unknown 对应终态。原 due/planned_at 保留，唤醒时间单独调度，回执记录迟到秒数；旧 claimed/processing 缺少未尝试证据时保留未知。旧闲聊过期；工作成果复用；直播重新读取原场次，经原插件/Gate 生成当前邀请，场次结束则过期，不发送旧字节。
+发送前依据既有事件和延期任务恢复同 batch、同原请求／事项且 batch_index 更小的行动依赖。前序真实送达才放行；失败或未知拒绝后续表达；前序尚在等待时复用原 Scheduler 延期，不阻塞同群无关事项。发送尝试也保存批次和请求身份，重启无需恢复内存失败字典。每个原 action 仅保留一个 Scheduler deferred_delivery 意图。waiting/queued 阶段才可在重启恢复，发送适配器调用前持久记 DELIVERY_ATTEMPTED，结果未知不重放。原任务与延期任务在同一发送回执事务进入 sent/shadow/not_sent/rejected/unknown 对应终态。原 due/planned_at 保留，唤醒时间单独调度，回执记录迟到秒数；旧 claimed/processing 缺少未尝试证据时保留未知。旧闲聊过期；工作成果复用；直播由原 live_started handler 声明延期来源重核，宿主读取原事件并确认替代来源保存，再经原插件/Gate 生成当前邀请；场次结束则过期，不发送旧字节。重核回调只收到原事件副本与行动 ID，失败／取消沿原拒绝回执结束旧行动，替代事件保存不代表新邀请已提交或送达。
 
 回执判定复用 `receipt_delivery_status`，供行动依赖、提醒／延期终态、互动资格和面板采用。MESSAGE_SENT/FILE_UPLOADED 的名称不单独证明送达：还需对应平台消息／文件 ID，不能有未知标记或矛盾状态。模拟与 Shadow 分开投影；模拟结局复用任务的 shadow_observed 容器状态，但 payload.delivery_status 明确为 simulated，不新增任务状态枚举。适配器声称 sent 却缺对应 ID 时，在原一次尝试后保存 unknown，不重试或补造 ID。等待回应仅在真实 live 消息回执的原事务激活，TTL 仍从实际送达时刻算起；历史事件和旧任务状态不批量改写。
 

@@ -8,10 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from len_bot.cards.bilibili import CardNotification, fetch_profile, render_notification
 from len_bot.cards.html_render import HtmlCardRenderer
-from len_bot.events.models import EventType
-from len_bot.media.models import MessageSegment
-from len_bot.plugins.base import BasePlugin, PluginContext
-from len_bot.tools.results import ToolResult, ToolSource
+from len_bot.plugins.api import BasePlugin, PluginContext, Event, EventType, MessageSegment, ToolResult, ToolSource
 from .client import LiveClient, LiveSample
 from .config import LivePluginConfig
 from .events import LiveEndedSample
@@ -63,7 +60,7 @@ class BilibiliLiveSensor(BasePlugin):
             handler=self.on_live_started, event_types=(EventType.PLUGIN_EVENT,), sources=('plugin_event',),
             priority=10, consume=True,
             available=lambda call: self.announcement_allowed(call.scene_id, call.event.payload['data']['member']),
-            validate=self.validate_announcement,
+            validate=self.validate_announcement, refresh_deferred=self.refresh_deferred,
             allow_mention_all=lambda call: bool(call.scene_config and call.scene_config.mention_all))
         context.register_handler(id='live_ended', description='记录订阅成员下播，不生成额外群消息',
             match=lambda call: call.event.payload['plugin_id'] == self.manifest.id and call.event.payload['name'] == 'live_ended',
@@ -115,28 +112,20 @@ class BilibiliLiveSensor(BasePlugin):
     async def on_live_ended(self, call):
         return None
 
-    async def refresh_deferred(self, action):
+    async def refresh_deferred(self, source: Event, action_id: str) -> str | None:
         """Re-read the original public session; replacement still enters Actor/Gate."""
-        actor = await self.context._runtime.scene_manager.get_or_create_actor(action.scene_id)
-        rows = await self.context.event_store.events_by_ids(action.scene_id,
-            [action.plugin_origin.source_event_id], actor.session.last_observed_event_rowid)
-        if len(rows) != 1:
-            raise ValueError('延期邀请的原始来源不存在')
-        original = LiveSample.model_validate(rows[0].payload['data'])
+        original = LiveSample.model_validate(source.payload['data'])
         member = next((item for item in self.monitored_members() if item.name == original.member), None)
-        if member is None or not self.announcement_allowed(action.scene_id, original.member):
+        if member is None or not self.announcement_allowed(source.scene_id, original.member):
             raise ValueError('原场次的订阅已取消')
         sample = await self.client.sample(member, self.context.now)
         self.samples[member.name] = sample
         if not sample.is_live or sample.room_id != original.room_id or sample.started_at != original.started_at:
             return None
-        replacement = 'live-refresh:' + action.id
-        sample = sample.model_copy(update={'supersedes_action_id': action.id})
-        await self.context.emit_event('live_started', sample, scene_id=action.scene_id,
+        replacement = 'live-refresh:' + action_id
+        sample = sample.model_copy(update={'supersedes_action_id': action_id})
+        await self.context.emit_event('live_started', sample, scene_id=source.scene_id,
             event_id=replacement, timestamp=sample.sampled_at)
-        await actor._queue.join()
-        if not await self.context.event_store.event_exists(replacement, action.scene_id):
-            raise RuntimeError('更新直播来源未提交')
         return replacement
 
     async def on_live_started(self, call):
@@ -227,7 +216,7 @@ class BilibiliLiveSensor(BasePlugin):
                             event_id = f'live-end:{previous.room_id}:{previous.started_at}:{scene_id}'
                             kind = 'live_ended'
                             payload = LiveEndedSample(**current.model_dump(), ended_session_started_at=previous.started_at)
-                        if await self.context.event_store.event_exists(event_id, scene_id):
+                        if await self.context.has_emitted_event(event_id, scene_id=scene_id):
                             continue
                         await self.context.emit_event(kind, payload, event_id=event_id, scene_id=scene_id,
                             timestamp=current.sampled_at)

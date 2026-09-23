@@ -7,7 +7,7 @@
 | 路径 | 现有实现 | 当前参考边界 |
 |---|---|---|
 | 读取＋确定性命令 | [业务时钟](../local_plugins/local_clock/__init__.py) | 全部框架依赖从 plugins.api 导入；正常读取与可选模型表达共用同一观察 |
-| 业务事件＋模型表达 | [真实开播事件](../src/len_bot/plugins/builtin/bilibili_live/plugin.py) | 发布、handler、表达和提交入口已有；完整传感器的延期刷新、存储查询及卡片仍含内部依赖，不能整包复制成独立公共接口范例 |
+| 业务事件＋模型表达 | [真实开播事件](../src/len_bot/plugins/builtin/bilibili_live/plugin.py) | 发布、handler、表达和提交入口已有；延期重核与身份查询已走公共入口，完整传感器的卡片仍含内部依赖，不能整包复制成独立公共接口范例 |
 | 后台工作＋产物 | [当前群报告](../src/len_bot/plugins/builtin/group_summary/__init__.py) | 全部框架导入从 plugins.api 取得；业务模型、分析和渲染留在原插件内，外部字体由维护者配置 |
 
 ## 一、读取与确定性命令：业务时钟
@@ -60,7 +60,9 @@ on_live_started 将真实 LiveSample 作为 ToolResult 材料，调用 call.run_
 
 ### 4. 不掩盖尚未独立化的部分
 
-refresh_deferred 仍直接使用内部场景管理和存储；共享轮询的事件存在查询以及卡片的资料／渲染模块也未全部纳入公共插件合同。本教程不重新实现这些业务，不把整个插件标成仅依赖公共入口。其迁移与现场运行证据仍是 S3-05／S3-06 的后续工作。
+live_started 的 register_handler 已声明 refresh_deferred 回调。宿主只传真实原事件副本与旧行动 ID，插件重读场次、检查订阅并以原 live-refresh 身份发布替代事件；宿主等待并确认事件保存，旧行动结束，新来源重新经过 handler／Gate。轮询查重使用 context.has_emitted_event，不访问完整存储，不把同一来源的新文案当新场次。
+
+插件已不再直接读取 Runtime、EventStore 或 Actor 队列；但卡片资料获取、HTML 渲染与简图模块仍含非公共入口依赖。本文不重新实现这些业务，不把完整包标成仅依赖公共入口。其迁移与现场运行证据仍是 S3-05／S3-06 的后续工作。
 
 ## 三、后台工作与产物：当前群增量报告
 

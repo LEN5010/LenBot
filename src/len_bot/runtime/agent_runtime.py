@@ -681,23 +681,25 @@ class AgentRuntime:
             self._spawn_background_task(self.action_queue._reject(action,
                 '睡眠期间的旧闲聊已过期，等待新的真实人类上下文', status='rejected', cancelled=True))
             return
-        if (action.plugin_origin and action.plugin_origin.plugin_id == 'bilibili_live_sensor'
-                and action.plugin_origin.entry_id == 'live_started'):
-            self._spawn_background_task(self._refresh_deferred_live(action))
+        if self.plugin_host.has_deferred_refresh(action.plugin_origin):
+            self._spawn_background_task(self._refresh_deferred_plugin(action))
             return
         self.action_queue.enqueue(action)
 
-    async def _refresh_deferred_live(self, action):
-        plugin = self.plugin_host._plugins.get(action.plugin_origin.plugin_id)
+    async def _refresh_deferred_plugin(self, action):
         try:
-            if plugin is None or not plugin.manifest.enabled:
-                raise ValueError('原直播插件已停用')
-            replacement = await plugin.refresh_deferred(action)
-            await self.action_queue._reject(action,
-                '已按当前直播场次重新提交：' + replacement if replacement else '原直播场次已结束，延期邀请过期',
+            replacement = await self.plugin_host.refresh_deferred(action)
+        except asyncio.CancelledError:
+            await self.action_queue._reject(action, '延期来源重核已取消，停止原延期行动',
                 status='rejected', cancelled=True)
+            raise
         except Exception as error:
-            await self.action_queue._reject(action, f'延期直播重核失败：{error}', status='rejected', cancelled=True)
+            await self.action_queue._reject(action, f'延期来源重核失败：{type(error).__name__}: {error}',
+                status='rejected', cancelled=True)
+        else:
+            await self.action_queue._reject(action,
+                '替代业务来源已保存：' + replacement if replacement else '原业务来源已失效，延期行动过期',
+                status='rejected', cancelled=True)
 
     async def prepare_outbound_action(self, action: ActionItem) -> ActionItem:
         if action.file_asset_id:

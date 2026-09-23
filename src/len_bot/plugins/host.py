@@ -178,6 +178,9 @@ class PluginHost:
                     and set(definition.match.words).intersection(other.match.words)):
                 raise ValueError(f'Exclusive exact command conflict: {source} / {definition.id} and '
                     f'{_registration_source(other.plugin_id, other.handler)} / {other.id}')
+        if definition.refresh_deferred is not None and (definition.event_types != (EventType.PLUGIN_EVENT,)
+                or definition.sources != ('plugin_event',)):
+            raise ValueError(f'Handler {key} deferred refresh requires plugin-event sources only')
         if not definition.sources or set(definition.sources) - {'human', 'plugin_event', 'self_sent'}:
             raise ValueError(f'Handler {key} has invalid source kinds')
         self._handlers[key] = definition
@@ -708,6 +711,42 @@ class PluginHost:
         if tool.available is not None and not tool.available(call_context):
             return 'entry_conditions_not_met'
         return None
+
+    def has_deferred_refresh(self, origin: PluginOrigin | None) -> bool:
+        if origin is None or origin.entry_kind != 'handler':
+            return False
+        handler = self._handlers.get((origin.plugin_id, origin.entry_id))
+        return bool(handler and handler.refresh_deferred is not None)
+
+    async def refresh_deferred(self, action) -> str | None:
+        origin = action.plugin_origin
+        if not self.has_deferred_refresh(origin):
+            raise ValueError('The original handler has no deferred refresh callback')
+        issue = self.origin_issue(origin, action.scene_id)
+        if issue:
+            raise ValueError(issue)
+        actor = await self.runtime.scene_manager.get_or_create_actor(action.scene_id)
+        rows = await self.runtime.event_store.events_by_ids(action.scene_id,
+            [origin.source_event_id], actor.session.last_observed_event_rowid)
+        if len(rows) != 1 or rows[0].event_type != EventType.PLUGIN_EVENT:
+            raise ValueError('延期行动的原始插件事件不存在')
+        source = rows[0]
+        envelope = PluginEventPayload.model_validate(source.payload)
+        if envelope.plugin_id != origin.plugin_id or envelope.plugin_version != origin.plugin_version:
+            raise ValueError('延期行动与原事件的插件归属不一致')
+        handler = self._handlers[(origin.plugin_id, origin.entry_id)]
+        replacement = await self.start_task(origin.plugin_id,
+            handler.refresh_deferred(source.model_copy(deep=True), action.id),
+            name=f'deferred_refresh:{action.id}', scene_id=action.scene_id, record_error=False)
+        if replacement is None:
+            return None
+        if not isinstance(replacement, str) or not replacement or replacement == source.id:
+            raise ValueError('Deferred refresh must return a replacement event id or None')
+        await actor._queue.join()
+        context = self.context_for(origin.plugin_id)
+        if not await context.has_emitted_event(replacement, scene_id=action.scene_id):
+            raise RuntimeError('更新插件来源未提交')
+        return replacement
 
     def has_tool(self, name: str, call_context: PluginCallContext) -> bool:
         tool = self._tools.get(name)
