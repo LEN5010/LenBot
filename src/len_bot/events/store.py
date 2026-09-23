@@ -665,6 +665,31 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
             "SELECT state_json FROM scene_sessions WHERE scene_id=?", (scene_id,))).fetchone()
         return json.loads(row[0]) if row else None
 
+    async def save_conversation_segment(self, scene_id, expected_id, segment, episode_id, *, changed):
+        """Update only the Actor-owned source window, never observation or task progress."""
+        import uuid
+        async with self._write_lock:
+            try:
+                await self._db.execute('BEGIN IMMEDIATE')
+                cursor = await self._db.execute(
+                    "UPDATE scene_sessions SET state_json=json_set(state_json,'$.conversation_segment',json(?)),updated_at=? "
+                    "WHERE scene_id=? AND json_extract(state_json,'$.conversation_segment.id') IS ?",
+                    (json.dumps(segment,ensure_ascii=False),self.clock(),scene_id,expected_id))
+                if cursor.rowcount != 1:
+                    raise ValueError('The stored conversation segment changed before its checkpoint')
+                if changed:
+                    await self._db.execute(
+                        'INSERT INTO traces (id,kind,scene_id,ref_id,payload,created_at) VALUES (?,?,?,?,?,?)',
+                        (f'trc_segment_{uuid.uuid4().hex}','conversation_segment',scene_id,episode_id,
+                         json.dumps({'segment_id':segment['id'],'previous_id':segment['previous_id'],
+                             'reason':segment['reason'],'through_rowid':segment['through_rowid'],
+                             'window_events':len(segment['event_ids']),'continuity':'source_window_only'},ensure_ascii=False),
+                         self.clock()))
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
     async def memory_subjects(self, scene_id, memory_ids):
         rows=await (await self._db.execute(
             'SELECT DISTINCT subject FROM memories WHERE scope=? AND id IN (SELECT value FROM json_each(?))',

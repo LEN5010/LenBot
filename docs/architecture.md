@@ -30,6 +30,8 @@ Gate 先返回持久事务的真实结果，Actor 随即采用同次提交的 Se
 
 ## 配置与持续数据
 
+普通对话当前段的原话窗口引用由 SceneActor 在原执行租约内保存到 scene_sessions.state_json.conversation_segment；下一轮只从原事件回读。它不提升观察截点、不消费唤醒、不记成已读或提交，原生工具跨轮续接仍未接通。开启／换段与引用更新使用同一原存储事务，失败不修改内存段或自动换来源；当前覆盖及重启行为见[原话窗口合同](context.md#当前段的原话窗口引用)。
+
 ConfigStore 从项目根目录的固定 `lenbot.config.json` 读取 RootConfig。先发现内置和 plugin_directories 中的无运行副作用描述符，再解析 runtime、models、delivery、access、resources、scenes、time、members 与插件 config。面板候选使用同一解析入口。样例、环境变量、CLI 和数据库不覆盖根配置；网络客户端显式禁用环境继承。业务时区未配置为 null，不满足相关插件必需条件时不能启用。
 
 面板保存持有 Runtime.config_update_lock，先校验完整候选并替换根文件，再发布内存设置。需要重建组件的参数记录需重启，不自动重启。运行参数热更新会同步 `EventStore.budget_config`，因此新工作预占与新执行段读同一份已发布上限；已有工作仍读自己的创建快照。文件保存失败不会改用数据库存配置。

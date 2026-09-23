@@ -1,5 +1,7 @@
 """Event-derived session facts. Social interpretations belong to a single turn."""
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Literal
+from len_bot.cognition.providers import ModelProfile
 
 
 class OriginalCoverage(BaseModel):
@@ -73,11 +75,26 @@ class WakeConfirmationRequest(BaseModel):
     prompted_at: float | None = None
 
 
+class ConversationSegment(BaseModel):
+    """Current source-window references, not a provider transcript or read grant."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    id: str
+    previous_id: str | None = None
+    assembly_version: Literal[1] = 1
+    opened_at: float
+    reason: Literal['initial', 'process_restart', 'binding_changed', 'window_trimmed']
+    model_profile: ModelProfile
+    knowledge_revision: int = Field(ge=0)
+    through_rowid: int = Field(ge=0)
+    event_ids: list[str]
+
+
 class SceneSession(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scene_id: str
     version: int = 0
     knowledge_revision: int = 0
+    conversation_segment: ConversationSegment | None = None
     last_observed_event_rowid: int = 0
     attention_scanned_event_rowid: int = 0
     pending_wakes: list[PendingWake] = Field(default_factory=list)
