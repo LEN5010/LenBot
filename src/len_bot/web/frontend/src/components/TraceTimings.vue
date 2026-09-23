@@ -14,6 +14,10 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
     <article v-for="run in timings?.runs || []" :key="run.index" class="timing-run">
       <h5>{{ run.cognition_slot_wait_ms != null || run.cognition_slot_wait_state ? '槽位等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
       <p v-if="run.cognition_slot_wait_state" class="timing-note">{{ slotStates[run.cognition_slot_wait_state] || run.cognition_slot_wait_state }}。只说明取得执行容量之前的等待；不代表模型或后续业务成功。</p>
+      <p v-if="run.request_preparation_failure" class="timing-note">
+        第 {{ run.request_preparation_failure.step + 1 }} 步请求准备{{ run.request_preparation_failure.state === 'cancelled' ? '被取消' : '失败' }}：{{ duration(run.request_preparation_failure.elapsed_ms) }} · {{ run.request_preparation_failure.error_type }}。
+        未进入本步模型请求；准备可能包含压缩等嵌套调用，不能据此判断没有调用或费用。
+      </p>
       <dl class="timing-facts">
         <div v-if="run.cognition_slot_wait_ms !== null && run.cognition_slot_wait_ms !== undefined"><dt>对话执行槽位等待</dt><dd>{{ duration(run.cognition_slot_wait_ms) }}</dd></div>
         <div><dt>初始来源读取</dt><dd>{{ duration(run.initial_source_reads_ms) }}</dd></div>

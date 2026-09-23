@@ -215,6 +215,7 @@ class AgentLoop:
         audit = trace if trace is not None else {}
         audit.update({"steps": [], "model_calls_used": initial_model_calls, "tool_calls_used": initial_tool_calls, "latency_ms": 0})
         audit.pop('termination_reason', None)
+        audit.pop('request_preparation_failure', None)
         tool_calls_used = initial_tool_calls
         local_tools_used = 0
         seen_call_ids = {call['id'] for message in trajectory for call in (message.get('tool_calls') or [])}
@@ -282,6 +283,7 @@ class AgentLoop:
             return note, view, state
 
         step = None
+        preparation_started = None
         try:
             # The step argument is a bound only when the operator set one.  An
             # unlimited count still ends: the deadline, the token allowance or
@@ -586,4 +588,11 @@ class AgentLoop:
             audit["failure_reason"] = _error_text(exc)
             if step is not None:
                 step["failure_reason"] = audit["failure_reason"]
+            elif preparation_started is not None:
+                audit['request_preparation_failure'] = {
+                    'step': step_index,
+                    'state': 'cancelled' if isinstance(exc, asyncio.CancelledError) else 'failed',
+                    'elapsed_ms': round((time.monotonic() - preparation_started) * 1000, 2),
+                    'error_type': type(exc).__name__,
+                }
             raise
