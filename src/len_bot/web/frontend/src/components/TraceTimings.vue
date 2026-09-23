@@ -12,9 +12,10 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
     <p v-if="timings?.elapsed_ms !== null && timings?.elapsed_ms !== undefined" class="timing-note">轨迹记录的外层耗时：{{ duration(timings.elapsed_ms) }}；不是这条消息的独占耗时，执行槽位等待另列，不据此相加为总延迟。</p>
     <p v-if="!timings?.runs?.length" class="timing-note">该轨迹没有可展示的分阶段计时。</p>
     <article v-for="run in timings?.runs || []" :key="run.index" class="timing-run">
-      <h5>{{ run.cognition_slot_wait_ms != null || run.cognition_slot_wait_state || run.work_slot_wait_ms != null || run.work_slot_wait_state ? '槽位等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
+      <h5>{{ run.cognition_slot_wait_ms != null || run.cognition_slot_wait_state || run.work_slot_wait_ms != null || run.work_slot_wait_state || run.maintenance_slot_wait_ms != null || run.maintenance_slot_wait_state ? '槽位等待记录' : `执行段 ${run.index}` }}<span v-if="run.job_revision !== null"> · 目标版本 {{ run.job_revision }}</span></h5>
       <p v-if="run.cognition_slot_wait_state" class="timing-note">{{ slotStates[run.cognition_slot_wait_state] || run.cognition_slot_wait_state }}。只说明取得执行容量之前的等待；不代表模型或后续业务成功。</p>
       <p v-if="run.work_slot_wait_state" class="timing-note">{{ slotStates[run.work_slot_wait_state] || run.work_slot_wait_state }}。只说明工作执行槽位的取得结局，不代表原工作已被处理或完成。</p>
+      <p v-if="run.maintenance_slot_wait_state" class="timing-note">{{ slotStates[run.maintenance_slot_wait_state] || run.maintenance_slot_wait_state }}。只属于本场景方法维护调度，不归给尚未选定的候选或工作。</p>
       <p v-if="run.request_preparation_failure" class="timing-note">
         第 {{ run.request_preparation_failure.step + 1 }} 步请求准备{{ run.request_preparation_failure.state === 'cancelled' ? '被取消' : '失败' }}：{{ duration(run.request_preparation_failure.elapsed_ms) }} · {{ run.request_preparation_failure.error_type }}。
         未进入本步模型请求；准备可能包含压缩等嵌套调用，不能据此判断没有调用或费用。
@@ -22,6 +23,7 @@ const slotStates = { waiting: '等待中（记录时尚未取得）', acquired: 
       <dl class="timing-facts">
         <div v-if="run.cognition_slot_wait_ms !== null && run.cognition_slot_wait_ms !== undefined"><dt>对话执行槽位等待</dt><dd>{{ duration(run.cognition_slot_wait_ms) }}</dd></div>
         <div v-if="run.work_slot_wait_ms !== null && run.work_slot_wait_ms !== undefined"><dt>工作执行槽位等待</dt><dd>{{ duration(run.work_slot_wait_ms) }}</dd></div>
+        <div v-if="run.maintenance_slot_wait_ms !== null && run.maintenance_slot_wait_ms !== undefined"><dt>方法维护槽位等待</dt><dd>{{ duration(run.maintenance_slot_wait_ms) }}</dd></div>
         <div><dt>初始来源读取</dt><dd>{{ duration(run.initial_source_reads_ms) }}</dd></div>
         <div><dt>初始上下文装配</dt><dd>{{ duration(run.initial_context_ms) }}</dd></div>
         <div><dt>本段提交累计</dt><dd>{{ duration(run.commit_ms) }}</dd></div>
