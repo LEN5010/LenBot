@@ -4,18 +4,18 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `4fefe9d`；上批通用群报告字体样例已归[历史记录](history/iteration-20260924-s0.md)，未使用真实字体或装载插件。
-- S0-03：兴趣分享候选由插件以注册的 `Candidate` 发出，Actor 接入时又按描述符解析；出站准备却在内核再次导入同一业务插件模型。只移除这处反向类型依赖，直接使用已保存候选的两个身份字段，原当前兴趣回读、来源核对、Gate 与发送事务不变。
+- 分支 `feat/s0-product-contract`，基线 `ae97090`；上批兴趣候选出站已复用入口解析身份，过程归[历史记录](history/iteration-20260924-s0.md#兴趣候选出站复用已解析身份)，未运行实际发送。
+- S5-02／S5-06：原设置页只读字段与能力卡将两个实现的内部 `protocol` 标签显示为“协议”，容易把 NapCat 的复合标签误解成另一个网络动作。当前出站代码对两种实现都只调用 `upload_group_file`；本批仅修正现有界面投影和说明，不改配置或发送行为。
 
 ## 本批交付与核对
 
-- `AgentRuntime.prepare_outbound_action` 不再 import `plugins.builtin.interest_share.config.Candidate` 或再次 `model_validate`；从原 `source_event_id` 读取已存事件的 `data.interest_id`／`revision`，调用原 `publication_for` 复核当前兴趣、修订和匿名来源。事件发出端 `PluginContext.emit_event` 要求注册模型实例，Actor 的 `PluginHost.match_event` 再按描述符严格解析后才提交；出站不从未经入口解析的外部协议猜字段。来源缺失仍在原边界拒绝，`validate_outbound_action` 与发送尝试事务不变。
-- 同步[架构中的逐群表达](architecture.md#公共兴趣的逐群表达)及路线 S0-03 证据。只收窄内核对插件模型的直接依赖，不增公共接口、候选类型、配置、表或重试；其他 `interest_share` 业务 ID 分支仍在，不能称为已完成全量分层。
-- `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/runtime/agent_runtime.py` 退出 0；`git diff --check` 退出 0。仅证明语法与差异格式，未运行插件事件、出站或真实送达。
-- 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批实际业务失败原文。
+- `capability_status` 文件卡在原部署列表把实现、**配置／回执标签**、实际动作和部署核验标记分别标明；系统设置页的只读字段／帮助、本群文件前置和连接页的已声明配置同样区分标签与动作。界面继续显示原 `file_delivery` 资格、实际 `FILE_UPLOADED`／`file_id`；标签或核验标记不推断上传成功。没有新增后端字段、配置、接口或回退。
+- 同步[运行手册](operations.md#配置-onebot-文件上传)及路线 S5-02 证据。源码检查了 `SettingsView`、`SceneSettingsForm` 和能力卡的实际改动位置；未获准打开同版服务页面，真实显示与正常保存仍待人工验收。
+- 第一次从前端目录执行 Python 编译时路径写成仓库相对路径，原输出 `Can't list 'src/len_bot/web/capability_status.py'`，退出码虽为 0，但**没有完成该文件编译**；随后从仓库根目录执行 `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/web/capability_status.py` 退出 0。前端目录 `npm run build` 在最终文案后再次退出 0，末次 1.64 秒；`git diff --check` 退出 0。编译构建不等于页面或平台回执通过，构建产物不进 Git。
+- 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批业务运行失败原文。
 
 ## 待决定与接续
 
-1. S0-03 其余兴趣分享和站点业务硬编码仍按当前源码存在；是否做更大的插件归属迁移需逐项业务依据，不能从这一处类型 import 的删除推断通用发行已完整拆分。兴趣分享到发送的同版正常观察仍待获准现场。
-2. S2 仍为 `source_window_only`，固定材料版本、跨轮原生交换和压缩交接未完成；回复片段持久边界待维护者答复。首个 Linux／SnowLuma 报告与文件、S1／S3／S4 同版人工核对仍待现场；数据期限、许可证／素材授权、公开承诺、S6 候选与 S7 外部闭环亦未完成。
+1. 维护者已于本批确认 S2 可由宿主在当前会话段保存原事件与已存观察无法还原的必要原生 assistant 工具调用片段及回执引用，不改变数据保留期限；下一批沿已确认方向实现，不把片段当 Bot 群发言。S2 当前仍为 `source_window_only`，固定材料版本、跨轮交换和压缩交接未完成。
+2. 文件设置／能力卡同版页面、首个 Linux／SnowLuma 报告与文件回执，以及 S1／S3／S4 正常操作均待获准现场；数据期限、许可证／素材授权、公开承诺、S6 候选与 S7 外部闭环未完成。
 3. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。
