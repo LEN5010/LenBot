@@ -62,7 +62,7 @@
 | Python sdist | 当前源码包保留前端源码、锁文件与已构建面板，排除本机 `node_modules`；由该 sdist 再构建 wheel 已在本机退出 0 | 源码包没有自动执行前端构建；此前须生成同版面板。只证明当前包可打包，未验证目标双架构依赖安装或素材分发许可 |
 | Linux 镜像 | Node 阶段新建面板，Python 阶段按 uv.lock 安装非 dev 依赖，运行阶段复制环境 | 不带真实根配置、主库、业务文件、外部插件或 Docker socket；Gateway／执行镜像是独立部署项 |
 
-打包文件依据 pyproject.toml、.dockerignore 与 deploy/linux/Dockerfile；本批没有构建或解包新的发行物，最终候选包内容仍须核对。原资源与许可证不被本页改授其他许可，具体决定沿[授权清点](plan/s0-04-06-license-and-support.md)。
+打包文件依据 pyproject.toml、.dockerignore 与 deploy/linux/Dockerfile；本机已构建并核对 sdist／wheel 内容，固定构建后端后又完成 Linux/arm64 和交叉 Linux/amd64 主镜像构建，实际范围见[打包与镜像记录](history/iteration-20260924-s6.md)。这些不是维护者选定的同一候选版本，最终候选包内容、目标安装与真实业务仍须分别核对。原资源与许可证不被本页改授其他许可，具体决定沿[授权清点](plan/s0-04-06-license-and-support.md)。
 
 ## 报告问题与公开支持
 
