@@ -33,3 +33,9 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 ## CI 发行包构建入口
 
 基线 `4eeec68`。原 CI 的 Python 编译与前端构建止于 `npm run build`，没有执行前述已确认顺序的 sdist／wheel 构建；本批只在面板构建之后追加 `uv build --sdist --wheel --out-dir dist`，不增加上传、发布、安装或测试步骤。贡献流程同步说明 CI 范围。本批仅做源码与流程核对，尚未触发远端 CI；前一批的本机组合打包记录不能代替新 CI 步骤的运行结果。未读取真实配置／数据、启动服务、调用模型／平台或实发，也未新增、修改或运行仓库禁止的验证任务。
+
+## 构建后端固定
+
+基线 `484c016`。现有 CI 固定 uv 命令版本 0.12.13，`pyproject.toml` 却允许 `uv_build>=0.12.5,<0.13.0` 在构建时选择不同后端；本机已用缓存的包元数据是 uv-build 0.12.18。本批仅将构建后端要求固定为该精确版本，不改运行依赖、主包版本、源码包含规则或构建入口。
+
+在仓库根目录执行 `uv --cache-dir /private/tmp/lenbot-uv-cache build --sdist --wheel --offline --out-dir /private/tmp/lenbot-backend-pin-review` 退出 0，得到 `len_bot-0.1.0.tar.gz` 与 `len_bot-0.1.0-py3-none-any.whl`。只读核对 sdist 的 `pyproject.toml` 已包含 `uv_build==0.12.18`；wheel 仍有已构建面板入口、日历字体和 B 站 logo，未见前端源码目录。`git diff --check` 退出 0。此构建复用工作区已有前端产物，未在本批从干净检出运行 Node 22、安装 wheel 或触发远端 CI；目标双架构安装、素材授权及发布仍待确认。未运行测试、服务、模型、平台或实发，没有本批业务运行失败原文。
