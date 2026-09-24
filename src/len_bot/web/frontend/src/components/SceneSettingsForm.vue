@@ -358,7 +358,7 @@ watch(()=>props.sceneId,()=>{
             <p class="muted-copy mb-3">每行只改本群是否使用已配置插件。全局缺失条件不会被一个开关补齐。</p>
             <div v-for="card in pluginSections" :key="card.id" class="plugin-setting">
               <h5>{{ card.title }}</h5>
-              <p v-if="card.id==='files'" class="muted-copy">生成文件走工作空间；上传还需要下方申请者和已核对的平台协议。当前：{{ record.file_delivery.blocked_reason || (record.file_delivery.can_upload_to_target ? '上传条件已具备（仍取决于申请者）' : '尚未具备上传条件') }}</p>
+              <p v-if="card.id==='files'" class="muted-copy">生成文件走工作空间；上传还需要下方申请者和已核对的文件部署。当前：{{ record.file_delivery.blocked_reason || (record.file_delivery.can_upload_to_target ? '上传条件已具备（仍取决于申请者）' : '尚未具备上传条件') }}</p>
               <p v-if="card.id==='account'" class="muted-copy">账号动作需要独立授予，本页不会因为打开本群而授予点赞/收藏。</p>
               <div v-for="plugin in card.plugins" :key="plugin.id" :ref="node=>setPluginRef(pluginRows,plugin.id,node)" class="plugin-row">
                 <div class="settings-heading">

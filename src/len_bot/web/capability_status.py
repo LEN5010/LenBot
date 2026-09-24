@@ -150,8 +150,8 @@ async def capability_status(query, scene_id=None, requester=None):
             item['deployment'].append({'label': '工作空间配置', 'value': '、'.join(
                 f"{backend['plugin_id']} · {backend['backend']}" for backend in delivery['workspace_backends']) or '当前范围未开放'})
             item['deployment'].append({'label': '文件交付', 'value': '已开启' if rt.config.file_delivery.enabled else '未开启'})
-            item['deployment'].append({'label': '平台协议', 'value': '未声明上传协议' if delivery['implementation'] is None else
-                f"{delivery['implementation']} · {delivery['protocol']} · 部署核验标记：{delivery['deployment_verified']}"})
+            item['deployment'].append({'label': '上传配置', 'value': '未声明上传实现与标签' if delivery['implementation'] is None else
+                f"实现 {delivery['implementation']} · 标签 {delivery['protocol']} · 动作 upload_group_file · 部署核验标记：{delivery['deployment_verified']}"})
             item['deployment'].append({'label': '配置允许生成', 'value': '是' if delivery['can_generate'] else '否'})
             item['deployment'].append({'label': '具备资产登记配置', 'value': '是，实际 Gateway 快照仍待核对' if delivery['can_prepare_asset'] else '否'})
             item['deployment'].append({'label': '平台上传配置', 'value': '已声明并标记核对' if delivery['platform_configured'] else '未具备'})
