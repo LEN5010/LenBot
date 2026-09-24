@@ -43,3 +43,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 ### 固定后端后的主镜像双架构构建
 
 基线 `c5443a6`。在本机 Docker Desktop `desktop-linux` 上，使用该提交分别执行 `docker buildx build --platform linux/arm64 --load -f deploy/linux/Dockerfile -t lenbot:arm64-backend-pin .` 与相同命令的 `linux/amd64`／`lenbot:amd64-backend-pin`，均退出 0。两份日志均显示 Node 22 阶段重新执行 `npm run build`（491 模块）和 Python 3.13 阶段执行 `uv sync --locked --no-dev --no-editable` 并构建当前包；`npm ci` 层使用缓存。`docker image inspect` 只读显示：arm64 镜像 `sha256:b6151a75ee07be965b78c9044d7a0b52e447c573757152bc08515a59b4098c60` 为 `linux/arm64`，amd64 镜像 `sha256:6edd4b3c6aa458134799f38a0b5b623f4cb48086f2d631a0b76c2f01b9ee41ca` 为 `linux/amd64`。这些是本机镜像，不是目标主机安装或运行；amd64 是交叉构建，未启动容器、运行群报告、连接 SnowLuma 或上传文件。workspace worker 未因本批主包构建后端变化重建，仍沿此前的双架构构建记录；权限、素材授权、候选版本和现场回执待确认。
+
+## 未发布说明基线更新
+
+基线 `f38ffc5`。[未发布说明](../release-notes.md)仍以 `9f10681` 为核对基线，并称发行包内容和镜像构建尚未验证；之后已有 53 个本地提交，且本机 sdist／wheel、Node 22 双架构主镜像构建已记录。只按当前路线与前述实际构建更新草稿的开发比较范围、会话段与文件上传事实、构建证据和仍待决定项；不选候选、版本、标签或发布日期，也不把旧批次构建挪作新候选验收。本批仅修改文档，`git diff --check` 退出 0；没有新安装、服务、模型、平台、真实数据或仓库禁止的验证任务。
