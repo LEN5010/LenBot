@@ -4,18 +4,18 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `c95e221`；上批会话段摘要范围修正已归[历史记录](history/iteration-20260924-s2.md)，仅编译，未运行段保存或恢复。
-- S0-03／S5-01：通用配置样例仍让群报告从相邻日历插件目录读字体，运行手册也把这条路径当作可用前置。首个 Linux 方向已明确运营者须提供主进程可读字体；本批仅将样例改成明确待替换的绝对路径占位，并同步操作说明，不碰真实根配置或素材文件。
+- 分支 `feat/s0-product-contract`，基线 `4fefe9d`；上批通用群报告字体样例已归[历史记录](history/iteration-20260924-s0.md)，未使用真实字体或装载插件。
+- S0-03：兴趣分享候选由插件以注册的 `Candidate` 发出，Actor 接入时又按描述符解析；出站准备却在内核再次导入同一业务插件模型。只移除这处反向类型依赖，直接使用已保存候选的两个身份字段，原当前兴趣回读、来源核对、Gate 与发送事务不变。
 
 ## 本批交付与核对
 
-- `lenbot.config.example.json` 的 `plugins.group_summary.config.render_font_path` 由 `../asoul_calendar/resources/font.ttf` 改为 `/replace/with/approved/report-font.ttf`。该值是必须人工替换的绝对路径占位；样例中的群报告仍默认停用。插件现有 `on_load` 文件存在核对和报告渲染路径原样保留，不新增字体、配置字段或兼容分支。
-- [运行手册](operations.md#日常查看与处置)及[Linux 部署前置](../deploy/linux/README.md#首个验收方向的报告与文件)改为启用前提供实际可读字体、核对使用／分发边界；Linux 容器按已挂载的 `/var/lib/lenbot` 填真实绝对路径。[路线入口](plan/README.md)仅更新 S0-03 证据，不标记授权或现场验收。基线[依赖测绘](plan/s0-03-dependency-boundary.md)与[授权清点](plan/s0-04-06-license-and-support.md)仍按原提交保留，旧路径／行号不涂改成当前事实。
-- 只改通用样例和所属文档；未构建或装载插件，`git diff --check` 退出 0。差异格式不证明样例已用于安装，也不证明字体文件存在、可读或获授权。
+- `AgentRuntime.prepare_outbound_action` 不再 import `plugins.builtin.interest_share.config.Candidate` 或再次 `model_validate`；从原 `source_event_id` 读取已存事件的 `data.interest_id`／`revision`，调用原 `publication_for` 复核当前兴趣、修订和匿名来源。事件发出端 `PluginContext.emit_event` 要求注册模型实例，Actor 的 `PluginHost.match_event` 再按描述符严格解析后才提交；出站不从未经入口解析的外部协议猜字段。来源缺失仍在原边界拒绝，`validate_outbound_action` 与发送尝试事务不变。
+- 同步[架构中的逐群表达](architecture.md#公共兴趣的逐群表达)及路线 S0-03 证据。只收窄内核对插件模型的直接依赖，不增公共接口、候选类型、配置、表或重试；其他 `interest_share` 业务 ID 分支仍在，不能称为已完成全量分层。
+- `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/runtime/agent_runtime.py` 退出 0；`git diff --check` 退出 0。仅证明语法与差异格式，未运行插件事件、出站或真实送达。
 - 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批实际业务失败原文。
 
 ## 待决定与接续
 
-1. 字体／模板素材的实际使用、再分发许可与候选字体文件仍由维护者决定；样例占位不是许可或可运行配置。首个 Linux／SnowLuma 报告和文件仍待同版目标主机、Gateway／字体／挂载与真实回执。
-2. S2 仍为 `source_window_only`，固定材料版本、跨轮原生交换和压缩交接未完成；回复片段持久边界待维护者答复。S1／S3／S4 同版人工核对，数据期限、许可证、公开承诺、S6 候选与 S7 外部闭环亦未完成。
+1. S0-03 其余兴趣分享和站点业务硬编码仍按当前源码存在；是否做更大的插件归属迁移需逐项业务依据，不能从这一处类型 import 的删除推断通用发行已完整拆分。兴趣分享到发送的同版正常观察仍待获准现场。
+2. S2 仍为 `source_window_only`，固定材料版本、跨轮原生交换和压缩交接未完成；回复片段持久边界待维护者答复。首个 Linux／SnowLuma 报告与文件、S1／S3／S4 同版人工核对仍待现场；数据期限、许可证／素材授权、公开承诺、S6 候选与 S7 外部闭环亦未完成。
 3. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。

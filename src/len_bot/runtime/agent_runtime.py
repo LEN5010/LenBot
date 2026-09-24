@@ -711,12 +711,11 @@ class AgentRuntime:
             return await self.file_assets.prepare_action(action)
         if action.plugin_origin and action.plugin_origin.plugin_id == 'interest_share':
             from len_bot.runtime.interest_publication import publication_for
-            from len_bot.plugins.builtin.interest_share.config import Candidate
             rows = await self.event_store.events_by_ids(action.scene_id, [action.plugin_origin.source_event_id], 2**63-1)
             if len(rows) != 1:
                 raise ValueError('兴趣分享来源不存在')
-            candidate = Candidate.model_validate(rows[0].payload['data'])
-            _, publication = await publication_for(self.event_store, candidate.interest_id, candidate.revision)
+            candidate = rows[0].payload['data']
+            _, publication = await publication_for(self.event_store, candidate['interest_id'], candidate['revision'])
             action = action.model_copy(update={'interest_publication': publication})
         return await self.media_service.prepare_action(action)
 
