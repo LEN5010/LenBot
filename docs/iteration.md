@@ -4,12 +4,12 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `484c016`；上批已核清 S2 工具回执可还原边界，仍未接通跨轮原生交换。
-- S6-02：原 CI 固定 uv 命令版本，但 pyproject 的构建后端仍可在版本范围内变化。本批固定为本机已用的 uv-build 0.12.18，不调整运行依赖或发布范围。
+- 分支 `feat/s0-product-contract`，基线 `c5443a6`；上批固定 uv-build 0.12.18 并完成本机离线 sdist／wheel 构建。
+- S5-01／S6-02：沿已存在的 Linux 主镜像配方，核对固定后端后的本机 arm64 与交叉 amd64 构建，不启动或部署。
 
 ## 本批交付与核对
 
-- pyproject 的 `[build-system]` 改为 `uv_build==0.12.18`；[贡献流程](../CONTRIBUTING.md#最小构建与差异复核)同步区分固定工具与仍变化的托管环境。本机离线组合构建退出 0，sdist 的 pyproject 已含固定版本，wheel 仍含已构建面板及待授权素材，详见[本批历史](history/iteration-20260924-s6.md#构建后端固定)。这不是远端 CI、干净检出或安装验收。
+- 两个 `docker buildx build --load` 均退出 0，日志显示 Node 22 前端构建、Python 3.13 `uv sync --locked --no-dev --no-editable` 完成；`docker image inspect` 分别核为 `linux/arm64` 与 `linux/amd64`，镜像 ID 和缓存范围见[本批历史](history/iteration-20260924-s6.md#固定后端后的主镜像双架构构建)。这不是目标主机运行、空环境安装或群报告／文件交付验收；workspace worker 本批未重建。
 - `git diff --check` 退出 0；本批未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批业务运行失败原文。
 
 ## 待决定与接续

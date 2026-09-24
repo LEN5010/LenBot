@@ -39,3 +39,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 基线 `484c016`。现有 CI 固定 uv 命令版本 0.12.13，`pyproject.toml` 却允许 `uv_build>=0.12.5,<0.13.0` 在构建时选择不同后端；本机已用缓存的包元数据是 uv-build 0.12.18。本批仅将构建后端要求固定为该精确版本，不改运行依赖、主包版本、源码包含规则或构建入口。
 
 在仓库根目录执行 `uv --cache-dir /private/tmp/lenbot-uv-cache build --sdist --wheel --offline --out-dir /private/tmp/lenbot-backend-pin-review` 退出 0，得到 `len_bot-0.1.0.tar.gz` 与 `len_bot-0.1.0-py3-none-any.whl`。只读核对 sdist 的 `pyproject.toml` 已包含 `uv_build==0.12.18`；wheel 仍有已构建面板入口、日历字体和 B 站 logo，未见前端源码目录。`git diff --check` 退出 0。此构建复用工作区已有前端产物，未在本批从干净检出运行 Node 22、安装 wheel 或触发远端 CI；目标双架构安装、素材授权及发布仍待确认。未运行测试、服务、模型、平台或实发，没有本批业务运行失败原文。
+
+### 固定后端后的主镜像双架构构建
+
+基线 `c5443a6`。在本机 Docker Desktop `desktop-linux` 上，使用该提交分别执行 `docker buildx build --platform linux/arm64 --load -f deploy/linux/Dockerfile -t lenbot:arm64-backend-pin .` 与相同命令的 `linux/amd64`／`lenbot:amd64-backend-pin`，均退出 0。两份日志均显示 Node 22 阶段重新执行 `npm run build`（491 模块）和 Python 3.13 阶段执行 `uv sync --locked --no-dev --no-editable` 并构建当前包；`npm ci` 层使用缓存。`docker image inspect` 只读显示：arm64 镜像 `sha256:b6151a75ee07be965b78c9044d7a0b52e447c573757152bc08515a59b4098c60` 为 `linux/arm64`，amd64 镜像 `sha256:6edd4b3c6aa458134799f38a0b5b623f4cb48086f2d631a0b76c2f01b9ee41ca` 为 `linux/amd64`。这些是本机镜像，不是目标主机安装或运行；amd64 是交叉构建，未启动容器、运行群报告、连接 SnowLuma 或上传文件。workspace worker 未因本批主包构建后端变化重建，仍沿此前的双架构构建记录；权限、素材授权、候选版本和现场回执待确认。
