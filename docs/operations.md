@@ -560,6 +560,8 @@ SnowLuma 现场示例（版本换成实际值）：
 {"implementation":"snowluma","version":"填写实际版本","protocol":"upload_group_file","deployment_verified":false,"export_mount_path":"/lenbot-files"}
 ```
 
+这两个 `protocol` 值是现有配置／回执标签，不是两个不同的出站动作名；适配器对两种实现都只调用 `upload_group_file`。不根据一个标签改试另一动作，也不以公开目录存在动作推断本机已经上传成功。
+
 连接页的「读取平台实现与版本」按当前发送传输只读调用 `get_version_info`，返回现场 app_name、app_version、protocol_version，并与已声明的 `onebot_file_upload` 对照实现名与版本。该按钮不发送任何群消息，也不改配置：填 `deployment_verified` 前先用它核对当前实例及所选协议，不要用发布目录反推现场。版本对照只防止拿旧配置核对另一实例，不把版本字符串当作协议兼容或上传成功证明。
 
 只将数据库同级 `file_assets/` 只读挂入 OneBot 的 `/lenbot-files`，不得共享完整工作区、控制目录、配置或数据库。宿主运行账号应能创建资产，OneBot 账号通过部署文件组获得 0750/0440 读取权限；核对挂载确实只读。`deployment_verified` 只表示版本与挂载已人工核对，不要求先有成功上传；授权后的第一次正常文件操作才产生真实 `data.file_id`。现有 HTTP/WS 连接模式不变。不要把一种实现填成另一种，也不自动改协议。

@@ -105,9 +105,15 @@ docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 
 模板 `Restart=no` / `restart: "no"`，不自动恢复实发；开机启动另按明确部署策略配置。Gateway 日志用 `journalctl -u lenbot-gateway`；LenBot 用 `docker compose -f deploy/linux/compose.yaml logs --since 30m lenbot`。日志不替代 action、file_id 与 OneBot 回执；分享前移除凭据、私人原话和签名地址。
 
+## 首个验收方向的报告与文件
+
+群报告与可下载文件是两条独立业务链，不把报告图片当成已上传文件。`group_summary` 在 **LenBot 主进程** 读取原群事件、使用原工作预算并渲染图片，完成后的群表达另看行动与真实回执；它不调用 workspace worker。主镜像不安装系统字体，worker 镜像里的 `fonts-noto-cjk` 也不在主进程可见。群报告加载前，运营者须确认本次可用的字体及其使用／分发边界，把字体放在已挂载的 `/var/lib/lenbot` 内，并在 `plugins.group_summary.config.render_font_path` 填容器内的**绝对路径**。例如由运营者准备 `/var/lib/lenbot/report-fonts/report.ttf`，目录让 UID 10000 可遍历、文件让 UID 10000 可读；不要只填宿主机上未挂入容器的路径。当前样例相对路径指向随包日历字体，能定位文件不代表该字体的发行授权已确定；本步骤不复制或改授随包素材。
+
+文件交付则需 `workspace` 明确选择 Gateway 后端：普通本机 worker 只保留原产物下载，`prepare_workspace_file` 的持久资产登记依赖 Gateway 已确认的不可变产物。所选离线 Python 路径使用本目录的 `gateway.offline.example.json` 与同架构构建的 `lenbot-workspace:local`；启用前分别核对 Gateway 代码／镜像、卷与停止事实。`runtime.file_delivery.enabled`、目标群的 `workspace` 开关、真实申请者的 `send_file` 授予、资产审查和 SnowLuma 文件配置仍各自明确设置；没有这些事实就只保留工作面板下载，不把生成产物或返回路径写成上传成功。实际成功只看上传行动对应的 `FILE_UPLOADED` 和平台 `data.file_id`，不从报告图片回执或面板下载推断。
+
 ## OneBot 文件与可选项
 
-OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。文件协议按显式实现分别选择 NapCat `upload_group_file_data_file_id` 或 SnowLuma `upload_group_file`；首个方向为 SnowLuma，不以具体版本划分公开兼容名单。根配置的版本字段仍记录当前连接实际报告的版本，用于确认运营核对的是当前实例而非旧部署；协议、动作与只读挂载核对后才置 `onebot_file_upload.deployment_verified: true`，不要求先成功上传。授权后的正常上传另以真实 `data.file_id` 确认，文本发送成功不证明上传成功。
+OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。原配置按实现分别要求 NapCat 标签 `upload_group_file_data_file_id` 或 SnowLuma 标签 `upload_group_file`；标签不是不同的网络动作，当前适配器均只发送 `upload_group_file`。首个方向为 SnowLuma，不以具体版本划分公开兼容名单。根配置的版本字段仍记录当前连接实际报告的版本，用于确认运营核对的是当前实例而非旧部署；协议、响应与只读挂载核对后才置 `onebot_file_upload.deployment_verified: true`，不要求先成功上传。授权后的正常上传另以真实 `data.file_id` 确认，文本发送成功不证明上传成功。
 
 Core、转写、B 站账号/允许收藏夹缺失均单列“未配置/未放行”，不阻塞已确认的普通聊天。Core 首版只接带 echo 的群文字/at/图片帧；实际版本无 echo 时不能声称接通。B 站动作另需 grant 和额度，Cookie 可读不代表可写。转写保留原绑定和实际计量协议，费用未核实不填价格。
 

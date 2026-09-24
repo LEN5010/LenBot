@@ -1,24 +1,21 @@
 # 当前任务
 
-更新于 2026-09-23。任务状态只见[产品路线](plan/README.md)，稳定合同见[文档入口](README.md)，此前过程见[历史入口](history/README.md)。
+更新于 2026-09-24。任务状态只见[产品路线](plan/README.md)，稳定合同见[文档入口](README.md)，此前过程见[历史入口](history/README.md)。
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `b7ce7f4`，开始时工作区干净；上一批动态简图复用了已有公共随包字体定位，仅编译未做插件装载或双架构镜像重建。
-- S2-01／S2-02：当前段只保存原话窗口和 R／J 别名；历史摘要虽在每次请求从原批次筛选，却没有记录哪几个批次实际构成这一段的摘要材料。沿已确认宿主所有权方向，只在原 `scene_sessions.state_json` 的当前段增加批次身份引用，不复制正文或建立新表。
+- 分支 `feat/s0-product-contract`，基线 `8a52054`；上批会话段已保存最终请求实际保留的历史摘要批次引用，仍为 `source_window_only`，其过程已归[历史记录](history/iteration-20260923-s2-s3.md#会话段历史摘要批次引用)。
+- S5-01／S5-06：首个验收方向虽已选为 Linux 容器群报告与文件交付，但安装材料没有直说报告渲染所在进程和文件持久登记所需执行后端；OneBot 原配置标签也易被误读成两种网络动作。本批沿现有配置、适配器和部署材料补足操作边界，不改运行行为或真实配置。
 
 ## 本批交付与核对
 
-`ConversationSegment.summary_refs` 保存最终请求实际保留的 history_summary 批次 ID、字符串 `generation_version` 和四个原覆盖位置。`SocialCognitionCore.finalize_request` 在来源复核与最终容量裁剪后，仅当摘要区块未被省略且仍与装配时整条声明一致时提取引用；已撤下、已改写或未装入的区块不登记。`SceneActor` 在原活跃普通对话租约内规范化引用、与上一段比较，变动记为 `binding_changed`，沿原写锁只更新段字段；旧段无新字段按空列表读取。摘要正文、已读资格、未完事项和工作预算仍归各自权威记录；下轮重新查询本群当前可用批次，不从段引用恢复旧文本。
-
-- 阅读 `history_batches.generation_version` 的真实类型为字符串（当前值由历史维护使用），因此段字段使用字符串，不以调用界面的显示格式猜整数。没有更改批次生成、查询、清理或原始事件。
-- 同步[上下文装配](context.md#当前段的原话窗口引用)、[结构设计](plan/s2-01-conversation-segment.md)、[数据生命周期](data-lifecycle.md)、[升级回退](operations.md#会话段字段的升级与回退)及路线状态。`source_window_only` 仍表示缺少跨轮原生交换；保存摘要位置不完成段内轨迹或压缩。
-- `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/scenes/models.py src/len_bot/scenes/actor.py src/len_bot/cognition/social_core.py` 退出 0；`git diff --check` 退出 0。只证明语法与差异格式，未运行同版普通对话或恢复。
+- [Linux 部署前置](../deploy/linux/README.md#首个验收方向的报告与文件)把两条链分开：`group_summary` 在 LenBot 主进程渲染，worker 字体不能替代主进程可读字体；运营者须在已挂载路径提供经核对的字体并为 UID 10000 留读取权限。可下载文件须选 Gateway 后端、保留不可变产物、登记 `file_asset`，再按原授权和审查经 SnowLuma 上传；报告图片或工作产物均不等于文件上传回执。对应字段已加入[现场记录模板](../deploy/linux/release-evidence.template.md)。
+- 阅读 `group_summary` 装载／渲染路径、主镜像与 worker 镜像、`file_delivery_facts` 与 `prepare_workspace_file`、OneBot `_action_payload` 和 `upload_response`：NapCat 的 `upload_group_file_data_file_id` 与 SnowLuma 的 `upload_group_file` 是原配置／回执标签；实际出站动作对两者均是 `upload_group_file`，只有真实 `data.file_id` 才确认为上传。对照 [NapCat 动作文档](https://napcat.apifox.cn/226658753e0)和 [SnowLuma 动作文档](https://snowluma.github.io/zh/docs/api/group-file/upload_group_file)的动作名称；文档存在不证明本机响应。同步[架构](architecture.md#onebot-文件上传协议)、[支持范围](support.md#当前入口矩阵)和[运行手册](operations.md#配置-onebot-文件上传)。
+- 本批只改文档和协议标签旁的说明性注释，不改适配器分支、动作、配置、Schema、存储或发送行为。`git diff --check` 退出 0；未进行新的编译、构建或业务运行，沿用先前双架构构建记录，不将其计为本批通过。
 - 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批实际业务失败原文。
 
 ## 待决定与接续
 
-1. S2 的完整活动段仍缺固定材料持久版本、必要原生交换和终结保存；原生回复片段的持久边界待维护者答复。S2-03 压缩交接尚未实现，不因摘要引用入段而标记完成。
-2. 旧程序不认识新增的嵌套字段；获准升级先停机备份，回退条件沿运行手册。本批未转换或接触真实场景状态。
-3. S1／S3／S4 多项源码待同版人工复核；S5-01 双架构目标与本机 SnowLuma 协议方向已定，但实际安装、报告／文件回执未获准；保留期限、许可证／素材授权、公开承诺、S6 候选及 S7 外部闭环仍待决定或证据。
-4. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。
+1. 字体／模板素材的使用和再分发边界仍待维护者决定；本批不复制或改授素材。首次组合的实际字体文件、目标两架构主机、Gateway 与 SnowLuma 只读挂载及上传回执均待获准人工观察，不把本机交叉构建或公开协议文档记为已验收。
+2. S2 跨轮原生交换及压缩交接仍缺；回复片段持久边界待维护者答复。S1／S3／S4 同版人工核对，S5 数据期限、许可证、公开承诺、S6 候选与 S7 外部闭环均未完成。
+3. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。

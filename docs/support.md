@@ -17,7 +17,7 @@
 | 语义检索 | 可选 embedding；rerank 显式 `cohere_v1` | 绑定和场景开关缺一不可；相同模型名字不能证明维度、协议或实际效果一致，不默认开启 |
 | 语音转写 | 显式 `openai_verbose_json` 转写绑定 | 需要实际模型与计量协议，估算 token 不是供应商收费结论；转写可用不代表语音发送也已验证 |
 | OneBot 消息与行动 | v11；forward_ws／reverse_ws 收消息；websocket／http 发送 | 收到原话、连接任务启动、行动提交及真实 message_id 分别验证；不承诺任意适配器的全部消息段 |
-| 平台文件上传 | NapCat → `upload_group_file_data_file_id`；SnowLuma → `upload_group_file`，两者显式选择 | 首个方向为本机 SnowLuma，不以具体发行版本列公开名单；当前连接报告的实际版本仍按原配置留作部署核对事实。所选动作、协议和资产目录 `/lenbot-files` 的只读挂载须现场核对；成功需要实际 `data.file_id`，不明确则 unknown，不切协议重传 |
+| 平台文件上传 | NapCat 与 SnowLuma 分别用原配置标签 `upload_group_file_data_file_id`／`upload_group_file` 显式选择；实际出站动作均为 `upload_group_file` | 标签不是两个可轮试的动作。首个方向为本机 SnowLuma，不以具体发行版本列公开名单；当前连接报告的实际版本仍按原配置留作部署核对事实。动作、响应与资产目录 `/lenbot-files` 的只读挂载须现场核对；成功需要实际 `data.file_id`，不明确则 unknown，不切协议重传 |
 | 本地源码运行 | Python 3.13、uv 锁文件安装、Node 22 面板构建配方 | 是当前起步配方，未确认所有系统或架构；首个验收方向选择 Linux 容器，不因此承诺本地源码运行的系统支持范围，本批无空环境安装证据 |
 | Linux 容器 | 当前 Compose 与多阶段 Dockerfile，主进程 UID/GID 10000，无 Docker socket 挂载；主镜像及 workspace worker 的基础镜像索引已固定，后者绘图库版本也有清单 | 主镜像和 workspace worker 已在本机分别完成 Linux/arm64 与 Linux/amd64 构建，amd64 为交叉构建；目标主机运行、隔离与回执未验收。browser／media 基础镜像、apt 来源与 wheel 文件仍可变，实际候选组合待确认 |
 | Python 工作空间 | 原 worker 或独立 Gateway 二选一 | 宿主 worker 依赖容器运行时；Gateway 是独立受信服务。已配置后端失败不换另一个后端。隔离和停止事实待对应主机记录 |
@@ -36,6 +36,8 @@
 - 所需模型职责的渠道、模型与请求协议；本机 SnowLuma 的实际连接身份、所报版本与 OneBot 消息／文件动作、上传协议及导出目录映射。所报版本用于对齐当次记录，不作为公开兼容名单。
 - `group_summary` 的群作用域、时间配置、工作预算和 `render_font_path`；字体／模板来源与分发授权单独核对。实际使用的执行后端、文件目录权限与原发送授权分别确认。
 - 原群输入到报告工作的来源／版本／成果记录，以及报告表达的真实回执；文件交付另保留资产身份、上传行动和平台 `data.file_id`。报告或卡片生成不代表已经登记或上传可下载文件，不假定群报告会自动完成文件交付。
+
+首选 Linux 配方的[报告与文件分链前置](../deploy/linux/README.md#首个验收方向的报告与文件)明确主进程字体路径、Gateway 持久产物和 SnowLuma 上传各自的依赖；worker 内的字体不替代报告主进程字体，生成产物不替代平台文件回执。
 
 尚无本批现场记录；观察材料复用已有发布观察模板。没有以模型名称、渠道品牌或操作系统名单虚填“稳定支持”，所选方向仍需实际观察与已知限制。
 

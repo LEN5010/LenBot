@@ -563,7 +563,7 @@ ModelGateway 在调用客户端前创建唯一 model_calls，表示一次网关�
 
 ### OneBot 文件上传协议
 
-`FileUploadConfig.implementation` 显式选择 `napcat`（`protocol=upload_group_file_data_file_id`）或 `snowluma`（`protocol=upload_group_file`）。运行时只调用选定实现，不轮流尝试或伪装另一种协议。上传参数均为 `group_id/file/name`，文件路径只能由宿主已登记资产映射为 `/lenbot-files/<asset_id>`。HTTP 和 WebSocket 复用原连接和发送队列，传输前已有 `DELIVERY_ATTEMPTED`。仅 `status=ok`、整数 `retcode=0` 且 `data.file_id` 非空才产生 `FILE_UPLOADED`；不会伪造 `message_id`。空返回、异步返回、格式变化或传输中断记 unknown，保留额度与文件且不重放；明确失败或连接未建立分别记录 rejected/not_sent。`deployment_verified` 表示运营已核对实际版本与只读挂载，不要求先有一次成功上传；真实 file_id 只从回执派生。文字通知必须读取这条回执后沿原对话另行提出，通知失败不重传文件。NapCat 协议来自 [NapCat 上传文档](https://napcat.apifox.cn/226658753e0)，SnowLuma 动作名来自其公开目录 `upload_group_file`；生产实现/版本及挂载仍需现场核对。
+`FileUploadConfig.implementation` 显式选择 `napcat`（配置标签 `protocol=upload_group_file_data_file_id`）或 `snowluma`（配置标签 `protocol=upload_group_file`）。这两个标签不是两个出站动作名：当前适配器对两者都只发送 `upload_group_file`，不轮流试其他动作或改协议重传；[NapCat 文档](https://napcat.apifox.cn/226658753e0)与[SnowLuma 文档](https://snowluma.github.io/zh/docs/api/group-file/upload_group_file)均列出该动作。上传参数均为 `group_id/file/name`，文件路径只能由宿主已登记资产映射为 `/lenbot-files/<asset_id>`。HTTP 和 WebSocket 复用原连接和发送队列，传输前已有 `DELIVERY_ATTEMPTED`。仅 `status=ok`、整数 `retcode=0` 且 `data.file_id` 非空才产生 `FILE_UPLOADED`；不会伪造 `message_id`。空返回、异步返回、格式变化或传输中断记 unknown，保留额度与文件且不重放；明确失败或连接未建立分别记录 rejected/not_sent。`deployment_verified` 表示运营已核对当前实例与只读挂载，不要求先有一次成功上传；真实 file_id 只从回执派生。文字通知必须读取这条回执后沿原对话另行提出，通知失败不重传文件。文档列出动作与响应形状不等于本机已取得真实上传回执；生产协议与挂载仍需现场核对。
 
 ### B 站登录态读取
 
