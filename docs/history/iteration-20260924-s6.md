@@ -11,3 +11,9 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 命令退出 0，得到 `/private/tmp/lenbot-wheel-review/len_bot-0.1.0-py3-none-any.whl`，压缩文件 14,198,875 字节；用 `unzip -Z -1` 与 `unzip -l` 只读核对共 363 个目录／文件条目，解包总量 29,921,246 字节。包内有 `len_bot/web/static/dist/index.html`、当前 `SettingsView` 构建资源、`group_summary` 与 `workspace` 插件、`len-bot = len_bot:main` 命令入口；没有前端源码目录、`node_modules`、真实根配置、数据库或文件资产目录。包仍带 `asoul_calendar/resources/font.ttf`（25,631,744 字节）与 `cards/bilibili/logo.png`（53,782 字节），其再分发授权须由维护者决定；此次构建未改变素材归属。
 
 `py3-none-any` 只说明本 wheel 的标签，**不证明**所需依赖在 Linux/amd64 和 Linux/arm64 的可用性、空环境安装、字体装载、群报告、Gateway 产物或 SnowLuma 上传。wheel 依赖事先构建的前端产物，不能拿本次包含页面当作从原始 Git 检出即能得到同一包。没有安装 wheel、启动服务、读取真实配置／业务库、调用模型／平台或实发；未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务。没有本批业务运行失败原文。
+
+## 源码包保留前端重建材料
+
+基线 `b133da4`。继续构建原配置的 sdist 后发现 `source-exclude` 排除了整个 `web/frontend`：包内虽有已构建页面，但缺 `src/`、`package-lock.json` 和 Vite 配置，无法从该**源码包**重新生成页面。仅将该排除路径收窄为 `web/frontend/node_modules`，保留现有 `wheel-exclude`；不用复制第二套前端或改运行入口。
+
+修改后 `uv build --sdist --offline` 退出 0，包内核对可见 `web/frontend/src/views/SettingsView.vue`、`package.json`、`package-lock.json`、`vite.config.js` 与已构建 `web/static/dist/index.html`，没有本机 `node_modules`。直接从源码离线构建 wheel 退出 0，包内只有已构建页面而无前端源码／工具链。首次尝试离线从 sdist 构建 wheel 退出 2，原文为 `uv-build was not found in the cache`；这是构建后端缺缓存，不是源码包缺失。随后允许该构建命令取得声明的后端，从同一 sdist 构建 wheel 退出 0，包内再次核对 `group_summary/plugin.py` 和 `web/static/dist/index.html`，没有前端源码／工具链。没有安装产物、运行目标架构或开展业务操作；`git diff --check` 退出 0。素材授权、同版空环境安装和真实平台回执仍未确认。
