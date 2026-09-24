@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from len_bot.actions.models import DeliveryResult, DeliveryStatus
 
+# Config/receipt labels, not alternate action names: both selected adapters send
+# upload_group_file and require an actual data.file_id before recording success.
 PROTOCOLS = {
     'napcat': 'upload_group_file_data_file_id',
     'snowluma': 'upload_group_file',
