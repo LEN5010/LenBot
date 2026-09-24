@@ -80,7 +80,7 @@ class SegmentSummaryRef(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     batch_id: str
     generation_version: str
-    range: tuple[int, int, int, int]
+    range: list[int] = Field(min_length=4, max_length=4)
 
 
 class ConversationSegment(BaseModel):
