@@ -29,3 +29,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 ## 候选包同提交构建顺序
 
 基线 `5597ec2`。原版本化流程只要求产物来自候选提交，却未明确 Git 中不保存的前端页面必须先于 sdist/wheel 构建；从无 `web/static/dist` 的干净检出直接打包可能得到缺页面的包。本批在原[贡献流程](../../CONTRIBUTING.md#从开发提交到版本发布)中补同提交前端锁文件安装、面板构建、全新目录的源码包／轮子构建及包内容复核顺序，不新增发布脚本或 CI 检查。当前工作区已有本机面板产物，以 `uv build --sdist --wheel --offline --out-dir /private/tmp/lenbot-candidate-build-review` 实际构建，命令退出 0，产生 `len_bot-0.1.0.tar.gz` 和 `len_bot-0.1.0-py3-none-any.whl`。这不是从全新检出安装依赖、不是候选提交或获准发行；未创建标签、推送或发布，也未运行测试或业务服务。`git diff --check` 退出 0。
+
+## CI 发行包构建入口
+
+基线 `4eeec68`。原 CI 的 Python 编译与前端构建止于 `npm run build`，没有执行前述已确认顺序的 sdist／wheel 构建；本批只在面板构建之后追加 `uv build --sdist --wheel --out-dir dist`，不增加上传、发布、安装或测试步骤。贡献流程同步说明 CI 范围。本批仅做源码与流程核对，尚未触发远端 CI；前一批的本机组合打包记录不能代替新 CI 步骤的运行结果。未读取真实配置／数据、启动服务、调用模型／平台或实发，也未新增、修改或运行仓库禁止的验证任务。
