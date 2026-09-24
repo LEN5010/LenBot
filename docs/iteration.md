@@ -4,18 +4,18 @@
 
 ## 当前批次
 
-- 分支 `feat/s0-product-contract`，基线 `5145cf1`；上批首选 Linux 报告与文件前置已归[历史记录](history/iteration-20260924-s5.md)，仅完成静态部署说明，未现场验收。
-- S2-01／S2-02：上批段摘要引用的覆盖范围由装配侧记给出四项 Python 列表，`scene_sessions.state_json` 也只能以 JSON 数组重载，但新增严格模型声明为 Python 元组。原字段形状与生产／持久化输入不一致；本批直接修正同一字段类型，不另加转换层、表或状态。
+- 分支 `feat/s0-product-contract`，基线 `c95e221`；上批会话段摘要范围修正已归[历史记录](history/iteration-20260924-s2.md)，仅编译，未运行段保存或恢复。
+- S0-03／S5-01：通用配置样例仍让群报告从相邻日历插件目录读字体，运行手册也把这条路径当作可用前置。首个 Linux 方向已明确运营者须提供主进程可读字体；本批仅将样例改成明确待替换的绝对路径占位，并同步操作说明，不碰真实根配置或素材文件。
 
 ## 本批交付与核对
 
-- `SegmentSummaryRef.range` 由仅接收元组改为长度恰好四项的 `list[int]`，与 `ConversationContext` 产生的批次侧记及原 JSON 序列化一致；批次 ID、字符串版本、范围顺序、Actor 资格和写事务不变。旧段无 `summary_refs` 仍按空列表读；本批不回填或转换真实数据。
-- 同步[段结构](plan/s2-01-conversation-segment.md#3-最小持久结构)和[上下文装配](context.md#当前段的原话窗口引用)。静态核对 `context.build` 的 `range: [start_rowid,start_offset,end_rowid,end_offset]`、`social_core.finalize_request` 传给 Actor 的列表，以及 `model_dump(mode='json')` 后 `SceneSession.model_validate(saved)` 的读取路径。此修正解决形状冲突，不证明完整段或原生交换已实现。
-- `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/scenes/models.py` 退出 0；`git diff --check` 退出 0。仅证明语法与差异格式；未运行同版段保存或重载，也不把静态推断写成运行通过。
+- `lenbot.config.example.json` 的 `plugins.group_summary.config.render_font_path` 由 `../asoul_calendar/resources/font.ttf` 改为 `/replace/with/approved/report-font.ttf`。该值是必须人工替换的绝对路径占位；样例中的群报告仍默认停用。插件现有 `on_load` 文件存在核对和报告渲染路径原样保留，不新增字体、配置字段或兼容分支。
+- [运行手册](operations.md#日常查看与处置)及[Linux 部署前置](../deploy/linux/README.md#首个验收方向的报告与文件)改为启用前提供实际可读字体、核对使用／分发边界；Linux 容器按已挂载的 `/var/lib/lenbot` 填真实绝对路径。[路线入口](plan/README.md)仅更新 S0-03 证据，不标记授权或现场验收。基线[依赖测绘](plan/s0-03-dependency-boundary.md)与[授权清点](plan/s0-04-06-license-and-support.md)仍按原提交保留，旧路径／行号不涂改成当前事实。
+- 只改通用样例和所属文档；未构建或装载插件，`git diff --check` 退出 0。差异格式不证明样例已用于安装，也不证明字体文件存在、可读或获授权。
 - 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批实际业务失败原文。
 
 ## 待决定与接续
 
-1. S2 的原话窗口和摘要引用仍为 `source_window_only`；固定材料持久版本、跨轮原生交换与压缩交接未完成，回复片段持久边界待维护者答复。段保存／重载、旧字段读取与实际恢复需同版人工核对，不能以编译代替。
-2. S1／S3／S4 同版人工核对及 S5 首选 Linux／SnowLuma 报告和文件回执仍待获准现场；数据期限、许可证／素材授权、公开承诺、S6 候选与 S7 外部闭环未完成。
+1. 字体／模板素材的实际使用、再分发许可与候选字体文件仍由维护者决定；样例占位不是许可或可运行配置。首个 Linux／SnowLuma 报告和文件仍待同版目标主机、Gateway／字体／挂载与真实回执。
+2. S2 仍为 `source_window_only`，固定材料版本、跨轮原生交换和压缩交接未完成；回复片段持久边界待维护者答复。S1／S3／S4 同版人工核对，数据期限、许可证、公开承诺、S6 候选与 S7 外部闭环亦未完成。
 3. 仅阶段性本地提交，不推送、合并、部署或实发，总体目标继续。
