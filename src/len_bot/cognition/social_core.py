@@ -63,6 +63,9 @@ class SocialCognitionCore:
         if save_segment is not None and session.conversation_segment is not None:
             context.refs.result_aliases=dict(session.conversation_segment.result_aliases)
             context.refs.job_aliases=dict(session.conversation_segment.job_aliases)
+            context.refs.memory_aliases=dict(session.conversation_segment.memory_aliases)
+            context.refs.task_aliases=dict(session.conversation_segment.task_aliases)
+            context.refs.loop_aliases=dict(session.conversation_segment.loop_aliases)
         context.supports_segment_vision = binding.supports_vision
         context.config=config
         context.input_budget=config.conversation_context_tokens-config.conversation_output_tokens
@@ -299,6 +302,9 @@ class SocialCognitionCore:
                     summary_refs=summary_refs,
                     result_aliases=dict(context.refs.results),
                     job_aliases={ref:job['id'] for ref,job in context.refs.jobs.items()},
+                    memory_aliases=dict(context.refs.memories),
+                    task_aliases=dict(context.refs.tasks),
+                    loop_aliases=dict(context.refs.loops),
                     profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
                         reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
                     basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],

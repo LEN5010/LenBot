@@ -54,17 +54,20 @@ class TurnReferences:
         self.event_rowids = {}
         self.media = {}
         self.memories = {}
+        self.memory_aliases = {}
         self.editable_memories = set()
         self.results = {}
         self.result_aliases = {}
         self.jobs = {}
         self.job_aliases = {}
         self.tasks = {}
+        self.task_aliases = {}
         self.task_snapshots = {}
         self.editable_tasks = set()
         self.deliverable_tasks = set()
         self.file_assets = {}
         self.loops = {}
+        self.loop_aliases = {}
         self.active_loops = set()
 
     @staticmethod
@@ -155,7 +158,9 @@ class TurnReferences:
     def register_memory(self, memory_id, *, editable=False):
         if editable:self.editable_memories.add(memory_id)
         else:self.editable_memories.discard(memory_id)
-        return self._register(self.memories, memory_id, 'B')
+        ref = self._register(self.memory_aliases, memory_id, 'B')
+        self.memories[ref] = memory_id
+        return ref
 
     def register_result(self, result_id):
         ref = self._register(self.result_aliases, result_id, 'R')
@@ -177,11 +182,15 @@ class TurnReferences:
             self.deliverable_tasks.add(task['id'])
         else:
             self.deliverable_tasks.discard(task['id'])
-        return self._register(self.tasks, task['id'], 'T')
+        ref = self._register(self.task_aliases, task['id'], 'T')
+        self.tasks[ref] = task['id']
+        return ref
 
     def register_loop(self, loop):
         self.active_loops.add(loop['id'])
-        return self._register(self.loops, loop['id'], 'L')
+        ref = self._register(self.loop_aliases, loop['id'], 'L')
+        self.loops[ref] = loop['id']
+        return ref
 
     def locate_event(self, ref): return self._resolve(self.events, ref, '消息')
     def note_event_rowid(self, event_id, rowid):
