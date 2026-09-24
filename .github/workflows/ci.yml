@@ -40,3 +40,6 @@ jobs:
       - name: Build control panel
         working-directory: src/len_bot/web/frontend
         run: npm run build
+
+      - name: Build source and wheel packages
+        run: uv build --sdist --wheel --out-dir dist
