@@ -93,9 +93,9 @@ function setHeartbeat(key, value) {
 const UPLOAD_PROTOCOLS = {napcat:'upload_group_file_data_file_id', snowluma:'upload_group_file'}
 const UPLOAD_HELP = `implementation 决定内部配置／回执标签：napcat 用 upload_group_file_data_file_id，snowluma 用 upload_group_file。两者实际都发送 upload_group_file，不切换实现或重传。
 
-version 填现场实际版本，可用「连接」页的「读取平台实现与版本」按钮核对。
+version 可选，仅记录当前连接报告的版本；不按 SnowLuma 或 NapCat 的具体发行版本准入。
 
-deployment_verified 表示你已人工核对现场版本与「仅文件资产目录只读挂到 /lenbot-files」这两件事，不要求先有过一次成功上传。真实 file_id 只从 FILE_UPLOADED 回执派生。
+deployment_verified 表示你已人工核对所选实现、upload_group_file 动作与「仅文件资产目录只读挂到 /lenbot-files」；不要求先有过一次成功上传。真实 file_id 只从 FILE_UPLOADED 回执派生。
 
 改动保存后需重启。`
 const fileUpload = computed(() => {
@@ -106,14 +106,13 @@ function setFileUpload(patch) {
   try { draft = JSON.parse(runtimeText.value || '{}') } catch { return }
   if (patch === null) draft.onebot_file_upload = null
   else {
-    const current = draft.onebot_file_upload || {implementation:'snowluma', version:'',
+    const current = draft.onebot_file_upload || {implementation:'snowluma', version:null,
       protocol:UPLOAD_PROTOCOLS.snowluma, deployment_verified:false, export_mount_path:'/lenbot-files'}
     const next = {...current, ...patch}
     next.protocol = UPLOAD_PROTOCOLS[next.implementation] || next.protocol
-    // Declaring a different platform or version retires the operator's check;
-    // the flag has to be re-earned rather than carried across.
-    const retargeted = (patch.implementation && patch.implementation !== current.implementation)
-      || (patch.version !== undefined && patch.version !== current.version)
+    // A different implementation needs its own deployment check; a version
+    // note is not a compatibility decision and does not retire that check.
+    const retargeted = patch.implementation && patch.implementation !== current.implementation
     if (retargeted && patch.deployment_verified === undefined) next.deployment_verified = false
     draft.onebot_file_upload = next
   }
@@ -595,7 +594,7 @@ watch(tab,()=>{
     <p v-if="tab==='access'&&currentConflict" class="muted">白名单与授予列表按整组核对。明确保留后，仍使用当前授予 ID 和修订；已经删除的旧 ID 不会被改成新授予重新签发。</p>
     <v-tabs :model-value="tab" color="primary" show-arrows @update:model-value="value=>router.push({name:'settings',query:{tab:value}})"><v-tab v-for="item in tabs" :key="item.value" :value="item.value">{{ item.title }}<span v-if="conflicts.entries[item.value]"> · 待处理冲突</span><span v-if="saveOutcomes[item.value]"> · 保存待核对</span></v-tab></v-tabs>
     <v-progress-linear v-if="loading" indeterminate />
-    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.active_connection?.connection_mode==='forward_ws'?'当前运行方式为主动连接；尚未连接，请核对最近错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'当前运行方式等待 OneBot 主动接入。':'尚未取得当前运行连接方式；下方仅是已保存配置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback||!!conflicts.entries.connection||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn><v-btn variant="outlined" :loading="busy==='version'" :disabled="!!busy" @click="readVersion">读取平台实现与版本</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p><div v-if="platform" class="wide"><v-alert type="info" variant="tonal"><p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p><p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；填写前先以这里读到的实现与版本为准。</p><template v-else><p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · {{ platform.configured_upload.version }} · 配置标签 {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}</p><p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要把配置标签改成另一实现。</p><p v-else-if="!platform.configured_upload.version_matches" class="mt-2">版本与现场报告不一致，请按实际版本更新后再核验挂载。</p><p v-else class="mt-2">实现与版本一致；只读挂载仍需在主机侧另行核对。</p></template><p class="mt-2">{{ platform.message }}</p></v-alert></div></v-form></v-card>
+    <v-card v-if="tab==='connection'&&onebot&&connection" class="pa-5 form-card"><div class="section-header"><h2>连接 OneBot</h2><v-chip :color="onebot.connected?'success':'warning'">{{ onebot.connected?'已连接':'未连接' }}</v-chip></div><p class="muted my-3">{{ onebot.connected?'已取得 OneBot 连接。':onebot.active_connection?.connection_mode==='forward_ws'?'当前运行方式为主动连接；尚未连接，请核对最近错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'当前运行方式等待 OneBot 主动接入。':'尚未取得当前运行连接方式；下方仅是已保存配置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span></p><v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">{{ onebot.last_error }}</v-alert><v-form :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback" class="form-grid" @submit.prevent="saveConnection()"><v-select v-model="connection.connection_mode" label="消息连接方式" :items="[{title:'主动连接 OneBot',value:'forward_ws'},{title:'等待 OneBot 连接',value:'reverse_ws'}]" class="wide" /><v-text-field v-if="connection.connection_mode==='forward_ws'" v-model="connection.ws_url" label="WebSocket 端点" placeholder="ws://127.0.0.1:13001/" class="wide" required /><template v-else><v-text-field v-model="connection.host" label="监听地址" required /><v-text-field v-model.number="connection.port" type="number" min="1" max="65535" label="监听端口" required /></template><v-select v-model="connection.action_transport" label="发送传输" :items="[{title:'使用 WebSocket',value:'websocket'},{title:'使用 HTTP',value:'http'}]" /><v-text-field v-model="connection.http_url" label="HTTP 接口地址" :required="connection.action_transport==='http'" /><v-select v-model="connection.access_token_action" :items="[{title:'保留当前令牌',value:'keep'},{title:'替换令牌',value:'replace'},{title:'清除令牌',value:'clear'}]" label="访问令牌操作" class="wide" /><v-text-field v-if="connection.access_token_action==='replace'" v-model="connection.access_token" type="password" autocomplete="new-password" label="访问令牌" :placeholder="onebot.access_token_set?'已保存，留空保留':'填写 OneBot 访问令牌'" class="wide" /><div class="actions wide"><v-btn type="submit" color="primary" :loading="busy==='connection'" :disabled="!!currentSaveOutcome||!!busy||connectionNeedsReadback||!!conflicts.entries.connection||!connectionDirty">保存连接配置</v-btn><v-btn variant="outlined" :loading="busy==='http'" :disabled="!!busy" @click="checkHttp">检查当前 HTTP 连接</v-btn><v-btn variant="outlined" :loading="busy==='version'" :disabled="!!busy" @click="readVersion">读取平台实现与版本</v-btn></div><p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p><div v-if="platform" class="wide"><v-alert type="info" variant="tonal"><p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p><p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；先核对当前实现与所选文件动作，版本仅作可选现场记录。</p><template v-else><p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · 现场版本 {{ platform.configured_upload.version || '未记录' }} · 配置标签 {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}</p><p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要把配置标签改成另一实现。</p><p v-else class="mt-2">实现名一致；文件动作和资产目录只读挂载仍需在主机侧核对，版本仅供现场记录。</p></template><p class="mt-2">{{ platform.message }}</p></v-alert></div></v-form></v-card>
     <v-card v-if="tab==='access'&&accessText!==null" class="pa-5 form-card">
       <v-alert v-if="referenceError" type="error" variant="tonal" class="mb-4">群、成员、插件或额度策略参考读取失败：{{ referenceError }}；已有草稿保留，未自动选择替代项。</v-alert>
       <h2>QQ 回复白名单</h2>
@@ -707,17 +706,16 @@ watch(tab,()=>{
             <v-select :model-value="fileUpload.implementation" label="实现"
               :items="[{title:'SnowLuma',value:'snowluma'},{title:'NapCat',value:'napcat'}]"
               @update:model-value="value=>setFileUpload({implementation:value})" />
-            <v-text-field :model-value="fileUpload.version" label="现场实际版本"
-              placeholder="例如 1.14.15-node" hint="改动后需重新核对" persistent-hint
-              @update:model-value="value=>setFileUpload({version:value})" />
+            <v-text-field :model-value="fileUpload.version || ''" label="现场版本（可选记录）"
+              placeholder="可从连接页读取" hint="仅供现场记录，不作为协议准入条件" persistent-hint
+              @update:model-value="value=>setFileUpload({version:value.trim() || null})" />
             <v-text-field :model-value="fileUpload.protocol" label="配置／回执标签（由实现决定）" readonly />
             <v-text-field :model-value="fileUpload.export_mount_path" label="只读挂载点" readonly />
             <p class="muted wide">两种实现均调用 upload_group_file；标签和部署核验标记不等于平台取得文件，成功仍看真实 FILE_UPLOADED 与 file_id。</p>
           </div>
           <v-switch :model-value="fileUpload.deployment_verified"
-            label="已人工核对现场版本与只读挂载"
-            :disabled="!fileUpload.version"
-            :hint="fileUpload.version ? '打开后模型才会把上传当作可用能力' : '先填写现场版本'"
+            label="已人工核对实现、文件动作与只读挂载"
+            hint="打开后仍需真实授权、资产审查与平台 file_id 回执"
             persistent-hint
             @update:model-value="value=>setFileUpload({deployment_verified:!!value})" />
           <div class="actions"><v-btn size="small" variant="text" color="error"

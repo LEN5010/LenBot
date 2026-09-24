@@ -16,10 +16,11 @@ PROTOCOLS = {
 class FileUploadConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     implementation: Literal['napcat', 'snowluma']
-    version: str = Field(min_length=1, max_length=80, description='运营核对的实际版本')
+    version: str | None = Field(default=None, min_length=1, max_length=80,
+        description='可选的现场版本记录；协议准入不按实现的发行版本判定')
     protocol: Literal['upload_group_file_data_file_id', 'upload_group_file']
     deployment_verified: bool = Field(default=False,
-        description='运营已核对实际版本与仅资产目录的只读挂载；真实上传成功只从 FILE_UPLOADED 的 file_id 派生，本标记不要求先有成功上传')
+        description='运营已核对所选实现、文件动作与仅资产目录的只读挂载；真实上传成功只从 FILE_UPLOADED 的 file_id 派生，本标记不要求先有成功上传')
     export_mount_path: Literal['/lenbot-files'] = '/lenbot-files'
 
     @model_validator(mode='after')

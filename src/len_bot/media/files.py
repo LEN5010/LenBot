@@ -168,7 +168,7 @@ def file_delivery_facts(runtime, scene_id=None, requester=None):
     if upload is None:
         blocked.append('onebot_file_upload 未配置')
     elif not upload.deployment_verified:
-        blocked.append(f'onebot_file_upload.deployment_verified=false（{upload.implementation} {upload.version} 的版本与只读挂载尚未人工核对）')
+        blocked.append(f'onebot_file_upload.deployment_verified=false（{upload.implementation} 的文件动作与只读挂载尚未人工核对）')
     grant_allowed = None
     if scene_id and not scene_id.startswith('group:'):
         blocked.append('普通文件上传只接受目标群')

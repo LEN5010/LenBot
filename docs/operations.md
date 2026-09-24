@@ -548,25 +548,25 @@ TasksLoops 中的“公共兴趣分享机会”只表示调度阶段；Trace 的
 
 ### 配置 OneBot 文件上传
 
-面板运行参数新增 `onebot_file_upload`（默认 null）。首个验收方向在本机选 SnowLuma，公开兼容不按它的固定发行版本名单判读；但本字段仍须填写当前连接报告的实际版本，作为这次部署核对的身份事实。当前支持配置示意如下，核对前保留 false：
+面板运行参数新增 `onebot_file_upload`（默认 null）。首个验收方向在本机选 SnowLuma，按当前 OneBot 文件动作与回执合同核对，不按它的固定发行版本名单准入。`version` 可选，仅记录连接报告的现场版本；核验开关不以填入版本为前置。当前支持配置示意如下，核对前保留 false：
 
 ```json
-{"implementation":"napcat","version":"填写实际版本","protocol":"upload_group_file_data_file_id","deployment_verified":false,"export_mount_path":"/lenbot-files"}
+{"implementation":"napcat","protocol":"upload_group_file_data_file_id","deployment_verified":false,"export_mount_path":"/lenbot-files"}
 ```
 
-SnowLuma 现场示例（版本换成实际值）：
+SnowLuma 现场示例（取得所报版本时可另填 `version`）：
 
 ```json
-{"implementation":"snowluma","version":"填写实际版本","protocol":"upload_group_file","deployment_verified":false,"export_mount_path":"/lenbot-files"}
+{"implementation":"snowluma","protocol":"upload_group_file","deployment_verified":false,"export_mount_path":"/lenbot-files"}
 ```
 
 这两个 `protocol` 值是现有配置／回执标签，不是两个不同的出站动作名；适配器对两种实现都只调用 `upload_group_file`。不根据一个标签改试另一动作，也不以公开目录存在动作推断本机已经上传成功。
 
-连接页的「读取平台实现与版本」按当前发送传输只读调用 `get_version_info`，返回现场 app_name、app_version、protocol_version，并与已声明的 `onebot_file_upload` 对照实现名与版本。该按钮不发送任何群消息，也不改配置：填 `deployment_verified` 前先用它核对当前实例及所选协议，不要用发布目录反推现场。版本对照只防止拿旧配置核对另一实例，不把版本字符串当作协议兼容或上传成功证明。
+连接页的「读取平台实现与版本」按当前发送传输只读调用 `get_version_info`，展示现场 app_name、app_version、protocol_version，并提示已声明的实现名是否一致；不比较版本作准入。该按钮不发送任何群消息，也不改配置：填 `deployment_verified` 前核对当前实例、`upload_group_file` 动作与只读挂载，不要用发布目录反推现场。连接报告的版本可写入发布记录或可选配置字段，但不证明协议兼容或上传成功。
 
 系统设置的只读字段和能力卡将两个 `protocol` 值明确显示为**配置／回执标签**，另标实际出站动作 `upload_group_file`。标签、版本读取及部署核验标记都不等于平台回执；群设置页只提示配置与申请者前置，不从这些显示值认定文件已上传。
 
-只将数据库同级 `file_assets/` 只读挂入 OneBot 的 `/lenbot-files`，不得共享完整工作区、控制目录、配置或数据库。宿主运行账号应能创建资产，OneBot 账号通过部署文件组获得 0750/0440 读取权限；核对挂载确实只读。`deployment_verified` 只表示版本与挂载已人工核对，不要求先有成功上传；授权后的第一次正常文件操作才产生真实 `data.file_id`。现有 HTTP/WS 连接模式不变。不要把一种实现填成另一种，也不自动改协议。
+只将数据库同级 `file_assets/` 只读挂入 OneBot 的 `/lenbot-files`，不得共享完整工作区、控制目录、配置或数据库。宿主运行账号应能创建资产，OneBot 账号通过部署文件组获得 0750/0440 读取权限；核对挂载确实只读。`deployment_verified` 表示所选实现、动作与挂载已人工核对，不要求先有成功上传或精确版本；授权后的第一次正常文件操作才产生真实 `data.file_id`。现有 HTTP/WS 连接模式不变。不要把一种实现填成另一种，也不自动改协议。
 
 生产开启须同时具备 `file_delivery.enabled`、当前用户与群的 `send_file`、资产审查以及已核对协议。unknown 保留原尝试、资产及额度供现场核对，不提供再次发送按钮或强制标成功；面板下载仍可用。
 

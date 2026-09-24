@@ -79,12 +79,12 @@ async def test_onebot_http(request: Request, user: str = Depends(get_current_use
 
 @router.post("/read-version")
 async def read_onebot_version(request: Request, user: str = Depends(get_current_user)):
-    """Read the platform's own implementation and version over the live channel.
+    """Read the platform's reported implementation and version over the live channel.
 
-    This is the read the operator owes before setting `deployment_verified`: a
-    published catalogue names an action, it does not prove the running build
-    answers to it.  Nothing is written here, and a real upload receipt is still
-    the only evidence that a file reached a group.
+    A published catalogue names an action, but does not prove the running
+    build answers to it. The reported version is optional deployment context,
+    not an upload compatibility gate. Nothing is written here; only a real
+    upload receipt proves that a file reached a group.
     """
     runtime = request.app.state.runtime
     adapter = getattr(runtime, "_onebot_adapter", None)
@@ -105,12 +105,11 @@ async def read_onebot_version(request: Request, user: str = Depends(get_current_
     if upload is not None:
         configured = {"implementation": upload.implementation, "version": upload.version,
                       "protocol": upload.protocol, "deployment_verified": upload.deployment_verified,
-                      "name_matches": upload.implementation.casefold() in app_name.casefold(),
-                      "version_matches": upload.version == app_version}
+                      "name_matches": upload.implementation.casefold() in app_name.casefold()}
     return {"success": True, "app_name": app_name, "app_version": app_version,
             "protocol_version": data.get("protocol_version"), "transport": runtime.config.onebot_action_transport,
             "configured_upload": configured,
-            "message": "这是当前连接实际报告的实现与版本；上传成功仍以 FILE_UPLOADED 的真实 file_id 为准"}
+            "message": "这是当前连接报告的实现与版本；版本不是协议准入条件，上传成功仍以 FILE_UPLOADED 的真实 file_id 为准"}
 
 
 @router.post("/disconnect")
