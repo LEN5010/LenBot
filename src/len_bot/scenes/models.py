@@ -98,6 +98,9 @@ class ConversationSegment(BaseModel):
     summary_refs: list[SegmentSummaryRef] = Field(default_factory=list)
     result_aliases: dict[str, str] = Field(default_factory=dict)
     job_aliases: dict[str, str] = Field(default_factory=dict)
+    memory_aliases: dict[str, str] = Field(default_factory=dict)
+    task_aliases: dict[str, str] = Field(default_factory=dict)
+    loop_aliases: dict[str, str] = Field(default_factory=dict)
 
 
 class SceneSession(BaseModel):

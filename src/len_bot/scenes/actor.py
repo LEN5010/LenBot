@@ -60,6 +60,9 @@ class SegmentCommand:
     summary_refs: list[dict]
     result_aliases: dict[str, str]
     job_aliases: dict[str, str]
+    memory_aliases: dict[str, str]
+    task_aliases: dict[str, str]
+    loop_aliases: dict[str, str]
     future: asyncio.Future
 
 
@@ -161,11 +164,11 @@ class SceneActor:
         return await asyncio.shield(future)
 
     async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis,
-                                        summary_refs, result_aliases, job_aliases):
+                                        summary_refs, result_aliases, job_aliases, memory_aliases, task_aliases, loop_aliases):
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(SegmentCommand(episode_id, expected_id, through_rowid,
             list(event_ids), profile, copy.deepcopy(basis), copy.deepcopy(summary_refs),
-            dict(result_aliases), dict(job_aliases), future))
+            dict(result_aliases), dict(job_aliases), dict(memory_aliases), dict(task_aliases), dict(loop_aliases), future))
         return await asyncio.shield(future)
 
     async def _save_conversation_segment(self, command):
@@ -188,7 +191,10 @@ class SceneActor:
         summary_refs = [SegmentSummaryRef.model_validate(ref) for ref in command.summary_refs]
         if previous:
             for old, current in ((previous.result_aliases, command.result_aliases),
-                                 (previous.job_aliases, command.job_aliases)):
+                                 (previous.job_aliases, command.job_aliases),
+                                 (previous.memory_aliases, command.memory_aliases),
+                                 (previous.task_aliases, command.task_aliases),
+                                 (previous.loop_aliases, command.loop_aliases)):
                 if any(ref in old and old[ref] != identity for ref, identity in current.items()):
                     raise SceneCommitConflict('A retained conversation reference cannot change its identity')
         reason = ('initial' if previous is None else 'process_restart' if self._segment_basis is None
@@ -204,7 +210,9 @@ class SceneActor:
             reason=reason or previous.reason, model_profile=command.profile,
             knowledge_revision=self.session.knowledge_revision, through_rowid=command.through_rowid,
             event_ids=command.event_ids,summary_refs=summary_refs,
-            result_aliases=command.result_aliases,job_aliases=command.job_aliases)
+            result_aliases=command.result_aliases,job_aliases=command.job_aliases,
+            memory_aliases=command.memory_aliases,task_aliases=command.task_aliases,
+            loop_aliases=command.loop_aliases)
         await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
             segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
         self.session.conversation_segment = segment
