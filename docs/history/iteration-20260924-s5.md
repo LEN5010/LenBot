@@ -31,3 +31,9 @@
 分支同上，基线 `ab724c7`。维护者已明确 SnowLuma 按 OneBot 协议而非具体发行版本判读；原 `FileUploadConfig.version`、设置页开关及连接页提示仍要求精确版本才能标部署核验，与该方向不一致。本批沿现有配置字段将 `version` 改为可空、可选的现场记录，保留旧值读取；部署核验改为明确核对实现、`upload_group_file` 动作和资产目录只读挂载。版本编辑不再重置该开关；换实现仍需重新人工核对。连接页继续只读展示平台报告，但不比较版本作为准入。原实现／标签匹配、授权、文件审查、`data.file_id` 回执与 unknown 不重传边界均不变。
 
 同步[配置步骤](../operations.md#配置-onebot-文件上传)、[支持矩阵](../support.md#当前入口矩阵)、[Linux 前置](../../deploy/linux/README.md#onebot-文件与可选项)与发布模板。前端 `npm run build` 退出 0，491 个模块、1.72 秒；从前端目录误执行仓库相对 Python 编译路径，命令虽退出 0 但原输出三行 `Can't list 'src/len_bot/…'`，**不计为编译**；随后在仓库根目录正确编译三个改动模块退出 0，`git diff --check` 退出 0。均只是静态／构建结果，不是页面、配置保存、协议或上传验收。未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批业务运行失败原文。
+
+## SnowLuma 公开响应示例的歧义
+
+基线 `ec159b7`。只读核对 [SnowLuma 上传群文件文档](https://snowluma.github.io/zh/docs/api/group-file/upload_group_file)：页面列出 `upload_group_file`、`group_id/file/name`，响应形状标 `{ file_id: string }`，但同页成功示例写 `data: null`。这两处不能同时证明真实连接会返回 `file_id`。原适配器保持严格确认：无真实 `data.file_id` 时结果为 unknown，不把 `status=ok` 单独解释为文件已到群，也不自动补传。本批只在支持页与原发布模板标出歧义和现场需记录的脱敏响应，不改上传器或真实配置。
+
+`git diff --check` 退出 0；没有本批业务失败原文。没有访问本机 SnowLuma、上传文件、启动服务或执行仓库禁止的验证任务。双架构目标、实际报告与文件回执仍待获准正常操作；如现场响应持续缺少身份，需基于真实协议另行决定，不预设替代回执。

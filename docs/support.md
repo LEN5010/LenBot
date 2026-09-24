@@ -39,6 +39,8 @@
 
 首选 Linux 配方的[报告与文件分链前置](../deploy/linux/README.md#首个验收方向的报告与文件)明确主进程字体路径、Gateway 持久产物和 SnowLuma 上传各自的依赖；worker 内的字体不替代报告主进程字体，生成产物不替代平台文件回执。
 
+[SnowLuma 的当前上传群文件文档](https://snowluma.github.io/zh/docs/api/group-file/upload_group_file)同时展示 `{ file_id: string }` 响应形状与 `data: null` 的示例，不能仅凭该页面推断本机返回哪一种。现有适配器对 `data: null` 记 unknown 而非已上传，也不会重传；首个验收须在获准正常上传中记录原行动、脱敏响应与平台 `file_id`。若实际始终不返回该身份，不得把文件交付标为已验收，先按实际协议与回执另行决定处理方式。
+
 尚无本批现场记录；观察材料复用已有发布观察模板。没有以模型名称、渠道品牌或操作系统名单虚填“稳定支持”，所选方向仍需实际观察与已知限制。
 
 ## 信任边界
