@@ -17,3 +17,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 基线 `b133da4`。继续构建原配置的 sdist 后发现 `source-exclude` 排除了整个 `web/frontend`：包内虽有已构建页面，但缺 `src/`、`package-lock.json` 和 Vite 配置，无法从该**源码包**重新生成页面。仅将该排除路径收窄为 `web/frontend/node_modules`，保留现有 `wheel-exclude`；不用复制第二套前端或改运行入口。
 
 修改后 `uv build --sdist --offline` 退出 0，包内核对可见 `web/frontend/src/views/SettingsView.vue`、`package.json`、`package-lock.json`、`vite.config.js` 与已构建 `web/static/dist/index.html`，没有本机 `node_modules`。直接从源码离线构建 wheel 退出 0，包内只有已构建页面而无前端源码／工具链。首次尝试离线从 sdist 构建 wheel 退出 2，原文为 `uv-build was not found in the cache`；这是构建后端缺缓存，不是源码包缺失。随后允许该构建命令取得声明的后端，从同一 sdist 构建 wheel 退出 0，包内再次核对 `group_summary/plugin.py` 和 `web/static/dist/index.html`，没有前端源码／工具链。没有安装产物、运行目标架构或开展业务操作；`git diff --check` 退出 0。素材授权、同版空环境安装和真实平台回执仍未确认。
+
+## 发行包简述去占位
+
+基线 `411040e`。只读解包确认 wheel 的 `METADATA` 仍写 `Summary: Add your description here`，与已有[首页事实描述](../../README.md)不符。本批仅将 `pyproject.toml` 的简述改为当前可核对的 QQ 群聊、工具调用、后台工作与运营面板，不改版本号、许可证、依赖或支持承诺。离线 wheel 构建退出 0，解包 `METADATA` 显示新简述；`git diff --check` 退出 0。没有安装、运行、实发或执行仓库禁止的验证任务。公开定位、授权与发行决定仍归维护者。
