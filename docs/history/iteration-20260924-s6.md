@@ -21,3 +21,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 ## 发行包简述去占位
 
 基线 `411040e`。只读解包确认 wheel 的 `METADATA` 仍写 `Summary: Add your description here`，与已有[首页事实描述](../../README.md)不符。本批仅将 `pyproject.toml` 的简述改为当前可核对的 QQ 群聊、工具调用、后台工作与运营面板，不改版本号、许可证、依赖或支持承诺。离线 wheel 构建退出 0，解包 `METADATA` 显示新简述；`git diff --check` 退出 0。没有安装、运行、实发或执行仓库禁止的验证任务。公开定位、授权与发行决定仍归维护者。
+
+## 授权底稿的当前产物注记
+
+基线 `a5ad204`。[授权事实底稿](../plan/s0-04-06-license-and-support.md)固定在 2026-09-21 的核对提交，仍写当时的简述占位和整目录前端排除；为避免读者把它们误作当前源码，本批只在底稿开头加一条带日期的后续产物注记，保留原表格与行号。注记引用本页已观察到的 wheel 字体／logo、sdist 前端材料和新的包简述，不推断代码或素材可再分发，不修改授权、打包规则或发行范围。`git diff --check` 退出 0；无新构建、业务运行、测试或数据操作。
