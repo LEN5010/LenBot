@@ -1,7 +1,7 @@
 [project]
 name = "len-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "QQ group-chat bot with tool calls, background work, and an operator dashboard"
 readme = "README.md"
 authors = [
     { name = "LEN5010", email = "1649211052@qq.com" }
