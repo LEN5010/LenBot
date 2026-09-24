@@ -39,7 +39,7 @@ LenBot 使用 uv 0.12.13、项目 uv.lock，构建时不安装 dev 依赖；构�
 
 工作空间依赖变更时先在源码根目录更新 `requirements.in`，然后执行 `uv pip compile containers/workspace/requirements.in --python-version 3.13 --universal --no-header --no-annotate -o containers/workspace/requirements.txt`，复核改动版本后再构建；运行中的 worker 不在启动时解析或升级包。
 
-首个验收方向要求 Linux/amd64 与 Linux/arm64 都可构建。本机 Docker Desktop 已分别完成主镜像和 workspace worker 的两架构构建；交叉构建不代替目标主机上的正常安装、执行和回执。发布时每个架构记录自己的镜像 ID，目标主机从对应已核对镜像启动，不拿 amd64 镜像在 arm64 上的仿真执行冒充原生支持。本机使用 SnowLuma；公开兼容范围按实际 OneBot 消息协议及已选 `upload_group_file` 文件动作判读，不按 SnowLuma 的固定版本名单判读。当前配置仍要求填写所连实现报告的版本以对照当次部署，且须核对资产目录只读挂载；这个值不是支持名单，版本读取或构建不证明实际上传成功。
+首个验收方向要求 Linux/amd64 与 Linux/arm64 都可构建。本机 Docker Desktop 已分别完成主镜像和 workspace worker 的两架构构建；交叉构建不代替目标主机上的正常安装、执行和回执。发布时每个架构记录自己的镜像 ID，目标主机从对应已核对镜像启动，不拿 amd64 镜像在 arm64 上的仿真执行冒充原生支持。本机使用 SnowLuma；公开兼容范围按实际 OneBot 消息协议及已选 `upload_group_file` 文件动作判读，不按 SnowLuma 的固定版本名单判读。配置版本字段可选，若所连实现报告版本则记入当次部署材料；它不是上传前置，版本读取或构建不证明实际上传成功。资产目录只读挂载仍须核对。
 
 新部署由运营者准备目录；已有部署先停机备份，不递归重写旧数据身份：
 
@@ -113,7 +113,7 @@ docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 
 ## OneBot 文件与可选项
 
-OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。原配置按实现分别要求 NapCat 标签 `upload_group_file_data_file_id` 或 SnowLuma 标签 `upload_group_file`；标签不是不同的网络动作，当前适配器均只发送 `upload_group_file`。首个方向为 SnowLuma，不以具体版本划分公开兼容名单。根配置的版本字段仍记录当前连接实际报告的版本，用于确认运营核对的是当前实例而非旧部署；所选实现、动作合同与只读挂载核对后才置 `onebot_file_upload.deployment_verified: true`，不要求先成功上传。授权后的正常上传另以真实 `data.file_id` 确认，文本发送成功不证明上传成功。
+OneBot 仅将 file_assets 只读挂至 `/lenbot-files`。文件 0440、目录 0750；非 root OneBot 用户需组 10000 的读取权限，不开放整个数据目录解决权限。不同用户命名空间须核对真实映射。原配置按实现分别要求 NapCat 标签 `upload_group_file_data_file_id` 或 SnowLuma 标签 `upload_group_file`；标签不是不同的网络动作，当前适配器均只发送 `upload_group_file`。首个方向为 SnowLuma，不以具体版本划分公开兼容名单。根配置的版本字段可选，所报版本可记入当次材料；所选实现、动作合同与只读挂载核对后才置 `onebot_file_upload.deployment_verified: true`，不要求先成功上传。授权后的正常上传另以真实 `data.file_id` 确认，文本发送成功不证明上传成功。
 
 Core、转写、B 站账号/允许收藏夹缺失均单列“未配置/未放行”，不阻塞已确认的普通聊天。Core 首版只接带 echo 的群文字/at/图片帧；实际版本无 echo 时不能声称接通。B 站动作另需 grant 和额度，Cookie 可读不代表可写。转写保留原绑定和实际计量协议，费用未核实不填价格。
 
