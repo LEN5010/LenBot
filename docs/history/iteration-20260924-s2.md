@@ -25,3 +25,9 @@ S2 仍为 `source_window_only`；固定材料版本、跨轮原生交换与压�
 预留映射不写入本轮 `memories`／`tasks`／`loops` 可解析表：本轮偏好、工具页或当前事实重新提供对象时才登记，并由现有认识有效状态、提醒控制原值、等待活动资格及 Gate 继续判定可否操作。没有增加事实正文、跨轮权限、原生工具交换或新的表／配置。严格 Session 写入新增字段后旧程序仍有既定回退限制；本批未转换真实数据。
 
 `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q` 编译 `scenes/models.py`、`scenes/actor.py`、`cognition/context.py`、`cognition/social_core.py` 退出 0；`git diff --check` 退出 0。只说明语法与差异格式，未运行段保存／重载或同版群聊。未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实根配置／业务库、启动服务、调用模型／平台或实发。没有本批业务运行失败原文。
+
+## 原生工具回执可还原形态核对
+
+分支同上，基线 `0627e0d`。只读核对原循环、观察保存与呈现、原话范围、工作定位投影：`record_tool_result` 把工具错误导向已存观察，普通观察页的原 result_id 不包含实际分页范围；`read_message_range` 将原事件范围写入展示但不产生观察的 displayed_range；`query_jobs` 的目录不等于工作详情；暂存提案／终结回执没有 result_id，成功终结与提交后发布失败也不能靠现有部分 checkpoint 推断完整回复。Hook 改写同样不能由原观察 ID 自动重建。结论写入[会话段设计](../plan/s2-01-conversation-segment.md#回执定位不等于原生回复可还原)，没有新增持久字段或把资料正文复制到段。
+
+这次核对收窄了 S2 实现入口：先按调用 ID 确认完整组，再按实际回复形态选择既有引用与范围；不能把所有 result_id 当同一种正文页。无 result_id 的最小回执政策仍待维护者答复，固定材料版本、完整交换、压缩交接与同版正常操作均未完成。本批只改文档；没有服务、模型、平台、真实数据或仓库禁止的验证任务，也没有业务失败原文。
