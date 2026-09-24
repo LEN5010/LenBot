@@ -25,3 +25,7 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 ## 授权底稿的当前产物注记
 
 基线 `a5ad204`。[授权事实底稿](../plan/s0-04-06-license-and-support.md)固定在 2026-09-21 的核对提交，仍写当时的简述占位和整目录前端排除；为避免读者把它们误作当前源码，本批只在底稿开头加一条带日期的后续产物注记，保留原表格与行号。注记引用本页已观察到的 wheel 字体／logo、sdist 前端材料和新的包简述，不推断代码或素材可再分发，不修改授权、打包规则或发行范围。`git diff --check` 退出 0；无新构建、业务运行、测试或数据操作。
+
+## 候选包同提交构建顺序
+
+基线 `5597ec2`。原版本化流程只要求产物来自候选提交，却未明确 Git 中不保存的前端页面必须先于 sdist/wheel 构建；从无 `web/static/dist` 的干净检出直接打包可能得到缺页面的包。本批在原[贡献流程](../../CONTRIBUTING.md#从开发提交到版本发布)中补同提交前端锁文件安装、面板构建、全新目录的源码包／轮子构建及包内容复核顺序，不新增发布脚本或 CI 检查。当前工作区已有本机面板产物，以 `uv build --sdist --wheel --offline --out-dir /private/tmp/lenbot-candidate-build-review` 实际构建，命令退出 0，产生 `len_bot-0.1.0.tar.gz` 和 `len_bot-0.1.0-py3-none-any.whl`。这不是从全新检出安装依赖、不是候选提交或获准发行；未创建标签、推送或发布，也未运行测试或业务服务。`git diff --check` 退出 0。
