@@ -150,31 +150,31 @@ const interactionText=computed(()=>props.event.interaction&&props.event.interact
 </template>
 <style scoped>
 .message-item{display:flex;align-items:flex-start;gap:12px;padding:20px 4px;border-bottom:1px solid var(--line);min-width:0}
-.message-avatar{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:10px;background:#edf1f6;color:#63748b;font-size:13px;font-weight:600}
-.bot .message-avatar{background:#eaf1ff;color:#2563eb}
+.message-avatar{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:10px;background:var(--message-avatar-bg);color:var(--muted);font-size:13px;font-weight:600}
+.bot .message-avatar{background:var(--bot-avatar-bg);color:var(--primary)}
 .message-main{min-width:0;flex:1}
 .message-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;font-size:12px}
 .message-meta strong{font-size:13px;overflow-wrap:anywhere}
 .message-meta time{font-size:11px;color:var(--muted);white-space:nowrap}
 .message-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;margin:8px 0 0;font-size:14px}
 .message-text.collapsed{display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}
-.message-quote{padding:8px 12px;border-left:3px solid #ccd8e7;background:#f7f9fc;margin:12px 0;min-width:0;font-size:12px}
+.message-quote{padding:8px 12px;border-left:3px solid var(--quote-border);background:var(--quote-bg);margin:12px 0;min-width:0;font-size:12px}
 .message-quote p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
 .quote-images{display:flex;gap:8px;margin-top:8px}
 .message-images{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.image-button{border:1px solid var(--line);border-radius:8px;background:#f5f7fa;max-width:100%;cursor:pointer;padding:4px}
+.image-button{border:1px solid var(--line);border-radius:8px;background:var(--image-button-bg);max-width:100%;cursor:pointer;padding:4px}
 .image-error{display:grid;place-items:center;height:100%;font-size:12px;color:var(--muted)}
 .message-footer{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
 .attention-copy{font-size:11px;color:var(--muted)}
-.selected{background:#f2f6ff;border-radius:8px;padding-inline:12px}
-.system{background:#f7f9fb}
+.selected{background:var(--selected-bg);border-radius:8px;padding-inline:12px}
+.system{background:var(--system-message-bg)}
 .image-title{display:flex;align-items:center;justify-content:space-between}
 .original-image{display:block;max-width:100%;max-height:72vh;object-fit:contain;margin:0 auto 16px}
 .quote-images{flex-wrap:wrap}
 .quote-images .image-button{width:104px;height:104px}
 .message-images .image-button{width:188px;height:168px}
 .original-image{width:100%;height:clamp(180px,50vh,560px)}
-.image-button:focus-visible{outline:3px solid #2563eb;outline-offset:2px}
+.image-button:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
 @media(max-width:600px){
   .message-item{gap:8px;padding-block:16px}
   .message-avatar{width:28px;height:28px;border-radius:8px}

@@ -340,10 +340,10 @@ const toggleChoice=(field,value,choice)=>{
 <style scoped>
 .config-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .compound-field{grid-column:1/-1}
-.exclusive-group{grid-column:1/-1;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
+.exclusive-group{grid-column:1/-1;border:1px solid var(--line);border-radius:8px;padding:14px}
 .exclusive-title{margin:0 0 4px;font-weight:600}
 .exclusive-hint{margin:0 0 10px;font-size:13px;line-height:1.6}
-.nested-field,.list-field{grid-column:1/-1;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
+.nested-field,.list-field{grid-column:1/-1;border:1px solid var(--line);border-radius:8px;padding:14px}
 .nested-title{margin:0 0 6px;font-weight:600}
 .list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;margin-bottom:10px}
 .list-choices{display:flex;flex-wrap:wrap;gap:4px 18px;margin-bottom:6px}

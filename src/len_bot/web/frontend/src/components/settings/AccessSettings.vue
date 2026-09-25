@@ -191,7 +191,7 @@ const { accessText, grants, plugins, scopeOptions, policyOptions, referenceError
 </template>
 <style scoped>
 .form-card{max-width:1000px;width:100%}
-.grant-card{border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:18px}
+.grant-card{border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:18px}
 .grant-card h3{font-size:14px;font-weight:650;margin-bottom:12px}
 .impact-summary{border-left:3px solid rgb(var(--v-theme-primary));padding:12px 14px;margin:16px 0;background:rgb(var(--v-theme-surface-variant));max-width:1000px}
 .impact-summary p{margin:4px 0;font-size:13px;line-height:1.7}

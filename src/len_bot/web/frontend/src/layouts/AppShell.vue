@@ -199,8 +199,8 @@ async function exit(){
 .app-toolbar{border-bottom:1px solid var(--line)}
 .toolbar-title{font-size:14px;font-weight:600}
 .toolbar-status{font-size:12px;color:var(--muted)}
-.status-indicator{width:6px;height:6px;border-radius:50%;background:#bd8340;display:inline-block;margin-right:8px}
-.status-indicator.healthy{background:#16845c}
+.status-indicator{width:6px;height:6px;border-radius:50%;background:var(--status-warning);display:inline-block;margin-right:8px}
+.status-indicator.healthy{background:var(--success)}
 .mode-chip{margin-inline:16px 24px}
 .toolbar-divider{height:20px;align-self:center;margin-left:8px}
 .status-details p{margin:0 0 12px;line-height:1.6}

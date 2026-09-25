@@ -22,5 +22,5 @@ const text=computed(()=>typeof props.content==='string'?props.content:JSON.strin
 .resource-viewer{min-width:0}
 .resource-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
 .resource-title h3{font-size:15px}
-.resource-viewer pre{padding:16px;background:#f6f8fb;border:1px solid var(--line);border-radius:8px;max-height:65vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ink)}
+.resource-viewer pre{padding:16px;background:var(--code-bg);border:1px solid var(--line);border-radius:8px;max-height:65vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ink)}
 </style>

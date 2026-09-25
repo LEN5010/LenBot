@@ -1,2 +1,32 @@
-
-:root{ --ink:#172b46;--muted:#63748b;--line:#e2e8f0;--surface:#fff;--page:#f4f6f9;--primary:#2563eb;--space:8px }
+:root {
+  --ink:#172b46;
+  --muted:#63748b;
+  --line:#e2e8f0;
+  --surface:#fff;
+  --page:#f4f6f9;
+  --primary:#2563eb;
+  --space:8px;
+  /* Colors pages used to write out in their own styles; values unchanged. */
+  --text-secondary:#64748b;
+  --on-primary:#fff;
+  --success:#16845c;
+  --success-bg:#e3f3ec;
+  --warning-text:#9a5514;
+  --warning-bg:#fbeade;
+  --error-text:#b3261e;
+  --info:#326fa8;
+  --status-warning:#bd8340;
+  --status-idle:#adb8c7;
+  --chip-bg:#f2f5fa;
+  --scene-avatar-bg:#edf2fa;
+  --scene-avatar-text:#647c9b;
+  --message-avatar-bg:#edf1f6;
+  --bot-avatar-bg:#eaf1ff;
+  --quote-border:#ccd8e7;
+  --quote-bg:#f7f9fc;
+  --image-button-bg:#f5f7fa;
+  --selected-bg:#f2f6ff;
+  --system-message-bg:#f7f9fb;
+  --code-bg:#f6f8fb;
+  --list-heading-bg:#f8fafc;
+}

@@ -119,6 +119,6 @@ const { catalogs, selectedModels, catalogInvalid, orphanCatalogs, inUse, catalog
 .provider-name{min-width:0}
 .provider-url{overflow-wrap:anywhere;margin-top:8px}
 .provider-meta,.actions,.model-tags{display:flex;flex-wrap:wrap;gap:10px 16px}
-.provider-meta{font-size:13px;color:#64748b;margin:16px 0}
+.provider-meta{font-size:13px;color:var(--text-secondary);margin:16px 0}
 .model-tags .v-chip{max-width:100%;height:auto;min-height:26px;white-space:normal;overflow-wrap:anywhere}
 </style>
