@@ -17,6 +17,7 @@ from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRec
 from len_bot.scenes.models import SceneSession, ConversationSegment, SegmentSummaryRef, SegmentExchange, SegmentExchangeGap, SegmentMaterial
 from len_bot.cognition.providers import ModelProfile
 from len_bot.scenes.reducer import SceneReducer
+from len_bot.scenes.handoff import collect_handoff
 from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
 
 logger = logging.getLogger(__name__)
@@ -284,6 +285,10 @@ class SceneActor:
             else 'exchange_unrecoverable' if unrecoverable
             else 'window_trimmed' if not set(previous.event_ids).issubset(command.event_ids) or exchanges_trimmed
             else None)
+        # Content leaving the segment hands its unfinished items to the next
+        # request by fixed rules; nothing here closes, cancels or spends them.
+        handoff = await collect_handoff(self.event_store, self.session, previous, command.event_ids, exchanges,
+            bot_actor_id=self.bot_actor_id, now=self.event_store.clock(), cutoff=command.through_rowid)
         segment = ConversationSegment(
             id=f'segment:{uuid.uuid4().hex}' if reason else previous.id,
             previous_id=previous.id if reason and previous else previous.previous_id if previous else None,
@@ -294,7 +299,7 @@ class SceneActor:
             result_aliases=command.result_aliases,job_aliases=command.job_aliases,
             memory_aliases=command.memory_aliases,task_aliases=command.task_aliases,
             loop_aliases=command.loop_aliases,ordered_items=exchanges,exchange_gap=gap,materials=materials,
-            material_changes=changes if reason else previous.material_changes)
+            material_changes=changes if reason else previous.material_changes, handoff=handoff)
         await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
             segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
         self.session.conversation_segment = segment

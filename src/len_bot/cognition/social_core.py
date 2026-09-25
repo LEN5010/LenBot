@@ -149,6 +149,9 @@ class SocialCognitionCore:
         exchange_gap=None
         request_cutoff=None
         last_definitions=None
+        # Unfinished items the latest saved segment handed off; shown with
+        # their current state before each request, one request behind a save.
+        handoff=list(previous_segment.handoff) if previous_segment is not None else []
         # Read-tool exhaustion closes reads, not a still-budgeted follow-up or wait.
         # An unlimited count has no remaining number to report; the ledger then
         # keeps offering its full action set and the deadline or the account's
@@ -323,7 +326,7 @@ class SocialCognitionCore:
             return values,materials
 
         async def save_state(trajectory,definitions):
-            nonlocal segment_id,exchange_gap
+            nonlocal segment_id,exchange_gap,handoff
             window_ids=[message['_source_event_id'] for message in trajectory
                 if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
             summary_refs=[dict(ref) for message in trajectory
@@ -352,11 +355,13 @@ class SocialCognitionCore:
                     reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
                 basis=basis,materials=materials)
             segment_id=segment.id
+            handoff=list(segment.handoff)
             context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
                 'reason':segment.reason,'through_rowid':segment.through_rowid,
                 'window_events':len(segment.event_ids),'summary_batches':len(segment.summary_refs),
                 'native_exchanges':len(segment.ordered_items),'exchange_gap':exchange_gap,
                 'exchange_break':exchange_break,'material_changes':list(segment.material_changes),
+                'handoff_items':len(segment.handoff),
                 'unversioned_materials':[item.item for item in segment.materials if item.basis!='source_revision'],
                 'continuity':'native_exchanges' if segment.ordered_items else 'source_window_only'}
             audit['context_plan']=copy.deepcopy(context.context_plan)
@@ -384,6 +389,8 @@ class SocialCognitionCore:
             if not plugin_request or plugin_request.input_mode=='conversation':
                 await context.install_preferences(trajectory)
             await context.refresh_segment_result_locators(trajectory,toolkit)
+            if save_segment is not None:
+                await context.install_segment_handoff(trajectory,handoff)
             await toolkit.invalidate_saved_references(trajectory)
             await toolkit.invalidate_result_references()
             tokens=context.fit_request(trajectory,definitions,phase='before_model')
