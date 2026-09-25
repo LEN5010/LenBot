@@ -9,23 +9,20 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
 import ScopeSelect from '../components/ScopeSelect.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
-import CacheUsageSummary from '../components/CacheUsageSummary.vue'
-import ObservationDetails from '../components/ObservationDetails.vue'
-import OperationReceipts from '../components/OperationReceipts.vue'
-import PluginWorkDetails from '../components/PluginWorkDetails.vue'
 import PluginConfigFields from '../components/PluginConfigFields.vue'
 import {configValue} from '../lib/pluginConfig.js'
 import { hasConfigDraftChanges } from '../lib/configDraft.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
-import { withReturn } from '../router/navigation.js'
-import AnswerBasisDetails from '../components/AnswerBasisDetails.vue'
-import FileAssetsPanel from '../components/FileAssetsPanel.vue'
-import ExecutionDetails from '../components/ExecutionDetails.vue'
-import { purposeLabel } from '../domain/activity.js'
+import JobBudgetTab from '../components/jobs/JobBudgetTab.vue'
+import JobProgressTab from '../components/jobs/JobProgressTab.vue'
+import JobRecordsTab from '../components/jobs/JobRecordsTab.vue'
+import JobResultTab from '../components/jobs/JobResultTab.vue'
+import { useJobProgress } from '../components/jobs/useJobProgress.js'
+import { useJobRecords } from '../components/jobs/useJobRecords.js'
+import { useJobUsage } from '../components/jobs/useJobUsage.js'
 
 const route = useRoute(), router = useRouter()
 const scalar = value => typeof value === 'string' ? value : ''
-const limitText = value => value === undefined ? '未记录' : value === null ? '不设限' : value.toLocaleString()
 const jobId = computed(() => scalar(route.params.jobId))
 const page = computed(() => Math.max(1, Number(route.query.page) || 1))
 const tab = computed(() => ['result', 'progress', 'budget', 'records'].includes(route.query.tab) ? route.query.tab : 'result')
@@ -42,30 +39,7 @@ const job = ref(null),
   detailError = ref(''),
   detailMissing = ref(false),
   detailReadAt = ref(null)
-const workBudget = computed(() => job.value?.budget.work_snapshot)
 const imageErrors=ref(new Set())
-const preparedImages=computed(()=>(job.value?.result?.delivery?.segments || []).filter(segment=>segment.type==='image'))
-const imageUrl=id=>`/api/media/${encodeURIComponent(id)}/file?scene_id=${encodeURIComponent(job.value.scene_id)}`
-const artifactDownloadUrl=artifact=>`/api/cockpit/jobs/${encodeURIComponent(job.value.id)}/workspace-artifact/download?` + new URLSearchParams({
-  scene_id: job.value.scene_id,
-  path: artifact.path,
-  ...(workspaceArtifacts.value?.execution_id?{execution_id:workspaceArtifacts.value.execution_id}:{})
-})
-const records = ref(null), recordsLoading = ref(false), recordsError = ref('')
-const resource = ref(null),
-  resourceText = ref(''),
-  resourceLoading = ref(false),
-  resourceError = ref('')
-const workspaceArtifacts = ref(null),
-  workspaceArtifactsLoading = ref(false),
-  workspaceArtifactsError = ref('')
-const workspaceFile = ref(null), workspaceFileLoading = ref(false), workspaceFileError = ref('')
-const workspaceFileTarget = ref(null)
-const usage = ref(null),
-  usageLoading = ref(false),
-  usageError = ref(''),
-  usageReadAt = ref(null),
-  usagePage = ref(1)
 const editing = ref(false),
   draft = ref({ goal: '', constraints: '', parameters:{} }),
   baseline = ref(null),
@@ -73,12 +47,17 @@ const editing = ref(false),
 const confirmation = ref(null), saving = ref(false), actionError = ref(''), feedback = ref('')
 const pendingControl=ref(null), controlReadAt=ref(null), controlReceipt=ref(null)
 let listRequest = 0,
-  detailRequest = 0,
-  recordsRequest = 0,
-  resourceRequest = 0,
-  artifactsRequest = 0,
-  fileRequest = 0,
-  usageRequest = 0
+  detailRequest = 0
+// Tab state is created here so it outlives tab switches; the page still
+// decides when a job version's related state is loaded or reset.
+const tabContext = {job, jobId, route, scalar, sameJob}
+const progressTab = useJobProgress(tabContext)
+const usageTab = useJobUsage(tabContext)
+const recordsTab = useJobRecords(tabContext)
+const { resource, loadWorkspaceArtifacts, loadResource, resetProgress, dropResource } = progressTab
+const { usage, usagePage, loadUsage, resetUsage } = usageTab
+const { records, loadRecords, resetRecords } = recordsTab
+const shared = {job, jobId, route, scalar, imageErrors, openResource, clearFileFocus}
 const actionGuard = useRequestGuard(() => JSON.stringify([route.name, jobId.value, route.query.scene]))
 const clone = value => JSON.parse(JSON.stringify(value))
 const constraintLines = value => [...new Set(value.split('\n').map(item=>item.trim()).filter(Boolean))]
@@ -98,23 +77,6 @@ const dirty = computed(() => {
 })
 const { confirmLeave } = useUnsavedChanges(dirty)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const deliveryExplanation = computed(() => job.value?.delivery_required === false
-  ? '这是已有公共研究来源与系统发起身份的工作，不走群内首次交付。执行完成只表示结果已保存；之后各群是否分享及其真实回执另行记录。'
-  : ({
-  result_ready: job.value?.result?.delivery ? '当前版本的成品已经保存，待通过工作交付；图片不会交给对话模型重新改写。' : '当前版本的执行结果已经保存，正在等待组织首次回应。',
-  awaiting_delivery: '当前版本的结果已关联表达行动，正在等待真实发送回执。',
-  completed: '已记录此工作的交付完成状态，具体送达以关联回执为准。',
-  delivery_unknown: '发送结果未知，需要核对原发送回执；已有研究结果仍然保留。',
-  failed: job.value?.result ? '工作保留了执行结果，当前发送没有确认送达。' : '当前工作失败，已保存进度与原因可在本页回查。',
-  review_required: '执行已中断，进度和已用预算保留；恢复前需核对当前版本和中断原因。',
-  shadow_observed: '本次仅保存了 Shadow 表达，没有真实群聊送达回执。',
-  cancelled: '工作已停止，已有资料和历史记录保留。',
-}[job.value?.status] || '当前还没有保存首次交付结果。'))
-const rangeUnit = unit => ({ characters: '字符', records: '记录' }[unit] || unit)
-const spanLabel = span => `${span.start}–${span.end} ${rangeUnit(span.coordinate_unit)}`
-const rangesLabel = ranges => ranges.map(([start,end])=>`${start}–${end}`).join('、') || '没有记录采用范围'
-const jobOperations = computed(() => (records.value?.operation_receipts || []).filter(item => item.kind==='work' && item.target_id===jobId.value))
-const jobActions = computed(() => (records.value?.actions || []).filter(action => action.job_id === jobId.value || action.acknowledges_task_id === jobId.value || action.fulfils_task_id === jobId.value || action.operation_receipt?.kind==='work' && action.operation_receipt.target_id===jobId.value || [job.value?.ack_action_id,job.value?.delivery_action_id].includes(action.id)))
 const executionOptions = [
   { title: '全部执行状态', value: '' },
   { title: '尚未开始', value: 'pending' },
@@ -138,38 +100,13 @@ const deliveryOptions = [
   { title: '仅观察', value: 'shadow_observed' },
   { title: '已取消', value: 'cancelled' }
 ]
-const hasPresentedBody = observation => Object.values(observation.provided_ranges).some(read => read.ranges.some(([start,end]) => end > start))
 function sameJob(current) {
   return jobId.value === current.id && job.value?.id === current.id && job.value?.scene_id === current.scene_id && job.value?.revision === current.revision
 }
-function resetWorkspaceFile() {
-  ++fileRequest;
-  workspaceFile.value = null;
-  workspaceFileTarget.value = null;
-  workspaceFileLoading.value = false;
-  workspaceFileError.value = ''
-}
 function resetRelated() {
-  ++recordsRequest;
-  ++resourceRequest;
-  ++artifactsRequest;
-  ++usageRequest
-  records.value = null;
-  recordsLoading.value = false;
-  recordsError.value = ''
-  resource.value = null;
-  resourceText.value = '';
-  resourceLoading.value = false;
-  resourceError.value = ''
-  workspaceArtifacts.value = null;
-  workspaceArtifactsLoading.value = false;
-  workspaceArtifactsError.value = '';
-  resetWorkspaceFile()
-  usage.value = null;
-  usageLoading.value = false;
-  usageError.value = '';
-  usageReadAt.value = null;
-  usagePage.value = 1
+  resetRecords()
+  resetProgress()
+  resetUsage()
 }
 function cleanQuery(values) {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined))
@@ -288,121 +225,12 @@ async function loadJob({ reset = false, accept = () => true } = {}) {
     if (fresh()) detailLoading.value = false
   }
 }
-async function loadWorkspaceArtifacts() {
-  if (!job.value) return
-  const current = job.value, request = ++artifactsRequest
-  workspaceArtifactsLoading.value = true;
-  workspaceArtifactsError.value = ''
-  try {
-    const value = await api(`/api/cockpit/jobs/${encodeURIComponent(current.id)}/workspace-artifacts?scene_id=${encodeURIComponent(current.scene_id)}`)
-    if (request !== artifactsRequest || !sameJob(current)) return
-    if (workspaceArtifacts.value?.execution_id !== value.execution_id) resetWorkspaceFile()
-    workspaceArtifacts.value = value
-  } catch (error) {
-    if (request !== artifactsRequest || !sameJob(current)) return
-    workspaceArtifacts.value = null;
-    resetWorkspaceFile()
-    if (error.status !== 404) workspaceArtifactsError.value = error.message
-  } finally {
-    if (request === artifactsRequest) workspaceArtifactsLoading.value = false
-  }
-}
-async function loadWorkspaceArtifact(path, offset = 0) {
-  if (!job.value || !workspaceArtifacts.value) return
-  const current = job.value
-  const executionId = workspaceArtifacts.value.execution_id
-  const previous = workspaceFile.value
-  if (offset && (workspaceFileTarget.value?.path !== path || workspaceFileTarget.value?.executionId !== executionId || previous?.next_offset !== offset)) return
-  const request = ++fileRequest
-  if (!offset) workspaceFile.value = null
-  workspaceFileTarget.value = { path, executionId }
-  workspaceFileLoading.value = true;
-  workspaceFileError.value = ''
-  try {
-    const value = await api(`/api/cockpit/jobs/${encodeURIComponent(current.id)}/workspace-artifact?` + new URLSearchParams({
-      scene_id: current.scene_id,
-      path,
-      offset,
-      ...(executionId?{execution_id:executionId}:{})
-    }))
-    if (request !== fileRequest || !sameJob(current)) return
-    if (value.execution_id !== executionId) {
-      workspaceFileError.value = '产物快照已变化，本次内容未合并。请刷新工作目录后重新选择文件。'
-      return
-    }
-    workspaceFile.value = offset && executionId ? { ...value, content: previous.content + value.content } : value
-  } catch (error) {
-    if (request === fileRequest && sameJob(current)) workspaceFileError.value = error.message
-  }
-  finally {
-    if (request === fileRequest) workspaceFileLoading.value = false
-  }
-}
-async function loadUsage(page = 1) {
-  if (!job.value) return
-  const current = job.value, request = ++usageRequest
-  usageLoading.value = true;
-  usageError.value = ''
-  try {
-    const value = await api('/api/models/usage?' + new URLSearchParams({ scene_id: current.scene_id, job_id: current.id, page, page_size: 20 }))
-    if (request !== usageRequest || !sameJob(current)) return
-    usage.value = value;
-    usagePage.value = value.page;
-    usageReadAt.value = Date.now()/1000
-  } catch (error) {
-    if (request === usageRequest && sameJob(current)) usageError.value = error.message
-  }
-  finally {
-    if (request === usageRequest) usageLoading.value = false
-  }
-}
-async function loadRecords() {
-  if (!job.value) return
-  const current = job.value, request = ++recordsRequest
-  recordsLoading.value = true;
-  recordsError.value = ''
-  try {
-    const value = await api('/api/cockpit/relations?' + new URLSearchParams({ scene_id: current.scene_id, job_id: current.id }))
-    if (request === recordsRequest && sameJob(current)) records.value = value
-  } catch (error) {
-    if (request === recordsRequest && sameJob(current)) recordsError.value = error.message
-  }
-  finally {
-    if (request === recordsRequest) recordsLoading.value = false
-  }
-}
 function openResource(id) {
   router.replace({
     name: 'job',
     params: { jobId: jobId.value },
     query: { ...route.query, tab: 'progress', resource: id }
   })
-}
-async function loadResource(id, offset = 0) {
-  if (!job.value) return
-  const current = job.value, request = ++resourceRequest
-  resourceLoading.value = true;
-  resourceError.value = ''
-  if (!offset) {
-    resource.value = null;
-    resourceText.value = ''
-  }
-  if (!current.result_ids.includes(id)) {
-    resourceError.value = '该资料没有关联到当前工作。';
-    resourceLoading.value = false;
-    return
-  }
-  try {
-    const value = await api(`/api/cockpit/tool-results/${encodeURIComponent(id)}?` + new URLSearchParams({ scene_id: current.scene_id, offset }))
-    if (request !== resourceRequest || current.id !== jobId.value || scalar(route.query.resource) !== id) return
-    resource.value = value;
-    resourceText.value = offset ? resourceText.value + value.content : value.content
-  } catch (error) {
-    if (request === resourceRequest) resourceError.value = error.message
-  }
-  finally {
-    if (request === resourceRequest) resourceLoading.value = false
-  }
 }
 function currentBaseline() {
   return { id:job.value.id, scene:job.value.scene_id, revision:job.value.revision, goal:job.value.goal, constraints:[...job.value.constraints],
@@ -656,11 +484,7 @@ watch(tab, value => {
   if (value === 'budget' && job.value && !usage.value) loadUsage()
 })
 watch(() => route.query.resource, value => {
-  if (value && job.value) loadResource(scalar(value)); else {
-    ++resourceRequest;
-    resource.value = null;
-    resourceText.value = ''
-  }
+  if (value && job.value) loadResource(scalar(value)); else dropResource()
 })
 </script>
 
@@ -965,620 +789,10 @@ watch(() => route.query.resource, value => {
             <v-tab value="budget">预算与压缩</v-tab>
             <v-tab value="records">执行记录</v-tab>
           </v-tabs>
-          <v-card-text v-if="tab === 'result'" class="detail-body">
-            <section v-if="job.resume_from">
-              <h3>本版继续自 v{{ job.resume_from.revision }}</h3>
-              <p>原版交付状态：{{ job.resume_from.response_status }}。旧版结果与已用预算保留。</p>
-              <EntityLink
-                v-if="job.resume_from.delivery_event_id"
-                type="event"
-                :id="job.resume_from.delivery_event_id"
-                :scene-id="job.scene_id"
-                label="查看原版交付回执"
-              />
-              <ResourceViewer title="原版结果与未完成项" :content="job.resume_from.result" />
-            </section>
-            <h3>{{ job.delivery_required === false ? '结果保存与后续分享' : '当前版本首次交付' }}</h3>
-            <p>{{ deliveryExplanation }}</p>
-            <dl v-if="job.delivery_required !== false" class="summary-facts">
-              <dt>创建确认行动</dt>
-              <dd>
-                <code v-if="job.ack_action_id">{{ job.ack_action_id }}</code>
-                <span v-else class="muted-copy">未保存确认行动引用</span>
-              </dd>
-              <dt>结果交付行动</dt>
-              <dd>
-                <code v-if="job.delivery_action_id">{{ job.delivery_action_id }}</code>
-                <span v-else class="muted-copy">未保存交付行动引用</span>
-              </dd>
-              <dt>结果送达回执</dt>
-              <dd>
-                <EntityLink
-                  v-if="job.delivery_event_id"
-                  type="event"
-                  :id="job.delivery_event_id"
-                  :scene-id="job.scene_id"
-                  label="读取此工作版本的结果发送回执"
-                />
-                <span v-else class="muted-copy">未保存结果回执引用</span>
-              </dd>
-            </dl>
-            <PluginWorkDetails :job="job" />
-            <section v-if="job.result?.delivery">
-              <h3>已生成的交付成品</h3>
-              <p class="muted-copy">这里显示保存的成品。发送失败或送达未知时仍可查看，实际交付见上方回执。</p>
-              <EntityLink
-                type="result"
-                :id="job.result.delivery.result_id"
-                :scene-id="job.scene_id"
-                label="成品结构化资料与来源"
-              />
-              <div v-for="segment in preparedImages" :key="segment.asset_id" class="prepared-image">
-                <v-alert v-if="imageErrors.has(segment.asset_id)" type="warning" variant="tonal">此图片目前不可读取，已保存的报告资料仍可回查。</v-alert>
-                <a v-else :href="imageUrl(segment.asset_id)" target="_blank" rel="noopener">
-                  <img
-                    :src="imageUrl(segment.asset_id)"
-                    alt="已生成的工作报告，点击查看完整图片"
-                    @error="imageErrors.add(segment.asset_id)"
-                  />
-                </a>
-                <EntityLink
-                  type="media"
-                  :id="segment.asset_id"
-                  :scene-id="job.scene_id"
-                  label="图片资产与来源"
-                />
-              </div>
-            </section>
-            <template v-if="job.result">
-              <h3>当前版本执行结果</h3>
-              <ResourceViewer title="完整结果" :content="job.result.summary" />
-              <h3 v-if="job.result.unresolved.length">尚未解决</h3>
-              <ul v-if="job.result.unresolved.length">
-                <li v-for="(item, index) in job.result.unresolved" :key="index">{{ item }}</li>
-              </ul>
-            </template>
-            <v-alert v-else type="info" variant="tonal">尚无已保存的执行结果。</v-alert>
-            <p v-if="job.result?.reason" class="readable-copy">结果或中断原因：{{ job.result.reason }}</p>
-            <template v-if="job.result?.evidence_spans?.length">
-              <h3>结论关联的资料范围</h3>
-              <ul>
-                <li v-for="(span,index) in job.result.evidence_spans" :key="index">
-                  <EntityLink
-                    type="result"
-                    :id="span.result_id"
-                    :scene-id="job.scene_id"
-                    :span="span"
-                    label="回读结论引用范围"
-                  />
-                  <span>{{ spanLabel(span) }}（起含止不含）</span>
-                </li>
-              </ul>
-            </template>
-            <ResourceViewer
-              v-if="job.result?.work_state && !job.work_state"
-              title="形成此结果时保存的进度"
-              :content="job.result.work_state"
-            />
-            <h3>当前要求</h3>
-            <ul v-if="job.constraints.length">
-              <li v-for="(item, index) in job.constraints" :key="index">{{ item }}</li>
-            </ul>
-            <p v-else class="muted-copy">没有附加要求。</p>
-            <h3>已保存的来源与修订原话</h3>
-            <p class="muted-copy">以下是工作的资料来源集合；请求者与唯一请求原话单独显示在页首。</p>
-            <div class="link-list">
-              <EntityLink
-                v-for="id in job.source_event_ids"
-                :key="id"
-                type="event"
-                :id="id"
-                :scene-id="job.scene_id"
-              />
-            </div>
-          </v-card-text>
-          <v-card-text v-else-if="tab === 'progress'" class="detail-body">
-            <FileAssetsPanel
-              :files="job.file_assets || []"
-              :scene-id="job.scene_id"
-              :job-id="job.id"
-              :focus-id="scalar(route.query.file)"
-              @clear-focus="clearFileFocus"
-            />
-            <PluginWorkDetails :job="job" />
-            <template v-if="job.work_state">
-              <div class="status-line">
-                <h3>已保存进度 · 目标版本 {{ job.work_state.goal_revision }}</h3>
-                <v-chip
-                  v-if="job.work_state.goal_revision !== job.revision"
-                  color="warning"
-                  variant="tonal"
-                >旧目标进度，需重新核对</v-chip>
-              </div>
-              <h4>计划</h4>
-              <ol><li v-for="(item, index) in job.work_state.plan" :key="index">{{ item }}</li></ol>
-              <h4>已完成步骤与依据</h4>
-              <ul>
-                <li v-for="(step, index) in job.work_state.completed_steps" :key="index">
-                  {{ step.step }}<div class="action-row">
-                    <v-btn
-                      v-for="id in step.result_ids"
-                      :key="id"
-                      size="small"
-                      variant="text"
-                      @click="openResource(id)"
-                    >原始资料 · {{ id.slice(0, 10) }}
-                    </v-btn>
-                  </div>
-                  <div
-                    v-for="(span,spanIndex) in step.evidence_spans || []"
-                    :key="spanIndex"
-                    class="evidence-range"
-                  >
-                    <EntityLink
-                      type="result"
-                      :id="span.result_id"
-                      :scene-id="job.scene_id"
-                      :span="span"
-                      label="回读进度引用范围"
-                    />
-                    <span>{{ spanLabel(span) }}（起含止不含）</span>
-                  </div>
-                </li>
-              </ul>
-              <h4>待解决</h4>
-              <ul>
-                <li v-for="(item, index) in job.work_state.unresolved" :key="index">{{ item }}</li>
-              </ul>
-              <p>下一步：{{ job.work_state.next_step || '尚未提供' }}</p>
-              <template v-if="job.work_state.evidence_spans?.length">
-                <h4>进度依据的具体范围</h4>
-                <div
-                  v-for="(span,index) in job.work_state.evidence_spans"
-                  :key="index"
-                  class="evidence-range"
-                >
-                  <EntityLink
-                    type="result"
-                    :id="span.result_id"
-                    :scene-id="job.scene_id"
-                    :span="span"
-                    label="回读进度引用范围"
-                  />
-                  <span>{{ spanLabel(span) }}</span>
-                </div>
-              </template>
-            </template>
-            <p v-else-if="!job.work_progress" class="muted-copy">尚无已保存的进度。</p>
-            <h3>实际呈现范围</h3>
-            <p class="muted-copy">这里只展示已写入工作的呈现记录。取得资料、引用资料或打开面板都不等于模型看过正文或图像。</p>
-            <ResourceViewer title="正文范围与图像呈现事实" :content="job.observation_reads" />
-            <h3>已取得的原始工具资料</h3>
-            <div class="action-row">
-              <v-btn
-                v-for="id in job.result_ids"
-                :key="id"
-                variant="outlined"
-                :aria-label="'读取原始资料 ' + id"
-                @click="openResource(id)"
-              >资料 · {{ id.slice(0, 10) }}
-              </v-btn>
-              <p v-if="!job.result_ids.length" class="muted-copy">尚未取得资料。</p>
-            </div>
-            <h4>此工作实际提供给模型的范围</h4>
-            <p class="muted-copy">范围保留实际坐标单位，可以包含工作既有版本的阅读；正文保存本身不表示模型已读。</p>
-            <article
-              v-for="(units,id) in job.observation_reads || {}"
-              :key="id"
-              class="adopted-range"
-            >
-              <v-btn variant="text" size="small" @click="openResource(id)">资料 {{ id.slice(0,10) }}
-              </v-btn>
-              <div v-for="(read,unit) in units" :key="unit">
-                <p>
-                  {{ rangesLabel(read.ranges) }} / {{ read.total }}
-                  {{ rangeUnit(unit) }}（起含止不含）</p>
-                <div class="action-row">
-                  <EntityLink
-                    v-for="(range,index) in read.ranges"
-                    :key="index"
-                    type="result"
-                    :id="id"
-                    :scene-id="job.scene_id"
-                    :span="{start:range[0],end:range[1],coordinate_unit:unit}"
-                    :label="`回读 [${range[0]}, ${range[1]}) ${rangeUnit(unit)}`"
-                  />
-                </div>
-              </div>
-            </article>
-            <p v-if="!Object.keys(job.observation_reads || {}).length" class="muted-copy">尚未保存实际采用范围，不能从资料数量推定完整读取。</p>
-            <ResourceViewer
-              v-if="route.query.resource"
-              title="原始工具资料"
-              :content="resourceText"
-              :loading="resourceLoading"
-              :error="resourceError"
-            />
-            <div v-if="resource" class="resource-meta">
-              <ObservationDetails :observation="resource" :scene-id="job.scene_id" />
-              <v-btn
-                v-if="resource.next_offset !== null && resource.next_offset !== undefined"
-                :loading="resourceLoading"
-                :disabled="resourceLoading"
-                variant="outlined"
-                class="mt-4"
-                @click="loadResource(scalar(route.query.resource), resource.next_offset)"
-              >继续读取已保存正文</v-btn>
-            </div>
-            <section v-if="job.platform_actions?.length" class="workspace-artifacts">
-              <h3>平台动作回执</h3>
-              <p class="muted-copy">账号写入与 QQ 消息交付分别记录。未知结果保留额度并阻止同资源再次写入；状态核对只证明当时状态，不证明未知请求的执行过程。</p>
-              <div
-                v-for="action in job.platform_actions"
-                :key="action.action_id"
-                class="workspace-artifact"
-              >
-                <div>
-                  <strong>
-                    {{ {bilibili_like:'点赞',bilibili_favorite:'收藏'}[action.action_type] || action.action_type }} · av{{ action.resource_id }} · 目标 {{ action.desired_state === true ? '设置' : action.desired_state === false ? '取消' : '未记录' }}
-                  </strong>
-                  <span>账号 {{ action.account_uid }} · {{ action.collection_id ? `收藏夹 ${action.collection_id} · ` : '' }}修订 {{ action.job_revision }}
-                  </span>
-                  <span>
-                    <StatusBadge domain="platform_action" :status="action.status" /> · {{ action.reason }}
-                  </span>
-                  <span>
-                    {{ action.attempted_at != null ? `尝试于 ${fmtTime(action.attempted_at)}` : '没有登记写入尝试' }} · {{ action.action_id }}
-                  </span>
-                  <span>此动作记录更新于 {{ fmtTime(action.updated_at) }}；不是当前平台状态实时查询。</span>
-                  <p v-if="action.receipt_note">{{ action.receipt_note }}</p>
-                </div>
-              </div>
-            </section>
-            <section
-              v-if="workspaceArtifacts || workspaceArtifactsLoading || workspaceArtifactsError"
-              class="workspace-artifacts"
-            >
-              <div class="action-row">
-                <h3>Python 工作空间产物</h3>
-                <v-btn
-                  variant="text"
-                  size="small"
-                  :loading="workspaceArtifactsLoading"
-                  @click="loadWorkspaceArtifacts"
-                >刷新目录</v-btn>
-              </div>
-              <v-progress-linear v-if="workspaceArtifactsLoading" indeterminate />
-              <v-alert v-if="workspaceArtifactsError" type="error" variant="tonal">
-                {{ workspaceArtifactsError }}
-              </v-alert>
-              <template v-if="workspaceArtifacts">
-                <p v-if="workspaceArtifacts.execution_id" class="muted-copy">这些文件属于最近一次 Python 执行的已确认快照（{{ workspaceArtifacts.execution_id }}，工作 v{{ workspaceArtifacts.job_revision ?? '未记录' }}），不是浏览器或媒体执行目录。历史读取继续绑定此执行身份；读取不会执行或发送文件。</p>
-                <p v-else class="muted-copy">这是宿主 worker 当前目录，不是按执行保存的不可变快照。后续运行可能改变文件；文本逐页显示、不跨页拼接，不接受 Gateway 历史执行 ID。</p>
-                <p v-if="workspaceArtifacts.sampled_at" class="muted-copy">目录读取于 {{ fmtTime(workspaceArtifacts.sampled_at) }}
-                </p>
-                <v-alert
-                  v-if="workspaceArtifacts.truncated"
-                  type="warning"
-                  variant="tonal"
-                  density="compact"
-                >清单按产物数量上限标记为截断（{{ workspaceArtifacts.truncated_reason === 'artifact_cap' ? '达到产物上限' : '原因未标注' }}），不能据此确认完整目录。</v-alert>
-                <div
-                  v-for="artifact in workspaceArtifacts.artifacts || []"
-                  :key="artifact.path"
-                  class="workspace-artifact"
-                >
-                  <div>
-                    <strong>{{ artifact.path }}</strong>
-                    <span class="muted-copy">
-                      {{ artifact.size_bytes }} 字节 · {{ artifact.media_type }}
-                    </span>
-                    <v-alert
-                      v-if="artifact.over_limit"
-                      type="warning"
-                      variant="tonal"
-                      density="compact"
-                    >此文件超过当前产物上限，已保留记录但不能读取或登记媒体。</v-alert>
-                  </div>
-                  <div class="action-row">
-                    <v-btn
-                      size="small"
-                      variant="outlined"
-                      :disabled="artifact.over_limit"
-                      :loading="workspaceFileLoading && workspaceFileTarget?.path === artifact.path"
-                      @click="loadWorkspaceArtifact(artifact.path)"
-                    >读取文本</v-btn>
-                    <a
-                      v-if="!artifact.over_limit"
-                      class="v-btn v-btn--size-small v-btn--variant-text"
-                      :href="artifactDownloadUrl(artifact)"
-                      target="_blank"
-                      rel="noopener"
-                    >下载原文件</a>
-                  </div>
-                </div>
-                <p v-if="!workspaceArtifacts.artifacts?.length" class="muted-copy">此次已读取的目录没有列出普通文件产物。</p>
-              </template>
-              <p v-if="workspaceFile && !workspaceFileTarget?.executionId" class="muted-copy">当前页起始字符 {{ workspaceFile.offset }} · 本页 {{ workspaceFile.content.length }} 字符；未与前页合并，目录可能在两次读取间变化。</p>
-              <ResourceViewer
-                v-if="workspaceFileTarget"
-                :title="'工作产物 · ' + workspaceFileTarget.path"
-                :content="workspaceFile?.content"
-                :loading="workspaceFileLoading"
-                :error="workspaceFileError"
-              />
-              <v-btn
-                v-if="workspaceFile?.next_offset !== null && workspaceFile?.next_offset !== undefined"
-                variant="outlined"
-                size="small"
-                :loading="workspaceFileLoading"
-                :disabled="workspaceFileLoading"
-                @click="loadWorkspaceArtifact(workspaceFileTarget.path, workspaceFile.next_offset)"
-              >
-                {{ workspaceFileTarget.executionId ? '继续读取同一快照' : '读取当前文件下一页' }}
-              </v-btn>
-            </section>
-            <h3>固定的方法版本与正文提供记录</h3>
-            <p class="muted-copy">固定版本、取得正文、实际提供是三个不同事实；均不证明已正确使用或学会。范围可来自本工作既有目标版本。</p>
-            <article
-              v-for="method in job.method_reads || []"
-              :key="method.skill_id"
-              class="adopted-range"
-            >
-              <EntityLink
-                type="skill"
-                :id="method.skill_id"
-                :scene-id="job.scene_id"
-                :version="method.version"
-                :label="method.skill_id + ' · v' + method.version"
-              />
-              <p v-if="!method.observations.length" class="muted-copy">版本已固定；本工作未关联到该版本的成功正文记录，不能推定已读。</p>
-              <div v-for="observation in method.observations" :key="observation.result_id">
-                <EntityLink
-                  type="result"
-                  :id="observation.result_id"
-                  :scene-id="job.scene_id"
-                  label="查看当时取得的方法正文"
-                />
-                <p v-if="!hasPresentedBody(observation)" class="muted-copy">正文已保存，尚无非空的实际提供范围。</p>
-                <div v-for="(read,unit) in observation.provided_ranges" :key="unit">
-                  <p>已提供 {{ rangesLabel(read.ranges) }} / {{ read.total }}
-                    {{ rangeUnit(unit) }}（起含止不含）</p>
-                  <div class="action-row">
-                    <EntityLink
-                      v-for="(range,index) in read.ranges"
-                      :key="index"
-                      type="result"
-                      :id="observation.result_id"
-                      :scene-id="job.scene_id"
-                      :span="{ start:range[0], end:range[1], coordinate_unit:unit }"
-                      :label="`回读 [${range[0]}, ${range[1]}) ${rangeUnit(unit)}`"
-                    />
-                  </div>
-                </div>
-              </div>
-            </article>
-            <p v-if="!Object.keys(job.skill_versions).length" class="muted-copy">本工作没有固定的方法版本。</p>
-          </v-card-text>
-          <v-card-text v-else-if="tab === 'budget'" class="detail-body">
-            <h3>本工作累计用量与原上限</h3>
-            <v-alert v-if="!workBudget" type="info" variant="tonal">
-              {{ job.budget.work_snapshot_note }}
-            </v-alert>
-            <div class="budget-grid">
-              <div>
-                <span>模型额度计次 / 原次数上限</span>
-                <strong>
-                  {{ job.model_steps }} / {{ limitText(workBudget?.max_model_steps) }}
-                </strong>
-              </div>
-              <div>
-                <span>工具累计计次 / 原次数上限</span>
-                <strong>{{ job.tool_calls }} / {{ limitText(workBudget?.max_tool_calls) }}</strong>
-              </div>
-              <div><span>累计活动时长</span><strong>{{ job.elapsed_seconds.toFixed(1) }} 秒</strong></div>
-            </div>
-            <p>原时间窗口：{{ limitText(workBudget?.max_seconds) }} 秒；绝对期限：{{ workBudget?.deadline_at ? fmtTime(workBudget.deadline_at) : '未记录' }}。</p>
-            <p>累计 token 上限：{{ limitText(workBudget?.token_limit) }}。</p>
-            <p class="muted-copy">修订、暂停和恢复不重置累计账。有绝对期限时，等待和停机也计入窗口，不能用累计活动时长推算剩余时间。计次是准入账，不等于成功返回的请求数；实际请求见下方调用账。不设限仅指已明确记录为 null 的次数或 token 维度，不是免费或无限执行。</p>
-            <details class="section-gap">
-              <summary>原预算快照与账户记录</summary>
-              <ResourceViewer
-                title="本工作创建时的预算快照"
-                :content="workBudget || job.budget.work_snapshot_note"
-              />
-              <ResourceViewer title="本工作账户预占与结算" :content="job.reservation || '未记录'" />
-            </details>
-            <h3>归属本工作的完整调用账</h3>
-            <p class="muted-copy">按 job_id 读取所有目标版本，不受“执行记录”最多 50 项的范围限制。汇总按用途及处置分组，明细分页；压缩、方法整理与子调用均按原工作归属显示。</p>
-            <v-progress-linear v-if="usageLoading" indeterminate aria-label="正在读取本工作调用账" />
-            <v-alert v-if="usageError" type="error" variant="tonal">
-              {{ usageError }}<v-btn variant="text" size="small" @click="loadUsage(usagePage)">重新读取账目</v-btn>
-            </v-alert>
-            <template v-if="usage">
-              <CacheUsageSummary :cache="usage.cache" :phases="usage.request_phases" />
-              <p class="muted-copy">共 {{ usage.total }} 条调用记录 · 读取于 {{ fmtTime(usageReadAt) }}。缓存是输入的子项，推理是输出的子项，不重复相加；未知 usage 不按零消耗或零成本处理。</p>
-              <article
-                v-for="group in usage.totals"
-                :key="`${group.purpose}:${group.disposition}`"
-                class="adopted-range"
-              >
-                <strong>
-                  {{ purposeLabel(group.purpose) }} · {{ group.disposition || '处置未记录' }} · {{ group.calls }} 次</strong>
-                <p>已记录输入 {{ group.prompt_tokens.toLocaleString() }}（含已记录缓存 {{ group.cached_tokens.toLocaleString() }}）；已记录输出 {{ group.completion_tokens.toLocaleString() }}（含已记录推理 {{ group.reasoning_tokens.toLocaleString() }}）。</p>
-                <p>usage 未完整记录 {{ group.unknown_usage }} 次；失败 {{ group.failed }}，取消 {{ group.cancelled }}，请求未确认 {{ group.unconfirmed }}。<template v-if="group.audio_seconds">另有转写时长 {{ group.audio_seconds }} 秒。</template>
-                </p>
-              </article>
-              <p v-if="!usage.items.length" class="muted-copy">没有关联到该工作身份的模型调用记录；不能据此推断其他未关联请求没有发生。</p>
-              <div class="link-list">
-                <div v-for="call in usage.items" :key="call.id">
-                  <EntityLink
-                    type="call"
-                    :id="call.id"
-                    :scene-id="job.scene_id"
-                    :label="`${purposeLabel(call.purpose)} · ${call.id}`"
-                  />
-                  <StatusBadge domain="call" :status="call.status" />
-                  <span> · {{ fmtTime(call.started_at) }}</span>
-                </div>
-              </div>
-              <v-pagination
-                v-if="usage.total > usage.page_size"
-                :model-value="usagePage"
-                :length="Math.ceil(usage.total / usage.page_size)"
-                :total-visible="5"
-                :disabled="usageLoading"
-                @update:model-value="loadUsage"
-              />
-            </template>
-            <h3>固定模型绑定</h3>
-            <p v-if="job.model_binding" class="breakable">
-              {{ job.model_binding.provider_id }} / {{ job.model_binding.model }} · 推理 {{ job.model_binding.reasoning_effort || '模型默认' }}
-            </p>
-            <p v-else class="muted-copy">尚未绑定模型。</p>
-            <h3>最后完整检查点</h3>
-            <p v-if="job.checkpoint">
-              {{ job.checkpoint.exchange_count }} 组工具交换 · 目标版本 {{ job.checkpoint.goal_revision }} · {{ fmtTime(job.checkpoint.updated_at) }}
-            </p>
-            <p v-else class="muted-copy">尚无完整检查点。</p>
-            <h3>本工作上下文与已保存压缩</h3>
-            <p>原有效输入 {{ limitText(workBudget?.effective_input_tokens) }} token；原总窗口 {{ limitText(workBudget?.context_tokens) }}，原输出预留 {{ limitText(workBudget?.output_tokens) }}。</p>
-            <p>原维护窗口 {{ limitText(workBudget?.maintenance_context_tokens) }} token；原维护输出预留 {{ limitText(workBudget?.maintenance_output_tokens) }}。</p>
-            <details class="section-gap">
-              <summary>当前运行默认值（不替代旧工作的额度）</summary>
-              <p>新工作模型 {{ limitText(job.budget.max_model_steps) }} 次、工具 {{ limitText(job.budget.max_tool_calls) }} 次、窗口 {{ limitText(job.budget.max_seconds) }} 秒；上下文 {{ limitText(job.budget.context_tokens) }} token，输出 {{ limitText(job.budget.output_tokens) }}。</p>
-              <p>当前压缩触发比例 {{ Math.round(job.budget.compression_trigger * 100) }}%，目标比例 {{ Math.round(job.budget.compression_target * 100) }}%；历史请求的实际装配与比例以对应 Trace 为准。</p>
-            </details>
-            <template v-if="job.compression">
-              <p>压缩原状态：{{ job.compression.status }}</p>
-              <v-alert v-if="job.compression.error" type="error" variant="tonal">
-                {{ job.compression.error }}
-              </v-alert>
-              <v-expansion-panels variant="accordion" class="mt-4">
-                <v-expansion-panel
-                  v-for="(segment, index) in job.compression.segments"
-                  :key="index"
-                  :title="`工具交换 ${segment.start_exchange}—${segment.end_exchange}`"
-                >
-                  <v-expansion-panel-text>
-                    <ResourceViewer title="区间摘要" :content="segment.summary" />
-                    <ul v-if="segment.unresolved">
-                      <li v-for="(item, itemIndex) in segment.unresolved" :key="itemIndex">
-                        {{ item }}
-                      </li>
-                    </ul>
-                    <div class="action-row">
-                      <v-btn
-                        v-for="id in segment.result_ids"
-                        :key="id"
-                        variant="text"
-                        @click="openResource(id)"
-                      >回读资料 · {{ id.slice(0, 10) }}
-                      </v-btn>
-                    </div>
-                  </v-expansion-panel-text>
-                </v-expansion-panel>
-              </v-expansion-panels>
-            </template>
-            <p v-else class="muted-copy">尚无已保存的压缩区间。</p>
-          </v-card-text>
-          <v-card-text v-else class="detail-body">
-            <h3>外部执行与停止事实</h3>
-            <p class="muted-copy">工作取消不会替代容器停止回执。展开查看当次输入来源、错误与原事件；停止未知时需在执行服务核对，不在此重跑。</p>
-            <ExecutionDetails
-              v-for="run in job.executions || []"
-              :key="run.execution_id"
-              :run="run"
-              :job-id="job.id"
-              :scene-id="job.scene_id"
-            />
-            <p v-if="!job.executions?.length">没有已记录的外部执行；宿主 worker 的输入和输出仍沿原工具观察查看，不补造 Gateway 身份。</p>
-            <v-progress-linear v-if="recordsLoading" indeterminate />
-            <v-alert v-if="recordsError" type="error" variant="tonal">{{ recordsError }}</v-alert>
-            <template v-if="records">
-              <p class="muted-copy">只展示已持久化的明确关联。各类记录最多 50 项。</p>
-              <v-alert
-                v-if="Object.values(records.truncated).some(Boolean)"
-                type="info"
-                variant="tonal"
-              >部分关联超出本页范围，可从对应对象继续查看。</v-alert>
-              <OperationReceipts :items="jobOperations" :scene-id="job.scene_id" />
-              <h3>表达行动与真实回执</h3>
-              <article v-for="action in jobActions" :key="action.id" class="delivery-record">
-                <code class="breakable">{{ action.id }}</code>
-                <div class="status-line">
-                  <v-chip v-if="action.acknowledges_task_id" size="small" variant="tonal">创建确认</v-chip>
-                  <v-chip v-if="action.fulfils_task_id" size="small" variant="tonal">结果交付</v-chip>
-                  <v-chip v-if="action.operation_ref" size="small" variant="tonal">操作确认 {{ action.operation_ref }}
-                  </v-chip>
-                  <StatusBadge domain="delivery" :status="action.delivery_status" />
-                  <span v-if="action.job_revision">发送依据工作 v{{ action.job_revision }}</span>
-                </div>
-                <EntityLink
-                  v-if="action.origin_event_id"
-                  type="event"
-                  :id="action.origin_event_id"
-                  :scene-id="job.scene_id"
-                  label="本条表达对应的来源"
-                />
-                <div class="link-list">
-                  <EntityLink
-                    v-for="id in action.receipt_event_ids"
-                    :key="id"
-                    type="event"
-                    :id="id"
-                    :scene-id="job.scene_id"
-                    label="查看发送回执"
-                  />
-                </div>
-                <p v-if="!action.receipt_event_ids.length" class="muted-copy">这条行动尚无已保存回执。</p>
-                <EntityLink
-                  v-if="action.file_asset_id"
-                  type="file"
-                  :id="action.file_asset_id"
-                  :job-id="job.id"
-                  :scene-id="job.scene_id"
-                  label="此文件资产的完整交付链路"
-                />
-                <p v-if="action.file_id">平台文件 ID：{{ action.file_id }}</p>
-                <AnswerBasisDetails :basis="action.answer_basis" :scene-id="job.scene_id" />
-              </article>
-              <p v-if="!jobActions.length" class="muted-copy">未找到关联的表达行动。</p>
-              <h3>执行轨迹</h3>
-              <div class="link-list">
-                <RouterLink
-                  v-for="item in records.traces"
-                  :key="item.id"
-                  :to="withReturn(route, { name: 'activity', query: { tab: 'turns', id: item.id, scene: job.scene_id } })"
-                >
-                  {{ item.kind }} · {{ item.id }}<span v-if="item.tool_outcomes?.errors"> · {{ item.tool_outcomes.errors }} 条工具错误</span>
-                </RouterLink>
-              </div>
-              <p v-if="!records.traces.length" class="muted-copy">没有关联轨迹。</p>
-              <h3>模型请求</h3>
-              <div class="link-list">
-                <EntityLink
-                  v-for="item in records.calls"
-                  :key="item.id"
-                  type="call"
-                  :id="item.id"
-                  :scene-id="job.scene_id"
-                  :label="item.purpose + ' · ' + item.id"
-                />
-              </div>
-              <h3>原始事件与回执</h3>
-              <div class="link-list">
-                <EntityLink
-                  v-for="item in records.events"
-                  :key="item.id"
-                  type="event"
-                  :id="item.id"
-                  :scene-id="job.scene_id"
-                  :label="item.event_type + ' · ' + item.id"
-                />
-              </div>
-            </template>
-          </v-card-text>
+          <JobResultTab v-if="tab === 'result'" :page="shared" />
+          <JobProgressTab v-else-if="tab === 'progress'" :state="progressTab" :page="shared" />
+          <JobBudgetTab v-else-if="tab === 'budget'" :state="usageTab" :page="shared" />
+          <JobRecordsTab v-else :state="recordsTab" :page="shared" />
         </v-card>
       </template>
     </template>
@@ -1625,27 +839,8 @@ watch(() => route.query.resource, value => {
     </v-dialog>
   </section>
 </template>
-
 <style scoped>
-.prepared-image{display:grid;gap:12px;margin-top:20px}
-.prepared-image img{display:block;width:min(100%,540px);height:auto;border:1px solid var(--line);border-radius:8px}
-.workspace-artifacts{display:grid;gap:12px;margin-top:28px}
-.workspace-artifact{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
-.workspace-artifact>div{display:grid;gap:4px;min-width:0}
-.workspace-artifact strong{overflow-wrap:anywhere}
-.delivery-record,.adopted-range{display:grid;gap:10px;min-width:0;padding:14px 0;border-bottom:1px solid var(--line)}
-.evidence-range{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px}
-.adopted-range .v-btn{justify-self:start}
-.adopted-range p{margin:0;font-size:13px;overflow-wrap:anywhere}
-.delivery-record .breakable{white-space:normal}
-.summary-facts{display:grid;grid-template-columns:130px minmax(0,1fr);gap:10px 16px;margin:12px 0}
-.summary-facts dt{color:rgb(var(--v-theme-on-surface-variant))}
-.summary-facts dd{margin:0;overflow-wrap:anywhere}
 .summary-counts{margin:16px 0}
-@media(max-width:650px){
-  .summary-facts{grid-template-columns:minmax(0,1fr);gap:4px}
-  .summary-facts dd{margin-bottom:10px}
-}
 .jobs-page{min-width:0}
 .jobs-page>.page-header{margin-bottom:24px}
 .section-gap{margin-top:20px}
@@ -1672,21 +867,7 @@ watch(() => route.query.resource, value => {
 .action-row{margin-top:16px}
 .identity-line>*,.link-list>*{min-width:0;overflow-wrap:anywhere}
 .job-heading .read-time{margin-left:auto}
-.detail-body{min-width:0;line-height:1.65}
-.detail-body h3{font-size:17px;margin:24px 0 12px}
-.detail-body h3:first-child{margin-top:0}
-.detail-body h4{font-size:15px;margin:18px 0 8px}
-.detail-body ul,.detail-body ol{padding-left:24px;margin:8px 0}
-.detail-body li{margin:8px 0;overflow-wrap:anywhere}
-.detail-body p{margin:10px 0}
-.link-list{display:grid;gap:10px}
-.budget-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-.budget-grid>div{padding:16px;background:rgb(var(--v-theme-surface-variant));border-radius:8px}
-.budget-grid span,.budget-grid strong{display:block}
-.budget-grid strong{font-size:20px;margin-top:8px}
-.resource-meta{font-size:13px}
 .source-url{display:block;overflow-wrap:anywhere}
-.breakable{overflow-wrap:anywhere}
 .empty-state{padding:20px;text-align:center}
 .dialog-title{white-space:normal;overflow-wrap:anywhere}
 .dialog-actions{flex-wrap:wrap;padding:16px}
@@ -1705,7 +886,6 @@ watch(() => route.query.resource, value => {
   .work-row{grid-template-columns:minmax(0,1fr);padding:16px}
   .work-main,.status-pair,.work-usage,.work-row>.v-btn{grid-column:auto;grid-row:auto}
   .work-row>.v-btn{justify-self:start}
-  .budget-grid{grid-template-columns:1fr}
   .job-heading .read-time{margin-left:0}
   .full-title{font-size:18px}
   .action-row>.v-btn{flex-grow:1}
