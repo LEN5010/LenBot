@@ -1,11 +1,17 @@
 // Shared API client: cookie session (same-origin), no retries or optimistic writes.
 import { ref } from 'vue'
 const displayTimezone = ref(null)
-export function setDisplayTimezone(value) { displayTimezone.value = value }
+export function setDisplayTimezone(value) {
+  displayTimezone.value = value
+}
 let onUnauthorized = () => {}
 let sessionGeneration = 0
-export function setUnauthorizedHandler(handler) { onUnauthorized = handler }
-export function resetApiSession() { ++sessionGeneration }
+export function setUnauthorizedHandler(handler) {
+  onUnauthorized = handler
+}
+export function resetApiSession() {
+  ++sessionGeneration
+}
 
 export async function api(path, options = {}) {
   const session = sessionGeneration
@@ -16,7 +22,9 @@ export async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers, credentials: 'same-origin' })
   if (res.status === 401 && path !== '/api/auth/login' && session === sessionGeneration) onUnauthorized()
   let data
-  try { data = await res.json() }
+  try {
+    data = await res.json()
+  }
   catch {
     const error = new Error(`HTTP ${res.status}：接口未返回可读取的 JSON，本次请求结果需核对；没有自动重试。`)
     error.status = res.status
