@@ -23,7 +23,10 @@ export function resolveField(field, definitions) {
     seen.add(current.$ref)
     const target = definitions[current.$ref.slice(8)]
     if (!target) break
-    current = {...target, ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== '$ref'))}
+    current = {
+      ...target,
+      ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== '$ref'))
+    }
   }
   return current
 }
@@ -34,7 +37,10 @@ export function configFields(schema, definitions) {
     let field = resolveField(original, defs)
     const nullable = field.anyOf?.some(item => item.type === 'null') || false
     if (nullable && field.anyOf.length === 2) {
-      field = {...resolveField(field.anyOf.find(item => item.type !== 'null'), defs), ...original}
+      field = {
+        ...resolveField(field.anyOf.find(item => item.type !== 'null'), defs),
+        ...original
+      }
     }
     const nested = field.type === 'object' && !!field.properties
     const list = field.type === 'array' && SIMPLE.includes(field.items?.type)
@@ -99,7 +105,10 @@ export function configDraft(config, schema, secrets = [], prefix = '', definitio
       if (nested && typeof nested === 'object') draft[field.key] = configDraft(nested, field.schema, secrets, path, defs)
       continue
     }
-    if (secrets.includes(path)) { draft[field.key] = ''; continue }
+    if (secrets.includes(path)) {
+      draft[field.key] = '';
+      continue
+    }
     if (!Object.hasOwn(source, field.key) || source[field.key] === null) continue
     draft[field.key] = field.list ? [...source[field.key]]
       : field.json ? JSON.stringify(source[field.key], null, 2) : source[field.key]
@@ -121,8 +130,12 @@ function draftValues(draft, schema, toEditor, prefix = '', definitions) {
     else if (field.json) {
       if (toEditor) next[field.key] = JSON.stringify(value, null, 2)
       else {
-        try { next[field.key] = JSON.parse(value) }
-        catch { throw new Error(`${field.schema.title || path} 需要合法 JSON；请先修正草稿，或选择采用现值。`) }
+        try {
+          next[field.key] = JSON.parse(value)
+        }
+        catch {
+          throw new Error(`${field.schema.title || path} 需要合法 JSON；请先修正草稿，或选择采用现值。`)
+        }
       }
     }
   }
@@ -183,8 +196,14 @@ export function blankConfigDraft(schema, secrets = [], prefix = '', definitions)
       if (field.required) draft[field.key] = blankConfigDraft(field.schema, secrets, path, defs)
       continue
     }
-    if (secrets.includes(path)) { draft[field.key] = ''; continue }
-    if (field.schema.const !== undefined) { draft[field.key] = field.schema.const; continue }
+    if (secrets.includes(path)) {
+      draft[field.key] = '';
+      continue
+    }
+    if (field.schema.const !== undefined) {
+      draft[field.key] = field.schema.const;
+      continue
+    }
     if (field.schema.default !== undefined) {
       draft[field.key] = field.list ? [...field.schema.default]
         : field.json ? JSON.stringify(field.schema.default, null, 2) : field.schema.default
@@ -216,17 +235,30 @@ export function configValue(draft, schema, {secrets = [], preserveSecrets = fals
     if (secrets.includes(path)) {
       // null is the only way a panel says "clear this credential"; an empty
       // value only means the operator did not touch a stored one.
-      if (value === null) { config[field.key] = null; continue }
+      if (value === null) {
+        config[field.key] = null;
+        continue
+      }
       if (value === '' && preserveSecrets) continue
       config[field.key] = value
       continue
     }
-    if (value === null) { config[field.key] = null; continue }
-    if (field.list) { config[field.key] = value; continue }
+    if (value === null) {
+      config[field.key] = null;
+      continue
+    }
+    if (field.list) {
+      config[field.key] = value;
+      continue
+    }
     if (field.json) {
       if (value === '' && groupFor(schema, field.key)) continue
-      try { config[field.key] = JSON.parse(value) }
-      catch { throw new Error(`${field.schema.title || path} 需要合法 JSON`) }
+      try {
+        config[field.key] = JSON.parse(value)
+      }
+      catch {
+        throw new Error(`${field.schema.title || path} 需要合法 JSON`)
+      }
     } else config[field.key] = value
   }
   // Unselected exclusive branches are an explicit clear, not an omitted
@@ -275,8 +307,12 @@ export function draftProblems(schema, draft, {secrets = [], configSet = {}, requ
       continue
     }
     if (field.json && typeof value === 'string' && value.trim() !== '') {
-      try { JSON.parse(value) }
-      catch { problems.push({key: path, message: `${title}：不是合法 JSON，请按字段下方说明的结构填写`}) }
+      try {
+        JSON.parse(value)
+      }
+      catch {
+        problems.push({key: path, message: `${title}：不是合法 JSON，请按字段下方说明的结构填写`})
+      }
     }
   }
   return problems
