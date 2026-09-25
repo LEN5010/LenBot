@@ -12,8 +12,15 @@ defineProps({
 <template>
   <v-menu :close-on-content-click="false" location="bottom start" max-width="440">
     <template #activator="{ props }">
-      <v-btn v-bind="props" variant="text" size="x-small" density="comfortable"
-             icon :aria-label="label" class="help-hint__btn">
+      <v-btn
+        v-bind="props"
+        variant="text"
+        size="x-small"
+        density="comfortable"
+        icon
+        :aria-label="label"
+        class="help-hint__btn"
+      >
         <v-icon :icon="mdiHelpCircleOutline" size="17" />
       </v-btn>
     </template>
@@ -24,7 +31,7 @@ defineProps({
 </template>
 
 <style scoped>
-.help-hint__btn { color:var(--muted);vertical-align:baseline }
-.help-hint__btn:hover { color:var(--primary) }
-.help-hint__text { white-space:pre-line;line-height:1.75;font-size:13px;color:var(--ink) }
+.help-hint__btn{ color:var(--muted);vertical-align:baseline }
+.help-hint__btn:hover{ color:var(--primary) }
+.help-hint__text{ white-space:pre-line;line-height:1.75;font-size:13px;color:var(--ink) }
 </style>
