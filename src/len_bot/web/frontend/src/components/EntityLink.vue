@@ -41,16 +41,34 @@ const destination = computed(() => {
 const to = computed(() => props.type==='file' && route.name==='job' && route.params.jobId===props.jobId
   ? destination.value : withReturn(route, destination.value))
 const text = computed(()=>props.label || (props.type==='scene'?sceneName(props.id):props.id))
-async function copy() { try { await navigator.clipboard.writeText(props.id); copied.value=true;error.value='' } catch { error.value='未能复制，请在详情中选择编号复制' } }
+async function copy() {
+  try {
+    await navigator.clipboard.writeText(props.id);
+    copied.value=true;
+    error.value=''
+  } catch {
+    error.value='未能复制，请在详情中选择编号复制'
+  }
+}
 </script>
 <template>
   <span v-if="id" class="entity-link">
     <router-link class="entity-link__label" :to="to" :title="text">{{ text }}</router-link>
-    <v-btn v-if="copyable" :icon="mdiContentCopy" variant="text" density="compact" size="x-small" :aria-label="copied?'已复制编号':`复制 ${id}`" @click="copy" />
+    <v-btn
+      v-if="copyable"
+      :icon="mdiContentCopy"
+      variant="text"
+      density="compact"
+      size="x-small"
+      :aria-label="copied?'已复制编号':`复制 ${id}`"
+      @click="copy"
+    />
     <span v-if="error" role="alert" class="copy-error">{{ error }}</span>
   </span>
   <span v-else class="muted">未关联</span>
 </template>
 <style scoped>
-.entity-link{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}.entity-link__label{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.copy-error{font-size:12px;color:rgb(var(--v-theme-error));white-space:normal}
+.entity-link{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
+.entity-link__label{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copy-error{font-size:12px;color:rgb(var(--v-theme-error));white-space:normal}
 </style>
