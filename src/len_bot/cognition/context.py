@@ -540,7 +540,7 @@ class ConversationContext:
     def release_optional_context(self, messages, *, definitions=None, reserved=(), reason='capacity_reserved_for_new_input'):
         labels = {'saved_result_locators': '上一段资料位置',
                   'own_recent_expression': '自己近期说法', 'reference': '运营目录与表达参考',
-                  'history_summary': '历史摘要', 'recent_history': '历史原话',
+                  'history_summary': '历史摘要', 'segment_handoff': '未完事项交接', 'recent_history': '历史原话',
                   'pending_directory': '待处理来源目录', 'previous_failure': '既往失败说明'}
         # A native call proves the preceding request actually received the
         # initially packed original history. Before that response, keep those
@@ -1120,6 +1120,58 @@ class ConversationContext:
                                              if not key.startswith('_')},
                             'replies': replies})
         return records, None
+
+    async def install_segment_handoff(self, messages, items):
+        """Show the segment's handed-off items with their current state, or remove it.
+
+        The list names only identities; each state is read again here, and
+        whatever finished since leaves the view. It closes nothing.
+        """
+        from len_bot.scenes.handoff import handoff_states
+        base = [message for message in messages if message.get('_context_section') != 'segment_handoff']
+        states = await handoff_states(self.runtime.event_store, self.session, items,
+            bot_actor_id=self.runtime.bot_actor_id, now=self.runtime.clock(), cutoff=self.refs.cutoff)
+        if not states:
+            messages[:] = base
+            return
+        snapshot = self._projection_snapshot()
+        views = []
+        for item in items:
+            state = states.get((item.kind, item.id))
+            if state is None:
+                continue
+            if item.kind == 'pending_source':
+                self.refs.note_event_rowid(item.id, state.rowid)
+                views.append({'kind': item.kind, 'message': self.refs.register_event_locator(item.id),
+                              'reasons': state.reasons, 'original_read': item.id in self.refs.read_events})
+            elif item.kind == 'work':
+                views.append({'kind': item.kind, 'work': self.refs.register_job(state), 'revision': state['revision'],
+                              'status': state['status'], 'goal_preview': state['goal'][:160],
+                              'next_call': {'name': 'query_jobs', 'arguments': {}}})
+            elif item.kind == 'open_loop':
+                views.append({'kind': item.kind, 'wait': self.refs.register_loop(state),
+                              'target': self.refs.register_actor(state['target_actor_id']),
+                              'question_message': self.refs.register_event_locator(state['source_event_id']),
+                              'expires_at': state['expires_at']})
+            else:
+                views.append({'kind': item.kind, 'status': state['status'],
+                              'approval_event_id': state['approval_event_id'], 'batch_index': state['batch_index'],
+                              'segments': self.model_segments(state['segments'])})
+        message = {'role': 'user', '_context_section': 'segment_handoff', 'content': json.dumps({
+            'kind': 'segment_handoff', 'evidence': 'locator_only',
+            'meaning': '较早内容离开当前上下文时由宿主按固定规则附带的未完事项；状态为本次读取的当前值。'
+                       '这不是摘要、结论或新授权，也不表示已处理；精确内容回读原话或工作。',
+            'resolved_since_handoff': len(items) - len(views), 'items': views}, ensure_ascii=False)}
+        if self.request_tokens([*base, message]) > self.input_budget:
+            self._restore_projection(snapshot)
+            messages[:] = base
+            self.omit('segment_handoff', 'no_capacity', items=len(views))
+            return
+        for position, previous in enumerate(messages):
+            if previous.get('_context_section') == 'segment_handoff':
+                messages[position] = message
+                return
+        messages.append(message)
 
     def _source_result_id(self, ref):
         return self.refs.result_id(ref)
