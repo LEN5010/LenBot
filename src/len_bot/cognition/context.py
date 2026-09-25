@@ -1149,10 +1149,14 @@ class ConversationContext:
                               'status': state['status'], 'goal_preview': state['goal'][:160],
                               'next_call': {'name': 'query_jobs', 'arguments': {}}})
             elif item.kind == 'open_loop':
-                views.append({'kind': item.kind, 'wait': self.refs.register_loop(state),
-                              'target': self.refs.register_actor(state['target_actor_id']),
-                              'question_message': self.refs.register_event_locator(state['source_event_id']),
-                              'expires_at': state['expires_at']})
+                # Like runtime facts, only a wait on a person relevant to this
+                # turn becomes a resolvable L; others stay a plain location.
+                view = {'kind': item.kind, 'target': self.refs.register_actor(state['target_actor_id']),
+                        'question_message': self.refs.register_event_locator(state['source_event_id']),
+                        'expires_at': state['expires_at']}
+                if state['target_actor_id'] in self.relevant_actor_ids:
+                    view['wait'] = self.refs.register_loop(state)
+                views.append(view)
             else:
                 views.append({'kind': item.kind, 'status': state['status'],
                               'approval_event_id': state['approval_event_id'], 'batch_index': state['batch_index'],
