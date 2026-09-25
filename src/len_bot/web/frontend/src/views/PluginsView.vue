@@ -779,15 +779,15 @@ loadScopes()
 .plugin-toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .toolbar-search{max-width:320px;min-width:200px}
 .heading-with-hint{display:flex;align-items:center;gap:2px}
-.scene-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#64748b;margin-left:6px}
+.scene-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:var(--text-secondary);margin-left:6px}
 .entry-list{display:grid;gap:12px}
-.entry-row{border:1px solid #e2e8f0;border-radius:8px;padding:14px;overflow-wrap:anywhere}
+.entry-row{border:1px solid var(--line);border-radius:8px;padding:14px;overflow-wrap:anywhere}
 .entry-row p{margin-top:6px;line-height:1.6}
 .state-list{list-style:none;display:grid;gap:6px;margin:14px 0;padding:0;font-size:13px}
 .state-list li{display:flex;gap:12px}
-.state-label{color:#64748b;min-width:64px}
-.state-ok{color:#16845c}
-.state-warn{color:#9a5514}
+.state-label{color:var(--text-secondary);min-width:64px}
+.state-ok{color:var(--success)}
+.state-warn{color:var(--warning-text)}
 .error-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px}
 .error-link{background:none;border:0;padding:0;color:inherit;text-align:left;text-decoration:underline;cursor:pointer;font:inherit}
 .plugin-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
@@ -796,11 +796,11 @@ loadScopes()
 .plugin-title h2,.plugin-heading h2{font-size:19px;overflow-wrap:anywhere}
 .plugin-description{margin:16px 0;line-height:1.7;min-height:3.4em}
 .plugin-meta,.actions,.open-scenes{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:center}
-.plugin-meta,.source-summary{font-size:13px;color:#64748b;margin-bottom:12px}
+.plugin-meta,.source-summary{font-size:13px;color:var(--text-secondary);margin-bottom:12px}
 .source-summary{display:grid;gap:6px}
 .full-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
 .facts{display:grid;grid-template-columns:100px minmax(0,1fr);gap:12px;line-height:1.7}
-.facts dt{color:#64748b}
+.facts dt{color:var(--text-secondary)}
 .facts dd{margin:0;overflow-wrap:anywhere}
 @media(max-width:850px){
   .plugin-list{grid-template-columns:minmax(0,1fr)}

@@ -140,12 +140,12 @@ const { personaNeedsReadback, persona, exemplars, examplesLoading, examplesError
 .wide{grid-column:1/-1}
 .form-grid>.v-btn{justify-self:start}
 .actions,.meta{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}
-.meta{font-size:13px;color:#64748b}
-.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}
+.meta{font-size:13px;color:var(--text-secondary)}
+.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid var(--line)}
 .example-row:last-child{border:0;padding-bottom:0}
 .example-main{min-width:0;flex:1}
 .example-row>.actions{max-width:220px;justify-content:flex-end}
-.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}
+.example-context{white-space:pre-wrap;line-height:1.65;color:var(--text-secondary);overflow-wrap:anywhere}
 .example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}
 .example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}
 .example-body img{max-width:180px;max-height:180px;object-fit:contain}

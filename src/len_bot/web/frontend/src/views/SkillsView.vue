@@ -491,7 +491,7 @@ summary{cursor:pointer}
 .skill-main{min-width:0;flex:1}
 .skill-main h2,.candidate-heading h2{font-size:17px;line-height:1.5;overflow-wrap:anywhere}
 .skill-main>p{margin:10px 0;line-height:1.65}
-.meta{display:flex;flex-wrap:wrap;gap:8px 16px;color:#64748b;font-size:13px;align-items:center}
+.meta{display:flex;flex-wrap:wrap;gap:8px 16px;color:var(--text-secondary);font-size:13px;align-items:center}
 .skill-body{line-height:1.8;overflow-wrap:anywhere}
 .skill-body h3{margin:22px 0 8px}
 .skill-body p{white-space:pre-wrap}
