@@ -4,6 +4,7 @@ import { mdiRefresh,mdiArrowRight,mdiForumOutline,mdiDatabaseOutline,mdiClockOut
 import { api,fmtTime,sceneName } from '../api.js'
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 import { roleNames } from '../domain/roles.js'
 import PageHeader from '../components/PageHeader.vue'
 import EntityLink from '../components/EntityLink.vue'
@@ -50,19 +51,11 @@ const issueDefinitions=[
 ]
 const issues=reactive(Object.fromEntries(issueDefinitions.map(item=>[item.key,{data:null,error:'',loading:false,readAt:null}])))
 const issueGuards=Object.fromEntries(issueDefinitions.map(item=>[item.key,useRequestGuard()]))
-async function load(){
-  const fresh=statsGuard();
-  statsLoading.value=true;
-  error.value=''
-  try{
-    const result=await api('/api/overview/stats');
-    if(fresh())data.value=result
-  }
-  catch(e){
-    if(fresh())error.value=e.message
-  }finally{
-    if(fresh())statsLoading.value=false
-  }
+const readStats=useGuardedRead(statsGuard,statsLoading,error)
+function load(){
+  return readStats(()=>api('/api/overview/stats'),result=>{
+    data.value=result
+  })
 }
 async function loadIssue(item){
   const fresh=issueGuards[item.key](), source=issues[item.key]
@@ -96,19 +89,11 @@ const issueLabel=(item,type)=>type==='job'?item.goal:type==='task'?item.descript
 // cannot blank the rest of the page.
 const capabilities=ref(null),pluginError=ref(''),pluginLoading=ref(false)
 const loading=computed(()=>statsLoading.value||pluginLoading.value||Object.values(issues).some(item=>item.loading))
-async function loadPlugins(){
-  const fresh=pluginGuard();
-  pluginLoading.value=true;
-  pluginError.value=''
-  try{
-    const result=await api('/api/overview/capabilities');
-    if(fresh())capabilities.value=result
-  }
-  catch(e){
-    if(fresh())pluginError.value=e.message
-  }finally{
-    if(fresh())pluginLoading.value=false
-  }
+const readPlugins=useGuardedRead(pluginGuard,pluginLoading,pluginError)
+function loadPlugins(){
+  return readPlugins(()=>api('/api/overview/capabilities'),result=>{
+    capabilities.value=result
+  })
 }
 const plugins=computed(()=>[...new Map((capabilities.value?.items||[])
   .flatMap(card=>card.plugins).filter(plugin=>plugin.state!=='absent')

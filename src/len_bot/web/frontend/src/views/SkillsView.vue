@@ -8,6 +8,7 @@ import EntityLink from '../components/EntityLink.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import ResourceViewer from '../components/ResourceViewer.vue'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 
 const route = useRoute(), router = useRouter()
 const scalar = value => typeof value === 'string' ? value : ''
@@ -39,26 +40,19 @@ const sameVersion = (skill, target)=>skill?.id===target.id && skill.scene_id===t
 const sourceRanges = computed(() => Object.entries(selected.value?.source.work_observation_reads || {}).flatMap(([id, units]) =>
   Object.entries(units).flatMap(([unit, read]) => read.ranges.map(([start,end]) => ({ id, unit, start, end, total: read.total })))))
 const unitName = value => ({ characters: '字符', records: '记录' }[value] || value)
-async function load() {
-  const fresh = listGuard()
-  loading.value = true;
-  error.value = ''
-  const params = new URLSearchParams({ page: String(page.value), page_size: '30' })
-  if (listScene.value) params.set('scene_id', listScene.value)
-  if (tab.value === 'saved' && route.query.q) params.set('query', route.query.q)
-  try {
-    const result = await api(`/api/cockpit/${tab.value === 'saved' ? 'skills' : 'skill-candidates'}?${params}`)
-    if (!fresh()) return
+const readList = useGuardedRead(listGuard, loading, error)
+function load() {
+  return readList(() => {
+    const params = new URLSearchParams({ page: String(page.value), page_size: '30' })
+    if (listScene.value) params.set('scene_id', listScene.value)
+    if (tab.value === 'saved' && route.query.q) params.set('query', route.query.q)
+    return api(`/api/cockpit/${tab.value === 'saved' ? 'skills' : 'skill-candidates'}?${params}`)
+  }, result => {
     rows.value = result.items;
     total.value = result.total;
     loaded.value = true;
     readAt.value = Date.now()/1000
-  } catch (e) {
-    if (fresh()) error.value = e.message
-  }
-  finally {
-    if (fresh()) loading.value = false
-  }
+  })
 }
 async function loadDetail() {
   const fresh = detailGuard(),
