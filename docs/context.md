@@ -116,6 +116,25 @@ stable（当前只有 persona）
 
 交接只读：不结案、不取消工作或等待、不清预算、不消费来源、不改送达状态，也不是摘要或结论；精确内容仍须回读原话、工作或资料。段保存与历史维护沿用原互斥：历史维护在场景有活动对话租约时延后提交（`HistoryCommitDeferred`），段只能在活动租约内保存，二者都经同一 Actor 队列串行；维护提交认识后知识修订递增，下一次段保存以 `knowledge_revision` 变化开新段。原生交换只按整组离开，工具调用与对应结果不被拆开。
 
+### 会话段在新输入、重启、取消与撤销时的边界
+
+下表是 2026-09-25 的源码核对结论，均未经运行实证；各行只说明会话段相关的行为，原事件、提交、预算与回执的既有合同不变。
+
+| 分支 | 当前行为 | 依据 |
+|---|---|---|
+| 段保存或内容离开期间到达的新输入 | 新事件照常由 Actor 串行提交；段保存只用本次请求的读取截点，截点后的事件不算“离开”，由同一运行的新输入吸收或下一轮接入 | `SceneActor._save_conversation_segment` 核对截点不超过观察截点；`collect_handoff` 只比较上一段与本次窗口 |
+| 历史维护与段保存同时发生 | 活动对话租约期间历史维护延后提交；维护提交认识后，下一次段保存按知识修订变化换段 | `HistoryCommitDeferred`；`_material_changes` 之后追加 `knowledge_revision` |
+| 正常重启 | Actor 重新读取场景状态，内存比较材料和上次保存者都清空：首次保存开启 `process_restart` 段，材料变化项列出无法证明的项；已存原生交换在同一模型绑定下逐组重建，不重新调用工具或重发 | `SceneActor.start`、`_check_exchanges` 的新运行分支、`install_segment_exchanges` |
+| 等待恢复 | 沿用原 episode，但按新执行租约视为新运行：可带入上一段末尾的交换组，恢复前的已存组不会被误判为本运行已存组 | `_check_exchanges` 以租约 mailbox 区分运行 |
+| 普通对话被取消 | 已随前一请求保存的完整组保留；执行中的组不保存；被取消的租约不能再写段 | `_save_conversation_segment` 拒绝已取消 mailbox；AgentLoop 取消时不调用收尾保存 |
+| 工作被取消或修订 | 重建的旧 query_jobs 目录只保留编号，不把旧快照放回当前工作表；交接区块与运行事实按当前工作状态登记编号；控制仍经原修订号与 Gate 核对 | `_restore_page` 的 job_query 处理、`install_segment_handoff` |
+| 插件停用、退出本群或换版 | 该插件资料所在的交换组无法重建：本轮一组都不带入，以 `exchange_unrecoverable` 换段；运行中途失效的页按原逻辑替换为 `saved_source_unavailable`；定位目录显示不可用 | `saved_result_issue` → `PluginHost.origin_issue`；`invalidate_saved_references` |
+| 认识被纠正、撤销或到期 | 保存的认识查询页呈现失败，所在交换组不能重建；偏好与认识每次请求重新读取 | `_memory_presentation_failure` |
+| 历史摘要来源不可用 | 摘要区块按原核对撤下；保存的摘要检索页不能重建 | `available_history_summaries`、`_history_presentation_failure` |
+| 等待回应属于与本轮无关的人 | 交接区块只给出位置，不登记可结束的 L 编号 | `install_segment_handoff` 按 `relevant_actor_ids` 判断 |
+
+重建时遇到上表以外的异常（例如已存资料格式无法解析）不转成换段，按原错误结束本次对话并记录，下一次仍会在同一处失败；这时按[运行手册](operations.md#会话段字段的升级与回退)经授权离线处理活动段字段，不自动清空段。供应商已经接收过的旧请求内容无法撤回，失效只作用于之后的新请求。
+
 ### 当前互动与行动合同
 
 `input_status` 为已定位的每项来源提供 `speaker`、`event_type`、`is_current_source` 与 `original_complete`。人物、事件类型和本轮来源身份只是索引，唤醒理由只是读取线索；都不代替原话、授予阅读资格或证明对方正在向 Bot 提问。
