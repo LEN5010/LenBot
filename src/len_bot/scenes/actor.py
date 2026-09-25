@@ -14,7 +14,7 @@ from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.history import HistoryConflictError
 from len_bot.memory.models import MemoryItem
 from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
-from len_bot.scenes.models import SceneSession, ConversationSegment, SegmentSummaryRef, SegmentExchange, SegmentExchangeGap
+from len_bot.scenes.models import SceneSession, ConversationSegment, SegmentSummaryRef, SegmentExchange, SegmentExchangeGap, SegmentMaterial
 from len_bot.cognition.providers import ModelProfile
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
@@ -68,6 +68,7 @@ class SegmentCommand:
     carried: int
     exchange_break: str | None
     exchange_gap: str | None
+    materials: list[dict]
 
 
 @dataclass
@@ -171,12 +172,12 @@ class SceneActor:
 
     async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis,
                                         summary_refs, result_aliases, job_aliases, memory_aliases, task_aliases, loop_aliases,
-                                        exchanges=(), carried=0, exchange_break=None, exchange_gap=None):
+                                        exchanges=(), carried=0, exchange_break=None, exchange_gap=None, materials=()):
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(SegmentCommand(episode_id, expected_id, through_rowid,
             list(event_ids), profile, copy.deepcopy(basis), copy.deepcopy(summary_refs),
             dict(result_aliases), dict(job_aliases), dict(memory_aliases), dict(task_aliases), dict(loop_aliases), future,
-            copy.deepcopy(list(exchanges)), carried, exchange_break, exchange_gap))
+            copy.deepcopy(list(exchanges)), carried, exchange_break, exchange_gap, copy.deepcopy(list(materials))))
         return await asyncio.shield(future)
 
     def _check_exchanges(self, command, previous):
@@ -221,6 +222,27 @@ class SceneActor:
                    and previous.model_profile == command.profile)
         return exchanges, gap, unrecoverable, trimmed
 
+    def _material_changes(self, previous, basis, materials):
+        """Name the fixed materials that changed, and whether a restart can be ruled out.
+
+        In one process the Actor compares the actual material values it last
+        saved. After a restart only a source revision proves a material
+        unchanged; every other item is listed as unprovable, and the segment
+        reopens with reason process_restart rather than claiming continuity.
+        """
+        if previous is None:
+            return [], False
+        if self._segment_basis is not None:
+            names = sorted(set(self._segment_basis) | set(basis))
+            return [name for name in names if self._segment_basis.get(name) != basis.get(name)], False
+        saved = {item.item: item for item in previous.materials}
+        current = {item.item: item for item in materials}
+        changed = sorted(name for name in set(saved) | set(current) if saved.get(name) != current.get(name))
+        unprovable = sorted(name for name, item in current.items()
+                            if item.basis != 'source_revision' and name not in changed)
+        # A segment saved before materials were recorded has nothing to compare.
+        return changed + unprovable, bool(changed or unprovable or not previous.materials)
+
     async def _save_conversation_segment(self, command):
         mailbox = self._active_mailbox
         if (mailbox is None or mailbox.episode_id != command.episode_id or mailbox.is_cancelled()
@@ -248,11 +270,17 @@ class SceneActor:
                                  (previous.loop_aliases, command.loop_aliases)):
                 if any(ref in old and old[ref] != identity for ref, identity in current.items()):
                     raise SceneCommitConflict('A retained conversation reference cannot change its identity')
-        reason = ('initial' if previous is None else 'process_restart' if self._segment_basis is None
-            else 'binding_changed' if self._segment_basis != command.basis
-                or previous.model_profile != command.profile
-                or previous.knowledge_revision != self.session.knowledge_revision
-                or previous.summary_refs != summary_refs
+        materials = [SegmentMaterial.model_validate(item) for item in command.materials]
+        if set(command.basis) != {item.item for item in materials} or len(materials) != len(command.basis):
+            raise ValueError('Segment materials and their compared values must name the same items')
+        changes, restart = self._material_changes(previous, command.basis, materials)
+        if previous is not None:
+            changes += [name for name, changed in (
+                ('model_profile', previous.model_profile != command.profile),
+                ('knowledge_revision', previous.knowledge_revision != self.session.knowledge_revision),
+                ('summary_refs', previous.summary_refs != summary_refs)) if changed]
+        reason = ('initial' if previous is None else 'process_restart' if restart
+            else 'binding_changed' if changes
             else 'exchange_unrecoverable' if unrecoverable
             else 'window_trimmed' if not set(previous.event_ids).issubset(command.event_ids) or exchanges_trimmed
             else None)
@@ -265,7 +293,8 @@ class SceneActor:
             event_ids=command.event_ids,summary_refs=summary_refs,
             result_aliases=command.result_aliases,job_aliases=command.job_aliases,
             memory_aliases=command.memory_aliases,task_aliases=command.task_aliases,
-            loop_aliases=command.loop_aliases,ordered_items=exchanges,exchange_gap=gap)
+            loop_aliases=command.loop_aliases,ordered_items=exchanges,exchange_gap=gap,materials=materials,
+            material_changes=changes if reason else previous.material_changes)
         await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
             segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
         self.session.conversation_segment = segment

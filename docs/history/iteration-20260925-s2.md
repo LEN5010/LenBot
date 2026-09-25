@@ -18,3 +18,21 @@
 已知限制：资料页的 evidence_ref 每次重新签发，重建页与上一轮文字不保证逐字相同，供应商前缀缓存可能在第一处重建页处中断；像素不随组重建；原生交换随 Session 一起写入，会增大每次场景状态保存的体积，实际大小未测。编号：重建的 query_jobs 目录重新登记工作编号，若该工作不在当前事实中，编号可能与上一轮不同。
 
 未确认（需人工现场）：多轮续接后模型是否正确理解重建组、供应商是否接受跨轮原样回传的续接字段、插件停用／认识修订后是否按预期换段、发布失败分支的 trace 记录。
+
+## B. 固定材料的版本依据
+
+改动符号：`scenes/models.py` 新增 `SegmentMaterial`，`ConversationSegment` 增加 `materials`、`material_changes`；`SceneActor._material_changes` 取代原先整段 system 文字与工具列表的单一比较；`SocialCognitionCore.material_basis` 逐项生成材料；`RetrievalToolkit.configured_tool_names`；`PluginHost.request_material_hooks`。合同写入[上下文·当前段的原话窗口引用](../context.md#当前段的原话窗口引用)。
+
+逐项结论（源码核对，未运行）：
+
+| 材料 | 装配变化入口 | 跨重启依据 |
+|---|---|---|
+| 人格前缀 | 面板保存运行设置后，同进程下一次保存逐项比较文字 | 根配置没有修订号，停机手改不留记录：不能证明未变 |
+| 固定组件（对话合同、表情偏好提示、插件入口提示） | 源码修改时递增修订号；同进程亦比较文字 | 修订号相同即未变 |
+| 插件入口指令 | 同进程比较文字 | 没有依据 |
+| 核心读取工具 | 同进程比较定义 JSON | Schema 含根配置数值上限，归 runtime_config：不能证明未变 |
+| 固定提案工具、tool_search、计算类工具 | 源码修订号；同进程比较 JSON | 修订号相同即未变 |
+| 插件工具 | 插件启停、改设置、换版本后同进程比较 JSON | 只记插件代码版本；插件可能按设置生成定义，版本相同不证明定义相同 |
+| before_model／after_tool Hook | 插件启停或换版本后同进程比较插件版本 | 输出每次重新产生，没有版本 |
+
+因此当前任何配置下重启后都会开启 process_restart 段，并在 material_changes 中列出无法证明的项；这是如实记录，不是缺陷修复。旧段没有 materials 时同样按无法比较处理。同进程下原先已有的换段条件不变，只是现在能指出具体变化项。

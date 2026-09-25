@@ -162,6 +162,21 @@ class SegmentExchange(BaseModel):
         return True
 
 
+class SegmentMaterial(BaseModel):
+    """One fixed request material and what identifies it across processes.
+
+    source_revision is a host declaration whose text changes only with its
+    revision. plugin_version names plugin code, which may still derive text
+    from its own settings; runtime_config comes from root settings, which
+    carry no revision; hook_output is produced anew by a hook on each call.
+    Only source_revision proves the material unchanged after a restart.
+    """
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    item: str = Field(min_length=1)
+    basis: Literal['source_revision', 'plugin_version', 'runtime_config', 'hook_output', 'none']
+    version: str | None = None
+
+
 class SegmentExchangeGap(BaseModel):
     """A run whose native groups could not be kept; the next run opens a new segment."""
     model_config = ConfigDict(extra='forbid', frozen=True)
@@ -189,6 +204,10 @@ class ConversationSegment(BaseModel):
     loop_aliases: dict[str, str] = Field(default_factory=dict)
     ordered_items: list[SegmentExchange] = Field(default_factory=list)
     exchange_gap: SegmentExchangeGap | None = None
+    materials: list[SegmentMaterial] = Field(default_factory=list)
+    # Why this segment opened, by material: the changed items for a binding
+    # change, and the unchanged-but-unprovable ones after a restart.
+    material_changes: list[str] = Field(default_factory=list)
 
 
 class SceneSession(BaseModel):

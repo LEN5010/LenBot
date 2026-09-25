@@ -281,6 +281,47 @@ class SocialCognitionCore:
                         and '_segment_after_rowid' not in message):
                     message['_segment_after_rowid']=request_cutoff if request_cutoff is not None else context.refs.cutoff
 
+        def material_basis(trajectory,definitions):
+            """Each fixed material with its compared value and its version basis."""
+            values,materials={},[]
+            def add(item,basis,version,value):
+                values[item]=value
+                materials.append({'item':item,'basis':basis,'version':version})
+            for message in trajectory:
+                if message.get('role')!='system':
+                    continue
+                content=message.get('content') or ''
+                cursor,uncovered=0,[]
+                for component in sorted(message.get('_prompt_components',()),key=lambda item:item.start):
+                    uncovered.append(content[cursor:component.start])
+                    cursor=component.start+len(component.text)
+                    add(f'component:{component.component_id}','source_revision',str(component.revision),
+                        content[component.start:cursor])
+                uncovered.append(content[cursor:])
+                # The identity prefix is rendered from root settings; anything
+                # else outside a declared component is plugin entry text.
+                if uncovered[0]:
+                    add('persona','runtime_config',None,uncovered[0])
+                if ''.join(uncovered[1:]):
+                    add('plugin_instructions','none',None,''.join(uncovered[1:]))
+            for definition in definitions:
+                name=definition['function']['name']
+                value=json.dumps(dict(definition),ensure_ascii=False,sort_keys=True)
+                if isinstance(definition,_LocatedPluginToolDefinition):
+                    add(f'tool:{name}','plugin_version',
+                        f'{definition.plugin_id}@{definition.plugin_version}/api{definition.api_version}',value)
+                elif isinstance(definition,_RecordedToolDefinition):
+                    configured=(definition.component_id.startswith('core.retrieval.')
+                                and name in toolkit.configured_tool_names)
+                    add(f'tool:{name}','runtime_config' if configured else 'source_revision',
+                        f'{definition.component_id}#{definition.revision}',value)
+                else:
+                    add(f'tool:{name}','none',None,value)
+            for hook,version in runtime.plugin_host.request_material_hooks(plugin_context()):
+                add(f'hook:{hook.plugin_id}/{hook.id}/{hook.phase}','hook_output',f'{hook.plugin_id}@{version}',
+                    f'{hook.plugin_id}@{version}')
+            return values,materials
+
         async def save_state(trajectory,definitions):
             nonlocal segment_id,exchange_gap
             window_ids=[message['_source_event_id'] for message in trajectory
@@ -293,6 +334,7 @@ class SocialCognitionCore:
                 for ref in message['_summary_refs']]
             exchanges,gap=context.segment_exchanges(trajectory,episode_id=episode_id,
                 terminal_name=terminal_name,toolkit=toolkit)
+            basis,materials=material_basis(trajectory,definitions)
             # Once a group of this run cannot be kept, none of its groups is.
             exchange_gap=exchange_gap or gap
             segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
@@ -308,18 +350,14 @@ class SocialCognitionCore:
                 exchange_break=exchange_break,exchange_gap=exchange_gap,
                 profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
                     reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
-                basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],
-                       'tools':[dict(definition) for definition in definitions],
-                       'tool_sources':[(definition.plugin_id,definition.plugin_version,definition.api_version)
-                           if isinstance(definition,_LocatedPluginToolDefinition)
-                           else (definition.component_id,definition.revision)
-                           if isinstance(definition,_RecordedToolDefinition) else None for definition in definitions]})
+                basis=basis,materials=materials)
             segment_id=segment.id
             context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
                 'reason':segment.reason,'through_rowid':segment.through_rowid,
                 'window_events':len(segment.event_ids),'summary_batches':len(segment.summary_refs),
                 'native_exchanges':len(segment.ordered_items),'exchange_gap':exchange_gap,
-                'exchange_break':exchange_break,
+                'exchange_break':exchange_break,'material_changes':list(segment.material_changes),
+                'unversioned_materials':[item.item for item in segment.materials if item.basis!='source_revision'],
                 'continuity':'native_exchanges' if segment.ordered_items else 'source_window_only'}
             audit['context_plan']=copy.deepcopy(context.context_plan)
 

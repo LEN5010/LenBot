@@ -112,6 +112,12 @@ class PluginHost:
                     or hook.scope == call.role and call.entry != 'handler'):
                 yield hook
 
+    def request_material_hooks(self, call):
+        """Hooks whose output enters a model request, with their plugin code version."""
+        for phase in ('before_model', 'after_tool'):
+            for hook in self.applicable_hooks(phase, call):
+                yield hook, self._plugins[hook.plugin_id].manifest.version
+
     def run_hooks(self, call, audit):
         return PluginRunHooks(self, call, audit)
 
