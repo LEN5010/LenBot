@@ -690,6 +690,7 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                              'window_events':len(segment['event_ids']),
                              'native_exchanges':len(segment['ordered_items']),
                              'exchange_gap':segment['exchange_gap'],
+                             'material_changes':segment['material_changes'],
                              'continuity':'native_exchanges' if segment['ordered_items'] else 'source_window_only'},
                             ensure_ascii=False),
                          self.clock()))
