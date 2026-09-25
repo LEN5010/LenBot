@@ -14,7 +14,7 @@ from len_bot.events.models import Event, EventType, PluginOrigin
 from len_bot.memory.history import HistoryConflictError
 from len_bot.memory.models import MemoryItem
 from len_bot.runtime.gate import CommittedProposal, GateDecision, PublicationRecord
-from len_bot.scenes.models import SceneSession, ConversationSegment, SegmentSummaryRef
+from len_bot.scenes.models import SceneSession, ConversationSegment, SegmentSummaryRef, SegmentExchange, SegmentExchangeGap
 from len_bot.cognition.providers import ModelProfile
 from len_bot.scenes.reducer import SceneReducer
 from len_bot.runtime.attention import HUMAN_INPUTS, is_real_send, record_scanned_event
@@ -64,6 +64,10 @@ class SegmentCommand:
     task_aliases: dict[str, str]
     loop_aliases: dict[str, str]
     future: asyncio.Future
+    exchanges: list[dict]
+    carried: int
+    exchange_break: str | None
+    exchange_gap: str | None
 
 
 @dataclass
@@ -85,6 +89,7 @@ class SceneActor:
         self._worker_task = None
         self._active_mailbox = None
         self._segment_basis = None
+        self._segment_mailbox = None
         self._episode_idle = asyncio.Event()
         self._episode_idle.set()
 
@@ -94,6 +99,7 @@ class SceneActor:
         saved = await self.event_store.load_scene_session(self.scene_id)
         self.session = SceneSession.model_validate(saved) if saved else SceneSession(scene_id=self.scene_id)
         self._segment_basis = None
+        self._segment_mailbox = None
         self._worker_task = asyncio.create_task(self._process_loop())
 
     async def stop(self):
@@ -164,12 +170,56 @@ class SceneActor:
         return await asyncio.shield(future)
 
     async def save_conversation_segment(self, *, episode_id, expected_id, through_rowid, event_ids, profile, basis,
-                                        summary_refs, result_aliases, job_aliases, memory_aliases, task_aliases, loop_aliases):
+                                        summary_refs, result_aliases, job_aliases, memory_aliases, task_aliases, loop_aliases,
+                                        exchanges=(), carried=0, exchange_break=None, exchange_gap=None):
         future = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(SegmentCommand(episode_id, expected_id, through_rowid,
             list(event_ids), profile, copy.deepcopy(basis), copy.deepcopy(summary_refs),
-            dict(result_aliases), dict(job_aliases), dict(memory_aliases), dict(task_aliases), dict(loop_aliases), future))
+            dict(result_aliases), dict(job_aliases), dict(memory_aliases), dict(task_aliases), dict(loop_aliases), future,
+            copy.deepcopy(list(exchanges)), carried, exchange_break, exchange_gap))
         return await asyncio.shield(future)
+
+    def _check_exchanges(self, command, previous):
+        """A run only appends to its own groups; a new run carries an unchanged suffix.
+
+        The lease mailbox tells the two apart: a resumed wait keeps its episode
+        ID but is a new run, and a restart leaves no earlier saver.
+        """
+        exchanges = [SegmentExchange.model_validate(item) for item in command.exchanges]
+        if command.exchange_gap is not None and exchanges:
+            raise ValueError('A run with an exchange gap keeps no native exchange')
+        if not 0 <= command.carried <= len(exchanges):
+            raise ValueError('Carried native exchanges exceed the saved list')
+        call_ids = [ident for exchange in exchanges for ident in exchange.call_ids]
+        if len(set(call_ids)) != len(call_ids):
+            raise ValueError('Conversation segment repeats native tool-call identities')
+        positions = [exchange.after_rowid for exchange in exchanges]
+        if positions != sorted(positions) or positions and positions[-1] > command.through_rowid:
+            raise SceneCommitConflict('Native exchanges are out of scene order or after the read cutoff')
+        earlier = previous.ordered_items if previous else []
+        gap = SegmentExchangeGap(episode_id=command.episode_id, reason=command.exchange_gap) if command.exchange_gap else None
+        if previous is not None and self._segment_mailbox is self._active_mailbox:
+            if previous.exchange_gap is not None and gap is None:
+                raise SceneCommitConflict('A run cannot clear its own native exchange gap')
+            if gap is None and (len(exchanges) < len(earlier)
+                    or not all(saved.same_source(kept) for saved, kept in zip(earlier, exchanges))):
+                raise SceneCommitConflict('A run cannot drop or rewrite its saved native exchanges')
+            if any(exchange.episode_id != command.episode_id for exchange in exchanges[len(earlier):]):
+                raise SceneCommitConflict('New native exchanges belong to the saving episode')
+            return exchanges, gap, False, False
+        carried, fresh = exchanges[:command.carried], exchanges[command.carried:]
+        if carried and (command.exchange_break or gap is not None or previous is None
+                or previous.exchange_gap is not None or previous.model_profile != command.profile
+                or len(carried) > len(earlier)
+                or not all(saved.same_source(kept) for saved, kept in zip(earlier[len(earlier) - len(carried):], carried))):
+            raise SceneCommitConflict('Carried native exchanges must be an unchanged suffix of the saved segment')
+        if any(exchange.episode_id != command.episode_id for exchange in fresh):
+            raise SceneCommitConflict('New native exchanges belong to the saving episode')
+        unrecoverable = previous is not None and (previous.exchange_gap is not None
+            or bool(earlier) and command.exchange_break is not None)
+        trimmed = (previous is not None and not unrecoverable and len(carried) < len(earlier)
+                   and previous.model_profile == command.profile)
+        return exchanges, gap, unrecoverable, trimmed
 
     async def _save_conversation_segment(self, command):
         mailbox = self._active_mailbox
@@ -189,6 +239,7 @@ class SceneActor:
         if [event.id for event in events] != command.event_ids:
             raise SceneCommitConflict('Conversation window has missing or reordered source events')
         summary_refs = [SegmentSummaryRef.model_validate(ref) for ref in command.summary_refs]
+        exchanges, gap, unrecoverable, exchanges_trimmed = self._check_exchanges(command, previous)
         if previous:
             for old, current in ((previous.result_aliases, command.result_aliases),
                                  (previous.job_aliases, command.job_aliases),
@@ -202,7 +253,9 @@ class SceneActor:
                 or previous.model_profile != command.profile
                 or previous.knowledge_revision != self.session.knowledge_revision
                 or previous.summary_refs != summary_refs
-            else 'window_trimmed' if not set(previous.event_ids).issubset(command.event_ids) else None)
+            else 'exchange_unrecoverable' if unrecoverable
+            else 'window_trimmed' if not set(previous.event_ids).issubset(command.event_ids) or exchanges_trimmed
+            else None)
         segment = ConversationSegment(
             id=f'segment:{uuid.uuid4().hex}' if reason else previous.id,
             previous_id=previous.id if reason and previous else previous.previous_id if previous else None,
@@ -212,11 +265,12 @@ class SceneActor:
             event_ids=command.event_ids,summary_refs=summary_refs,
             result_aliases=command.result_aliases,job_aliases=command.job_aliases,
             memory_aliases=command.memory_aliases,task_aliases=command.task_aliases,
-            loop_aliases=command.loop_aliases)
+            loop_aliases=command.loop_aliases,ordered_items=exchanges,exchange_gap=gap)
         await self.event_store.save_conversation_segment(self.scene_id, command.expected_id,
             segment.model_dump(mode='json'), command.episode_id, changed=reason is not None)
         self.session.conversation_segment = segment
         self._segment_basis = command.basis
+        self._segment_mailbox = mailbox
         return segment.model_copy(deep=True)
 
     async def _process_loop(self):

@@ -30,6 +30,12 @@ CHAT_TYPES = {EventType.GROUP_MESSAGE_RECEIVED, EventType.PRIVATE_MESSAGE_RECEIV
 # budget counter, the addressing status, the media catalog's own send counts —
 # is new every call and belongs there too.
 STABLE_SECTIONS = {'persona'}
+
+
+class SegmentExchangeUnavailable(RuntimeError):
+    """A saved native group cannot be rebuilt from current authoritative state."""
+
+
 CUE_TYPES = {EventType.TASK_DUE, EventType.TASK_REVIEW, EventType.AGENT_JOB_FINISHED,
              EventType.AGENT_JOB_PROGRESS, EventType.MESSAGE_SEND_FAILED, EventType.FILE_UPLOAD_FAILED, EventType.FILE_UPLOADED, EventType.REFLECTION_RECORDED,
              EventType.LIVE_STARTED, EventType.LIVE_ENDED, EventType.PLUGIN_EVENT, EventType.USER_JOINED, EventType.TOOL_COMPLETED}
@@ -259,6 +265,9 @@ class ConversationContext:
         self.confirmed_provided_ids = set()
         self.confirmed_work_results: set[tuple[str, int]] = set()
         self.tool_original_presentations = {}
+        # Presentation inputs of each saved page actually placed in a native
+        # tool reply, by call ID. A segment keeps these, never the body.
+        self.tool_reply_sources = {}
         self.input_budget = self.config.conversation_context_tokens - self.config.conversation_output_tokens
         self.tool_definitions = lambda: []
         self.trajectory = None
@@ -492,37 +501,41 @@ class ConversationContext:
         for start, end in exchange_spans(messages)[:-1]:
             calls = {call['id']: call for call in messages[start]['tool_calls']}
             for message in messages[start+1:end]:
-                try:
-                    result = json.loads(message['content'])
-                except (TypeError, ValueError):
-                    continue
-                if (not isinstance(result, dict) or not result.get('result_id')
-                        or not isinstance(result.get('content'), str) or len(result['content']) <= 900
-                        or 'locator' in result.get('coverage', '')):
-                    continue
-                span = result.get('displayed_range')
-                unit = result.get('coordinate_unit', 'characters')
-                offset = span['start'] if span else 0
-                call = calls[message['tool_call_id']]
-                if call['function']['name'] == 'read_message_range':
-                    arguments = json.loads(call['function']['arguments'])
-                    offset = arguments['offset']
-                    continuation = {'name': 'read_message_range', 'arguments': {
-                        'message_ref': arguments['message_ref'], 'offset': offset,
-                        'limit': self.config.tool_result_page_chars}}
-                else:
-                    continuation = {'name': 'read_tool_result', 'arguments': {
-                        'result_id': result['result_id'], 'offset': offset, 'coordinate_unit': unit,
-                        'limit': self.config.tool_result_page_chars}}
-                prior = f"旧回执的展示范围为 {unit} [{span['start']},{span['end']}) / {span['total']}。" if span else '旧回执未记录展示范围。'
-                result.update(content=prior + '正文已外置，此处只是位置；需要精确内容时按 next_call 回读。',
-                    coverage='result_locator; archived_body', displayed_range=None, truncated=True,
-                    next_offset=offset, next_call=continuation)
-                result.pop('evidence_span', None)
-                result.pop('evidence_ref', None)
-                message['content'] = json.dumps(result, ensure_ascii=False)
-                self.omit('tool_body', 'saved_body_externalized', result_id=result['result_id'],
-                    previous_displayed_range=span, coordinate_unit=unit)
+                self._archive_tool_body(message, calls[message['tool_call_id']])
+
+    def _archive_tool_body(self, message, call, *, force=False):
+        """Replace one saved body with its location; the call/result pair stays whole."""
+        try:
+            result = json.loads(message['content'])
+        except (TypeError, ValueError):
+            return False
+        if (not isinstance(result, dict) or not result.get('result_id')
+                or not isinstance(result.get('content'), str) or len(result['content']) <= 900 and not force
+                or 'locator' in result.get('coverage', '')):
+            return False
+        span = result.get('displayed_range')
+        unit = result.get('coordinate_unit', 'characters')
+        offset = span['start'] if span else 0
+        if call['function']['name'] == 'read_message_range':
+            arguments = json.loads(call['function']['arguments'])
+            offset = arguments['offset']
+            continuation = {'name': 'read_message_range', 'arguments': {
+                'message_ref': arguments['message_ref'], 'offset': offset,
+                'limit': self.config.tool_result_page_chars}}
+        else:
+            continuation = {'name': 'read_tool_result', 'arguments': {
+                'result_id': result['result_id'], 'offset': offset, 'coordinate_unit': unit,
+                'limit': self.config.tool_result_page_chars}}
+        prior = f"旧回执的展示范围为 {unit} [{span['start']},{span['end']}) / {span['total']}。" if span else '旧回执未记录展示范围。'
+        result.update(content=prior + '正文已外置，此处只是位置；需要精确内容时按 next_call 回读。',
+            coverage='result_locator; archived_body', displayed_range=None, truncated=True,
+            next_offset=offset, next_call=continuation)
+        result.pop('evidence_span', None)
+        result.pop('evidence_ref', None)
+        message['content'] = json.dumps(result, ensure_ascii=False)
+        self.omit('tool_body', 'saved_body_externalized', result_id=result['result_id'],
+            previous_displayed_range=span, coordinate_unit=unit)
+        return True
 
     def release_optional_context(self, messages, *, definitions=None, reserved=(), reason='capacity_reserved_for_new_input'):
         labels = {'saved_result_locators': '上一段资料位置',
@@ -532,7 +545,10 @@ class ConversationContext:
         # A native call proves the preceding request actually received the
         # initially packed original history. Before that response, keep those
         # bodies alongside the read references already assigned by packing.
-        history_was_provided = any(message.get('tool_calls') for message in messages)
+        # A continuation restored from the segment was answered last turn; it
+        # proves nothing about this turn's packed history.
+        history_was_provided = any(message.get('tool_calls') and not message.get('_segment_replayed')
+                                   for message in messages)
         for section in labels:
             if section == 'recent_history' and not history_was_provided:
                 continue
@@ -719,10 +735,13 @@ class ConversationContext:
         page_calls=[call for call,_ in entries if call.id in pages]
         media_reads={}
         original_ranges={}
+        render_inputs={}
 
         async def render(position,limit):
             call_id=page_calls[position].id
             page=pages[call_id]
+            render_inputs[call_id]={'presentation':page.name,'result_id':page.result.result_id,
+                'offset':page.offset,'limit':limit,'coordinate_unit':page.coordinate_unit}
             range_start=len(self.refs.range_contributions)
             result=await toolkit._present(page.name,page.result,page.offset,limit,page.coordinate_unit)
             original_ranges[call_id]=copy.deepcopy(self.refs.range_contributions[range_start:])
@@ -757,6 +776,8 @@ class ConversationContext:
             self.tool_original_presentations[message['tool_call_id']] = {
                 'content': message['content'],
                 'ranges': original_ranges[message['tool_call_id']]}
+            self.tool_reply_sources[message['tool_call_id']] = self._reply_source(
+                render_inputs[message['tool_call_id']], page)
 
         await self.pack_tool_pages(messages,[positions[call.id] for call in page_calls],
             [pages[call.id].limit for call in page_calls],render,definitions=definitions,reserved=reserved,
@@ -871,6 +892,234 @@ class ConversationContext:
             message['_segment_result_locators']=[{**item,'result_id':available.get(item['ref'])} for item in items]
             message['_segment_result_content']=content
             message['content']=content
+
+    @staticmethod
+    def _reply_source(inputs, page):
+        """A presented page as a segment keeps it: its inputs and what they displayed."""
+        name = inputs['presentation']
+        kind = 'message_range' if name == 'read_message_range' else 'job_query' if name == 'query_jobs' else 'page'
+        displayed = None
+        if kind == 'message_range':
+            # Original speech keeps its coordinates in the message, not in
+            # the JSON wrapper saved under the result ID.
+            if page.status in {'ok', 'partial'}:
+                displayed = list(json.loads(page.content)['range'])
+        elif page.displayed_range is not None:
+            span = page.displayed_range
+            displayed = [span.start, span.end, span.total]
+        return {'kind': kind, **inputs, 'displayed_range': displayed}
+
+    @staticmethod
+    def _archived(message):
+        try:
+            shown = json.loads(message.get('content'))
+        except (TypeError, ValueError):
+            return False
+        return isinstance(shown, dict) and 'archived_body' in str(shown.get('coverage', ''))
+
+    @staticmethod
+    def restored_receipt(reply):
+        """The fixed host text for a saved minimal receipt; the original text is gone."""
+        return json.dumps({'kind': 'restored_receipt', 'committed': reply.committed,
+            **({'handle': reply.handle} if reply.handle is not None else {}),
+            **({'reason': reply.reason} if reply.reason is not None else {}),
+            'note': '宿主按保存的固定字段重建的上一段回执，原回执正文未保存。暂存句柄只属于当时那次执行，本轮不能再引用；'
+                    'committed=false 表示当时没有提交，也没有发送；committed=true 的实际发送结果以消息事件为准。'},
+            ensure_ascii=False)
+
+    async def _restore_page(self, reply, toolkit):
+        """Rerender one saved page under this turn's scene, owner and knowledge checks."""
+        saved = await self.runtime.event_store.tool_observation_locator(reply.result_id, self.session.scene_id)
+        if saved is None:
+            raise SegmentExchangeUnavailable('observation_unavailable')
+        if toolkit.saved_result_issue(*saved) is not None:
+            raise SegmentExchangeUnavailable('observation_owner_unavailable')
+        try:
+            await toolkit.import_results([reply.result_id])
+        except ValueError as error:
+            raise SegmentExchangeUnavailable('observation_outside_scene') from error
+        original = toolkit.observations[reply.result_id]
+        current_jobs = dict(self.refs.jobs)
+        range_start = len(self.refs.range_contributions)
+        try:
+            shown = await toolkit._present(reply.presentation, original, reply.offset, reply.limit,
+                                           reply.coordinate_unit)
+        except ValueError as error:
+            raise SegmentExchangeUnavailable('presentation_failed') from error
+        finally:
+            if reply.kind == 'job_query':
+                # A saved directory is an old listing, not current work facts:
+                # its numbers stay reserved, its control eligibility does not.
+                self.refs.jobs.clear()
+                self.refs.jobs.update(current_jobs)
+        failed = {'error', 'unsupported'}
+        if shown.status in failed and original.status not in failed:
+            raise SegmentExchangeUnavailable('presentation_changed')
+        inputs = {'presentation': reply.presentation, 'result_id': reply.result_id, 'offset': reply.offset,
+                  'limit': reply.limit, 'coordinate_unit': reply.coordinate_unit}
+        if self._reply_source(inputs, shown)['displayed_range'] != reply.displayed_range:
+            raise SegmentExchangeUnavailable('displayed_range_changed')
+        toolkit.remember_presentation(shown)
+        return str(shown), copy.deepcopy(self.refs.range_contributions[range_start:])
+
+    async def _rebuild_segment_exchange(self, exchange, toolkit):
+        common = {'_context_section': 'segment_exchange', '_segment_after_rowid': exchange.after_rowid}
+        group = [{**copy.deepcopy(exchange.continuation), **common, '_segment_replayed': True,
+                  '_segment_exchange': exchange.model_dump(mode='json')}]
+        calls = {call['id']: call for call in exchange.continuation['tool_calls']}
+        for reply in exchange.replies:
+            message = {'role': 'tool', 'tool_call_id': reply.tool_call_id, **common}
+            if reply.kind == 'receipt':
+                message['content'] = self.restored_receipt(reply)
+            else:
+                message['content'], ranges = await self._restore_page(reply, toolkit)
+                self.tool_original_presentations[reply.tool_call_id] = {
+                    'content': message['content'], 'ranges': ranges}
+                if reply.shown == 'archived':
+                    self._archive_tool_body(message, calls[reply.tool_call_id], force=True)
+            group.append(message)
+        return group
+
+    def _insert_segment_groups(self, messages, groups):
+        """Place each group after the last window message at or before its position."""
+        for after_rowid, group in groups:
+            index = None
+            for position, message in enumerate(messages):
+                section = message.get('_context_section')
+                if (section == 'recent_history' and message['_source_rowid'] <= after_rowid
+                        or section == 'segment_exchange' and message['_segment_after_rowid'] <= after_rowid):
+                    index = position + 1
+            if index is None:
+                index = next((position for position, message in enumerate(messages)
+                              if self._initial_context_order(message)[0] >= 1), len(messages))
+            messages[index:index] = group
+
+    async def install_segment_exchanges(self, messages, exchanges, *, toolkit, definitions):
+        """Rebuild the saved segment's native groups from persistent references.
+
+        Every group must rebuild under this turn's checks, or none is restored
+        and the reason is returned for the Actor to open a new segment. Groups
+        before the retained window or beyond this request's room leave whole,
+        oldest first. A restored page is a candidate like any presented page:
+        it becomes a read only once this request is actually sent.
+        """
+        if not exchanges:
+            return None
+        window = [message['_source_rowid'] for message in messages
+                  if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
+        start = min(window) if window else None
+        kept = [exchange for exchange in exchanges if start is None or exchange.after_rowid >= start]
+        for exchange in exchanges[:len(exchanges) - len(kept)]:
+            self.omit('segment_exchange', 'before_window_start', tool_call_ids=exchange.call_ids)
+        if not kept:
+            return None
+        snapshot = self._projection_snapshot()
+        presentations = dict(self.tool_original_presentations)
+        empty = self.request_tokens([], [])
+        try:
+            costs = [self.request_tokens(await self._rebuild_segment_exchange(exchange, toolkit), []) - empty
+                     for exchange in kept]
+        except SegmentExchangeUnavailable as error:
+            self._restore_projection(snapshot)
+            self.tool_original_presentations = presentations
+            self.omit('segment_exchange', 'not_rebuildable', detail=str(error))
+            return str(error)
+        self._restore_projection(snapshot)
+        self.tool_original_presentations = presentations
+        room = min(self.input_budget - self.request_tokens(messages, definitions()),
+                   self.config.conversation_recent_tokens)
+        used, first = 0, len(kept)
+        while first > 0 and used + costs[first - 1] <= room:
+            first -= 1
+            used += costs[first]
+        for exchange in kept[:first]:
+            self.omit('segment_exchange', 'no_capacity', tool_call_ids=exchange.call_ids)
+        groups = [(exchange.after_rowid, await self._rebuild_segment_exchange(exchange, toolkit))
+                  for exchange in kept[first:]]
+        self._insert_segment_groups(messages, groups)
+        self.fit_request(messages, definitions(), phase='segment_exchanges')
+        self.reconcile_original_reads(messages)
+        return None
+
+    def _reply_record(self, call, message, terminal_name, toolkit):
+        """Classify one retained native reply by its persistent form, or None."""
+        call_id = message['tool_call_id']
+        try:
+            shown = json.loads(message['content']) if isinstance(message.get('content'), str) else None
+        except ValueError:
+            shown = None
+        receipt = {'kind': 'receipt', 'tool_call_id': call_id}
+        if call['function']['name'] == terminal_name:
+            if not isinstance(shown, dict):
+                return None
+            if shown.get('error') == 'fresh_input_conflict':
+                return {**receipt, 'committed': False, 'reason': 'fresh_input_conflict'}
+            if shown.get('committed') is False:
+                return {**receipt, 'committed': False, 'reason': shown.get('error_code') or 'rejected'}
+            if shown.get('committed') is True:
+                return {**receipt, 'committed': True}
+            return None
+        archived = 'archived' if self._archived(message) else 'page'
+        source = self.tool_reply_sources.get(call_id)
+        if source is not None:
+            return {**source, 'tool_call_id': call_id, 'shown': archived}
+        if (isinstance(shown, dict) and shown.get('status') in {'staged', 'discarded'}
+                and isinstance(shown.get('proposal_ref'), str)):
+            return {**receipt, 'handle': shown['proposal_ref'], 'committed': False,
+                    'reason': 'discarded' if shown['status'] == 'discarded' else None}
+        if isinstance(shown, dict) and isinstance(shown.get('result_id'), str):
+            # An error the loop saved after presentation is shown whole; it is
+            # replayed as the same saved body through the ordinary page path.
+            ident = self.refs.results.get(shown['result_id'], shown['result_id'])
+            original = toolkit.observations.get(ident)
+            span = shown.get('displayed_range')
+            if original is None or span is not None and shown.get('coordinate_unit', 'characters') != 'characters':
+                return None
+            if span is None:
+                span = {'start': 0, 'end': len(original.content), 'total': len(original.content)}
+            limit = span['end'] - span['start']
+            if not 1 <= limit <= self.config.tool_result_max_chars:
+                return None
+            return {'kind': 'page', 'tool_call_id': call_id, 'result_id': ident, 'presentation': 'read_tool_result',
+                    'offset': span['start'], 'limit': limit, 'coordinate_unit': 'characters',
+                    'displayed_range': [span['start'], span['end'], span['total']], 'shown': archived}
+        return None
+
+    def segment_exchanges(self, messages, *, episode_id, terminal_name, toolkit):
+        """Records of the complete native groups in this request, or why none is kept."""
+        if any(message.get('_context_section') == 'plugin_tool_view' for message in messages):
+            # An after_tool view is hook output that no saved state rebuilds.
+            return [], 'plugin_tool_view'
+        records = []
+        starts = [index for index, message in enumerate(messages)
+                  if message.get('role') == 'assistant' and message.get('tool_calls')]
+        for number, index in enumerate(starts):
+            message = messages[index]
+            ids = [call.get('id') for call in message['tool_calls']]
+            group = messages[index + 1:index + 1 + len(ids)]
+            if [item.get('tool_call_id') if item.get('role') == 'tool' else None for item in group] != ids:
+                if number == len(starts) - 1 and not group:
+                    break  # an accepted terminal the loop answered with no receipt
+                return [], 'incomplete_exchange'
+            saved = message.get('_segment_exchange')
+            if saved is not None:
+                replies = [{**reply, 'shown': 'archived'} if reply['kind'] != 'receipt'
+                           and self._archived(item) else reply for reply, item in zip(saved['replies'], group)]
+                records.append({**saved, 'replies': replies})
+                continue
+            if message.get('_segment_after_rowid') is None:
+                return [], 'unplaced_exchange'
+            calls = {call['id']: call for call in message['tool_calls']}
+            replies = [self._reply_record(calls[item['tool_call_id']], item, terminal_name, toolkit)
+                       for item in group]
+            if any(reply is None for reply in replies):
+                return [], 'unclassified_tool_reply'
+            records.append({'kind': 'exchange', 'episode_id': episode_id,
+                            'after_rowid': message['_segment_after_rowid'],
+                            'continuation': {key: copy.deepcopy(value) for key, value in message.items()
+                                             if not key.startswith('_')},
+                            'replies': replies})
+        return records, None
 
     def _source_result_id(self, ref):
         return self.refs.result_id(ref)
