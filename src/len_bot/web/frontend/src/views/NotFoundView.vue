@@ -17,4 +17,15 @@ const directory=computed(()=>({
   agent:{name:'agent-settings',label:'人格与参与'},settings:{name:'settings',label:'系统设置'},
 }[route.path.split('/')[1]] || {name:'overview',label:'运行概览'}))
 </script>
-<template><div class="page-stack"><PageHeader title="页面未找到" description="这个地址没有对应页面；不会为此修改配置或创建对象。" /><v-card><v-card-text class="empty-state"><p>404 · 未知页面</p><v-btn v-if="origin" color="primary" :to="origin">返回来源页面</v-btn><v-btn v-else color="primary" :to="{name:directory.name}">返回{{ directory.label }}</v-btn></v-card-text></v-card></div></template>
+<template>
+  <div class="page-stack">
+    <PageHeader title="页面未找到" description="这个地址没有对应页面；不会为此修改配置或创建对象。" />
+    <v-card>
+      <v-card-text class="empty-state">
+        <p>404 · 未知页面</p>
+        <v-btn v-if="origin" color="primary" :to="origin">返回来源页面</v-btn>
+        <v-btn v-else color="primary" :to="{name:directory.name}">返回{{ directory.label }}</v-btn>
+      </v-card-text>
+    </v-card>
+  </div>
+</template>
