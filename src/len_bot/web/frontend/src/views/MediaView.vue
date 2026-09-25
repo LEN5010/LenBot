@@ -9,6 +9,7 @@ import MediaPreview from '../components/MediaPreview.vue'
 import CharacterReferencesPanel from '../components/CharacterReferencesPanel.vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 import { useConfigConflicts } from '../composables/useConfigConflicts.js'
 import { hasConfigDraftChanges, rebaseConfigDraft } from '../lib/configDraft.js'
 import ConfigConflictBanner from '../components/ConfigConflictBanner.vue'
@@ -127,51 +128,35 @@ function setDraft(asset) {
   baseline.value = original
   draft.value = values
 }
-async function load() {
-  const fresh = listGuard()
-  loading.value = true;
-  error.value = ''
-  const params = new URLSearchParams({
-    scene_id: listScope.value,
-    query: route.query.q || '',
-    page: String(page.value),
-    page_size: '48'
-  })
-  if (route.query.kind && route.query.kind !== 'all') params.set('curated', String(route.query.kind === 'curated'))
-  if (route.query.enabled && route.query.enabled !== 'all') params.set('enabled', String(route.query.enabled === 'enabled'))
-  if (route.query.purpose && route.query.purpose !== 'all') params.set('purpose', route.query.purpose)
-  try {
-    const result = await api('/api/media?' + params)
-    if (!fresh()) return
+const readList = useGuardedRead(listGuard, loading, error)
+function load() {
+  return readList(() => {
+    const params = new URLSearchParams({
+      scene_id: listScope.value,
+      query: route.query.q || '',
+      page: String(page.value),
+      page_size: '48'
+    })
+    if (route.query.kind && route.query.kind !== 'all') params.set('curated', String(route.query.kind === 'curated'))
+    if (route.query.enabled && route.query.enabled !== 'all') params.set('enabled', String(route.query.enabled === 'enabled'))
+    if (route.query.purpose && route.query.purpose !== 'all') params.set('purpose', route.query.purpose)
+    return api('/api/media?' + params)
+  }, result => {
     assets.value = result.items;
     total.value = result.total;
     uploadMaxBytes.value = result.upload_max_bytes;
     loaded.value = true;
     readAt.value = Date.now() / 1000
-  } catch (e) {
-    if (fresh()) error.value = e.message
-  }
-  finally {
-    if (fresh()) loading.value = false
-  }
+  })
 }
-async function loadPalette() {
-  const fresh = paletteGuard()
-  paletteLoading.value = true;
-  paletteError.value = ''
-  try {
-    const value = await api('/api/media/palette?' + new URLSearchParams({ scene_id: listScope.value }))
-    if (!fresh()) return
+const readPalette = useGuardedRead(paletteGuard, paletteLoading, paletteError)
+function loadPalette() {
+  return readPalette(() => api('/api/media/palette?' + new URLSearchParams({ scene_id: listScope.value })), value => {
     palette.value = value.items;
     paletteLimit.value = value.limit;
     paletteLoaded.value = true;
     paletteReadAt.value = Date.now()/1000
-  } catch (e) {
-    if (fresh()) paletteError.value = e.message
-  }
-  finally {
-    if (fresh()) paletteLoading.value = false
-  }
+  })
 }
 async function loadDetail({accept=()=>true}={}) {
   const own=detailGuard(),

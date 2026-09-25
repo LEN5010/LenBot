@@ -5,6 +5,7 @@ import { mdiArrowLeft, mdiRefresh, mdiTextBoxRemoveOutline } from '@mdi/js'
 import { api, fmtTime } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import EntityLink from '../components/EntityLink.vue'
@@ -122,37 +123,31 @@ function applyFilters() {
 function changePage(value) {
   router.push({ name: 'memories', query: { ...route.query, page: value } })
 }
+const readList = useGuardedRead(listGuard, loading, listError)
 async function loadList() {
   if (route.query.tab === 'interests') return
-  const fresh = listGuard()
-  loading.value = true;
-  listError.value = ''
-  const selection = route.query.status === undefined ? 'current' : scalar(route.query.status)
-  const validity = ['current', 'expired'].includes(selection) ? selection : undefined
-  const params = new URLSearchParams(clean({
-    scope: scalar(route.query.scene),
-    subject: scalar(route.query.subject),
-    status: validity ? 'active' : selection,
-    validity,
-    kind: scalar(route.query.kind),
-    query: scalar(route.query.query),
-    page: page.value,
-    page_size: 30
-  }))
-  try {
-    const result = await api('/api/cockpit/memories?' + params)
-    if (!fresh() || id.value) return
+  await readList(() => {
+    const selection = route.query.status === undefined ? 'current' : scalar(route.query.status)
+    const validity = ['current', 'expired'].includes(selection) ? selection : undefined
+    const params = new URLSearchParams(clean({
+      scope: scalar(route.query.scene),
+      subject: scalar(route.query.subject),
+      status: validity ? 'active' : selection,
+      validity,
+      kind: scalar(route.query.kind),
+      query: scalar(route.query.query),
+      page: page.value,
+      page_size: 30
+    }))
+    return api('/api/cockpit/memories?' + params)
+  }, result => {
+    if (id.value) return
     rows.value = result.items;
     total.value = result.total;
     pageSize.value = result.page_size;
     listLoaded.value = true;
     readAt.value = result.sampled_at
-  } catch (error) {
-    if (fresh()) listError.value = error.message
-  }
-  finally {
-    if (fresh()) loading.value = false
-  }
+  })
 }
 async function loadDetail({ reset = false, accept = () => true } = {}) {
   if (route.query.tab === 'interests') return

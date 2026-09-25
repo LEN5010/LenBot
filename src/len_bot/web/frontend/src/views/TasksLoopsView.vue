@@ -5,6 +5,7 @@ import { mdiArrowLeft, mdiRefresh, mdiPencilOutline, mdiClockFast, mdiCancel } f
 import { api } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 import { hasConfigDraftChanges } from '../lib/configDraft.js'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -111,25 +112,20 @@ function parseTime(text) {
   const actual = [value.getFullYear(),value.getMonth()+1,value.getDate(),value.getHours(),value.getMinutes(),value.getSeconds()]
   return parts.every((part,index)=>part===actual[index]) ? value.getTime()/1000 : NaN
 }
-async function loadList() {
-  const fresh = listGuard(), currentTab = tab.value
-  loading.value = true;
-  listError.value = ''
-  const params = new URLSearchParams(clean({ scene_id: scalar(route.query.scene), status: routeStatus.value, kind: currentTab === 'waiting' ? undefined : currentTab === 'reminders' ? 'reminder' : currentTab, page: page.value, page_size: 30 }))
-  try {
-    const value = await api(`/api/cockpit/${currentTab === 'waiting' ? 'loops' : 'tasks'}?` + params)
-    if (!fresh() || id.value) return
+const readList = useGuardedRead(listGuard, loading, listError)
+function loadList() {
+  const currentTab = tab.value
+  return readList(() => {
+    const params = new URLSearchParams(clean({ scene_id: scalar(route.query.scene), status: routeStatus.value, kind: currentTab === 'waiting' ? undefined : currentTab === 'reminders' ? 'reminder' : currentTab, page: page.value, page_size: 30 }))
+    return api(`/api/cockpit/${currentTab === 'waiting' ? 'loops' : 'tasks'}?` + params)
+  }, value => {
+    if (id.value) return
     rows.value = value.items;
     total.value = value.total;
     pageSize.value = value.page_size;
     readAt.value = Date.now() / 1000;
     loaded.value = true
-  } catch (error) {
-    if (fresh()) listError.value = error.message
-  }
-  finally {
-    if (fresh()) loading.value = false
-  }
+  })
 }
 async function loadDetail({ reset = false, accept = () => true } = {}) {
   if (!id.value) return

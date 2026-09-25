@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader.vue'
 import EntityLink from '../components/EntityLink.vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import { useGuardedRead } from '../composables/useGuardedRead.js'
 import { useConfigConflicts } from '../composables/useConfigConflicts.js'
 import { hasConfigDraftChanges, rebaseConfigDraft } from '../lib/configDraft.js'
 import ConfigConflictBanner from '../components/ConfigConflictBanner.vue'
@@ -46,23 +47,12 @@ const retrievalConflict = computed(() => conflicts.entries.retrieval)
 const deleteConflicts = computed(() => Object.entries(conflicts.entries).filter(([key]) => key.startsWith('delete:')))
 const reservationRows = computed(() => reservations.value?.items || [])
 const reservationAccounts = computed(() => reservations.value?.accounts || [])
-async function loadReservations() {
-  const fresh = reservationGuard()
-  reservationError.value = '';
-  reservationLoading.value = true
-  try {
-    const result = await api('/api/models/reservations')
-    if (fresh()) {
-      reservations.value = result;
-      reservationReadAt.value = Date.now()/1000
-    }
-  }
-  catch (e) {
-    if (fresh()) reservationError.value = e.message
-  }
-  finally {
-    if (fresh()) reservationLoading.value = false
-  }
+const readReservations = useGuardedRead(reservationGuard, reservationLoading, reservationError)
+function loadReservations() {
+  return readReservations(() => api('/api/models/reservations'), result => {
+    reservations.value = result;
+    reservationReadAt.value = Date.now()/1000
+  })
 }
 // An absent number is only "no limit" when a policy actually said so.  A day
 // spanning several grants has no single admission balance, and a reference
