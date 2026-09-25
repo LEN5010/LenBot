@@ -182,6 +182,7 @@ class AgentLoop:
         prepare_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
         prepare_tool_results: Callable[[list[dict], list[tuple[ToolCall, ToolResult | ObservationPage | dict[str, Any]]]], Awaitable[list[str]]] | None = None,
         exchange_checkpoint: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+        closed_exchange: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
         remaining_steps: Callable[[], Awaitable[int | None]] | None = None,
         budget_state: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         finalize_request: Callable[[list[dict], list[dict]], Awaitable[list[dict] | None]] | None = None,
@@ -523,6 +524,8 @@ class AgentLoop:
                             await exchange_checkpoint(copy.deepcopy(trajectory))
                         if remaining == 1:
                             audit['termination_reason'] = 'final_step_fresh_input_conflict'
+                            if closed_exchange is not None:
+                                await closed_exchange(trajectory)
                             raise
                         if observe is not None:
                             additions = await observe()
@@ -547,6 +550,8 @@ class AgentLoop:
                             await exchange_checkpoint(copy.deepcopy(trajectory))
                         if remaining == 1:
                             audit['termination_reason'] = 'final_step_invalid_arguments'
+                            if closed_exchange is not None:
+                                await closed_exchange(trajectory)
                             raise
                         if observe is not None:
                             additions = await observe()
@@ -575,6 +580,10 @@ class AgentLoop:
                                     additions=await observe()
                                     if additions:trajectory.extend(copy.deepcopy(additions))
                                 continue
+                    # The last group has its receipt, or the terminal had none
+                    # to give; either way no further request will carry it.
+                    if closed_exchange is not None:
+                        await closed_exchange(trajectory)
                     return outcome
                 if exchange_checkpoint is not None:
                     await exchange_checkpoint(copy.deepcopy(trajectory))

@@ -670,7 +670,7 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
         return json.loads(row[0]) if row else None
 
     async def save_conversation_segment(self, scene_id, expected_id, segment, episode_id, *, changed):
-        """Update only the Actor-owned source window, never observation or task progress."""
+        """Update only the Actor-owned segment, never observation or task progress."""
         import uuid
         async with self._write_lock:
             try:
@@ -687,7 +687,11 @@ class EventStore(DeliveryStoreMixin, ObservationStoreMixin, JobStoreMixin, Media
                         (f'trc_segment_{uuid.uuid4().hex}','conversation_segment',scene_id,episode_id,
                          json.dumps({'segment_id':segment['id'],'previous_id':segment['previous_id'],
                              'reason':segment['reason'],'through_rowid':segment['through_rowid'],
-                             'window_events':len(segment['event_ids']),'continuity':'source_window_only'},ensure_ascii=False),
+                             'window_events':len(segment['event_ids']),
+                             'native_exchanges':len(segment['ordered_items']),
+                             'exchange_gap':segment['exchange_gap'],
+                             'continuity':'native_exchanges' if segment['ordered_items'] else 'source_window_only'},
+                            ensure_ascii=False),
                          self.clock()))
                 await self._db.commit()
             except BaseException:

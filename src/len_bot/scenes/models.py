@@ -1,6 +1,6 @@
 """Event-derived session facts. Social interpretations belong to a single turn."""
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Literal
+from typing import Annotated, Any, Literal
 from len_bot.cognition.providers import ModelProfile
 
 
@@ -83,14 +83,100 @@ class SegmentSummaryRef(BaseModel):
     range: list[int] = Field(min_length=4, max_length=4)
 
 
+class SegmentPageReply(BaseModel):
+    """A native tool reply shown from a saved observation; the body stays there.
+
+    offset/limit/unit are the presentation inputs that produced the page, and
+    displayed_range is what they displayed: [start, end, total] of the saved
+    body, the original message's own range for read_message_range, and None
+    for a job directory page, which displays no range of its JSON.
+    """
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    kind: Literal['page', 'message_range', 'job_query']
+    tool_call_id: str = Field(min_length=1)
+    result_id: str = Field(min_length=1)
+    presentation: str = Field(min_length=1)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    coordinate_unit: Literal['characters', 'records']
+    displayed_range: list[int] | None = Field(default=None, min_length=3, max_length=3)
+    shown: Literal['page', 'archived'] = 'page'
+
+
+class SegmentReceiptReply(BaseModel):
+    """Host-built minimal receipt for a reply that has no saved observation.
+
+    Only these fixed fields are kept; the text the model received, including
+    any hook output, is not, and is never rebuilt from traces or commits.
+    """
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    kind: Literal['receipt'] = 'receipt'
+    tool_call_id: str = Field(min_length=1)
+    handle: str | None = None
+    committed: bool
+    reason: str | None = None
+
+
+SegmentReply = Annotated[SegmentPageReply | SegmentReceiptReply, Field(discriminator='kind')]
+
+
+class SegmentExchange(BaseModel):
+    """One complete native call group, placed after a scene event position."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    kind: Literal['exchange'] = 'exchange'
+    episode_id: str = Field(min_length=1)
+    after_rowid: int = Field(ge=0)
+    continuation: dict[str, Any]
+    replies: list[SegmentReply] = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def matching_replies(self):
+        calls = self.continuation.get('tool_calls')
+        if self.continuation.get('role') != 'assistant' or not isinstance(calls, list) or not calls:
+            raise ValueError('A saved exchange needs a native assistant tool-call continuation')
+        if any(key.startswith('_') for key in self.continuation):
+            raise ValueError('A saved continuation carries no host-private fields')
+        ids = [call.get('id') if isinstance(call, dict) else None for call in calls]
+        if ids != [reply.tool_call_id for reply in self.replies]:
+            raise ValueError('Each native tool call needs exactly one reply, in call order')
+        return self
+
+    @property
+    def call_ids(self) -> list[str]:
+        return [reply.tool_call_id for reply in self.replies]
+
+    def same_source(self, other: 'SegmentExchange') -> bool:
+        """The same group; a page may since have been archived, never restored."""
+        if (self.episode_id, self.after_rowid, self.continuation) != (other.episode_id, other.after_rowid,
+                                                                     other.continuation):
+            return False
+        if len(self.replies) != len(other.replies):
+            return False
+        for earlier, later in zip(self.replies, other.replies):
+            if earlier.kind == 'receipt' or later.kind == 'receipt':
+                if earlier != later:
+                    return False
+            elif (earlier.model_dump(exclude={'shown'}) != later.model_dump(exclude={'shown'})
+                  or earlier.shown == 'archived' and later.shown != 'archived'):
+                return False
+        return True
+
+
+class SegmentExchangeGap(BaseModel):
+    """A run whose native groups could not be kept; the next run opens a new segment."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    episode_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class ConversationSegment(BaseModel):
-    """Current source-window references, not a provider transcript or read grant."""
+    """Current source-window references and complete native exchanges, not a read grant."""
     model_config = ConfigDict(extra='forbid', frozen=True)
     id: str
     previous_id: str | None = None
     assembly_version: Literal[1] = 1
     opened_at: float
-    reason: Literal['initial', 'process_restart', 'binding_changed', 'window_trimmed']
+    reason: Literal['initial', 'process_restart', 'binding_changed', 'window_trimmed', 'exchange_unrecoverable']
     model_profile: ModelProfile
     knowledge_revision: int = Field(ge=0)
     through_rowid: int = Field(ge=0)
@@ -101,6 +187,8 @@ class ConversationSegment(BaseModel):
     memory_aliases: dict[str, str] = Field(default_factory=dict)
     task_aliases: dict[str, str] = Field(default_factory=dict)
     loop_aliases: dict[str, str] = Field(default_factory=dict)
+    ordered_items: list[SegmentExchange] = Field(default_factory=list)
+    exchange_gap: SegmentExchangeGap | None = None
 
 
 class SceneSession(BaseModel):

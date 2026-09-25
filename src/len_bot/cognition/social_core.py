@@ -7,7 +7,7 @@ import copy
 import time
 from dataclasses import replace
 
-from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, TerminalArgumentError, final_step_message, execution_budget_message
+from len_bot.cognition.agent_loop import AgentLoop, CommitConflict, FreshInputConflict, TerminalArgumentError, final_step_message, execution_budget_message, _error_text
 from len_bot.cognition.context import ConversationContext
 from len_bot.cognition.gateway import ModelGateway
 from len_bot.cognition.proposals import ProposalLedger, TOOLS
@@ -140,6 +140,15 @@ class SocialCognitionCore:
                 raise ValueError('Plugin Agent requested tools unavailable to this scene and entry')
         pending_exchange=None
         pending_presentations=[]
+        # Native groups of the saved segment return only under the same model
+        # binding: provider continuation fields belong to the model that made
+        # them. The Actor decides the segment identity at the first save.
+        previous_segment=session.conversation_segment if save_segment is not None else None
+        terminal_name=ledger.terminal_definition()['function']['name']
+        exchange_break=None
+        exchange_gap=None
+        request_cutoff=None
+        last_definitions=None
         # Read-tool exhaustion closes reads, not a still-budgeted follow-up or wait.
         # An unlimited count has no remaining number to report; the ledger then
         # keeps offering its full action set and the deadline or the account's
@@ -168,6 +177,13 @@ class SocialCognitionCore:
             if save_segment is not None and session.conversation_segment is not None:
                 await context.install_segment_result_locators(messages,
                     session.conversation_segment.result_aliases,definitions=request_definitions,toolkit=toolkit)
+            if (previous_segment is not None and previous_segment.ordered_items
+                    and previous_segment.exchange_gap is None
+                    and previous_segment.model_profile == ModelProfile(provider_id=binding.provider_id,
+                        model=binding.model,reasoning_effort=binding.reasoning_effort,
+                        supports_vision=binding.supports_vision)):
+                exchange_break=await context.install_segment_exchanges(messages,previous_segment.ordered_items,
+                    toolkit=toolkit,definitions=request_definitions)
             if plugin_request:
                 await toolkit.import_results(plugin_request.result_ids)
                 for ident in plugin_request.result_ids:
@@ -257,9 +273,74 @@ class SocialCognitionCore:
             context.fit_request(trajectory,request_definitions(),phase='new_input')
             return None
 
+        def tag_exchanges(trajectory):
+            # Each native group follows the request that produced it; its
+            # scene position is that request's read cutoff.
+            for message in trajectory:
+                if (message.get('role')=='assistant' and message.get('tool_calls')
+                        and '_segment_after_rowid' not in message):
+                    message['_segment_after_rowid']=request_cutoff if request_cutoff is not None else context.refs.cutoff
+
+        async def save_state(trajectory,definitions):
+            nonlocal segment_id,exchange_gap
+            window_ids=[message['_source_event_id'] for message in trajectory
+                if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
+            summary_refs=[dict(ref) for message in trajectory
+                if message.get('_context_section') == 'history_summary'
+                and not message.get('_context_omitted')
+                and '_summary_content' in message
+                and message.get('content') == message['_summary_content']
+                for ref in message['_summary_refs']]
+            exchanges,gap=context.segment_exchanges(trajectory,episode_id=episode_id,
+                terminal_name=terminal_name,toolkit=toolkit)
+            # Once a group of this run cannot be kept, none of its groups is.
+            exchange_gap=exchange_gap or gap
+            segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
+                through_rowid=context.refs.cutoff,event_ids=window_ids,
+                summary_refs=summary_refs,
+                result_aliases=dict(context.refs.results),
+                job_aliases={ref:job['id'] for ref,job in context.refs.jobs.items()},
+                memory_aliases=dict(context.refs.memories),
+                task_aliases=dict(context.refs.tasks),
+                loop_aliases=dict(context.refs.loops),
+                exchanges=[] if exchange_gap else exchanges,
+                carried=0 if exchange_gap else sum('_segment_exchange' in message for message in trajectory),
+                exchange_break=exchange_break,exchange_gap=exchange_gap,
+                profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
+                    reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
+                basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],
+                       'tools':[dict(definition) for definition in definitions],
+                       'tool_sources':[(definition.plugin_id,definition.plugin_version,definition.api_version)
+                           if isinstance(definition,_LocatedPluginToolDefinition)
+                           else (definition.component_id,definition.revision)
+                           if isinstance(definition,_RecordedToolDefinition) else None for definition in definitions]})
+            segment_id=segment.id
+            context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
+                'reason':segment.reason,'through_rowid':segment.through_rowid,
+                'window_events':len(segment.event_ids),'summary_batches':len(segment.summary_refs),
+                'native_exchanges':len(segment.ordered_items),'exchange_gap':exchange_gap,
+                'exchange_break':exchange_break,
+                'continuity':'native_exchanges' if segment.ordered_items else 'source_window_only'}
+            audit['context_plan']=copy.deepcopy(context.context_plan)
+
+        async def close_exchanges(trajectory):
+            # The loop ends without another request; keep its last complete
+            # group. A failed save leaves the earlier checkpoint and is reported
+            # beside the run's own result, which it cannot undo or repeat.
+            if save_segment is None or last_definitions is None:
+                return
+            tag_exchanges(trajectory)
+            try:
+                await save_state(trajectory,last_definitions)
+            except Exception as error:
+                audit['segment_close']={'status':'failed','error':_error_text(error)}
+            else:
+                audit['segment_close']={'status':'saved'}
+
         async def finalize_request(trajectory,definitions):
-            nonlocal pending_presentations,segment_id
+            nonlocal pending_presentations,request_cutoff,last_definitions
             context.trajectory=trajectory
+            tag_exchanges(trajectory)
             # Expiry does not increment the scene's knowledge revision. Refresh
             # the existing local preference projection even without new input.
             if not plugin_request or plugin_request.input_mode=='conversation':
@@ -289,36 +370,9 @@ class SocialCognitionCore:
             audit['read_cutoff']=context.refs.cutoff
             audit['call_signals']=dict(context.call_signals)
             if save_segment is not None:
-                window_ids=[message['_source_event_id'] for message in trajectory
-                    if message.get('_context_section') == 'recent_history' and not message.get('_context_omitted')]
-                summary_refs=[dict(ref) for message in trajectory
-                    if message.get('_context_section') == 'history_summary'
-                    and not message.get('_context_omitted')
-                    and '_summary_content' in message
-                    and message.get('content') == message['_summary_content']
-                    for ref in message['_summary_refs']]
-                segment=await save_segment(episode_id=episode_id,expected_id=segment_id,
-                    through_rowid=context.refs.cutoff,event_ids=window_ids,
-                    summary_refs=summary_refs,
-                    result_aliases=dict(context.refs.results),
-                    job_aliases={ref:job['id'] for ref,job in context.refs.jobs.items()},
-                    memory_aliases=dict(context.refs.memories),
-                    task_aliases=dict(context.refs.tasks),
-                    loop_aliases=dict(context.refs.loops),
-                    profile=ModelProfile(provider_id=binding.provider_id,model=binding.model,
-                        reasoning_effort=binding.reasoning_effort,supports_vision=binding.supports_vision),
-                    basis={'system':[message.get('content') for message in trajectory if message.get('role')=='system'],
-                           'tools':[dict(definition) for definition in definitions],
-                           'tool_sources':[(definition.plugin_id,definition.plugin_version,definition.api_version)
-                               if isinstance(definition,_LocatedPluginToolDefinition)
-                               else (definition.component_id,definition.revision)
-                               if isinstance(definition,_RecordedToolDefinition) else None for definition in definitions]})
-                segment_id=segment.id
-                context.context_plan['segment']={'id':segment.id,'previous_id':segment.previous_id,
-                    'reason':segment.reason,'through_rowid':segment.through_rowid,
-                    'window_events':len(segment.event_ids),'summary_batches':len(segment.summary_refs),
-                    'continuity':'source_window_only'}
-                audit['context_plan']=copy.deepcopy(context.context_plan)
+                await save_state(trajectory,definitions)
+            request_cutoff=context.refs.cutoff
+            last_definitions=definitions
             return context.model_messages(trajectory, toolkit=toolkit)
 
         async def checkpoint(stage,payload):
@@ -412,6 +466,12 @@ class SocialCognitionCore:
                 publication_started = time.monotonic()
                 try:
                     await publish(last_decision)
+                except BaseException as error:
+                    # The commit stands; the model got no receipt, so this
+                    # terminal group is incomplete and stays out of the segment.
+                    audit['segment_close']={'status':'not_saved','reason':'publication_interrupted'
+                        if isinstance(error,asyncio.CancelledError) else 'publication_failed'}
+                    raise
                 finally:
                     timings = audit.setdefault('timings_ms', {})
                     timings['publication'] = round(timings.get('publication', 0)
@@ -434,7 +494,8 @@ class SocialCognitionCore:
                 ordered_tool_names=runtime.plugin_host.ordered_tool_names(),
                 max_steps=config.conversation_max_steps,max_tool_calls=config.conversation_max_tool_calls,
                 observe=incorporate,finalize_request=finalize_request,record_tool_result=record_tool_result,prepare_tool_results=prepare_tool_results,
-                checkpoint=checkpoint,trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools,
+                checkpoint=checkpoint,closed_exchange=close_exchanges,
+                trace=audit,initial_model_calls=initial_models,initial_tool_calls=initial_tools,
                 hooks=hooks,budget=execution.budget,external_outcome=lambda:execution.suspended_outcome)
             remaining = execution.budget.deadline_seconds()
             if remaining is None:
