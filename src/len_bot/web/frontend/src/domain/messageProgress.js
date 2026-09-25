@@ -2,7 +2,14 @@ import { attentionReason, fmtTime } from '../api.js'
 import { eventLabel, interactionReason, publicationActionLabel } from './activity.js'
 
 const inputTypes = new Set(['GROUP_MESSAGE_RECEIVED', 'PRIVATE_MESSAGE_RECEIVED'])
-const receiptTypes = new Set(['MESSAGE_SENT', 'MESSAGE_SEND_FAILED', 'ACTION_SHADOWED', 'DELIVERY_ATTEMPTED', 'FILE_UPLOADED', 'FILE_UPLOAD_FAILED'])
+const receiptTypes = new Set([
+  'MESSAGE_SENT',
+  'MESSAGE_SEND_FAILED',
+  'ACTION_SHADOWED',
+  'DELIVERY_ATTEMPTED',
+  'FILE_UPLOADED',
+  'FILE_UPLOAD_FAILED'
+])
 export function supportsMessageProgress(event) {
   return Boolean(event && (inputTypes.has(event.event_type) || receiptTypes.has(event.event_type) && event.payload?.action_id))
 }
@@ -42,10 +49,19 @@ export function messageRecords(event, relations) {
   const linkedActionIds = new Set(actions.map(action => action.id))
   const deliveryReceipts = [...new Map([...(relations?.events || []), event].filter(item => item
     && item.scene_id === event?.scene_id
-    && ['MESSAGE_SENT', 'MESSAGE_SEND_FAILED', 'FILE_UPLOADED', 'FILE_UPLOAD_FAILED', 'ACTION_SHADOWED'].includes(item.event_type)
+    && [
+      'MESSAGE_SENT',
+      'MESSAGE_SEND_FAILED',
+      'FILE_UPLOADED',
+      'FILE_UPLOAD_FAILED',
+      'ACTION_SHADOWED'
+    ].includes(item.event_type)
     && linkedActionIds.has(item.payload.action_id)).map(item => [item.id, item])).values()]
   const deliveryProblems = deliveryReceipts.filter(item => ['MESSAGE_SEND_FAILED', 'FILE_UPLOAD_FAILED'].includes(item.event_type) && item.payload.error)
-  const committed = new Set([...readTurns.map(turn => turn.event_id), ...actions.map(action => action.commit_event_id).filter(Boolean)])
+  const committed = new Set([
+    ...readTurns.map(turn => turn.event_id),
+    ...actions.map(action => action.commit_event_id).filter(Boolean)
+  ])
   const attempts = (relations?.traces || []).filter(trace => ['conversation', 'conversation_error', 'conversation_wait'].includes(trace.kind)
     && (actionId ? selectedAction.commit_event_id && trace.commit_event_ids?.includes(selectedAction.commit_event_id)
       : sourceId && (trace.source_event_ids?.includes(sourceId) || trace.read_source_event_ids?.includes(sourceId))))
@@ -69,8 +85,20 @@ export function messageRecords(event, relations) {
 }
 
 const step = (name, state, summary, detail = '') => ({ name, state, summary, detail })
-const outcomeLabels = { replied: '已组织回应', delegated: '已委托', waiting: '等待外部回应', incomplete: '本次未完成', silent: '选择旁听' }
-const outcomeStates = { replied: 'recorded', delegated: 'waiting', waiting: 'waiting', incomplete: 'partial', silent: 'skipped' }
+const outcomeLabels = {
+  replied: '已组织回应',
+  delegated: '已委托',
+  waiting: '等待外部回应',
+  incomplete: '本次未完成',
+  silent: '选择旁听'
+}
+const outcomeStates = {
+  replied: 'recorded',
+  delegated: 'waiting',
+  waiting: 'waiting',
+  incomplete: 'partial',
+  silent: 'skipped'
+}
 
 export function messageProgress(event, relations) {
   const facts = messageRecords(event, relations)
@@ -105,14 +133,24 @@ export function messageProgress(event, relations) {
   if (committed.size) {
     const interrupted = actions.some(action => action.publication_status === 'not_enqueued' && action.publication_error)
     const uncertain = actions.some(action => action.publication_status === 'enqueue_unknown')
-    const states = [...new Set(actions.map(action => publicationActionLabel(action.publication_status)))]
+    const states = [
+      ...new Set(actions.map(action => publicationActionLabel(action.publication_status)))
+    ]
     commit = step('提交与发布', interrupted ? 'failed' : uncertain ? 'unknown' : 'recorded',
       interrupted ? '已有提交，部分表达未入队且同次发布报告问题' : uncertain ? '已有提交，部分表达入队结果未知' : '已有持久提交',
       states.length ? states.join('；') : '已有读取或处理提交，没有据此证明发送。')
   } else if (actions.length) {
     commit = step('提交与发布', 'unknown', '已有行动关联，提交身份未取得', '只展示已保存身份，不从发送时间反推提交。')
   }
-  const counts = { sent: 0, failed: 0, unknown: 0, shadow: 0, simulated: 0, pending: 0, unrecorded: 0 }
+  const counts = {
+    sent: 0,
+    failed: 0,
+    unknown: 0,
+    shadow: 0,
+    simulated: 0,
+    pending: 0,
+    unrecorded: 0
+  }
   for (const action of actions) {
     if (action.simulated || action.origin_mode === 'simulated') counts.simulated++
     else if (action.delivery_status === 'shadow') counts.shadow++
@@ -125,7 +163,15 @@ export function messageProgress(event, relations) {
     else if (action.delivery_status === 'pending' || !action.delivery_status && action.publication_status === 'enqueued') counts.pending++
     else counts.unrecorded++
   }
-  const deliveryLabels = { sent: '真实送达', failed: '明确未送达', unknown: '送达未知', shadow: 'Shadow', simulated: '模拟', pending: '待回执', unrecorded: '未记录结局' }
+  const deliveryLabels = {
+    sent: '真实送达',
+    failed: '明确未送达',
+    unknown: '送达未知',
+    shadow: 'Shadow',
+    simulated: '模拟',
+    pending: '待回执',
+    unrecorded: '未记录结局'
+  }
   const delivery = actions.length
     ? step('发送与回执', counts.failed ? 'failed' : counts.unknown || counts.unrecorded ? 'unknown' : counts.pending ? 'waiting' : counts.sent ? 'recorded' : 'skipped',
       `本页 ${actions.length} 条明确归属的行动`, Object.entries(counts).filter(([, count]) => count).map(([key, count]) => `${deliveryLabels[key]} ${count}`).join(' · '))
