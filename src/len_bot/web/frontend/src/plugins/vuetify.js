@@ -7,7 +7,28 @@ export default createVuetify({
   locale:{locale:'zhHans',messages:{zhHans}},
   icons:{defaultSet:'mdi',aliases,sets:{mdi}},
   display:{mobileBreakpoint:1024},
-  theme:{defaultTheme:'light',themes:{light:{dark:false,colors:{primary:'#2563eb',secondary:'#52647b',background:'#f4f6f9',surface:'#ffffff','surface-variant':'#eef2f7','on-surface-variant':'#63748b',success:'#16845c',warning:'#a86413',error:'#c84040',info:'#326fa8','on-background':'#172b46','on-surface':'#172b46'}}}},
+  theme:{
+    defaultTheme:'light',
+    themes:{
+      light:{
+        dark:false,
+        colors:{
+          primary:'#2563eb',
+          secondary:'#52647b',
+          background:'#f4f6f9',
+          surface:'#ffffff',
+          'surface-variant':'#eef2f7',
+          'on-surface-variant':'#63748b',
+          success:'#16845c',
+          warning:'#a86413',
+          error:'#c84040',
+          info:'#326fa8',
+          'on-background':'#172b46',
+          'on-surface':'#172b46'
+        }
+      }
+    }
+  },
   defaults:{
     VBtn:{variant:'flat',rounded:'lg',elevation:0},
     VCard:{elevation:0,border:true,rounded:'lg'},

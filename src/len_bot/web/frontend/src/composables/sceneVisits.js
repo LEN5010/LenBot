@@ -12,5 +12,9 @@ export function rememberSceneVisit(route, view) {
   while (visits.size > limit) visits.delete(visits.keys().next().value)
 }
 
-export function sceneVisit(route) { return visits.get(sourcePath(route)) }
-export function clearSceneVisits() { visits.clear() }
+export function sceneVisit(route) {
+  return visits.get(sourcePath(route))
+}
+export function clearSceneVisits() {
+  visits.clear()
+}
