@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '../../api.js'
+import { useGuardedRead } from '../../composables/useGuardedRead.js'
 import { useRequestGuard } from '../../composables/useRequestGuard.js'
 
 // Persona tab: the persona draft, the Diana template preview, expression
@@ -56,22 +57,12 @@ export function usePersonaSettings({
   const personaDirty = computed(()=>!!persona.value&&JSON.stringify(persona.value)!==personaOriginal.value)
   const exampleDirty = computed(()=>exampleOpen.value&&JSON.stringify(example.value)!==exampleOriginal.value)
   const imageUrl = (assetId,scene='') => `/api/media/${encodeURIComponent(assetId)}/file?scene_id=${encodeURIComponent(scene||'global-safe')}`
-  async function loadExamples() {
-    const fresh = exampleListGuard()
-    examplesLoading.value = true;
-    examplesError.value = ''
-    try {
-      const result = await api('/api/voice/exemplars')
-      if(fresh()){
-        exemplars.value=result.exemplars;
-        examplesReadAt.value=Date.now()/1000
-      }
-    } catch(e){
-      if(fresh())examplesError.value=e.message
-    }
-    finally{
-      if(fresh())examplesLoading.value=false
-    }
+  const readExamples = useGuardedRead(exampleListGuard, examplesLoading, examplesError)
+  function loadExamples() {
+    return readExamples(() => api('/api/voice/exemplars'), result => {
+      exemplars.value=result.exemplars;
+      examplesReadAt.value=Date.now()/1000
+    })
   }
   async function savePersona() {
     if(busy.value||personaNeedsReadback.value||saveOutcomes.value.persona||conflicts.entries.persona)return
