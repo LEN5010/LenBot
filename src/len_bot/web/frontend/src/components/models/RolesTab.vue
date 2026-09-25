@@ -73,7 +73,7 @@ const { testConfirm, testResult, profile } = props.state
 .role-title h2,.provider-heading h2{font-size:19px}
 .role-description{min-height:3.5em;line-height:1.7}
 .role-card dl{display:grid;grid-template-columns:75px minmax(0,1fr);gap:12px;font-size:14px}
-.role-card dt{color:#64748b}
+.role-card dt{color:var(--text-secondary)}
 .role-card dd{margin:0;overflow-wrap:anywhere}
 .check-list{display:flex;flex-wrap:wrap;gap:8px 20px}
 @media(max-width:1100px){

@@ -132,11 +132,11 @@ const { quotaText, quotaDirty, quotaRows, quotaProblems, quotaRaw, rawPolicies,
 .form-grid>.v-btn{justify-self:start}
 .actions,.meta,.delivery-state,.saved-scenes{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center}
 .error-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px}
-.policy-row{border:1px solid #e2e8f0;border-radius:8px;padding:16px}
+.policy-row{border:1px solid var(--line);border-radius:8px;padding:16px}
 .policy-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .policy-heading h3{font-size:14px;font-weight:650}
 .policy-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-.policy-error{color:#b3261e;font-size:13px;margin:8px 0 0}
+.policy-error{color:var(--error-text);font-size:13px;margin:8px 0 0}
 .settings-view p{line-height:1.7}
 @media(max-width:650px){
   .form-grid{grid-template-columns:minmax(0,1fr)}

@@ -645,11 +645,11 @@ watch(() => providerForm.value?.id.trim(), () => {
 <style scoped>
 .usage-card{display:grid;gap:12px}
 .limit-row{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:baseline;font-size:13px}
-.limit-row span{color:#64748b}
+.limit-row span{color:var(--text-secondary)}
 .reservation-table-wrap{overflow-x:auto}
 .reservation-table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}
 .reservation-table caption{text-align:left;font-weight:600;padding:4px 0 10px}
-.reservation-table th,.reservation-table td{padding:10px 12px;border-bottom:1px solid #e2e8f0;white-space:nowrap}
+.reservation-table th,.reservation-table td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
 .reservation-table thead{background:rgb(var(--v-theme-surface-variant))}
 .reservation-table tbody th{font-weight:500}
 .role-title,.provider-heading,.dialog-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}

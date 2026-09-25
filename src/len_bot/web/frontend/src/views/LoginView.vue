@@ -65,7 +65,7 @@ async function submit(){
 <style scoped>
 .login-page{display:grid;place-items:center;min-height:100vh;padding:24px}
 .login-card{width:420px;max-width:100%;padding:20px}
-.login-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:10px;background:#2563eb;color:#fff;font-size:26px;font-weight:700;margin-bottom:24px}
+.login-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:10px;background:var(--primary);color:var(--on-primary);font-size:26px;font-weight:700;margin-bottom:24px}
 .login-card h1{font-size:25px;margin-bottom:8px}
 .login-card form{display:grid;gap:20px;margin-top:28px}
 .login-note{margin:24px 0 0;font-size:12px;color:var(--muted)}

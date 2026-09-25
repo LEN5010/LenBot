@@ -940,7 +940,7 @@ onBeforeUnmount(()=>{
 .usage-grid small{font-size:11px;color:var(--muted)}
 .usage-note,.range-note{font-size:12px;line-height:1.7;margin:0}
 .activity-list{min-width:0}
-.list-heading{background:#f8fafc;padding:12px 20px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line)}
+.list-heading{background:var(--list-heading-bg);padding:12px 20px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line)}
 .record-row{padding:18px 20px;border-bottom:1px solid var(--line);gap:16px;align-items:start;font-size:13px;min-width:0}
 .record-row:last-child{border-bottom:0}
 .record-row>div{min-width:0}

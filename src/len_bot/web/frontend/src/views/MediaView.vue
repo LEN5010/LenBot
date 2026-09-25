@@ -847,22 +847,22 @@ watch(() => route.fullPath, () => {
 .filters{display:grid;grid-template-columns:minmax(170px,1.2fr) minmax(160px,1.5fr) repeat(3,minmax(110px,.7fr)) auto;gap:12px;align-items:center}
 .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
 .asset-link{display:block;color:inherit;text-decoration:none;height:100%}
-.asset-preview{aspect-ratio:1;background:#f4f6f9;display:flex;align-items:center;justify-content:center;padding:12px}
+.asset-preview{aspect-ratio:1;background:var(--page);display:flex;align-items:center;justify-content:center;padding:12px}
 .asset-copy{padding:14px;min-width:0;display:grid;gap:8px}
 .asset-copy strong{line-height:1.5;min-height:3em;overflow-wrap:anywhere}
 .asset-scope{font-size:12px;overflow-wrap:anywhere}
-.asset-tags{font-size:12px;color:#64748b;min-height:1.5em}
+.asset-tags{font-size:12px;color:var(--text-secondary);min-height:1.5em}
 .chips,.detail-meta{display:flex;gap:8px;flex-wrap:wrap}
 .list-summary,.dialog-title{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
 .palette-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .palette-item{display:flex;gap:10px;align-items:center;min-width:0;text-decoration:none;color:inherit}
-.palette-preview{width:48px;height:48px;flex:none;background:#f4f6f9}
-.detail-image{height:clamp(220px,42vh,450px);background:#f4f6f9;display:flex;margin-bottom:16px;min-width:0}
+.palette-preview{width:48px;height:48px;flex:none;background:var(--page)}
+.detail-image{height:clamp(220px,42vh,450px);background:var(--page);display:flex;margin-bottom:16px;min-width:0}
 .detail-meta{font-size:13px;align-items:center;margin-bottom:20px}
 .edit-form{display:grid;gap:12px}
 .edit-form>.v-btn{justify-self:start}
 .full-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
-.asset-link:focus-visible,.palette-item:focus-visible{outline:3px solid #2563eb;outline-offset:-3px}
+.asset-link:focus-visible,.palette-item:focus-visible{outline:3px solid var(--primary);outline-offset:-3px}
 @media(max-width:1000px){
   .filters{grid-template-columns:repeat(2,minmax(0,1fr))}
 }

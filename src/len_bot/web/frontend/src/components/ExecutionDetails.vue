@@ -167,7 +167,7 @@ onBeforeUnmount(() => {
 .execution-details summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:14px;cursor:pointer;font-size:13px}
 .execution-details summary::before{content:'▸';color:var(--muted)}
 .execution-details[open] summary::before{content:'▾'}
-.execution-details summary:focus-visible{outline:3px solid #2563eb;outline-offset:-3px}
+.execution-details summary:focus-visible{outline:3px solid var(--primary);outline-offset:-3px}
 .execution-details code{overflow-wrap:anywhere;min-width:0}
 .execution-details summary code{flex-basis:100%;font-size:12px;color:var(--muted)}
 .execution-body,.input-section{display:grid;gap:12px;min-width:0}

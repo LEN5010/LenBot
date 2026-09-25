@@ -96,10 +96,10 @@ const { personaNeedsReadback, persona, preset, selectedPresetFields, selectedPre
 <style scoped>
 .preset-field{margin-bottom:12px}
 .section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid #e2e8f0}
+.example-row{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:24px 0;border-bottom:1px solid var(--line)}
 .example-row:last-child{border:0;padding-bottom:0}
 .example-main{min-width:0;flex:1}
-.example-context{white-space:pre-wrap;line-height:1.65;color:#64748b;overflow-wrap:anywhere}
+.example-context{white-space:pre-wrap;line-height:1.65;color:var(--text-secondary);overflow-wrap:anywhere}
 .example-body{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}
 .example-body p{flex-basis:100%;white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}
 .example-body img{max-width:180px;max-height:180px;object-fit:contain}

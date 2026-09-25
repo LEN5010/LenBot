@@ -132,7 +132,7 @@ const { routesOpen, routingForm, roleEnabled, testConfirm, testResult, routingCo
 </template>
 <style scoped>
 .role-title,.provider-heading,.dialog-title{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.routing-section{padding:18px 0;border-bottom:1px solid #e2e8f0;margin-bottom:18px}
+.routing-section{padding:18px 0;border-bottom:1px solid var(--line);margin-bottom:18px}
 .route-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:12px;margin-top:16px}
 .route-fields>:last-child{grid-column:1/-1}
 @media(max-width:600px){

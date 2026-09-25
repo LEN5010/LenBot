@@ -253,7 +253,7 @@ defineExpose({addAsset, canAdd})
 .reference-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:start}
 .reference-asset{display:flex;gap:12px;align-items:center;overflow-wrap:anywhere}
 .reference-asset>div:last-child{min-width:0}
-.reference-preview{width:60px;height:60px;flex:none;background:#f4f6f9}
+.reference-preview{width:60px;height:60px;flex:none;background:var(--page)}
 @media(max-width:600px){
   .reference-fields{grid-template-columns:minmax(0,1fr)}
   .reference-fields>.v-btn{justify-self:end}

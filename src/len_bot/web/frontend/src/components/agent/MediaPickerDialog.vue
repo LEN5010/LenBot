@@ -51,7 +51,7 @@ const { mediaOpen, mediaRows, mediaTotal, mediaPage, mediaQuery, mediaSearch, me
 .section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .media-filter{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}
 .media-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
-.media-picker img{width:100%;height:150px;object-fit:contain;background:#f4f6f9}
+.media-picker img{width:100%;height:150px;object-fit:contain;background:var(--page)}
 .media-picker p{overflow-wrap:anywhere;min-height:3em}
 @media(max-width:650px){
   .section-header{align-items:flex-start}
