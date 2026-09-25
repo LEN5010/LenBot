@@ -177,6 +177,13 @@ class SegmentMaterial(BaseModel):
     version: str | None = None
 
 
+class SegmentHandoffItem(BaseModel):
+    """An unfinished item's identity; its status is always read again."""
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    kind: Literal['pending_source', 'work', 'open_loop', 'outbound']
+    id: str = Field(min_length=1)
+
+
 class SegmentExchangeGap(BaseModel):
     """A run whose native groups could not be kept; the next run opens a new segment."""
     model_config = ConfigDict(extra='forbid', frozen=True)
@@ -208,6 +215,7 @@ class ConversationSegment(BaseModel):
     # Why this segment opened, by material: the changed items for a binding
     # change, and the unchanged-but-unprovable ones after a restart.
     material_changes: list[str] = Field(default_factory=list)
+    handoff: list[SegmentHandoffItem] = Field(default_factory=list)
 
 
 class SceneSession(BaseModel):

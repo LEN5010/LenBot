@@ -36,3 +36,13 @@
 | before_model／after_tool Hook | 插件启停或换版本后同进程比较插件版本 | 输出每次重新产生，没有版本 |
 
 因此当前任何配置下重启后都会开启 process_restart 段，并在 material_changes 中列出无法证明的项；这是如实记录，不是缺陷修复。旧段没有 materials 时同样按无法比较处理。同进程下原先已有的换段条件不变，只是现在能指出具体变化项。
+
+## C. 压缩与未完事项交接
+
+改动符号：新增 `scenes/handoff.py`（`collect_handoff`、`handoff_states`），`scenes/models.py` 新增 `SegmentHandoffItem` 与 `ConversationSegment.handoff`；`SceneActor._save_conversation_segment` 在保存时生成交接；`ConversationContext.install_segment_handoff` 与可选区块 `segment_handoff`；`SocialCognitionCore` 在每次最终请求前按最近一次保存的清单重读状态。合同写入[上下文·段内容离开时的未完事项交接](../context.md#段内容离开时的未完事项交接)。
+
+取舍：任务卡要求“唯一压缩入口”并禁止两个压缩器同时改主会话，因此没有新增模型摘要调用。会话段的内容只在 Actor 保存时离开（窗口变小或较早交换组不再带入），原话的语义延续仍只用历史维护摘要；离开的交换组中的资料正文不另作摘要，只能按 R 编号定位回读，这是有意保留的缺口。交接清单只存身份，每次展示前重读当前状态，已完成的只计数。
+
+源码核对结论（未实证）：历史维护在活动对话租约期间以 `HistoryCommitDeferred` 延后提交，段保存要求活动租约，二者经同一 Actor 队列串行，因此不会同时修改场景状态；维护提交认识使知识修订递增，下一次段保存把 `knowledge_revision` 记为变化项并换段。交接不调用任何结案、取消、预算或送达写入口。
+
+已知限制：出站事实只扫描最近 50 条批准记录，更早的未定发送不会被交接挑中（仍在原回执与面板中）；清单最多 40 项；新交接的事项从保存后的下一次请求才出现。

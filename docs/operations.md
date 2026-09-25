@@ -391,7 +391,7 @@ uv run --no-sync python scripts/migrate_observation_config.py --write  # 确认�
 
 本批未执行数据转换或真实启动。获准升级仍先停机备份；正常重启后回读原话引用、明确开启 process_restart 段（人格前缀来自没有修订号的根配置，重启后无法证明未变；段的 material_changes 列出这些材料），不重新调用旧工具或重发动作。已存原生交换逐组按当前本群范围、插件归属与认识版本核对，任何一组不能重建就全部不带入并以 exchange_unrecoverable 换段；段身份存在不代表原生交换已恢复。旧引用缺失会明确结束准备，应按实际数据与保留决定处理，不能通过自动清空段掩盖缺口。
 
-段中的资料／工作编号预留、摘要批次引用、ordered_items、exchange_gap、materials 与 material_changes 由同版程序写入；旧段没有字段时新程序按空列表／空预留读取，不反推旧编号或旧摘要。只认识此前段结构的旧程序同样会因 extra='forbid' 拒绝新增的嵌套字段，因此也须按上述同批备份或获准离线转换回退；不因为顶层 conversation_segment 已存在就认为任意版本可混用。
+段中的资料／工作编号预留、摘要批次引用、ordered_items、exchange_gap、materials、material_changes 与 handoff 由同版程序写入；旧段没有字段时新程序按空列表／空预留读取，不反推旧编号或旧摘要。只认识此前段结构的旧程序同样会因 extra='forbid' 拒绝新增的嵌套字段，因此也须按上述同批备份或获准离线转换回退；不因为顶层 conversation_segment 已存在就认为任意版本可混用。
 
 ## 插件接口世代升级
 
