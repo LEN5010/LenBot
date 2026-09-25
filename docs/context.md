@@ -142,7 +142,7 @@ boundary = ((oldest + step - 1) // step) * step
 | `conversation_window_step_rowids` | 窗口头的全局 rowid 对齐间隔 | 不是本群消息数，也不是每轮固定丢弃量 |
 | `conversation_summary_limit` | 可尝试装入的最近已完成摘要数 | 数据库有覆盖不等于请求中有覆盖 |
 | `history_target_tokens` | 维护批次目标原话量 | 不保证每批都能达到 |
-| `maintenance_context_tokens` / `maintenance_output_tokens` | 维护请求输入余量 | 人格、认识、工具和续读也占容量 |
+| `maintenance_context_tokens` / `maintenance_output_tokens` | 维护请求输入余量；切批次时再扣除每次认识读取 2048 估算 token 的预留 | 人格、认识、工具和续读也占容量；估算值不等于上游实际计数 |
 | `conversation_context_tokens` / `conversation_output_tokens` | 最终对话请求容量与输出预留 | 增大窗口不自动增大整个请求上限 |
 
 全局 rowid 包含其他群和运行事件，同一步长在不同群的含义不同。条数上限、文字预算、步长与摘要覆盖应一起理解，不能规定任意群都必须由 token 上限先触发，也不能保证步长调小就有更高命中率。`recent_history/no_capacity` 只能说明本次装填受容量限制，要结合其他省略记录和实际范围判断。

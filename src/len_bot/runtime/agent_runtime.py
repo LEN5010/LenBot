@@ -904,9 +904,9 @@ class AgentRuntime:
             maintenance_context = {'bot_qq':self.config.bot_qq, 'bot_actor_id':self.bot_actor_id, 'now':self.clock()}
             reflector = self.history_engine.llm_reflector
             estimate = reflector.input_tokens(batch, maintenance_context)
-            budget = self.config.maintenance_context_tokens - self.config.maintenance_output_tokens
+            budget = reflector.batch_input_budget()
             if estimate > budget:
-                raise ValueError(f'历史维护请求需要 {estimate} token，可用输入容量为 {budget}；请先调整维护上下文配置')
+                raise ValueError(f'历史维护请求需要 {estimate} token，扣除认识读取预留后可用输入容量为 {budget}；请先调整维护上下文配置')
             batch = await self.event_store.retry_history_batch(batch_id)
             self._spawn_background_task(self._maintain_history(batch.scene_id, retry_batch=batch, claimed=True))
         except Exception:
@@ -954,7 +954,7 @@ class AgentRuntime:
                     batch = await self.event_store.begin_history_batch(scene_id,
                         target_tokens=self.config.history_target_tokens, min_tokens=self.config.history_min_tokens,
                         quiet=quiet,
-                        input_budget_tokens=self.config.maintenance_context_tokens - self.config.maintenance_output_tokens,
+                        input_budget_tokens=reflector.batch_input_budget(),
                         estimate_input=lambda candidate: reflector.input_tokens(candidate, maintenance_context))
                 if batch is None:
                     return
