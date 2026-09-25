@@ -92,6 +92,20 @@ class LLMReflector:
             },
         }, component_id='core.history_maintenance.query_memory', revision=1)]
 
+    # Room one memory read needs in the requests after the first: the model's
+    # call, its page (a stored belief is about 100 estimated tokens) and the
+    # step's budget note. A batch sized to the whole input left the first
+    # read nowhere to go and failed its range unadvanced.
+    TOOL_CALL_RESERVE_TOKENS = 2048
+
+    def batch_input_budget(self) -> int:
+        """Input a batch's first request may use, leaving room for its memory reads."""
+        budget = self.context_tokens - self.output_tokens
+        if self.memory_store is None or self.max_steps == 1 or self.max_tool_calls == 0:
+            return budget
+        calls = self.max_tool_calls if self.max_tool_calls is not None else self.max_steps - 1
+        return budget - min(calls * self.TOOL_CALL_RESERVE_TOKENS, budget // 2)
+
     def input_tokens(self, batch: HistoryBatch, context: dict) -> int:
         """Size the same first request used by AgentLoop before saving a batch."""
         messages = self.messages(batch, context)
@@ -252,7 +266,7 @@ class LLMReflector:
             # This fixed contract's revision changes with the instruction below.
             prepared = list(trajectory)
             prepared[0] = {**trajectory[0], '_request_location': _RequestLocation(prompt_components=(
-                _PromptComponent('history_maintenance.contract', 1, 0, trajectory[0]['content']),))}
+                _PromptComponent('history_maintenance.contract', 2, 0, trajectory[0]['content']),))}
             return prepared
 
         try:
@@ -280,9 +294,18 @@ class LLMReflector:
         }, ensure_ascii=False)
         # Keep each saved text slice verbatim, without encoding it inside
         # another JSON string or repeating the source IDs in several lists.
+        # A complete slice is the whole projected event, which already carries
+        # its type and speaker; its location adds only what the text lacks.
+        # Repeating both per message made the locations about as large as the
+        # conversation they point at.
         sources = []
         for segment in batch.segments:
-            location = {key: value for key, value in segment.items() if key != 'text'}
+            if segment['complete']:
+                location = {'event_id': segment['event_id'], 'complete': True}
+                location.update({key: value for key, value in segment.get('source_context', {}).items()
+                                 if key not in ('event_type', 'actor_id') and not (key == 'simulated' and not value)})
+            else:
+                location = {key: value for key, value in segment.items() if key not in ('text', 'rowid')}
             sources.append(json.dumps(location, ensure_ascii=False) + '\n' + segment['text'])
         return [
             {"role": "system", "content": (
@@ -290,7 +313,8 @@ class LLMReflector:
                 "summary约800至1200文本token，保留主体、否定、时间、条件和未决项，不虚构完成；短批次可更短。"
                 "key_event_ids只标关键原文定位；摘要不是证据、不是任务授权。不要总结未提供区间。"
                 "每个原文片段前的位置记录包含event_id和complete；只有complete=true的原文可以作为认识和review_items的证据。"
-                "位置记录的source_context来自原事件，包含event_type、actor_id、simulated；发送记录另含delivery_status和origin_mode。"
+                "complete=true的片段正文已含event_type和actor_id，位置记录只补正文没有的来源信息：simulated=true（未写即false），发送记录另含delivery_status和origin_mode。"
+                "complete=false的片段另带start_offset、end_offset、total_characters和source_context（event_type、actor_id、simulated，发送记录另含delivery_status和origin_mode）。"
                 "simulated=true只作为模拟记录描述，不能用作认识或review_items的真实来源；消息事件类型本身不证明是人类或已经送达。"
                 "start_offset非零或end_offset未到total_characters表示单条原文分段，明确未覆盖部分；图片只有引用，禁止声称看过像素。"
                 "通常无需新增认识，不产出话题树、心情或自我状态。"
