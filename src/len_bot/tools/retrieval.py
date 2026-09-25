@@ -277,6 +277,8 @@ class RetrievalToolkit:
                for name in ('read_tool_result', 'read_message_range')},
             'read_pending_wakes': (self.config.pending_wakes_default_limit, self.config.pending_wakes_max_limit),
         }
+        # These schemas carry numbers from root settings, not only source text.
+        self.configured_tool_names = frozenset({*bounds, 'read_context'})
         for name, (default, maximum) in bounds.items():
             models[name] = create_model(f'{models[name].__name__}Configured', __base__=models[name],
                 limit=(int, Field(default=default, ge=1, le=maximum)))
