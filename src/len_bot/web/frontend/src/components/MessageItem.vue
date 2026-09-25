@@ -16,24 +16,171 @@ const attentionText=computed(()=>Object.hasOwn(props.event.attention,'attention_
 const interactionText=computed(()=>props.event.interaction&&props.event.interaction.interaction_reason!=='chat_eligible'?interactionReason(props.event.interaction.interaction_reason):'')
 </script>
 <template>
-  <article class="message-item" :class="{selected,bot:event.display_kind==='bot',system:event.display_kind==='system'}" :data-event-id="event.id">
-    <div class="message-avatar"><v-icon v-if="event.display_kind==='bot'" :icon="mdiRobotOutline" size="19" /><span v-else>{{ name.slice(0,1) }}</span></div>
-    <div class="message-main">
-      <header class="message-meta"><strong>{{ name }}</strong><span v-if="event.display_kind==='system'" class="muted">系统记录</span><time>{{ fmtTime(event.timestamp) }}</time><v-chip v-if="event.simulated" size="small" variant="tonal" label>模拟记录</v-chip><StatusBadge v-if="event.delivery_status" domain="delivery" :status="event.delivery_status" /></header>
-      <div v-if="event.quote" class="message-quote"><span v-if="event.quote.missing" class="muted">引用原话不可用或不属于当前场景</span><template v-else><EntityLink type="event" :id="event.quote.event_id" :scene-id="event.scene_id" :label="`引用 ${event.quote.display_name}`" :copyable="false" /><p :class="{'clamp-2':!quoteExpanded}">{{ event.quote.text }}</p><v-btn v-if="event.quote.text.length>200" variant="text" size="small" @click="quoteExpanded=!quoteExpanded">{{ quoteExpanded?'收起引用':'展开引用全文' }}</v-btn><div v-if="event.quote.media.length" class="quote-images"><button v-for="asset in event.quote.media" :key="asset.id" type="button" class="image-button" :aria-label="`查看引用媒体：${asset.description || '已登记媒体'}`" @click="image=asset"><MediaPreview :asset="asset" :scene-id="event.scene_id" /></button></div></template></div>
-      <p v-if="text" class="message-text" :class="{collapsed:!expanded && text.length>800}">{{ text }}</p>
-      <div v-if="event.member_mentions?.length || event.addressed_to?.length" class="message-meta mt-2"><v-chip v-for="uid in event.member_mentions || []" :key="uid" size="small" variant="tonal">真实提及 QQ {{ uid }}</v-chip><span v-if="event.addressed_to?.length">回应对象：{{ event.addressed_to.join('、') }}</span></div>
-      <div v-if="event.interaction?.plugin_routes?.length" class="message-meta mt-2"><span v-for="entry in event.interaction.plugin_routes" :key="entry.origin.run_id">已匹配 {{ entry.origin.plugin_id }} / {{ entry.origin.entry_id }} · {{ entry.consume?'消费消息':'继续传播' }}</span></div>
-      <div v-if="event.plugin_origin" class="message-meta mt-2"><span>插件表达 {{ event.plugin_origin.plugin_id }} / {{ event.plugin_origin.entry_id }}</span></div>
-      <v-btn v-if="text.length>800" size="small" variant="text" color="primary" @click="expanded=!expanded">{{ expanded?'收起全文':`展开全文（${text.length} 字）` }}</v-btn>
-      <div v-if="event.media.length" class="message-images"><button v-for="asset in event.media" :key="asset.id" type="button" class="image-button" :aria-label="`查看媒体：${asset.description || '已登记媒体'}`" @click="image=asset"><MediaPreview :asset="asset" :scene-id="event.scene_id" /></button></div>
-      <footer class="message-footer"><span v-if="interactionText" class="attention-copy">{{ interactionText }}</span><span v-else-if="event.display_kind==='human'" class="attention-copy">{{ attentionText }}</span><span v-else class="attention-copy">{{ event.display_kind==='system'?'系统资料，不代表群聊发言':'' }}</span><v-btn size="small" variant="text" :prepend-icon="mdiInformationOutline" @click="emit('inspect',event)">查看关联</v-btn></footer>
+  <article
+    class="message-item"
+    :class="{selected,bot:event.display_kind==='bot',system:event.display_kind==='system'}"
+    :data-event-id="event.id"
+  >
+    <div class="message-avatar">
+      <v-icon v-if="event.display_kind==='bot'" :icon="mdiRobotOutline" size="19" />
+      <span v-else>{{ name.slice(0,1) }}</span>
     </div>
-    <v-dialog :model-value="!!image" max-width="960" scrollable @update:model-value="!$event && (image=null)"><v-card v-if="image"><v-card-title class="image-title"><span>消息媒体</span><v-btn :icon="mdiClose" variant="text" aria-label="关闭媒体预览" @click="image=null" /></v-card-title><v-card-text><div class="original-image"><MediaPreview :asset="image" :scene-id="event.scene_id" interactive /></div><p class="muted">{{ image.description }}</p><p class="muted">预览不代表模型已看过或听过。音视频不自动播放。</p><EntityLink type="media" :id="image.id" :scene-id="event.scene_id" label="媒体来源与详情" /></v-card-text></v-card></v-dialog>
+    <div class="message-main">
+      <header class="message-meta">
+        <strong>{{ name }}</strong>
+        <span v-if="event.display_kind==='system'" class="muted">系统记录</span>
+        <time>{{ fmtTime(event.timestamp) }}</time>
+        <v-chip v-if="event.simulated" size="small" variant="tonal" label>模拟记录</v-chip>
+        <StatusBadge
+          v-if="event.delivery_status"
+          domain="delivery"
+          :status="event.delivery_status"
+        />
+      </header>
+      <div v-if="event.quote" class="message-quote">
+        <span v-if="event.quote.missing" class="muted">引用原话不可用或不属于当前场景</span>
+        <template v-else>
+          <EntityLink
+            type="event"
+            :id="event.quote.event_id"
+            :scene-id="event.scene_id"
+            :label="`引用 ${event.quote.display_name}`"
+            :copyable="false"
+          />
+          <p :class="{'clamp-2':!quoteExpanded}">{{ event.quote.text }}</p>
+          <v-btn
+            v-if="event.quote.text.length>200"
+            variant="text"
+            size="small"
+            @click="quoteExpanded=!quoteExpanded"
+          >
+            {{ quoteExpanded?'收起引用':'展开引用全文' }}
+          </v-btn>
+          <div v-if="event.quote.media.length" class="quote-images">
+            <button
+              v-for="asset in event.quote.media"
+              :key="asset.id"
+              type="button"
+              class="image-button"
+              :aria-label="`查看引用媒体：${asset.description || '已登记媒体'}`"
+              @click="image=asset"
+            >
+              <MediaPreview :asset="asset" :scene-id="event.scene_id" />
+            </button>
+          </div>
+        </template>
+      </div>
+      <p v-if="text" class="message-text" :class="{collapsed:!expanded && text.length>800}">
+        {{ text }}
+      </p>
+      <div
+        v-if="event.member_mentions?.length || event.addressed_to?.length"
+        class="message-meta mt-2"
+      >
+        <v-chip v-for="uid in event.member_mentions || []" :key="uid" size="small" variant="tonal">真实提及 QQ {{ uid }}
+        </v-chip>
+        <span v-if="event.addressed_to?.length">回应对象：{{ event.addressed_to.join('、') }}</span>
+      </div>
+      <div v-if="event.interaction?.plugin_routes?.length" class="message-meta mt-2">
+        <span v-for="entry in event.interaction.plugin_routes" :key="entry.origin.run_id">已匹配 {{ entry.origin.plugin_id }} / {{ entry.origin.entry_id }} · {{ entry.consume?'消费消息':'继续传播' }}
+        </span>
+      </div>
+      <div v-if="event.plugin_origin" class="message-meta mt-2">
+        <span>插件表达 {{ event.plugin_origin.plugin_id }} / {{ event.plugin_origin.entry_id }}</span>
+      </div>
+      <v-btn
+        v-if="text.length>800"
+        size="small"
+        variant="text"
+        color="primary"
+        @click="expanded=!expanded"
+      >
+        {{ expanded?'收起全文':`展开全文（${text.length} 字）` }}
+      </v-btn>
+      <div v-if="event.media.length" class="message-images">
+        <button
+          v-for="asset in event.media"
+          :key="asset.id"
+          type="button"
+          class="image-button"
+          :aria-label="`查看媒体：${asset.description || '已登记媒体'}`"
+          @click="image=asset"
+        >
+          <MediaPreview :asset="asset" :scene-id="event.scene_id" />
+        </button>
+      </div>
+      <footer class="message-footer">
+        <span v-if="interactionText" class="attention-copy">{{ interactionText }}</span>
+        <span v-else-if="event.display_kind==='human'" class="attention-copy">
+          {{ attentionText }}
+        </span>
+        <span v-else class="attention-copy">
+          {{ event.display_kind==='system'?'系统资料，不代表群聊发言':'' }}
+        </span>
+        <v-btn
+          size="small"
+          variant="text"
+          :prepend-icon="mdiInformationOutline"
+          @click="emit('inspect',event)"
+        >查看关联</v-btn>
+      </footer>
+    </div>
+    <v-dialog
+      :model-value="!!image"
+      max-width="960"
+      scrollable
+      @update:model-value="!$event && (image=null)"
+    >
+      <v-card v-if="image">
+        <v-card-title class="image-title">
+          <span>消息媒体</span>
+          <v-btn :icon="mdiClose" variant="text" aria-label="关闭媒体预览" @click="image=null" />
+        </v-card-title>
+        <v-card-text>
+          <div class="original-image">
+            <MediaPreview :asset="image" :scene-id="event.scene_id" interactive />
+          </div>
+          <p class="muted">{{ image.description }}</p>
+          <p class="muted">预览不代表模型已看过或听过。音视频不自动播放。</p>
+          <EntityLink type="media" :id="image.id" :scene-id="event.scene_id" label="媒体来源与详情" />
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </article>
 </template>
 <style scoped>
-.message-item{display:flex;align-items:flex-start;gap:12px;padding:20px 4px;border-bottom:1px solid var(--line);min-width:0}.message-avatar{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:10px;background:#edf1f6;color:#63748b;font-size:13px;font-weight:600}.bot .message-avatar{background:#eaf1ff;color:#2563eb}.message-main{min-width:0;flex:1}.message-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;font-size:12px}.message-meta strong{font-size:13px;overflow-wrap:anywhere}.message-meta time{font-size:11px;color:var(--muted);white-space:nowrap}.message-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;margin:8px 0 0;font-size:14px}.message-text.collapsed{display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}.message-quote{padding:8px 12px;border-left:3px solid #ccd8e7;background:#f7f9fc;margin:12px 0;min-width:0;font-size:12px}.message-quote p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}.quote-images{display:flex;gap:8px;margin-top:8px}.message-images{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.image-button{border:1px solid var(--line);border-radius:8px;background:#f5f7fa;max-width:100%;cursor:pointer;padding:4px}.image-error{display:grid;place-items:center;height:100%;font-size:12px;color:var(--muted)}.message-footer{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}.attention-copy{font-size:11px;color:var(--muted)}.selected{background:#f2f6ff;border-radius:8px;padding-inline:12px}.system{background:#f7f9fb}.image-title{display:flex;align-items:center;justify-content:space-between}.original-image{display:block;max-width:100%;max-height:72vh;object-fit:contain;margin:0 auto 16px}
-.quote-images{flex-wrap:wrap}.quote-images .image-button{width:104px;height:104px}.message-images .image-button{width:188px;height:168px}.original-image{width:100%;height:clamp(180px,50vh,560px)}.image-button:focus-visible{outline:3px solid #2563eb;outline-offset:2px}
-@media(max-width:600px){.message-item{gap:8px;padding-block:16px}.message-avatar{width:28px;height:28px;border-radius:8px}.message-meta time{flex-basis:100%}.message-text{font-size:14px}.message-footer{align-items:flex-start}.message-footer .v-btn{margin-left:auto}}
+.message-item{display:flex;align-items:flex-start;gap:12px;padding:20px 4px;border-bottom:1px solid var(--line);min-width:0}
+.message-avatar{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:10px;background:#edf1f6;color:#63748b;font-size:13px;font-weight:600}
+.bot .message-avatar{background:#eaf1ff;color:#2563eb}
+.message-main{min-width:0;flex:1}
+.message-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;font-size:12px}
+.message-meta strong{font-size:13px;overflow-wrap:anywhere}
+.message-meta time{font-size:11px;color:var(--muted);white-space:nowrap}
+.message-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;margin:8px 0 0;font-size:14px}
+.message-text.collapsed{display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}
+.message-quote{padding:8px 12px;border-left:3px solid #ccd8e7;background:#f7f9fc;margin:12px 0;min-width:0;font-size:12px}
+.message-quote p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
+.quote-images{display:flex;gap:8px;margin-top:8px}
+.message-images{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.image-button{border:1px solid var(--line);border-radius:8px;background:#f5f7fa;max-width:100%;cursor:pointer;padding:4px}
+.image-error{display:grid;place-items:center;height:100%;font-size:12px;color:var(--muted)}
+.message-footer{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.attention-copy{font-size:11px;color:var(--muted)}
+.selected{background:#f2f6ff;border-radius:8px;padding-inline:12px}
+.system{background:#f7f9fb}
+.image-title{display:flex;align-items:center;justify-content:space-between}
+.original-image{display:block;max-width:100%;max-height:72vh;object-fit:contain;margin:0 auto 16px}
+.quote-images{flex-wrap:wrap}
+.quote-images .image-button{width:104px;height:104px}
+.message-images .image-button{width:188px;height:168px}
+.original-image{width:100%;height:clamp(180px,50vh,560px)}
+.image-button:focus-visible{outline:3px solid #2563eb;outline-offset:2px}
+@media(max-width:600px){
+  .message-item{gap:8px;padding-block:16px}
+  .message-avatar{width:28px;height:28px;border-radius:8px}
+  .message-meta time{flex-basis:100%}
+  .message-text{font-size:14px}
+  .message-footer{align-items:flex-start}
+  .message-footer .v-btn{margin-left:auto}
+}
 </style>
