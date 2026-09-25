@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { mdiArrowLeft, mdiRefresh, mdiMagnify, mdiMessageOutline, mdiChevronDown } from '@mdi/js'
-import { api, fmtTime, attentionReason, queryString } from '../api.js'
+import { api, fmtTime, queryString } from '../api.js'
 import { useAppState, loadScopes } from '../composables/useAppState.js'
 import { useAuth } from '../composables/useAuth.js'
 import { rememberSceneVisit, sceneVisit } from '../composables/sceneVisits.js'
@@ -11,10 +11,18 @@ import { sourcePath, withReturn } from '../router/navigation.js'
 import PageHeader from '../components/PageHeader.vue'
 import EntityLink from '../components/EntityLink.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import ResourceViewer from '../components/ResourceViewer.vue'
-import MessageItem from '../components/MessageItem.vue'
 import SceneInspector from '../components/SceneInspector.vue'
 import SceneSettingsForm from '../components/SceneSettingsForm.vue'
+import RetryHistoryDialog from '../components/scenes/RetryHistoryDialog.vue'
+import SceneAttentionTab from '../components/scenes/SceneAttentionTab.vue'
+import SceneDeliveriesTab from '../components/scenes/SceneDeliveriesTab.vue'
+import SceneHistoryTab from '../components/scenes/SceneHistoryTab.vue'
+import SceneJobsTab from '../components/scenes/SceneJobsTab.vue'
+import SceneMemoryTab from '../components/scenes/SceneMemoryTab.vue'
+import SceneMessagesTab from '../components/scenes/SceneMessagesTab.vue'
+import SceneParticipantsTab from '../components/scenes/SceneParticipantsTab.vue'
+import ScenePreferencesTab from '../components/scenes/ScenePreferencesTab.vue'
+import { useHistoryRetry } from '../components/scenes/useHistoryRetry.js'
 
 const route = useRoute(), router = useRouter(), appState = useAppState(), display = useDisplay()
 const scalar = value => typeof value === 'string' ? value : ''
@@ -102,25 +110,20 @@ const selectedEvent = ref(null),
   inspectorError = ref(''),
   inspectorReadAt = ref(null)
 const aux = ref(null), auxLoading = ref(false), auxError = ref(''), auxReadAt = ref(null)
-const retryConfirmation = ref(null),
-  retrySaving = ref(false),
-  retryError = ref(''),
-  feedback = ref(''),
-  retryingBatch = ref(null)
 let detailRequest = 0, messageRequest = 0, inspectorRequest = 0, auxRequest = 0
-let scrollAnchor = null, pendingPosition = false, contentObserver = null, retryPoll = null
+let scrollAnchor = null, pendingPosition = false, contentObserver = null
 let sectionPosition = null
-let retryGeneration = 0
 let activeScene = '', activeTab = '', activeEvent = '', viewRequest = 0
-const participants = computed(() => Object.values(detail.value?.session.participants || {}).filter(item => `${item.actor_id} ${item.nickname || ''} ${item.card || ''}`.toLowerCase().includes((participantSearch.value || '').toLowerCase())))
-const focused = computed(() => Object.entries(detail.value?.session.focused_participants || {}))
 const auxPages = computed(() => Math.max(1, Math.ceil((aux.value?.total || 0) / (aux.value?.page_size || 30))))
 const deliveryType = computed(() => ['MESSAGE_SENT', 'MESSAGE_SEND_FAILED', 'ACTION_SHADOWED'].includes(route.query.delivery) ? route.query.delivery : 'MESSAGE_SENT')
-const deliveryOptions = [
-  { title: 'MESSAGE_SENT · 实际发送记录', value: 'MESSAGE_SENT' },
-  { title: 'MESSAGE_SEND_FAILED · 发送失败', value: 'MESSAGE_SEND_FAILED' },
-  { title: 'ACTION_SHADOWED · Shadow 记录', value: 'ACTION_SHADOWED' }
-]
+// The history retry state is created here so it follows this page's route
+// changes and unmount; tab components render page state and own no requests.
+const retryState = useHistoryRetry({sceneId, tab, loadDetail, loadAux})
+const { retryConfirmation, retryError, feedback, stopRetryPoll, cancelRetry, disposeRetry } = retryState
+const shared = {route, sceneId, eventId, detail, aux, auxLoading, auxError, expandedRecords, participantSearch,
+  deliveryType, messages, messageLoading, olderLoading, messageError, messageLoaded, messageReadAt, hasMore, newPage,
+  historical, messageScroll, messageContent, captureScrollAnchor, loadMessages, viewLatest, inspect, related, setTab,
+  setDelivery, latestDeliveries, olderDeliveries}
 const path = suffix => `/api/cockpit/scenes/${encodeURIComponent(sceneId.value)}${suffix}`
 function setTab(value) {
   if (tabNames.includes(value)) router.push({
@@ -536,62 +539,6 @@ async function loadAux(reset = false) {
     if (own === auxRequest) auxLoading.value = false
   }
 }
-function askRetry(batch) {
-  retryConfirmation.value = {
-    id: batch.id,
-    scene: sceneId.value,
-    range: `${batch.start_rowid}:${batch.start_offset} → ${batch.end_rowid}:${batch.end_offset}`,
-    error: batch.failure_detail || batch.error_type
-  };
-  retryError.value = ''
-}
-function stopRetryPoll() {
-  if (retryPoll) {
-    clearInterval(retryPoll);
-    retryPoll = null
-  }
-  retryingBatch.value = null
-}
-async function pollRetry(id, scene, generation) {
-  const current = () => generation === retryGeneration && sceneId.value === scene && tab.value === 'history'
-  if (!current() || retryingBatch.value !== id) return
-  try {
-    const batch = await api(`/api/cockpit/history-batches/${encodeURIComponent(id)}?${queryString({ scene_id: scene })}`)
-    if (!current() || retryingBatch.value !== id) return
-    if (batch.status === 'pending') return
-    stopRetryPoll();
-    await Promise.all([loadDetail(), loadAux()])
-    if (!current()) return
-    if (batch.status === 'completed') feedback.value = '此区间已完成历史摘要覆盖。'
-    else retryError.value = batch.failure_detail || batch.error_type || '此区间处理失败，请查看失败详情后再重试。'
-  } catch (error) {
-    if (current() && retryingBatch.value === id) retryError.value = error.message
-  }
-}
-async function retryHistory() {
-  if (!retryConfirmation.value || retrySaving.value) return
-  stopRetryPoll()
-  const generation = ++retryGeneration
-  const pending = { ...retryConfirmation.value };
-  retrySaving.value = true;
-  retryError.value = ''
-  const current = () => generation === retryGeneration && sceneId.value === pending.scene && tab.value === 'history'
-  try {
-    const result = await api(`/api/cockpit/history-batches/${encodeURIComponent(pending.id)}/retry`, { method: 'POST', body: JSON.stringify({ scene_id: pending.scene }) })
-    if (!current()) return
-    feedback.value = result.message || '已提交此区间的维护重试，正在等待处理结果。';
-    retryConfirmation.value = null;
-    retryingBatch.value = pending.id
-    retryPoll = setInterval(() => pollRetry(pending.id, pending.scene, generation), 1500)
-    await pollRetry(pending.id, pending.scene, generation)
-    if (current() && retryingBatch.value === pending.id) await Promise.all([loadDetail(), loadAux()])
-  } catch (error) {
-    if (current()) retryError.value = error.message
-  }
-  finally {
-    if (current()) retrySaving.value = false
-  }
-}
 async function refresh() {
   const requests = [loadDirectory()]
   if (sceneId.value) {
@@ -615,8 +562,7 @@ onBeforeUnmount(() => {
   ++messageRequest;
   ++inspectorRequest;
   ++auxRequest;
-  ++retryGeneration;
-  stopRetryPoll();
+  disposeRetry();
   contentObserver?.disconnect();
   document.removeEventListener('visibilitychange', onVisible);
   window.removeEventListener('scroll', captureScrollAnchor)
@@ -636,12 +582,7 @@ watch(() => route.query.query, value => {
 watch(() => sourcePath(route), async () => {
   const own = ++viewRequest, changedScene = activeScene !== sceneId.value
   const previousTab = activeTab, previousEvent = activeEvent
-  ++retryGeneration;
-  stopRetryPoll();
-  retrySaving.value = false
-  retryConfirmation.value = null;
-  retryError.value = '';
-  feedback.value = ''
+  cancelRetry()
   sectionPosition = null;
   returnNotice.value = ''
   expandedRecords.value = {}
@@ -956,447 +897,20 @@ watch(() => [
               >打开本群设置</v-btn>
             </v-card-text>
           </v-card>
-          <v-card v-else-if="tab === 'messages'" class="scene-tab-card">
-            <div class="timeline-toolbar">
-              <span>原话与实际发送记录<span v-if="messageReadAt"> · 窗口读取于 {{ fmtTime(messageReadAt) }}</span>
-              </span>
-              <v-btn
-                v-if="historical || newPage"
-                size="small"
-                color="primary"
-                variant="tonal"
-                :disabled="messageLoading || olderLoading"
-                @click="viewLatest"
-              >
-                {{ newPage ? '有新消息 · 查看最新' : '返回最新消息' }}
-              </v-btn>
-            </div>
-            <v-alert v-if="messageError" type="error" variant="tonal" class="mx-4 mb-3">
-              {{ messageError }}<div v-if="messageReadAt">上次读取于 {{ fmtTime(messageReadAt) }}</div>
-            </v-alert>
-            <v-progress-linear v-if="messageLoading" indeterminate aria-label="正在读取场景原话" />
-            <div
-              ref="messageScroll"
-              class="message-scroll"
-              tabindex="0"
-              aria-label="场景原话时间线"
-              @scroll.passive="captureScrollAnchor"
-            >
-              <div ref="messageContent" class="message-content">
-                <div v-if="hasMore" class="older-messages">
-                  <v-btn
-                    variant="outlined"
-                    :loading="olderLoading"
-                    :disabled="olderLoading || messageLoading"
-                    @click="loadMessages({ older: true })"
-                  >读取更早原话</v-btn>
-                </div>
-                <p v-else-if="messageLoaded && messages.length" class="history-start">已到此场景保存的最早原话</p>
-                <MessageItem
-                  v-for="event in messages"
-                  :key="event.id"
-                  :event="event"
-                  :selected="event.id === eventId"
-                  @inspect="inspect"
-                />
-                <p v-if="messageLoaded && !messages.length" class="empty-copy">此场景尚无原话记录。</p>
-              </div>
-            </div>
-          </v-card>
+          <SceneMessagesTab v-else-if="tab === 'messages'" :page="shared" />
           <v-card v-else class="scene-tab-card">
             <v-card-text class="scene-detail-body">
               <v-progress-linear v-if="auxLoading" indeterminate aria-label="正在读取场景详情" />
               <v-alert v-if="auxError" type="error" variant="tonal" class="mb-4">
                 {{ auxError }}<div v-if="auxReadAt">上次读取于 {{ fmtTime(auxReadAt) }}</div>
               </v-alert>
-              <template v-if="tab === 'memory'">
-                <h3>{{ sceneId.startsWith('group:')?'本群':'本会话' }}记忆</h3>
-                <p class="muted-copy">认识保留来源与修订，不是原话本身。本页只列采样时仍有效且未到期的认识；已撤销、替代或到期的旧版本可从认识列表回查。</p>
-                <div class="scene-quick-links">
-                  <v-btn
-                    variant="tonal"
-                    size="small"
-                    :to="related({name:'memories',query:{scene:sceneId}})"
-                  >筛选认识与查看修订</v-btn>
-                  <v-btn variant="text" size="small" @click="setTab('preferences')">称呼与互动偏好</v-btn>
-                  <v-btn variant="text" size="small" @click="setTab('history')">历史摘要覆盖</v-btn>
-                  <v-btn
-                    variant="text"
-                    size="small"
-                    :to="related({name:'skills',query:{scene:sceneId}})"
-                  >方法与经验</v-btn>
-                </div>
-                <article
-                  v-for="memory in aux?.items || []"
-                  :key="memory.id"
-                  :data-scene-record="'memory:' + memory.id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <div class="record-meta">
-                    <StatusBadge domain="basis" :status="memory.basis" />
-                    <span class="breakable">{{ memory.subject }}</span>
-                    <v-chip
-                      v-if="memory.expires_at!==null&&memory.expires_at<=Date.now()/1000"
-                      color="warning"
-                      size="small"
-                      variant="tonal"
-                    >现已过期</v-chip>
-                  </div>
-                  <p>
-                    <RouterLink
-                      class="two-lines"
-                      :to="related({name:'memories',query:{scene:sceneId,id:memory.id}})"
-                    >
-                      {{ memory.statement }}
-                    </RouterLink>
-                  </p>
-                  <div class="record-meta">
-                    <span>{{ memory.evidence.length }} 条来源原话</span>
-                    <span>到期 {{ memory.expires_at ? fmtTime(memory.expires_at) : '未设置' }}</span>
-                    <time>{{ fmtTime(memory.created_at) }}</time>
-                  </div>
-                </article>
-                <p v-if="aux && !aux.items.length && !auxError" class="empty-copy">此范围没有当前有效的认识；历史原话与旧版本仍可回查。</p>
-              </template>
-              <template v-else-if="tab === 'attention'">
-                <h3>注意力扫描与待处理来源</h3>
-                <p class="muted-copy">扫描到原始位置 {{ detail.session.attention_scanned_event_rowid }}；当前接收截点 {{ detail.session.last_observed_event_rowid }}。扫描位置与模型实际读取分别记录。</p>
-                <p>短时观察截止：{{ detail.session.observing_until ? fmtTime(detail.session.observing_until) : '未开启' }}；有新输入才执行，截止不表示正在调用模型。</p>
-                <p>待观察或待处理来源 {{ aux?.total ?? detail.session.pending_wake_count }} 项</p>
-                <article
-                  v-for="wake in aux?.items || []"
-                  :key="wake.event_id"
-                  :data-scene-record="'wake:' + wake.event_id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <div class="record-meta">
-                    <v-chip variant="tonal" size="small">
-                      {{ wake.certain ? '直接搭话或运行来源' : '观察机会' }}
-                    </v-chip>
-                    <span>{{ wake.actor_id || '运行事件' }}</span>
-                    <span>位置 {{ wake.rowid }}</span>
-                  </div>
-                  <p>{{ wake.reasons.map(attentionReason).join(' · ') || '未记录原因' }}</p>
-                  <EntityLink
-                    type="event"
-                    :id="wake.event_id"
-                    :scene-id="sceneId"
-                    label="查看来源原话与关联"
-                  />
-                </article>
-                <p v-if="aux && !aux.items.length" class="empty-copy">没有尚待处理的唤醒来源。</p>
-                <h3>真实送达建立的连续关注</h3>
-                <div v-for="[actor, until] in focused" :key="actor" class="detail-record">
-                  <strong class="breakable">{{ actor }}</strong>
-                  <p>截止 {{ fmtTime(until) }}</p>
-                </div>
-                <p v-if="!focused.length" class="muted-copy">暂无连续关注记录。</p>
-                <v-expansion-panels v-model="expandedRecords.attention" variant="accordion">
-                  <v-expansion-panel title="事实状态与版本">
-                    <v-expansion-panel-text>
-                      <p>事实版本 {{ detail.session.version }} · 认识版本 {{ detail.session.knowledge_revision }}
-                      </p>
-                      <p>最近实际发言 {{ fmtTime(detail.session.last_bot_message_at) }}</p>
-                      <p>发言后新增群友消息 {{ detail.session.human_messages_since_bot }}</p>
-                      <p>本群清醒截止 {{ fmtTime(detail.session.awake_until) }}</p>
-                      <p>最近直接人类互动 {{ fmtTime(detail.session.last_direct_human_at) }}</p>
-                      <div v-if="detail.session.wake_confirmation">
-                        <p>叫醒确认：{{ detail.session.wake_confirmation.prompt_event_id ? '等待请求者答复' : detail.session.wake_confirmation.prompt_commit_id ? '提问已提交，等待实际送达' : '等待确认提问' }} · {{ fmtTime(detail.session.wake_confirmation.expires_at) }} 到期</p>
-                        <EntityLink
-                          type="event"
-                          :id="detail.session.wake_confirmation.request_event_id"
-                          :scene-id="sceneId"
-                          label="叫醒请求原话"
-                        />
-                      </div>
-                      <EntityLink
-                        v-if="detail.session.wake_source_event_id"
-                        type="event"
-                        :id="detail.session.wake_source_event_id"
-                        :scene-id="sceneId"
-                        label="本群叫醒来源"
-                      />
-                      <EntityLink
-                        v-if="detail.session.last_bot_message_event_id"
-                        type="event"
-                        :id="detail.session.last_bot_message_event_id"
-                        :scene-id="sceneId"
-                        label="最近实际发言原始回执"
-                      />
-                    </v-expansion-panel-text>
-                  </v-expansion-panel>
-                </v-expansion-panels>
-              </template>
-              <template v-else-if="tab === 'history'">
-                <h3>历史摘要覆盖</h3>
-                <v-alert
-                  :type="detail.maintenance?.ready ? 'info' : 'warning'"
-                  variant="tonal"
-                  class="my-4"
-                >
-                  {{ detail.maintenance?.reason }}
-                </v-alert>
-                <p class="muted-copy">摘要按原始范围保存，未成功的区间保留原文。摘要提供定位，工作和认识仍须实际读取证据。</p>
-                <p v-if="detail.history_status.initial_history_boundary" class="muted-copy">初始历史边界 {{ detail.history_status.initial_history_boundary }}，边界之前的原文未据此标为已总结。</p>
-                <p>尚未成功覆盖 {{ detail.history_status.unsuccessful_count }} 个批次</p>
-                <article
-                  v-for="batch in aux?.items || []"
-                  :key="batch.id"
-                  :data-scene-record="'history:' + batch.id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <div class="record-meta">
-                    <StatusBadge domain="summary" :status="batch.status" />
-                    <strong>
-                      {{ batch.start_rowid }}:{{ batch.start_offset }} → {{ batch.end_rowid }}:{{ batch.end_offset }}
-                    </strong>
-                    <span>版本 {{ batch.generation_version }}</span>
-                    <time>{{ fmtTime(batch.completed_at || batch.created_at) }}</time>
-                  </div>
-                  <v-alert
-                    v-if="batch.sources_available === false"
-                    type="warning"
-                    variant="tonal"
-                    class="my-3"
-                  >本批次的原话来源不完整，或已不在原本群范围；摘要仅保留审计，不再进入新的摘要候选或请求。原完成状态不代表来源仍可读取。</v-alert>
-                  <p v-if="batch.error_type" class="error-copy">
-                    {{ batch.failure_detail || batch.error_type }} · 此区间尚未成功覆盖</p>
-                  <p class="muted-copy">
-                    {{ batch.candidate_review?.adopted_operations == null ? '本记录未提供已采用认识操作清单' : `本次提交采用 ${batch.candidate_review.adopted_operations.length} 条认识操作` }}；摘要覆盖与认识采用分别记录。</p>
-                  <v-alert
-                    v-if="batch.candidate_review?.status==='needs_review'"
-                    type="warning"
-                    variant="tonal"
-                    class="my-3"
-                  >摘要已保存；{{ batch.candidate_review.candidates.length }} 条认识候选因相关认识变化未采用，需人工核对。不会自动重跑维护。<EntityLink
-                      type="event"
-                      :id="batch.candidate_review.event_id"
-                      :scene-id="sceneId"
-                      label="查看候选、原版本与提交时版本"
-                    />
-                  </v-alert>
-                  <p v-else-if="batch.candidate_review?.status==='not_recorded'" class="muted-copy">此维护回执未单独记录候选冲突情况，不能据此认定全部采用。</p>
-                  <p class="two-lines">{{ batch.summary || '尚无摘要正文。' }}</p>
-                  <v-btn
-                    v-if="['failed', 'pending'].includes(batch.status)"
-                    variant="outlined"
-                    :disabled="!detail.maintenance?.ready || retrySaving"
-                    @click="askRetry(batch)"
-                  >重试此区间</v-btn>
-                  <v-expansion-panels
-                    v-model="expandedRecords['history:' + batch.id]"
-                    variant="accordion"
-                    class="mt-3"
-                  >
-                    <v-expansion-panel title="摘要全文、已采用操作与原文定位">
-                      <v-expansion-panel-text>
-                        <ResourceViewer title="完整摘要" :content="batch.summary" />
-                        <h4>本次提交采用的认识操作</h4>
-                        <p class="muted-copy">下列版本和状态属于当时的提交；打开认识详情查看当前修订链，不从摘要推断已经记住。</p>
-                        <div
-                          v-for="(receipt,index) in batch.candidate_review?.adopted_operations || []"
-                          :key="index"
-                          class="detail-record"
-                        >
-                          <div class="record-meta">
-                            <strong>
-                              {{ {create:'创建',refute:'撤销',supersede:'替代'}[receipt.operation] || receipt.operation }}
-                            </strong>
-                            <span>当时版本 {{ receipt.revision ?? '未记录' }}</span>
-                            <StatusBadge domain="memory" :status="receipt.status" />
-                          </div>
-                          <p class="two-lines">{{ receipt.statement }}</p>
-                          <EntityLink
-                            type="memory"
-                            :id="receipt.id"
-                            :scene-id="sceneId"
-                            label="查看当前认识与修订"
-                          />
-                        </div>
-                        <EntityLink
-                          v-if="batch.candidate_review?.event_id"
-                          type="event"
-                          :id="batch.candidate_review.event_id"
-                          :scene-id="sceneId"
-                          label="查看完整维护回执"
-                        />
-                        <h4>来源原话</h4>
-                        <div class="detail-links">
-                          <EntityLink
-                            v-for="id in batch.source_event_ids"
-                            :key="id"
-                            type="event"
-                            :id="id"
-                            :scene-id="sceneId"
-                          />
-                        </div>
-                        <h4>关键原话</h4>
-                        <div class="detail-links">
-                          <EntityLink
-                            v-for="id in batch.key_event_ids"
-                            :key="id"
-                            type="event"
-                            :id="id"
-                            :scene-id="sceneId"
-                          />
-                        </div>
-                      </v-expansion-panel-text>
-                    </v-expansion-panel>
-                  </v-expansion-panels>
-                </article>
-                <p v-if="aux && !aux.items.length" class="empty-copy">尚未生成历史摘要，原文保留。</p>
-              </template>
-              <template v-else-if="tab === 'participants'">
-                <h3>参与者</h3>
-                <p class="muted-copy">账号昵称与群名片来自已保存的消息；称呼偏好单独保留在认识中。</p>
-                <v-text-field
-                  v-model="participantSearch"
-                  label="查找账号、昵称或群名片"
-                  clearable
-                  hide-details
-                  class="my-4"
-                />
-                <article
-                  v-for="person in participants"
-                  :key="person.actor_id"
-                  :data-scene-record="'participant:' + person.actor_id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <strong class="breakable">
-                    {{ person.card || person.nickname || person.actor_id }}
-                  </strong>
-                  <dl class="participant-facts">
-                    <dt>账号</dt>
-                    <dd>{{ person.actor_id }}</dd>
-                    <dt>昵称</dt>
-                    <dd>{{ person.nickname || '未记录' }}</dd>
-                    <dt>群名片</dt>
-                    <dd>{{ person.card || '未记录' }}</dd>
-                    <dt>群角色</dt>
-                    <dd>{{ person.role || '未记录' }}</dd>
-                  </dl>
-                </article>
-                <p v-if="!participants.length" class="empty-copy">没有符合条件的参与者事实。</p>
-              </template>
-              <template v-else-if="tab === 'preferences'">
-                <h3>称呼与互动偏好</h3>
-                <article
-                  v-for="memory in detail.preferences"
-                  :key="memory.id"
-                  :data-scene-record="'preference:' + memory.id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <div class="record-meta">
-                    <StatusBadge domain="basis" :status="memory.basis" />
-                    <span class="breakable">{{ memory.subject }}</span>
-                  </div>
-                  <p class="two-lines">{{ memory.statement }}</p>
-                  <div class="record-meta">
-                    <EntityLink
-                      type="memory"
-                      :id="memory.id"
-                      :scene-id="sceneId"
-                      label="认识全文与修订链"
-                    />
-                    <span>到期 {{ memory.expires_at ? fmtTime(memory.expires_at) : '未设置' }}</span>
-                  </div>
-                  <v-expansion-panels
-                    v-model="expandedRecords['preference:' + memory.id]"
-                    variant="accordion"
-                    class="mt-3"
-                  >
-                    <v-expansion-panel title="来源原话">
-                      <v-expansion-panel-text>
-                        <div class="detail-links">
-                          <EntityLink
-                            v-for="id in memory.evidence"
-                            :key="id"
-                            type="event"
-                            :id="id"
-                            :scene-id="sceneId"
-                          />
-                        </div>
-                      </v-expansion-panel-text>
-                    </v-expansion-panel>
-                  </v-expansion-panels>
-                </article>
-                <p v-if="!detail.preferences.length" class="empty-copy">暂无有效的称呼与互动偏好。</p>
-              </template>
-              <template v-else-if="tab === 'jobs'">
-                <h3>本会话的工作与交付</h3>
-                <p class="muted-copy">执行结果和发送回执分别记录。工作插件已开启不代表具备当前执行或上传资格。</p>
-                <div class="scene-quick-links">
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    :to="related({name:'jobs',query:{scene:sceneId}})"
-                  >筛选工作与交付</v-btn>
-                  <v-btn
-                    size="small"
-                    variant="text"
-                    :to="related({name:'tasks',query:{scene:sceneId}})"
-                  >提醒与等待</v-btn>
-                </div>
-                <article
-                  v-for="job in aux?.items || []"
-                  :key="job.id"
-                  :data-scene-record="'job:' + job.id"
-                  tabindex="-1"
-                  class="detail-record"
-                >
-                  <RouterLink
-                    class="two-lines job-title"
-                    :to="related({ name: 'job', params: { jobId: job.id }, query: { scene: sceneId } })"
-                  >
-                    {{ job.goal }}
-                  </RouterLink>
-                  <div class="record-meta mt-3">
-                    <StatusBadge domain="job_execution" :status="job.execution_status" />
-                    <StatusBadge
-                      domain="job_delivery"
-                      :status="job.delivery_required === false ? 'not_required' : job.status"
-                    />
-                    <span>目标版本 {{ job.revision }}</span>
-                    <time>{{ fmtTime(job.updated_at) }}</time>
-                  </div>
-                </article>
-                <p v-if="aux && !aux.items.length && !auxError" class="empty-copy">暂无信息工作。</p>
-              </template>
-              <template v-else-if="tab === 'deliveries'">
-                <h3>发送记录</h3>
-                <p class="muted-copy">按原始事件类型读取。模拟与 Shadow 会单独标记，送达状态以保存的回执为准。</p>
-                <v-select
-                  :model-value="deliveryType"
-                  :items="deliveryOptions"
-                  label="原始事件类型"
-                  hide-details
-                  class="my-4"
-                  @update:model-value="setDelivery"
-                />
-                <v-btn v-if="route.query.before" variant="text" @click="latestDeliveries">返回最新记录</v-btn>
-                <MessageItem
-                  v-for="event in aux?.items || []"
-                  :key="event.id"
-                  :data-scene-record="'delivery:' + event.id"
-                  tabindex="-1"
-                  :event="event"
-                  :selected="event.id === eventId"
-                  @inspect="inspect"
-                />
-                <p v-if="aux && !aux.items.length" class="empty-copy">此范围没有该类型的发送记录。</p>
-                <v-btn
-                  v-if="aux?.has_more"
-                  variant="outlined"
-                  class="mt-4"
-                  :disabled="auxLoading"
-                  @click="olderDeliveries"
-                >读取更早记录</v-btn>
-              </template>
+              <SceneMemoryTab v-if="tab === 'memory'" :page="shared" />
+              <SceneAttentionTab v-else-if="tab === 'attention'" :page="shared" />
+              <SceneHistoryTab v-else-if="tab === 'history'" :state="retryState" :page="shared" />
+              <SceneParticipantsTab v-else-if="tab === 'participants'" :page="shared" />
+              <ScenePreferencesTab v-else-if="tab === 'preferences'" :page="shared" />
+              <SceneJobsTab v-else-if="tab === 'jobs'" :page="shared" />
+              <SceneDeliveriesTab v-else-if="tab === 'deliveries'" :page="shared" />
               <div
                 v-if="aux && ['attention', 'history', 'memory', 'jobs'].includes(tab)"
                 class="aux-pagination"
@@ -1449,39 +963,10 @@ watch(() => [
         @retry="loadInspector"
       />
     </v-navigation-drawer>
-    <v-dialog
-      :model-value="Boolean(retryConfirmation)"
-      :persistent="retrySaving"
-      max-width="580"
-      @update:model-value="value => { if (!value && !retrySaving) retryConfirmation = null }"
-    >
-      <v-card>
-        <v-card-title class="dialog-title">重试此历史区间</v-card-title>
-        <v-card-text v-if="retryConfirmation">
-          <p>场景 {{ retryConfirmation.scene }}</p>
-          <p>原始范围 {{ retryConfirmation.range }}</p>
-          <p v-if="retryConfirmation.error">原失败记录：{{ retryConfirmation.error }}</p>
-          <p>通过已有维护入口提交一次重试，失败证据和原文仍可回查。</p>
-          <v-alert v-if="retryError" type="error" variant="tonal" class="mt-4">
-            {{ retryError }}
-          </v-alert>
-        </v-card-text>
-        <v-card-actions class="dialog-actions">
-          <v-btn variant="text" :disabled="retrySaving" @click="retryConfirmation = null">返回</v-btn>
-          <v-btn
-            color="primary"
-            :loading="retrySaving"
-            :disabled="retrySaving"
-            @click="retryHistory"
-          >确认重试</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <RetryHistoryDialog :state="retryState" />
   </section>
 </template>
-
 <style scoped>
-.detail-record:focus-visible{outline:2px solid rgb(var(--v-theme-primary));outline-offset:4px}
 .directory-filters{display:grid;gap:12px}
 .workspace-tabs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line);padding:0 12px}
 .workspace-tabs>.v-tabs{flex:1;min-width:0}
@@ -1520,37 +1005,16 @@ watch(() => [
 .scene-heading-meta{display:flex;gap:8px 16px;flex-wrap:wrap;margin-top:8px;align-items:center;font-size:12px;color:var(--muted);min-width:0}
 .scene-heading-meta>*{min-width:0}
 .scene-tab-card{margin-top:16px}
-.timeline-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
-.message-content{min-width:0;display:flow-root}
-.message-scroll{overflow-anchor:none;padding:4px 16px 12px;max-height:70vh;min-height:360px;overflow:auto;position:relative;scrollbar-gutter:stable}
-.message-scroll:focus-visible{outline:2px solid rgb(var(--v-theme-primary));outline-offset:-2px}
-.older-messages{text-align:center;padding:16px 0}
-.history-start{text-align:center;color:var(--muted);font-size:11px;padding:14px 0}
 .scene-detail-body{min-width:0;line-height:1.7}
-.scene-detail-body h3{font-size:17px;margin:24px 0 10px;line-height:1.6}
-.scene-detail-body h3:first-child{margin-top:0}
-.scene-detail-body h4{font-size:14px;margin:16px 0 10px}
 .scene-detail-body p{margin:10px 0;overflow-wrap:anywhere}
 .muted-copy{font-size:13px;color:var(--muted);line-height:1.8}
-.detail-record{padding:18px 0;border-bottom:1px solid var(--line);min-width:0}
-.detail-record:last-child{border-bottom:0}
 .record-meta{display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
 .record-meta>*{min-width:0}
 .record-meta strong{color:var(--ink);overflow-wrap:anywhere}
-.detail-links{display:grid;gap:10px;min-width:0}
-.two-lines{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:pre-wrap}
-.breakable{overflow-wrap:anywhere}
-.job-title{font-weight:600;font-size:15px;line-height:1.7}
-.error-copy{color:rgb(var(--v-theme-error));font-size:13px}
-.participant-facts{display:grid;grid-template-columns:64px minmax(0,1fr);gap:6px 12px;font-size:13px;margin-top:12px}
-.participant-facts dt{color:var(--muted)}
-.participant-facts dd{margin:0;overflow-wrap:anywhere}
 .empty-copy{padding:28px 16px;text-align:center;font-size:13px;color:var(--muted);line-height:1.8}
 .aux-pagination{margin-top:20px;color:var(--muted);font-size:12px}
 .inline-inspector{max-height:calc(100vh - 180px);overflow:hidden;position:sticky;top:20px}
 .inline-inspector :deep(.scene-inspector){max-height:calc(100vh - 180px)}
-.dialog-title{white-space:normal}
-.dialog-actions{padding:16px;flex-wrap:wrap}
 @media(max-width:1200px){
   .scene-workspace{grid-template-columns:220px minmax(0,1fr);gap:14px}
   .scene-heading h2{font-size:18px}
@@ -1561,14 +1025,11 @@ watch(() => [
   .scene-list-content{padding:10px 0}
   .scene-heading h2{font-size:18px}
   .scene-heading-meta{align-items:flex-start;flex-direction:column}
-  .message-scroll{max-height:none;min-height:240px;overflow:visible;scrollbar-gutter:auto;padding:4px 12px 12px}
   .inline-inspector{max-height:none;position:static}
   .inline-inspector :deep(.scene-inspector){max-height:none}
   .inline-inspector :deep(.inspector-body){overflow:visible}
   .scene-detail-body{padding:16px}
   .scene-counts{gap:18px}
   .directory-search{padding:16px}
-  .timeline-toolbar{padding:12px;align-items:flex-start}
-  .timeline-toolbar>.v-btn{max-width:100%}
 }
 </style>
