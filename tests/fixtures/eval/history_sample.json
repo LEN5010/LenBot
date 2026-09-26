@@ -1,0 +1,99 @@
+{
+  "provenance": "Legacy backup event column and payload shapes; all original text, IDs and sender names replaced.",
+  "events": [
+    {
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:1000000",
+      "actor_id": "bot",
+      "timestamp": 1788694089.049525,
+      "payload": {
+        "raw_text": "[原文已移除]",
+        "content": "[原文已移除]",
+        "message_id": "900001",
+        "delivery_status": "sent",
+        "origin_mode": "live"
+      },
+      "metadata": {
+        "simulated": false
+      }
+    },
+    {
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:1000000",
+      "actor_id": "user:1000001",
+      "timestamp": 1788695065.0,
+      "payload": {
+        "raw_text": "[CQ:at,qq=1000001] [原文已移除]",
+        "message_id": "900002",
+        "reply_to_message_id": "900001",
+        "at_bot": true,
+        "reply_bot": true,
+        "sender": {
+          "nickname": "匿名用户2",
+          "card": "",
+          "role": "member"
+        },
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "[原文已移除]"
+            }
+          }
+        ]
+      },
+      "metadata": {}
+    },
+    {
+      "event_type": "MESSAGE_SENT",
+      "scene_id": "group:1000000",
+      "actor_id": "bot",
+      "timestamp": 1788695076.9962502,
+      "payload": {
+        "raw_text": "[原文已移除]",
+        "content": "[原文已移除]",
+        "message_id": "900003",
+        "delivery_status": "sent",
+        "origin_mode": "live"
+      },
+      "metadata": {
+        "simulated": false
+      }
+    },
+    {
+      "event_type": "GROUP_MESSAGE_RECEIVED",
+      "scene_id": "group:2000000",
+      "actor_id": "user:1000002",
+      "timestamp": 1788697731.0,
+      "payload": {
+        "raw_text": "[原文已移除]",
+        "message_id": "900004",
+        "reply_to_message_id": null,
+        "at_bot": false,
+        "reply_bot": false,
+        "sender": {
+          "nickname": "匿名用户4",
+          "card": "",
+          "role": "member"
+        },
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "[原文已移除]"
+            }
+          }
+        ]
+      },
+      "metadata": {}
+    },
+    {
+      "event_type": "OPERATOR_ACTION",
+      "scene_id": "system",
+      "actor_id": "operator",
+      "timestamp": 1788698091.0,
+      "payload": {},
+      "metadata": {}
+    }
+  ]
+}

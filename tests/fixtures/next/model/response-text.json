@@ -1,0 +1,27 @@
+{
+  "id": "[redacted]",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "gemini-3.8-flash",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "我们这轮试聊的计划是周三去图书馆。",
+        "reasoning_content": "[redacted]",
+        "tool_calls": null
+      },
+      "finish_reason": "stop",
+      "native_finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "completion_tokens": 382,
+    "total_tokens": 1733,
+    "prompt_tokens": 1351,
+    "completion_tokens_details": {
+      "reasoning_tokens": 370
+    }
+  }
+}

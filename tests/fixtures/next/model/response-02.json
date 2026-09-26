@@ -1,0 +1,48 @@
+{
+  "id": "chatcmpl-202609071637334089332818268d9d6YEJNyd9o",
+  "model": "gemini-3.8-flash",
+  "object": "chat.completion",
+  "created": 1788799055,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_13d8afaf8eb845bc90f2b5fb231b97d5",
+            "type": "function",
+            "function": {
+              "name": "read_validation_document",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 3946,
+    "completion_tokens": 388,
+    "total_tokens": 4333,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "text_tokens": 3431,
+      "audio_tokens": 0,
+      "image_tokens": 0
+    },
+    "completion_tokens_details": {
+      "text_tokens": 12,
+      "audio_tokens": 0,
+      "image_tokens": 0,
+      "reasoning_tokens": 374
+    },
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "input_tokens_details": null,
+    "claude_cache_creation_5_m_tokens": 0,
+    "claude_cache_creation_1_h_tokens": 0
+  }
+}
