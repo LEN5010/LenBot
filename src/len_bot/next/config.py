@@ -105,6 +105,46 @@ class Compaction(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
 
 
+ScheduleRole = Literal["owner", "admin", "group_manager", "whitelist", "member"]
+
+
+class ScheduleSettings(BaseModel):
+    model_config = STRICT
+
+    enabled: bool = True
+    max_pending: int = Field(default=50, gt=0)
+    owner: str | None = None
+    admins: list[str] = Field(default_factory=list)
+    whitelist: list[str] = Field(default_factory=list)
+    own: list[ScheduleRole] = Field(
+        default_factory=lambda: ["owner", "admin", "group_manager", "whitelist", "member"]
+    )
+    others: list[ScheduleRole] = Field(default_factory=lambda: ["owner", "admin", "group_manager"])
+    manage: list[ScheduleRole] = Field(default_factory=lambda: ["owner", "admin", "group_manager"])
+    autonomous: bool = True
+
+    @field_validator("owner")
+    @classmethod
+    def valid_owner(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[1-9][0-9]*", value) is None:
+            raise ValueError("owner must be a positive QQ number as text")
+        return value
+
+    @field_validator("admins", "whitelist")
+    @classmethod
+    def valid_qqs(cls, values: list[str]) -> list[str]:
+        if any(re.fullmatch(r"[1-9][0-9]*", value) is None for value in values):
+            raise ValueError("must contain positive QQ numbers as text")
+        return values
+
+    @field_validator("own", "others", "manage")
+    @classmethod
+    def unique_roles(cls, values: list[ScheduleRole]) -> list[ScheduleRole]:
+        if len(values) != len(set(values)):
+            raise ValueError("roles must not repeat")
+        return values
+
+
 class QuietHours(BaseModel):
     model_config = STRICT
 
@@ -197,6 +237,7 @@ class LabConfig(BaseModel):
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
     attention: Attention = Field(default_factory=Attention)
+    schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     models: Models
 
     @field_validator("scene")
@@ -233,6 +274,14 @@ class LabConfig(BaseModel):
                 "models.roles.mind.max_output_tokens must be less than "
                 "models.roles.mind.context_window_tokens * compaction.trigger_ratio"
             )
+        return self
+
+    @model_validator(mode="after")
+    def bot_is_not_schedule_requester(self) -> LabConfig:
+        schedules = self.schedules
+        if (schedules.owner == self.bot_qq or self.bot_qq in schedules.admins
+                or self.bot_qq in schedules.whitelist):
+            raise ValueError("schedules owner, admins and whitelist must not include bot_qq")
         return self
 
     def model_settings(self, role: Literal["mind", "voice"]) -> ModelSettings:

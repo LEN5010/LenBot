@@ -5,7 +5,7 @@ from datetime import time as WallTime
 
 import pytest
 
-from len_bot.next.config import QuietHours, load_config
+from len_bot.next.config import LabConfig, QuietHours, load_config
 from len_bot.next.persona import load_persona
 
 
@@ -66,6 +66,13 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert (config.attention.activity, config.attention.ambient_threshold) == (0.3, 0.5)
     assert (config.attention.ambient_min_interval_seconds,
             config.attention.ambient_max_interval_seconds) == (60.0, 900.0)
+    assert config.schedules.enabled is True and config.schedules.max_pending == 50
+    assert config.schedules.owner is None
+    assert config.schedules.admins == [] and config.schedules.whitelist == []
+    assert config.schedules.own == ["owner", "admin", "group_manager", "whitelist", "member"]
+    assert config.schedules.others == ["owner", "admin", "group_manager"]
+    assert config.schedules.manage == ["owner", "admin", "group_manager"]
+    assert config.schedules.autonomous is True
     assert config.models.roles.mind.context_window_tokens == 8192
     assert config.models.roles.voice.context_window_tokens == 4096
     assert config.model_settings("mind").model == "sample-mind"
@@ -73,6 +80,69 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.model_settings("voice").model == "sample-voice"
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+@pytest.mark.parametrize(
+    "schedules",
+    [
+        {
+            "enabled": False,
+            "max_pending": 7,
+            "owner": "80002",
+            "admins": ["80003"],
+            "whitelist": ["80003", "80004"],
+            "own": ["owner", "admin", "member"],
+            "others": ["admin", "group_manager"],
+            "manage": ["owner", "whitelist"],
+            "autonomous": False,
+        },
+        {"owner": None, "admins": [], "whitelist": [], "own": [], "others": [], "manage": []},
+    ],
+)
+def test_schedule_configuration_accepts_explicit_permissions_and_roundtrips(tmp_path, schedules):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["schedules"] = schedules
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    for field, value in schedules.items():
+        assert getattr(config.schedules, field) == value
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("schedules", "field"),
+    [
+        ({"enabled": "false"}, "enabled"),
+        ({"max_pending": 0}, "max_pending"),
+        ({"max_pending": "50"}, "max_pending"),
+        ({"owner": "0"}, "owner"),
+        ({"owner": "080002"}, "owner"),
+        ({"owner": 80002}, "owner"),
+        ({"admins": ["0"]}, "admins"),
+        ({"admins": [80003]}, "admins"),
+        ({"whitelist": ["80004a"]}, "whitelist"),
+        ({"whitelist": [80004]}, "whitelist"),
+        ({"own": ["owner", "unknown"]}, "own"),
+        ({"others": ["member", "member"]}, "others"),
+        ({"manage": ["admin", "admin"]}, "manage"),
+        ({"owner": "90001"}, "bot_qq"),
+        ({"admins": ["90001"]}, "bot_qq"),
+        ({"whitelist": ["90001"]}, "bot_qq"),
+    ],
+)
+def test_schedule_configuration_rejects_invalid_permissions(tmp_path, schedules, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["schedules"] = schedules
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):

@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,6 +15,21 @@ from .messages import ChatMessage, Segment, Sender, plain_text
 
 def encode(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+@dataclass(frozen=True)
+class Schedule:
+    id: int
+    scene: str
+    created: float
+    due_at: float
+    timezone: str
+    note: str
+    target: str
+    requester: str | None
+    status: str
+    delivered_at: float | None
+    reason: str | None
 
 
 class Store:
@@ -27,18 +42,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 6:
+                if application_id != 0x4C424E31 or version != 7:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 6;
+                    PRAGMA user_version = 7;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -70,6 +85,14 @@ class Store:
                         started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
                         response TEXT, usage TEXT, error TEXT
                     );
+                    CREATE TABLE schedules (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
+                        created REAL NOT NULL, due_at REAL NOT NULL,
+                        timezone TEXT NOT NULL, note TEXT NOT NULL,
+                        target TEXT NOT NULL, requester TEXT,
+                        status TEXT NOT NULL, delivered_at REAL, reason TEXT
+                    );
+                    CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -368,8 +391,100 @@ class Store:
             "AND json_extract(body,'$.is_self')=1", (scene,)
         )}
 
+    @staticmethod
+    def _schedule(row: sqlite3.Row) -> Schedule:
+        return Schedule(**dict(row))
+
+    def create_schedule(self, scene: str, *, due_at: float, timezone: str,
+                        note: str, target: str, requester: str | None,
+                        limit: int) -> Schedule:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            unfinished = self.db.execute(
+                "SELECT COUNT(*) FROM schedules WHERE scene=? AND status IN ('pending','blocked')",
+                (scene,),
+            ).fetchone()[0]
+            if unfinished >= limit:
+                raise ValueError(f"Scene {scene} has reached its unfinished schedule limit {limit}")
+            cursor = self.db.execute(
+                "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status) "
+                "VALUES (?,?,?,?,?,?,?,'pending')",
+                (scene, time.time(), due_at, timezone, note, target, requester),
+            )
+            row = self.db.execute(
+                "SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+        return self._schedule(row)
+
+    def get_schedule(self, scene: str, id: int) -> Schedule:
+        row = self.db.execute(
+            "SELECT * FROM schedules WHERE scene=? AND id=?", (scene, id)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Scene {scene} has no schedule {id}")
+        return self._schedule(row)
+
+    def list_schedules(self, scene: str, *, status: str = "active", offset: int = 0,
+                       limit: int = 20) -> list[Schedule]:
+        if status == "all":
+            where, parameters = "", ()
+        elif status == "active":
+            where, parameters = " AND status IN ('pending','blocked')", ()
+        else:
+            where, parameters = " AND status=?", (status,)
+        rows = self.db.execute(
+            "SELECT * FROM schedules WHERE scene=?" + where + " ORDER BY due_at,id LIMIT ? OFFSET ?",
+            (scene, *parameters, limit, offset),
+        ).fetchall()
+        return [self._schedule(row) for row in rows]
+
+    def next_schedule_at(self, scene: str) -> float | None:
+        return self.db.execute(
+            "SELECT MIN(due_at) FROM schedules WHERE scene=? AND status='pending'", (scene,)
+        ).fetchone()[0]
+
+    def due_schedules(self, scene: str, now: float) -> list[Schedule]:
+        rows = self.db.execute(
+            "SELECT * FROM schedules WHERE scene=? AND status='pending' AND due_at<=? "
+            "ORDER BY due_at,id", (scene, now),
+        ).fetchall()
+        return [self._schedule(row) for row in rows]
+
+    def cancel_schedule(self, scene: str, id: int) -> Schedule:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            current = self.get_schedule(scene, id)
+            if current.status not in {"pending", "blocked"}:
+                raise ValueError(f"Schedule {id} is {current.status}, not pending or blocked")
+            self.db.execute(
+                "UPDATE schedules SET status='cancelled' WHERE scene=? AND id=?", (scene, id)
+            )
+            result = self.get_schedule(scene, id)
+        return result
+
+    def block_schedule(self, scene: str, id: int, reason: str) -> None:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            current = self.get_schedule(scene, id)
+            if current.status != "pending":
+                raise ValueError(f"Schedule {id} is {current.status}, not pending")
+            self.db.execute(
+                "UPDATE schedules SET status='blocked',reason=? WHERE scene=? AND id=?",
+                (reason, scene, id),
+            )
+
+    def latest_sender_role(self, scene: str, uid: str) -> str | None:
+        row = self.db.execute(
+            "SELECT json_extract(body,'$.sender.role') FROM messages "
+            "WHERE scene=? AND raw IS NOT NULL "
+            "AND json_extract(body,'$.sender.uid')=? ORDER BY seq DESC LIMIT 1",
+            (scene, uid),
+        ).fetchone()
+        return None if row is None else row[0]
+
     def start_turn(self, scene: str, *, batch: tuple[int, list[str]] | None = None,
-                   attention_state: dict | None = None) -> str:
+                   attention_state: dict | None = None,
+                   scheduled: list[tuple[int, str]] | None = None) -> str:
         turn_id = str(uuid4())
         with self.db:
             self.db.execute(
@@ -381,9 +496,33 @@ class Store:
                             (turn_id, scene, time.time()))
             if batch is not None:
                 self._append_batch(scene, batch[0], batch[1])
+            if scheduled is not None:
+                self._append_schedules(scene, scheduled)
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
         return turn_id
+
+    def _append_schedules(self, scene: str, scheduled: list[tuple[int, str]]) -> None:
+        for id, content in scheduled:
+            self._append(scene, {"role": "user", "content": content})
+            updated = self.db.execute(
+                "UPDATE schedules SET status='delivered',delivered_at=? "
+                "WHERE scene=? AND id=? AND status='pending'",
+                (time.time(), scene, id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"Scene {scene} schedule {id} is not pending")
+
+    def append_schedules(self, scene: str, scheduled: list[tuple[int, str]], *,
+                         turn_id: str) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE turns SET status='queued' WHERE id=? AND scene=? AND ended IS NULL",
+                (turn_id, scene),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"No active turn {turn_id} in scene {scene}")
+            self._append_schedules(scene, scheduled)
 
     def end_turn(self, turn_id: str, status: str, error: str | None = None,
                  *, attention_state: dict | None = None) -> bool:

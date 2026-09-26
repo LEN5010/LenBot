@@ -15,6 +15,7 @@ from .chat import Chat
 from .config import Attention
 from .messages import ChatMessage, Segment, parse_message, plain_text
 from .quiet import next_quiet_start, quiet_period
+from .schedule import check_creation, platform_role, wake_text
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -234,11 +235,17 @@ class SceneRunner:
             if available:
                 reason = "收到新消息"
                 break
+            due_at = self.store.next_schedule_at(self.config.scene)
+            if period is None and due_at is not None and due_at <= now:
+                reason = "当前场景有到期安排，完整工具组结束后处理"
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 reason = "已到等待时间"
                 break
             delay = remaining if period is None else min(remaining, period[1] - now)
+            if period is None and due_at is not None:
+                delay = min(delay, due_at - now)
             try:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
@@ -262,8 +269,33 @@ class SceneRunner:
         maximum = getattr(self.settings, wake.channel + "_max_seconds")
         return min((wake.first_at if latest is None else latest) + idle, wake.first_at + maximum)
 
+    def due_schedules(self, now: float) -> list[tuple[int, str]]:
+        scheduled = []
+        for item in self.store.due_schedules(self.config.scene, now):
+            try:
+                if "schedule" not in self.chat.tool_names:
+                    raise PermissionError("当前角色或场景未开放 schedule，安排未交付")
+                check_creation(self.config.schedules, requester=item.requester, target=item.target,
+                               bot_qq=self.config.bot_qq,
+                               group_role=platform_role(self.store, self.config, item.requester))
+            except PermissionError as error:
+                reason = f"{type(error).__name__}: {error}"
+                self.store.block_schedule(self.config.scene, item.id, reason)
+                self.emit({"type": "schedule", "id": item.id, "status": "blocked", "error": reason})
+            else:
+                scheduled.append((item.id, wake_text(item, now)))
+        return scheduled
+
+    def schedule_deadline(self, now: float) -> float | None:
+        due_at = self.store.next_schedule_at(self.config.scene)
+        if due_at is None:
+            return None
+        period = quiet_period(self.settings.quiet_hours, self.config.timezone, max(now, due_at))
+        return due_at if period is None else period[1]
+
     async def ready_messages(self, *, continuing: bool = False, in_turn: bool = False
-                             ) -> tuple[list[tuple[int, ChatMessage, float]], float | None] | None:
+                             ) -> tuple[list[tuple[int, ChatMessage, float]], float | None,
+                                        list[tuple[int, str]]] | None:
         while True:
             self.changed.clear()
             now = time.time()
@@ -271,6 +303,9 @@ class SceneRunner:
             state = copy.deepcopy(self.state)
             self.clear_quiet_wake(state, now, period)
             self.save_state(state)
+            scheduled = self.due_schedules(now) if period is None else []
+            if scheduled:
+                return self.store.pending_messages(self.config.scene), None, scheduled
             notice_until = None
             resuming = self.resume and not in_turn
             if period is not None:
@@ -293,7 +328,7 @@ class SceneRunner:
                     return None
             if (continuing or resuming) and notice_until is None:
                 pending = self.store.pending_messages(self.config.scene)
-                return (pending, None) if pending or resuming else None
+                return (pending, None, []) if pending or resuming else None
             deadline = self.deadline()
             if deadline is None:
                 return None
@@ -302,9 +337,12 @@ class SceneRunner:
                                                self.state.pending.first_at)
                 if quiet_start is not None:
                     deadline = min(deadline, quiet_start)
+            schedule_at = self.schedule_deadline(now)
+            if schedule_at is not None:
+                deadline = min(deadline, schedule_at)
             delay = deadline - now
             if delay <= 0:
-                return self.store.pending_messages(self.config.scene), notice_until
+                return self.store.pending_messages(self.config.scene), notice_until, []
             try:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
@@ -347,10 +385,14 @@ class SceneRunner:
         ready = await self.ready_messages(continuing=continuing, in_turn=True)
         if ready is None:
             return False
-        pending, _ = ready
-        through, contents = self.batch(pending, self.wake_reason())
+        pending, _, scheduled = ready
         state = self.consumed_state()
-        self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id, attention_state=asdict(state))
+        if pending:
+            through, contents = self.batch(pending, self.wake_reason())
+            self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id,
+                                    attention_state=asdict(state))
+        if scheduled:
+            self.store.append_schedules(self.config.scene, scheduled, turn_id=turn_id)
         self.state = state
         return True
 
@@ -379,11 +421,11 @@ class SceneRunner:
         while True:
             ready = await self.ready_messages()
             if ready is not None:
-                pending, notice_until = ready
+                pending, notice_until, scheduled = ready
                 if notice_until is not None:
                     self.quiet_notice(pending, notice_until)
                     continue
-                channel = self.state.pending.channel if self.state.pending else "resume"
+                channel = "system" if scheduled else self.state.pending.channel if self.state.pending else "resume"
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
                 state = self.consumed_state()
@@ -391,7 +433,7 @@ class SceneRunner:
                 self.state, self.resume = state, False
                 result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
                                                   wait_for_messages=self.wait_for_messages,
-                                                  attention_state=asdict(state))
+                                                  attention_state=asdict(state), scheduled=scheduled)
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)
                 if own_at is not None:
@@ -411,4 +453,11 @@ class SceneRunner:
                 continue
             if self.closing:
                 return
-            await self.changed.wait()
+            deadline = self.schedule_deadline(time.time())
+            if deadline is None:
+                await self.changed.wait()
+            else:
+                try:
+                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, deadline - time.time()))
+                except TimeoutError:
+                    pass  # Recheck the actual due time and quiet interval.

@@ -23,6 +23,7 @@ from .messages import ChatMessage, Segment, Sender, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
+from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import Store, encode
 
 
@@ -72,9 +73,12 @@ class Chat:
                  mind: ChatModel, voice: ChatModel):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
-        self.tools = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL)
-                      if persona.tools == "all" or tool["function"]["name"] in persona.tools]
+        self.tools = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS)
+                      if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
+                      and (config.schedules.enabled or tool["function"]["name"] != "schedule")]
         self.tool_names = {tool["function"]["name"] for tool in self.tools}
+        if "schedule" in self.tool_names and not {"schedule_list", "schedule_cancel"} <= self.tool_names:
+            raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
         # Mode instructions live beside the other prompts, not in runtime branches.
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
         expression_mode = Template((PROMPTS / mode).read_text()).substitute(
@@ -86,6 +90,8 @@ class Chat:
             aliases="、".join(persona.aliases), behavior=persona.behavior,
             boundaries=persona.boundaries, expression_mode=expression_mode,
         )
+        if "schedule" in self.tool_names:
+            self.system += "\n" + (PROMPTS / "next_schedule.md").read_text()
 
     def restore(self) -> bool:
         previous = self.store.last_mind_request(self.config.scene)
@@ -162,6 +168,12 @@ class Chat:
             recap, entries = self.store.active_history(self.config.scene)
             now = datetime.now(ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
             state = {"role": "user", "content": f"当前时间：{now}"}
+            schedules = self.store.list_schedules(self.config.scene, limit=21)
+            if schedules:
+                state["content"] += "\n<未完成安排>\n" + "\n\n".join(
+                    describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"
+                if len(schedules) > 20:
+                    state["content"] += "\n这里只列前 20 条；schedule_list 可继续查看。"
             messages = self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
@@ -228,15 +240,17 @@ class Chat:
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None
+        if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
+            return execute_schedule(self.store, self.config, call.name, call.arguments), None
         arguments = WaitArguments.model_validate(call.arguments)
         return await wait_for_messages(arguments.seconds), None
 
     async def run_turn(self, *, batch: tuple[int, list[str]] | None,
                        append_new: Callable[[bool, str], Awaitable[bool]],
                        wait_for_messages: Callable[[float], Awaitable[str]],
-                       attention_state: dict) -> dict:
+                       attention_state: dict, scheduled: list[tuple[int, str]] | None = None) -> dict:
         scene = self.config.scene
-        turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state)
+        turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state, scheduled=scheduled)
         expressions: list[str] = []
         extensions = 0
         failed_tools = 0
