@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from .messages import ChatMessage, Segment, Sender
+from .messages import ChatMessage, Segment, Sender, plain_text
 
 
 def encode(value: object) -> str:
@@ -27,18 +27,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 4:
+                if application_id != 0x4C424E31 or version != 5:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 4;
+                    PRAGMA user_version = 5;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -46,6 +46,9 @@ class Store:
                     );
                     CREATE UNIQUE INDEX platform_messages ON messages(scene, platform_id)
                         WHERE platform_id IS NOT NULL;
+                    CREATE VIRTUAL TABLE message_search USING fts5(
+                        search_text, tokenize='trigram case_sensitive 1'
+                    );
                     CREATE TABLE mind_entries (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         message TEXT NOT NULL, created REAL NOT NULL
@@ -113,7 +116,12 @@ class Store:
             (message.scene, message.platform_message_id, encode(asdict(message)),
              None if raw is None else encode(raw), received_at),
         )
-        return cursor.lastrowid
+        seq = cursor.lastrowid
+        self.db.execute(
+            "INSERT INTO message_search(rowid,search_text) VALUES (?,?)",
+            (seq, plain_text(message).casefold()),
+        )
+        return seq
 
     def _save_attention(self, scene: str, state: dict) -> None:
         self.db.execute(
@@ -274,6 +282,73 @@ class Store:
             "SELECT body FROM messages WHERE scene=? AND platform_id=?", (scene, platform_id)
         ).fetchone()
         return None if row is None else self._message(row[0])
+
+    def max_message_seq(self, scene: str) -> int:
+        return self.db.execute(
+            "SELECT COALESCE(MAX(seq),0) FROM messages WHERE scene=?", (scene,)
+        ).fetchone()[0]
+
+    def search_messages(self, scene: str, *, query: str | None, who: str | None,
+                        after: float | None, before: float | None, snapshot: int,
+                        offset: int, limit: int) -> list[tuple[int, ChatMessage]]:
+        join = ""
+        conditions = ["m.scene=?", "m.seq<=?"]
+        params: list[object] = [scene, snapshot]
+        if query is not None:
+            join = " JOIN message_search s ON s.rowid=m.seq"
+            normalized = query.casefold()
+            if len(normalized) >= 3:
+                conditions.append("s.search_text MATCH ?")
+                params.append('"' + normalized.replace('"', '""') + '"')
+            else:
+                conditions.append("instr(s.search_text,?)>0")
+                params.append(normalized)
+        if who is not None:
+            conditions.append("json_extract(m.body,'$.sender.uid')=?")
+            params.append(who)
+        if after is not None:
+            conditions.append("json_extract(m.body,'$.time')>=?")
+            params.append(after)
+        if before is not None:
+            conditions.append("json_extract(m.body,'$.time')<?")
+            params.append(before)
+        rows = self.db.execute(
+            "SELECT m.seq,m.body FROM messages m" + join + " WHERE " + " AND ".join(conditions)
+            + " ORDER BY json_extract(m.body,'$.time'),m.seq LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        return [(row[0], self._message(row[1])) for row in rows]
+
+    def read_message(self, scene: str, record: int) -> ChatMessage | None:
+        row = self.db.execute(
+            "SELECT body FROM messages WHERE scene=? AND seq=?", (scene, record)
+        ).fetchone()
+        return None if row is None else self._message(row[0])
+
+    def context_messages(self, scene: str, record: int) -> list[tuple[int, ChatMessage]]:
+        center = self.db.execute(
+            "SELECT body FROM messages WHERE scene=? AND seq=?", (scene, record)
+        ).fetchone()
+        if center is None:
+            raise ValueError(f"Scene {scene} has no message {record}")
+        message = self._message(center[0])
+        earlier = self.db.execute(
+            "SELECT seq,body FROM messages WHERE scene=? AND "
+            "(json_extract(body,'$.time')<? OR "
+            "(json_extract(body,'$.time')=? AND seq<?)) "
+            "ORDER BY json_extract(body,'$.time') DESC,seq DESC LIMIT 3",
+            (scene, message.time, message.time, record),
+        ).fetchall()
+        later = self.db.execute(
+            "SELECT seq,body FROM messages WHERE scene=? AND "
+            "(json_extract(body,'$.time')>? OR "
+            "(json_extract(body,'$.time')=? AND seq>?)) "
+            "ORDER BY json_extract(body,'$.time'),seq LIMIT 3",
+            (scene, message.time, message.time, record),
+        ).fetchall()
+        return ([(row[0], self._message(row[1])) for row in reversed(earlier)]
+                + [(record, message)]
+                + [(row[0], self._message(row[1])) for row in later])
 
     def own_ids(self, scene: str) -> set[str]:
         return {row[0] for row in self.db.execute(

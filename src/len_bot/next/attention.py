@@ -11,7 +11,7 @@ from typing import Literal
 
 from .chat import Chat
 from .config import Attention
-from .messages import ChatMessage, parse_message
+from .messages import ChatMessage, parse_message, plain_text
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -58,11 +58,6 @@ class AttentionState:
 
 def is_direct(message: ChatMessage) -> bool:
     return not message.is_self and (message.scene.startswith("private:") or message.mentions_bot)
-
-
-def plain_text(message: ChatMessage) -> str:
-    return "".join(segment.data["text"] if segment.type == "text" else "\n"
-                   for segment in message.segments)
 
 
 def participation_score(pending: list[tuple[ChatMessage, float]],
@@ -206,6 +201,25 @@ class SceneRunner:
         self.closing = True
         self.changed.set()
 
+    async def wait_for_messages(self, seconds: float) -> str:
+        started = time.monotonic()
+        deadline = started + seconds
+        while True:
+            self.changed.clear()
+            if self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None:
+                reason = "收到新消息"
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "已到等待时间"
+                break
+            try:
+                await asyncio.wait_for(self.changed.wait(), timeout=remaining)
+            except TimeoutError:
+                reason = "已到等待时间"
+                break
+        return f"等待结束：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
+
     def ambient_interval(self) -> float:
         base, maximum = self.settings.ambient_min_interval_seconds, self.settings.ambient_max_interval_seconds
         cap = math.ceil(math.log2(maximum) - math.log2(base))
@@ -293,6 +307,7 @@ class SceneRunner:
                 contact_before = state.last_contact_at
                 self.state, self.resume = state, False
                 result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
+                                                  wait_for_messages=self.wait_for_messages,
                                                   attention_state=asdict(state))
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)
