@@ -12,7 +12,7 @@ from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import LabConfig
 from .context import (
@@ -20,8 +20,9 @@ from .context import (
     plan_compaction, project_history,
 )
 from .messages import ChatMessage, Segment, Sender, render_message
-from .model import ChatModel, ModelProtocolError, ModelReply
+from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
+from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .store import Store, encode
 
 
@@ -33,9 +34,26 @@ class SayArguments(BaseModel):
     length: Literal["短", "正常", "长"] = "正常"
 
 
+class WaitArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    seconds: float = Field(ge=0, allow_inf_nan=False)
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def required_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value
+
+
 SAY_TOOL = {"type": "function", "function": {
     "name": "say", "description": "在当前场景表达；隔离环境仅模拟发送。",
     "parameters": SayArguments.model_json_schema(),
+}}
+WAIT_TOOL = {"type": "function", "function": {
+    "name": "wait", "description": "短时等待补充消息，新消息可提前结束；受本轮剩余时限约束。",
+    "parameters": WaitArguments.model_json_schema(),
 }}
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 
@@ -54,7 +72,9 @@ class Chat:
                  mind: ChatModel, voice: ChatModel):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
-        self.tools = [SAY_TOOL] if persona.tools == "all" or "say" in persona.tools else []
+        self.tools = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL)
+                      if persona.tools == "all" or tool["function"]["name"] in persona.tools]
+        self.tool_names = {tool["function"]["name"] for tool in self.tools}
         # Mode instructions live beside the other prompts, not in runtime branches.
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
         expression_mode = Template((PROMPTS / mode).read_text()).substitute(
@@ -195,8 +215,22 @@ class Chat:
             is_self=True, send_status="simulated",
         )
 
+    async def execute_tool(self, turn_id: str, call: ToolCall,
+                           wait_for_messages: Callable[[float], Awaitable[str]]) -> tuple[str, ChatMessage | None]:
+        if call.name not in self.tool_names:
+            raise ValueError(f"当前实例未开放工具：{call.name}")
+        if call.name == "say":
+            expression = await self.express(turn_id, SayArguments.model_validate(call.arguments))
+            return self.render(expression), expression
+        if call.name == "recall_chat":
+            return recall_chat(self.store, self.config.scene, self.config.timezone,
+                               RecallArguments.model_validate(call.arguments)), None
+        arguments = WaitArguments.model_validate(call.arguments)
+        return await wait_for_messages(arguments.seconds), None
+
     async def run_turn(self, *, batch: tuple[int, list[str]] | None,
                        append_new: Callable[[bool, str], Awaitable[bool]],
+                       wait_for_messages: Callable[[float], Awaitable[str]],
                        attention_state: dict) -> dict:
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state)
@@ -211,17 +245,15 @@ class Chat:
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     for call in reply.tool_calls:
                         try:
-                            if call.name != "say" or not self.tools:
-                                raise ValueError(f"当前实例未开放工具：{call.name}")
-                            arguments = SayArguments.model_validate(call.arguments)
-                            expression = await self.express(turn_id, arguments)
+                            content, expression = await self.execute_tool(turn_id, call, wait_for_messages)
                         except Exception as error:
                             failed_tools += 1
-                            self.store.complete_tool(scene, call.id, f"{type(error).__name__}: {error}")
+                            self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")
                         else:
-                            rendered = self.render(expression)
-                            self.store.complete_tool(scene, call.id, "模拟表达（未发送到 QQ）：" + rendered, expression)
-                            expressions.append(rendered)
+                            result_content = "模拟表达（未发送到 QQ）：" + content if expression is not None else content
+                            self.store.complete_tool(scene, call.id, result_content, expression)
+                            if expression is not None:
+                                expressions.append(content)
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):
                             extensions += 1

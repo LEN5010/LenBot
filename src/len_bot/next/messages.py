@@ -46,6 +46,12 @@ class SendResult:
     error: str | None
 
 
+def plain_text(message: ChatMessage) -> str:
+    """Current text only; media and other non-text segments remain separators."""
+    return "".join(segment.data["text"] if segment.type == "text" else "\n"
+                   for segment in message.segments)
+
+
 def _id(value: object, field: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (int, str)) or not str(value):
         raise ValueError(f"{field} must be a nonempty OneBot ID")
