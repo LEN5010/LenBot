@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
@@ -26,18 +27,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2):
+                if application_id == 0x4C424E31 and version in (1, 2, 3):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 3:
+                if application_id != 0x4C424E31 or version != 4:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 3;
+                    PRAGMA user_version = 4;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -54,7 +55,8 @@ class Store:
                         scene TEXT PRIMARY KEY,
                         compact_through INTEGER NOT NULL DEFAULT 0,
                         recap TEXT,
-                        last_message_seq INTEGER NOT NULL DEFAULT 0
+                        last_message_seq INTEGER NOT NULL DEFAULT 0,
+                        attention_state TEXT
                     );
                     CREATE TABLE turns (
                         id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
@@ -113,10 +115,31 @@ class Store:
         )
         return cursor.lastrowid
 
-    def enqueue(self, message: ChatMessage, raw: dict, received_at: float) -> int:
+    def _save_attention(self, scene: str, state: dict) -> None:
+        self.db.execute(
+            "INSERT INTO mind_sessions(scene,attention_state) VALUES (?,?) "
+            "ON CONFLICT(scene) DO UPDATE SET attention_state=excluded.attention_state",
+            (scene, encode(state)),
+        )
+
+    def load_attention(self, scene: str) -> dict | None:
+        row = self.db.execute(
+            "SELECT attention_state FROM mind_sessions WHERE scene=?", (scene,)
+        ).fetchone()
+        return None if row is None or row[0] is None else json.loads(row[0])
+
+    def save_attention(self, scene: str, state: dict) -> None:
+        with self.db:
+            self._save_attention(scene, state)
+
+    def enqueue(self, message: ChatMessage, raw: dict, received_at: float,
+                *, attention_state: dict | None = None) -> int:
         """Store one received platform message without adding it to the mind yet."""
         with self.db:
-            return self._save_message(message, raw, received_at)
+            seq = self._save_message(message, raw, received_at)
+            if attention_state is not None:
+                self._save_attention(message.scene, attention_state)
+            return seq
 
     def pending_messages(self, scene: str) -> list[tuple[int, ChatMessage, float]]:
         rows = self.db.execute(
@@ -127,6 +150,40 @@ class Store:
         )
         return [(row[0], self._message(row[1]), row[2]) for row in rows]
 
+    def pending_attention_sample(self, scene: str, exclude_uids: Sequence[str],
+                                 limit: int = 20) -> list[tuple[ChatMessage, float]]:
+        """Recent eligible non-self input with known host arrival, oldest first."""
+        excluded = tuple(exclude_uids)
+        exclude_clause = (
+            " AND json_extract(body,'$.sender.uid') NOT IN (" + ",".join("?" for _ in excluded) + ")"
+            if excluded else ""
+        )
+        rows = self.db.execute(
+            "SELECT body,received_at FROM messages WHERE scene=? AND raw IS NOT NULL "
+            "AND received_at IS NOT NULL "
+            "AND seq>COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0) "
+            "AND json_extract(body,'$.is_self')=0" + exclude_clause + " ORDER BY seq DESC LIMIT ?",
+            (scene, scene, *excluded, limit),
+        ).fetchall()
+        return [(self._message(body), received_at) for body, received_at in reversed(rows)]
+
+    def last_pending_arrival(self, scene: str, exclude_uids: Sequence[str]) -> float | None:
+        """Latest unbatched arrival eligible for merging into the next input."""
+        excluded = tuple(exclude_uids)
+        exclude_clause = (
+            " AND (json_extract(body,'$.mentions_bot')=1 OR scene LIKE 'private:%' "
+            "OR json_extract(body,'$.sender.uid') NOT IN (" + ",".join("?" for _ in excluded) + "))"
+            if excluded else ""
+        )
+        row = self.db.execute(
+            "SELECT received_at FROM messages WHERE scene=? AND raw IS NOT NULL "
+            "AND received_at IS NOT NULL "
+            "AND seq>COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0) "
+            "AND json_extract(body,'$.is_self')=0" + exclude_clause + " ORDER BY seq DESC LIMIT 1",
+            (scene, scene, *excluded),
+        ).fetchone()
+        return None if row is None else float(row[0])
+
     def _append_batch(self, scene: str, through: int, content: str) -> None:
         self._append(scene, {"role": "user", "content": content})
         self.db.execute(
@@ -135,7 +192,8 @@ class Store:
             (scene, through),
         )
 
-    def append_batch(self, scene: str, through: int, content: str, *, turn_id: str) -> None:
+    def append_batch(self, scene: str, through: int, content: str, *, turn_id: str,
+                     attention_state: dict | None = None) -> None:
         """Attach an arriving batch to an existing turn before its next request."""
         with self.db:
             updated = self.db.execute(
@@ -145,6 +203,8 @@ class Store:
             if updated.rowcount != 1:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
             self._append_batch(scene, through, content)
+            if attention_state is not None:
+                self._save_attention(scene, attention_state)
 
     def complete_tool(self, scene: str, call_id: str, content: str,
                       expression: ChatMessage | None = None) -> None:
@@ -169,6 +229,38 @@ class Store:
         ).fetchall()
         return [self._message(row[0]) for row in reversed(rows)]
 
+    def attention_sample(self, scene: str, limit: int = 20, *,
+                         exclude_uids: Sequence[str] = ()) -> list[tuple[ChatMessage, float]]:
+        """Recent messages with actual host observation or saved outbound time."""
+        excluded = tuple(exclude_uids)
+        exclude_clause = (
+            " AND (json_extract(body,'$.is_self')=1 OR "
+            "json_extract(body,'$.sender.uid') NOT IN (" + ",".join("?" for _ in excluded) + "))"
+            if excluded else ""
+        )
+        rows = self.db.execute(
+            "SELECT body,received_at,raw FROM messages WHERE scene=? "
+            "AND (received_at IS NOT NULL OR raw IS NULL)" + exclude_clause + " ORDER BY seq DESC LIMIT ?",
+            (scene, *excluded, limit),
+        ).fetchall()
+        sample = []
+        for body, received_at, raw in reversed(rows):
+            message = self._message(body)
+            sample.append((message, message.time if raw is None else received_at))
+        return sample
+
+    def last_self_time(self, scene: str) -> float | None:
+        row = self.db.execute(
+            "SELECT CASE WHEN raw IS NULL THEN json_extract(body,'$.time') "
+            "ELSE received_at END FROM messages WHERE scene=? "
+            "AND json_extract(body,'$.is_self')=1 "
+            "AND json_extract(body,'$.send_status') IN ('sent','received','simulated') "
+            "AND (raw IS NULL OR received_at IS NOT NULL) "
+            "ORDER BY seq DESC LIMIT 1",
+            (scene,),
+        ).fetchone()
+        return None if row is None else float(row[0])
+
     @staticmethod
     def _message(body: str) -> ChatMessage:
         value = json.loads(body)
@@ -188,7 +280,8 @@ class Store:
             "AND json_extract(body,'$.is_self')=1", (scene,)
         )}
 
-    def start_turn(self, scene: str, *, batch: tuple[int, str] | None = None) -> str:
+    def start_turn(self, scene: str, *, batch: tuple[int, str] | None = None,
+                   attention_state: dict | None = None) -> str:
         turn_id = str(uuid4())
         with self.db:
             self.db.execute(
@@ -200,10 +293,16 @@ class Store:
                             (turn_id, scene, time.time()))
             if batch is not None:
                 self._append_batch(scene, batch[0], batch[1])
+            if attention_state is not None:
+                self._save_attention(scene, attention_state)
         return turn_id
 
-    def end_turn(self, turn_id: str, status: str, error: str | None = None) -> bool:
+    def end_turn(self, turn_id: str, status: str, error: str | None = None,
+                 *, attention_state: dict | None = None) -> bool:
         with self.db:
+            if attention_state is not None:
+                scene = self.db.execute("SELECT scene FROM turns WHERE id=?", (turn_id,)).fetchone()[0]
+                self._save_attention(scene, attention_state)
             if status in {"timeout", "cancelled"}:
                 queued = self.db.execute(
                     "UPDATE turns SET error=? WHERE id=? AND status='queued' AND ended IS NULL",

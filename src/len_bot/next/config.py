@@ -107,14 +107,50 @@ class Compaction(BaseModel):
 class Attention(BaseModel):
     model_config = STRICT
 
+    only_direct: bool = False
+    keywords: list[str] = Field(default_factory=list)
+    other_bot_qqs: list[str] = Field(default_factory=list)
     direct_idle_seconds: float = Field(default=1.5, ge=0, allow_inf_nan=False)
     direct_max_seconds: float = Field(default=4.0, gt=0, allow_inf_nan=False)
+    named_idle_seconds: float = Field(default=3.0, ge=0, allow_inf_nan=False)
+    named_max_seconds: float = Field(default=8.0, gt=0, allow_inf_nan=False)
+    keyword_cooldown_seconds: float = Field(default=60.0, ge=0, allow_inf_nan=False)
+    focus_seconds: float = Field(default=180.0, ge=0, allow_inf_nan=False)
+    focus_idle_seconds: float = Field(default=4.0, ge=0, allow_inf_nan=False)
+    focus_max_seconds: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+    activity: float = Field(default=0.3, ge=0, le=1, allow_inf_nan=False)
+    ambient_threshold: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    ambient_min_interval_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    ambient_max_interval_seconds: float = Field(default=900.0, gt=0, allow_inf_nan=False)
     max_extensions: int = Field(default=2, ge=0)
+
+    @field_validator("keywords")
+    @classmethod
+    def valid_keywords(cls, values: list[str]) -> list[str]:
+        stripped = [value.strip() for value in values]
+        if any(not value for value in stripped):
+            raise ValueError("keywords must be nonempty after stripping whitespace")
+        if len(stripped) != len(set(stripped)):
+            raise ValueError("keywords must not repeat")
+        return stripped
+
+    @field_validator("other_bot_qqs")
+    @classmethod
+    def valid_other_bot_qqs(cls, values: list[str]) -> list[str]:
+        if any(re.fullmatch(r"[1-9][0-9]*", value) is None for value in values):
+            raise ValueError("other_bot_qqs must contain positive QQ numbers as text")
+        return values
 
     @model_validator(mode="after")
     def idle_within_max(self) -> Attention:
         if self.direct_idle_seconds > self.direct_max_seconds:
             raise ValueError("direct_idle_seconds must not exceed direct_max_seconds")
+        if self.named_idle_seconds > self.named_max_seconds:
+            raise ValueError("named_idle_seconds must not exceed named_max_seconds")
+        if self.focus_idle_seconds > self.focus_max_seconds:
+            raise ValueError("focus_idle_seconds must not exceed focus_max_seconds")
+        if self.ambient_min_interval_seconds > self.ambient_max_interval_seconds:
+            raise ValueError("ambient_min_interval_seconds must not exceed ambient_max_interval_seconds")
         return self
 
 

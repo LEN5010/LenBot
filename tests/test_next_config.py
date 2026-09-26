@@ -54,6 +54,16 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.attention.direct_idle_seconds == 1.5
     assert config.attention.direct_max_seconds == 4.0
     assert config.attention.max_extensions == 2
+    assert config.attention.only_direct is False
+    assert config.attention.keywords == []
+    assert config.attention.other_bot_qqs == []
+    assert (config.attention.named_idle_seconds, config.attention.named_max_seconds) == (3.0, 8.0)
+    assert config.attention.keyword_cooldown_seconds == 60.0
+    assert (config.attention.focus_seconds, config.attention.focus_idle_seconds,
+            config.attention.focus_max_seconds) == (180.0, 4.0, 12.0)
+    assert (config.attention.activity, config.attention.ambient_threshold) == (0.3, 0.5)
+    assert (config.attention.ambient_min_interval_seconds,
+            config.attention.ambient_max_interval_seconds) == (60.0, 900.0)
     assert config.models.roles.mind.context_window_tokens == 8192
     assert config.models.roles.voice.context_window_tokens == 4096
     assert config.model_settings("mind").model == "sample-mind"
@@ -67,14 +77,32 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     root = tmp_path / "lab"
     source = _config("personas/example")
     source["attention"] = {
+        "only_direct": True,
+        "keywords": ["  然然  ", "开播"],
+        "other_bot_qqs": ["90002"],
         "direct_idle_seconds": 0.02,
         "direct_max_seconds": 0.05,
+        "named_idle_seconds": 0.03,
+        "named_max_seconds": 0.06,
+        "keyword_cooldown_seconds": 0.01,
+        "focus_seconds": 0.2,
+        "focus_idle_seconds": 0.04,
+        "focus_max_seconds": 0.08,
+        "activity": 0.8,
+        "ambient_threshold": 0.2,
+        "ambient_min_interval_seconds": 0.05,
+        "ambient_max_interval_seconds": 0.1,
         "max_extensions": 0,
     }
     _write_config(root, source)
 
     attention = load_config(root).attention
     assert (attention.direct_idle_seconds, attention.direct_max_seconds, attention.max_extensions) == (0.02, 0.05, 0)
+    assert attention.only_direct is True
+    assert attention.keywords == ["然然", "开播"] and attention.other_bot_qqs == ["90002"]
+    assert (attention.named_idle_seconds, attention.named_max_seconds) == (0.03, 0.06)
+    assert (attention.focus_seconds, attention.focus_idle_seconds, attention.focus_max_seconds) == (0.2, 0.04, 0.08)
+    assert (attention.ambient_min_interval_seconds, attention.ambient_max_interval_seconds) == (0.05, 0.1)
 
 
 @pytest.mark.parametrize(
@@ -112,6 +140,29 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
         (lambda source: source.update(attention={"max_extensions": True}), "max_extensions"),
         (lambda source: source.update(attention={"max_extensions": "2"}), "max_extensions"),
         (lambda source: source.update(attention={"ambient_idle_seconds": 1.0}), "ambient_idle_seconds"),
+        (lambda source: source.update(attention={"only_direct": "false"}), "only_direct"),
+        (lambda source: source.update(attention={"keywords": ["  "]}), "keywords"),
+        (lambda source: source.update(attention={"keywords": ["然然", " 然然 "]}), "keywords"),
+        (lambda source: source.update(attention={"keywords": [123]}), "keywords"),
+        (lambda source: source.update(attention={"other_bot_qqs": ["0"]}), "other_bot_qqs"),
+        (lambda source: source.update(attention={"other_bot_qqs": ["abc"]}), "other_bot_qqs"),
+        (lambda source: source.update(attention={"other_bot_qqs": [90002]}), "other_bot_qqs"),
+        (lambda source: source.update(attention={"named_idle_seconds": -1}), "named_idle_seconds"),
+        (lambda source: source.update(attention={"named_idle_seconds": 9}), "named_idle_seconds"),
+        (lambda source: source.update(attention={"named_max_seconds": 0}), "named_max_seconds"),
+        (lambda source: source.update(attention={"keyword_cooldown_seconds": -1}), "keyword_cooldown_seconds"),
+        (lambda source: source.update(attention={"focus_seconds": -1}), "focus_seconds"),
+        (lambda source: source.update(attention={"focus_idle_seconds": 13}), "focus_idle_seconds"),
+        (lambda source: source.update(attention={"focus_max_seconds": 0}), "focus_max_seconds"),
+        (lambda source: source.update(attention={"activity": -0.1}), "activity"),
+        (lambda source: source.update(attention={"activity": 1.1}), "activity"),
+        (lambda source: source.update(attention={"activity": True}), "activity"),
+        (lambda source: source.update(attention={"ambient_threshold": 0}), "ambient_threshold"),
+        (lambda source: source.update(attention={"ambient_min_interval_seconds": 0}), "ambient_min_interval_seconds"),
+        (lambda source: source.update(attention={"ambient_max_interval_seconds": 0}), "ambient_max_interval_seconds"),
+        (lambda source: source.update(attention={"ambient_min_interval_seconds": 901}), "ambient_min_interval_seconds"),
+        (lambda source: source.update(attention={"ambient_max_interval_seconds": "1"}), "ambient_max_interval_seconds"),
+        (lambda source: source.update(attention={"focus_seconds": float("inf")}), "focus_seconds"),
     ],
 )
 def test_invalid_lab_configuration_names_field_without_leaking_key(tmp_path, change, field):
@@ -162,3 +213,19 @@ skills: []
     assert persona.voice == "短句，清楚。"
     assert persona.boundaries == "不声称拥有真实经历。"
     assert [example.line for example in persona.examples] == [f"台词 {number}" for number in range(8)]
+
+
+def test_persona_rejects_blank_alias_at_package_boundary(tmp_path):
+    path = tmp_path / "example"
+    path.mkdir()
+    (path / "persona.yaml").write_text(
+        "id: example\nname: 示例角色\nbrief: 示例\nbehavior: 示例\n"
+        "self_reference: [我]\naliases: ['   ']\ntools: []\nskills: []\nstyles: []\n",
+        encoding="utf-8",
+    )
+    (path / "voice.md").write_text("示例", encoding="utf-8")
+    (path / "boundaries.md").write_text("示例", encoding="utf-8")
+    (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="aliases"):
+        load_persona(path)
