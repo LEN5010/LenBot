@@ -25,8 +25,9 @@ def _config(persona: str) -> dict:
                 }
             },
             "roles": {
-                "mind": {"provider": "sample", "model": "sample-mind", "reasoning_effort": "high"},
-                "voice": {"provider": "sample", "model": "sample-voice"},
+                "mind": {"provider": "sample", "model": "sample-mind", "reasoning_effort": "high",
+                         "context_window_tokens": 8192},
+                "voice": {"provider": "sample", "model": "sample-voice", "context_window_tokens": 4096},
             },
         },
     }
@@ -47,9 +48,15 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.database == root / "data/isolated-chat.db"
     assert config.persona == external_persona
     assert config.voice_mode == "voice" and config.max_steps == 8
+    assert config.compaction.trigger_ratio == 0.6
+    assert config.compaction.keep_recent_entries == 30
+    assert config.compaction.max_output_tokens == 1024
+    assert config.models.roles.mind.context_window_tokens == 8192
+    assert config.models.roles.voice.context_window_tokens == 4096
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
     assert config.model_settings("voice").model == "sample-voice"
+    assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
 
 
@@ -64,6 +71,19 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
         (lambda source: source.update(extra_runtime_flag=True), "extra_runtime_flag"),
         (lambda source: source["models"]["roles"]["voice"].update(provider="missing"), "voice.provider"),
         (lambda source: source["models"]["roles"]["mind"].update(reasoning_effort=" "), "reasoning_effort"),
+        (lambda source: source["models"]["roles"]["mind"].pop("context_window_tokens"), "context_window_tokens"),
+        (lambda source: source["models"]["roles"]["voice"].update(context_window_tokens=0), "context_window_tokens"),
+        (lambda source: source["models"]["roles"]["voice"].update(context_window_tokens=True), "context_window_tokens"),
+        (lambda source: source["models"]["roles"]["voice"].update(max_output_tokens=4096), "max_output_tokens"),
+        (lambda source: source["models"]["roles"]["mind"].update(max_output_tokens=5000), "compaction.trigger_ratio"),
+        (lambda source: source.update(compaction={"trigger_ratio": 0.1}), "compaction.trigger_ratio"),
+        (lambda source: source.update(compaction={"trigger_ratio": 1}), "trigger_ratio"),
+        (lambda source: source.update(compaction={"trigger_ratio": "0.6"}), "trigger_ratio"),
+        (lambda source: source.update(compaction={"keep_recent_entries": 0}), "keep_recent_entries"),
+        (lambda source: source.update(compaction={"keep_recent_entries": 30.0}), "keep_recent_entries"),
+        (lambda source: source.update(compaction={"max_output_tokens": 0}), "max_output_tokens"),
+        (lambda source: source.update(compaction={"max_output_tokens": 100000}), "compaction.max_output_tokens"),
+        (lambda source: source.update(compaction={"unknown": True}), "unknown"),
     ],
 )
 def test_invalid_lab_configuration_names_field_without_leaking_key(tmp_path, change, field):
