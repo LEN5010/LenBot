@@ -1,4 +1,5 @@
 `v1-synthetic.sqlite3` uses the exact format-1 table DDL from commit `f90ac4a`'s
-`src/len_bot/next/store.py`. Its single scene, platform identity, timestamps,
-message body, native assistant/tool pair and model-call record are deliberately
-synthetic placeholders, not a platform recording or real chat excerpt.
+`src/len_bot/next/store.py`. `v2-synthetic.sqlite3` uses the exact format-2 DDL
+from commit `118bade` in the same file. Their scene IDs, QQ IDs, timestamps,
+message bodies, native assistant/tool pairs, calls and recap are deliberately
+synthetic placeholders, not platform recordings or real chat excerpts.
