@@ -24,14 +24,20 @@ class Store:
         try:
             tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             if tables:
-                if (self.db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                        or self.db.execute("PRAGMA user_version").fetchone()[0] != 1):
+                application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
+                version = self.db.execute("PRAGMA user_version").fetchone()[0]
+                if application_id == 0x4C424E31 and version == 1:
+                    raise ValueError(
+                        f"Next-core database format 1 requires offline migration while stopped: {path}; "
+                        "run python -m len_bot.next.migrate from the isolated instance directory"
+                    )
+                if application_id != 0x4C424E31 or version != 2:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 1;
+                    PRAGMA user_version = 2;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT
@@ -43,6 +49,10 @@ class Store:
                         message TEXT NOT NULL, created REAL NOT NULL
                     );
                     CREATE INDEX scene_entries ON mind_entries(scene, seq);
+                    CREATE TABLE mind_sessions (
+                        scene TEXT PRIMARY KEY, compact_through INTEGER NOT NULL,
+                        recap TEXT NOT NULL
+                    );
                     CREATE TABLE turns (
                         id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
                         ended REAL, status TEXT NOT NULL, error TEXT
@@ -64,10 +74,22 @@ class Store:
     def __exit__(self, *_: object) -> None:
         self.db.close()
 
-    def entries(self, scene: str) -> list[dict]:
-        return [json.loads(row[0]) for row in self.db.execute(
-            "SELECT message FROM mind_entries WHERE scene=? ORDER BY seq", (scene,)
+    def active_history(self, scene: str) -> tuple[str | None, list[tuple[int, dict]]]:
+        session = self.db.execute(
+            "SELECT compact_through,recap FROM mind_sessions WHERE scene=?", (scene,)
+        ).fetchone()
+        through = 0 if session is None else session[0]
+        history = [(row[0], json.loads(row[1])) for row in self.db.execute(
+            "SELECT seq,message FROM mind_entries WHERE scene=? AND seq>? ORDER BY seq",
+            (scene, through),
         )]
+        return (None if session is None else session[1]), history
+
+    def entries(self, scene: str) -> list[dict]:
+        recap, history = self.active_history(scene)
+        return ([{"role": "user", "content": recap}] if recap is not None else []) + [
+            message for _, message in history
+        ]
 
     def _append(self, scene: str, message: dict) -> None:
         self.db.execute(
@@ -145,7 +167,8 @@ class Store:
         return cursor.lastrowid
 
     def end_call(self, call_id: int, response: dict | None, usage: dict | None,
-                 error: str | None = None, *, append_to_scene: str | None = None) -> None:
+                 error: str | None = None, *, append_to_scene: str | None = None,
+                 recap_for: tuple[str, int] | None = None) -> None:
         with self.db:
             self.db.execute(
                 "UPDATE model_calls SET ended=?,response=?,usage=?,error=? WHERE id=?",
@@ -154,6 +177,14 @@ class Store:
             )
             if append_to_scene is not None:
                 self._append(append_to_scene, response["message"])
+            if recap_for is not None:
+                scene, through = recap_for
+                self.db.execute(
+                    "INSERT INTO mind_sessions(scene,compact_through,recap) VALUES (?,?,?) "
+                    "ON CONFLICT(scene) DO UPDATE SET compact_through=excluded.compact_through, "
+                    "recap=excluded.recap",
+                    (scene, through, response["message"]["content"]),
+                )
 
     def last_mind_request(self, scene: str) -> dict | None:
         row = self.db.execute(

@@ -14,8 +14,12 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import LabConfig
+from .context import (
+    CompactionPlan, ContextBudgetError, estimate_request, plan_compaction,
+    project_history, recap_source,
+)
 from .messages import ChatMessage, Segment, Sender, parse_message, render_message
-from .model import ChatModel, ModelReply
+from .model import ChatModel, ModelProtocolError, ModelReply
 from .persona import Persona
 from .store import Store, encode
 
@@ -84,21 +88,73 @@ class Chat:
                  self.store.find_message(message.scene, message.reply_to))
         return render_message(message, timezone=self.config.timezone, reply=quote)
 
-    async def request(self, turn_id: str, role: Literal["mind", "voice"],
-                      messages: list[dict], tools: list[dict]) -> ModelReply:
-        model = self.mind if role == "mind" else self.voice
+    async def request(self, turn_id: str, role: Literal["mind", "voice", "recap"],
+                      messages: list[dict], tools: list[dict], *,
+                      recap_target: tuple[CompactionPlan, dict] | None = None) -> ModelReply:
+        model = self.voice if role == "voice" else self.mind
+        binding = self.config.models.roles.voice if role == "voice" else self.config.models.roles.mind
+        output_tokens = self.config.compaction.max_output_tokens if role == "recap" else binding.max_output_tokens
+        estimated = estimate_request(messages, tools, output_tokens)
+        if estimated > binding.context_window_tokens:
+            raise ContextBudgetError(
+                f"{role} 请求含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
         settings = model.settings.model_dump(exclude={"api_key"})
+        settings["max_output_tokens"] = output_tokens
         call_id = self.store.start_call(turn_id, role, {
             "settings": settings, "messages": messages, "tools": tools,
+            "estimated_total_tokens": estimated,
+            "context_window_tokens": binding.context_window_tokens,
         })
+        reply = None
         try:
-            reply = await model.complete(messages, tools)
+            if role == "recap":
+                reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
+            else:
+                reply = await model.complete(messages, tools)
+            if recap_target is not None:
+                plan, state = recap_target
+                if reply.tool_calls or not reply.text.strip():
+                    raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
+                projected = self.project(reply.text, plan.kept, state)
+                after = estimate_request(projected, self.tools, binding.max_output_tokens)
+                target = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+                if after > target:
+                    raise ContextBudgetError(f"新回想加近期会话估算 {after} token，仍超过触发预算 {target}；未切换起点")
         except BaseException as error:
-            self.store.end_call(call_id, None, None, f"{type(error).__name__}: {error}")
+            response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
+            usage = None if reply is None else reply.usage
+            if isinstance(error, ModelProtocolError):
+                response, usage = error.response, error.usage
+            self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}")
             raise
         self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
-                            append_to_scene=self.config.scene if role == "mind" else None)
+                            append_to_scene=self.config.scene if role == "mind" else None,
+                            recap_for=None if recap_target is None else (self.config.scene, recap_target[0].through))
         return reply
+
+    def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
+        return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
+
+    async def prepare_context(self, turn_id: str, state: dict) -> list[dict]:
+        binding = self.config.models.roles.mind
+        recap, entries = self.store.active_history(self.config.scene)
+        messages = self.project(recap, entries, state)
+        trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
+        if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
+            return messages
+        plan = plan_compaction(
+            entries, system=messages[0], state=state, tools=self.tools,
+            output_tokens=binding.max_output_tokens, trigger_tokens=trigger,
+            keep_recent_entries=self.config.compaction.keep_recent_entries,
+            summary_output_tokens=self.config.compaction.max_output_tokens,
+        )
+        prompt = Template((PROMPTS / "next_recap.md").read_text()).substitute(
+            summary_budget_tokens=plan.summary_budget_tokens)
+        summary = await self.request(turn_id, "recap", [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": recap_source(recap, plan.source)},
+        ], [], recap_target=(plan, state))
+        return self.project(summary.text, plan.kept, state)
 
     async def express(self, turn_id: str, arguments: SayArguments) -> ChatMessage:
         quote = None
@@ -161,9 +217,7 @@ class Chat:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
                 for _ in range(self.config.max_steps):
                     now = datetime.now(ZoneInfo(self.config.timezone)).isoformat()
-                    messages = [{"role": "system", "content": self.system}]
-                    messages += self.store.entries(scene)
-                    messages.append({"role": "user", "content": f"当前时间：{now}"})
+                    messages = await self.prepare_context(turn_id, {"role": "user", "content": f"当前时间：{now}"})
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     if not reply.tool_calls:
                         status = "settled"

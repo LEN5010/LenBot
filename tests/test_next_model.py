@@ -108,6 +108,9 @@ def test_recorded_response_fault_injections_fail_before_tool_execution(change, r
         parse_chat_completion(body)
     assert reason in str(failure.value)
     assert "response fragment:" in str(failure.value)
+    assert failure.value.response == body
+    assert failure.value.response is not body
+    assert failure.value.usage == body["usage"]
 
 
 def test_missing_usage_in_recorded_response_is_unknown_not_zero():
@@ -185,10 +188,11 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry():
             continuation = messages + [first.message, {
                 "role": "tool", "tool_call_id": first.tool_calls[0].id, "content": "document excerpt",
             }]
-            second = await model.complete(continuation, tools)
+            second = await model.complete(continuation, tools, max_output_tokens=512)
             await model.complete(continuation + [second.message, {
                 "role": "user", "content": "continue",
             }], tools)
+        assert settings.max_output_tokens == 1024
 
     assert len(requests) == 3
     assert all(line == "POST /v1/chat/completions HTTP/1.1" for line, _, _ in requests)
@@ -198,6 +202,8 @@ async def test_loopback_replay_sends_native_tool_continuation_without_retry():
     assert first_payload["model"] == "recorded-model"
     assert first_payload["temperature"] == 0.6
     assert first_payload["max_completion_tokens"] == 1024
+    assert requests[1][2]["max_completion_tokens"] == 512
+    assert requests[2][2]["max_completion_tokens"] == 1024
     assert first_payload["reasoning_effort"] == "high"
     assert first_payload["tools"] == tools
     assert requests[1][2]["messages"][1] == recorded["choices"][0]["message"]
@@ -242,3 +248,36 @@ async def test_loopback_http_error_propagates_original_body_without_retry():
     assert "429" in str(failure.value)
     assert requests == 1
     assert "reasoning_effort" not in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_loopback_truncated_recorded_json_has_unknown_usage():
+    recorded_bytes = RECORDED_RESPONSE.read_bytes()
+    truncated = recorded_bytes[:recorded_bytes.index(b'"usage"')]
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        headers = await reader.readuntil(b"\r\n\r\n")
+        for line in headers.decode("ascii").split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                await reader.readexactly(int(line.split(":", 1)[1]))
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(truncated)}\r\nConnection: close\r\n\r\n".encode()
+            + truncated
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    async with server:
+        port = server.sockets[0].getsockname()[1]
+        settings = ModelSettings(
+            api="openai-chat", base_url=f"http://127.0.0.1:{port}/v1",
+            api_key="replay-only", model="recorded-model",
+        )
+        async with ChatModel(settings) as model:
+            with pytest.raises(ModelProtocolError, match="Invalid chat completion JSON") as failure:
+                await model.complete([{"role": "user", "content": "hello"}], [])
+    assert failure.value.usage is None
+    assert failure.value.response == truncated.decode()

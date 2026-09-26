@@ -68,6 +68,12 @@ class ModelReply:
 class ModelProtocolError(RuntimeError):
     """A successful HTTP response did not contain a complete model reply."""
 
+    def __init__(self, message: str, *, response: object | None = None,
+                 usage: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.response = copy.deepcopy(response)
+        self.usage = copy.deepcopy(usage)
+
 
 class ModelHTTPError(RuntimeError):
     """The configured provider rejected a model request."""
@@ -136,7 +142,12 @@ def parse_chat_completion(body: object) -> ModelReply:
             raise ValueError("usage must be an object or null")
     except (KeyError, TypeError, ValueError) as error:
         fragment = json.dumps(body, ensure_ascii=False, default=repr)[:500]
-        raise ModelProtocolError(f"Invalid chat completion: {error}; response fragment: {fragment}") from error
+        raw_usage = body.get("usage") if isinstance(body, dict) else None
+        usage = raw_usage if isinstance(raw_usage, dict) else None
+        raise ModelProtocolError(
+            f"Invalid chat completion: {error}; response fragment: {fragment}",
+            response=body, usage=usage,
+        ) from error
 
     return ModelReply(
         message=copy.deepcopy(message),
@@ -164,12 +175,15 @@ class ChatModel:
     async def __aexit__(self, *_: object) -> None:
         await self._client.aclose()
 
-    async def complete(self, messages: list[dict], tools: list[dict]) -> ModelReply:
+    async def complete(self, messages: list[dict], tools: list[dict], *,
+                       max_output_tokens: int | None = None) -> ModelReply:
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
             "temperature": self.settings.temperature,
-            "max_completion_tokens": self.settings.max_output_tokens,
+            "max_completion_tokens": (
+                self.settings.max_output_tokens if max_output_tokens is None else max_output_tokens
+            ),
             "stream": False,
         }
         if tools:
@@ -183,6 +197,7 @@ class ChatModel:
             body = response.json()
         except json.JSONDecodeError as error:
             raise ModelProtocolError(
-                f"Invalid chat completion JSON: {error}; response fragment: {response.text[:500]}"
+                f"Invalid chat completion JSON: {error}; response fragment: {response.text[:500]}",
+                response=response.text,
             ) from error
         return parse_chat_completion(body)
