@@ -4,8 +4,9 @@ import json
 from datetime import time as WallTime
 
 import pytest
+from pydantic import ValidationError
 
-from len_bot.next.config import LabConfig, QuietHours, load_config
+from len_bot.next.config import ONEBOT_SETTINGS, LabConfig, OneBotForward, OneBotReverse, QuietHours, load_config
 from len_bot.next.persona import load_persona
 
 
@@ -37,6 +38,124 @@ def _config(persona: str) -> dict:
 def _write_config(root, source: dict) -> None:
     root.mkdir()
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_type"),
+    [
+        ({"mode": "forward_ws", "ws_url": "wss://example.test:6700/onebot/v11"}, OneBotForward),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 0}, OneBotReverse),
+        ({"mode": "forward_ws", "ws_url": "ws://127.0.0.1:6700/events",
+          "action_transport": "http", "http_url": "https://example.test:6701/api/v1",
+          "access_token": " synthetic-token ", "request_timeout_seconds": 3.5,
+          "ping_interval_seconds": 4.5, "ping_timeout_seconds": 2.5,
+          "max_frame_bytes": 2048}, OneBotForward),
+        ({"mode": "reverse_ws", "listen_host": "::1", "listen_port": 65535,
+          "action_transport": "http", "http_url": "http://127.0.0.1:6701/api"}, OneBotReverse),
+    ],
+)
+def test_onebot_transport_configuration_parses_and_roundtrips(source, expected_type):
+    settings = ONEBOT_SETTINGS.validate_json(json.dumps(source))
+
+    assert isinstance(settings, expected_type)
+    for name, value in source.items():
+        assert getattr(settings, name) == value
+    assert ONEBOT_SETTINGS.validate_json(settings.model_dump_json()) == settings
+    assert settings.action_transport in {"websocket", "http"}
+    assert settings.request_timeout_seconds > 0
+    assert settings.max_frame_bytes > 0
+
+
+def test_onebot_transport_defaults_and_is_not_an_implicit_lab_connection(tmp_path):
+    settings = ONEBOT_SETTINGS.validate_python({"mode": "forward_ws", "ws_url": "ws://example.test"})
+    assert settings.action_transport == "websocket" and settings.http_url is None
+    assert settings.access_token == ""
+    assert settings.request_timeout_seconds == 10
+    assert settings.ping_interval_seconds == 20 and settings.ping_timeout_seconds == 20
+    assert settings.max_frame_bytes == 1048576
+
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["onebot"] = settings.model_dump()
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="onebot"):
+        load_config(root)
+
+
+@pytest.mark.parametrize(
+    ("source", "field"),
+    [
+        ({"mode": "forward_ws"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "http://example.test/ws"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "ws:///events"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://user:secret@example.test/events"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "wss://example.test/events?token=x"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "wss://example.test/events#fragment"}, "ws_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "listen_port": 9000}, "listen_port"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1"}, "listen_port"),
+        ({"mode": "reverse_ws", "listen_host": " ", "listen_port": 0}, "listen_host"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": -1}, "listen_port"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 65536}, "listen_port"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": True}, "listen_port"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 6700,
+          "ws_url": "ws://example.test"}, "ws_url"),
+        ({"mode": "unknown", "ws_url": "ws://example.test"}, "mode"),
+        ({"ws_url": "ws://example.test"}, "mode"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http",
+          "http_url": "ws://example.test/actions"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http",
+          "http_url": "http:///actions"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http",
+          "http_url": "http://user:secret@example.test/actions"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http",
+          "http_url": "https://example.test/actions?q=x"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "http",
+          "http_url": "https://example.test/actions#x"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test",
+          "http_url": "http://example.test/actions"}, "http_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "action_transport": "invalid"},
+         "action_transport"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "request_timeout_seconds": 0},
+         "request_timeout_seconds"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "request_timeout_seconds": float("nan")},
+         "request_timeout_seconds"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "ping_interval_seconds": float("inf")},
+         "ping_interval_seconds"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "ping_timeout_seconds": "20"},
+         "ping_timeout_seconds"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "ping_timeout_seconds": 0},
+         "ping_timeout_seconds"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "max_frame_bytes": 0},
+         "max_frame_bytes"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "max_frame_bytes": "2048"},
+         "max_frame_bytes"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "max_frame_bytes": True},
+         "max_frame_bytes"),
+    ],
+)
+def test_onebot_transport_configuration_rejects_invalid_input(source, field):
+    with pytest.raises(ValidationError) as failure:
+        ONEBOT_SETTINGS.validate_python(source)
+    assert field in str(failure.value)
+
+
+def test_onebot_transport_token_is_preserved_but_not_rendered_in_errors_or_repr():
+    settings = ONEBOT_SETTINGS.validate_python({"mode": "forward_ws", "ws_url": "ws://example.test",
+                                                "access_token": " synthetic-token "})
+    assert settings.access_token == " synthetic-token "
+    assert "synthetic-token" not in repr(settings)
+
+    with pytest.raises(ValidationError) as failure:
+        ONEBOT_SETTINGS.validate_python({"mode": "forward_ws", "ws_url": "ws://example.test",
+                                         "access_token": "synthetic-token\r\nInjected: true"})
+    assert "access_token" in str(failure.value)
+    assert "synthetic-token" not in str(failure.value)
+
+    with pytest.raises(ValidationError) as json_failure:
+        ONEBOT_SETTINGS.validate_json(json.dumps({"mode": "forward_ws", "ws_url": "ws://example.test",
+                                                   "access_token": "synthetic-token\nInjected: true"}))
+    assert "synthetic-token" not in str(json_failure.value)
 
 
 def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
