@@ -1,15 +1,16 @@
-"""Explicit offline upgrade of an isolated next-core database to format 5."""
+"""Explicit offline upgrade of an isolated next-core database to format 6."""
 
 from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+import json
 import sqlite3
 import sys
 
 from .config import load_config
 from .messages import plain_text
-from .store import Store
+from .store import Store, encode
 
 
 APPLICATION_ID = 0x4C424E31
@@ -60,7 +61,7 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("ALTER TABLE mind_sessions_next RENAME TO mind_sessions")
         elif version == 3:
             db.execute("ALTER TABLE mind_sessions ADD COLUMN attention_state TEXT")
-        else:
+        elif version == 4:
             db.execute(
                 "CREATE VIRTUAL TABLE message_search USING fts5("
                 "search_text, tokenize='trigram case_sensitive 1')"
@@ -70,6 +71,22 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                     "INSERT INTO message_search(rowid,search_text) VALUES (?,?)",
                     (seq, plain_text(Store._message(body)).casefold()),
                 )
+        else:
+            for scene, raw_state in db.execute(
+                "SELECT scene,attention_state FROM mind_sessions "
+                "WHERE attention_state IS NOT NULL"
+            ).fetchall():
+                try:
+                    state = json.loads(raw_state)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid attention_state for {scene}: {error}; raw={raw_state[:500]}"
+                    ) from error
+                state["quiet_notice_until"] = None
+                db.execute(
+                    "UPDATE mind_sessions SET attention_state=? WHERE scene=?",
+                    (encode(state), scene),
+                )
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -78,21 +95,21 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
 
 
 def migrate_database(path: Path) -> Path:
-    """Upgrade format 1 through 4 while retaining a copy of each step."""
+    """Upgrade format 1 through 5 while retaining a copy of each step."""
     path = Path(path).resolve()
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)) as db:
         application_id, version = _format(db)
-        if application_id != APPLICATION_ID or version not in (1, 2, 3, 4):
+        if application_id != APPLICATION_ID or version not in (1, 2, 3, 4, 5):
             raise ValueError(
-                f"Expected a next-core format 1, 2, 3 or 4 database: {path}; "
+                f"Expected a next-core format 1, 2, 3, 4 or 5 database: {path}; "
                 f"found app={application_id}, version={version}"
             )
-        for step in range(version, 5):
+        for step in range(version, 6):
             backup = path.with_name(path.name + f".v{step}.bak")
             if backup.exists():
                 raise FileExistsError(f"Migration backup already exists: {backup}")
         original_backup = path.with_name(path.name + f".v{version}.bak")
-        for step in range(version, 5):
+        for step in range(version, 6):
             _upgrade_one_step(db, path, step)
     return original_backup
 

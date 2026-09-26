@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import time as WallTime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -104,6 +105,33 @@ class Compaction(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
 
 
+class QuietHours(BaseModel):
+    model_config = STRICT
+
+    start: WallTime
+    end: WallTime
+    direct: Literal["allow", "notice", "defer"] = "defer"
+    notice_text: str | None = None
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def local_clock(cls, value: object) -> WallTime:
+        if not isinstance(value, str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?", value) is None:
+            raise ValueError("must be a local HH:MM or HH:MM:SS clock without offset or fraction")
+        return WallTime.fromisoformat(value)
+
+    @model_validator(mode="after")
+    def valid_period(self) -> "QuietHours":
+        if self.start == self.end:
+            raise ValueError("quiet_hours start and end must differ")
+        if self.direct == "notice":
+            if self.notice_text is None or not self.notice_text.strip():
+                raise ValueError("quiet_hours notice requires nonblank notice_text")
+        elif self.notice_text is not None:
+            raise ValueError("quiet_hours notice_text is only accepted for direct=notice")
+        return self
+
+
 class Attention(BaseModel):
     model_config = STRICT
 
@@ -123,6 +151,7 @@ class Attention(BaseModel):
     ambient_min_interval_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     ambient_max_interval_seconds: float = Field(default=900.0, gt=0, allow_inf_nan=False)
     max_extensions: int = Field(default=2, ge=0)
+    quiet_hours: QuietHours | None = None
 
     @field_validator("keywords")
     @classmethod
