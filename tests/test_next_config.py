@@ -51,6 +51,9 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.compaction.trigger_ratio == 0.6
     assert config.compaction.keep_recent_entries == 30
     assert config.compaction.max_output_tokens == 1024
+    assert config.attention.direct_idle_seconds == 1.5
+    assert config.attention.direct_max_seconds == 4.0
+    assert config.attention.max_extensions == 2
     assert config.models.roles.mind.context_window_tokens == 8192
     assert config.models.roles.voice.context_window_tokens == 4096
     assert config.model_settings("mind").model == "sample-mind"
@@ -58,6 +61,20 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.model_settings("voice").model == "sample-voice"
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["attention"] = {
+        "direct_idle_seconds": 0.02,
+        "direct_max_seconds": 0.05,
+        "max_extensions": 0,
+    }
+    _write_config(root, source)
+
+    attention = load_config(root).attention
+    assert (attention.direct_idle_seconds, attention.direct_max_seconds, attention.max_extensions) == (0.02, 0.05, 0)
 
 
 @pytest.mark.parametrize(
@@ -84,6 +101,17 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
         (lambda source: source.update(compaction={"max_output_tokens": 0}), "max_output_tokens"),
         (lambda source: source.update(compaction={"max_output_tokens": 100000}), "compaction.max_output_tokens"),
         (lambda source: source.update(compaction={"unknown": True}), "unknown"),
+        (lambda source: source.update(attention={"direct_idle_seconds": -0.1}), "direct_idle_seconds"),
+        (lambda source: source.update(attention={"direct_idle_seconds": True}), "direct_idle_seconds"),
+        (lambda source: source.update(attention={"direct_idle_seconds": "0.1"}), "direct_idle_seconds"),
+        (lambda source: source.update(attention={"direct_max_seconds": 0}), "direct_max_seconds"),
+        (lambda source: source.update(attention={"direct_max_seconds": "4.0"}), "direct_max_seconds"),
+        (lambda source: source.update(attention={"direct_max_seconds": float("inf")}), "direct_max_seconds"),
+        (lambda source: source.update(attention={"direct_idle_seconds": 5.0}), "direct_idle_seconds"),
+        (lambda source: source.update(attention={"max_extensions": -1}), "max_extensions"),
+        (lambda source: source.update(attention={"max_extensions": True}), "max_extensions"),
+        (lambda source: source.update(attention={"max_extensions": "2"}), "max_extensions"),
+        (lambda source: source.update(attention={"ambient_idle_seconds": 1.0}), "ambient_idle_seconds"),
     ],
 )
 def test_invalid_lab_configuration_names_field_without_leaking_key(tmp_path, change, field):

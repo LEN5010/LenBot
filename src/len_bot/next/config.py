@@ -104,6 +104,20 @@ class Compaction(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
 
 
+class Attention(BaseModel):
+    model_config = STRICT
+
+    direct_idle_seconds: float = Field(default=1.5, ge=0, allow_inf_nan=False)
+    direct_max_seconds: float = Field(default=4.0, gt=0, allow_inf_nan=False)
+    max_extensions: int = Field(default=2, ge=0)
+
+    @model_validator(mode="after")
+    def idle_within_max(self) -> Attention:
+        if self.direct_idle_seconds > self.direct_max_seconds:
+            raise ValueError("direct_idle_seconds must not exceed direct_max_seconds")
+        return self
+
+
 class LabConfig(BaseModel):
     model_config = STRICT
 
@@ -117,6 +131,7 @@ class LabConfig(BaseModel):
     max_steps: int = Field(default=8, gt=0)
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
+    attention: Attention = Field(default_factory=Attention)
     models: Models
 
     @field_validator("scene")

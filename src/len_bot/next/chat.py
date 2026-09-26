@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -18,7 +19,7 @@ from .context import (
     CompactionPlan, ContextBudgetError, estimate_request, plan_compaction,
     project_history, recap_source,
 )
-from .messages import ChatMessage, Segment, Sender, parse_message, render_message
+from .messages import ChatMessage, Segment, Sender, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply
 from .persona import Persona
 from .store import Store, encode
@@ -53,7 +54,6 @@ class Chat:
                  mind: ChatModel, voice: ChatModel):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
-        self.lock = asyncio.Lock()
         self.tools = [SAY_TOOL] if persona.tools == "all" or "say" in persona.tools else []
         # Mode instructions live beside the other prompts, not in runtime branches.
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
@@ -67,13 +67,13 @@ class Chat:
             boundaries=persona.boundaries, expression_mode=expression_mode,
         )
 
-    def restore(self) -> None:
+    def restore(self) -> bool:
         previous = self.store.last_mind_request(self.config.scene)
         if previous is not None:
             current = self.mind.settings.model_dump(exclude={"api_key"})
             if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
                 raise ValueError("大脑模型绑定已改变；此隔离库保留原生续接字段，请显式创建独立会话库")
-        self.store.recover(self.config.scene)
+        resume = self.store.recover(self.config.scene)
         if previous is not None and previous["messages"][0]["content"] != self.system:
             self.store.append(self.config.scene, {"role": "user", "content":
                 "本次启动已更新角色或表达模式；当前系统设定生效，已有聊天原文保留。"})
@@ -82,6 +82,7 @@ class Chat:
             last = datetime.fromtimestamp(history[-1].time, ZoneInfo(self.config.timezone)).isoformat()
             self.store.append(self.config.scene, {"role": "user", "content":
                 f"隔离会话已恢复。上次保存聊天时间：{last}。离线期间的消息尚未取得。"})
+        return resume
 
     def render(self, message: ChatMessage) -> str:
         quote = (None if message.reply_to is None else
@@ -166,7 +167,7 @@ class Chat:
             text = arguments.content
         else:
             messages = [{"role": "system", "content": voice_prompt(self.persona)}]
-            for message in self.store.recent(self.config.scene):
+            for message in self.store.recent_context_messages(self.config.scene):
                 if message.is_self and message.send_status in {"received", "sent", "simulated"}:
                     messages.append({"role": "assistant", "content": "".join(
                         segment.data["text"] for segment in message.segments if segment.type == "text")})
@@ -196,32 +197,19 @@ class Chat:
             is_self=True, send_status="simulated",
         )
 
-    async def receive(self, raw: dict) -> dict:
-        async with self.lock:
-            message = parse_message(raw, own_message_ids=self.store.own_ids(self.config.scene))
-            if message.scene != self.config.scene or str(raw["self_id"]) != self.config.bot_qq:
-                raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
-            if self.store.find_message(message.scene, message.platform_message_id) is not None:
-                return {"status": "duplicate", "platform_message_id": message.platform_message_id}
-            # Include the existing platform ID so the model can actually use reply_to.
-            self.store.receive(message, raw, "隔离输入：\n" + self.render(message)
-                               + f"\n平台消息 ID：{message.platform_message_id}")
-            return await self.run_turn()
-
-    async def run_turn(self) -> dict:
+    async def run_turn(self, *, batch: tuple[int, str] | None,
+                       append_new: Callable[[bool, str], Awaitable[bool]]) -> dict:
         scene = self.config.scene
-        turn_id = self.store.start_turn(scene)
+        turn_id = self.store.start_turn(scene, batch=batch)
         expressions: list[str] = []
+        extensions = 0
         status, error_text = "step_limit", None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
-                for _ in range(self.config.max_steps):
+                for step in range(self.config.max_steps):
                     now = datetime.now(ZoneInfo(self.config.timezone)).isoformat()
                     messages = await self.prepare_context(turn_id, {"role": "user", "content": f"当前时间：{now}"})
                     reply = await self.request(turn_id, "mind", messages, self.tools)
-                    if not reply.tool_calls:
-                        status = "settled"
-                        break
                     for call in reply.tool_calls:
                         try:
                             if call.name != "say" or not self.tools:
@@ -234,6 +222,13 @@ class Chat:
                             rendered = self.render(expression)
                             self.store.complete_tool(scene, call.id, "模拟表达（未发送到 QQ）：" + rendered, expression)
                             expressions.append(rendered)
+                    if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
+                        if await append_new(bool(reply.tool_calls), turn_id):
+                            extensions += 1
+                            continue
+                    if not reply.tool_calls:
+                        status = "settled"
+                        break
         except asyncio.CancelledError:
             self.store.finish_pending_tools(scene, "当前轮被取消")
             self.store.end_turn(turn_id, "cancelled", "CancelledError")
@@ -242,6 +237,7 @@ class Chat:
             status = "timeout" if isinstance(error, TimeoutError) else "error"
             error_text = f"{type(error).__name__}: {error}"
         self.store.finish_pending_tools(scene, error_text or status)
-        self.store.end_turn(turn_id, status, error_text)
+        pending_wake = self.store.end_turn(turn_id, status, error_text)
         return {"turn_id": turn_id, "status": status, "error": error_text,
-                "delivery": "simulated", "expressions": expressions}
+                "delivery": "simulated", "expressions": expressions, "extensions": extensions,
+                "pending_wake": pending_wake}
