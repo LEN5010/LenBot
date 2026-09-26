@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -123,11 +123,12 @@ class Store:
             message for _, message in history
         ]
 
-    def _append(self, scene: str, message: dict) -> None:
-        self.db.execute(
+    def _append(self, scene: str, message: dict) -> int:
+        cursor = self.db.execute(
             "INSERT INTO mind_entries(scene,message,created) VALUES (?,?,?)",
             (scene, encode(message), time.time()),
         )
+        return cursor.lastrowid
 
     def append(self, scene: str, message: dict) -> None:
         with self.db:
@@ -190,6 +191,7 @@ class Store:
     def pending_messages(self, scene: str) -> list[tuple[int, ChatMessage, float]]:
         rows = self.db.execute(
             "SELECT seq,body,received_at FROM messages WHERE scene=? AND raw IS NOT NULL "
+            "AND NOT (json_extract(body,'$.is_self')=1 AND json_extract(body,'$.send_status')='sent') "
             "AND seq>COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0) "
             "ORDER BY seq",
             (scene, scene),
@@ -279,6 +281,56 @@ class Store:
                     (scene, encode(discovered_tools)),
                 )
 
+    def prepare_expression(self, call_id: str, expression: ChatMessage, content: str) -> tuple[int, int]:
+        """Save actual words and the unfinished native result before platform I/O."""
+        with self.db:
+            message_seq = self._save_message(expression, None)
+            entry_seq = self._append(expression.scene, {
+                "role": "tool", "tool_call_id": call_id, "content": content,
+            })
+        return message_seq, entry_seq
+
+    def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str) -> None:
+        """Finish this live call before projecting another request in the scene."""
+        message_seq, entry_seq = positions
+        with self.db:
+            echo = (None if expression.platform_message_id is None else self.db.execute(
+                "SELECT seq,body FROM messages WHERE scene=? AND platform_id=?",
+                (expression.scene, expression.platform_message_id),
+            ).fetchone())
+            if echo is not None:
+                received = self._message(echo[1])
+                if (not received.is_self or received.sender.uid != expression.sender.uid
+                        or echo[0] <= message_seq or received.send_status != "received"):
+                    raise ValueError(f"Send receipt conflicts with an existing message: {expression.platform_message_id}")
+                self.db.execute("UPDATE messages SET body=? WHERE seq=?",
+                                (encode(asdict(replace(received, send_status="sent"))), echo[0]))
+                self.db.execute("DELETE FROM message_search WHERE rowid=?", (message_seq,))
+                self.db.execute("DELETE FROM messages WHERE seq=?", (message_seq,))
+            else:
+                self.db.execute("UPDATE messages SET platform_id=?,body=? WHERE seq=?",
+                                (expression.platform_message_id, encode(asdict(expression)), message_seq))
+            self.db.execute(
+                "UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
+                (content, entry_seq),
+            )
+
+    def attach_echo(self, message: ChatMessage, raw: dict, received_at: float) -> None:
+        """Attach a later platform event to an already confirmed own expression."""
+        with self.db:
+            row = self.db.execute("SELECT seq,body,raw FROM messages WHERE scene=? AND platform_id=?",
+                                  (message.scene, message.platform_message_id)).fetchone()
+            saved = self._message(row[1])
+            if not message.is_self or message.sender.uid != saved.sender.uid:
+                raise ValueError(f"Own message echo conflicts with another sender: {message.platform_message_id}")
+            if row[2] is not None:
+                return
+            self.db.execute("UPDATE messages SET body=?,raw=?,received_at=? WHERE seq=?",
+                            (encode(asdict(replace(message, id=saved.id, send_status="sent"))),
+                             encode(raw), received_at, row[0]))
+            self.db.execute("UPDATE message_search SET search_text=? WHERE rowid=?",
+                            (plain_text(message).casefold(), row[0]))
+
     def recent(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         rows = self.db.execute(
             "SELECT body FROM messages WHERE scene=? ORDER BY seq DESC LIMIT ?", (scene, limit)
@@ -288,7 +340,8 @@ class Store:
     def recent_context_messages(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         """Only inbound messages already batched for the mind, plus saved outbound."""
         rows = self.db.execute(
-            "SELECT body FROM messages WHERE scene=? AND (raw IS NULL OR seq<="
+            "SELECT body FROM messages WHERE scene=? AND (raw IS NULL "
+            "OR (json_extract(body,'$.is_self')=1 AND json_extract(body,'$.send_status')='sent') OR seq<="
             "COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0)) "
             "ORDER BY seq DESC LIMIT ?",
             (scene, scene, limit),

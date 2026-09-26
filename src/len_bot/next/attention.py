@@ -187,7 +187,16 @@ class SceneRunner:
         message = parse_message(raw, own_message_ids=self.own_ids)
         if message.scene != self.config.scene or str(raw["self_id"]) != self.config.bot_qq:
             raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
-        if self.store.find_message(message.scene, message.platform_message_id) is not None:
+        if message.reply_to is not None and message.reply_to not in self.own_ids:
+            # A send receipt may arrive without an own-message event.
+            replied = self.store.find_message(message.scene, message.reply_to)
+            if replied is not None and replied.is_self:
+                self.own_ids.add(message.reply_to)
+                message.mentions_bot = True
+        existing = self.store.find_message(message.scene, message.platform_message_id)
+        if existing is not None:
+            if existing.is_self and existing.send_status == "sent":
+                self.store.attach_echo(message, raw, time.time())
             return {"status": "duplicate", "platform_message_id": message.platform_message_id}
         now = time.time()
         state = copy.deepcopy(self.state)
