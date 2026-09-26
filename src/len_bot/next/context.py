@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from math import ceil
+from string import Template
 
 from .store import encode
 
@@ -17,6 +18,11 @@ def estimate_request(messages: list[dict], tools: list[dict], output_tokens: int
     # A UTF-8 / 3 heuristic, not a provider tokenizer or a billing measurement.
     payload = encode({"messages": messages, "tools": tools})
     return ceil(len(payload.encode("utf-8")) / 3) + output_tokens
+
+
+def estimate_content(content: str) -> int:
+    """Extra JSON content bytes, excluding the empty string's two quotes."""
+    return ceil((len(encode(content).encode("utf-8")) - 2) / 3)
 
 
 def project_history(recap: str | None, entries: list[Entry]) -> list[dict]:
@@ -45,28 +51,53 @@ def complete_boundaries(entries: list[Entry]) -> list[int]:
 @dataclass(frozen=True)
 class CompactionPlan:
     through: int
-    source: list[Entry]
-    kept: list[Entry]
     summary_budget_tokens: int
+    request_messages: list[dict]
 
 
 def plan_compaction(entries: list[Entry], *, system: dict, state: dict,
                     tools: list[dict], output_tokens: int, trigger_tokens: int,
-                    keep_recent_entries: int, summary_output_tokens: int) -> CompactionPlan:
+                    keep_recent_entries: int, summary_output_tokens: int,
+                    recap: str | None, summary_template: str, window_tokens: int) -> CompactionPlan:
     boundaries = [cut for cut in complete_boundaries(entries) if cut < len(entries)]
     if not boundaries:
         raise ContextBudgetError("没有可压缩的旧完整对话段；当前消息或单个工具组超过输入预算")
     preferred = len(entries) - keep_recent_entries
     start = max((cut for cut in boundaries if cut <= preferred), default=boundaries[0])
-    for cut in boundaries:
+    for desired_index, cut in enumerate(boundaries):
         if cut < start:
             continue
         kept = entries[cut:]
         without_recap = [system] + project_history("", kept) + [state]
         available = trigger_tokens - estimate_request(without_recap, tools, output_tokens)
         if available >= summary_output_tokens:
-            return CompactionPlan(entries[cut - 1][0], entries[:cut], kept, available)
-    raise ContextBudgetError("系统、工具与最新完整对话段没有给回想留下预算；原文未裁剪")
+            break
+    else:
+        raise ContextBudgetError("系统、工具与最新完整对话段没有给回想留下预算；原文未裁剪")
+
+    prompt = Template(summary_template).substitute(summary_budget_tokens=available)
+
+    def request_at(cut: int) -> list[dict]:
+        return [{"role": "system", "content": prompt},
+                {"role": "user", "content": recap_source(recap, entries[:cut])}]
+
+    # Prefix size grows monotonically. Search complete boundaries, not raw tokens.
+    low, high = 0, desired_index
+    selected = None
+    while low <= high:
+        middle = (low + high) // 2
+        cut = boundaries[middle]
+        request = request_at(cut)
+        if estimate_request(request, [], summary_output_tokens) <= window_tokens:
+            selected = CompactionPlan(entries[cut - 1][0], available, request)
+            low = middle + 1
+        else:
+            high = middle - 1
+    if selected is None:
+        required = estimate_request(request_at(boundaries[0]), [], summary_output_tokens)
+        raise ContextBudgetError(
+            f"最早完整旧段的回想请求估算 {required} token，超过配置窗口 {window_tokens}；原文与工具组未拆分")
+    return selected
 
 
 def recap_source(recap: str | None, entries: list[Entry]) -> str:

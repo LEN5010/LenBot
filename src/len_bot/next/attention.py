@@ -239,11 +239,11 @@ class SceneRunner:
             except TimeoutError:
                 pass  # The known burst/cooldown deadline has arrived.
 
-    def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, str]:
-        lines = [reason]
-        for _, message, _ in pending:
-            lines.append(self.chat.render(message) + f"（平台消息 ID：{message.platform_message_id}）")
-        return pending[-1][0], "\n".join(lines)
+    def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
+        contents = [self.chat.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
+                    for _, message, _ in pending]
+        contents[0] = reason + "\n" + contents[0]
+        return pending[-1][0], contents
 
     def consumed_state(self) -> AttentionState:
         state = copy.deepcopy(self.state)
@@ -276,9 +276,9 @@ class SceneRunner:
         pending = await self.ready_messages(continuing=continuing)
         if not pending:
             return False
-        through, content = self.batch(pending, self.wake_reason())
+        through, contents = self.batch(pending, self.wake_reason())
         state = self.consumed_state()
-        self.store.append_batch(self.config.scene, through, content, turn_id=turn_id, attention_state=asdict(state))
+        self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id, attention_state=asdict(state))
         self.state = state
         return True
 

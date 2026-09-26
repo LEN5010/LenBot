@@ -184,15 +184,16 @@ class Store:
         ).fetchone()
         return None if row is None else float(row[0])
 
-    def _append_batch(self, scene: str, through: int, content: str) -> None:
-        self._append(scene, {"role": "user", "content": content})
+    def _append_batch(self, scene: str, through: int, contents: list[str]) -> None:
+        for content in contents:
+            self._append(scene, {"role": "user", "content": content})
         self.db.execute(
             "INSERT INTO mind_sessions(scene,last_message_seq) VALUES (?,?) "
             "ON CONFLICT(scene) DO UPDATE SET last_message_seq=excluded.last_message_seq",
             (scene, through),
         )
 
-    def append_batch(self, scene: str, through: int, content: str, *, turn_id: str,
+    def append_batch(self, scene: str, through: int, contents: list[str], *, turn_id: str,
                      attention_state: dict | None = None) -> None:
         """Attach an arriving batch to an existing turn before its next request."""
         with self.db:
@@ -202,7 +203,7 @@ class Store:
             )
             if updated.rowcount != 1:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
-            self._append_batch(scene, through, content)
+            self._append_batch(scene, through, contents)
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
 
@@ -280,7 +281,7 @@ class Store:
             "AND json_extract(body,'$.is_self')=1", (scene,)
         )}
 
-    def start_turn(self, scene: str, *, batch: tuple[int, str] | None = None,
+    def start_turn(self, scene: str, *, batch: tuple[int, list[str]] | None = None,
                    attention_state: dict | None = None) -> str:
         turn_id = str(uuid4())
         with self.db:
