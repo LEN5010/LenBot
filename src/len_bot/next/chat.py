@@ -19,6 +19,7 @@ from .context import (
     CompactionPlan, ContextBudgetError, estimate_content, estimate_request,
     plan_compaction, project_history,
 )
+from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
 from .messages import ChatMessage, Segment, Sender, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
@@ -73,12 +74,20 @@ class Chat:
                  mind: ChatModel, voice: ChatModel):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
-        self.tools = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS)
-                      if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
-                      and (config.schedules.enabled or tool["function"]["name"] != "schedule")]
-        self.tool_names = {tool["function"]["name"] for tool in self.tools}
-        if "schedule" in self.tool_names and not {"schedule_list", "schedule_cancel"} <= self.tool_names:
+        allowed = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
+                   if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
+                   and (config.schedules.enabled or tool["function"]["name"] != "schedule")]
+        self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
+        self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
+        self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+        if "schedule" in self.allowed_tool_names and not {"schedule_list", "schedule_cancel"} <= self.allowed_tool_names:
             raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
+        if self.deferred_tools and "tool_search" not in self.allowed_tool_names:
+            raise ValueError("角色开放低频工具时必须同时开放 tool_search")
+        saved = self.store.load_discovered_tools(config.scene)
+        self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
+        if set(saved) != self.discovered_tools:
+            self.store.save_discovered_tools(config.scene, sorted(self.discovered_tools))
         # Mode instructions live beside the other prompts, not in runtime branches.
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
         expression_mode = Template((PROMPTS / mode).read_text()).substitute(
@@ -90,8 +99,21 @@ class Chat:
             aliases="、".join(persona.aliases), behavior=persona.behavior,
             boundaries=persona.boundaries, expression_mode=expression_mode,
         )
-        if "schedule" in self.tool_names:
+        if "schedule" in self.allowed_tool_names:
             self.system += "\n" + (PROMPTS / "next_schedule.md").read_text()
+        if "tool_search" in self.allowed_tool_names:
+            self.system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
+                catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
+                                  for tool in self.deferred_tools) or "（当前没有允许发现的低频工具）")
+
+    @property
+    def tools(self) -> list[dict]:
+        return self.core_tools + [tool for tool in self.deferred_tools
+                                  if tool["function"]["name"] in self.discovered_tools]
+
+    @property
+    def tool_names(self) -> set[str]:
+        return {tool["function"]["name"] for tool in self.tools}
 
     def restore(self) -> bool:
         previous = self.store.last_mind_request(self.config.scene)
@@ -166,6 +188,8 @@ class Chat:
         trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
         while True:
             recap, entries = self.store.active_history(self.config.scene)
+            # Refresh only between model requests, never midway through a tool group.
+            self.discovered_tools = set(self.store.load_discovered_tools(self.config.scene))
             now = datetime.now(ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
             state = {"role": "user", "content": f"当前时间：{now}"}
             schedules = self.store.list_schedules(self.config.scene, limit=21)
@@ -178,7 +202,7 @@ class Chat:
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
             plan = plan_compaction(
-                entries, system=messages[0], state=state, tools=self.tools,
+                entries, system=messages[0], state=state, tools=self.core_tools,
                 output_tokens=binding.max_output_tokens, trigger_tokens=trigger,
                 keep_recent_entries=self.config.compaction.keep_recent_entries,
                 summary_output_tokens=self.config.compaction.max_output_tokens,
@@ -231,19 +255,27 @@ class Chat:
         )
 
     async def execute_tool(self, turn_id: str, call: ToolCall,
-                           wait_for_messages: Callable[[float], Awaitable[str]]) -> tuple[str, ChatMessage | None]:
+                           wait_for_messages: Callable[[float], Awaitable[str]]
+                           ) -> tuple[str, ChatMessage | None, list[str] | None]:
         if call.name not in self.tool_names:
-            raise ValueError(f"当前实例未开放工具：{call.name}")
+            raise ValueError(f"当前请求未开放工具：{call.name}")
+        if call.name == "tool_search":
+            arguments = ToolSearchArguments.model_validate(call.arguments)
+            matched = search_tools(arguments.query, self.deferred_tools)
+            names = [tool["function"]["name"] for tool in matched]
+            discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
+            return encode({"query": arguments.query, "matched_names": names,
+                           "available_from": "next_model_request", "tools": matched}), None, discovered
         if call.name == "say":
             expression = await self.express(turn_id, SayArguments.model_validate(call.arguments))
-            return self.render(expression), expression
+            return self.render(expression), expression, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
-                               RecallArguments.model_validate(call.arguments)), None
+                               RecallArguments.model_validate(call.arguments)), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
-            return execute_schedule(self.store, self.config, call.name, call.arguments), None
+            return execute_schedule(self.store, self.config, call.name, call.arguments), None, None
         arguments = WaitArguments.model_validate(call.arguments)
-        return await wait_for_messages(arguments.seconds), None
+        return await wait_for_messages(arguments.seconds), None, None
 
     async def run_turn(self, *, batch: tuple[int, list[str]] | None,
                        append_new: Callable[[bool, str], Awaitable[bool]],
@@ -262,13 +294,14 @@ class Chat:
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     for call in reply.tool_calls:
                         try:
-                            content, expression = await self.execute_tool(turn_id, call, wait_for_messages)
+                            content, expression, discovered = await self.execute_tool(turn_id, call, wait_for_messages)
                         except Exception as error:
                             failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")
                         else:
                             result_content = "模拟表达（未发送到 QQ）：" + content if expression is not None else content
-                            self.store.complete_tool(scene, call.id, result_content, expression)
+                            self.store.complete_tool(scene, call.id, result_content, expression,
+                                                     discovered_tools=discovered)
                             if expression is not None:
                                 expressions.append(content)
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:

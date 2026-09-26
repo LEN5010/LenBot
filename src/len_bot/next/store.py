@@ -42,18 +42,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 7:
+                if application_id != 0x4C424E31 or version != 8:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 7;
+                    PRAGMA user_version = 8;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -74,7 +74,8 @@ class Store:
                         compact_through INTEGER NOT NULL DEFAULT 0,
                         recap TEXT,
                         last_message_seq INTEGER NOT NULL DEFAULT 0,
-                        attention_state TEXT
+                        attention_state TEXT,
+                        discovered_tools TEXT NOT NULL DEFAULT '[]'
                     );
                     CREATE TABLE turns (
                         id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
@@ -162,6 +163,20 @@ class Store:
     def save_attention(self, scene: str, state: dict) -> None:
         with self.db:
             self._save_attention(scene, state)
+
+    def load_discovered_tools(self, scene: str) -> list[str]:
+        row = self.db.execute(
+            "SELECT discovered_tools FROM mind_sessions WHERE scene=?", (scene,)
+        ).fetchone()
+        return [] if row is None else json.loads(row[0])
+
+    def save_discovered_tools(self, scene: str, names: list[str]) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO mind_sessions(scene,discovered_tools) VALUES (?,?) "
+                "ON CONFLICT(scene) DO UPDATE SET discovered_tools=excluded.discovered_tools",
+                (scene, encode(names)),
+            )
 
     def enqueue(self, message: ChatMessage, raw: dict, received_at: float,
                 *, attention_state: dict | None = None) -> int:
@@ -251,11 +266,18 @@ class Store:
             self._save_attention(scene, attention_state)
 
     def complete_tool(self, scene: str, call_id: str, content: str,
-                      expression: ChatMessage | None = None) -> None:
+                      expression: ChatMessage | None = None, *,
+                      discovered_tools: list[str] | None = None) -> None:
         with self.db:
             if expression is not None:
                 self._save_message(expression, None)
             self._append(scene, {"role": "tool", "tool_call_id": call_id, "content": content})
+            if discovered_tools is not None:
+                self.db.execute(
+                    "INSERT INTO mind_sessions(scene,discovered_tools) VALUES (?,?) "
+                    "ON CONFLICT(scene) DO UPDATE SET discovered_tools=excluded.discovered_tools",
+                    (scene, encode(discovered_tools)),
+                )
 
     def recent(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         rows = self.db.execute(
@@ -574,9 +596,10 @@ class Store:
             if recap_for is not None:
                 scene, through = recap_for
                 self.db.execute(
-                    "INSERT INTO mind_sessions(scene,compact_through,recap) VALUES (?,?,?) "
+                    "INSERT INTO mind_sessions(scene,compact_through,recap,discovered_tools) "
+                    "VALUES (?,?,?,'[]') "
                     "ON CONFLICT(scene) DO UPDATE SET compact_through=excluded.compact_through, "
-                    "recap=excluded.recap",
+                    "recap=excluded.recap,discovered_tools=excluded.discovered_tools",
                     (scene, through, response["message"]["content"]),
                 )
 
