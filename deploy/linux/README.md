@@ -1,6 +1,6 @@
 # Linux 部署与恢复
 
-本目录提供 Linux 部署材料。起停约束和当次状态见[运行手册](../../docs/operations.md)与[当前任务](../../docs/iteration.md)。模板不能证明目标 Linux、账号、模型或实群已验收；生产启动、现场配置变更和真实发送分别服从当次授权。
+本目录提供 Linux 部署材料。模板不能证明目标 Linux、账号、模型或实群已验收；生产启动、现场配置变更和真实发送分别服从当次授权。
 
 ## 服务与卷
 
@@ -101,7 +101,7 @@ sudo systemctl start lenbot-gateway
 docker compose -f deploy/linux/compose.yaml up -d --no-build --pull never lenbot
 ```
 
-启动后的连接、对话资格与真实回执按[首条回复路径](../../docs/operations.md#从面板可用到首条真实回复)分别确认，不用容器 running 替代业务验收。
+启动后分别确认 OneBot 连接、群对话资格和第一条真实回复的回执，不用容器 running 替代业务验收。
 
 模板 `Restart=no` / `restart: "no"`，不自动恢复实发；开机启动另按明确部署策略配置。Gateway 日志用 `journalctl -u lenbot-gateway`；LenBot 用 `docker compose -f deploy/linux/compose.yaml logs --since 30m lenbot`。日志不替代 action、file_id 与 OneBot 回执；分享前移除凭据、私人原话和签名地址。
 
@@ -119,7 +119,7 @@ Core、转写、B 站账号/允许收藏夹缺失均单列“未配置/未放行
 
 ## 停机、备份与恢复
 
-先按[升级或回退判定](../../docs/operations.md#选择升级或回退路径)核对源／目标版本与备份后的新增事实；以下步骤不是无条件恢复旧全库的授权。
+先核对源／目标版本，以及备份之后新增的数据；以下步骤不是无条件恢复旧全库的授权。
 
 先通过原面板阻止新的自主工作入场，按当次授权暂停新外发，记录未结束工作、在途调用、预占、待发文件和 unknown 操作。等待执行结束，或从原取消入口取得真实停止回执。然后先停 LenBot，再停 Gateway：
 
@@ -152,8 +152,6 @@ sudo sqlite3 /var/lib/lenbot-gateway/gateway.db ".backup '$release_backup/gatewa
 
 重启查询原 execution/job/action：未知结果不重放；旧页面失效但已存资料保留；预算、deadline、版本和待交付资产沿原记录。停止未知不清零、模型未知不重购、上传未知不换通道。
 
-## 发布记录
-
-用[现场记录模板](release-evidence.template.md)，先明确同一候选提交、配置选择、渠道、插件与镜像，再在本地运维目录记录一个获准聊天群与一个获准播报群的输入、调用、工作、资产、表达与真实回执。S0—S7 状态只在 docs/plan/README.md 维护，当批观察摘要归 docs/iteration.md，不提交私人原话和凭据。首个方向已选择 Linux 容器群报告与文件交付，未观察模块仍写未确认，可选缺失单列；编译、Compose 解析和镜像构建都不等于实群通过。
+## 参考
 
 语法依据：[Compose 服务定义](https://docs.docker.com/reference/compose-file/services/)、[uv 镜像构建](https://docs.astral.sh/uv/guides/integration/docker/)。目标执行网另核对[Docker DNS 行为](https://docs.docker.com/engine/network/#dns-services)；文档不是实机证据。
