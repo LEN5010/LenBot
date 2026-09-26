@@ -162,7 +162,7 @@ def _body(segments: list[Segment]) -> str:
 
 def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | None = None) -> str:
     """Render a single message with its actual sender, words, and known reply."""
-    clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).strftime("%H:%M")
+    clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(sep=" ", timespec="seconds")
     quote = ""
     if message.reply_to is not None:
         if reply is None:
