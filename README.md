@@ -21,6 +21,8 @@
 
 两条入口最终都使用唯一的 lenbot.config.json，不自动切换人格或合并预设。已有实际配置不能用样例覆盖；角色原文和素材保留在原位置，预览不等于采用。
 
+当前开发与验收情况见[项目现状报告](docs/status.md)；源码已接通的能力与现场验收分别记录。
+
 ## 当前能做什么
 
 - 在已启用的群里参与聊天：留言、真实 @ 提及、图片、语音与混排表达，也可以沉默；文字里的 @称呼不等于真实提及。
@@ -57,7 +59,7 @@
 | Linux Compose、Gateway 服务、卷映射与发布记录 | [部署材料](deploy/linux/README.md) |
 | 如何开发现有插件 | [插件开发](docs/plugins.md) |
 | 工程约束 | [AGENTS.md](AGENTS.md) |
-| 产品化 S0—S7 路线、任务状态与决策草案 | [产品路线入口](docs/plan/README.md) |
+| 产品化 S0—S7 任务状态与决策 | [产品路线入口](docs/plan/README.md) |
 | 旧 P／N 批次的设计、验收与真实观察 | [历史与原始资料](docs/README.md#历史依据与原始资料) |
 | 本轮状态、下一步和实际核对结果 | [当前任务](docs/iteration.md) |
 | 人格与素材的原始资料 | [人物素材交接](docs/persona/asoul/README.md)、[人格来源资料](docs/persona/diana/README.md) |
