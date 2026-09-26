@@ -66,3 +66,6 @@ node_modules/
 /lenbot.config.json
 /.lenbot-config-*.json
 /gateway.config.json
+
+# 设计文档与工作记录只留在本机
+/docs/

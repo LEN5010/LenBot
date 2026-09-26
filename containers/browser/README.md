@@ -1,6 +1,6 @@
 # 独立浏览器 worker
 
-本目录提供独立浏览器的固定容器入口。它复用 Worker Gateway 的执行、期限、取消和产物接口，逐条命令另记在同一执行日志的 `execution_commands`。本目录存在不代表出口与浏览器部署已验收；当前放行状态见 [当前任务](../../docs/iteration.md)。
+本目录提供独立浏览器的固定容器入口。它复用 Worker Gateway 的执行、期限、取消和产物接口，逐条命令另记在同一执行日志的 `execution_commands`。本目录存在不代表出口与浏览器部署已验收。
 
 在获准的 Linux 构建环境，从项目根目录正常构建：
 
@@ -18,4 +18,4 @@ LenBot 根配置选择 `plugins.workspace.config.gateway` 后，browser_agent �
 
 每个工作修订只建立一个浏览器执行，多个页面由它持有；page_ref、snapshot_revision 仅在本会话内有效。`open/snapshot/interact/capture` 的请求与结果持久保存，命令运行前记 running；失联只查同一 command_id，不重放点击。任一进程重启后原页面失效，需要人工继续工作形成新修订；已保存 R 正文仍可续读。正文在 DOM 采集时受 max_snapshot_chars 限制，记录 collection_truncated；截图按高度、字节与产物数量限制，经 Gateway 产物接口取回后才登记媒体，pixels_loaded 保持 false。
 
-升级前按 [运行手册](../../docs/operations.md) 停机、普通备份。宿主和 Gateway 的执行日志都增加命令表；不能用旧代码重放新版本的执行或删除未知结果记录。取消只在 Gateway 确认容器消失/停止后释放占用。
+升级前停机、普通备份。宿主和 Gateway 的执行日志都增加命令表；不能用旧代码重放新版本的执行或删除未知结果记录。取消只在 Gateway 确认容器消失/停止后释放占用。
