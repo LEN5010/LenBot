@@ -27,18 +27,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 5:
+                if application_id != 0x4C424E31 or version != 6:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 5;
+                    PRAGMA user_version = 6;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -214,6 +214,18 @@ class Store:
             self._append_batch(scene, through, contents)
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
+
+    def append_quiet(self, scene: str, batch: tuple[int, list[str]], *,
+                     attention_state: dict, expression: ChatMessage | None,
+                     note: str | None) -> None:
+        """Persist a quiet-hours batch and its actual simulated outlet together."""
+        with self.db:
+            self._append_batch(scene, batch[0], batch[1])
+            if expression is not None:
+                self._save_message(expression, None)
+            if note is not None:
+                self._append(scene, {"role": "user", "content": note})
+            self._save_attention(scene, attention_state)
 
     def complete_tool(self, scene: str, call_id: str, content: str,
                       expression: ChatMessage | None = None) -> None:

@@ -208,10 +208,13 @@ class Chat:
         if arguments.mention is not None:
             segments.append(Segment("at", {"qq": arguments.mention}))
         segments.append(Segment("text", {"text": text}))
+        return self.simulated_message(segments, reply_to=arguments.reply_to)
+
+    def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
             id=str(uuid4()), platform="qq", scene=self.config.scene, platform_message_id=None,
             sender=Sender(self.config.bot_qq, self.persona.name, None, None), time=time.time(),
-            segments=segments, reply_to=arguments.reply_to, mentions_bot=False,
+            segments=segments, reply_to=reply_to, mentions_bot=False,
             is_self=True, send_status="simulated",
         )
 

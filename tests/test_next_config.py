@@ -1,10 +1,11 @@
 """Validation of the isolated lab configuration and role-package formats."""
 
 import json
+from datetime import time as WallTime
 
 import pytest
 
-from len_bot.next.config import load_config
+from len_bot.next.config import QuietHours, load_config
 from len_bot.next.persona import load_persona
 
 
@@ -57,6 +58,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.attention.only_direct is False
     assert config.attention.keywords == []
     assert config.attention.other_bot_qqs == []
+    assert config.attention.quiet_hours is None
     assert (config.attention.named_idle_seconds, config.attention.named_max_seconds) == (3.0, 8.0)
     assert config.attention.keyword_cooldown_seconds == 60.0
     assert (config.attention.focus_seconds, config.attention.focus_idle_seconds,
@@ -103,6 +105,63 @@ def test_isolated_attention_accepts_explicit_short_direct_timing(tmp_path):
     assert (attention.named_idle_seconds, attention.named_max_seconds) == (0.03, 0.06)
     assert (attention.focus_seconds, attention.focus_idle_seconds, attention.focus_max_seconds) == (0.2, 0.04, 0.08)
     assert (attention.ambient_min_interval_seconds, attention.ambient_max_interval_seconds) == (0.05, 0.1)
+
+
+@pytest.mark.parametrize(
+    ("quiet", "expected_direct", "expected_notice"),
+    [
+        ({"start": "23:30", "end": "07:15:30", "notice_text": None}, "defer", None),
+        ({"start": "01:00:00", "end": "08:00", "direct": "allow",
+          "notice_text": None}, "allow", None),
+        ({"start": "22:00", "end": "06:00", "direct": "notice",
+          "notice_text": "合成时段说明"}, "notice", "合成时段说明"),
+    ],
+)
+def test_quiet_hours_parse_explicit_local_clocks(tmp_path, quiet, expected_direct, expected_notice):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["attention"] = {"quiet_hours": quiet}
+    _write_config(root, source)
+
+    settings = load_config(root).attention.quiet_hours
+    assert settings.start == WallTime.fromisoformat(quiet["start"])
+    assert settings.end == WallTime.fromisoformat(quiet["end"])
+    assert settings.direct == expected_direct
+    assert settings.notice_text == expected_notice
+    assert QuietHours.model_validate_json(settings.model_dump_json()) == settings
+
+
+@pytest.mark.parametrize(
+    ("quiet", "field"),
+    [
+        ({"start": "1:00", "end": "08:00"}, "start"),
+        ({"start": "24:00", "end": "08:00"}, "start"),
+        ({"start": "01:00:60", "end": "08:00"}, "start"),
+        ({"start": "01:00.000", "end": "08:00"}, "start"),
+        ({"start": "01:00+08:00", "end": "08:00"}, "start"),
+        ({"start": 100, "end": "08:00"}, "start"),
+        ({"start": "01:00", "end": "01:00:00"}, "start and end must differ"),
+        ({"start": "01:00", "end": "08:00", "direct": "notice"}, "notice_text"),
+        ({"start": "01:00", "end": "08:00", "direct": "notice",
+          "notice_text": "   "}, "notice_text"),
+        ({"start": "01:00", "end": "08:00", "direct": "allow",
+          "notice_text": "合成说明"}, "notice_text"),
+        ({"start": "01:00", "end": "08:00", "direct": "defer",
+          "notice_text": "合成说明"}, "notice_text"),
+        ({"start": "01:00", "end": "08:00", "direct": "sleep"}, "direct"),
+        ({"start": "01:00", "end": "08:00", "unknown": True}, "unknown"),
+    ],
+)
+def test_quiet_hours_reject_invalid_configuration(tmp_path, quiet, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["attention"] = {"quiet_hours": quiet}
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 @pytest.mark.parametrize(

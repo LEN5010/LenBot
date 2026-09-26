@@ -7,11 +7,14 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from .chat import Chat
 from .config import Attention
-from .messages import ChatMessage, parse_message, plain_text
+from .messages import ChatMessage, Segment, parse_message, plain_text
+from .quiet import next_quiet_start, quiet_period
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -36,6 +39,7 @@ class AttentionState:
     silence_level: int = 0
     keyword_last: dict[str, float] = field(default_factory=dict)
     pending: PendingWake | None = None
+    quiet_notice_until: float | None = None
 
     def contact(self, at: float, duration: float) -> None:
         if self.last_contact_at is None or at > self.last_contact_at:
@@ -143,6 +147,13 @@ class SceneRunner:
             self.store.save_attention(self.config.scene, asdict(state))
             self.state = state
 
+    def clear_quiet_wake(self, state: AttentionState, now: float, period: tuple[float, float] | None) -> None:
+        wake = state.pending
+        if wake is not None and wake.channel != "direct":
+            start = next_quiet_start(self.settings.quiet_hours, self.config.timezone, wake.first_at)
+            if period is not None or (start is not None and start <= now):
+                state.pending = None
+
     def offer_message(self, state: AttentionState, message: ChatMessage, at: float,
                       pending: list[tuple[ChatMessage, float]], recent: list[tuple[ChatMessage, float]]) -> None:
         if is_direct(message):
@@ -155,6 +166,8 @@ class SceneRunner:
                 state.contact(at, self.settings.focus_seconds)
             return
         if self.settings.only_direct or message.sender.uid in self.settings.other_bot_qqs:
+            return
+        if quiet_period(self.settings.quiet_hours, self.config.timezone, at) is not None:
             return
         text = plain_text(message).casefold()
         words = [word for word in self.keywords if word in text and
@@ -177,11 +190,13 @@ class SceneRunner:
             return {"status": "duplicate", "platform_message_id": message.platform_message_id}
         now = time.time()
         state = copy.deepcopy(self.state)
+        period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+        self.clear_quiet_wake(state, now, period)
         # Batch statistics are only needed for a new, non-direct ambient opportunity.
         pending, recent = [], []
         if (not is_direct(message) and not message.is_self and not self.settings.only_direct
                 and message.sender.uid not in self.settings.other_bot_qqs and state.pending is None
-                and self.settings.activity > 0):
+                and self.settings.activity > 0 and period is None):
             pending = self.store.pending_attention_sample(self.config.scene, self.settings.other_bot_qqs, limit=19)
             pending.append((message, now))
             recent = self.store.attention_sample(self.config.scene, limit=19,
@@ -193,9 +208,12 @@ class SceneRunner:
         if message.is_self:
             self.own_ids.add(message.platform_message_id)
         self.changed.set()
-        return {"status": "queued" if state.pending else "stored",
-                "platform_message_id": message.platform_message_id,
-                "wake_channel": state.pending.channel if state.pending else None}
+        receipt = {"status": "queued" if state.pending else "stored",
+                   "platform_message_id": message.platform_message_id,
+                   "wake_channel": state.pending.channel if state.pending else None}
+        if period is not None:
+            receipt["quiet_until"] = datetime.fromtimestamp(period[1], ZoneInfo(self.config.timezone)).isoformat()
+        return receipt
 
     def close_input(self) -> None:
         self.closing = True
@@ -206,18 +224,25 @@ class SceneRunner:
         deadline = started + seconds
         while True:
             self.changed.clear()
-            if self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None:
+            now = time.time()
+            period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+            if period is None:
+                available = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None
+            else:
+                available = (self.settings.quiet_hours.direct == "allow" and self.state.pending is not None
+                             and self.state.pending.channel == "direct")
+            if available:
                 reason = "收到新消息"
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 reason = "已到等待时间"
                 break
+            delay = remaining if period is None else min(remaining, period[1] - now)
             try:
-                await asyncio.wait_for(self.changed.wait(), timeout=remaining)
+                await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
-                reason = "已到等待时间"
-                break
+                pass  # Recheck the wait deadline and any quiet interval that just ended.
         return f"等待结束：实际等待 {time.monotonic() - started:.3f} 秒；{reason}。"
 
     def ambient_interval(self) -> float:
@@ -237,17 +262,49 @@ class SceneRunner:
         maximum = getattr(self.settings, wake.channel + "_max_seconds")
         return min((wake.first_at if latest is None else latest) + idle, wake.first_at + maximum)
 
-    async def ready_messages(self, *, continuing: bool) -> list[tuple[int, ChatMessage, float]]:
+    async def ready_messages(self, *, continuing: bool = False, in_turn: bool = False
+                             ) -> tuple[list[tuple[int, ChatMessage, float]], float | None] | None:
         while True:
             self.changed.clear()
-            if continuing:
-                return self.store.pending_messages(self.config.scene)
+            now = time.time()
+            period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+            state = copy.deepcopy(self.state)
+            self.clear_quiet_wake(state, now, period)
+            self.save_state(state)
+            notice_until = None
+            resuming = self.resume and not in_turn
+            if period is not None:
+                direct = self.state.pending is not None
+                mode = self.settings.quiet_hours.direct
+                if direct and mode in {"allow", "notice"}:
+                    if mode == "notice":
+                        if in_turn:
+                            return None
+                        notice_until = period[1]
+                elif direct or resuming:
+                    if in_turn or self.closing:
+                        return None
+                    try:
+                        await asyncio.wait_for(self.changed.wait(), timeout=period[1] - now)
+                    except TimeoutError:
+                        pass  # Recheck the configured quiet boundary, not a model retry.
+                    continue
+                else:
+                    return None
+            if (continuing or resuming) and notice_until is None:
+                pending = self.store.pending_messages(self.config.scene)
+                return (pending, None) if pending or resuming else None
             deadline = self.deadline()
             if deadline is None:
-                return []
-            delay = deadline - time.time()
+                return None
+            if self.state.pending.channel != "direct":
+                quiet_start = next_quiet_start(self.settings.quiet_hours, self.config.timezone,
+                                               self.state.pending.first_at)
+                if quiet_start is not None:
+                    deadline = min(deadline, quiet_start)
+            delay = deadline - now
             if delay <= 0:
-                return self.store.pending_messages(self.config.scene)
+                return self.store.pending_messages(self.config.scene), notice_until
             try:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
             except TimeoutError:
@@ -287,19 +344,45 @@ class SceneRunner:
         if own_at is not None:
             state.contact(own_at, self.settings.focus_seconds)
         self.save_state(state)
-        pending = await self.ready_messages(continuing=continuing)
-        if not pending:
+        ready = await self.ready_messages(continuing=continuing, in_turn=True)
+        if ready is None:
             return False
+        pending, _ = ready
         through, contents = self.batch(pending, self.wake_reason())
         state = self.consumed_state()
         self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id, attention_state=asdict(state))
         self.state = state
         return True
 
+    def quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
+        state = self.consumed_state()
+        expression, note = None, None
+        expressions = []
+        if state.quiet_notice_until != until:
+            expression = self.chat.simulated_message([
+                Segment("text", {"text": self.settings.quiet_hours.notice_text})])
+            rendered = self.chat.render(expression)
+            note = "[宿主安静时段固定表达；模拟，未发送到 QQ]\n" + rendered
+            expressions.append(rendered)
+            state.quiet_notice_until = until
+            state.contact(expression.time, self.settings.focus_seconds)
+        self.store.append_quiet(
+            self.config.scene, self.batch(pending, "[安静时段直接消息；本批未调用模型]"),
+            attention_state=asdict(state), expression=expression, note=note,
+        )
+        self.state = state
+        self.emit({"type": "notice", "status": "simulated" if expression is not None else "stored",
+                   "delivery": "simulated" if expression is not None else "none", "expressions": expressions,
+                   "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
+
     async def run(self) -> None:
         while True:
-            pending = await self.ready_messages(continuing=self.resume)
-            if pending or self.resume:
+            ready = await self.ready_messages()
+            if ready is not None:
+                pending, notice_until = ready
+                if notice_until is not None:
+                    self.quiet_notice(pending, notice_until)
+                    continue
                 channel = self.state.pending.channel if self.state.pending else "resume"
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
