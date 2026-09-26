@@ -303,6 +303,8 @@ class LabConfig(BaseModel):
     database: Path
     persona: Path
     voice_mode: Literal["voice", "direct"] = "voice"
+    onebot: OneBotSettings | None = None
+    delivery: Literal["simulated", "onebot"] = "simulated"
     max_steps: int = Field(default=8, gt=0)
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
@@ -352,6 +354,12 @@ class LabConfig(BaseModel):
         if (schedules.owner == self.bot_qq or self.bot_qq in schedules.admins
                 or self.bot_qq in schedules.whitelist):
             raise ValueError("schedules owner, admins and whitelist must not include bot_qq")
+        return self
+
+    @model_validator(mode="after")
+    def valid_delivery(self) -> LabConfig:
+        if self.delivery == "onebot" and self.onebot is None:
+            raise ValueError("delivery=onebot requires onebot transport")
         return self
 
     def model_settings(self, role: Literal["mind", "voice"]) -> ModelSettings:

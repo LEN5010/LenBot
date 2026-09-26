@@ -261,16 +261,23 @@ class Chat:
             return content
         expression.send_status = "unconfirmed"
         positions = self.store.prepare_expression(
-            call_id, expression, self.render(expression) +
-            "\n尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。",
+            call_id, expression, self.unconfirmed_content(expression),
         )
+        return await self.send_prepared_expression(positions, expression)
+
+    def unconfirmed_content(self, expression: ChatMessage) -> str:
+        return (self.render(expression) +
+                "\n尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。")
+
+    async def send_prepared_expression(self, positions: tuple[int, int], expression: ChatMessage,
+                                       *, prefix: str = "") -> str:
         result = await self.send_text(expression)
         expression.send_status = result.status
         expression.platform_message_id = result.platform_message_id
         content = self.render(expression)
         if result.error is not None:
             content += "\n" + result.error
-        self.store.finish_expression(positions, expression, content)
+        self.store.finish_expression(positions, expression, prefix + content)
         return content
 
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:

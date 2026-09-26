@@ -256,16 +256,18 @@ class Store:
                 self._save_attention(scene, attention_state)
 
     def append_quiet(self, scene: str, batch: tuple[int, list[str]], *,
-                     attention_state: dict, expression: ChatMessage | None,
-                     note: str | None) -> None:
-        """Persist a quiet-hours batch and its actual simulated outlet together."""
+                     attention_state: dict,
+                     notice: tuple[ChatMessage, str] | None) -> tuple[int, int] | None:
+        """Persist the batch, once-per-period attempt and actual notice together."""
+        positions = None
         with self.db:
             self._append_batch(scene, batch[0], batch[1])
-            if expression is not None:
-                self._save_message(expression, None)
-            if note is not None:
-                self._append(scene, {"role": "user", "content": note})
+            if notice is not None:
+                expression, note = notice
+                positions = (self._save_message(expression, None),
+                             self._append(scene, {"role": "user", "content": note}))
             self._save_attention(scene, attention_state)
+        return positions
 
     def complete_tool(self, scene: str, call_id: str, content: str,
                       expression: ChatMessage | None = None, *,

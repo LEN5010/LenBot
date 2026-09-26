@@ -126,7 +126,14 @@ class OneBot:
                     await self._http.aclose()
                     self._http = None
 
-    async def wait_connected(self, timeout_seconds: float) -> None:
+    async def wait_terminated(self) -> None:
+        """Wait for the started transport, not a reverse peer's single session."""
+        if isinstance(self.settings, OneBotForward):
+            await asyncio.shield(self._receiver)
+        else:
+            await self._server.wait_closed()
+
+    async def wait_connected(self, timeout_seconds: float | None) -> None:
         try:
             async with asyncio.timeout(timeout_seconds):
                 while True:
