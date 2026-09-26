@@ -70,7 +70,7 @@ S0-05 的 docs/README.md 已按四类读者给入口，当前合同分别归 arc
 
 `AsoulDynamicsPlugin._render_source_card` 的简图分支改用 `BUNDLED_CARD_FONT`。文件缺失时在此边界明确报“动态卡片字体文件不存在”，不扫描机器字体或改用其他资源。富卡、来源查询、图片登记与发送链均不变；当前公共常量仍指向内置日历目录下同一原件，路径抽离不等于字体授权或打包边界已决定。
 
-同步[插件开发](plugins.md#可选卡片公共入口)、[插件兼容清单](plugin-compatibility.md)和路线 S0-03 的当前证据；基线[依赖测绘](plan/s0-03-dependency-boundary.md)仍按旧提交保留，不把当时的静态发现涂改成当前事实。群报告仍要求运营明确 `render_font_path`；代码和素材许可待维护者决定，本批不动样例配置或真实文件。
+同步[插件开发](../plugins.md#可选卡片公共入口)、[插件兼容清单](../plugin-compatibility.md)和路线 S0-03 的当前证据；基线[依赖测绘](retired-plans.md#dependency-boundary)仍按旧提交保留，不把当时的静态发现涂改成当前事实。群报告仍要求运营明确 `render_font_path`；代码和素材许可待维护者决定，本批不动样例配置或真实文件。
 
 - `uv --cache-dir /private/tmp/lenbot-uv-cache run --no-sync python -m compileall -q src/len_bot/plugins/builtin/asoul_dynamics/plugin.py` 退出 0；`git diff --check` 退出 0。仅证语法与差异格式，未获准同版页面、插件装载或真实卡片现场。
 - 未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未读取真实配置／业务库、启动服务、调用模型／平台或实发。没有本批实际业务失败原文。

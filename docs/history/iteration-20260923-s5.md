@@ -393,7 +393,7 @@ README 区分群内使用和自行安装，插件合同增加已有业务时钟�
 本机 Docker Desktop `desktop-linux` 的 Linux/arm64 builder 在当前工作树完成两个**构建而非启动**：`docker compose -f deploy/linux/compose.yaml build lenbot` 退出 0，镜像 `sha256:68b3b4424d8ab9e1661e20baf21e4a633c2b03a57bad523716ea0703dae40f87`；`docker build -f containers/workspace/Dockerfile -t lenbot-workspace:local .` 退出 0，镜像 `sha256:310275b27284538a6d816a90b432dd8075b803913d2f52b461d9beb553a276d3`。主镜像内 `npm ci`、491 模块前端构建和 `uv sync --locked --no-dev --no-editable` 均由配方完成；worker 安装本次取得的字体及绘图包。没有运行镜像、读取运行配置、触发工作或上传文件；本机 arm64 构建不代替目标 Linux/amd64、OneBot、模型及群回执验收。
 
 - 首次沙箱只读镜像查询失败原文：`Head "https://registry-1.docker.io/v2/library/node/manifests/22-slim": dial tcp: lookup registry-1.docker.io: no such host`；获准只读访问后取得上列索引。首次沙箱探查 Docker 服务失败原文：`permission denied while trying to connect to the docker API at unix:///Users/len5010/.docker/run/docker.sock`；获准仅构建后两个构建均成功。这些是访问边界，不是业务运行失败。
-- 更新[Linux 配方](../deploy/linux/README.md)、[运行手册](operations.md)、[支持边界](support.md)和路线的镜像可变性说明。`git diff --check` 退出 0；构建产物与本机镜像均不入 Git。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、服务、模型／平台调用或实发；未读取真实配置和业务库。
+- 更新[Linux 配方](../../deploy/linux/README.md)、[运行手册](../operations.md)、[支持边界](../support.md)和路线的镜像可变性说明。`git diff --check` 退出 0；构建产物与本机镜像均不入 Git。未运行测试、夹具、断言探针、自动截图、回放、故障注入、覆盖率、服务、模型／平台调用或实发；未读取真实配置和业务库。
 
 ## 待决定与接续
 
@@ -424,7 +424,7 @@ README 区分群内使用和自行安装，插件合同增加已有业务时钟�
 
 维护者本批确定首个方向为本机 SnowLuma、目标兼容 Linux/amd64 与 Linux/arm64，并明确不按 SnowLuma 具体发行版本设公开支持名单，按所选 OneBot 协议和文件动作核对。根配置既有 `onebot_file_upload.version` 仍须填写当前连接报告的实际版本并复核只读挂载；它是部署身份事实，不是公开兼容版本名单。本批未读取运行连接或真实配置，也没有取得实际 SnowLuma 版本和文件回执；不因构建成功宣称协议兼容已验收。
 
-- 同步[Linux 配方](../deploy/linux/README.md)、[运行手册](operations.md)、[支持边界](support.md)、[发布记录模板](../deploy/linux/release-evidence.template.md)和路线状态，修正路线末尾 S1-02 的旧状态文案；没有因依赖固定把 S5-01 标为待复核或已验收。
+- 同步[Linux 配方](../../deploy/linux/README.md)、[运行手册](../operations.md)、[支持边界](../support.md)、[发布记录模板](../../deploy/linux/release-evidence.template.md)和路线状态，修正路线末尾 S1-02 的旧状态文案；没有因依赖固定把 S5-01 标为待复核或已验收。
 - `git diff --check` 退出 0；不将本机镜像、缓存或构建产物入 Git。未新增、修改或运行测试、夹具、断言式探针、自动截图、回放、故障注入、压力或覆盖率任务；未启动服务、调用模型／平台、读取真实配置／业务库或实发。
 
 ## 待决定与接续

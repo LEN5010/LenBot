@@ -68,4 +68,4 @@ uv --cache-dir /private/tmp/lenbot-uv-cache build --wheel --offline --out-dir /p
 
 本批修改：`cognition/diana.py` 预设改为 `diana-v5`，`conversation_style` 增加短句节奏、样例用法和反例清单，示例换为 49 条（群聊原话或按群内句式改短，昵称改为 A/B/C，群内专名改为通用说法；末尾保留资料不足、接口失败、被纠正和称呼撤回的边界示例）。服务停机状态下先把根配置和业务库备份到仓库外 `~/lenbot-backups/`（`*.20260924-persona`），再只替换根配置 `runtime.conversation_style` 一行，并以 `add_voice_example` 相同格式向 `voice_exemplars` 写入 47 条全局文字样例（标签 `diana-v5`；两条需要运营表情绑定的图片样例未写入）。根配置经 `ConfigStore.load()` 校验可读；未启动服务、调用模型或实发，实际表达效果待下一次正常运行观察。
 
-与既有决定的差异：[自然群聊改进计划](../LenBot_自然群聊与能力调度_改进计划_20260921.md)第 5 节要求人工样例先逐条预览再保存，并不建立禁词表；本批按用户当次明确要求直接写入，反例清单只是人格文本，没有宿主校验或过滤。样例可在面板逐条停用或删除，全部回退使用上述备份。六个群的 `sticker_preference=slightly_more` 未改。
+与既有决定的差异：[自然群聊改进计划](retired-plans.md#natural-chat)第 5 节要求人工样例先逐条预览再保存，并不建立禁词表；本批按用户当次明确要求直接写入，反例清单只是人格文本，没有宿主校验或过滤。样例可在面板逐条停用或删除，全部回退使用上述备份。六个群的 `sticker_preference=slightly_more` 未改。

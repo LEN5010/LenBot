@@ -555,7 +555,7 @@ ModelGateway 在调用客户端前创建唯一 model_calls，表示一次网关�
 
 ### 普通文件资产与交付提案
 
-`prepare_workspace_file` 从当前工作修订的 Gateway 不可变产物读取实际字节，保存 `file_assets` 身份及数据库同级专用目录中的文件。资产保存原群、请求者、工作/修订、执行/产物、大小、MIME、展示名和有效期，不向模型提供宿主路径。首版仅支持 UTF-8 TXT/CSV/JSON、PDF、PNG/JPEG/WEBP/GIF、ZIP；独立脚本、可执行文件和 Office 均 unsupported。ZIP 不解包到宿主；检查路径、链接/特殊文件、加密、嵌套（最多 3 层）、文件数（1000）、展开字节（100MB）、不可检查压缩格式及敏感名称。名称筛查不是任意秘密内容检测；凭据、根配置、数据库和控制目录本来就不得进入工作输入。
+`prepare_workspace_file` 从当前工作修订的 Gateway 不可变产物读取实际字节，保存 `file_assets` 身份及数据库同级专用目录中的文件。资产保存原群、请求者、工作/修订、执行/产物、大小、MIME、展示名和有效期，不向模型提供宿主路径。当前支持 UTF-8 TXT/MD/CSV/JSON、PDF、PNG/JPEG/WEBP/GIF、ZIP；MD 按纯文本检查，不渲染或执行内容；独立脚本、可执行文件和 Office 均 unsupported。ZIP 不解包到宿主；检查路径、链接/特殊文件、加密、嵌套（最多 3 层）、文件数（1000）、展开字节（100MB）、不可检查压缩格式及敏感名称。名称筛查不是任意秘密内容检测；凭据、根配置、数据库和控制目录本来就不得进入工作输入。
 
 `for_upload=true` 需要当前真实工作请求者的本群 `send_file`、不可变资产参数和原工作审查。对话 `respond` 固定公开普通消息与文件两类形状（由业务字段确定）；文件只填当前 `file_asset_id` 和唯一的 `delivery_ref` 或 `work_ref`，不得带 `segments`。目录稳定不授予交付资格；缺少当前可交付候选时在终结解析与原事务拒绝，不能发明资产。Gate 事务及发送前复核范围、修订和当前授权。原发送队列支持明确 `UPLOAD_GROUP_FILE`；上传成功/失败使用 `FILE_UPLOADED/FILE_UPLOAD_FAILED`，与文字 `message_id` 分开。实际尝试事务按业务时区原子预占每群每天最多 10 个、单文件最多 50MB；明确未发释放、unknown 保留，同一资产已成功/未知不能再上传。睡眠延期复用原任务和行动身份，醒来才占上传日期额度。能力投影分别说明 can_generate、can_prepare_asset、can_upload_to_target；未上传不得把面板下载写成已履约。
 
