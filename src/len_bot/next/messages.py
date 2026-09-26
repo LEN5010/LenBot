@@ -186,7 +186,7 @@ def parse_send_result(raw: dict) -> SendResult:
         wording = raw.get("wording")
         error = wording if isinstance(wording, str) and wording else repr(raw)[:500]
         return SendResult(status="failed", platform_message_id=None, error=error)
-    if raw.get("status") == "ok" and raw.get("retcode") == 0:
+    if raw.get("status") == "ok" and type(raw.get("retcode")) is int and raw["retcode"] == 0:
         data = raw.get("data")
         if isinstance(data, dict) and "message_id" in data:
             message_id = data["message_id"]

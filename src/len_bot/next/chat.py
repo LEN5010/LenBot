@@ -1,4 +1,4 @@
-"""Persistent, scene-serial chat with an explicitly simulated text outlet."""
+"""Persistent, scene-serial chat; platform text sending is explicitly injected."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .context import (
     plan_compaction, project_history,
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
-from .messages import ChatMessage, Segment, Sender, render_message
+from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
@@ -71,10 +71,15 @@ def voice_prompt(persona: Persona) -> str:
 
 class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
-                 mind: ChatModel, voice: ChatModel):
+                 mind: ChatModel, voice: ChatModel, *,
+                 send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
-        allowed = [tool for tool in (SAY_TOOL, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
+        self.send_text = send_text
+        say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
+            **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
+        }}
+        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
                    if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
                    and (config.schedules.enabled or tool["function"]["name"] != "schedule")]
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
@@ -98,6 +103,8 @@ class Chat:
             brief=persona.brief, self_reference="、".join(persona.self_reference),
             aliases="、".join(persona.aliases), behavior=persona.behavior,
             boundaries=persona.boundaries, expression_mode=expression_mode,
+            outlet=(PROMPTS / ("next_simulated_outlet.md" if send_text is None else
+                               "next_platform_outlet.md")).read_text().strip(),
         )
         if "schedule" in self.allowed_tool_names:
             self.system += "\n" + (PROMPTS / "next_schedule.md").read_text()
@@ -246,6 +253,26 @@ class Chat:
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=arguments.reply_to)
 
+    async def deliver_expression(self, call_id: str, expression: ChatMessage) -> str:
+        if self.send_text is None:
+            content = self.render(expression)
+            self.store.complete_tool(self.config.scene, call_id,
+                                     "模拟表达（未发送到 QQ）：" + content, expression)
+            return content
+        expression.send_status = "unconfirmed"
+        positions = self.store.prepare_expression(
+            call_id, expression, self.render(expression) +
+            "\n尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。",
+        )
+        result = await self.send_text(expression)
+        expression.send_status = result.status
+        expression.platform_message_id = result.platform_message_id
+        content = self.render(expression)
+        if result.error is not None:
+            content += "\n" + result.error
+        self.store.finish_expression(positions, expression, content)
+        return content
+
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
             id=str(uuid4()), platform="qq", scene=self.config.scene, platform_message_id=None,
@@ -299,11 +326,12 @@ class Chat:
                             failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")
                         else:
-                            result_content = "模拟表达（未发送到 QQ）：" + content if expression is not None else content
-                            self.store.complete_tool(scene, call.id, result_content, expression,
-                                                     discovered_tools=discovered)
-                            if expression is not None:
-                                expressions.append(content)
+                            if expression is None:
+                                self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)
+                            else:
+                                expressions.append(await self.deliver_expression(call.id, expression))
+                                if expression.send_status in {"failed", "unconfirmed"}:
+                                    failed_tools += 1
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):
                             extensions += 1
@@ -320,5 +348,6 @@ class Chat:
             error_text = f"{type(error).__name__}: {error}"
         self.store.finish_pending_tools(scene, error_text or status)
         return {"turn_id": turn_id, "status": status, "error": error_text,
-                "delivery": "simulated", "expressions": expressions, "extensions": extensions,
+                "delivery": "simulated" if self.send_text is None else "onebot",
+                "expressions": expressions, "extensions": extensions,
                 "failed_tools": failed_tools}
