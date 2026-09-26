@@ -66,7 +66,7 @@ def test_onebot_transport_configuration_parses_and_roundtrips(source, expected_t
     assert settings.max_frame_bytes > 0
 
 
-def test_onebot_transport_defaults_and_is_not_an_implicit_lab_connection(tmp_path):
+def test_onebot_transport_defaults_and_can_be_selected_by_lab_root(tmp_path):
     settings = ONEBOT_SETTINGS.validate_python({"mode": "forward_ws", "ws_url": "ws://example.test"})
     assert settings.action_transport == "websocket" and settings.http_url is None
     assert settings.access_token == ""
@@ -78,8 +78,9 @@ def test_onebot_transport_defaults_and_is_not_an_implicit_lab_connection(tmp_pat
     source = _config("personas/example")
     source["onebot"] = settings.model_dump()
     _write_config(root, source)
-    with pytest.raises(ValueError, match="onebot"):
-        load_config(root)
+    config = load_config(root)
+    assert config.onebot == settings
+    assert config.delivery == "simulated"
 
 
 @pytest.mark.parametrize(
@@ -158,6 +159,66 @@ def test_onebot_transport_token_is_preserved_but_not_rendered_in_errors_or_repr(
     assert "synthetic-token" not in str(json_failure.value)
 
 
+@pytest.mark.parametrize(
+    ("onebot", "delivery", "expected_type"),
+    [
+        ({"mode": "forward_ws", "ws_url": "wss://example.test:6700/events"},
+         "simulated", OneBotForward),
+        ({"mode": "forward_ws", "ws_url": "ws://127.0.0.1:6700/events"},
+         "onebot", OneBotForward),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 0,
+          "action_transport": "http", "http_url": "http://127.0.0.1:6701/actions",
+          "access_token": "synthetic-onebot-token"}, "onebot", OneBotReverse),
+    ],
+)
+def test_lab_root_selects_typed_onebot_transport_and_delivery(tmp_path, onebot, delivery, expected_type):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source.update(onebot=onebot, delivery=delivery)
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    assert isinstance(config.onebot, expected_type)
+    assert config.delivery == delivery
+    for field, value in onebot.items():
+        assert getattr(config.onebot, field) == value
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+    assert "synthetic-onebot-token" not in repr(config)
+
+
+@pytest.mark.parametrize(
+    ("onebot", "delivery", "field"),
+    [
+        (None, "onebot", "delivery=onebot requires onebot"),
+        (None, "network", "delivery"),
+        ({"mode": "forward_ws"}, "simulated", "onebot.forward_ws.ws_url"),
+        ({"mode": "forward_ws", "ws_url": "http://example.test/events"},
+         "onebot", "onebot.forward_ws.ws_url"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test", "listen_port": 6700},
+         "onebot", "onebot.forward_ws.listen_port"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 6700,
+          "ws_url": "ws://example.test"}, "onebot", "onebot.reverse_ws.ws_url"),
+        ({"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 6700,
+          "action_transport": "http"}, "onebot", "http_url"),
+        ({"mode": "unknown", "ws_url": "ws://example.test"}, "onebot", "onebot"),
+        ({"mode": "forward_ws", "ws_url": "ws://example.test",
+          "access_token": "synthetic-onebot-token\r\nInjected: yes"}, "onebot", "access_token"),
+    ],
+)
+def test_lab_root_rejects_invalid_onebot_and_delivery_without_token_echo(tmp_path, onebot, delivery, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source.update(onebot=onebot, delivery=delivery)
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-onebot-token" not in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
 def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     root = tmp_path / "lab"
     external_persona = tmp_path / "operator-persona"
@@ -168,6 +229,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.database == root / "data/isolated-chat.db"
     assert config.persona == external_persona
     assert config.voice_mode == "voice" and config.max_steps == 8
+    assert config.onebot is None and config.delivery == "simulated"
     assert config.compaction.trigger_ratio == 0.6
     assert config.compaction.keep_recent_entries == 30
     assert config.compaction.max_output_tokens == 1024

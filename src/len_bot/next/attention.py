@@ -5,7 +5,7 @@ import copy
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -100,7 +100,8 @@ def participation_score(pending: list[tuple[ChatMessage, float]],
 
 
 class SceneRunner:
-    def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool):
+    def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool,
+                 ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None):
         self.chat = chat
         self.store, self.config = chat.store, chat.config
         self.settings = self.config.attention
@@ -108,6 +109,7 @@ class SceneRunner:
         self.changed = asyncio.Event()
         self.closing = False
         self.resume = resume
+        self.ready_for_turn = ready_for_turn
         self.own_ids = self.store.own_ids(self.config.scene)
         self.keywords = tuple(dict.fromkeys(word.strip().casefold() for word in
             [chat.persona.name, *chat.persona.aliases, *self.settings.keywords]))
@@ -183,9 +185,14 @@ class SceneRunner:
             if score > self.settings.ambient_threshold:
                 state.offer(PendingWake("ambient", at, score=score))
 
-    def receive(self, raw: dict) -> dict:
+    def receive(self, raw: dict, *, ignore_other_scenes: bool = False) -> dict:
         message = parse_message(raw, own_message_ids=self.own_ids)
-        if message.scene != self.config.scene or str(raw["self_id"]) != self.config.bot_qq:
+        if str(raw["self_id"]) != self.config.bot_qq:
+            raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
+        if message.scene != self.config.scene:
+            if ignore_other_scenes:
+                return {"status": "ignored", "scene": message.scene,
+                        "platform_message_id": message.platform_message_id}
             raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
         if message.reply_to is not None and message.reply_to not in self.own_ids:
             # A send receipt may arrive without an own-message event.
@@ -386,6 +393,8 @@ class SceneRunner:
         return "[直接唤醒：被 @、被回复或私聊]"
 
     async def append_during_turn(self, continuing: bool, turn_id: str) -> bool:
+        if self.ready_for_turn is not None and not await self.ready_for_turn(False):
+            return False
         state = copy.deepcopy(self.state)
         own_at = self.store.last_self_time(self.config.scene)
         if own_at is not None:
@@ -393,6 +402,8 @@ class SceneRunner:
         self.save_state(state)
         ready = await self.ready_messages(continuing=continuing, in_turn=True)
         if ready is None:
+            return False
+        if self.ready_for_turn is not None and not await self.ready_for_turn(False):
             return False
         pending, _, scheduled = ready
         state = self.consumed_state()
@@ -405,34 +416,54 @@ class SceneRunner:
         self.state = state
         return True
 
-    def quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
+    async def quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
         state = self.consumed_state()
-        expression, note = None, None
+        expression, notice = None, None
         expressions = []
+        prefix = "[宿主安静时段固定表达]\n"
         if state.quiet_notice_until != until:
             expression = self.chat.simulated_message([
                 Segment("text", {"text": self.settings.quiet_hours.notice_text})])
-            rendered = self.chat.render(expression)
-            note = "[宿主安静时段固定表达；模拟，未发送到 QQ]\n" + rendered
-            expressions.append(rendered)
+            if self.chat.send_text is None:
+                rendered = self.chat.render(expression)
+                note = "[宿主安静时段固定表达；模拟，未发送到 QQ]\n" + rendered
+                expressions.append(rendered)
+                state.contact(expression.time, self.settings.focus_seconds)
+            else:
+                expression.send_status = "unconfirmed"
+                note = prefix + self.chat.unconfirmed_content(expression)
+            notice = expression, note
             state.quiet_notice_until = until
-            state.contact(expression.time, self.settings.focus_seconds)
-        self.store.append_quiet(
+        positions = self.store.append_quiet(
             self.config.scene, self.batch(pending, "[安静时段直接消息；本批未调用模型]"),
-            attention_state=asdict(state), expression=expression, note=note,
+            attention_state=asdict(state), notice=notice,
         )
         self.state = state
-        self.emit({"type": "notice", "status": "simulated" if expression is not None else "stored",
-                   "delivery": "simulated" if expression is not None else "none", "expressions": expressions,
+        if expression is not None and self.chat.send_text is not None:
+            expressions.append(await self.chat.send_prepared_expression(positions, expression, prefix=prefix))
+            if expression.send_status == "sent":
+                # Receipt callbacks may have persisted newer attention while sending.
+                state = copy.deepcopy(self.state)
+                state.contact(expression.time, self.settings.focus_seconds)
+                self.save_state(state)
+        delivery = "none" if expression is None else "simulated" if self.chat.send_text is None else "onebot"
+        self.emit({"type": "notice", "status": "stored" if expression is None else expression.send_status,
+                   "delivery": delivery, "expressions": expressions,
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
 
     async def run(self) -> None:
         while True:
+            if self.ready_for_turn is not None and not await self.ready_for_turn(True):
+                return
             ready = await self.ready_messages()
             if ready is not None:
+                # Merging may await beyond a disconnect. Re-enter admission without
+                # consuming this snapshot, rather than resume it after a reconnect.
+                if self.ready_for_turn is not None and not await self.ready_for_turn(False):
+                    continue
                 pending, notice_until, scheduled = ready
                 if notice_until is not None:
-                    self.quiet_notice(pending, notice_until)
+                    await self.quiet_notice(pending, notice_until)
                     continue
                 channel = "system" if scheduled else self.state.pending.channel if self.state.pending else "resume"
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
