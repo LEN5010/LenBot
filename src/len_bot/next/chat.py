@@ -198,11 +198,13 @@ class Chat:
         )
 
     async def run_turn(self, *, batch: tuple[int, str] | None,
-                       append_new: Callable[[bool, str], Awaitable[bool]]) -> dict:
+                       append_new: Callable[[bool, str], Awaitable[bool]],
+                       attention_state: dict) -> dict:
         scene = self.config.scene
-        turn_id = self.store.start_turn(scene, batch=batch)
+        turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state)
         expressions: list[str] = []
         extensions = 0
+        failed_tools = 0
         status, error_text = "step_limit", None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
@@ -217,6 +219,7 @@ class Chat:
                             arguments = SayArguments.model_validate(call.arguments)
                             expression = await self.express(turn_id, arguments)
                         except Exception as error:
+                            failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{type(error).__name__}: {error}")
                         else:
                             rendered = self.render(expression)
@@ -237,7 +240,6 @@ class Chat:
             status = "timeout" if isinstance(error, TimeoutError) else "error"
             error_text = f"{type(error).__name__}: {error}"
         self.store.finish_pending_tools(scene, error_text or status)
-        pending_wake = self.store.end_turn(turn_id, status, error_text)
         return {"turn_id": turn_id, "status": status, "error": error_text,
                 "delivery": "simulated", "expressions": expressions, "extensions": extensions,
-                "pending_wake": pending_wake}
+                "failed_tools": failed_tools}
