@@ -25,7 +25,7 @@ from .attention import SceneRunner
 from .chat import Chat
 from .config import LabConfig, STRICT, load_config
 from .model import ChatModel
-from .persona import load_persona
+from .persona import load_persona, select_examples
 from .store import Store
 
 
@@ -187,6 +187,31 @@ def create_app(config: LabConfig) -> FastAPI:
     @app.get("/api/chat-test/state")
     async def state(_: str = Depends(user)):
         return app.state.session.snapshot()
+
+    @app.get("/api/chat-test/settings")
+    async def settings(_: str = Depends(user)):
+        session: PanelSession = app.state.session
+        config, chat = session.config, session.chat
+        persona = chat.persona
+        return {
+            "scene": config.scene, "timezone": config.timezone, "bot_qq": config.bot_qq,
+            "voice_mode": config.voice_mode, "delivery": "simulated",
+            "scene_persona": {
+                "persona_aliases": config.persona_aliases,
+                "relationships": config.relationships,
+                "behavior_addendum": config.behavior_addendum,
+            },
+            "persona": persona.model_dump(),
+            "selected_examples": [example.model_dump() for example in select_examples(persona)],
+            "knowledge": [
+                {"filename": filename, "tags": list(document.tags), "characters": len(document.content)}
+                for filename, document in sorted(persona.knowledge.items())
+            ],
+            "tools": {
+                "core": sorted(tool["function"]["name"] for tool in chat.core_tools),
+                "deferred": sorted(tool["function"]["name"] for tool in chat.deferred_tools),
+            },
+        }
 
     @app.post("/api/chat-test/messages")
     async def message(item: TestMessage, _: str = Depends(user)):

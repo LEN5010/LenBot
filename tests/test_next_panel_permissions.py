@@ -66,7 +66,8 @@ def test_unauthed_http_and_websocket_are_rejected(panel_config):
         assert client.get("/api/panel-context").json() == {
             "mode": "isolated", "home": "/chat-test",
         }
-        for path in ("/api/auth/me", "/api/chat-test/state", "/api/chat-test/turns/no-turn"):
+        for path in ("/api/auth/me", "/api/chat-test/state", "/api/chat-test/settings",
+                     "/api/chat-test/turns/no-turn"):
             assert client.get(path).status_code == 401
         assert client.post("/api/chat-test/messages", json={
             "uid": "80002", "nickname": "测试者", "text": "不会入库", "mention_bot": True,
@@ -115,6 +116,7 @@ def test_configured_account_uses_separate_cookie_name_and_logout_revokes_it(pane
             client.cookies.set("session_token", legacy_token)
             assert client.get("/api/auth/me").status_code == 401
             assert client.get("/api/chat-test/state").status_code == 401
+            assert client.get("/api/chat-test/settings").status_code == 401
 
             assert client.post("/api/auth/login", json={
                 "username": "admin", "password": "synthetic-panel-password",
@@ -136,11 +138,17 @@ def test_configured_account_uses_separate_cookie_name_and_logout_revokes_it(pane
             assert state.json()["delivery"] == "simulated"
             assert "synthetic-unused-key" not in state.text
             assert panel_config.panel.password_hash not in state.text
+            settings = client.get("/api/chat-test/settings")
+            assert settings.status_code == 200
+            assert "synthetic-unused-key" not in settings.text
+            assert panel_config.panel.password_hash not in settings.text
+            assert "synthetic-panel-password" not in settings.text
 
             assert client.post("/api/auth/logout").status_code == 200
             assert client.get("/api/auth/me").status_code == 401
             client.cookies.set("lenbot_test_session", token)
             assert client.get("/api/chat-test/state").status_code == 401
+            assert client.get("/api/chat-test/settings").status_code == 401
     finally:
         revoke_session(legacy_token)
 

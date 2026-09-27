@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
-import { mdiViewDashboardOutline, mdiForumOutline, mdiBriefcaseSearchOutline, mdiBookOpenPageVariantOutline, mdiCogOutline, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown, mdiArrowLeft } from '@mdi/js'
+import { mdiViewDashboardOutline, mdiForumOutline, mdiAccountOutline, mdiBriefcaseSearchOutline, mdiBookOpenPageVariantOutline, mdiCogOutline, mdiMenu, mdiClose, mdiLogout, mdiRefresh, mdiChevronDown, mdiArrowLeft } from '@mdi/js'
 import { useAppState,refreshStatus } from '../composables/useAppState.js'
 import { logout, useAuth } from '../composables/useAuth.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
@@ -31,11 +31,12 @@ const legacySections=[
     ['人格与参与',{name:'agent-settings'}],['能力状态',{name:'capabilities'}],
     ['插件与开发',{name:'plugins'}],['运行诊断',{name:'activity'}]]},
 ]
-const sections=computed(()=>isolated.value?[{
-  id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]
-}]:legacySections)
+const sections=computed(()=>isolated.value?[
+  {id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]},
+  {id:'chat-test-settings',label:'场景与角色',icon:mdiAccountOutline,to:{name:'chat-test-settings'},items:[]}
+]:legacySections)
 const activeSection=computed(()=>{
-  if(isolated.value)return 'chat-test'
+  if(isolated.value)return route.name==='chat-test-settings'?'chat-test-settings':'chat-test'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
