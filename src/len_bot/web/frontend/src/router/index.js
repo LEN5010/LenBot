@@ -5,7 +5,9 @@ import { internalPath } from './navigation.js'
 import { sceneVisit } from '../composables/sceneVisits.js'
 
 export function returnPath(value) {
-  return internalPath(value) || '/overview'
+  const context = useAuth().panelContext
+  if (context?.mode === 'isolated') return '/chat-test'
+  return internalPath(value) || context?.home || '/overview'
 }
 const router = createRouter({
   history:createWebHashHistory(),
@@ -16,6 +18,12 @@ const router = createRouter({
       name:'login',
       component:()=>import('../views/LoginView.vue'),
       meta:{public:true,title:'登录'}
+    },
+    {
+      path:'/chat-test',
+      name:'chat-test',
+      component:()=>import('../views/ChatTestView.vue'),
+      meta:{title:'对话测试'}
     },
     {
       path:'/overview',
@@ -145,10 +153,17 @@ const router = createRouter({
   },
 })
 router.beforeEach(async to=>{
-  if(to.name==='settings'&&['persona','attention','time'].includes(to.query.tab))return {name:'agent-settings',query:to.query}
   await ensureAuth()
   const auth=useAuth()
   if(auth.status==='error')return true
+  if(auth.panelContext?.mode==='isolated'){
+    if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:'/chat-test'}}
+    if(to.name==='login' && auth.status==='authenticated')return {name:'chat-test'}
+    if(to.name!=='login' && to.name!=='chat-test')return {name:'chat-test'}
+    return true
+  }
+  if(to.name==='chat-test')return {name:'overview'}
+  if(to.name==='settings'&&['persona','attention','time'].includes(to.query.tab))return {name:'agent-settings',query:to.query}
   if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:to.fullPath}}
   if(to.name==='login' && auth.status==='authenticated')return returnPath(to.query.redirect)
 })

@@ -1,13 +1,12 @@
 import logging
-from pathlib import Path
 from fastapi import FastAPI, Depends
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from len_bot.web.auth import get_current_user
 from len_bot.web.query_service import RuntimeQueryService
 from len_bot.web.log_ring import LogRingBuffer
+from len_bot.web.shell import mount_panel
 from len_bot.web.routes.auth import router as auth_router
 from len_bot.web.routes.overview import router as overview_router
 from len_bot.web.routes.websocket import router as websocket_router
@@ -84,20 +83,5 @@ def create_app(runtime, cors_origins: list[str] | None = None) -> FastAPI:
     async def get_logs(level: str | None = None, limit: int = 200, user: str = Depends(get_current_user)):
         return app.state.log_ring.snapshot(level=level, limit=limit)
 
-    # One Vue application uses hash history; assets and shell ship together.
-    dist_dir = Path(__file__).parent / "static" / "dist"
-    if (dist_dir / "assets").is_dir():
-        app.mount("/assets", StaticFiles(directory=str(dist_dir / "assets")), name="assets")
-
-    @app.get("/")
-    async def index():
-        entry = dist_dir / "index.html"
-        if not entry.is_file():
-            return JSONResponse(status_code=503, content={"detail": "控制面板尚未构建，请先在 frontend 目录执行 npm ci 和 npm run build"})
-        return FileResponse(entry, headers={"Cache-Control": "no-cache"})
-
-    @app.get("/{full_path:path}")
-    async def unknown_path(full_path: str):
-        return JSONResponse(status_code=404, content={"detail": "接口不存在" if full_path.startswith("api/") else "资源不存在"})
-
+    mount_panel(app, mode="legacy", home="/overview")
     return app

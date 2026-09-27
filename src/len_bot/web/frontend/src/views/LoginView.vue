@@ -1,10 +1,11 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { login } from '../composables/useAuth.js'
+import { login, useAuth } from '../composables/useAuth.js'
 import { returnPath } from '../router/index.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 const route=useRoute(),router=useRouter()
+const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
 const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
 const guard=useRequestGuard()
 async function submit(){
@@ -31,7 +32,7 @@ async function submit(){
       <v-card-text>
         <span class="login-mark">L</span>
         <h1>登录 LenBot</h1>
-        <p class="muted">查看运行事实，管理工作与资料。</p>
+        <p class="muted">{{ isolated?'进入当前测试实例；表达只模拟，不发送到 QQ。':'查看运行事实，管理工作与资料。' }}</p>
         <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
         <form @submit.prevent="submit">
           <v-text-field
@@ -57,7 +58,7 @@ async function submit(){
             :disabled="!username || !password"
           >登录</v-btn>
         </form>
-        <p class="login-note">使用现有管理账户登录</p>
+        <p class="login-note">{{ isolated?'使用当前测试实例账户，不读取生产面板账户。':'使用现有管理账户登录' }}</p>
       </v-card-text>
     </v-card>
   </main>

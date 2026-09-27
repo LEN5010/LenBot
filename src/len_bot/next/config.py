@@ -190,6 +190,31 @@ class TextDelivery(BaseModel):
         return self
 
 
+class PanelSettings(BaseModel):
+    model_config = STRICT
+
+    host: str
+    port: int = Field(strict=True, ge=0, le=65535)
+    username: str
+    password_hash: str = Field(repr=False)
+    cookie_secure: bool = False
+    assets_dir: Path | None = None
+
+    @field_validator("host", "username")
+    @classmethod
+    def required_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("password_hash")
+    @classmethod
+    def valid_password_hash(cls, value: str) -> str:
+        if re.fullmatch(r"[^$]+\$[0-9a-f]{64}", value) is None:
+            raise ValueError("must use a nonempty salt followed by $ and 64 lowercase hex digits")
+        return value
+
+
 ScheduleRole = Literal["owner", "admin", "group_manager", "whitelist", "member"]
 
 
@@ -320,6 +345,7 @@ class LabConfig(BaseModel):
     voice_mode: Literal["voice", "direct"] = "voice"
     onebot: OneBotSettings | None = None
     delivery: Literal["simulated", "onebot"] = "simulated"
+    panel: PanelSettings | None = None
     max_steps: int = Field(default=8, gt=0)
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
@@ -415,6 +441,11 @@ def load_config(root: Path) -> LabConfig:
         raise ValueError(f"{path}: configuration must be a JSON object")
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
     source["persona"] = _resolved_path(root, source.get("persona"), within_root=False, field="persona")
+    panel = source.get("panel")
+    if isinstance(panel, dict) and panel.get("assets_dir") is not None:
+        panel["assets_dir"] = _resolved_path(
+            root, panel["assets_dir"], within_root=False, field="panel.assets_dir"
+        )
     try:
         return LabConfig.model_validate(source)
     except ValidationError as error:
