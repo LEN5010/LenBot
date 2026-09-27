@@ -256,25 +256,19 @@ class Store:
                 self._save_attention(scene, attention_state)
 
     def append_quiet(self, scene: str, batch: tuple[int, list[str]], *,
-                     attention_state: dict,
-                     notice: tuple[ChatMessage, str] | None) -> tuple[int, int] | None:
+                     attention_state: dict, note: str | None) -> int | None:
         """Persist the batch, once-per-period attempt and actual notice together."""
-        positions = None
+        entry_seq = None
         with self.db:
             self._append_batch(scene, batch[0], batch[1])
-            if notice is not None:
-                expression, note = notice
-                positions = (self._save_message(expression, None),
-                             self._append(scene, {"role": "user", "content": note}))
+            if note is not None:
+                entry_seq = self._append(scene, {"role": "user", "content": note})
             self._save_attention(scene, attention_state)
-        return positions
+        return entry_seq
 
-    def complete_tool(self, scene: str, call_id: str, content: str,
-                      expression: ChatMessage | None = None, *,
+    def complete_tool(self, scene: str, call_id: str, content: str, *,
                       discovered_tools: list[str] | None = None) -> None:
         with self.db:
-            if expression is not None:
-                self._save_message(expression, None)
             self._append(scene, {"role": "tool", "tool_call_id": call_id, "content": content})
             if discovered_tools is not None:
                 self.db.execute(
@@ -283,14 +277,30 @@ class Store:
                     (scene, encode(discovered_tools)),
                 )
 
-    def prepare_expression(self, call_id: str, expression: ChatMessage, content: str) -> tuple[int, int]:
-        """Save actual words and the unfinished native result before platform I/O."""
+    def prepare_expression(self, scene: str, call_id: str, content: str) -> int:
+        """Save the complete actual words before starting any part."""
         with self.db:
-            message_seq = self._save_message(expression, None)
-            entry_seq = self._append(expression.scene, {
+            return self._append(scene, {
                 "role": "tool", "tool_call_id": call_id, "content": content,
             })
-        return message_seq, entry_seq
+
+    def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str) -> int:
+        """Only attempted parts become chat messages; the remainder stays in the result."""
+        with self.db:
+            message_seq = self._save_message(expression, None)
+            self.db.execute("UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
+                            (content, entry_seq))
+        return message_seq
+
+    def expression_error(self, entry_seq: int, error: str) -> str:
+        with self.db:
+            self.db.execute(
+                "UPDATE mind_entries SET message=json_set(message,'$.content',"
+                "json_extract(message,'$.content')||char(10)||?) WHERE seq=?", (error, entry_seq),
+            )
+            content = self.db.execute("SELECT json_extract(message,'$.content') FROM mind_entries WHERE seq=?",
+                                      (entry_seq,)).fetchone()[0]
+        return content
 
     def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str) -> None:
         """Finish this live call before projecting another request in the scene."""

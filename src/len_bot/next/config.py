@@ -175,6 +175,21 @@ class Compaction(BaseModel):
     max_output_tokens: int = Field(default=1024, gt=0)
 
 
+class TextDelivery(BaseModel):
+    model_config = STRICT
+
+    max_chars: int = Field(default=300, gt=0, strict=True)
+    min_interval_seconds: float = Field(default=0.6, ge=0, allow_inf_nan=False)
+    max_interval_seconds: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+    chars_per_second: float = Field(default=40.0, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def valid_interval(self) -> TextDelivery:
+        if self.min_interval_seconds > self.max_interval_seconds:
+            raise ValueError("min_interval_seconds must not exceed max_interval_seconds")
+        return self
+
+
 ScheduleRole = Literal["owner", "admin", "group_manager", "whitelist", "member"]
 
 
@@ -308,6 +323,7 @@ class LabConfig(BaseModel):
     max_steps: int = Field(default=8, gt=0)
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
+    text_delivery: TextDelivery = Field(default_factory=TextDelivery)
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     models: Models
