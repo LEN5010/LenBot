@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from .messages import ChatMessage, Segment, Sender, plain_text
@@ -15,6 +16,14 @@ from .messages import ChatMessage, Segment, Sender, plain_text
 
 def encode(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def turn_record(row: sqlite3.Row) -> dict:
+    turn = dict(row)
+    first, wake = turn["first_expression_at"], turn["wake_received_at"]
+    turn["turn_to_first_expression_seconds"] = None if first is None else first - turn["started"]
+    turn["wake_to_first_expression_seconds"] = None if first is None or wake is None else first - wake
+    return turn
 
 
 @dataclass(frozen=True)
@@ -65,18 +74,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 11:
+                if application_id != 0x4C424E31 or version != 12:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 11;
+                    PRAGMA user_version = 12;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -102,7 +111,8 @@ class Store:
                     );
                     CREATE TABLE turns (
                         id TEXT PRIMARY KEY, scene TEXT NOT NULL, started REAL NOT NULL,
-                        ended REAL, status TEXT NOT NULL, error TEXT
+                        ended REAL, status TEXT NOT NULL, error TEXT,
+                        wake_received_at REAL, first_expression_at REAL, first_expression_delivery TEXT
                     );
                     CREATE TABLE model_calls (
                         id INTEGER PRIMARY KEY, turn_id TEXT NOT NULL, role TEXT NOT NULL,
@@ -364,13 +374,23 @@ class Store:
                 "role": "tool", "tool_call_id": call_id, "content": content,
             })
 
-    def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str) -> int:
+    def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str,
+                              *, turn_id: str | None = None) -> int:
         """Only attempted parts become chat messages; the remainder stays in the result."""
         with self.db:
             message_seq = self._save_message(expression, None)
             self.db.execute("UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
                             (content, entry_seq))
+            if turn_id is not None and expression.send_status == "simulated":
+                self._first_expression(turn_id, "simulated")
         return message_seq
+
+    def _first_expression(self, turn_id: str, delivery: Literal["simulated", "sent"]) -> None:
+        # Part of the same message/receipt transaction, not an independent event.
+        self.db.execute(
+            "UPDATE turns SET first_expression_at=?,first_expression_delivery=? "
+            "WHERE id=? AND first_expression_at IS NULL", (self.now(), delivery, turn_id),
+        )
 
     def expression_error(self, entry_seq: int, error: str) -> str:
         with self.db:
@@ -382,7 +402,8 @@ class Store:
                                       (entry_seq,)).fetchone()[0]
         return content
 
-    def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str) -> None:
+    def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str,
+                          *, turn_id: str | None = None) -> None:
         """Finish this live call before projecting another request in the scene."""
         message_seq, entry_seq = positions
         with self.db:
@@ -406,6 +427,8 @@ class Store:
                 "UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
                 (content, entry_seq),
             )
+            if turn_id is not None and expression.send_status == "sent":
+                self._first_expression(turn_id, "sent")
 
     def attach_echo(self, message: ChatMessage, raw: dict, received_at: float) -> None:
         """Attach a later platform event to an already confirmed own expression."""
@@ -435,7 +458,7 @@ class Store:
         return [(row[0], self._message(row[1])) for row in reversed(rows)]
 
     def recent_turns(self, scene: str, limit: int = 20) -> list[dict]:
-        return [dict(row) for row in self.db.execute(
+        return [turn_record(row) for row in self.db.execute(
             "SELECT * FROM turns WHERE scene=? ORDER BY started DESC,id DESC LIMIT ?", (scene, limit))]
 
     def turn_detail(self, scene: str, turn_id: str) -> dict | None:
@@ -462,7 +485,7 @@ class Store:
                         if len(call["tool_results"]) == len(call["response"]["message"]["tool_calls"]):
                             break
             calls.append(call)
-        return {"turn": dict(turn), "calls": calls}
+        return {"turn": turn_record(turn), "calls": calls}
 
     def recent_context_messages(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         """Only inbound messages already batched for the mind, plus saved outbound."""
@@ -686,7 +709,8 @@ class Store:
 
     def start_turn(self, scene: str, *, batch: tuple[int, list[str]] | None = None,
                    attention_state: dict | None = None,
-                   scheduled: list[tuple[int, str]] | None = None) -> str:
+                   scheduled: list[tuple[int, str]] | None = None,
+                   wake_received_at: float | None = None) -> str:
         turn_id = str(uuid4())
         with self.db:
             self.db.execute(
@@ -694,8 +718,8 @@ class Store:
                 "WHERE scene=? AND ended IS NULL",
                 (self.now(), "Previous turn handed off to a resumed turn", scene),
             )
-            self.db.execute("INSERT INTO turns VALUES (?,?,?,NULL,'queued',NULL)",
-                            (turn_id, scene, self.now()))
+            self.db.execute("INSERT INTO turns(id,scene,started,status,wake_received_at) VALUES (?,?,?,'queued',?)",
+                            (turn_id, scene, self.now(), wake_received_at))
             if batch is not None:
                 self._append_batch(scene, batch[0], batch[1])
             if scheduled is not None:

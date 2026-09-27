@@ -486,12 +486,15 @@ class SceneRunner:
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
                 direct = self.state.pending is not None and self.state.pending.channel == "direct"
+                wake_received_at = (self.state.pending.first_at
+                                    if not scheduled and self.state.pending is not None else None)
                 state = self.consumed_state()
                 contact_before = state.last_contact_at
                 self.state, self.resume = state, False
                 result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
                                                   wait_for_messages=self.wait_for_messages,
-                                                  attention_state=asdict(state), scheduled=scheduled, direct=direct)
+                                                  attention_state=asdict(state), scheduled=scheduled,
+                                                  direct=direct, wake_received_at=wake_received_at)
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)
                 if own_at is not None:

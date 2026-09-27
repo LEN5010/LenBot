@@ -322,16 +322,17 @@ class Chat:
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=arguments.reply_to)
 
-    async def deliver_expression(self, call_id: str, expression: ChatMessage) -> tuple[str, str]:
+    async def deliver_expression(self, call_id: str, expression: ChatMessage, *,
+                                 turn_id: str) -> tuple[str, str]:
         parts = split_expression(expression, self.config.text_delivery.max_chars)
         entry_seq = self.store.prepare_expression(
             self.config.scene, call_id, report_parts(parts, [], self.render),
         )
         prefix = "模拟表达（未发送到 QQ）：" if self.send_text is None else ""
-        return await self.send_prepared_expression(entry_seq, parts, prefix=prefix)
+        return await self.send_prepared_expression(entry_seq, parts, prefix=prefix, turn_id=turn_id)
 
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
-                                       *, prefix: str = "") -> tuple[str, str]:
+                                       *, prefix: str = "", turn_id: str | None = None) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         for index, part in enumerate(parts):
@@ -343,14 +344,16 @@ class Chat:
             part.send_status = "simulated" if self.send_text is None else "unconfirmed"
             errors.append(None)
             content = report_parts(parts, errors, self.render)
-            message_seq = self.store.start_expression_part(entry_seq, part, prefix + content)
+            message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
+                                                          turn_id=turn_id)
             self.notify()
             if self.send_text is not None:
                 result = await self.send_text(part)
                 part.send_status, part.platform_message_id = result.status, result.platform_message_id
                 errors[-1] = result.error
                 content = report_parts(parts, errors, self.render)
-                self.store.finish_expression((message_seq, entry_seq), part, prefix + content)
+                self.store.finish_expression((message_seq, entry_seq), part, prefix + content,
+                                             turn_id=turn_id)
                 self.notify()
                 if result.status != "sent":
                     break
@@ -407,10 +410,11 @@ class Chat:
                        append_new: Callable[[bool, str], Awaitable[bool]],
                        wait_for_messages: Callable[[float], Awaitable[str]],
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
-                       direct: bool = False) -> dict:
+                       direct: bool = False, wake_received_at: float | None = None) -> dict:
         self.direct_request = direct
         scene = self.config.scene
-        turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state, scheduled=scheduled)
+        turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
+                                       scheduled=scheduled, wake_received_at=wake_received_at)
         self.notify()
         expressions: list[str] = []
         extensions = 0
@@ -439,7 +443,9 @@ class Chat:
                             if expression is None:
                                 self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)
                             else:
-                                content, delivery_status = await self.deliver_expression(call.id, expression)
+                                content, delivery_status = await self.deliver_expression(
+                                    call.id, expression, turn_id=turn_id,
+                                )
                                 expressions.append(content)
                                 if delivery_status not in {"sent", "simulated"}:
                                     failed_tools += 1

@@ -25,7 +25,7 @@ from .cases import CaseFile, ReplayCase, load_cases
 from ..next.chat import PROMPTS
 from ..next.config import LabConfig, load_config
 from ..next.persona import Persona, load_persona
-from ..next.store import encode
+from ..next.store import encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
@@ -60,8 +60,8 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
             raise ValueError(f"Initial database must be offline without nonempty {suffix}: {path}")
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
         if (db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or db.execute("PRAGMA user_version").fetchone()[0] != 11):
-            raise ValueError(f"Initial database requires current next-core format 11; no automatic migration: {path}")
+                or db.execute("PRAGMA user_version").fetchone()[0] != 12):
+            raise ValueError(f"Initial database requires current next-core format 12; no automatic migration: {path}")
         scenes = {row[0] for row in db.execute(" UNION ".join(
             f"SELECT scene FROM {table}" for table in (
                 "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents", "image_cache",
@@ -178,7 +178,7 @@ def observed_database(path: Path, *, after_turn: int = 0, after_call: int = 0) -
         return {"database": None, "turns": None, "model_calls": None, "usage": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
-        turns = [dict(row) for row in db.execute(
+        turns = [turn_record(row) for row in db.execute(
             "SELECT * FROM turns WHERE rowid>? ORDER BY started,id", (after_turn,),
         )]
         calls = [dict(row) for row in db.execute(
@@ -454,6 +454,7 @@ def comparison_side(item: dict) -> dict:
                 call["error"] for call in result["usage"] if call["error"] is not None],
         },
         "model_calls": None if result is None else result["model_calls"],
+        "turns": None if result is None else result["turns"],
         "script_seconds": None if result is None else result["ended"] - result["started"],
         "cost": None,
     }
