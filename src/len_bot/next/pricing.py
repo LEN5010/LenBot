@@ -44,6 +44,25 @@ class TokenUsage:
     cached_tokens: int | None
 
 
+def cost_summary(costs: list[dict | None]) -> dict:
+    amounts: dict[str, Decimal] = {}
+    known = 0
+    with localcontext() as context:
+        for cost in costs:
+            if cost is None:
+                continue
+            known += 1
+            currency = cost["currency"]
+            amount = Decimal(cost["amount"])
+            previous = amounts.get(currency, Decimal(0))
+            context.prec = max(previous.adjusted(), amount.adjusted(), 0) - min(
+                previous.as_tuple().exponent, amount.as_tuple().exponent) + 2
+            amounts[currency] = previous + amount
+    return {"basis": "configured_estimate",
+            "known_amounts": {currency: format(amount, "f") for currency, amount in sorted(amounts.items())},
+            "known_calls": known, "unknown_calls": len(costs) - known}
+
+
 def estimate_cost(price: ModelPrice | None, usage: TokenUsage | None) -> dict[str, str] | None:
     if price is None or usage is None:
         return None

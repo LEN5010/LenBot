@@ -27,6 +27,7 @@ from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
+from .memory import MEMORY_TOOL, MemoryService
 from .persona import Persona, select_examples, select_style
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .pricing import estimate_cost
@@ -34,6 +35,7 @@ from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import ImageAsset, Store, encode
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
+from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
 
 
 class SayArguments(BaseModel):
@@ -68,6 +70,50 @@ WAIT_TOOL = {"type": "function", "function": {
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 
 
+def tool_catalog(*, platform: bool) -> list[dict]:
+    say = SAY_TOOL if not platform else {"type": "function", "function": {
+        **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
+    }}
+    return [say, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
+            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, TOOL_SEARCH]
+
+
+def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
+    reasons = []
+    if persona.tools != "all" and name not in persona.tools:
+        reasons.append("当前角色未允许此工具")
+    if name == "web_read" and config.web_read is None:
+        reasons.append("尚未配置网页读取")
+    if name == "web_search" and config.web_search is None:
+        reasons.append("尚未配置搜索服务")
+    if name == "memory" and config.memory is None:
+        reasons.append("尚未配置长期记忆后端")
+    if name == "look" and config.models.roles.vision is None:
+        reasons.append("尚未配置视觉模型")
+    if name == "schedule" and not config.schedules.enabled:
+        reasons.append("当前场景未开启一次性安排")
+    if name == "persona_knowledge" and not persona.knowledge:
+        reasons.append("角色包没有 knowledge/ 资料")
+    return reasons
+
+
+def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
+    if persona.tools != "all":
+        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory"):
+            if name in persona.tools:
+                reasons = tool_unavailable_reasons(config, persona, name)
+                if reasons:
+                    raise ValueError(f"角色开放 {name} 但无法装配：{'；'.join(reasons)}")
+    allowed = [tool for tool in tool_catalog(platform=platform)
+               if not tool_unavailable_reasons(config, persona, tool["function"]["name"])]
+    names = {tool["function"]["name"] for tool in allowed}
+    if "schedule" in names and not {"schedule_list", "schedule_cancel"} <= names:
+        raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
+    if names & DEFERRED_NAMES and "tool_search" not in names:
+        raise ValueError("角色开放低频工具时必须同时开放 tool_search")
+    return allowed
+
+
 def voice_prompt(persona: Persona) -> str:
     return Template((PROMPTS / "next_voice.md").read_text()).substitute(
         name=persona.name, brief=persona.brief,
@@ -77,83 +123,93 @@ def voice_prompt(persona: Persona) -> str:
     )
 
 
+def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool) -> str:
+    """Render the actual stable mind system text for this scene and outlet."""
+    names = {tool["function"]["name"] for tool in allowed}
+    deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+    mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
+    expression_mode = Template((PROMPTS / mode).read_text()).substitute(
+        voice=persona.voice,
+        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)))
+    system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
+        name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
+        brief=persona.brief, self_reference="、".join(persona.self_reference),
+        aliases="、".join(persona.aliases), behavior=persona.behavior,
+        boundaries=persona.boundaries, expression_mode=expression_mode,
+        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else
+                           "next_simulated_outlet.md")).read_text().strip(),
+    )
+    scene_details = {}
+    if config.persona_aliases:
+        scene_details["本场景对你的称呼"] = config.persona_aliases
+    if config.relationships:
+        scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
+    if config.behavior_addendum is not None:
+        scene_details["本场景行为补充"] = config.behavior_addendum
+    if scene_details:
+        system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
+            details=encode(scene_details),
+        )
+    if "schedule" in names:
+        system += "\n" + (PROMPTS / "next_schedule.md").read_text()
+    if "memory" in names:
+        details = ("本地后端使用相对 Markdown 路径，例如 people/<真实QQ>/profile.md、events/日期-主题.md。"
+                   "write 保存修改前后正文与原因；history 查看历史；delete 保留历史，forget 移除当前文件、索引和该路径可访问的正文版本。"
+                   if config.memory.backend == "local" else
+                   "OpenViking 后端使用原生路径 memories/... 或 peers/<真实QQ>/memories/...。"
+                   "write 和 delete 按返回值说明实际刷新结果；当前没有 history 和 forget 能力，修改原因不会保存为服务端历史。")
+        if config.memory.ingest is not None:
+            details += "\n当前开启自动抽取，来源补抽排除尚未接入，forget 暂不可用。"
+        system += "\n" + Template((PROMPTS / "next_memory.md").read_text()).substitute(
+            backend=config.memory.backend, backend_details=details,
+        )
+    elif config.memory is not None and config.memory.auto_recall:
+        system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
+    if "tool_search" in names:
+        system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
+            catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
+                              for tool in deferred) or "（当前没有允许发现的低频工具）")
+    return system
+
+
 class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
                  mind: ChatModel, voice: ChatModel, *,
                  vision: ChatModel | None = None,
+                 memory: MemoryService | None = None,
                  slots: ModelSlots | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
                  on_update: Callable[[], None] | None = None,
+                 on_compaction: Callable[[], None] | None = None,
                  now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
         self.now = now
         self.mind, self.voice, self.vision = mind, voice, vision
+        if (config.memory is None) != (memory is None):
+            raise ValueError("memory 服务必须与根配置的记忆后端一起提供")
+        self.memory = memory
         self.slots = slots
         self.direct_request = False
         self.send_text = send_text
         self.on_update = on_update
+        self.on_compaction = on_compaction
         previous = self.store.last_mind_request(config.scene)
         if previous is not None:
             current = mind.settings.model_dump(exclude={"api_key"})
             if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
-                raise ValueError("大脑模型绑定已改变；此隔离库保留原生续接字段，请显式创建独立会话库")
-        say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
-            **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
-        }}
-        if config.web_read is None and persona.tools != "all" and "web_read" in persona.tools:
-            raise ValueError("角色开放 web_read 时必须在根配置提供 web_read 设置")
+                _, active = self.store.active_history(config.scene)
+                if any(message["role"] in {"assistant", "tool"} for _, message in active):
+                    raise ValueError("大脑模型绑定已改变；当前会话仍含旧提供方原生条目，"
+                                     "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
-        if vision is None and persona.tools != "all" and "look" in persona.tools:
-            raise ValueError("角色开放 look 时必须在根配置提供 models.roles.vision 绑定")
-        if not persona.knowledge and persona.tools != "all" and "persona_knowledge" in persona.tools:
-            raise ValueError("角色开放 persona_knowledge 时必须在角色包 knowledge/ 中提供 Markdown 资料")
-        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, WEB_READ_TOOL, LOOK_TOOL,
-                                     *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, TOOL_SEARCH)
-                   if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
-                   and (config.schedules.enabled or tool["function"]["name"] != "schedule")
-                   and (config.web_read is not None or tool["function"]["name"] != "web_read")
-                   and (vision is not None or tool["function"]["name"] != "look")
-                   and (bool(persona.knowledge) or tool["function"]["name"] != "persona_knowledge")]
+        allowed = build_tools(config, persona, platform=send_text is not None)
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
-        if "schedule" in self.allowed_tool_names and not {"schedule_list", "schedule_cancel"} <= self.allowed_tool_names:
-            raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
-        if self.deferred_tools and "tool_search" not in self.allowed_tool_names:
-            raise ValueError("角色开放低频工具时必须同时开放 tool_search")
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
-        # Mode instructions live beside the other prompts, not in runtime branches.
-        mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
-        expression_mode = Template((PROMPTS / mode).read_text()).substitute(
-            voice=persona.voice,
-            examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)))
-        self.system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
-            name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
-            brief=persona.brief, self_reference="、".join(persona.self_reference),
-            aliases="、".join(persona.aliases), behavior=persona.behavior,
-            boundaries=persona.boundaries, expression_mode=expression_mode,
-            outlet=(PROMPTS / ("next_simulated_outlet.md" if send_text is None else
-                               "next_platform_outlet.md")).read_text().strip(),
-        )
-        scene_details = {}
-        if config.persona_aliases:
-            scene_details["本场景对你的称呼"] = config.persona_aliases
-        if config.relationships:
-            scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
-        if config.behavior_addendum is not None:
-            scene_details["本场景行为补充"] = config.behavior_addendum
-        if scene_details:
-            self.system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
-                details=encode(scene_details),
-            )
-        if "schedule" in self.allowed_tool_names:
-            self.system += "\n" + (PROMPTS / "next_schedule.md").read_text()
-        if "tool_search" in self.allowed_tool_names:
-            self.system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
-                catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
-                                  for tool in self.deferred_tools) or "（当前没有允许发现的低频工具）")
+        self.system = build_system(config, persona, allowed, platform=send_text is not None)
 
     @property
     def tools(self) -> list[dict]:
@@ -262,7 +318,8 @@ class Chat:
     def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
 
-    async def prepare_context(self, turn_id: str, *, expression_style: str | None = None) -> list[dict]:
+    async def prepare_context(self, turn_id: str, *, expression_style: str | None = None,
+                              recalled: str | None = None) -> list[dict]:
         binding = self.config.models.roles.mind
         trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
         while True:
@@ -279,6 +336,8 @@ class Chat:
                     state["content"] += "\n这里只列前 20 条；schedule_list 可继续查看。"
             if self.config.voice_mode == "direct" and expression_style is not None:
                 state["content"] += "\n" + expression_style
+            if recalled is not None:
+                state["content"] += "\n<相关长期记忆>\n" + recalled + "\n</相关长期记忆>"
             messages = self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
@@ -291,6 +350,8 @@ class Chat:
                 window_tokens=binding.context_window_tokens,
             )
             await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
+            if self.on_compaction is not None:
+                self.on_compaction()
 
     async def express(self, turn_id: str, arguments: SayArguments, *,
                       expression_style: str | None = None) -> ChatMessage:
@@ -404,6 +465,11 @@ class Chat:
         if call.name == "web_read":
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
                                           WebReadArguments.model_validate(call.arguments)), None, None
+        if call.name == "web_search":
+            return await execute_web_search(self.config.web_search,
+                                            WebSearchArguments.model_validate(call.arguments)), None, None
+        if call.name == "memory":
+            return await self.memory.execute(self.config.scene, call.arguments), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
         if call.name == "look":
@@ -430,6 +496,10 @@ class Chat:
         status, error_text = "step_limit", None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
+                recalled = None
+                if self.memory is not None and self.memory.settings.auto_recall:
+                    recall = await self.memory.recall(scene, self.store.recent_context_messages(scene, limit=8))
+                    recalled = encode({"backend": recall["backend"], "items": recall["items"]})
                 style = select_style(self.persona)
                 expression_style = None
                 if style is not None:
@@ -437,9 +507,13 @@ class Chat:
                         name=style.name, note="" if style.note is None else style.note,
                     )
                 for step in range(self.config.max_steps):
-                    messages = await self.prepare_context(turn_id, expression_style=expression_style)
+                    messages = await self.prepare_context(turn_id, expression_style=expression_style, recalled=recalled)
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     for call in reply.tool_calls:
+                        if call.name == "memory":
+                            # A tool may have edited or removed the recalled file, even if
+                            # a later index update failed. Do not reattach an old excerpt.
+                            recalled = None
                         try:
                             content, expression, discovered = await self.execute_tool(
                                 turn_id, call, wait_for_messages, expression_style=expression_style,

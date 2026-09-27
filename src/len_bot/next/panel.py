@@ -11,41 +11,23 @@ from threading import Lock
 import time
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel, Field, field_validator
-from starlette.requests import HTTPConnection
 import uvicorn
 
-from len_bot.web.auth import (
-    clear_login_failures, create_session, login_blocked, record_login_failure,
-    revoke_session, session_user, verify_password,
-)
 from len_bot.web.shell import mount_panel
 from .attention import SceneRunner
 from .chat import Chat
 from .config import LabConfig, ScenePersona, STRICT, load_config, read_scene_persona, save_scene_persona
 from .model import ChatModel
+from .memory import MemoryService, open_memory
+from .memory_ingest import MemoryIngestor, open_memory_ingestor
+from .panel_auth import changes_socket, install_panel_auth
 from .persona import load_persona, select_examples
 from .store import Store
 
 
 logger = logging.getLogger(__name__)
-
-
-def cookie_name(connection: HTTPConnection) -> str:
-    port = connection.url.port
-    if port is None:
-        port = 443 if connection.url.scheme in {"https", "wss"} else 80
-    return f"lenbot_test_session_p{port}"
-
-
-class Login(BaseModel):
-    model_config = STRICT
-    username: str
-    password: str = Field(repr=False)
 
 
 class TestMessage(BaseModel):
@@ -66,11 +48,14 @@ class TestMessage(BaseModel):
 
 class PanelSession:
     def __init__(self, config: LabConfig, store: Store, mind: ChatModel, voice: ChatModel,
-                 *, vision: ChatModel | None = None):
+                 *, vision: ChatModel | None = None, memory: MemoryService | None = None,
+                 ingestor: MemoryIngestor | None = None):
         self.config, self.store = config, store
         self.listeners: set[asyncio.Event] = set()
         self.closing = False
-        self.chat = Chat(config, load_persona(config.persona), store, mind, voice, vision=vision, on_update=self.notify)
+        self.chat = Chat(config, load_persona(config.persona), store, mind, voice, vision=vision,
+                         memory=memory, on_update=self.notify,
+                         on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
         self.runner = SceneRunner(self.chat, lambda _: self.notify(), resume=self.chat.restore())
         self.task = asyncio.create_task(self.runner.run())
         self.task.add_done_callback(lambda _: self.notify())
@@ -143,8 +128,10 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
                 ChatModel(config.model_settings("voice")) as voice,
                 (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
                  else nullcontext(None)) as vision,
+                open_memory(config) as memory,
+                open_memory_ingestor(config, store, memory, [config.scene]) as ingestor,
             ):
-                session = PanelSession(config, store, mind, voice, vision=vision)
+                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor)
                 app.state.session = session
                 try:
                     yield
@@ -152,49 +139,8 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
                     await session.close()
 
     app = FastAPI(title="LenBot 隔离对话测试", lifespan=lifespan)
-    last_login_at: float | None = None
     config_write_lock = Lock()
-
-    @app.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, error: RequestValidationError):
-        if request.url.path == "/api/auth/login":
-            # A missing field otherwise echoes the complete password-bearing body.
-            return JSONResponse(status_code=422, content={"detail": [
-                {key: item[key] for key in ("type", "loc", "msg")} for item in error.errors()
-            ]})
-        return await request_validation_exception_handler(request, error)
-
-    def user(request: Request) -> str:
-        return session_user(request.cookies.get(cookie_name(request)))
-
-    @app.post("/api/auth/login")
-    async def login(item: Login, request: Request, response: Response):
-        nonlocal last_login_at
-        key = f"isolated:{request.client.host}:{item.username}"
-        if login_blocked(key):
-            raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
-        valid = (item.username == config.panel.username and
-                 await asyncio.to_thread(verify_password, item.password, config.panel.password_hash))
-        if not valid:
-            record_login_failure(key)
-            raise HTTPException(401, "Invalid username or password")
-        clear_login_failures(key)
-        last_login_at = time.time()
-        response.set_cookie(cookie_name(request), create_session(item.username), httponly=True, samesite="lax",
-                            secure=config.panel.cookie_secure, max_age=7 * 86400)
-        return {"success": True, "username": item.username, "is_default_password": False}
-
-    @app.get("/api/auth/me")
-    async def me(current: str = Depends(user)):
-        return {"username": current, "is_default_password": False, "last_login_at": last_login_at}
-
-    @app.post("/api/auth/logout")
-    async def logout(request: Request, response: Response, _: str = Depends(user)):
-        name = cookie_name(request)
-        revoke_session(request.cookies[name])
-        response.delete_cookie(name)
-        app.state.session.notify()
-        return {"success": True}
+    user = install_panel_auth(app, config.panel, on_logout=lambda: app.state.session.notify())
 
     @app.get("/api/chat-test/state")
     async def state(_: str = Depends(user)):
@@ -265,42 +211,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
 
     @app.websocket("/api/chat-test/events")
     async def events(websocket: WebSocket):
-        token = websocket.cookies.get(cookie_name(websocket))
-        try:
-            session_user(token)
-        except HTTPException:
-            await websocket.close(code=1008)
-            return
-        await websocket.accept()
-        session: PanelSession = app.state.session
-        changed = asyncio.Event()
-        session.listeners.add(changed)
-        changed.set()
-
-        async def push():
-            while True:
-                await changed.wait()
-                changed.clear()
-                session_user(token)
-                await websocket.send_json({"type": "changed"})
-
-        pushing = asyncio.create_task(push())
-        receiving = asyncio.create_task(websocket.receive())
-        try:
-            done, _ = await asyncio.wait({pushing, receiving}, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                result = await task
-                if task is receiving and result["type"] != "websocket.disconnect":
-                    await websocket.close(code=1003, reason="This stream only reports changes")
-        except HTTPException:
-            await websocket.close(code=1008)
-        except WebSocketDisconnect:
-            pass
-        finally:
-            session.listeners.remove(changed)
-            pushing.cancel()
-            receiving.cancel()
-            await asyncio.gather(pushing, receiving, return_exceptions=True)
+        await changes_socket(websocket, app.state.session.listeners)
 
     mount_panel(app, mode="isolated", home="/chat-test", assets_dir=config.panel.assets_dir)
     return app

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sqlite3
+from collections.abc import Callable
 
 from .attention import SceneRunner
 from .chat import Chat
@@ -12,138 +13,192 @@ from .config import LabConfig, OneBotForward, SharedConfig
 from .messages import parse_message
 from .model import ChatModel
 from .model_slots import ModelSlots
+from .memory import MemoryService
+from .memory_ingest import MemoryIngestor
 from .onebot import OneBot
 from .persona import Persona
 from .store import Store, encode
 
 
-async def run_network(config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
-                      store: Store, mind: ChatModel, voice: ChatModel, *,
-                      vision: ChatModel | None = None, slots: ModelSlots | None = None) -> None:
-    if config.onebot is None:
-        raise ValueError("Network input requires OneBot configuration")
-    stopped = asyncio.Event()
-    accepting = True
-    storage_error: sqlite3.Error | None = None
+class NetworkRuntime:
+    def __init__(self, config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
+                 store: Store, mind: ChatModel, voice: ChatModel, *,
+                 vision: ChatModel | None = None, slots: ModelSlots | None = None,
+                 memory: MemoryService | None = None,
+                 ingestor: MemoryIngestor | None = None,
+                 on_update: Callable[[], None] | None = None):
+        if config.onebot is None:
+            raise ValueError("Network input requires OneBot configuration")
+        self.config, self.store = config, store
+        self.memory = memory
+        self.ingestor = ingestor
+        self.on_update = on_update
+        self.status = "created"
+        self.last_platform_error: str | None = None
+        self.stopped = asyncio.Event()
+        self.accepting = True
+        self.storage_error: sqlite3.Error | None = None
+        self.platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
+                               on_error=self._platform_error, on_connection_change=self.notify)
+        self.chats: dict[str, Chat] = {}
+        for scene_config, persona in scene_configs:
+            scene = scene_config.scene
+            if scene in self.chats:
+                raise ValueError(f"Duplicate network scene {scene}")
+            self.chats[scene] = Chat(
+                scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
+                on_compaction=(None if ingestor is None else lambda scene=scene: ingestor.request(scene)),
+                send_text=self.platform.send_text if config.delivery == "onebot" else None,
+                on_update=self.notify,
+            )
+        self.runners: dict[str, SceneRunner] = {}
+        for scene, chat in self.chats.items():
+            self.runners[scene] = SceneRunner(
+                chat, lambda result, scene=scene: self._emit({"type": "turn", **result, "scene": scene}),
+                resume=chat.restore(), ready_for_turn=self._ready,
+            )
 
-    def emit(result: dict) -> None:
+    def notify(self) -> None:
+        if self.on_update is not None:
+            self.on_update()
+
+    def _status(self, status: str) -> None:
+        if self.status != status:
+            self.status = status
+            self.notify()
+
+    def _emit(self, result: dict) -> None:
         print(encode(result), flush=True)
+        self.notify()
 
-    def stop() -> None:
-        nonlocal accepting
-        accepting = False
-        stopped.set()
+    def _platform_error(self, error: str) -> None:
+        self.last_platform_error = error
+        self._emit({"type": "platform_error", "error": error})
 
-    runners: dict[str, SceneRunner] = {}
+    def stop(self) -> None:
+        self.accepting = False
+        self.stopped.set()
+        if self.status != "stopped":
+            self._status("stopping")
 
-    def receive(raw: dict) -> None:
-        nonlocal storage_error
+    def _receive(self, raw: dict) -> None:
         post_type = raw["post_type"]
         if post_type == "meta_event":
             return
         if post_type != "message":
-            if not accepting:
-                emit({"type": "receipt", "status": "not_accepted", "reason": "stopping"})
+            if not self.accepting:
+                self._emit({"type": "receipt", "status": "not_accepted", "reason": "stopping"})
             else:
-                emit({"type": "platform_event", "status": "unsupported", "post_type": post_type})
+                self._emit({"type": "platform_event", "status": "unsupported", "post_type": post_type})
             return
         message = parse_message(raw, own_message_ids=set())
-        if not accepting:
-            emit({"type": "receipt", "scene": message.scene,
-                  "status": "not_accepted", "reason": "stopping"})
+        if not self.accepting:
+            self._emit({"type": "receipt", "scene": message.scene,
+                        "status": "not_accepted", "reason": "stopping"})
             return
-        runner = runners.get(message.scene)
+        runner = self.runners.get(message.scene)
         if runner is None:
-            emit({"type": "receipt", "scene": message.scene, "status": "ignored",
-                  "platform_message_id": message.platform_message_id})
+            self._emit({"type": "receipt", "scene": message.scene, "status": "ignored",
+                        "platform_message_id": message.platform_message_id})
             return
         try:
             receipt = runner.receive_message(message, raw)
         except sqlite3.Error as error:
-            storage_error = error
-            stop()
+            self.storage_error = error
+            self.stop()
             raise
-        emit({"type": "receipt", **receipt, "scene": message.scene})
+        self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
-    platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=receive,
-                      on_error=lambda error: emit({"type": "platform_error", "error": error}))
-
-    async def ready(wait: bool) -> bool:
-        if platform.connected:
+    async def _ready(self, wait: bool) -> bool:
+        if self.platform.connected:
             return True
         if not wait:
             return False
-        if stopped.is_set() or isinstance(config.onebot, OneBotForward):
+        if self.stopped.is_set() or isinstance(self.config.onebot, OneBotForward):
             return False
         async with asyncio.TaskGroup() as waiting:
-            connected = waiting.create_task(platform.wait_connected(None))
-            stopping = waiting.create_task(stopped.wait())
+            connected = waiting.create_task(self.platform.wait_connected(None))
+            stopping = waiting.create_task(self.stopped.wait())
             try:
                 await asyncio.wait({connected, stopping}, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 connected.cancel()
                 stopping.cancel()
-        return platform.connected
+        return self.platform.connected
 
-    chats: dict[str, Chat] = {}
-    for scene_config, persona in scene_configs:
-        scene = scene_config.scene
-        if scene in chats:
-            raise ValueError(f"Duplicate network scene {scene}")
-        chats[scene] = Chat(scene_config, persona, store, mind, voice, vision=vision, slots=slots,
-                            send_text=platform.send_text if config.delivery == "onebot" else None)
-    for scene, chat in chats.items():
-        runners[scene] = SceneRunner(
-            chat, lambda result, scene=scene: emit({"type": "turn", **result, "scene": scene}),
-            resume=chat.restore(), ready_for_turn=ready,
-        )
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop)
-    try:
-        async with asyncio.TaskGroup() as group:
-            pending: list[asyncio.Task] = []
-            try:
-                stopping = group.create_task(stopped.wait())
-                starting = group.create_task(platform.start())
-                pending.extend([stopping, starting])
-                done, _ = await asyncio.wait({starting, stopping}, return_when=asyncio.FIRST_COMPLETED)
-                if stopping in done:
-                    return
-                await starting
-                emit({"type": "runtime", "status": "started", "input": "onebot",
-                      "delivery": config.delivery, "addresses": platform.addresses})
-                terminated = group.create_task(platform.wait_terminated())
-                connected = group.create_task(platform.wait_connected(None))
-                pending.extend([terminated, connected])
-                done, _ = await asyncio.wait({connected, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)
-                if connected not in done or stopping in done or terminated in done:
-                    return
-                await connected
-                emit({"type": "runtime", "status": "ready", "input": "onebot", "delivery": config.delivery})
-                running = [group.create_task(runner.run()) for runner in runners.values()]
-                pending.extend(running)
-                done, _ = await asyncio.wait({*running, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)
-                accepting = False
-                reason = ("storage_error" if storage_error is not None else
-                          "signal" if stopping in done else "transport_closed" if terminated in done
-                          else "scene_stopped")
-                emit({"type": "runtime", "status": "stopping", "reason": reason})
-                stopped.set()
-                for runner in runners.values():
-                    runner.close_input()
-                await asyncio.gather(*running)
-            finally:
-                accepting = False
-                for task in pending:
-                    task.cancel()
-    finally:
+    async def run(self, *, manage_signals: bool = True) -> None:
+        if self.stopped.is_set():
+            self._status("stopped")
+            return
+        self._status("starting")
+        loop = asyncio.get_running_loop()
+        installed: list[signal.Signals] = []
         try:
-            await platform.close()
-            emit({"type": "runtime", "status": "stopped"})
+            if manage_signals:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, self.stop)
+                    installed.append(sig)
+            async with asyncio.TaskGroup() as group:
+                pending: list[asyncio.Task] = []
+                try:
+                    stopping = group.create_task(self.stopped.wait())
+                    starting = group.create_task(self.platform.start())
+                    pending.extend([stopping, starting])
+                    done, _ = await asyncio.wait({starting, stopping}, return_when=asyncio.FIRST_COMPLETED)
+                    if stopping in done:
+                        return
+                    try:
+                        await starting
+                    except Exception as error:
+                        self.last_platform_error = f"{type(error).__name__}: {error}"
+                        self.notify()
+                        raise
+                    self._status("waiting_connection")
+                    self._emit({"type": "runtime", "status": "started", "input": "onebot",
+                                "delivery": self.config.delivery, "addresses": self.platform.addresses})
+                    terminated = group.create_task(self.platform.wait_terminated())
+                    connected = group.create_task(self.platform.wait_connected(None))
+                    pending.extend([terminated, connected])
+                    done, _ = await asyncio.wait({connected, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)
+                    if connected not in done or stopping in done or terminated in done:
+                        return
+                    await connected
+                    self._status("running")
+                    self._emit({"type": "runtime", "status": "ready", "input": "onebot",
+                                "delivery": self.config.delivery})
+                    running = [group.create_task(runner.run()) for runner in self.runners.values()]
+                    pending.extend(running)
+                    done, _ = await asyncio.wait({*running, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)
+                    self.accepting = False
+                    reason = ("storage_error" if self.storage_error is not None else
+                              "signal" if stopping in done else "transport_closed" if terminated in done
+                              else "scene_stopped")
+                    self._status("stopping")
+                    self._emit({"type": "runtime", "status": "stopping", "reason": reason})
+                    self.stopped.set()
+                    for runner in self.runners.values():
+                        runner.close_input()
+                    await asyncio.gather(*running)
+                finally:
+                    self.accepting = False
+                    for task in pending:
+                        task.cancel()
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.remove_signal_handler(sig)
-        if storage_error is not None:
-            raise storage_error
+            try:
+                await self.platform.close()
+                self._status("stopped")
+                self._emit({"type": "runtime", "status": "stopped"})
+            finally:
+                for sig in installed:
+                    loop.remove_signal_handler(sig)
+            if self.storage_error is not None:
+                raise self.storage_error
+
+
+async def run_network(config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
+                      store: Store, mind: ChatModel, voice: ChatModel, *,
+                      vision: ChatModel | None = None, slots: ModelSlots | None = None,
+                      memory: MemoryService | None = None, ingestor: MemoryIngestor | None = None) -> None:
+    runtime = NetworkRuntime(config, scene_configs, store, mind, voice, vision=vision, slots=slots,
+                             memory=memory, ingestor=ingestor)
+    await runtime.run()

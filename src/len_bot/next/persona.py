@@ -115,30 +115,37 @@ def select_style(persona: Persona) -> Style | None:
     return positive[bisect_right(endpoints, random())]
 
 
-def _read_yaml(path: Path) -> object:
+PERSONA_FILES = ("persona.yaml", "voice.md", "boundaries.md", "examples.yaml")
+
+
+def read_persona_files(path: Path) -> dict[str, str]:
+    return {name: (path / name).read_text(encoding="utf-8") for name in PERSONA_FILES}
+
+
+def _parse_yaml(path: Path, content: str) -> object:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
+        return yaml.safe_load(content)
     except yaml.YAMLError as error:
         raise ValueError(f"{path}: invalid YAML: {error}") from error
 
 
-def load_persona(path: Path) -> Persona:
-    """Load one package, preserving its complete validated example list."""
+def parse_persona_files(path: Path, files: dict[str, str]) -> Persona:
+    """Validate the same complete package for loading and an editor candidate."""
     path = path.resolve()
-    metadata = _read_yaml(path / "persona.yaml")
+    metadata = _parse_yaml(path / "persona.yaml", files["persona.yaml"])
     if not isinstance(metadata, dict):
         raise ValueError(f"{path / 'persona.yaml'}: expected a YAML object")
     if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge")):
         raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples and knowledge belong in separate files")
 
-    examples = _read_yaml(path / "examples.yaml")
+    examples = _parse_yaml(path / "examples.yaml", files["examples.yaml"])
     if not isinstance(examples, list):
         raise ValueError(f"{path / 'examples.yaml'}: expected a YAML list")
     try:
         persona = Persona.model_validate({
             **metadata,
-            "voice": (path / "voice.md").read_text(encoding="utf-8"),
-            "boundaries": (path / "boundaries.md").read_text(encoding="utf-8"),
+            "voice": files["voice.md"],
+            "boundaries": files["boundaries.md"],
             "examples": examples,
         })
         return persona.model_copy(update={"knowledge": load_knowledge(path)})
@@ -148,3 +155,8 @@ def load_persona(path: Path) -> Persona:
             for item in error.errors(include_input=False)
         )
         raise ValueError(f"{path}: invalid persona package: {details}") from error
+
+
+def load_persona(path: Path) -> Persona:
+    """Load one package, preserving its complete validated example list."""
+    return parse_persona_files(path, read_persona_files(path))

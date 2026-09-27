@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api.js'
+import TurnRecordDetail from '../components/TurnRecordDetail.vue'
 
 const state = ref(null)
 const loading = ref(false)
@@ -26,19 +27,6 @@ const isPrivate = computed(() => state.value?.scene?.startsWith('private:') || f
 const messages = computed(() => [...(state.value?.messages || [])].sort((a, b) => a.seq - b.seq))
 const turns = computed(() => [...(state.value?.turns || [])].sort((a, b) => b.started - a.started))
 const activeTurns = computed(() => turns.value.filter(turn => turn.ended == null))
-const detailCalls = computed(() => (detail.value?.calls || []).map(call => {
-  const nativeCalls = call.error == null && call.response?.finish_reason === 'tool_calls'
-    ? call.response.message.tool_calls : []
-  const tools = nativeCalls.map(native => ({
-    id: native.id,
-    name: native.function.name,
-    arguments: native.function.arguments,
-    result: call.tool_results === null ? null
-      : call.tool_results.find(saved => saved.tool_call_id === native.id),
-    hasDirectAssociation: call.tool_results !== null
-  }))
-  return { ...call, tools }
-}))
 const replyOptions = computed(() => messages.value
   .filter(message => message.platform_message_id != null)
   .map(message => {
@@ -79,19 +67,12 @@ function turnLabel(status) {
     error: '失败', timeout: '超时', cancelled: '已取消', interrupted: '已中断',
     step_limit: '达到轮次上限' })[status] || status
 }
-function expressionDeliveryLabel(delivery) {
-  return ({ simulated: '模拟表达已落库', sent: '平台已确认发送' })[delivery] || delivery
-}
 function receiptLabel(value) {
   if (value.status === 'queued') return '消息已保存并入队；这不是模型已回复。'
   if (value.status === 'stored') return '消息已保存；当前未触发模型回复。'
   if (value.status === 'duplicate') return '这条消息已存在，没有再次生成。'
   return `收件状态：${value.status}。请核对消息列表与轮次。`
 }
-function raw(value) {
-  return value == null ? '没有保存的内容' : JSON.stringify(value, null, 2)
-}
-
 async function refreshState() {
   const request = ++stateRequest
   loading.value = true
@@ -329,39 +310,7 @@ onBeforeUnmount(() => {
             <p v-if="detailLoading" role="status">正在读取该轮的实际记录…</p>
             <v-alert v-if="detailError" type="error" variant="tonal" role="alert"
               :title="detail ? '读取失败 · 保留上次详情' : '读取轮次失败'">{{ detailError }}</v-alert>
-            <template v-if="detail">
-              <p>状态：{{ turnLabel(detail.turn.status) }} · 开始 {{ localTime(detail.turn.started) }} · 结束 {{ localTime(detail.turn.ended) }}</p>
-              <div class="timing-facts">
-                <p>首条表达：<template v-if="detail.turn.first_expression_at != null">{{ expressionDeliveryLabel(detail.turn.first_expression_delivery) }} · {{ localTime(detail.turn.first_expression_at) }}</template><template v-else>未记录</template></p>
-                <p>轮开始至首条表达：{{ detail.turn.turn_to_first_expression_seconds == null ? '未知' : `${detail.turn.turn_to_first_expression_seconds} 秒` }}</p>
-                <p>唤醒机会至首条表达：{{ detail.turn.wake_to_first_expression_seconds == null ? '未知' : `${detail.turn.wake_to_first_expression_seconds} 秒` }}</p>
-              </div>
-              <p v-if="detail.turn.error" class="turn-error">{{ detail.turn.error }}</p>
-              <p v-if="!detailCalls.length" class="muted">这轮尚未保存模型请求。</p>
-              <article v-for="call in detailCalls" :key="call.id" class="call-card">
-                <div class="call-heading"><h4>{{ ({mind:'大脑',voice:'表达器',recap:'回想',vision:'视觉'})[call.role] || call.role }}</h4>
-                  <span>{{ localTime(call.started) }} · {{ call.ended==null?'请求中':'已结束' }}</span></div>
-                <p v-if="call.error" class="turn-error">{{ call.error }}</p>
-                <p v-if="call.cost == null" class="muted">按配置估算费用未知；不计为 0。</p>
-                <p v-else class="cost-fact">按调用时配置估算：<strong>{{ call.cost.currency }} {{ call.cost.amount }}</strong> <span class="muted">· 非供应商账单</span></p>
-                <p v-if="call.usage == null" class="muted">提供方用量未知；不按 0 费用显示。</p>
-                <p v-else class="usage">提供方返回用量：<code>{{ raw(call.usage) }}</code></p>
-                <section v-if="call.tools.length" class="call-tools" aria-label="本次原生工具调用与已保存结果">
-                  <h5>原生工具调用与已保存结果</h5>
-                  <div v-for="tool in call.tools" :key="tool.id" class="tool-entry">
-                    <strong class="tool-name">{{ tool.name }}</strong>
-                    <details class="tool-text"><summary>查看参数原文</summary><pre>{{ tool.arguments }}</pre></details>
-                    <p v-if="!tool.hasDirectAssociation" class="muted">没有直接关联，无法确认本次调用的工具结果。</p>
-                    <p v-else-if="!tool.result" class="muted">尚无已保存结果；不能据此判断是否执行。</p>
-                    <details v-else class="tool-text"><summary>已保存工具结果 · 不代表执行完成</summary><pre>{{ tool.result.content }}</pre></details>
-                  </div>
-                </section>
-                <details><summary>查看原始请求与响应</summary>
-                  <h5>请求</h5><pre>{{ raw(call.request) }}</pre>
-                  <h5>响应</h5><pre>{{ raw(call.response) }}</pre>
-                </details>
-              </article>
-            </template>
+            <TurnRecordDetail v-if="detail" :detail="detail" :timezone="state?.timezone || 'UTC'" />
           </div>
         </section>
       </div>
@@ -399,7 +348,7 @@ onBeforeUnmount(() => {
 .message-text{margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:400px;overflow:auto;line-height:1.75}
 .message-foot{border-top:1px solid var(--line);padding-top:8px}
 .turn-item{border-bottom:1px solid var(--line);padding:0 0 10px;min-width:0}
-.turn-summary,.call-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.turn-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .turn-summary>div{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;min-width:0}
 .turn-summary .v-btn{min-height:44px}
 .turn-error{color:var(--error-text);white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
@@ -409,26 +358,7 @@ onBeforeUnmount(() => {
 .detail-title{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .detail-title h3{margin:0}
 .detail-refresh{min-height:44px}
-.timing-facts{border-left:3px solid var(--primary);padding:8px 12px;margin:12px 0;background:var(--selected-bg)}
-.timing-facts p{margin:4px 0}
 .turn-detail p{overflow-wrap:anywhere}
-.call-card{border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:14px;margin-top:12px;min-width:0}
-.call-heading h4{font-size:14px;margin:0}
-.call-heading span{font-size:12px;color:var(--muted)}
-.usage code{white-space:pre-wrap;overflow-wrap:anywhere}
-.cost-fact strong{overflow-wrap:anywhere}
-.call-tools{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;min-width:0}
-.call-tools h5{font-size:13px;margin:0 0 10px}
-.tool-entry{border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px;min-width:0}
-.tool-name{display:block;overflow-wrap:anywhere}
-.tool-entry p{margin:10px 0 0}
-.tool-text{min-width:0}
-.tool-text pre{max-height:260px}
-.call-card details{min-width:0}
-.call-card summary{cursor:pointer;color:var(--primary);font-weight:600;min-height:44px;box-sizing:border-box;padding:10px 0}
-.call-card summary:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-.call-card h5{font-size:12px;margin:12px 0 6px}
-.call-card pre{max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:var(--code-bg);padding:12px;border-radius:8px;font-size:12px;line-height:1.6}
 @media(max-width:1050px){.binding{grid-template-columns:repeat(2,minmax(0,1fr))}.work-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:600px){.page-intro{display:grid;gap:16px}.page-intro h1{font-size:24px}.intro-actions{width:100%}.binding{grid-template-columns:minmax(0,1fr);gap:12px}.message-item{padding:12px}.turn-detail{padding:12px}}
 </style>

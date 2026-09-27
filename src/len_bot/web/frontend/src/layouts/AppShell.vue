@@ -13,6 +13,8 @@ const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay(
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const logoutGuard=useRequestGuard()
 const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
+const multi=computed(()=>useAuth().panelContext?.mode==='isolated-multi')
+const legacy=computed(()=>useAuth().panelContext?.mode==='legacy')
 const legacySections=[
   {
     id:'overview',
@@ -34,9 +36,20 @@ const legacySections=[
 const sections=computed(()=>isolated.value?[
   {id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]},
   {id:'chat-test-settings',label:'场景与角色',icon:mdiAccountOutline,to:{name:'chat-test-settings'},items:[]}
+]:multi.value?[
+  {id:'host-overview',label:'今日概览',icon:mdiViewDashboardOutline,to:{name:'host-overview'},items:[]},
+  {id:'host',label:'多场景观察',icon:mdiForumOutline,to:{name:'host'},items:[]},
+  {id:'host-capabilities',label:'工具能力',icon:mdiAccountOutline,to:{name:'host-capabilities'},items:[]},
+  {id:'host-models',label:'模型配置',icon:mdiViewDashboardOutline,to:{name:'host-models'},items:[]},
+  {id:'host-settings',label:'群聊设置与角色',icon:mdiCogOutline,to:{name:'host-settings'},items:[]},
+  {id:'host-persona',label:'角色文件',icon:mdiBookOpenPageVariantOutline,to:{name:'host-persona'},items:[]},
+  {id:'host-history',label:'大脑会话',icon:mdiForumOutline,to:{name:'host-history'},items:[]},
+  {id:'host-memory',label:'认识与记忆',icon:mdiBookOpenPageVariantOutline,to:{name:'host-memory'},items:[]},
+  {id:'host-system',label:'连接与运行设置',icon:mdiCogOutline,to:{name:'host-system'},items:[]}
 ]:legacySections)
 const activeSection=computed(()=>{
   if(isolated.value)return route.name==='chat-test-settings'?'chat-test-settings':'chat-test'
+  if(multi.value)return ['host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory'].includes(route.name)?route.name:'host'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
@@ -45,7 +58,7 @@ const activeSection=computed(()=>{
 })
 const section=computed(()=>sections.value.find(item=>item.id===activeSection.value))
 const origin=computed(()=>{
-  if(isolated.value)return ''
+  if(!legacy.value)return ''
   const target=returnTarget(route.query.return_to);
   return target&&target!==sourcePath(route)&&router.resolve(target).name!=='not-found'?target:''
 })
@@ -60,10 +73,10 @@ watch(()=>route.fullPath,()=>{
   if(mobile.value)drawer.value=false
 })
 function visible(){
-  if(!isolated.value && document.visibilityState==='visible')refreshStatus()
+  if(legacy.value && document.visibilityState==='visible')refreshStatus()
 }
 onMounted(()=>{
-  if(!isolated.value){
+  if(legacy.value){
     refreshStatus()
     document.addEventListener('visibilitychange',visible)
   }
@@ -96,7 +109,7 @@ async function exit(){
   >
     <div class="app-brand">
       <img class="app-mark" :src="markUrl" alt="LenBot" />
-      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':'运行管理中心' }}</span></div>
+      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':multi?'独立多场景宿主':'运行管理中心' }}</span></div>
       <v-btn
         v-if="mobile"
         :icon="mdiClose"
@@ -127,7 +140,7 @@ async function exit(){
   <v-app-bar flat :height="64" class="app-toolbar">
     <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer=true" />
     <v-app-bar-title><span class="toolbar-title">{{ route.meta.title }}</span></v-app-bar-title>
-    <v-menu v-if="!isolated" location="bottom end" :close-on-content-click="false">
+    <v-menu v-if="legacy" location="bottom end" :close-on-content-click="false">
       <template #activator="{props}">
         <v-btn
           v-bind="props"
@@ -160,9 +173,10 @@ async function exit(){
     <v-chip v-if="isolated" size="small" variant="tonal" color="secondary" class="isolated-chip">
       隔离 · 模拟发送
     </v-chip>
-    <v-divider v-else vertical class="toolbar-divider" />
+    <v-chip v-if="multi" size="small" variant="tonal" color="secondary" class="isolated-chip">独立多场景宿主</v-chip>
+    <v-divider v-if="legacy" vertical class="toolbar-divider" />
     <v-chip
-      v-if="!isolated && app.status"
+      v-if="legacy && app.status"
       size="small"
       variant="tonal"
       :color="app.status.shadow_mode?'secondary':'warning'"
