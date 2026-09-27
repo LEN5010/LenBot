@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import filecmp
 import json
 import re
 import shutil
@@ -378,13 +379,15 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
     return destination, failed
 
 
-def report(root: Path, run_id: str) -> dict:
+def run_directory(config: LabConfig, run_id: str) -> Path:
     if re.fullmatch(r"[0-9]{8}T[0-9]{6}\.[0-9]{6}Z", run_id) is None:
         raise ValueError("run must be an exact run directory name")
-    config = load_config(root)
     if config.evaluation is None:
         raise ValueError("Root configuration has no evaluation settings")
-    directory = config.evaluation.runs_directory / run_id
+    return config.evaluation.runs_directory / run_id
+
+
+def read_report(directory: Path) -> dict:
     metadata = json.loads((directory / "run.json").read_text(encoding="utf-8"))
     annotation_path = directory / "annotations.json"
     raw = annotation_path.read_text(encoding="utf-8")
@@ -420,8 +423,134 @@ def report(root: Path, run_id: str) -> dict:
                "pass_rate": None if scored == 0 else counts["pass"] / scored,
                "cost": None, "results": results,
                "notice": "1 倍速开发回放；每例时间轴见结果，未标注不计通过，费用未知不计零，完整输出见各实例数据库。"}
+    return summary
+
+
+def report(root: Path, run_id: str) -> dict:
+    directory = run_directory(load_config(root), run_id)
+    summary = read_report(directory)
     write_json(directory / "report.json", summary)
     return summary
+
+
+def changed_files(left: Path, right: Path) -> list[str]:
+    names = {str(path.relative_to(root)) for root in (left, right)
+             for path in root.rglob("*") if path.is_file()}
+    return [name for name in sorted(names)
+            if not (left / name).is_file() or not (right / name).is_file()
+            or not filecmp.cmp(left / name, right / name, shallow=False)]
+
+
+def comparison_side(item: dict) -> dict:
+    result = item["result"]
+    return {
+        "annotation": item["annotation"],
+        "execution": None if result is None else {
+            "script_completed": result["script_completed"], "script_error": result["error"],
+            "failed_tools": result["failed_tools"], "notice_errors": result["notice_errors"],
+            "turn_errors": None if result["turns"] is None else [
+                turn["error"] for turn in result["turns"] if turn["error"] is not None],
+            "model_errors": None if result["usage"] is None else [
+                call["error"] for call in result["usage"] if call["error"] is not None],
+        },
+        "model_calls": None if result is None else result["model_calls"],
+        "script_seconds": None if result is None else result["ended"] - result["started"],
+        "cost": None,
+    }
+
+
+def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
+    config = load_config(root)
+    left, right = (run_directory(config, run_id) for run_id in (baseline_id, candidate_id))
+    baseline, candidate = read_report(left), read_report(right)
+    cases = [CaseFile.model_validate(json.loads((directory / "cases.json").read_text(encoding="utf-8")))
+             for directory in (left, right)]
+    definitions = [{case.id: case for case in file.cases} for file in cases]
+    if (baseline["run"]["plan"]["set"] != candidate["run"]["plan"]["set"]
+            or definitions[0].keys() != definitions[1].keys()):
+        raise ValueError("Comparison requires the same evaluation set and case ids")
+    initial_histories = {}
+    for name in definitions[0]:
+        a, b = definitions[0][name], definitions[1][name]
+        if a.model_dump(exclude={"initial_database"}) != b.model_dump(exclude={"initial_database"}):
+            raise ValueError(f"Replay case definition differs: {name}; not pairing different inputs or expectations")
+        if (a.initial_database is None) != (b.initial_database is None):
+            raise ValueError(f"Archived initial database differs: {name}; not pairing different starting histories")
+        if a.initial_database is None:
+            initial_histories[name] = "both-empty"
+        else:
+            available = []
+            for directory, summary in ((left, baseline), (right, candidate)):
+                path = directory / name / "initial.sqlite3"
+                if not path.is_file() and any(item["case_id"] == name and item["result"] is not None
+                                             for item in summary["results"]):
+                    raise ValueError(f"Executed case is missing its initial archive: {path}")
+                available.append(path.is_file())
+            if all(available):
+                if not filecmp.cmp(left / name / "initial.sqlite3", right / name / "initial.sqlite3", shallow=False):
+                    raise ValueError(f"Archived initial database differs: {name}; not pairing different starting histories")
+                initial_histories[name] = "same-archived-bytes"
+            else:
+                initial_histories[name] = None
+    sides = [{(item["case_id"], item["repeat"]): item for item in summary["results"]}
+             for summary in (baseline, candidate)]
+    transitions = dict.fromkeys(("pass_to_pass", "pass_to_fail", "fail_to_pass", "fail_to_fail"), 0)
+    paired_scored = 0
+    unpaired = {"baseline": 0, "candidate": 0}
+    pairs = []
+    for name, repeat in sorted(sides[0].keys() | sides[1].keys()):
+        key = (name, repeat)
+        a = comparison_side(sides[0][key]) if key in sides[0] else None
+        b = comparison_side(sides[1][key]) if key in sides[1] else None
+        transition = None
+        if a is None:
+            unpaired["candidate"] += 1
+        elif b is None:
+            unpaired["baseline"] += 1
+        elif a["annotation"]["verdict"] in {"pass", "fail"} and b["annotation"]["verdict"] in {"pass", "fail"}:
+            transition = a["annotation"]["verdict"] + "_to_" + b["annotation"]["verdict"]
+            transitions[transition] += 1
+            paired_scored += 1
+        instances = [directory / name / str(repeat) for directory in (left, right)]
+        config_changes = persona_changes = None
+        if all((instance / "config.snapshot.json").is_file() for instance in instances):
+            configs = [json.loads((instance / "config.snapshot.json").read_text(encoding="utf-8"))
+                       for instance in instances]
+            for settings in configs:
+                if settings["replay_clock"] is not None:
+                    del settings["replay_clock"]["monotonic_origin"]
+            config_changes = []
+            for field in sorted(configs[0].keys() | configs[1].keys()):
+                if field not in configs[0]:
+                    config_changes.append({"field": field, "change": "added", "candidate": configs[1][field]})
+                elif field not in configs[1]:
+                    config_changes.append({"field": field, "change": "removed", "baseline": configs[0][field]})
+                elif configs[0][field] != configs[1][field]:
+                    config_changes.append({"field": field, "change": "changed",
+                                           "baseline": configs[0][field], "candidate": configs[1][field]})
+            if all((instance / "persona").is_dir() for instance in instances):
+                persona_changes = changed_files(instances[0] / "persona", instances[1] / "persona")
+        deltas = {field: None if a is None or b is None or a[field] is None or b[field] is None
+                  else b[field] - a[field] for field in ("model_calls", "script_seconds")}
+        pairs.append({"case_id": name, "repeat": repeat, "baseline": a, "candidate": b,
+                      "annotation_transition": transition, "deltas": deltas,
+                      "configuration_changes": config_changes, "persona_changed_files": persona_changes,
+                      "archives": {"baseline": str(instances[0]), "candidate": str(instances[1])}})
+    result = {
+        "baseline": {key: baseline[key] for key in ("run", "quality", "scored", "pass_rate")},
+        "candidate": {key: candidate[key] for key in ("run", "quality", "scored", "pass_rate")},
+        "paired_scored": paired_scored, "annotation_transitions": transitions, "unpaired": unpaired,
+        "paired_pass_rate_delta": (None if paired_scored == 0 else
+                                   (transitions["fail_to_pass"] - transitions["pass_to_fail"]) / paired_scored),
+        "pairs": pairs, "initial_histories": initial_histories,
+        "source_changed_files": changed_files(left / "source", right / "source"),
+        "cost": None,
+        "notice": "同输入的配对人工判定观察，不是架构或模型优势结论。未完成脚本的人工fail仍保留；"
+                  "未评、uncertain和未配对不混入分母。配置和源码差异须结合原档案解释；"
+                  "脚本总耗时不是首答延迟，缺省宿主日期不是固定历史时机，未知费用不计零。",
+    }
+    write_json(right / f"comparison-{baseline_id}.json", result)
+    return result
 
 
 def main() -> None:
@@ -432,10 +561,16 @@ def main() -> None:
         command.add_argument("set")
         command.add_argument("--profile", required=True)
     commands.add_parser("report").add_argument("run")
+    comparison = commands.add_parser("compare")
+    comparison.add_argument("baseline")
+    comparison.add_argument("candidate")
     args = parser.parse_args()
     root = Path.cwd().resolve()
     if args.command == "report":
         print(encode(report(root, args.run)))
+        return
+    if args.command == "compare":
+        print(encode(compare(root, args.baseline, args.candidate)))
         return
     config, persona, cases, plan = prepare(root, args.set, args.profile)
     print(encode(plan), flush=True)
