@@ -9,7 +9,7 @@ import re
 import tempfile
 from datetime import UTC, datetime
 from datetime import time as WallTime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -48,6 +48,17 @@ class OneBotCommon(BaseModel):
     ping_interval_seconds: float = Field(default=20.0, gt=0, allow_inf_nan=False)
     ping_timeout_seconds: float = Field(default=20.0, gt=0, allow_inf_nan=False)
     max_frame_bytes: int = Field(default=1048576, gt=0)
+    upload_visible_root: str | None = None
+
+    @field_validator("upload_visible_root")
+    @classmethod
+    def absolute_upload_root(cls, value: str | None) -> str | None:
+        if value is not None:
+            path = PurePosixPath(value)
+            if (not path.is_absolute() or value.startswith("//") or ".." in path.parts
+                    or any(char in value for char in ("\x00", "\r", "\n"))):
+                raise ValueError("upload_visible_root must be an explicit absolute POSIX directory in NapCat")
+        return value
 
     @field_validator("http_url")
     @classmethod

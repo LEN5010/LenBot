@@ -1,4 +1,4 @@
-"""OneBot message and text-send receipt boundaries for the new chat core."""
+"""OneBot message and text/file action receipt boundaries for the new chat core."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +44,16 @@ class SendResult:
     status: Literal["sent", "failed", "unconfirmed"]
     platform_message_id: str | None
     error: str | None
+
+
+@dataclass(slots=True)
+class UploadResult:
+    """An upload action receipt, not proof that a QQ client received the file."""
+
+    status: Literal["uploaded", "failed", "unconfirmed"]
+    file_id: str | None
+    error: str | None
+    raw: dict | None
 
 
 def plain_text(message: ChatMessage) -> str:
@@ -199,3 +209,21 @@ def parse_send_result(raw: dict) -> SendResult:
             if not isinstance(message_id, bool) and isinstance(message_id, (int, str)) and str(message_id):
                 return SendResult(status="sent", platform_message_id=str(message_id), error=None)
     return SendResult(status="unconfirmed", platform_message_id=None, error=repr(raw)[:500])
+
+
+def parse_upload_result(raw: dict) -> UploadResult:
+    """Parse the selected NapCat upload action without inventing a message ID."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"OneBot upload response must be an object; raw={raw!r}")
+    status = raw.get("status")
+    retcode = raw.get("retcode")
+    if status == "failed" and type(retcode) is int and retcode != 0:
+        wording = raw.get("wording")
+        error = wording if isinstance(wording, str) and wording else repr(raw)
+        return UploadResult("failed", None, error, raw)
+    if status == "ok" and type(retcode) is int and retcode == 0:
+        data = raw.get("data")
+        file_id = data.get("file_id") if isinstance(data, dict) else None
+        if isinstance(file_id, str) and file_id.strip():
+            return UploadResult("uploaded", file_id, None, raw)
+    return UploadResult("unconfirmed", None, repr(raw), raw)

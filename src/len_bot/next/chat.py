@@ -23,8 +23,9 @@ from .context import (
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
 from .delivery import part_length, report_parts, split_expression
+from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
-from .messages import ChatMessage, Segment, Sender, SendResult, render_message
+from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .memory import MEMORY_TOOL, MemoryService
@@ -35,6 +36,7 @@ from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import ImageAsset, Store, encode
 from .tasks import WorkTasks
+from .tasks_store import TaskStore
 from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
@@ -77,7 +79,8 @@ def tool_catalog(*, platform: bool) -> list[dict]:
         **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
     }}
     return [say, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
-            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL, TOOL_SEARCH]
+            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
+            SEND_FILE_TOOL, TOOL_SEARCH]
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -98,6 +101,13 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
         reasons.append("尚未配置任务容器与 worker 模型")
     if name == "delegate" and not config.tasks.enabled:
         reasons.append("当前场景未开放委托任务")
+    if name == "send_file":
+        if config.worker is None:
+            reasons.append("尚未配置任务交付副本目录")
+        if config.onebot is None or config.onebot.upload_visible_root is None:
+            reasons.append("尚未配置交付副本在 NapCat 一侧的可见目录")
+        if config.delivery != "onebot":
+            reasons.append("当前为模拟出口，不执行或伪造文件上传")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色包没有 knowledge/ 资料")
     return reasons
@@ -169,6 +179,8 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
     if "task" in names:
         system += "\n" + (PROMPTS / "next_tasks.md").read_text()
+    if "send_file" in names:
+        system += "\n" + (PROMPTS / "next_files.md").read_text()
     if "tool_search" in names:
         system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
             catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
@@ -184,6 +196,7 @@ class Chat:
                  tasks: WorkTasks | None = None,
                  slots: ModelSlots | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
+                 upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
                  now: Callable[[], float] = time.time):
@@ -199,6 +212,7 @@ class Chat:
         self.slots = slots
         self.direct_request = False
         self.send_text = send_text
+        self.upload_file = upload_file
         self.on_update = on_update
         self.on_compaction = on_compaction
         previous = self.store.last_mind_request(config.scene)
@@ -213,6 +227,8 @@ class Chat:
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
         allowed = build_tools(config, persona, platform=send_text is not None)
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
+        if "send_file" in self.allowed_tool_names and upload_file is None:
+            raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
         saved = self.store.load_discovered_tools(config.scene)
@@ -479,7 +495,14 @@ class Chat:
         if call.name == "memory":
             return await self.memory.execute(self.config.scene, call.arguments), None, None
         if call.name in {"delegate", "task"}:
-            return await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments), None, None
+            return encode(await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments)), None, None
+        if call.name == "send_file":
+            return await execute_send_file(
+                TaskStore(self.store), self.config.scene, SendFileArguments.model_validate(call.arguments),
+                local_root=self.config.worker.delivery_root,
+                visible_root=self.config.onebot.upload_visible_root,
+                upload=self.upload_file, on_update=self.notify,
+            ), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
         if call.name == "look":

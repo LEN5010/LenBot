@@ -58,6 +58,9 @@ function localTime(value) {
   })
 }
 function statusLabel(value) { return ({ queued:'排队中', running:'运行中', waiting_input:'等待输入', done:'正常结束', failed:'失败', cancelled:'已取消' })[value] || value }
+function uploadLabel(value) {
+  return ({ uploaded:'平台 API 已确认上传；不代表客户端已收到', failed:'最近一次上传失败', unconfirmed:'最近一次上传结果未确认' })[value]
+}
 function errorMessage(error, verb) {
   return error.status >= 400 && error.status < 500
     ? `${verb}未被接受：${error.message}`
@@ -308,7 +311,7 @@ async function downloadFile(file) {
     try {
       const link = document.createElement('a')
       link.href = url; link.download = file.name; document.body.appendChild(link); link.click(); link.remove()
-      downloadNotice.value = `已向浏览器发起 ${file.name} 的副本下载；不代表已保存到本机，也未上传 QQ。`
+      downloadNotice.value = `已向浏览器发起 ${file.name} 的副本下载；本次下载不代表已保存到本机，也不会触发新的 QQ 上传。`
     } finally { setTimeout(() => URL.revokeObjectURL(url), 1000) }
   } catch (error) { if (fresh()) fileError.value = error.message }
   finally { if (fresh()) fileReading.value = null }
@@ -347,6 +350,7 @@ onBeforeUnmount(() => { active = false; socket?.close() })
     <div v-if="stateLoading && !state" class="surface empty-state" role="status">正在读取任务服务与已配置场景…</div>
     <section v-if="state" class="surface"><div class="section-heading"><h2>服务现场 · 最近读取</h2><v-chip variant="tonal" :color="socketState==='connected' && !newData && state.accepting?'success':'warning'">{{ !state.configured?'未配置':state.accepting?'最近读取：接受任务':'最近读取：不接受新操作' }}</v-chip></div>
       <p class="muted">{{ state.notice }}；公共联网：{{ state.public_network?'已配置':'未接入' }}；时间按 {{ state.timezone }} 显示。</p>
+      <p class="muted">任务文件上传出口：{{ state.file_upload?'当前已配置；挂载是否可读及每份文件上传仍须实际回执确认':'当前未配置' }}。</p>
       <v-alert v-if="state.error" type="error" variant="tonal" role="alert">执行器错误原文：{{ state.error }}</v-alert>
       <div v-if="sceneSettings" class="scene-facts"><strong>{{ sceneName(sceneSettings.scene) }}</strong><span>此场景任务：{{ sceneSettings.enabled?'开放':'未开放' }}</span>
         <span>并行上限 {{ sceneSettings.max_running }} · 每人每日上限 {{ sceneSettings.max_daily_tasks }}</span></div>
@@ -416,10 +420,17 @@ onBeforeUnmount(() => { active = false; socket?.close() })
           <div v-if="actionResult" class="action-result"><p>后端实际返回：{{ actionResult.action }}。这不代替重新读取当前任务状态。</p>
             <details><summary>查看操作原始结果</summary><pre>{{ JSON.stringify(actionResult.result,null,2) }}</pre></details></div>
         </section>
-        <section class="files"><h3>已登记交付副本</h3><p class="muted">文件只保存在交付区；登记不表示已上传到 QQ。下载只获取已保存副本。</p>
+        <section class="files"><h3>已登记交付副本</h3><p class="muted">登记只说明副本已保存；是否上传以最近一次平台回执为准。下载只获取已保存副本，不会发往 QQ。</p>
           <p v-if="!detail.files.length" class="muted">当前没有已登记的文件。</p>
-          <ul v-else><li v-for="file in detail.files" :key="file.id"><strong>{{ file.name }}</strong> · {{ file.size }} 字节 · {{ file.status }} · {{ file.uploaded?'平台上传已确认':'未上传 QQ' }}
-            <p v-if="file.note" class="original-text">{{ file.note }}</p><v-btn variant="outlined" :loading="fileReading===file.id" :disabled="fileReading!==null" @click="downloadFile(file)">下载副本</v-btn></li></ul>
+          <ul v-else><li v-for="file in detail.files" :key="file.id"><strong>{{ file.name }}</strong> · {{ file.size }} 字节 · 副本已登记
+            <p v-if="file.note" class="original-text">{{ file.note }}</p>
+            <p v-if="file.upload===null" class="muted">暂无上传记录；不据此推断平台实际状态。</p>
+            <template v-else><p>{{ uploadLabel(file.upload.status) }}</p>
+              <p class="muted">尝试 / 回执：{{ localTime(file.upload.created) }} / {{ localTime(file.upload.ended) }}</p>
+              <p v-if="file.upload.platform_file_id" class="muted">平台文件回执：{{ file.upload.platform_file_id }}</p>
+              <p v-if="file.upload.error" class="original-text">错误原文：{{ file.upload.error }}</p>
+              <details><summary>查看最近一次上传回执原文</summary><pre>{{ JSON.stringify(file.upload,null,2) }}</pre></details></template>
+            <v-btn variant="outlined" :loading="fileReading===file.id" :disabled="fileReading!==null" @click="downloadFile(file)">下载副本</v-btn></li></ul>
           <v-alert v-if="fileError" type="error" variant="tonal" role="alert">下载失败：{{ fileError }}</v-alert>
           <p v-if="downloadNotice" class="muted" role="status">{{ downloadNotice }}</p></section>
         <section class="events"><h3>原生任务事件</h3><p class="muted">默认只取轻量预览；点击单条才读取完整记录，不一次加载全部模型上下文。</p>

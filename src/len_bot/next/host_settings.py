@@ -132,6 +132,7 @@ class OneBotPublic(BaseModel):
     ping_interval_seconds: float
     ping_timeout_seconds: float
     max_frame_bytes: int
+    upload_visible_root: str | None = None
 
 
 class ForwardPublic(OneBotPublic):

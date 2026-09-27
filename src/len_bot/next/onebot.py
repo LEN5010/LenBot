@@ -15,7 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from .config import OneBotForward, OneBotReverse
-from .messages import ChatMessage, SendResult, parse_send_result
+from .messages import ChatMessage, SendResult, UploadResult, parse_send_result, parse_upload_result
 
 
 def _non_json_number(value: str) -> None:
@@ -327,6 +327,34 @@ class OneBot:
         if result.status == "sent":
             return result
         return SendResult(result.status, None, self._safe(repr(raw)))
+
+    async def upload_file(self, scene: str, file: str, name: str) -> UploadResult:
+        """Upload an already registered, OneBot-visible file; return only the API receipt."""
+        kind, separator, target = scene.partition(":")
+        if (not separator or kind not in {"group", "private"} or not target.isdecimal()
+                or int(target) <= 0 or str(int(target)) != target):
+            return UploadResult("failed", None, f"Invalid OneBot scene: {scene!r}", None)
+        if not file or not name:
+            return UploadResult("failed", None, "OneBot upload requires a file path and name", None)
+        action = "upload_group_file" if kind == "group" else "upload_private_file"
+        params = {"group_id" if kind == "group" else "user_id": int(target),
+                  "file": file, "name": name}
+        websocket = self._ws
+        if not self._running or websocket is None:
+            return UploadResult("failed", None, "OneBot WebSocket is not connected; file was not uploaded", None)
+        try:
+            await self._verify_identity(websocket)
+        except (OneBotCallError, ValueError) as error:
+            return UploadResult("failed", None, self._safe(f"Identity verification failed: {error}"), None)
+        if not self._running or self._ws is not websocket or self._verified_ws is not websocket:
+            return UploadResult("failed", None, "OneBot WebSocket changed before file upload; file was not uploaded", None)
+        try:
+            raw = (await self._call_http(action, params) if self.settings.action_transport == "http"
+                   else await self._call_ws_on(websocket, action, params))
+        except OneBotCallError as error:
+            return UploadResult("unconfirmed" if error.submitted else "failed", None,
+                                self._safe(str(error)), None)
+        return parse_upload_result(raw)
 
     async def _call_http(self, action: str, params: dict) -> dict:
         url = self.settings.http_url.rstrip("/") + "/" + quote(action, safe="")
