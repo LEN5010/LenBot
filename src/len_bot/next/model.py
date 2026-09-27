@@ -87,7 +87,7 @@ def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant in tool arguments: {value}")
 
 
-def _parse_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
+def parse_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
     if usage is None:
         return None
 
@@ -119,7 +119,7 @@ def parse_chat_completion(body: object) -> ModelReply:
         usage = body.get("usage")
         if usage is not None and not isinstance(usage, dict):
             raise ValueError("usage must be an object or null")
-        token_usage = _parse_token_usage(usage)
+        token_usage = parse_token_usage(usage)
         choices = body["choices"]
         if not isinstance(choices, list) or not choices:
             raise ValueError("expected a nonempty choices array")

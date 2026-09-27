@@ -1,0 +1,5 @@
+**
+!src/
+!src/len_bot/
+!src/len_bot/next/
+!src/len_bot/next/worker_bridge.py
