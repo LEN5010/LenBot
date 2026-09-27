@@ -51,6 +51,9 @@ def test_recorded_tool_call_keeps_native_continuation_and_usage():
     ]
     assert reply.usage == body["usage"]
     assert reply.usage["completion_tokens_details"]["reasoning_tokens"] == 374
+    assert (reply.token_usage.prompt_tokens, reply.token_usage.completion_tokens,
+            reply.token_usage.cached_tokens) == (3946, 388, 0)
+    assert body["usage"]["total_tokens"] == 4333  # Retained, not forced to match the components.
 
 
 def test_recorded_response_with_injected_native_extension_keeps_it_unchanged():
@@ -73,6 +76,8 @@ def test_recorded_text_response_accepts_null_tool_calls_and_preserves_native_ext
     assert reply.tool_calls == []
     assert reply.finish_reason == "stop"
     assert reply.usage == body["usage"]
+    assert (reply.token_usage.prompt_tokens, reply.token_usage.completion_tokens,
+            reply.token_usage.cached_tokens) == (1351, 382, None)
     assert reply.message == message
     assert reply.message is not message
 
@@ -111,12 +116,48 @@ def test_recorded_response_fault_injections_fail_before_tool_execution(change, r
     assert failure.value.response == body
     assert failure.value.response is not body
     assert failure.value.usage == body["usage"]
+    assert failure.value.token_usage.prompt_tokens == body["usage"]["prompt_tokens"]
 
 
 def test_missing_usage_in_recorded_response_is_unknown_not_zero():
     body = recorded_response()
     del body["usage"]
-    assert parse_chat_completion(body).usage is None
+    reply = parse_chat_completion(body)
+    assert reply.usage is None
+    assert reply.token_usage is None
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        (lambda usage: usage.update(prompt_tokens=True), "prompt_tokens"),
+        (lambda usage: usage.update(prompt_tokens=-1), "prompt_tokens"),
+        (lambda usage: usage.update(completion_tokens=1.5), "completion_tokens"),
+        (lambda usage: usage.update(completion_tokens="388"), "completion_tokens"),
+        (lambda usage: usage["prompt_tokens_details"].update(cached_tokens=3947), "cached_tokens"),
+        (lambda usage: usage["prompt_tokens_details"].update(cached_tokens=False), "cached_tokens"),
+        (lambda usage: usage.update(prompt_tokens_details=[]), "prompt_tokens_details"),
+    ],
+)
+def test_recorded_usage_faults_reject_without_losing_raw_response(change, field):
+    body = recorded_response()
+    change(body["usage"])
+    with pytest.raises(ModelProtocolError) as failure:
+        parse_chat_completion(body)
+    assert field in str(failure.value)
+    assert failure.value.response == body
+    assert failure.value.usage == body["usage"]
+    assert failure.value.token_usage is None
+
+
+def test_recorded_usage_null_fields_remain_unknown_without_alias_guessing():
+    body = recorded_response()
+    body["usage"]["prompt_tokens"] = None
+    body["usage"]["completion_tokens"] = None
+    body["usage"]["prompt_tokens_details"] = None
+    reply = parse_chat_completion(body)
+    assert (reply.token_usage.prompt_tokens, reply.token_usage.completion_tokens,
+            reply.token_usage.cached_tokens) == (None, None, None)
 
 
 @pytest.mark.parametrize(

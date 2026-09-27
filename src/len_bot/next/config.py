@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from len_bot.next.model import ModelSettings
+from len_bot.next.pricing import ModelPrice
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -174,6 +175,7 @@ class Models(BaseModel):
 
     providers: dict[str, Provider]
     roles: Roles
+    prices: dict[str, dict[str, ModelPrice]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
@@ -184,6 +186,13 @@ class Models(BaseModel):
             provider_name = binding.provider
             if provider_name not in self.providers:
                 raise ValueError(f"models.roles.{role}.provider references unknown provider {provider_name!r}")
+        for provider_name, model_prices in self.prices.items():
+            if not provider_name.strip():
+                raise ValueError("models.prices provider name must not be blank")
+            if provider_name not in self.providers:
+                raise ValueError(f"models.prices references unknown provider {provider_name!r}")
+            if any(not model_name.strip() for model_name in model_prices):
+                raise ValueError(f"models.prices.{provider_name} model name must not be blank")
         return self
 
 

@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pytest
@@ -477,3 +478,24 @@ async def test_export_rejects_unsafe_offline_files_without_changing_data(tmp_pat
         assert backup.read_bytes() == b"synthetic existing backup"
     else:
         assert not backup.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_requires_current_format_without_modifying_legacy_target(tmp_path: Path) -> None:
+    from len_bot.next.export_history import export_history
+
+    _, _, old_path, new_path, _ = await _prepared(tmp_path)
+    shutil.copyfile(
+        Path(__file__).parent / "fixtures" / "next" / "migration" / "v12-synthetic.sqlite3",
+        new_path,
+    )
+    source_before, target_before = new_path.read_bytes(), old_path.read_bytes()
+    with closing(sqlite3.connect(new_path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+
+    with pytest.raises(ValueError, match="requires current next-core database format 13"):
+        export_history(load_instance_config(tmp_path))
+
+    assert new_path.read_bytes() == source_before
+    assert old_path.read_bytes() == target_before
+    assert not (tmp_path / "legacy-before-export.sqlite3").exists()

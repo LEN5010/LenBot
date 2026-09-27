@@ -153,8 +153,8 @@ def export_history(config: LabConfig | HostConfig) -> dict:
     with closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as new:
         new.row_factory = sqlite3.Row
         if (new.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or new.execute("PRAGMA user_version").fetchone()[0] != 12):
-            raise ValueError(f"History export requires current next-core database format 12: {source}")
+                or new.execute("PRAGMA user_version").fetchone()[0] != 13):
+            raise ValueError(f"History export requires current next-core database format 13: {source}")
         with closing(sqlite3.connect(target.as_uri() + "?mode=rw", uri=True)) as old:
             old.row_factory = sqlite3.Row
             tables = {row[0] for row in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}

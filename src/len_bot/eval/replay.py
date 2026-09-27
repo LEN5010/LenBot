@@ -16,6 +16,7 @@ import time
 import traceback
 from contextlib import closing
 from datetime import datetime, timezone
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Literal
 
@@ -60,8 +61,8 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
             raise ValueError(f"Initial database must be offline without nonempty {suffix}: {path}")
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
         if (db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or db.execute("PRAGMA user_version").fetchone()[0] != 12):
-            raise ValueError(f"Initial database requires current next-core format 12; no automatic migration: {path}")
+                or db.execute("PRAGMA user_version").fetchone()[0] != 13):
+            raise ValueError(f"Initial database requires current next-core format 13; no automatic migration: {path}")
         scenes = {row[0] for row in db.execute(" UNION ".join(
             f"SELECT scene FROM {table}" for table in (
                 "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents", "image_cache",
@@ -173,21 +174,41 @@ def snapshot_code(destination: Path) -> dict:
             "note": "本次实际源码、提示词与依赖锁随附；运行期间不要修改源码。"}
 
 
+def cost_summary(costs: list[dict | None]) -> dict:
+    amounts: dict[str, Decimal] = {}
+    known = 0
+    with localcontext() as context:
+        for cost in costs:
+            if cost is None:
+                continue
+            known += 1
+            currency = cost["currency"]
+            amount = Decimal(cost["amount"])
+            previous = amounts.get(currency, Decimal(0))
+            context.prec = max(previous.adjusted(), amount.adjusted(), 0) - min(
+                previous.as_tuple().exponent, amount.as_tuple().exponent) + 2
+            amounts[currency] = previous + amount
+    return {"basis": "configured_estimate",
+            "known_amounts": {currency: format(amount, "f") for currency, amount in sorted(amounts.items())},
+            "known_calls": known, "unknown_calls": len(costs) - known}
+
+
 def observed_database(path: Path, *, after_turn: int = 0, after_call: int = 0) -> dict:
     if not path.exists():
-        return {"database": None, "turns": None, "model_calls": None, "usage": None}
+        return {"database": None, "turns": None, "model_calls": None, "usage": None, "cost": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         turns = [turn_record(row) for row in db.execute(
             "SELECT * FROM turns WHERE rowid>? ORDER BY started,id", (after_turn,),
         )]
         calls = [dict(row) for row in db.execute(
-            "SELECT id,turn_id,role,started,ended,usage,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
+            "SELECT id,turn_id,role,started,ended,usage,cost,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
         )]
         for call in calls:
             call["usage"] = None if call["usage"] is None else json.loads(call["usage"])
+            call["cost"] = None if call["cost"] is None else json.loads(call["cost"])
         return {"database": path.name, "turns": turns, "model_calls": len(calls),
-                "usage": calls, "cost": None,
+                "usage": calls, "cost": cost_summary([call["cost"] for call in calls]),
                 "note": "仅统计本次新增轮次和调用；用量保留提供方原对象，缺失不计为零。初始历史及完整原文在数据库中。"}
 
 
@@ -419,9 +440,19 @@ def read_report(directory: Path) -> dict:
         results.append({"case_id": case, "repeat": repeat, "result": result,
                         "annotation": annotation.model_dump()})
     scored = counts["pass"] + counts["fail"]
+    costs = []
+    unobserved_cases = 0
+    for item in results:
+        result = item["result"]
+        if result is None or result["usage"] is None:
+            unobserved_cases += 1
+        elif result["cost"] is None:
+            costs.extend([None] * len(result["usage"]))
+        else:
+            costs.extend(call["cost"] for call in result["usage"])
     summary = {"run": metadata, "quality": counts, "scored": scored,
                "pass_rate": None if scored == 0 else counts["pass"] / scored,
-               "cost": None, "results": results,
+               "cost": {**cost_summary(costs), "unobserved_cases": unobserved_cases}, "results": results,
                "notice": "1 倍速开发回放；每例时间轴见结果，未标注不计通过，费用未知不计零，完整输出见各实例数据库。"}
     return summary
 
@@ -456,7 +487,7 @@ def comparison_side(item: dict) -> dict:
         "model_calls": None if result is None else result["model_calls"],
         "turns": None if result is None else result["turns"],
         "script_seconds": None if result is None else result["ended"] - result["started"],
-        "cost": None,
+        "cost": None if result is None else result["cost"],
     }
 
 
@@ -538,14 +569,13 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
                       "configuration_changes": config_changes, "persona_changed_files": persona_changes,
                       "archives": {"baseline": str(instances[0]), "candidate": str(instances[1])}})
     result = {
-        "baseline": {key: baseline[key] for key in ("run", "quality", "scored", "pass_rate")},
-        "candidate": {key: candidate[key] for key in ("run", "quality", "scored", "pass_rate")},
+        "baseline": {key: baseline[key] for key in ("run", "quality", "scored", "pass_rate", "cost")},
+        "candidate": {key: candidate[key] for key in ("run", "quality", "scored", "pass_rate", "cost")},
         "paired_scored": paired_scored, "annotation_transitions": transitions, "unpaired": unpaired,
         "paired_pass_rate_delta": (None if paired_scored == 0 else
                                    (transitions["fail_to_pass"] - transitions["pass_to_fail"]) / paired_scored),
         "pairs": pairs, "initial_histories": initial_histories,
         "source_changed_files": changed_files(left / "source", right / "source"),
-        "cost": None,
         "notice": "同输入的配对人工判定观察，不是架构或模型优势结论。未完成脚本的人工fail仍保留；"
                   "未评、uncertain和未配对不混入分母。配置和源码差异须结合原档案解释；"
                   "脚本总耗时不是首答延迟，缺省宿主日期不是固定历史时机，未知费用不计零。",
