@@ -155,6 +155,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
     reader = None
     completed_turns = 0
     failed_tools = 0
+    notice_errors = []
     output_closed = False
     changed = asyncio.Condition()
     processes = []
@@ -176,6 +177,8 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
                         raise ValueError(f"Invalid lab stdout JSON: {problem}; raw={raw[:500]!r}") from problem
                     if record["type"] == "receipt" and record["status"] == "error":
                         raise ValueError(f"Lab rejected replay input: {record['error']}; {record['input_fragment']}")
+                    if record["type"] == "notice" and record["error"] is not None:
+                        notice_errors.append(record["error"])
                     if record["type"] == "turn":
                         async with changed:
                             completed_turns += 1
@@ -271,6 +274,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
               },
               "started": started, "ended": time.time(), "inputs": inputs, "processes": processes,
               "failed_tools": failed_tools,
+              "notice_errors": notice_errors,
               **observed_database(directory / "chat.sqlite3")}
     write_json(directory / "result.json", result)
     if interruption is not None:
@@ -299,7 +303,7 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
             for repeat in range(1, settings.repetitions + 1):
                 result = await run_case(destination / case.id / str(repeat), config, persona, case,
                                         plan["voice_mode"], settings.case_timeout_seconds)
-                failed |= (not result["script_completed"] or result["failed_tools"] > 0
+                failed |= (not result["script_completed"] or result["failed_tools"] > 0 or bool(result["notice_errors"])
                            or (result["turns"] is not None and any(turn["error"] is not None for turn in result["turns"]))
                            or (result["usage"] is not None and any(call["error"] is not None for call in result["usage"])))
                 print(encode({"run": run_id, "case": case.id, "repeat": repeat,
