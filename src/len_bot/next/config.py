@@ -352,35 +352,21 @@ class Attention(BaseModel):
         return self
 
 
-class LabConfig(BaseModel):
+class SharedConfig(BaseModel):
     model_config = STRICT
 
-    mode: Literal["isolated"]
-    scene: str
     bot_qq: str
     timezone: str
     database: Path
-    persona: Path
-    voice_mode: Literal["voice", "direct"] = "voice"
     onebot: OneBotSettings | None = None
     delivery: Literal["simulated", "onebot"] = "simulated"
-    panel: PanelSettings | None = None
     max_steps: int = Field(default=8, gt=0)
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
     web_read: WebReadSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
-    attention: Attention = Field(default_factory=Attention)
-    schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     models: Models
-
-    @field_validator("scene")
-    @classmethod
-    def valid_scene(cls, value: str) -> str:
-        if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
-            raise ValueError("must be group:<QQ> or private:<QQ>")
-        return value
 
     @field_validator("bot_qq")
     @classmethod
@@ -399,7 +385,7 @@ class LabConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def mind_output_fits_compaction_trigger(self) -> LabConfig:
+    def mind_output_fits_compaction_trigger(self) -> SharedConfig:
         mind = self.models.roles.mind
         if self.compaction.max_output_tokens >= mind.context_window_tokens:
             raise ValueError("compaction.max_output_tokens must be less than mind.context_window_tokens")
@@ -412,15 +398,7 @@ class LabConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def bot_is_not_schedule_requester(self) -> LabConfig:
-        schedules = self.schedules
-        if (schedules.owner == self.bot_qq or self.bot_qq in schedules.admins
-                or self.bot_qq in schedules.whitelist):
-            raise ValueError("schedules owner, admins and whitelist must not include bot_qq")
-        return self
-
-    @model_validator(mode="after")
-    def valid_delivery(self) -> LabConfig:
+    def valid_delivery(self) -> SharedConfig:
         if self.delivery == "onebot" and self.onebot is None:
             raise ValueError("delivery=onebot requires onebot transport")
         return self
@@ -442,6 +420,75 @@ class LabConfig(BaseModel):
         )
 
 
+class SceneSettings(BaseModel):
+    model_config = STRICT
+
+    persona: Path
+    voice_mode: Literal["voice", "direct"] = "voice"
+    attention: Attention = Field(default_factory=Attention)
+    schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
+
+
+def _valid_scene(value: str) -> str:
+    if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
+        raise ValueError("must be group:<QQ> or private:<QQ>")
+    return value
+
+
+def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
+    if (schedules.owner == bot_qq or bot_qq in schedules.admins
+            or bot_qq in schedules.whitelist):
+        raise ValueError("schedules owner, admins and whitelist must not include bot_qq")
+
+
+class LabConfig(SharedConfig, SceneSettings):
+    mode: Literal["isolated"]
+    scene: str
+    panel: PanelSettings | None = None
+
+    @field_validator("scene")
+    @classmethod
+    def valid_scene(cls, value: str) -> str:
+        return _valid_scene(value)
+
+    @model_validator(mode="after")
+    def bot_is_not_schedule_requester(self) -> LabConfig:
+        _check_schedule_identity(self.bot_qq, self.schedules)
+        return self
+
+
+class HostConfig(SharedConfig):
+    mode: Literal["isolated-multi"]
+    onebot: OneBotSettings
+    scenes: dict[str, SceneSettings] = Field(min_length=1)
+    max_model_requests: int = Field(default=4, gt=0, strict=True)
+
+    @field_validator("scenes")
+    @classmethod
+    def valid_scenes(cls, scenes: dict[str, SceneSettings]) -> dict[str, SceneSettings]:
+        for scene in scenes:
+            _valid_scene(scene)
+        return scenes
+
+    @model_validator(mode="after")
+    def bot_is_not_schedule_requester(self) -> HostConfig:
+        for scene, settings in self.scenes.items():
+            try:
+                _check_schedule_identity(self.bot_qq, settings.schedules)
+            except ValueError as error:
+                raise ValueError(f"scenes.{scene}: {error}") from error
+        return self
+
+    def scene_config(self, scene: str) -> LabConfig:
+        if scene not in self.scenes:
+            raise ValueError(f"Scene {scene} is not configured")
+        # Both typed parts were validated at the single root boundary. Keep
+        # parsed local clocks and paths as typed values rather than roundtripping.
+        shared = {name: getattr(self, name) for name in SharedConfig.model_fields}
+        local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
+        return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
+
+
 def _resolved_path(root: Path, value: object, *, within_root: bool, field: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be a nonempty path string")
@@ -452,8 +499,7 @@ def _resolved_path(root: Path, value: object, *, within_root: bool, field: str) 
     return resolved
 
 
-def load_config(root: Path) -> LabConfig:
-    """Load only ``root/lenbot.config.json``; no environment or CLI overlay."""
+def _read_root(root: Path) -> tuple[Path, dict]:
     root = root.resolve()
     path = root / "lenbot.config.json"
     try:
@@ -462,6 +508,21 @@ def load_config(root: Path) -> LabConfig:
         raise ValueError(f"{path}: invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}") from error
     if not isinstance(source, dict):
         raise ValueError(f"{path}: configuration must be a JSON object")
+    return path, source
+
+
+def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueError:
+    details = "; ".join(
+        f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
+        for item in error.errors(include_input=False)
+    )
+    return ValueError(f"{path}: invalid {kind} configuration: {details}")
+
+
+def load_config(root: Path) -> LabConfig:
+    """Load only ``root/lenbot.config.json``; no environment or CLI overlay."""
+    path, source = _read_root(root)
+    root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
     source["persona"] = _resolved_path(root, source.get("persona"), within_root=False, field="persona")
     panel = source.get("panel")
@@ -472,8 +533,23 @@ def load_config(root: Path) -> LabConfig:
     try:
         return LabConfig.model_validate(source)
     except ValidationError as error:
-        details = "; ".join(
-            f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
-            for item in error.errors(include_input=False)
-        )
-        raise ValueError(f"{path}: invalid lab configuration: {details}") from error
+        raise _validation_error(path, error, "lab") from error
+
+
+def load_host_config(root: Path) -> HostConfig:
+    """Load one explicit multi-scene host from its sole root configuration."""
+    path, source = _read_root(root)
+    root = path.parent
+    source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
+    scenes = source.get("scenes")
+    if isinstance(scenes, dict):
+        for scene, settings in scenes.items():
+            if isinstance(settings, dict):
+                settings["persona"] = _resolved_path(
+                    root, settings.get("persona"), within_root=False,
+                    field=f"scenes.{scene}.persona",
+                )
+    try:
+        return HostConfig.model_validate(source)
+    except ValidationError as error:
+        raise _validation_error(path, error, "host") from error

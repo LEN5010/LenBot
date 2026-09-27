@@ -6,7 +6,10 @@ from datetime import time as WallTime
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.config import ONEBOT_SETTINGS, LabConfig, OneBotForward, OneBotReverse, PanelSettings, QuietHours, load_config
+from len_bot.next.config import (
+    ONEBOT_SETTINGS, HostConfig, LabConfig, OneBotForward, OneBotReverse,
+    PanelSettings, QuietHours, load_config, load_host_config,
+)
 from len_bot.next.persona import load_persona
 from len_bot.web.auth import hash_password
 
@@ -34,6 +37,28 @@ def _config(persona: str) -> dict:
             },
         },
     }
+
+
+def _host_config() -> dict:
+    source = _config("personas/group")
+    source["mode"] = "isolated-multi"
+    del source["scene"]
+    del source["persona"]
+    source["onebot"] = {"mode": "reverse_ws", "listen_host": "127.0.0.1", "listen_port": 0}
+    source["scenes"] = {
+        "group:80001": {
+            "persona": "personas/group", "attention": {
+                "activity": 0.7, "quiet_hours": {
+                    "start": "01:00", "end": "07:30", "direct": "defer",
+                },
+            },
+        },
+        "private:80002": {
+            "persona": "../private-persona", "voice_mode": "direct",
+            "schedules": {"owner": "80002"},
+        },
+    }
+    return source
 
 
 def _write_config(root, source: dict) -> None:
@@ -275,6 +300,110 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
         config.model_settings("vision")
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract(tmp_path):
+    root = tmp_path / "lab"
+    _write_config(root, _host_config())
+
+    host = load_host_config(root)
+
+    assert isinstance(host, HostConfig)
+    assert host.database == root / "data/isolated-chat.db"
+    assert host.bot_qq == "90001" and host.max_model_requests == 4
+    assert host.delivery == "simulated"
+    assert isinstance(host.onebot, OneBotReverse)
+    assert list(host.scenes) == ["group:80001", "private:80002"]
+    assert host.scenes["group:80001"].persona == root / "personas/group"
+    assert host.scenes["private:80002"].persona == tmp_path / "private-persona"
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
+
+    group = host.scene_config("group:80001")
+    private = host.scene_config("private:80002")
+    assert isinstance(group, LabConfig) and isinstance(private, LabConfig)
+    assert group.mode == private.mode == "isolated"
+    assert group.scene == "group:80001" and private.scene == "private:80002"
+    assert group.database == private.database == host.database
+    assert group.bot_qq == private.bot_qq == host.bot_qq
+    assert group.onebot == private.onebot == host.onebot
+    assert group.panel is None and private.panel is None
+    assert group.persona == root / "personas/group"
+    assert private.persona == tmp_path / "private-persona"
+    assert group.attention.activity == 0.7
+    assert group.attention.quiet_hours.start == WallTime(1, 0)
+    assert private.attention.activity == 0.3
+    assert private.voice_mode == "direct" and private.schedules.owner == "80002"
+    assert group.model_settings("mind").model == private.model_settings("mind").model == "sample-mind"
+    assert group.model_settings("mind").reasoning_effort == "high"
+    assert group.model_settings("voice").model == private.model_settings("voice").model == "sample-voice"
+    assert LabConfig.model_validate_json(group.model_dump_json()) == group
+    assert LabConfig.model_validate_json(private.model_dump_json()) == private
+    with pytest.raises(ValueError, match="group:99999.*not configured"):
+        host.scene_config("group:99999")
+    assert "synthetic-secret-marker" not in repr(host)
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        (lambda source: source.pop("onebot"), "onebot"),
+        (lambda source: source.update(onebot=None), "onebot"),
+        (lambda source: source.update(scenes={}), "scenes"),
+        (lambda source: source["scenes"].update({"group:0": {"persona": "personas/invalid"}}), "group:<QQ>"),
+        (lambda source: source.update(scene="group:80001"), "scene"),
+        (lambda source: source.update(persona="personas/group"), "persona"),
+        (lambda source: source.update(panel=None), "panel"),
+        (lambda source: source["scenes"]["group:80001"].update(database="other.db"), "database"),
+        (lambda source: source["scenes"]["group:80001"].pop("persona"), "scenes.group:80001.persona"),
+        (lambda source: source["models"]["roles"]["mind"].update(provider="missing"), "models.roles.mind.provider"),
+        (lambda source: source["scenes"]["private:80002"]["schedules"].update(owner="90001"), "bot_qq"),
+    ],
+)
+def test_multiscene_host_rejects_invalid_or_unowned_settings(tmp_path, change, field):
+    root = tmp_path / "lab"
+    source = _host_config()
+    change(source)
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_host_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 2.5, "4"])
+def test_multiscene_host_rejects_invalid_model_slots(tmp_path, limit):
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["max_model_requests"] = limit
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_host_config(root)
+    assert "max_model_requests" in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+def test_multiscene_host_rejects_database_outside_instance_directory(tmp_path):
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["database"] = "../another-chat.sqlite3"
+    _write_config(root, source)
+
+    with pytest.raises(ValueError, match="database must resolve inside the lab root"):
+        load_host_config(root)
+
+
+def test_multiscene_host_accepts_explicit_positive_model_slots(tmp_path):
+    root = tmp_path / "lab"
+    source = _host_config()
+    source["max_model_requests"] = 2
+    _write_config(root, source)
+
+    host = load_host_config(root)
+
+    assert host.max_model_requests == 2
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
 
 
 @pytest.mark.parametrize("port", [0, 65535])

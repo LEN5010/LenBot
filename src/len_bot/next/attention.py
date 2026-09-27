@@ -187,7 +187,11 @@ class SceneRunner:
                 state.offer(PendingWake("ambient", at, score=score))
 
     def receive(self, raw: dict, *, ignore_other_scenes: bool = False) -> dict:
-        message = parse_message(raw, own_message_ids=self.own_ids)
+        message = parse_message(raw, own_message_ids=set())
+        return self.receive_message(message, raw, ignore_other_scenes=ignore_other_scenes)
+
+    def receive_message(self, message: ChatMessage, raw: dict, *, ignore_other_scenes: bool = False) -> dict:
+        """Accept an already parsed message; own replies remain scoped to this scene."""
         if str(raw["self_id"]) != self.config.bot_qq:
             raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
         if message.scene != self.config.scene:
@@ -195,12 +199,15 @@ class SceneRunner:
                 return {"status": "ignored", "scene": message.scene,
                         "platform_message_id": message.platform_message_id}
             raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
-        if message.reply_to is not None and message.reply_to not in self.own_ids:
-            # A send receipt may arrive without an own-message event.
-            replied = self.store.find_message(message.scene, message.reply_to)
-            if replied is not None and replied.is_self:
-                self.own_ids.add(message.reply_to)
+        if message.reply_to is not None:
+            if message.reply_to in self.own_ids:
                 message.mentions_bot = True
+            else:
+                # A send receipt may arrive without an own-message event.
+                replied = self.store.find_message(message.scene, message.reply_to)
+                if replied is not None and replied.is_self:
+                    self.own_ids.add(message.reply_to)
+                    message.mentions_bot = True
         existing = self.store.find_message(message.scene, message.platform_message_id)
         if existing is not None:
             if existing.is_self and existing.send_status == "sent":
@@ -416,6 +423,8 @@ class SceneRunner:
             through, contents = self.batch(pending, self.wake_reason())
             self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id,
                                     attention_state=asdict(state))
+            if self.state.pending is not None and self.state.pending.channel == "direct":
+                self.chat.direct_request = True
         if scheduled:
             self.store.append_schedules(self.config.scene, scheduled, turn_id=turn_id)
         self.state = state
@@ -475,12 +484,13 @@ class SceneRunner:
                 channel = "system" if scheduled else self.state.pending.channel if self.state.pending else "resume"
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
+                direct = self.state.pending is not None and self.state.pending.channel == "direct"
                 state = self.consumed_state()
                 contact_before = state.last_contact_at
                 self.state, self.resume = state, False
                 result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
                                                   wait_for_messages=self.wait_for_messages,
-                                                  attention_state=asdict(state), scheduled=scheduled)
+                                                  attention_state=asdict(state), scheduled=scheduled, direct=direct)
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)
                 if own_at is not None:
@@ -492,10 +502,11 @@ class SceneRunner:
                     cap = math.ceil(math.log2(self.settings.ambient_max_interval_seconds)
                                     - math.log2(self.settings.ambient_min_interval_seconds))
                     state.silence_level = min(state.silence_level + 1, cap)
-                self.resume = self.store.end_turn(result["turn_id"], result["status"], result["error"],
-                                                  attention_state=asdict(state))
+                # Preserve restart eligibility without treating a timeout as new input.
+                pending_wake = self.store.end_turn(result["turn_id"], result["status"], result["error"],
+                                                   attention_state=asdict(state))
                 self.state = state
-                result["pending_wake"] = self.resume
+                result["pending_wake"] = pending_wake
                 self.emit(result)
                 continue
             if self.closing:

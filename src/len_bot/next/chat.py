@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -25,6 +26,7 @@ from .delivery import part_length, report_parts, split_expression
 from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
+from .model_slots import ModelSlots
 from .persona import Persona
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
@@ -77,12 +79,20 @@ class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
                  mind: ChatModel, voice: ChatModel, *,
                  vision: ChatModel | None = None,
+                 slots: ModelSlots | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
                  on_update: Callable[[], None] | None = None):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice, self.vision = mind, voice, vision
+        self.slots = slots
+        self.direct_request = False
         self.send_text = send_text
         self.on_update = on_update
+        previous = self.store.last_mind_request(config.scene)
+        if previous is not None:
+            current = mind.settings.model_dump(exclude={"api_key"})
+            if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
+                raise ValueError("大脑模型绑定已改变；此隔离库保留原生续接字段，请显式创建独立会话库")
         say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
             **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
         }}
@@ -107,8 +117,6 @@ class Chat:
             raise ValueError("角色开放低频工具时必须同时开放 tool_search")
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
-        if set(saved) != self.discovered_tools:
-            self.store.save_discovered_tools(config.scene, sorted(self.discovered_tools))
         # Mode instructions live beside the other prompts, not in runtime branches.
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
         expression_mode = Template((PROMPTS / mode).read_text()).substitute(
@@ -144,11 +152,9 @@ class Chat:
 
     def restore(self) -> bool:
         previous = self.store.last_mind_request(self.config.scene)
-        if previous is not None:
-            current = self.mind.settings.model_dump(exclude={"api_key"})
-            if any(previous["settings"][key] != current[key] for key in ("api", "base_url", "model")):
-                raise ValueError("大脑模型绑定已改变；此隔离库保留原生续接字段，请显式创建独立会话库")
         resume = self.store.recover(self.config.scene)
+        if set(self.store.load_discovered_tools(self.config.scene)) != self.discovered_tools:
+            self.store.save_discovered_tools(self.config.scene, sorted(self.discovered_tools))
         if previous is not None and previous["messages"][0]["content"] != self.system:
             self.store.append(self.config.scene, {"role": "user", "content":
                 "本次启动已更新角色或表达模式；当前系统设定生效，已有聊天原文保留。"})
@@ -179,42 +185,43 @@ class Chat:
                 f"{role} {scope}含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
         settings = model.settings.model_dump(exclude={"api_key"})
         settings["max_output_tokens"] = output_tokens
-        call_id = self.store.start_call(turn_id, role, {
-            "settings": settings, "messages": messages, "tools": tools,
-            **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
-               else {"estimated_total_tokens": estimated}),
-            "context_window_tokens": binding.context_window_tokens,
-        })
-        self.notify()
-        reply = None
-        try:
-            if role == "recap":
-                reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
-            else:
-                reply = await model.complete(messages, tools)
-            if role == "vision" and (reply.tool_calls or not reply.text.strip()):
-                raise ValueError(f"视觉模型未返回完整描述：{encode(reply.message)}")
-            if recap_target is not None:
-                if reply.tool_calls or not reply.text.strip():
-                    raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
-                content_tokens = estimate_content(reply.text)
-                if content_tokens > recap_target.summary_budget_tokens:
-                    raise ContextBudgetError(
-                        f"新回想正文估算 {content_tokens} token，超过本步回想预算 "
-                        f"{recap_target.summary_budget_tokens}；未切换起点")
-        except BaseException as error:
-            response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
-            usage = None if reply is None else reply.usage
-            if isinstance(error, ModelProtocolError):
-                response, usage = error.response, error.usage
-            self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}")
+        async with (self.slots.slot(direct=self.direct_request) if self.slots is not None else nullcontext()):
+            call_id = self.store.start_call(turn_id, role, {
+                "settings": settings, "messages": messages, "tools": tools,
+                **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
+                   else {"estimated_total_tokens": estimated}),
+                "context_window_tokens": binding.context_window_tokens,
+            })
             self.notify()
-            raise
-        self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
-                            append_to_scene=self.config.scene if role == "mind" else None,
-                            recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
-        self.notify()
-        return reply
+            reply = None
+            try:
+                if role == "recap":
+                    reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
+                else:
+                    reply = await model.complete(messages, tools)
+                if role == "vision" and (reply.tool_calls or not reply.text.strip()):
+                    raise ValueError(f"视觉模型未返回完整描述：{encode(reply.message)}")
+                if recap_target is not None:
+                    if reply.tool_calls or not reply.text.strip():
+                        raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
+                    content_tokens = estimate_content(reply.text)
+                    if content_tokens > recap_target.summary_budget_tokens:
+                        raise ContextBudgetError(
+                            f"新回想正文估算 {content_tokens} token，超过本步回想预算 "
+                            f"{recap_target.summary_budget_tokens}；未切换起点")
+            except BaseException as error:
+                response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
+                usage = None if reply is None else reply.usage
+                if isinstance(error, ModelProtocolError):
+                    response, usage = error.response, error.usage
+                self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}")
+                self.notify()
+                raise
+            self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
+                                append_to_scene=self.config.scene if role == "mind" else None,
+                                recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
+            self.notify()
+            return reply
 
     async def describe_image(self, turn_id: str, asset: ImageAsset) -> str:
         messages = [
@@ -371,7 +378,9 @@ class Chat:
     async def run_turn(self, *, batch: tuple[int, list[str]] | None,
                        append_new: Callable[[bool, str], Awaitable[bool]],
                        wait_for_messages: Callable[[float], Awaitable[str]],
-                       attention_state: dict, scheduled: list[tuple[int, str]] | None = None) -> dict:
+                       attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
+                       direct: bool = False) -> dict:
+        self.direct_request = direct
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state, scheduled=scheduled)
         self.notify()
