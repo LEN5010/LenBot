@@ -16,6 +16,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.requests import HTTPConnection
 import uvicorn
 
 from len_bot.web.auth import (
@@ -31,8 +32,14 @@ from .persona import load_persona, select_examples
 from .store import Store
 
 
-COOKIE = "lenbot_test_session"
 logger = logging.getLogger(__name__)
+
+
+def cookie_name(connection: HTTPConnection) -> str:
+    port = connection.url.port
+    if port is None:
+        port = 443 if connection.url.scheme in {"https", "wss"} else 80
+    return f"lenbot_test_session_p{port}"
 
 
 class Login(BaseModel):
@@ -158,7 +165,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
         return await request_validation_exception_handler(request, error)
 
     def user(request: Request) -> str:
-        return session_user(request.cookies.get(COOKIE))
+        return session_user(request.cookies.get(cookie_name(request)))
 
     @app.post("/api/auth/login")
     async def login(item: Login, request: Request, response: Response):
@@ -173,7 +180,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
             raise HTTPException(401, "Invalid username or password")
         clear_login_failures(key)
         last_login_at = time.time()
-        response.set_cookie(COOKIE, create_session(item.username), httponly=True, samesite="lax",
+        response.set_cookie(cookie_name(request), create_session(item.username), httponly=True, samesite="lax",
                             secure=config.panel.cookie_secure, max_age=7 * 86400)
         return {"success": True, "username": item.username, "is_default_password": False}
 
@@ -183,8 +190,9 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
 
     @app.post("/api/auth/logout")
     async def logout(request: Request, response: Response, _: str = Depends(user)):
-        revoke_session(request.cookies[COOKIE])
-        response.delete_cookie(COOKIE)
+        name = cookie_name(request)
+        revoke_session(request.cookies[name])
+        response.delete_cookie(name)
         app.state.session.notify()
         return {"success": True}
 
@@ -257,7 +265,7 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
 
     @app.websocket("/api/chat-test/events")
     async def events(websocket: WebSocket):
-        token = websocket.cookies.get(COOKIE)
+        token = websocket.cookies.get(cookie_name(websocket))
         try:
             session_user(token)
         except HTTPException:
