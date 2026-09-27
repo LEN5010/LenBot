@@ -1,0 +1,77 @@
+{
+  "format": "structured-development",
+  "source": "全部身份、时间、群号与原话均为人工合成的结构化开发用例，不是历史聊天录制。",
+  "cases": [
+    {
+      "id": "correction-restart",
+      "set": "coherence",
+      "expect": [
+        "观察第二轮是否承接第一轮实际保存的说法；不预设第一轮说了某个具体答案。",
+        "如先前说法不确定或有误，应说明已知事实与未确认处；由人工根据实际输出评分。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-1001",
+            "time": 1790000000,
+            "sender": {"nickname": "合成甲", "card": "", "role": "member"},
+            "message": [
+              {"type": "at", "data": {"qq": "90001"}},
+              {"type": "text", "data": {"text": "我上周推荐的是哪本书？"}}
+            ]
+          }
+        },
+        {"type": "await_turn", "count": 1},
+        {"type": "restart"},
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70001",
+            "message_id": "synthetic-1002",
+            "time": 1790000060,
+            "sender": {"nickname": "合成甲", "card": "", "role": "member"},
+            "message": [
+              {"type": "at", "data": {"qq": "90001"}},
+              {"type": "text", "data": {"text": "刚才那本可能不对，你能说明依据和不确定之处吗？"}}
+            ]
+          }
+        },
+        {"type": "await_turn", "count": 2}
+      ]
+    },
+    {
+      "id": "ambient-observe",
+      "set": "coherence",
+      "expect": [
+        "只观察真实时间窗口内是否自然发言；没有轮次并不自动算通过。"
+      ],
+      "steps": [
+        {
+          "type": "message",
+          "event": {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": "90001",
+            "group_id": "80001",
+            "user_id": "70002",
+            "message_id": "synthetic-2001",
+            "time": 1790000200,
+            "sender": {"nickname": "合成乙", "card": "", "role": "member"},
+            "message": [{"type": "text", "data": {"text": "今天把旧书整理好了。"}}]
+          }
+        },
+        {"type": "observe", "seconds": 0.2}
+      ]
+    }
+  ]
+}

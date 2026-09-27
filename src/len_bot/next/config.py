@@ -396,6 +396,30 @@ class HistoryExportSettings(BaseModel):
         return _history_scenes(scenes, "history_export")
 
 
+class EvaluationProfile(BaseModel):
+    model_config = STRICT
+
+    voice_mode: Literal["voice", "direct"]
+
+
+class EvaluationSettings(BaseModel):
+    model_config = STRICT
+
+    profiles: dict[str, EvaluationProfile] = Field(min_length=1)
+    sets: dict[str, Path] = Field(min_length=1)
+    runs_directory: Path = Path("data/eval/runs")
+    repetitions: int = Field(default=3, gt=0, strict=True)
+    case_timeout_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("profiles", "sets")
+    @classmethod
+    def safe_names(cls, values: dict) -> dict:
+        for name in values:
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) is None:
+                raise ValueError(f"name must be a single ASCII path segment: {name!r}")
+        return values
+
+
 class SharedConfig(BaseModel):
     model_config = STRICT
 
@@ -532,6 +556,7 @@ class LabConfig(SharedConfig, SceneSettings):
     mode: Literal["isolated"]
     scene: str
     panel: PanelSettings | None = None
+    evaluation: EvaluationSettings | None = None
 
     @field_validator("scene")
     @classmethod
@@ -650,6 +675,18 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
         panel["assets_dir"] = _resolved_path(
             root, panel["assets_dir"], within_root=False, field="panel.assets_dir"
         )
+    evaluation = source.get("evaluation")
+    if isinstance(evaluation, dict):
+        evaluation["runs_directory"] = _resolved_path(
+            root, evaluation.get("runs_directory", "data/eval/runs"),
+            within_root=True, field="evaluation.runs_directory",
+        )
+        sets = evaluation.get("sets")
+        if isinstance(sets, dict):
+            for name, location in sets.items():
+                sets[name] = _resolved_path(
+                    root, location, within_root=False, field=f"evaluation.sets.{name}",
+                )
     _resolve_history_paths(root, source)
     try:
         return LabConfig.model_validate(source)
