@@ -64,18 +64,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 10:
+                if application_id != 0x4C424E31 or version != 11:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 10;
+                    PRAGMA user_version = 11;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -106,8 +106,9 @@ class Store:
                     CREATE TABLE model_calls (
                         id INTEGER PRIMARY KEY, turn_id TEXT NOT NULL, role TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, error TEXT
+                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER
                     );
+                    CREATE INDEX turn_calls ON model_calls(turn_id, id);
                     CREATE TABLE schedules (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         created REAL NOT NULL, due_at REAL NOT NULL,
@@ -445,6 +446,20 @@ class Store:
             call = dict(row)
             for key in ("request", "response", "usage"):
                 call[key] = None if call[key] is None else json.loads(call[key])
+            entry_seq = call.pop("mind_entry_seq")
+            call["tool_results"] = None if entry_seq is None else []
+            if entry_seq is not None and call["response"]["message"].get("tool_calls"):
+                for entry in self.db.execute(
+                    "SELECT message FROM mind_entries WHERE scene=? AND seq>? ORDER BY seq",
+                    (scene, entry_seq),
+                ):
+                    message = json.loads(entry[0])
+                    if message["role"] == "assistant":
+                        break
+                    if message["role"] == "tool":
+                        call["tool_results"].append(message)
+                        if len(call["tool_results"]) == len(call["response"]["message"]["tool_calls"]):
+                            break
             calls.append(call)
         return {"turn": dict(turn), "calls": calls}
 
@@ -744,13 +759,14 @@ class Store:
                  error: str | None = None, *, append_to_scene: str | None = None,
                  recap_for: tuple[str, int] | None = None) -> None:
         with self.db:
+            entry_seq = (None if append_to_scene is None else
+                         self._append(append_to_scene, response["message"]))
             self.db.execute(
-                "UPDATE model_calls SET ended=?,response=?,usage=?,error=? WHERE id=?",
+                "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=? WHERE id=?",
                 (time.time(), None if response is None else encode(response),
-                 None if usage is None else encode(usage), error, call_id),
+                 None if usage is None else encode(usage), error, entry_seq, call_id),
             )
             if append_to_scene is not None:
-                self._append(append_to_scene, response["message"])
                 if error is None and not response["message"].get("tool_calls"):
                     self.db.execute(
                         "UPDATE turns SET status='settling' WHERE id="

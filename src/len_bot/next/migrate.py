@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 10."""
+"""Explicit offline upgrade of an isolated next-core database to format 11."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "CREATE TABLE web_documents ("
                 "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL)"
             )
-        else:
+        elif version == 9:
             db.execute(
                 "CREATE TABLE image_cache ("
                 "scene TEXT NOT NULL, platform_id TEXT NOT NULL,"
@@ -118,6 +118,9 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "description TEXT, description_model TEXT, described_at REAL,"
                 "PRIMARY KEY(scene, platform_id, image_index))"
             )
+        else:
+            db.execute("ALTER TABLE model_calls ADD COLUMN mind_entry_seq INTEGER")
+            db.execute("CREATE INDEX turn_calls ON model_calls(turn_id, id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -126,21 +129,21 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
 
 
 def migrate_database(path: Path) -> Path:
-    """Upgrade format 1 through 9 while retaining a copy of each step."""
+    """Upgrade format 1 through 10 while retaining a copy of each step."""
     path = Path(path).resolve()
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)) as db:
         application_id, version = _format(db)
-        if application_id != APPLICATION_ID or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+        if application_id != APPLICATION_ID or version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
             raise ValueError(
-                f"Expected a next-core format 1 through 9 database: {path}; "
+                f"Expected a next-core format 1 through 10 database: {path}; "
                 f"found app={application_id}, version={version}"
             )
-        for step in range(version, 10):
+        for step in range(version, 11):
             backup = path.with_name(path.name + f".v{step}.bak")
             if backup.exists():
                 raise FileExistsError(f"Migration backup already exists: {backup}")
         original_backup = path.with_name(path.name + f".v{version}.bak")
-        for step in range(version, 10):
+        for step in range(version, 11):
             _upgrade_one_step(db, path, step)
     return original_backup
 
