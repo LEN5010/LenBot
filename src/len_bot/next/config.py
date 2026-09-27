@@ -481,9 +481,36 @@ class SceneSettings(BaseModel):
     model_config = STRICT
 
     persona: Path
+    persona_aliases: list[str] = Field(default_factory=list)
+    relationships: dict[str, str] = Field(default_factory=dict)
+    behavior_addendum: str | None = None
     voice_mode: Literal["voice", "direct"] = "voice"
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
+
+    @field_validator("persona_aliases")
+    @classmethod
+    def nonblank_persona_aliases(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("persona_aliases must not contain blank entries")
+        return values
+
+    @field_validator("relationships")
+    @classmethod
+    def valid_relationships(cls, values: dict[str, str]) -> dict[str, str]:
+        for qq, description in values.items():
+            if re.fullmatch(r"[1-9][0-9]*", qq) is None:
+                raise ValueError(f"relationships key must be a positive QQ number as text: {qq!r}")
+            if not description.strip():
+                raise ValueError(f"relationships[{qq!r}] must not be blank")
+        return values
+
+    @field_validator("behavior_addendum")
+    @classmethod
+    def nonblank_behavior_addendum(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("behavior_addendum must not be blank")
+        return value
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:

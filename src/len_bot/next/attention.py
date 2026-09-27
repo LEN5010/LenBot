@@ -113,7 +113,7 @@ class SceneRunner:
         self.ready_for_turn = ready_for_turn
         self.own_ids = self.store.own_ids(self.config.scene)
         self.keywords = tuple(dict.fromkeys(word.strip().casefold() for word in
-            [chat.persona.name, *chat.persona.aliases, *self.settings.keywords]))
+            [chat.persona.name, *chat.persona.aliases, *self.config.persona_aliases, *self.settings.keywords]))
         saved = self.store.load_attention(self.config.scene)
         if saved is None:
             self.state = AttentionState()

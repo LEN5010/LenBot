@@ -276,6 +276,9 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.images.timeout_seconds == 20
     assert config.history_import is None
     assert config.history_export is None
+    assert config.persona_aliases == []
+    assert config.relationships == {}
+    assert config.behavior_addendum is None
     assert config.attention.direct_idle_seconds == 1.5
     assert config.attention.direct_max_seconds == 4.0
     assert config.attention.max_extensions == 2
@@ -350,6 +353,80 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     with pytest.raises(ValueError, match="group:99999.*not configured"):
         host.scene_config("group:99999")
     assert "synthetic-secret-marker" not in repr(host)
+
+
+def test_scene_persona_overrides_roundtrip_without_cross_scene_inheritance(tmp_path):
+    single_root = tmp_path / "single"
+    single_source = _config("personas/example")
+    single_source.update(
+        persona_aliases=[" 小例 ", "例子"],
+        relationships={"80002": " 熟悉，但先看本轮原话 "},
+        behavior_addendum=" 这个场景偏重简短回答。 ",
+    )
+    _write_config(single_root, single_source)
+    single = load_config(single_root)
+    assert single.persona_aliases == [" 小例 ", "例子"]
+    assert single.relationships == {"80002": " 熟悉，但先看本轮原话 "}
+    assert single.behavior_addendum == " 这个场景偏重简短回答。 "
+    assert LabConfig.model_validate_json(single.model_dump_json()) == single
+
+    host_root = tmp_path / "host"
+    host_source = _host_config()
+    host_source["scenes"]["group:80001"].update(
+        persona_aliases=["群内外号"],
+        relationships={"80002": "群内熟人"},
+        behavior_addendum="少开玩笑",
+    )
+    _write_config(host_root, host_source)
+    host = load_host_config(host_root)
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
+    group = host.scene_config("group:80001")
+    private = host.scene_config("private:80002")
+    assert (group.persona_aliases, group.relationships, group.behavior_addendum) == (
+        ["群内外号"], {"80002": "群内熟人"}, "少开玩笑",
+    )
+    assert private.persona_aliases == [] and private.relationships == {}
+    assert private.behavior_addendum is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("persona_aliases", "外号"),
+    ("persona_aliases", ["外号", 3]),
+    ("persona_aliases", ["   "]),
+    ("relationships", []),
+    ("relationships", {"0": "熟人"}),
+    ("relationships", {"01": "熟人"}),
+    ("relationships", {"80002": "  "}),
+    ("relationships", {"80002": 3}),
+    ("behavior_addendum", "  "),
+    ("behavior_addendum", 3),
+    ("unexpected_scene_field", "not accepted"),
+])
+def test_scene_persona_overrides_reject_invalid_single_config(tmp_path, field, value):
+    root = tmp_path / "single"
+    source = _config("personas/example")
+    source[field] = value
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("placement", ["top", "scene"])
+def test_multiscene_persona_overrides_reject_wrong_place_or_invalid_scene(tmp_path, placement):
+    root = tmp_path / "host"
+    source = _host_config()
+    if placement == "top":
+        source["persona_aliases"] = ["不得全局继承"]
+    else:
+        source["scenes"]["group:80001"]["relationships"] = {"not-qq": "熟人"}
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_host_config(root)
+    assert ("persona_aliases" if placement == "top" else "scenes.group:80001.relationships") in str(failure.value)
 
 
 @pytest.mark.parametrize(

@@ -134,6 +134,17 @@ class Chat:
             outlet=(PROMPTS / ("next_simulated_outlet.md" if send_text is None else
                                "next_platform_outlet.md")).read_text().strip(),
         )
+        scene_details = {}
+        if config.persona_aliases:
+            scene_details["本场景对你的称呼"] = config.persona_aliases
+        if config.relationships:
+            scene_details["关系说明（QQ → 描述）"] = dict(sorted(config.relationships.items()))
+        if config.behavior_addendum is not None:
+            scene_details["本场景行为补充"] = config.behavior_addendum
+        if scene_details:
+            self.system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
+                details=encode(scene_details),
+            )
         if "schedule" in self.allowed_tool_names:
             self.system += "\n" + (PROMPTS / "next_schedule.md").read_text()
         if "tool_search" in self.allowed_tool_names:
