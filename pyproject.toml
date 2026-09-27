@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 len-bot = "len_bot:main"
+lenbot-eval = "len_bot.eval.replay:main"
 
 [project.optional-dependencies]
 browser = [

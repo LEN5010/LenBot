@@ -277,6 +277,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.images.timeout_seconds == 20
     assert config.history_import is None
     assert config.history_export is None
+    assert config.evaluation is None
     assert config.persona_aliases == []
     assert config.relationships == {}
     assert config.behavior_addendum is None
@@ -465,6 +466,10 @@ def test_scene_persona_public_save_preserves_unedited_root_values_and_relative_p
     source["persona_aliases"] = ["原称呼"]
     source["relationships"] = {"80002": "原说明"}
     source["behavior_addendum"] = "原行为补充"
+    source["evaluation"] = {
+        "profiles": {"same-model": {"voice_mode": "direct"}},
+        "sets": {"coherence": "cases/coherence.json"},
+    }
     _write_config(root, source)
     persona_path = root / "personas" / "relative-package" / "persona.yaml"
     persona_path.parent.mkdir(parents=True)
@@ -491,6 +496,138 @@ def test_scene_persona_public_save_preserves_unedited_root_values_and_relative_p
     assert {key: saved[key] for key in ScenePersona.model_fields} == changes.model_dump()
     assert read_scene_persona(root) == changes
     assert persona_path.read_bytes() == b"operator-owned persona source\n"
+
+
+def test_evaluation_profiles_and_sets_resolve_once_from_single_lab_root(tmp_path):
+    root = tmp_path / "isolated"
+    external = tmp_path / "outside" / "structured-cases.json"
+    source = _config("personas/example")
+    source["evaluation"] = {
+        "profiles": {
+            "same-model_voice": {"voice_mode": "voice"},
+            "same-model-direct": {"voice_mode": "direct"},
+        },
+        "sets": {
+            "coherence": "cases/coherence.json",
+            "external-set": str(external),
+        },
+    }
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    assert config.evaluation is not None
+    assert list(config.evaluation.profiles) == ["same-model_voice", "same-model-direct"]
+    assert config.evaluation.profiles["same-model_voice"].voice_mode == "voice"
+    assert config.evaluation.profiles["same-model-direct"].voice_mode == "direct"
+    assert config.evaluation.sets == {
+        "coherence": root / "cases/coherence.json", "external-set": external,
+    }
+    assert config.evaluation.runs_directory == root / "data/eval/runs"
+    assert config.evaluation.repetitions == 3
+    assert config.evaluation.case_timeout_seconds == 300.0
+    assert config.models.roles.mind.model == "sample-mind"
+    assert config.models.roles.voice.model == "sample-voice"
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_evaluation_explicit_output_and_limits_roundtrip(tmp_path):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["evaluation"] = {
+        "profiles": {"trial-1": {"voice_mode": "direct"}},
+        "sets": {"role": "cases/role.json"},
+        "runs_directory": "reports/runs",
+        "repetitions": 2,
+        "case_timeout_seconds": 12.5,
+    }
+    _write_config(root, source)
+    config = load_config(root)
+    assert config.evaluation.runs_directory == root / "reports/runs"
+    assert config.evaluation.repetitions == 2
+    assert config.evaluation.case_timeout_seconds == 12.5
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize("change,field", [
+    (lambda data: data.update(profiles={}), "evaluation.profiles"),
+    (lambda data: data.update(sets={}), "evaluation.sets"),
+    (lambda data: data["profiles"].update({"bad": {}}), "evaluation.profiles.bad.voice_mode"),
+    (lambda data: data["profiles"].update({"bad": {"voice_mode": "unknown"}}), "evaluation.profiles.bad.voice_mode"),
+    (lambda data: data["profiles"].update({"bad": {"voice_mode": "direct", "model": "not-an-override"}}),
+     "evaluation.profiles.bad.model"),
+    (lambda data: data.update(extra="not accepted"), "evaluation.extra"),
+    (lambda data: data.update(repetitions=0), "evaluation.repetitions"),
+    (lambda data: data.update(repetitions=-1), "evaluation.repetitions"),
+    (lambda data: data.update(repetitions=True), "evaluation.repetitions"),
+    (lambda data: data.update(repetitions="3"), "evaluation.repetitions"),
+    (lambda data: data.update(case_timeout_seconds=0), "evaluation.case_timeout_seconds"),
+    (lambda data: data.update(case_timeout_seconds=-1), "evaluation.case_timeout_seconds"),
+    (lambda data: data.update(case_timeout_seconds=True), "evaluation.case_timeout_seconds"),
+    (lambda data: data.update(case_timeout_seconds=float("inf")), "evaluation.case_timeout_seconds"),
+    (lambda data: data.update(case_timeout_seconds=float("nan")), "evaluation.case_timeout_seconds"),
+    (lambda data: data.update(case_timeout_seconds="20"), "evaluation.case_timeout_seconds"),
+    (lambda data: data["sets"].update({"invalid": 3}), "evaluation.sets.invalid"),
+])
+def test_evaluation_configuration_rejects_invalid_values(tmp_path, change, field):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["evaluation"] = {
+        "profiles": {"valid": {"voice_mode": "voice"}},
+        "sets": {"coherence": "cases/coherence.json"},
+    }
+    change(source["evaluation"])
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("field,name", [
+    ("profiles", "../escape"), ("profiles", "bad.name"), ("profiles", "has space"),
+    ("sets", ""), ("sets", "slash/name"), ("sets", "非ASCII"),
+])
+def test_evaluation_selection_names_are_single_ascii_path_segments(tmp_path, field, name):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["evaluation"] = {
+        "profiles": {"valid": {"voice_mode": "voice"}},
+        "sets": {"coherence": "cases/coherence.json"},
+    }
+    source["evaluation"][field][name] = (
+        {"voice_mode": "direct"} if field == "profiles" else "cases/other.json"
+    )
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert f"evaluation.{field}" in str(failure.value)
+
+
+@pytest.mark.parametrize("runs", ["../outside", "/tmp/other-instance", "", 4])
+def test_evaluation_output_must_resolve_inside_instance_root(tmp_path, runs):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["evaluation"] = {
+        "profiles": {"valid": {"voice_mode": "voice"}},
+        "sets": {"coherence": "cases/coherence.json"},
+        "runs_directory": runs,
+    }
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="evaluation.runs_directory"):
+        load_config(root)
+
+
+def test_host_does_not_accept_evaluation_configuration(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["evaluation"] = {
+        "profiles": {"voice": {"voice_mode": "voice"}},
+        "sets": {"coherence": "cases/coherence.json"},
+    }
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="evaluation"):
+        load_host_config(root)
 
 
 def test_scene_persona_read_uses_full_root_validation_with_original_defaults(tmp_path):
