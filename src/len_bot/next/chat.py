@@ -27,7 +27,7 @@ from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
-from .persona import Persona
+from .persona import Persona, select_examples
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
@@ -72,7 +72,7 @@ def voice_prompt(persona: Persona) -> str:
         name=persona.name, brief=persona.brief,
         self_reference="、".join(persona.self_reference), voice=persona.voice,
         boundaries=persona.boundaries,
-        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in persona.examples[:8]),
+        examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)),
     )
 
 
@@ -125,7 +125,7 @@ class Chat:
         mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
         expression_mode = Template((PROMPTS / mode).read_text()).substitute(
             voice=persona.voice,
-            examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in persona.examples[:8]))
+            examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)))
         self.system = Template((PROMPTS / "next_mind.md").read_text()).substitute(
             name=persona.name, scene=config.scene, bot_qq=config.bot_qq,
             brief=persona.brief, self_reference="、".join(persona.self_reference),
