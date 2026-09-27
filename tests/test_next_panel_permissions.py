@@ -13,8 +13,15 @@ from len_bot.web.auth import create_session, hash_password, revoke_session
 
 
 @pytest.fixture
-def panel_config(tmp_path):
+def panel_root(tmp_path):
     root = tmp_path / "isolated"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def panel_config(panel_root):
+    root = panel_root
     persona = root / "persona"
     persona.mkdir(parents=True)
     (persona / "persona.yaml").write_text(
@@ -61,14 +68,18 @@ def _login(client: TestClient):
     })
 
 
-def test_unauthed_http_and_websocket_are_rejected(panel_config):
-    with TestClient(create_app(panel_config)) as client:
+def test_unauthed_http_and_websocket_are_rejected(panel_config, panel_root):
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert client.get("/api/panel-context").json() == {
             "mode": "isolated", "home": "/chat-test",
         }
         for path in ("/api/auth/me", "/api/chat-test/state", "/api/chat-test/settings",
+                     "/api/chat-test/scene-persona",
                      "/api/chat-test/turns/no-turn"):
             assert client.get(path).status_code == 401
+        assert client.put("/api/chat-test/scene-persona", json={
+            "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
+        }).status_code == 401
         assert client.post("/api/chat-test/messages", json={
             "uid": "80002", "nickname": "测试者", "text": "不会入库", "mention_bot": True,
             "reply_to": None,
@@ -83,9 +94,9 @@ def test_unauthed_http_and_websocket_are_rejected(panel_config):
         assert store.recent_records(panel_config.scene) == []
 
 
-def test_login_validation_names_missing_username_without_echoing_password(panel_config):
+def test_login_validation_names_missing_username_without_echoing_password(panel_config, panel_root):
     password = "synthetic-panel-secret-marker"
-    with TestClient(create_app(panel_config)) as client:
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
         response = client.post("/api/auth/login", json={"password": password})
         assert response.status_code == 422
         assert password not in response.text
@@ -94,8 +105,8 @@ def test_login_validation_names_missing_username_without_echoing_password(panel_
                    for item in response.json()["detail"])
 
 
-def test_virtual_sender_cannot_use_configured_bot_identity(panel_config):
-    with TestClient(create_app(panel_config)) as client:
+def test_virtual_sender_cannot_use_configured_bot_identity(panel_config, panel_root):
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert _login(client).status_code == 200
         response = client.post("/api/chat-test/messages", json={
             "uid": panel_config.bot_qq, "nickname": "伪装自身", "text": "不能保存的虚拟消息",
@@ -109,14 +120,18 @@ def test_virtual_sender_cannot_use_configured_bot_identity(panel_config):
         assert store.recent_records(panel_config.scene) == []
 
 
-def test_configured_account_uses_separate_cookie_name_and_logout_revokes_it(panel_config):
+def test_configured_account_uses_separate_cookie_name_and_logout_revokes_it(panel_config, panel_root):
     legacy_token = create_session("legacy-operator")
     try:
-        with TestClient(create_app(panel_config)) as client:
+        with TestClient(create_app(panel_config, root=panel_root)) as client:
             client.cookies.set("session_token", legacy_token)
             assert client.get("/api/auth/me").status_code == 401
             assert client.get("/api/chat-test/state").status_code == 401
             assert client.get("/api/chat-test/settings").status_code == 401
+            assert client.get("/api/chat-test/scene-persona").status_code == 401
+            assert client.put("/api/chat-test/scene-persona", json={
+                "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
+            }).status_code == 401
 
             assert client.post("/api/auth/login", json={
                 "username": "admin", "password": "synthetic-panel-password",
@@ -143,18 +158,28 @@ def test_configured_account_uses_separate_cookie_name_and_logout_revokes_it(pane
             assert "synthetic-unused-key" not in settings.text
             assert panel_config.panel.password_hash not in settings.text
             assert "synthetic-panel-password" not in settings.text
+            saved = client.get("/api/chat-test/scene-persona")
+            assert saved.status_code == 200
+            assert saved.json() == {
+                "saved": {"persona_aliases": [], "relationships": {}, "behavior_addendum": None},
+                "restart_required": False,
+            }
 
             assert client.post("/api/auth/logout").status_code == 200
             assert client.get("/api/auth/me").status_code == 401
             client.cookies.set("lenbot_test_session", token)
             assert client.get("/api/chat-test/state").status_code == 401
             assert client.get("/api/chat-test/settings").status_code == 401
+            assert client.get("/api/chat-test/scene-persona").status_code == 401
+            assert client.put("/api/chat-test/scene-persona", json={
+                "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
+            }).status_code == 401
     finally:
         revoke_session(legacy_token)
 
 
-def test_logout_closes_an_existing_authenticated_websocket(panel_config):
-    with TestClient(create_app(panel_config)) as client:
+def test_logout_closes_an_existing_authenticated_websocket(panel_config, panel_root):
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert _login(client).status_code == 200
         with client.websocket_connect("/api/chat-test/events") as websocket:
             assert websocket.receive_json() == {"type": "changed"}
@@ -165,14 +190,14 @@ def test_logout_closes_an_existing_authenticated_websocket(panel_config):
         assert client.get("/api/chat-test/state").status_code == 401
 
 
-def test_turn_lookup_is_scoped_to_configured_scene(panel_config):
+def test_turn_lookup_is_scoped_to_configured_scene(panel_config, panel_root):
     with Store(panel_config.database) as store:
         local_turn = store.start_turn(panel_config.scene)
         store.end_turn(local_turn, "settled")
         other_turn = store.start_turn("group:80002")
         store.end_turn(other_turn, "settled")
 
-    with TestClient(create_app(panel_config)) as client:
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
         assert _login(client).status_code == 200
         local = client.get(f"/api/chat-test/turns/{local_turn}")
         assert local.status_code == 200
@@ -181,11 +206,35 @@ def test_turn_lookup_is_scoped_to_configured_scene(panel_config):
         assert client.post("/api/auth/logout").status_code == 200
 
 
-def test_web_panel_rejects_nonisolated_outlet_configurations(panel_config):
+def test_web_panel_rejects_nonisolated_outlet_configurations(panel_config, panel_root):
     with pytest.raises(ValueError, match="requires panel configuration"):
-        create_app(panel_config.model_copy(update={"panel": None}))
+        create_app(panel_config.model_copy(update={"panel": None}), root=panel_root)
     transport = OneBotForward(mode="forward_ws", ws_url="ws://127.0.0.1:9")
     with pytest.raises(ValueError, match="onebot=null and delivery=simulated"):
-        create_app(panel_config.model_copy(update={"onebot": transport}))
+        create_app(panel_config.model_copy(update={"onebot": transport}), root=panel_root)
     with pytest.raises(ValueError, match="onebot=null and delivery=simulated"):
-        create_app(panel_config.model_copy(update={"onebot": transport, "delivery": "onebot"}))
+        create_app(panel_config.model_copy(update={"onebot": transport, "delivery": "onebot"}), root=panel_root)
+
+
+def test_scene_persona_rejects_scope_smuggling_without_any_file_or_runtime_change(panel_config, panel_root):
+    def saved_files():
+        return {path.relative_to(panel_root).as_posix(): path.read_bytes()
+                for path in panel_root.rglob("*") if path.is_file()}
+
+    with TestClient(create_app(panel_config, root=panel_root)) as client:
+        assert _login(client).status_code == 200
+        current = client.get("/api/chat-test/settings").json()["scene_persona"]
+        saved = client.get("/api/chat-test/scene-persona").json()
+        baseline = saved_files()
+        proposed = {"persona_aliases": ["合成本群称呼"],
+                    "relationships": {"70001": "合成关系"},
+                    "behavior_addendum": "本群简短回答。"}
+        for field, value in (("persona", "other-persona"), ("model", "other-model"),
+                             ("models", {"mind": "other-model"}),
+                             ("scene", "group:80002"), ("root", "/private/tmp/other")):
+            response = client.put("/api/chat-test/scene-persona", json={**proposed, field: value})
+            assert response.status_code == 422, (field, response.text)
+            assert saved_files() == baseline, field
+            assert client.get("/api/chat-test/scene-persona").json() == saved, field
+            assert client.get("/api/chat-test/settings").json()["scene_persona"] == current, field
+        assert client.post("/api/auth/logout").status_code == 200

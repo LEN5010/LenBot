@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
+import tempfile
 from datetime import time as WallTime
 from pathlib import Path
 from typing import Annotated, Literal
@@ -477,16 +480,12 @@ class SharedConfig(BaseModel):
         )
 
 
-class SceneSettings(BaseModel):
+class ScenePersona(BaseModel):
     model_config = STRICT
 
-    persona: Path
-    persona_aliases: list[str] = Field(default_factory=list)
-    relationships: dict[str, str] = Field(default_factory=dict)
-    behavior_addendum: str | None = None
-    voice_mode: Literal["voice", "direct"] = "voice"
-    attention: Attention = Field(default_factory=Attention)
-    schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
+    persona_aliases: list[str]
+    relationships: dict[str, str]
+    behavior_addendum: str | None
 
     @field_validator("persona_aliases")
     @classmethod
@@ -511,6 +510,16 @@ class SceneSettings(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("behavior_addendum must not be blank")
         return value
+
+
+class SceneSettings(ScenePersona):
+    persona_aliases: list[str] = Field(default_factory=list)
+    relationships: dict[str, str] = Field(default_factory=dict)
+    behavior_addendum: str | None = None
+    persona: Path
+    voice_mode: Literal["voice", "direct"] = "voice"
+    attention: Attention = Field(default_factory=Attention)
+    schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
@@ -670,6 +679,37 @@ def load_config(root: Path) -> LabConfig:
     """Load only ``root/lenbot.config.json``; no environment or CLI overlay."""
     path, source = _read_root(root)
     return _load_lab_source(path, source)
+
+
+def read_scene_persona(root: Path) -> ScenePersona:
+    """Read only the three scene-persona values from the validated single-scene root."""
+    config = load_config(root)
+    return ScenePersona.model_construct(
+        persona_aliases=config.persona_aliases,
+        relationships=config.relationships,
+        behavior_addendum=config.behavior_addendum,
+    )
+
+
+def save_scene_persona(root: Path, changes: ScenePersona) -> None:
+    """Replace only scene-persona values in the sole validated root file."""
+    path, candidate = _read_root(root)
+    candidate["persona_aliases"] = changes.persona_aliases
+    candidate["relationships"] = changes.relationships
+    candidate["behavior_addendum"] = changes.behavior_addendum
+    # Path resolution is only for validation. Preserve the original relative
+    # paths and every other raw root field in the file that is written.
+    _load_lab_source(path, copy.deepcopy(candidate))
+
+    descriptor, name = tempfile.mkstemp(prefix=".lenbot-config-", suffix=".json", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(candidate, stream, ensure_ascii=False, allow_nan=False, indent=2)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_host_config(root: Path) -> HostConfig:

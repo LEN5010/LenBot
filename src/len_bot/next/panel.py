@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
+from threading import Lock
 import time
 from uuid import uuid4
 
@@ -23,13 +25,14 @@ from len_bot.web.auth import (
 from len_bot.web.shell import mount_panel
 from .attention import SceneRunner
 from .chat import Chat
-from .config import LabConfig, STRICT, load_config
+from .config import LabConfig, ScenePersona, STRICT, load_config, read_scene_persona, save_scene_persona
 from .model import ChatModel
 from .persona import load_persona, select_examples
 from .store import Store
 
 
 COOKIE = "lenbot_test_session"
+logger = logging.getLogger(__name__)
 
 
 class Login(BaseModel):
@@ -119,7 +122,7 @@ class PanelSession:
         await self.task
 
 
-def create_app(config: LabConfig) -> FastAPI:
+def create_app(config: LabConfig, *, root: Path) -> FastAPI:
     if config.panel is None:
         raise ValueError("next.panel requires panel configuration in lenbot.config.json")
     if config.onebot is not None or config.delivery != "simulated":
@@ -143,6 +146,7 @@ def create_app(config: LabConfig) -> FastAPI:
 
     app = FastAPI(title="LenBot 隔离对话测试", lifespan=lifespan)
     last_login_at: float | None = None
+    config_write_lock = Lock()
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):
@@ -213,6 +217,33 @@ def create_app(config: LabConfig) -> FastAPI:
             },
         }
 
+    def scene_persona_result(saved: ScenePersona) -> dict:
+        values = saved.model_dump()
+        loaded = {field: getattr(config, field) for field in ScenePersona.model_fields}
+        return {"saved": values, "restart_required": values != loaded}
+
+    @app.get("/api/chat-test/scene-persona")
+    def scene_persona(_: str = Depends(user)):
+        try:
+            with config_write_lock:
+                saved = read_scene_persona(root)
+        except (ValueError, OSError) as error:
+            logger.exception("读取本场景补充失败：%s", error)
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f"{type(error).__name__}: {error}") from error
+        return scene_persona_result(saved)
+
+    @app.put("/api/chat-test/scene-persona")
+    def put_scene_persona(item: ScenePersona, _: str = Depends(user)):
+        try:
+            with config_write_lock:
+                save_scene_persona(root, item)
+        except (ValueError, OSError) as error:
+            logger.exception("保存本场景补充失败：%s", error)
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f"{type(error).__name__}: {error}") from error
+        return scene_persona_result(item)
+
     @app.post("/api/chat-test/messages")
     async def message(item: TestMessage, _: str = Depends(user)):
         return app.state.session.receive(item)
@@ -268,8 +299,9 @@ def create_app(config: LabConfig) -> FastAPI:
 
 
 def main() -> None:
-    config = load_config(Path.cwd())
-    app = create_app(config)
+    root = Path.cwd().resolve()
+    config = load_config(root)
+    app = create_app(config, root=root)
     uvicorn.run(app, host=config.panel.host, port=config.panel.port)
 
 
