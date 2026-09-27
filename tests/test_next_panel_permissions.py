@@ -193,8 +193,20 @@ def test_logout_closes_an_existing_authenticated_websocket(panel_config, panel_r
 def test_turn_lookup_is_scoped_to_configured_scene(panel_config, panel_root):
     with Store(panel_config.database) as store:
         local_turn = store.start_turn(panel_config.scene)
+        request = {"settings": panel_config.model_settings("mind").model_dump(exclude={"api_key"}),
+                   "messages": [{"role": "system", "content": "明确合成的既有会话"}], "tools": []}
+        response = {"message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "shared-provider-id", "type": "function",
+             "function": {"name": "say", "arguments": '{"content":"合成表达"}'}}
+        ]}, "finish_reason": "tool_calls"}
+        local_call = store.start_call(local_turn, "mind", request)
+        store.end_call(local_call, response, None, append_to_scene=panel_config.scene)
+        store.complete_tool(panel_config.scene, "shared-provider-id", "本场景的合成结果")
         store.end_turn(local_turn, "settled")
         other_turn = store.start_turn("group:80002")
+        other_call = store.start_call(other_turn, "mind", request)
+        store.end_call(other_call, response, None, append_to_scene="group:80002")
+        store.complete_tool("group:80002", "shared-provider-id", "其他场景不可见的合成结果")
         store.end_turn(other_turn, "settled")
 
     with TestClient(create_app(panel_config, root=panel_root)) as client:
@@ -202,6 +214,8 @@ def test_turn_lookup_is_scoped_to_configured_scene(panel_config, panel_root):
         local = client.get(f"/api/chat-test/turns/{local_turn}")
         assert local.status_code == 200
         assert local.json()["turn"]["scene"] == panel_config.scene
+        assert "本场景的合成结果" in local.text
+        assert "其他场景不可见的合成结果" not in local.text
         assert client.get(f"/api/chat-test/turns/{other_turn}").status_code == 404
         assert client.post("/api/auth/logout").status_code == 200
 

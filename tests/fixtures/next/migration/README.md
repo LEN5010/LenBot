@@ -15,3 +15,11 @@ The format-9 fixture was produced with the format-9 store and migration code
 from `8b2c2ec`, then given one synthetic webpage document. Its URL, extracted
 text, notice, timestamps, and all other rows are placeholders, not network
 captures or real chat data.
+The format-10 fixture uses the exact new-database DDL from committed
+`src/len_bot/next/store.py` at `4241e3a`. It carries forward only the synthetic
+format-9 rows, then adds a second native assistant/tool exchange reusing the
+first exchange's tool-call ID, two synthetic model calls, and a generated 2x2
+JPEG cache row. All contents, identities, times, usage, and image pixels are
+synthetic; this is not a platform or model response recording. The repeated
+tool-call ID is deliberately local to each native exchange and must not be
+used to backfill the new format-11 call-position column.
