@@ -41,6 +41,71 @@ def test_synthetic_structured_cases_keep_original_onebot_envelopes_and_boundarie
     assert loaded.cases[0].steps[0].event == source["cases"][0]["steps"][0]["event"]
     assert loaded.cases[0].expect == source["cases"][0]["expect"]
     assert all(case.start_time is None for case in loaded.cases)
+    assert all(case.initial_database is None for case in loaded.cases)
+
+
+def test_initial_database_relative_path_resolves_beside_case_file_without_changing_event(tmp_path):
+    source = _source()
+    original_event = copy.deepcopy(source["cases"][0]["steps"][0]["event"])
+    source["cases"][0]["initial_database"] = " snapshots/seed.sqlite3 "
+    path = _write(tmp_path, source)
+
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+
+    expected = (tmp_path / " snapshots/seed.sqlite3 ").resolve()
+    assert loaded.cases[0].initial_database == expected
+    assert loaded.cases[0].initial_database.is_absolute()
+    assert loaded.cases[0].steps[0].event == original_event
+    assert loaded.model_dump(mode="json")["cases"][0]["initial_database"] == str(expected)
+    assert not expected.exists()
+
+
+def test_initial_database_absolute_path_is_not_read_or_rebased(tmp_path):
+    source = _source()
+    absolute = (tmp_path / "separate-source.sqlite3").resolve()
+    source["cases"][1]["initial_database"] = str(absolute)
+    path = _write(tmp_path, source)
+
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+
+    assert loaded.cases[1].initial_database == absolute
+    assert loaded.cases[0].initial_database is None
+    assert not absolute.exists()
+
+
+@pytest.mark.parametrize("literal", ["~/seed.sqlite3", "$HOME/seed.sqlite3"])
+def test_initial_database_does_not_expand_home_or_environment_tokens(tmp_path, literal):
+    source = _source()
+    source["cases"][0]["initial_database"] = literal
+    path = _write(tmp_path, source)
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    assert loaded.cases[0].initial_database == (tmp_path / literal).resolve()
+
+
+@pytest.mark.parametrize("value", ["", " \n ", 0, True, [], {}])
+def test_initial_database_requires_a_nonblank_json_path_string(tmp_path, value):
+    source = _source()
+    source["cases"][0]["initial_database"] = value
+    path = _write(tmp_path, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    assert str(path) in str(failure.value)
+    assert "correction-restart" in str(failure.value)
+    assert "initial_database" in str(failure.value)
+    assert "raw=" in str(failure.value)
+
+
+def test_unresolvable_initial_database_reports_case_and_raw_path(tmp_path):
+    source = _source()
+    source["cases"][0]["initial_database"] = "bad\x00path.sqlite3"
+    path = _write(tmp_path, source)
+    with pytest.raises(ValueError) as failure:
+        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    assert str(path) in str(failure.value)
+    assert "correction-restart" in str(failure.value)
+    assert "initial_database" in str(failure.value)
+    assert "raw=" in str(failure.value)
 
 
 def test_explicit_case_start_time_preserves_platform_event_time_and_words(tmp_path):

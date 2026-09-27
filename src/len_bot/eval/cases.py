@@ -53,6 +53,7 @@ class ReplayCase(BaseModel):
     id: str
     set: str
     start_time: EpochSeconds | None = None
+    initial_database: Path | None = None
     expect: list[str] = Field(min_length=1)
     steps: list[ReplayStep] = Field(min_length=1)
 
@@ -69,6 +70,15 @@ class ReplayCase(BaseModel):
         if any(not value.strip() for value in values):
             raise ValueError("expect must contain nonblank original descriptions")
         return values
+
+    @field_validator("initial_database", mode="before")
+    @classmethod
+    def database_path_text(cls, value: object) -> Path | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("initial_database must be a nonblank path string")
+        return Path(value)
 
 
 class CaseFile(BaseModel):
@@ -153,6 +163,17 @@ def load_cases(path: Path, *, set_name: str, scene: str, bot_qq: str) -> CaseFil
                 f"{path}: cases[{index}] id={case.id!r} set {case.set!r} differs from selected "
                 f"set {set_name!r}; raw={_fragment(source['cases'][index])}"
             )
+        if case.initial_database is not None:
+            candidate = case.initial_database
+            try:
+                case.initial_database = (
+                    candidate if candidate.is_absolute() else path.parent / candidate
+                ).resolve()
+            except (OSError, ValueError, RuntimeError) as error:
+                raise ValueError(
+                    f"{path}: cases[{index}] id={case.id!r} invalid initial_database: {error}; "
+                    f"raw={_fragment(source['cases'][index])}"
+                ) from error
         for position, step in enumerate(case.steps):
             if not isinstance(step, MessageStep):
                 continue

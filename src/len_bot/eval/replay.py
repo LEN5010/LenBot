@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import traceback
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -49,6 +50,43 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
 
 
+def check_initial_database(path: Path, config: LabConfig) -> None:
+    if not path.is_file():
+        raise ValueError(f"Initial database is not an existing file: {path}")
+    for suffix in ("-wal", "-journal"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists() and sidecar.stat().st_size:
+            raise ValueError(f"Initial database must be offline without nonempty {suffix}: {path}")
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+        if (db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
+                or db.execute("PRAGMA user_version").fetchone()[0] != 11):
+            raise ValueError(f"Initial database requires current next-core format 11; no automatic migration: {path}")
+        scenes = {row[0] for row in db.execute(" UNION ".join(
+            f"SELECT scene FROM {table}" for table in (
+                "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents", "image_cache",
+            )
+        ))}
+        if scenes - {config.scene}:
+            raise ValueError(f"Initial database contains scenes other than {config.scene}: {sorted(scenes)!r}; {path}")
+        mismatch = db.execute(
+            "SELECT seq FROM messages WHERE "
+            "(json_extract(body,'$.is_self')=1 AND json_extract(body,'$.sender.uid')!=?) OR "
+            "(json_extract(raw,'$.self_id') IS NOT NULL AND CAST(json_extract(raw,'$.self_id') AS TEXT)!=?) LIMIT 1",
+            (config.bot_qq, config.bot_qq),
+        ).fetchone()
+        if mismatch is not None:
+            raise ValueError(f"Initial database message {mismatch[0]} has a different Bot QQ from {config.bot_qq}: {path}")
+        previous = db.execute(
+            "SELECT request FROM model_calls JOIN turns ON turns.id=model_calls.turn_id "
+            "WHERE turns.scene=? AND role='mind' ORDER BY model_calls.id DESC LIMIT 1", (config.scene,),
+        ).fetchone()
+        if previous is not None:
+            settings = json.loads(previous[0])["settings"]
+            current = config.model_settings("mind")
+            if any(settings[key] != getattr(current, key) for key in ("api", "base_url", "model")):
+                raise ValueError(f"Initial database mind binding differs; native history cannot switch models: {path}")
+
+
 def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona, CaseFile, dict]:
     config = load_config(root)
     if config.replay_clock is not None:
@@ -66,6 +104,9 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         raise ValueError(f"Development replay does not implement these declared tools: {sorted(unsupported)}")
     cases = load_cases(config.evaluation.sets[set_name], set_name=set_name,
                        scene=config.scene, bot_qq=config.bot_qq)
+    for case in cases.cases:
+        if case.initial_database is not None:
+            check_initial_database(case.initial_database, config)
     plan = {
         "set": set_name, "profile": profile,
         "voice_mode": config.evaluation.profiles[profile].voice_mode,
@@ -73,6 +114,10 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
                    for role in ("mind", "voice")},
         "case_ids": [case.id for case in cases.cases],
+        "case_initial_databases": {
+            case.id: None if case.initial_database is None else str(case.initial_database)
+            for case in cases.cases
+        },
         "case_clocks": [
             {"case_id": case.id,
              "mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
@@ -127,23 +172,27 @@ def snapshot_code(destination: Path) -> dict:
             "note": "本次实际源码、提示词与依赖锁随附；运行期间不要修改源码。"}
 
 
-def observed_database(path: Path) -> dict:
+def observed_database(path: Path, *, after_turn: int = 0, after_call: int = 0) -> dict:
     if not path.exists():
         return {"database": None, "turns": None, "model_calls": None, "usage": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
-        turns = [dict(row) for row in db.execute("SELECT * FROM turns ORDER BY started,id")]
+        turns = [dict(row) for row in db.execute(
+            "SELECT * FROM turns WHERE rowid>? ORDER BY started,id", (after_turn,),
+        )]
         calls = [dict(row) for row in db.execute(
-            "SELECT id,turn_id,role,started,ended,usage,error FROM model_calls ORDER BY id")]
+            "SELECT id,turn_id,role,started,ended,usage,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
+        )]
         for call in calls:
             call["usage"] = None if call["usage"] is None else json.loads(call["usage"])
         return {"database": path.name, "turns": turns, "model_calls": len(calls),
                 "usage": calls, "cost": None,
-                "note": "用量保留提供方原对象，缺失不计为零；原请求、响应与工具结果在数据库中。"}
+                "note": "仅统计本次新增轮次和调用；用量保留提供方原对象，缺失不计为零。初始历史及完整原文在数据库中。"}
 
 
 async def run_case(directory: Path, config: LabConfig, persona: Persona,
-                   case: ReplayCase, voice_mode: str, timeout: float) -> dict:
+                   case: ReplayCase, voice_mode: str, timeout: float,
+                   initial_database: Path | None = None) -> dict:
     directory.mkdir(parents=True, mode=0o700)
     effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
@@ -160,6 +209,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
     changed = asyncio.Condition()
     processes = []
     inputs = []
+    after_turn = after_call = 0
 
     async def consume(child, stream) -> None:
         nonlocal completed_turns, failed_tools, output_closed
@@ -213,6 +263,11 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
     try:
         snapshot_persona(persona, directory / "persona")
         write_json(directory / "case.json", case.model_dump(mode="json"))
+        if initial_database is not None:
+            with closing(sqlite3.connect(initial_database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+                after_turn = db.execute("SELECT COALESCE(MAX(rowid),0) FROM turns").fetchone()[0]
+                after_call = db.execute("SELECT COALESCE(MAX(id),0) FROM model_calls").fetchone()[0]
+            shutil.copyfile(initial_database, directory / "chat.sqlite3")
         # The same per-repeat anchor stays in this child config across normal restarts.
         effective["replay_clock"] = (None if case.start_time is None else {
             "epoch": case.start_time, "monotonic_origin": time.monotonic(),
@@ -264,6 +319,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
         finally:
             config_path.unlink(missing_ok=True)
     result = {"case_id": case.id, "script_completed": error is None, "error": error,
+              "initial_database": None if initial_database is None else "../initial.sqlite3",
               "clock": {"mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
                         "start_time": case.start_time},
               "time_axes": {
@@ -275,7 +331,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
               "started": started, "ended": time.time(), "inputs": inputs, "processes": processes,
               "failed_tools": failed_tools,
               "notice_errors": notice_errors,
-              **observed_database(directory / "chat.sqlite3")}
+              **observed_database(directory / "chat.sqlite3", after_turn=after_turn, after_call=after_call)}
     write_json(directory / "result.json", result)
     if interruption is not None:
         raise interruption
@@ -300,9 +356,15 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
     loop.add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
     try:
         for case in cases.cases:
+            initial_database = None
+            if case.initial_database is not None:
+                initial_database = destination / case.id / "initial.sqlite3"
+                initial_database.parent.mkdir()
+                check_initial_database(case.initial_database, config)
+                shutil.copyfile(case.initial_database, initial_database)
             for repeat in range(1, settings.repetitions + 1):
                 result = await run_case(destination / case.id / str(repeat), config, persona, case,
-                                        plan["voice_mode"], settings.case_timeout_seconds)
+                                        plan["voice_mode"], settings.case_timeout_seconds, initial_database)
                 failed |= (not result["script_completed"] or result["failed_tools"] > 0 or bool(result["notice_errors"])
                            or (result["turns"] is not None and any(turn["error"] is not None for turn in result["turns"]))
                            or (result["usage"] is not None and any(call["error"] is not None for call in result["usage"])))
