@@ -18,6 +18,7 @@ from .memory_ingest import MemoryIngestor
 from .onebot import OneBot
 from .persona import Persona
 from .store import Store, encode
+from .tasks import WorkTasks
 
 
 class NetworkRuntime:
@@ -26,12 +27,14 @@ class NetworkRuntime:
                  vision: ChatModel | None = None, slots: ModelSlots | None = None,
                  memory: MemoryService | None = None,
                  ingestor: MemoryIngestor | None = None,
+                 tasks: WorkTasks | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
         self.config, self.store = config, store
         self.memory = memory
         self.ingestor = ingestor
+        self.tasks = tasks
         self.on_update = on_update
         self.status = "created"
         self.last_platform_error: str | None = None
@@ -47,6 +50,7 @@ class NetworkRuntime:
                 raise ValueError(f"Duplicate network scene {scene}")
             self.chats[scene] = Chat(
                 scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
+                tasks=tasks,
                 on_compaction=(None if ingestor is None else lambda scene=scene: ingestor.request(scene)),
                 send_text=self.platform.send_text if config.delivery == "onebot" else None,
                 on_update=self.notify,
@@ -77,6 +81,8 @@ class NetworkRuntime:
 
     def stop(self) -> None:
         self.accepting = False
+        if self.tasks is not None:
+            self.tasks.stop()
         self.stopped.set()
         if self.status != "stopped":
             self._status("stopping")
@@ -163,6 +169,9 @@ class NetworkRuntime:
                     if connected not in done or stopping in done or terminated in done:
                         return
                     await connected
+                    if self.tasks is not None:
+                        await self.tasks.start()
+                        pending.append(group.create_task(self.tasks.wait_failure()))
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -176,6 +185,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.tasks is not None:
+                        await self.tasks.close()
                     for runner in self.runners.values():
                         runner.close_input()
                     await asyncio.gather(*running)
@@ -185,9 +196,13 @@ class NetworkRuntime:
                         task.cancel()
         finally:
             try:
-                await self.platform.close()
-                self._status("stopped")
-                self._emit({"type": "runtime", "status": "stopped"})
+                try:
+                    if self.tasks is not None:
+                        await self.tasks.close()
+                finally:
+                    await self.platform.close()
+                    self._status("stopped")
+                    self._emit({"type": "runtime", "status": "stopped"})
             finally:
                 for sig in installed:
                     loop.remove_signal_handler(sig)

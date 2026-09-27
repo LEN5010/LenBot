@@ -7,6 +7,7 @@ endpoint is carried over exec pipes, with ``--network none`` still in effect.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import json
 import math
 import os
@@ -209,7 +210,8 @@ class DockerSandbox:
     async def ensure(self, scene: str, task_id: str, *,
                      shared_skills: Path | None = None,
                      group_dir: Path | None = None,
-                     require_network: bool = False) -> SandboxHandle:
+                     require_network: bool = False,
+                     on_container: Callable[[str], None] | None = None) -> SandboxHandle:
         """Create a fresh container; never infer a usable network from Docker defaults."""
         if require_network:
             raise SandboxDependencyError(
@@ -241,6 +243,8 @@ class DockerSandbox:
                     raise ValueError(f"{target} source is not a directory: {resolved}")
                 mounts.extend(_mount(resolved, target, readonly=True))
         name = f"lenbot-next-{uuid.uuid4().hex}"
+        if on_container is not None:
+            on_container(name)
         command = [
             "create", "--name", name, "--network", "none", "--read-only",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -274,7 +278,9 @@ class DockerSandbox:
         return SandboxHandle(scene, task_id, container_id, workspace, home, control)
 
     async def spawn_model_bridge(self, sandbox: SandboxHandle, *, proxy: WorkerModelProxy,
-                                 stderr_path: Path) -> WorkerTransport:
+                                 stderr_path: Path,
+                                 task_request: Callable[[str, bytes], Awaitable[dict]] | None = None
+                                 ) -> WorkerTransport:
         """Listen only on container loopback and connect to this host-owned proxy."""
         (sandbox.control / "model-bridge.json").write_text(json.dumps({
             "port": 18181, "max_request_bytes": proxy.limits.max_request_bytes,
@@ -288,6 +294,7 @@ class DockerSandbox:
             command, cwd=sandbox.workspace, env=_docker_environment(),
             stderr_path=stderr_path, proxy=proxy,
             startup_timeout_seconds=self.settings.command_timeout_seconds,
+            task_request=task_request,
         )
 
     async def spawn_pi(self, sandbox: SandboxHandle, *, provider: str, model: str,
@@ -303,6 +310,7 @@ class DockerSandbox:
             "--provider", provider, "--model", model,
             "--no-extensions", "--no-skills", "--no-prompt-templates",
             "--no-context-files", "--no-approve",
+            "--extension", "/opt/lenbot/lenbot-extension.ts",
         ]
         rpc: PiRpc | None = None
         try:
@@ -352,6 +360,15 @@ class DockerSandbox:
         """Stop the whole container; keep workspace/home and clear current controls."""
         await self._docker("rm", "-f", sandbox.container_id)
         _clear_control(sandbox.control)
+
+    async def stop_recorded(self, scene: str, task_id: str, container: str) -> None:
+        """Reconcile a stored task container after host interruption."""
+        found = await self._docker("ps", "-aq", "--no-trunc", "--filter", f"name=^/{container}$")
+        if found:
+            await self._docker("rm", "-f", found)
+        control = self.settings.runtime_root / scene / task_id / "control"
+        if control.exists():
+            _clear_control(control)
 
 
 def _clear_control(path: Path) -> None:

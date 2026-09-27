@@ -18,6 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, 
 
 from len_bot.next.model import ModelSettings
 from len_bot.next.pricing import ModelPrice
+from len_bot.next.tasks_config import TaskSettings, WorkerSettings
 from len_bot.next.web_search import WebSearchSettings
 from len_bot.next.memory import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
 
@@ -171,6 +172,7 @@ class Roles(BaseModel):
     voice: Binding
     vision: Binding | None = None
     memory: Binding | None = None
+    worker: Binding | None = None
 
 
 class Models(BaseModel):
@@ -182,7 +184,7 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice", "vision", "memory"):
+        for role in ("mind", "voice", "vision", "memory", "worker"):
             binding = getattr(self.roles, role)
             if binding is None:
                 continue
@@ -467,6 +469,7 @@ class SharedConfig(BaseModel):
     web_read: WebReadSettings | None = None
     web_search: WebSearchSettings | None = None
     memory: MemorySettings | None = None
+    worker: WorkerSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     history_import: HistoryImportSettings | None = None
     history_export: HistoryExportSettings | None = None
@@ -481,6 +484,22 @@ class SharedConfig(BaseModel):
         if (isinstance(self.memory, LocalMemoryConfig) and self.memory.ingest is not None
                 and self.models.roles.memory is None):
             raise ValueError("local memory ingest requires explicit models.roles.memory")
+        if self.worker is not None:
+            binding = self.models.roles.worker
+            if binding is None:
+                raise ValueError("worker requires explicit models.roles.worker")
+            if (self.worker.max_cost is not None
+                    and self.models.prices.get(binding.provider, {}).get(binding.model) is None):
+                raise ValueError(
+                    "worker.max_cost requires models.prices for the exact worker provider and model"
+                )
+            if (self.worker.compaction_reserve_tokens + self.worker.compaction_keep_recent_tokens
+                    >= binding.context_window_tokens):
+                raise ValueError(
+                    "worker.compaction_reserve_tokens + worker.compaction_keep_recent_tokens "
+                    "must be less than models.roles.worker.context_window_tokens; "
+                    "set both limits explicitly for a smaller worker context window"
+                )
         return self
 
     @field_validator("bot_qq")
@@ -532,7 +551,7 @@ class SharedConfig(BaseModel):
                 raise ValueError("history_export.target, history_export.backup and database must differ")
         return self
 
-    def model_settings(self, role: Literal["mind", "voice", "vision", "memory"]) -> ModelSettings:
+    def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
             raise ValueError(f"models.roles.{role} is not configured")
@@ -589,6 +608,7 @@ class SceneSettings(ScenePersona):
     voice_mode: Literal["voice", "direct"] = "voice"
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
+    tasks: TaskSettings = Field(default_factory=TaskSettings)
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
@@ -612,6 +632,11 @@ class LabConfig(SharedConfig, SceneSettings):
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> LabConfig:
         _check_schedule_identity(self.bot_qq, self.schedules)
+        if (self.tasks.owner == self.bot_qq or self.bot_qq in self.tasks.admins
+                or self.bot_qq in self.tasks.whitelist):
+            raise ValueError("tasks owner, admins and whitelist must not include bot_qq")
+        if self.tasks.enabled or self.worker is not None:
+            raise ValueError("worker tasks require the isolated-multi host, not the single-scene lab or replay")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -629,6 +654,7 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("models.roles.vision", self.models.roles.vision is not None),
                     ("history_import", self.history_import is not None),
                     ("history_export", self.history_export is not None),
+                    ("worker", self.worker is not None),
                     ("delivery", self.delivery != "simulated"),
                 ) if enabled
             ]
@@ -663,6 +689,11 @@ class HostConfig(SharedConfig):
                 _check_schedule_identity(self.bot_qq, settings.schedules)
             except ValueError as error:
                 raise ValueError(f"scenes.{scene}: {error}") from error
+            if (settings.tasks.owner == self.bot_qq or self.bot_qq in settings.tasks.admins
+                    or self.bot_qq in settings.tasks.whitelist):
+                raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
+            if settings.tasks.enabled and self.worker is None:
+                raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
         if self.history_import is not None:
             unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
             if unknown:
@@ -744,6 +775,20 @@ def _resolve_memory_path(root: Path, source: dict) -> None:
         )
 
 
+def _resolve_worker_paths(root: Path, source: dict) -> None:
+    worker = source.get("worker")
+    if not isinstance(worker, dict):
+        return
+    binary = worker.get("docker_binary")
+    if not isinstance(binary, str) or not Path(binary).is_absolute():
+        raise ValueError("worker.docker_binary must be an explicit absolute path string")
+    worker["docker_binary"] = Path(binary).resolve()
+    for name in ("workspace_root", "runtime_root", "delivery_root"):
+        worker[name] = _resolved_path(
+            root, worker.get(name), within_root=True, field=f"worker.{name}",
+        )
+
+
 def _load_lab_source(path: Path, source: dict) -> LabConfig:
     root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
@@ -767,6 +812,7 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
                 )
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
+    _resolve_worker_paths(root, source)
     try:
         return LabConfig.model_validate(source)
     except ValidationError as error:
@@ -791,6 +837,7 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                 )
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
+    _resolve_worker_paths(root, source)
     try:
         return HostConfig.model_validate(source)
     except ValidationError as error:

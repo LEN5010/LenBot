@@ -313,6 +313,8 @@ class SceneRunner:
 
     def schedule_deadline(self, now: float) -> float | None:
         due_at = self.store.next_schedule_at(self.config.scene)
+        if self.chat.tasks is not None and self.chat.tasks.records.pending_notices(self.config.scene):
+            due_at = now if due_at is None else min(now, due_at)
         if due_at is None:
             return None
         period = quiet_period(self.settings.quiet_hours, self.config.timezone, max(now, due_at))
@@ -329,7 +331,9 @@ class SceneRunner:
             self.clear_quiet_wake(state, now, period)
             self.save_state(state)
             scheduled = self.due_schedules(now) if period is None else []
-            if scheduled:
+            task_notice = (period is None and self.chat.tasks is not None
+                           and self.chat.tasks.records.pending_notices(self.config.scene))
+            if scheduled or task_notice:
                 return self.store.pending_messages(self.config.scene), None, scheduled
             notice_until = None
             resuming = self.resume and not in_turn
@@ -428,6 +432,11 @@ class SceneRunner:
                 self.chat.direct_request = True
         if scheduled:
             self.store.append_schedules(self.config.scene, scheduled, turn_id=turn_id)
+        if self.chat.tasks is not None and quiet_period(
+                self.settings.quiet_hours, self.config.timezone, self.now()) is None:
+            notices = self.chat.tasks.records.pending_notices(self.config.scene)
+            if notices:
+                self.store.append_task_notices(self.config.scene, notices, turn_id=turn_id)
         self.state = state
         return True
 
@@ -482,7 +491,10 @@ class SceneRunner:
                 if notice_until is not None:
                     await self.quiet_notice(pending, notice_until)
                     continue
-                channel = "system" if scheduled else self.state.pending.channel if self.state.pending else "resume"
+                notices = (self.chat.tasks.records.pending_notices(self.config.scene)
+                           if self.chat.tasks is not None and quiet_period(
+                               self.settings.quiet_hours, self.config.timezone, self.now()) is None else [])
+                channel = "system" if scheduled or notices else self.state.pending.channel if self.state.pending else "resume"
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
                 direct = self.state.pending is not None and self.state.pending.channel == "direct"
@@ -494,6 +506,7 @@ class SceneRunner:
                 result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
                                                   wait_for_messages=self.wait_for_messages,
                                                   attention_state=asdict(state), scheduled=scheduled,
+                                                  task_notices=notices,
                                                   direct=direct, wake_received_at=wake_received_at)
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)

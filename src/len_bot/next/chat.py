@@ -34,6 +34,8 @@ from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import ImageAsset, Store, encode
+from .tasks import WorkTasks
+from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
 
@@ -75,7 +77,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
         **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
     }}
     return [say, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
-            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, TOOL_SEARCH]
+            *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL, TOOL_SEARCH]
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -92,6 +94,10 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
         reasons.append("尚未配置视觉模型")
     if name == "schedule" and not config.schedules.enabled:
         reasons.append("当前场景未开启一次性安排")
+    if name in {"delegate", "task"} and config.worker is None:
+        reasons.append("尚未配置任务容器与 worker 模型")
+    if name == "delegate" and not config.tasks.enabled:
+        reasons.append("当前场景未开放委托任务")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色包没有 knowledge/ 资料")
     return reasons
@@ -99,7 +105,7 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
 
 def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
     if persona.tools != "all":
-        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory"):
+        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory", "delegate", "task"):
             if name in persona.tools:
                 reasons = tool_unavailable_reasons(config, persona, name)
                 if reasons:
@@ -109,6 +115,8 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
     names = {tool["function"]["name"] for tool in allowed}
     if "schedule" in names and not {"schedule_list", "schedule_cancel"} <= names:
         raise ValueError("角色开放 schedule 时必须同时开放 schedule_list 和 schedule_cancel")
+    if "delegate" in names and "task" not in names:
+        raise ValueError("角色开放 delegate 时必须同时开放 task 管理工具")
     if names & DEFERRED_NAMES and "tool_search" not in names:
         raise ValueError("角色开放低频工具时必须同时开放 tool_search")
     return allowed
@@ -159,6 +167,8 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         )
     elif config.memory is not None and config.memory.auto_recall:
         system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
+    if "task" in names:
+        system += "\n" + (PROMPTS / "next_tasks.md").read_text()
     if "tool_search" in names:
         system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
             catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
@@ -171,6 +181,7 @@ class Chat:
                  mind: ChatModel, voice: ChatModel, *,
                  vision: ChatModel | None = None,
                  memory: MemoryService | None = None,
+                 tasks: WorkTasks | None = None,
                  slots: ModelSlots | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
                  on_update: Callable[[], None] | None = None,
@@ -182,6 +193,9 @@ class Chat:
         if (config.memory is None) != (memory is None):
             raise ValueError("memory 服务必须与根配置的记忆后端一起提供")
         self.memory = memory
+        if (config.worker is None) != (tasks is None):
+            raise ValueError("任务服务必须与根配置的 worker 一起提供")
+        self.tasks = tasks
         self.slots = slots
         self.direct_request = False
         self.send_text = send_text
@@ -464,6 +478,8 @@ class Chat:
                                             WebSearchArguments.model_validate(call.arguments)), None, None
         if call.name == "memory":
             return await self.memory.execute(self.config.scene, call.arguments), None, None
+        if call.name in {"delegate", "task"}:
+            return await execute_tasks(self.tasks, self.config.scene, call.name, call.arguments), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
         if call.name == "look":
@@ -478,11 +494,13 @@ class Chat:
                        append_new: Callable[[bool, str], Awaitable[bool]],
                        wait_for_messages: Callable[[float], Awaitable[str]],
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
+                       task_notices: list[tuple[int, str]] | None = None,
                        direct: bool = False, wake_received_at: float | None = None) -> dict:
         self.direct_request = direct
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
-                                       scheduled=scheduled, wake_received_at=wake_received_at)
+                                       scheduled=scheduled, task_notices=task_notices,
+                                       wake_received_at=wake_received_at)
         self.notify()
         expressions: list[str] = []
         extensions = 0

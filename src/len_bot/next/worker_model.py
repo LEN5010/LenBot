@@ -239,11 +239,14 @@ class WorkerModelProxy:
             raise WorkerModelError("forwarded worker model request exceeds max_request_bytes")
         return outgoing, wire, text_estimate, image_tokens_unknown
 
-    @asynccontextmanager
-    async def open(self, token: str, payload_bytes: bytes) -> AsyncIterator[WorkerResponse]:
+    def authorize(self, token: str) -> None:
         if (not self._entered or self._closed
                 or not hmac.compare_digest(token.encode("utf-8"), self._token.encode("utf-8"))):
             raise WorkerModelError("worker model task token is invalid or expired")
+
+    @asynccontextmanager
+    async def open(self, token: str, payload_bytes: bytes) -> AsyncIterator[WorkerResponse]:
+        self.authorize(token)
         if self._busy:
             raise WorkerModelError("worker model proxy already has an active call")
         if self._calls >= self.limits.max_calls:

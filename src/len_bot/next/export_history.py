@@ -17,7 +17,7 @@ from len_bot.scenes.reducer import SceneReducer
 from .config import HostConfig, LabConfig, load_instance_config
 from .messages import ChatMessage, Segment, Sender
 from .rollback_messages import convert_next_message
-from .store import encode
+from .store import FORMAT_VERSION, encode
 
 
 EVENT_COLUMNS = ("id", "event_type", "scene_id", "actor_id", "timestamp", "payload", "metadata")
@@ -153,8 +153,8 @@ def export_history(config: LabConfig | HostConfig) -> dict:
     with closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as new:
         new.row_factory = sqlite3.Row
         if (new.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or new.execute("PRAGMA user_version").fetchone()[0] != 13):
-            raise ValueError(f"History export requires current next-core database format 13: {source}")
+                or new.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION):
+            raise ValueError(f"History export requires current next-core database format {FORMAT_VERSION}: {source}")
         with closing(sqlite3.connect(target.as_uri() + "?mode=rw", uri=True)) as old:
             old.row_factory = sqlite3.Row
             tables = {row[0] for row in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -211,15 +211,16 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                     report["send_states"] = dict(report["send_states"])
                     report["retained_new_data"] = {
                         "schedules": dict(new.execute("SELECT status,COUNT(*) FROM schedules WHERE scene=? GROUP BY status", (scene,))),
+                        "work_tasks": dict(new.execute("SELECT status,COUNT(*) FROM tasks WHERE scene=? GROUP BY status", (scene,))),
                         **{table: new.execute(f"SELECT COUNT(*) FROM {table} WHERE scene=?", (scene,)).fetchone()[0]
-                           for table in ("web_documents", "image_cache")},
+                           for table in ("web_documents", "image_cache", "task_files")},
                     }
                     report["legacy_open_tasks"] = dict(old.execute(
                         "SELECT status,COUNT(*) FROM tasks WHERE scene_id=? "
                         "AND status IN ('pending','claimed','processing','review_required') GROUP BY status", (scene,),
                     ))
     return {"source": str(source), "target": str(target), "backup": str(backup), "scenes": reports,
-            "not_restored": ["mind history and model calls", "schedules", "media assets and image cache", "web documents", "background ownership"]}
+            "not_restored": ["mind history and model calls", "schedules", "media assets and image cache", "web documents", "work tasks and copied deliverables", "background ownership"]}
 
 
 def main() -> None:

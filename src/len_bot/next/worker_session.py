@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
@@ -49,7 +49,8 @@ def _write_json(path: Path, body: dict[str, Any]) -> None:
 
 def _configure_pi(handle: SandboxHandle, *, token: str, port: int,
                   settings: ModelSettings, context_window_tokens: int,
-                  model_reasoning: bool, input_support: Literal["text", "text-image"]) -> None:
+                  model_reasoning: bool, input_support: Literal["text", "text-image"],
+                  compaction_reserve_tokens: int, compaction_keep_recent_tokens: int) -> None:
     agent_dir = handle.home / ".pi" / "agent"
     # Stored credentials outrank models.json in Pi. A retained task home may
     # contain old credentials, but this run has exactly one newly issued token.
@@ -86,7 +87,8 @@ def _configure_pi(handle: SandboxHandle, *, token: str, port: int,
         "enabledModels": [f"{_PI_PROVIDER}/{settings.model}"],
         "defaultThinkingLevel": "off",
         "retry": {"enabled": False, "provider": {"maxRetries": 0}},
-        "compaction": {"enabled": False},
+        "compaction": {"enabled": True, "reserveTokens": compaction_reserve_tokens,
+                       "keepRecentTokens": compaction_keep_recent_tokens},
         "cacheWarming": "off",
         "packages": [],
         "extensions": [],
@@ -134,10 +136,14 @@ async def worker_session(
     price: ModelPrice | None,
     limits: Limits,
     model_reasoning: bool,
+    compaction_reserve_tokens: int,
+    compaction_keep_recent_tokens: int,
     start_call: Callable[[dict[str, Any]], int],
     finish_call: Callable[[int, dict[str, Any]], None],
     input_support: Literal["text", "text-image"] = "text",
     slots: ModelSlots | None = None,
+    on_container: Callable[[str], None] | None = None,
+    task_request: Callable[[str, bytes], Awaitable[dict]] | None = None,
 ) -> AsyncIterator[WorkerSession]:
     """Start one network-isolated task with host-mediated model access.
 
@@ -156,14 +162,21 @@ async def worker_session(
     original: BaseException | None = None
     try:
         await proxy.__aenter__()
-        handle = await sandbox.ensure(scene, task_id)
+        handle = await sandbox.ensure(scene, task_id, on_container=on_container)
+        _write_json(handle.control / "task-api.json", {
+            "base_url": "http://127.0.0.1:18181", "token": token,
+            "timeout_seconds": sandbox.settings.command_timeout_seconds,
+        })
         bridge = await sandbox.spawn_model_bridge(
-            handle, proxy=proxy, stderr_path=handle.workspace / "model-bridge.stderr"
+            handle, proxy=proxy, stderr_path=handle.workspace / "model-bridge.stderr",
+            task_request=task_request,
         )
         _configure_pi(
             handle, token=token, port=bridge.port, settings=settings,
             context_window_tokens=context_window_tokens,
             model_reasoning=model_reasoning, input_support=input_support,
+            compaction_reserve_tokens=compaction_reserve_tokens,
+            compaction_keep_recent_tokens=compaction_keep_recent_tokens,
         )
         pi = await sandbox.spawn_pi(
             handle, provider=_PI_PROVIDER, model=settings.model,

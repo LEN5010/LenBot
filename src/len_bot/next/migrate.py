@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 13."""
+"""Explicit offline upgrade of an isolated next-core database to format 14."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 
 from .config import load_instance_config
 from .messages import plain_text
-from .store import Store, encode
+from .store import FORMAT_VERSION, Store, encode
 
 
 APPLICATION_ID = 0x4C424E31
@@ -127,6 +127,39 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("ALTER TABLE turns ADD COLUMN first_expression_delivery TEXT")
         elif version == 12:
             db.execute("ALTER TABLE model_calls ADD COLUMN cost TEXT")
+        elif version == 13:
+            db.execute(
+                "CREATE TABLE tasks ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,"
+                "goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,"
+                "input TEXT NOT NULL,"
+                "status TEXT NOT NULL CHECK(status IN "
+                "('queued','running','waiting_input','done','failed','cancelled')),"
+                "created REAL NOT NULL, started REAL, ended REAL,"
+                "container TEXT, question TEXT, summary TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX tasks_scene_status ON tasks(scene,status,id)")
+            db.execute("CREATE INDEX tasks_status ON tasks(status,id)")
+            db.execute("CREATE INDEX tasks_containers ON tasks(id) WHERE container IS NOT NULL")
+            db.execute("CREATE INDEX tasks_requester_created ON tasks(scene,requester,created)")
+            db.execute(
+                "CREATE TABLE task_events ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,"
+                "kind TEXT NOT NULL, body TEXT NOT NULL, notice TEXT,"
+                "created REAL NOT NULL, delivered_at REAL)"
+            )
+            db.execute("CREATE INDEX task_events_task ON task_events(scene,task_id,id)")
+            db.execute(
+                "CREATE INDEX task_events_pending_notice ON task_events(scene,id) "
+                "WHERE notice IS NOT NULL AND delivered_at IS NULL"
+            )
+            db.execute(
+                "CREATE TABLE task_files ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,"
+                "name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,"
+                "note TEXT, created REAL NOT NULL)"
+            )
+            db.execute("CREATE INDEX task_files_task ON task_files(scene,task_id,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -135,21 +168,21 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
 
 
 def migrate_database(path: Path) -> Path:
-    """Upgrade format 1 through 12 while retaining a copy of each step."""
+    """Upgrade format 1 through 13 while retaining a copy of each step."""
     path = Path(path).resolve()
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)) as db:
         application_id, version = _format(db)
-        if application_id != APPLICATION_ID or version not in range(1, 13):
+        if application_id != APPLICATION_ID or version not in range(1, FORMAT_VERSION):
             raise ValueError(
-                f"Expected a next-core format 1 through 12 database: {path}; "
+                f"Expected a next-core format 1 through 13 database: {path}; "
                 f"found app={application_id}, version={version}"
             )
-        for step in range(version, 13):
+        for step in range(version, FORMAT_VERSION):
             backup = path.with_name(path.name + f".v{step}.bak")
             if backup.exists():
                 raise FileExistsError(f"Migration backup already exists: {backup}")
         original_backup = path.with_name(path.name + f".v{version}.bak")
-        for step in range(version, 13):
+        for step in range(version, FORMAT_VERSION):
             _upgrade_one_step(db, path, step)
     return original_backup
 

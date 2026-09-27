@@ -15,6 +15,9 @@ from .messages import ChatMessage, Segment, Sender, plain_text
 from .pricing import cost_summary
 
 
+FORMAT_VERSION = 14
+
+
 def encode(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
@@ -75,18 +78,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in range(1, 13):
+                if application_id == 0x4C424E31 and version in range(1, FORMAT_VERSION):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 13:
+                if application_id != 0x4C424E31 or version != FORMAT_VERSION:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
-                self.db.executescript("""
+                self.db.executescript(f"""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 13;
+                    PRAGMA user_version = {FORMAT_VERSION};
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -129,6 +132,33 @@ class Store:
                         status TEXT NOT NULL, delivered_at REAL, reason TEXT
                     );
                     CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
+                    CREATE TABLE tasks (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,
+                        goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,
+                        input TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN
+                            ('queued','running','waiting_input','done','failed','cancelled')),
+                        created REAL NOT NULL, started REAL, ended REAL,
+                        container TEXT, question TEXT, summary TEXT, error TEXT
+                    );
+                    CREATE INDEX tasks_scene_status ON tasks(scene,status,id);
+                    CREATE INDEX tasks_status ON tasks(status,id);
+                    CREATE INDEX tasks_containers ON tasks(id) WHERE container IS NOT NULL;
+                    CREATE INDEX tasks_requester_created ON tasks(scene,requester,created);
+                    CREATE TABLE task_events (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
+                        kind TEXT NOT NULL, body TEXT NOT NULL, notice TEXT,
+                        created REAL NOT NULL, delivered_at REAL
+                    );
+                    CREATE INDEX task_events_task ON task_events(scene,task_id,id);
+                    CREATE INDEX task_events_pending_notice ON task_events(scene,id)
+                        WHERE notice IS NOT NULL AND delivered_at IS NULL;
+                    CREATE TABLE task_files (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, task_id INTEGER NOT NULL,
+                        name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,
+                        note TEXT, created REAL NOT NULL
+                    );
+                    CREATE INDEX task_files_task ON task_files(scene,task_id,id);
                     CREATE TABLE web_documents (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL
                     );
@@ -850,6 +880,7 @@ class Store:
     def start_turn(self, scene: str, *, batch: tuple[int, list[str]] | None = None,
                    attention_state: dict | None = None,
                    scheduled: list[tuple[int, str]] | None = None,
+                   task_notices: list[tuple[int, str]] | None = None,
                    wake_received_at: float | None = None) -> str:
         turn_id = str(uuid4())
         with self.db:
@@ -864,6 +895,8 @@ class Store:
                 self._append_batch(scene, batch[0], batch[1])
             if scheduled is not None:
                 self._append_schedules(scene, scheduled)
+            if task_notices is not None:
+                self._append_task_notices(scene, task_notices)
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
         return turn_id
@@ -889,6 +922,28 @@ class Store:
             if updated.rowcount != 1:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
             self._append_schedules(scene, scheduled)
+
+    def _append_task_notices(self, scene: str, notices: list[tuple[int, str]]) -> None:
+        for event_id, content in notices:
+            self._append(scene, {"role": "user", "content": content})
+            updated = self.db.execute(
+                "UPDATE task_events SET delivered_at=? WHERE scene=? AND id=? "
+                "AND notice IS NOT NULL AND delivered_at IS NULL",
+                (self.now(), scene, event_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"Scene {scene} task notice {event_id} is not pending")
+
+    def append_task_notices(self, scene: str, notices: list[tuple[int, str]], *,
+                            turn_id: str) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE turns SET status='queued' WHERE id=? AND scene=? AND ended IS NULL",
+                (turn_id, scene),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"No active turn {turn_id} in scene {scene}")
+            self._append_task_notices(scene, notices)
 
     def end_turn(self, turn_id: str, status: str, error: str | None = None,
                  *, attention_state: dict | None = None) -> bool:
