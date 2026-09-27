@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import json
+import os
 from pathlib import Path
 from typing import Mapping
 
@@ -17,11 +19,13 @@ class WorkerTransportError(RuntimeError):
 
 class WorkerTransport:
     def __init__(self, process: asyncio.subprocess.Process, *, proxy: WorkerModelProxy,
-                 stderr_file, port: int):
+                 stderr_file, port: int,
+                 task_request: Callable[[str, bytes], Awaitable[dict]] | None):
         self.process = process
         self.proxy = proxy
         self.stderr_file = stderr_file
         self.port = port
+        self.task_request = task_request
         self._closing = False
         self._failure: asyncio.Future[BaseException] = asyncio.get_running_loop().create_future()
         self._serving: asyncio.Task | None = None
@@ -30,8 +34,10 @@ class WorkerTransport:
     @classmethod
     async def spawn(cls, argv: list[str], *, cwd: Path, env: Mapping[str, str],
                     stderr_path: Path, proxy: WorkerModelProxy,
-                    startup_timeout_seconds: float) -> WorkerTransport:
-        stderr_file = stderr_path.open("ab")
+                    startup_timeout_seconds: float,
+                    task_request: Callable[[str, bytes], Awaitable[dict]] | None = None) -> WorkerTransport:
+        stderr_file = os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                                       0o600), "ab")
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=dict(env), stdin=asyncio.subprocess.PIPE,
@@ -40,7 +46,8 @@ class WorkerTransport:
         except BaseException:
             stderr_file.close()
             raise
-        transport = cls(process, proxy=proxy, stderr_file=stderr_file, port=0)
+        transport = cls(process, proxy=proxy, stderr_file=stderr_file, port=0,
+                        task_request=task_request)
         try:
             async with asyncio.timeout(startup_timeout_seconds):
                 kind, data = await transport._read_frame(MAX_METADATA_BYTES)
@@ -58,6 +65,15 @@ class WorkerTransport:
                 await transport.close()
             except BaseException as cleanup_error:
                 error.add_note(f"Worker bridge cleanup also failed: {cleanup_error}")
+            try:
+                with stderr_path.open("rb") as diagnostic:
+                    diagnostic.seek(0, 2)
+                    diagnostic.seek(max(0, diagnostic.tell() - 4000))
+                    tail = diagnostic.read().decode("utf-8", errors="replace")
+                if tail:
+                    error.add_note(f"Worker bridge stderr (last 4000 bytes): {tail}")
+            except OSError as diagnostic_error:
+                error.add_note(f"Reading worker bridge stderr also failed: {diagnostic_error}")
             raise
 
     async def _read_frame(self, limit: int) -> tuple[bytes, bytes]:
@@ -94,8 +110,10 @@ class WorkerTransport:
                 kind, data = await self._read_frame(MAX_METADATA_BYTES)
                 request = json.loads(data)
                 if (kind != b"Q" or not isinstance(request, dict)
-                        or set(request) != {"token", "body_bytes"}
+                        or set(request) != {"token", "path", "body_bytes"}
                         or not isinstance(request["token"], str)
+                        or not isinstance(request["path"], str)
+                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file"}
                         or type(request["body_bytes"]) is not int
                         or not 0 < request["body_bytes"] <= self.proxy.limits.max_request_bytes):
                     raise WorkerTransportError(f"invalid worker request frame {kind!r}: {data[:500]!r}")
@@ -103,6 +121,19 @@ class WorkerTransport:
                 if kind != b"B" or len(body) != request["body_bytes"]:
                     raise WorkerTransportError(f"invalid worker body frame {kind!r}: {body[:500]!r}")
                 try:
+                    if request["path"] == "/task/deliver-file":
+                        self.proxy.authorize(request["token"])
+                        if self.task_request is None:
+                            raise WorkerTransportError("Task file delivery is not configured")
+                        result = await self.task_request(request["path"], body)
+                        content = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+                        await self._write_frame(b"H", json.dumps({
+                            "status": 200, "headers": {"content-type": "application/json"},
+                        }).encode())
+                        for offset in range(0, len(content), CHUNK_BYTES):
+                            await self._write_frame(b"D", content[offset:offset + CHUNK_BYTES])
+                        await self._write_frame(b"E")
+                        continue
                     async with self.proxy.open(request["token"], body) as response:
                         headers = {name.lower(): value for name, value in response.headers.items()
                                    if name.lower() == "content-type"}

@@ -16,6 +16,8 @@ from .memory_ingest import open_memory_ingestor
 from .network import NetworkRuntime
 from .persona import load_persona
 from .store import Store
+from .tasks import WorkTasks
+from .tasks_store import TaskStore
 
 
 class HostPanelServer(uvicorn.Server):
@@ -67,6 +69,8 @@ async def run() -> None:
               for scene, settings in config.scenes.items()]
     slots = ModelSlots(config.max_model_requests)
     with Store(config.database) as store:
+        if config.worker is None and TaskStore(store).containers():
+            raise ValueError("仍有未清理的任务容器；保留原 worker 配置完成清理后再停用任务执行器")
         async with (
             ChatModel(config.model_settings("mind")) as mind,
             ChatModel(config.model_settings("voice")) as voice,
@@ -75,8 +79,15 @@ async def run() -> None:
             open_memory(config, store) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
+            def task_update(scene: str) -> None:
+                runner = runtime.runners.get(scene)
+                if runner is not None:
+                    runner.changed.set()
+                runtime.notify()
+
+            tasks = (WorkTasks(config, store, slots, task_update) if config.worker is not None else None)
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
-                                     memory=memory, ingestor=ingestor)
+                                     memory=memory, ingestor=ingestor, tasks=tasks)
             if config.panel is None:
                 await runtime.run()
             else:

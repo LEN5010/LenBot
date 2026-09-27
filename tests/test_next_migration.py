@@ -76,7 +76,7 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
 
     original_backup = migrate_database(path)
     assert original_backup == tmp_path / f"isolated.sqlite3.v{format_number}.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(original_backup) == (0x4C424E31, format_number)
     for intermediate_format in range(format_number + 1, 13):
         assert _version(tmp_path / f"isolated.sqlite3.v{intermediate_format}.bak") == (
@@ -247,7 +247,7 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v7.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 7)
     assert _version(tmp_path / "isolated.sqlite3.v8.bak") == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
@@ -301,7 +301,7 @@ def test_v8_web_documents_upgrade_preserves_all_existing_records(tmp_path: Path)
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v8.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
@@ -336,7 +336,7 @@ def test_v9_image_cache_upgrade_preserves_synthetic_web_and_chat_records(tmp_pat
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v9.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -396,7 +396,7 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v10.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 10)
     assert _rows(path) == before == _rows(backup)
     assert _version(tmp_path / "isolated.sqlite3.v11.bak") == (0x4C424E31, 11)
@@ -451,7 +451,7 @@ def test_v11_first_expression_upgrade_preserves_synthetic_records_and_rowids(tmp
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v11.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 11)
     assert _rows(path) == before == _rows(backup)
     assert _version(tmp_path / "isolated.sqlite3.v12.bak") == (0x4C424E31, 12)
@@ -495,7 +495,7 @@ def test_v12_cost_upgrade_keeps_existing_latency_and_call_facts(tmp_path: Path) 
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v12.bak"
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
     assert _version(backup) == (0x4C424E31, 12)
     assert _rows(path) == before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -607,19 +607,40 @@ def test_migration_refuses_existing_backup_before_any_step(tmp_path: Path) -> No
     assert _rows(path) == before
 
 
+def test_work_task_upgrade_preserves_format_13_rows(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    shutil.copyfile(FIXTURES / "v12-synthetic.sqlite3", path)
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE model_calls ADD COLUMN cost TEXT")
+        db.execute("UPDATE model_calls SET cost=?", ('{"currency":"CNY","amount":"0.123"}',))
+        db.execute("PRAGMA user_version=13")
+        calls_before = db.execute("SELECT rowid,* FROM model_calls ORDER BY rowid").fetchall()
+    before = _rows(path)
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v13.bak"
+    assert _version(backup) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
+    assert _rows(path) == before == _rows(backup)
+    with Store(path) as store:
+        assert [tuple(row) for row in store.db.execute(
+            "SELECT rowid,* FROM model_calls ORDER BY rowid")] == calls_before
+        for table in ("tasks", "task_events", "task_files"):
+            assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_migration_rejects_current_and_wrong_database(tmp_path: Path) -> None:
     path = tmp_path / "isolated.sqlite3"
     shutil.copyfile(FIXTURES / "v2-synthetic.sqlite3", path)
     migrate_database(path)
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 12 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 13 database"):
         migrate_database(path)
-    assert _version(path) == (0x4C424E31, 13)
+    assert _version(path) == (0x4C424E31, 14)
 
     unrelated = tmp_path / "unrelated.sqlite3"
     with sqlite3.connect(unrelated) as db:
         db.execute("CREATE TABLE other (value TEXT)")
         db.execute("INSERT INTO other VALUES ('untouched')")
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 12 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 13 database"):
         migrate_database(unrelated)
     assert not unrelated.with_name(unrelated.name + ".v1.bak").exists()
     with sqlite3.connect(unrelated) as db:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -144,7 +145,8 @@ class PiRpc:
         """Start the already-chosen Pi or container command; never choose a model here."""
         if max_frame_bytes <= 0:
             raise ValueError("max_frame_bytes must be positive")
-        stderr_file = stderr_path.open("ab")
+        stderr_file = os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                                       0o600), "ab")
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=dict(env), stdin=asyncio.subprocess.PIPE,

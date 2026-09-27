@@ -493,7 +493,7 @@ async def test_export_requires_current_format_without_modifying_legacy_target(tm
     with closing(sqlite3.connect(new_path)) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 12
 
-    with pytest.raises(ValueError, match="requires current next-core database format 13"):
+    with pytest.raises(ValueError, match="requires current next-core database format 14"):
         export_history(load_instance_config(tmp_path))
 
     assert new_path.read_bytes() == source_before

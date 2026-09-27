@@ -16,7 +16,7 @@ from .context import complete_boundaries, estimate_request, project_history, rec
 from .discovery import DEFERRED_NAMES
 from .persona import Persona, load_persona
 from .schedule import describe
-from .store import Store, encode
+from .store import FORMAT_VERSION, Store, encode
 
 
 def _binding(config: HostConfig) -> tuple[str, str, str]:
@@ -106,7 +106,7 @@ def convert(config: HostConfig) -> dict:
             raise ValueError(f"Database has a nonempty {suffix} file; stop the host and use a complete snapshot: {path}")
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as check:
         if (check.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or check.execute("PRAGMA user_version").fetchone()[0] != 13):
+                or check.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION):
             raise ValueError(f"Not a current next-core database: {path}")
 
     personas = {settings.persona: load_persona(settings.persona)

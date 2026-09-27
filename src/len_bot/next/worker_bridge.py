@@ -103,7 +103,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self.close_connection = True
-        if self.path != "/v1/chat/completions":
+        if self.path not in {"/v1/chat/completions", "/task/deliver-file"}:
             self._error(404, f"unsupported worker route: {self.path}")
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -119,7 +119,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if len(authorizations) != 1 or not authorizations[0].startswith("Bearer "):
             self._error(401, "worker request needs one Bearer task token")
             return
-        metadata = json.dumps({"token": authorizations[0][7:], "body_bytes": length}).encode()
+        metadata = json.dumps({"token": authorizations[0][7:], "path": self.path,
+                               "body_bytes": length}).encode()
         if len(metadata) > MAX_METADATA_BYTES:
             self._error(431, "worker authorization header is too large")
             return
