@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
 import time
@@ -55,11 +55,12 @@ class TestMessage(BaseModel):
 
 
 class PanelSession:
-    def __init__(self, config: LabConfig, store: Store, mind: ChatModel, voice: ChatModel):
+    def __init__(self, config: LabConfig, store: Store, mind: ChatModel, voice: ChatModel,
+                 *, vision: ChatModel | None = None):
         self.config, self.store = config, store
         self.listeners: set[asyncio.Event] = set()
         self.closing = False
-        self.chat = Chat(config, load_persona(config.persona), store, mind, voice, on_update=self.notify)
+        self.chat = Chat(config, load_persona(config.persona), store, mind, voice, vision=vision, on_update=self.notify)
         self.runner = SceneRunner(self.chat, lambda _: self.notify(), resume=self.chat.restore())
         self.task = asyncio.create_task(self.runner.run())
         self.task.add_done_callback(lambda _: self.notify())
@@ -127,8 +128,13 @@ def create_app(config: LabConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         with Store(config.database) as store:
-            async with ChatModel(config.model_settings("mind")) as mind, ChatModel(config.model_settings("voice")) as voice:
-                session = PanelSession(config, store, mind, voice)
+            async with (
+                ChatModel(config.model_settings("mind")) as mind,
+                ChatModel(config.model_settings("voice")) as voice,
+                (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
+                 else nullcontext(None)) as vision,
+            ):
+                session = PanelSession(config, store, mind, voice, vision=vision)
                 app.state.session = session
                 try:
                     yield

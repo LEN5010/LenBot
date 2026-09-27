@@ -366,8 +366,12 @@ class SceneRunner:
                 pass  # The known burst/cooldown deadline has arrived.
 
     def batch(self, pending: list[tuple[int, ChatMessage, float]], reason: str) -> tuple[int, list[str]]:
-        contents = [self.chat.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
-                    for _, message, _ in pending]
+        contents = []
+        for _, message, _ in pending:
+            content = self.chat.render(message) + f"（平台消息 ID：{message.platform_message_id}）"
+            if message.reply_to is not None:
+                content += f"（回复平台消息 ID：{message.reply_to}）"
+            contents.append(content)
         contents[0] = reason + "\n" + contents[0]
         return pending[-1][0], contents
 

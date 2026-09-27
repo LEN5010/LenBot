@@ -11,6 +11,7 @@ import os
 import signal
 import stat
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from .chat import Chat
@@ -50,11 +51,16 @@ async def run() -> None:
     config = load_config(Path.cwd())
     persona = load_persona(config.persona)
     with Store(config.database) as store:
-        async with ChatModel(config.model_settings("mind")) as mind, ChatModel(config.model_settings("voice")) as voice:
+        async with (
+            ChatModel(config.model_settings("mind")) as mind,
+            ChatModel(config.model_settings("voice")) as voice,
+            (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
+             else nullcontext(None)) as vision,
+        ):
             if config.onebot is not None:
-                await run_network(config, persona, store, mind, voice)
+                await run_network(config, persona, store, mind, voice, vision=vision)
                 return
-            chat = Chat(config, persona, store, mind, voice)
+            chat = Chat(config, persona, store, mind, voice, vision=vision)
             resume = chat.restore()
             runner = SceneRunner(chat, lambda result: print(encode({"type": "turn", **result}), flush=True), resume=resume)
             async with asyncio.TaskGroup() as tasks:
@@ -70,7 +76,7 @@ async def run() -> None:
 
 
 async def run_network(config: LabConfig, persona: Persona, store: Store,
-                      mind: ChatModel, voice: ChatModel) -> None:
+                      mind: ChatModel, voice: ChatModel, *, vision: ChatModel | None = None) -> None:
     stopped = asyncio.Event()
     accepting = True
 
@@ -112,7 +118,7 @@ async def run_network(config: LabConfig, persona: Persona, store: Store,
                 stopping.cancel()
         return platform.connected
 
-    chat = Chat(config, persona, store, mind, voice,
+    chat = Chat(config, persona, store, mind, voice, vision=vision,
                 send_text=platform.send_text if config.delivery == "onebot" else None)
     runner = SceneRunner(chat, lambda result: emit({"type": "turn", **result}),
                          resume=chat.restore(), ready_for_turn=ready)

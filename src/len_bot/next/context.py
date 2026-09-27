@@ -25,6 +25,16 @@ def estimate_content(content: str) -> int:
     return ceil((len(encode(content).encode("utf-8")) - 2) / 3)
 
 
+def estimate_text_request(messages: list[dict], tools: list[dict], output_tokens: int) -> int:
+    """Estimate text only; image token cost remains unknown, not base64 text length."""
+    text_messages = [
+        {**message, "content": [block for block in message["content"] if block["type"] != "image_url"]}
+        if isinstance(message["content"], list) else message
+        for message in messages
+    ]
+    return estimate_request(text_messages, tools, output_tokens)
+
+
 def project_history(recap: str | None, entries: list[Entry]) -> list[dict]:
     messages = [] if recap is None else [{"role": "user", "content": recap}]
     return messages + [message for _, message in entries]

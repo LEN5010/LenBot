@@ -3,32 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
-import socket
 import sys
 import time
 from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from string import Template
-from urllib.parse import urljoin, urlsplit, urlunsplit
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from len_bot.services.worker_gateway.egress_policy import blocked_address_reason
 from len_bot.tools.pdf_reader import read_pdf
 
 from .config import WebReadSettings
+from .http_read import fetch_public
 from .store import Store, WebPage
 
 
 PAGE_CHARS = 4000
 TEXT_BYTES = 2_000_000
 PDF_BYTES = 10_000_000
-MAX_REDIRECTS = 5
-ERROR_BYTES = 2048
 PROMPT = Path(__file__).resolve().parents[1] / "prompts" / "next_web_read.md"
 
 
@@ -59,104 +53,8 @@ WEB_READ_TOOL = {"type": "function", "function": {
 }}
 
 
-def _target(url: str) -> tuple[str, str, int, str, str]:
-    if any(character.isspace() or ord(character) < 32 for character in url):
-        raise ValueError("web_read URL contains whitespace or control characters")
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.netloc or parts.hostname is None:
-        raise ValueError(f"web_read requires a complete HTTP(S) URL: {url[:200]}")
-    if parts.username is not None or parts.password is not None:
-        raise ValueError("web_read URL must not contain credentials")
-    host = parts.hostname
-    if "%" in host:
-        raise ValueError("web_read URL must not contain an address scope identifier")
-    port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
-    if port == 0:
-        raise ValueError("web_read URL port must be 1..65535")
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        ascii_host = host.encode("idna").decode("ascii")
-    else:
-        ascii_host = str(address)
-    host_header = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
-    if parts.port is not None:
-        host_header += f":{port}"
-    clean_url = urlunsplit((parts.scheme, parts.netloc, parts.path or "/", parts.query, ""))
-    return clean_url, ascii_host, port, host_header, parts.scheme
-
-
-async def _numeric_address(host: str, port: int) -> str:
-    try:
-        address = str(ipaddress.ip_address(host))
-    except ValueError:
-        answers = await asyncio.get_running_loop().getaddrinfo(
-            host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP,
-        )
-        if not answers:
-            raise OSError(f"web_read DNS returned no address for {host}")
-        address = answers[0][4][0]
-    reason = blocked_address_reason(address)
-    if reason is not None:
-        raise ValueError(f"web_read destination {address} blocked: {reason}")
-    return address
-
-
-async def _error_fragment(response: httpx.Response) -> str:
-    fragment = bytearray()
-    async for chunk in response.aiter_bytes(chunk_size=512):
-        fragment.extend(chunk[: ERROR_BYTES - len(fragment)])
-        if len(fragment) == ERROR_BYTES:
-            break
-    return fragment.decode("utf-8", errors="replace")
-
-
-async def _download(url: str, timeout_seconds: float) -> tuple[str, str, bytes]:
-    current = url
-    for redirect in range(MAX_REDIRECTS + 1):
-        current, host, port, host_header, scheme = _target(current)
-        address = await _numeric_address(host, port)
-        numeric_host = f"[{address}]" if ":" in address else address
-        authority = numeric_host if port == (443 if scheme == "https" else 80) else f"{numeric_host}:{port}"
-        parts = urlsplit(current)
-        numeric_url = urlunsplit((scheme, authority, parts.path, parts.query, ""))
-        # A client belongs to exactly one hop, preventing cross-origin connection reuse.
-        async with httpx.AsyncClient(
-            timeout=timeout_seconds, trust_env=False, follow_redirects=False,
-            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
-        ) as client:
-            async with client.stream(
-                "GET", numeric_url, headers={"Host": host_header},
-                extensions={"sni_hostname": host},
-            ) as response:
-                if response.status_code in {301, 302, 303, 307, 308}:
-                    location = response.headers.get("location")
-                    if location is None or not location.strip():
-                        fragment = await _error_fragment(response)
-                        raise ValueError(f"web_read HTTP {response.status_code} redirect has no Location; "
-                                         f"response fragment: {fragment}")
-                    if redirect == MAX_REDIRECTS:
-                        fragment = await _error_fragment(response)
-                        raise ValueError(f"web_read HTTP {response.status_code}: exceeded {MAX_REDIRECTS} redirects; "
-                                         f"response fragment: {fragment}")
-                    current = urljoin(current, location)
-                    continue
-                if not response.is_success:
-                    fragment = await _error_fragment(response)
-                    raise ValueError(f"web_read HTTP {response.status_code}: {fragment}")
-                media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                body = bytearray()
-                prefix = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=65536):
-                    if len(prefix) < 5:
-                        prefix.extend(chunk[: 5 - len(prefix)])
-                    is_pdf = media_type == "application/pdf" or prefix.startswith(b"%PDF-")
-                    limit = PDF_BYTES if is_pdf else TEXT_BYTES
-                    if len(body) + len(chunk) > limit:
-                        raise ValueError(f"web_read resource exceeds {limit} decoded bytes")
-                    body.extend(chunk)
-                return current, response.headers.get("content-type", ""), bytes(body)
-    raise AssertionError("redirect loop exhausted without returning")
+def _web_limit(media_type: str, prefix: bytes) -> int:
+    return PDF_BYTES if media_type == "application/pdf" or prefix.startswith(b"%PDF-") else TEXT_BYTES
 
 
 def _decode(body: bytes, content_type: str) -> str:
@@ -248,7 +146,7 @@ async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
     deadline = asyncio.timeout(settings.timeout_seconds)
     try:
         async with deadline:
-            final_url, content_type, body = await _download(arguments.url, settings.timeout_seconds)
+            final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit)
             media_type, content, notice = await _extract(final_url, content_type, body)
             page = WebPage(url=arguments.url, final_url=final_url, fetched_at=time.time(),
                            media_type=media_type, content=content, notice=notice)

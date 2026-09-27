@@ -150,6 +150,7 @@ class Roles(BaseModel):
 
     mind: Binding
     voice: Binding
+    vision: Binding | None = None
 
 
 class Models(BaseModel):
@@ -160,8 +161,11 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice"):
-            provider_name = getattr(self.roles, role).provider
+        for role in ("mind", "voice", "vision"):
+            binding = getattr(self.roles, role)
+            if binding is None:
+                continue
+            provider_name = binding.provider
             if provider_name not in self.providers:
                 raise ValueError(f"models.roles.{role}.provider references unknown provider {provider_name!r}")
         return self
@@ -193,6 +197,15 @@ class TextDelivery(BaseModel):
 class WebReadSettings(BaseModel):
     model_config = STRICT
 
+    timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
+
+
+class ImageSettings(BaseModel):
+    model_config = STRICT
+
+    max_bytes: int = Field(default=10000000, gt=0)
+    max_pixels: int = Field(default=25000000, gt=0)
+    max_dimension: int = Field(default=1280, gt=0)
     timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
 
 
@@ -357,6 +370,7 @@ class LabConfig(BaseModel):
     compaction: Compaction = Field(default_factory=Compaction)
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
     web_read: WebReadSettings | None = None
+    images: ImageSettings = Field(default_factory=ImageSettings)
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     models: Models
@@ -411,8 +425,10 @@ class LabConfig(BaseModel):
             raise ValueError("delivery=onebot requires onebot transport")
         return self
 
-    def model_settings(self, role: Literal["mind", "voice"]) -> ModelSettings:
+    def model_settings(self, role: Literal["mind", "voice", "vision"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
+        if binding is None:
+            raise ValueError(f"models.roles.{role} is not configured")
         provider = self.models.providers[binding.provider]
         return ModelSettings(
             api=provider.api,
