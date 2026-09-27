@@ -27,6 +27,7 @@ from .persona import Persona
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import Store, encode
+from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 
 
 class SayArguments(BaseModel):
@@ -82,9 +83,12 @@ class Chat:
         say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
             **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
         }}
-        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
+        if config.web_read is None and persona.tools != "all" and "web_read" in persona.tools:
+            raise ValueError("角色开放 web_read 时必须在根配置提供 web_read 设置")
+        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, WEB_READ_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
                    if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
-                   and (config.schedules.enabled or tool["function"]["name"] != "schedule")]
+                   and (config.schedules.enabled or tool["function"]["name"] != "schedule")
+                   and (config.web_read is not None or tool["function"]["name"] != "web_read")]
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -325,6 +329,9 @@ class Chat:
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None
+        if call.name == "web_read":
+            return await execute_web_read(self.store, self.config.scene, self.config.web_read,
+                                          WebReadArguments.model_validate(call.arguments)), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments), None, None
         arguments = WaitArguments.model_validate(call.arguments)

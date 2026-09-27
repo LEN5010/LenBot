@@ -8,3 +8,6 @@ native assistant/tool pairs, calls, turn states, recap, attention state, and
 one-time arrangements are synthetic placeholders, not platform recordings or
 real chat excerpts. The format-7 sample includes pending, delivered, blocked,
 and cancelled arrangements with their original metadata.
+The format-8 fixture was upgraded from the format-7 synthetic fixture with
+the migration code in `f555d4c`, then given one synthetic discovered-tool
+name to check that the next upgrade preserves existing session state.

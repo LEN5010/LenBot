@@ -54,15 +54,16 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
 
     original_backup = migrate_database(path)
     assert original_backup == tmp_path / f"isolated.sqlite3.v{format_number}.bak"
-    assert _version(path) == (0x4C424E31, 8)
+    assert _version(path) == (0x4C424E31, 9)
     assert _version(original_backup) == (0x4C424E31, format_number)
-    for intermediate_format in range(format_number + 1, 8):
+    for intermediate_format in range(format_number + 1, 9):
         assert _version(tmp_path / f"isolated.sqlite3.v{intermediate_format}.bak") == (
             0x4C424E31, intermediate_format
         )
     assert _old_columns(path) == before == _old_columns(original_backup)
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM schedules").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM web_documents").fetchone()[0] == 0
         assert [row[0] for row in db.execute(
             "SELECT discovered_tools FROM mind_sessions ORDER BY scene"
         )] == ["[]"] * db.execute("SELECT COUNT(*) FROM mind_sessions").fetchone()[0]
@@ -218,8 +219,9 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v7.bak"
-    assert _version(path) == (0x4C424E31, 8)
+    assert _version(path) == (0x4C424E31, 9)
     assert _version(backup) == (0x4C424E31, 7)
+    assert _version(tmp_path / "isolated.sqlite3.v8.bak") == (0x4C424E31, 8)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table in (*ORIGINAL_TABLES, "schedules"):
             assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == old.execute(
@@ -248,10 +250,39 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
         assert db.execute(
             "SELECT discovered_tools FROM mind_sessions ORDER BY scene"
         ).fetchall() == [("[]",), ("[]",)]
+        assert db.execute("SELECT COUNT(*) FROM web_documents").fetchone()[0] == 0
     with Store(path) as store:
         assert store.load_discovered_tools("group:12345") == []
         assert store.load_discovered_tools("private:67890") == []
         assert store.load_discovered_tools("group:99999") == []
+
+
+def test_v8_web_documents_upgrade_preserves_all_existing_records(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    shutil.copyfile(FIXTURES / "v8-synthetic.sqlite3", path)
+    assert _version(path) == (0x4C424E31, 8)
+    with pytest.raises(ValueError, match="format 8 requires offline migration"):
+        Store(path)
+
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v8.bak"
+    assert _version(path) == (0x4C424E31, 9)
+    assert _version(backup) == (0x4C424E31, 8)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        for table in (*ORIGINAL_TABLES, "mind_sessions", "schedules"):
+            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == old.execute(
+                f"SELECT * FROM {table} ORDER BY rowid"
+            ).fetchall()
+        assert db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == old.execute(
+            "SELECT rowid,search_text FROM message_search ORDER BY rowid"
+        ).fetchall()
+        assert db.execute("SELECT discovered_tools FROM mind_sessions WHERE scene='group:12345'").fetchone()[0] == '["schedule_list"]'
+        assert db.execute("SELECT sql FROM sqlite_master WHERE name='web_documents'").fetchone()[0] == (
+            "CREATE TABLE web_documents (id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL)"
+        )
+        assert db.execute("SELECT COUNT(*) FROM web_documents").fetchone()[0] == 0
+    with Store(path):
+        pass
 
 
 def test_migration_refuses_existing_backup_before_any_step(tmp_path: Path) -> None:
@@ -272,22 +303,22 @@ def test_migration_rejects_current_and_wrong_database(tmp_path: Path) -> None:
     path = tmp_path / "isolated.sqlite3"
     shutil.copyfile(FIXTURES / "v2-synthetic.sqlite3", path)
     migrate_database(path)
-    with pytest.raises(ValueError, match="Expected a next-core format 1, 2, 3, 4, 5, 6 or 7 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 8 database"):
         migrate_database(path)
-    assert _version(path) == (0x4C424E31, 8)
+    assert _version(path) == (0x4C424E31, 9)
 
     unrelated = tmp_path / "unrelated.sqlite3"
     with sqlite3.connect(unrelated) as db:
         db.execute("CREATE TABLE other (value TEXT)")
         db.execute("INSERT INTO other VALUES ('untouched')")
-    with pytest.raises(ValueError, match="Expected a next-core format 1, 2, 3, 4, 5, 6 or 7 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 8 database"):
         migrate_database(unrelated)
     assert not unrelated.with_name(unrelated.name + ".v1.bak").exists()
     with sqlite3.connect(unrelated) as db:
         assert db.execute("SELECT value FROM other").fetchone()[0] == "untouched"
 
 
-@pytest.mark.parametrize("format_number", [1, 2, 3, 4, 6, 7])
+@pytest.mark.parametrize("format_number", [1, 2, 3, 4, 6, 7, 8])
 def test_schema_failure_rolls_back_current_step(tmp_path: Path, format_number: int) -> None:
     path = tmp_path / "isolated.sqlite3"
     shutil.copyfile(FIXTURES / f"v{format_number}-synthetic.sqlite3", path)
@@ -303,8 +334,10 @@ def test_schema_failure_rolls_back_current_step(tmp_path: Path, format_number: i
             db.execute("CREATE TABLE message_search (sentinel TEXT)")
         elif format_number == 6:
             db.execute("CREATE TABLE schedules (sentinel TEXT)")
-        else:
+        elif format_number == 7:
             db.execute("ALTER TABLE mind_sessions ADD COLUMN discovered_tools TEXT NOT NULL DEFAULT '[]'")
+        else:
+            db.execute("CREATE TABLE web_documents (sentinel TEXT)")
     before = _rows(path)
     with pytest.raises(sqlite3.OperationalError):
         migrate_database(path)

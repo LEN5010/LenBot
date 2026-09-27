@@ -239,6 +239,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.text_delivery.min_interval_seconds == 0.6
     assert config.text_delivery.max_interval_seconds == 2.0
     assert config.text_delivery.chars_per_second == 40.0
+    assert config.web_read is None
     assert config.attention.direct_idle_seconds == 1.5
     assert config.attention.direct_max_seconds == 4.0
     assert config.attention.max_extensions == 2
@@ -427,6 +428,50 @@ def test_text_delivery_configuration_rejects_invalid_values(tmp_path, settings, 
     root = tmp_path / "lab"
     source = _config("personas/example")
     source["text_delivery"] = settings
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("value", [None, {}, {"timeout_seconds": 0.5}])
+def test_web_read_configuration_is_optional_and_roundtrips(tmp_path, value):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["web_read"] = value
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    if value is None:
+        assert config.web_read is None
+    else:
+        assert config.web_read is not None
+        assert config.web_read.timeout_seconds == value.get("timeout_seconds", 20)
+    assert config.model_settings("mind").model == "sample-mind"
+    assert config.model_settings("mind").reasoning_effort == "high"
+    assert config.model_settings("voice").model == "sample-voice"
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("value", "field"),
+    [
+        ({"timeout_seconds": 0}, "timeout_seconds"),
+        ({"timeout_seconds": -1}, "timeout_seconds"),
+        ({"timeout_seconds": float("nan")}, "timeout_seconds"),
+        ({"timeout_seconds": float("inf")}, "timeout_seconds"),
+        ({"timeout_seconds": "20"}, "timeout_seconds"),
+        ({"timeout_seconds": True}, "timeout_seconds"),
+        ({"unexpected": True}, "unexpected"),
+    ],
+)
+def test_web_read_configuration_rejects_invalid_values(tmp_path, value, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["web_read"] = value
     _write_config(root, source)
 
     with pytest.raises(ValueError) as failure:

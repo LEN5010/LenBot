@@ -190,6 +190,12 @@ class TextDelivery(BaseModel):
         return self
 
 
+class WebReadSettings(BaseModel):
+    model_config = STRICT
+
+    timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
+
+
 class PanelSettings(BaseModel):
     model_config = STRICT
 
@@ -350,6 +356,7 @@ class LabConfig(BaseModel):
     turn_timeout_seconds: float = Field(default=90.0, gt=0, allow_inf_nan=False)
     compaction: Compaction = Field(default_factory=Compaction)
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
+    web_read: WebReadSettings | None = None
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     models: Models
