@@ -20,6 +20,7 @@ from .context import (
     plan_compaction, project_history,
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
+from .delivery import part_length, report_parts, split_expression
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
@@ -253,32 +254,39 @@ class Chat:
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=arguments.reply_to)
 
-    async def deliver_expression(self, call_id: str, expression: ChatMessage) -> str:
-        if self.send_text is None:
-            content = self.render(expression)
-            self.store.complete_tool(self.config.scene, call_id,
-                                     "模拟表达（未发送到 QQ）：" + content, expression)
-            return content
-        expression.send_status = "unconfirmed"
-        positions = self.store.prepare_expression(
-            call_id, expression, self.unconfirmed_content(expression),
+    async def deliver_expression(self, call_id: str, expression: ChatMessage) -> tuple[str, str]:
+        parts = split_expression(expression, self.config.text_delivery.max_chars)
+        entry_seq = self.store.prepare_expression(
+            self.config.scene, call_id, report_parts(parts, [], self.render),
         )
-        return await self.send_prepared_expression(positions, expression)
+        prefix = "模拟表达（未发送到 QQ）：" if self.send_text is None else ""
+        return await self.send_prepared_expression(entry_seq, parts, prefix=prefix)
 
-    def unconfirmed_content(self, expression: ChatMessage) -> str:
-        return (self.render(expression) +
-                "\n尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。")
-
-    async def send_prepared_expression(self, positions: tuple[int, int], expression: ChatMessage,
-                                       *, prefix: str = "") -> str:
-        result = await self.send_text(expression)
-        expression.send_status = result.status
-        expression.platform_message_id = result.platform_message_id
-        content = self.render(expression)
-        if result.error is not None:
-            content += "\n" + result.error
-        self.store.finish_expression(positions, expression, prefix + content)
-        return content
+    async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
+                                       *, prefix: str = "") -> tuple[str, str]:
+        errors: list[str | None] = []
+        settings = self.config.text_delivery
+        for index, part in enumerate(parts):
+            if index:
+                delay = min(settings.max_interval_seconds,
+                            max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
+                await asyncio.sleep(delay)
+            part.time = time.time()
+            part.send_status = "simulated" if self.send_text is None else "unconfirmed"
+            errors.append(None)
+            content = report_parts(parts, errors, self.render)
+            message_seq = self.store.start_expression_part(entry_seq, part, prefix + content)
+            if self.send_text is not None:
+                result = await self.send_text(part)
+                part.send_status, part.platform_message_id = result.status, result.platform_message_id
+                errors[-1] = result.error
+                content = report_parts(parts, errors, self.render)
+                self.store.finish_expression((message_seq, entry_seq), part, prefix + content)
+                if result.status != "sent":
+                    break
+        states = {part.send_status for part in parts[:len(errors)]}
+        status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
+        return content, status
 
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
@@ -336,8 +344,9 @@ class Chat:
                             if expression is None:
                                 self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)
                             else:
-                                expressions.append(await self.deliver_expression(call.id, expression))
-                                if expression.send_status in {"failed", "unconfirmed"}:
+                                content, delivery_status = await self.deliver_expression(call.id, expression)
+                                expressions.append(content)
+                                if delivery_status not in {"sent", "simulated"}:
                                     failed_tools += 1
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):

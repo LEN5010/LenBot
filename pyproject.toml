@@ -22,6 +22,7 @@ dependencies = [
     "jinja2>=3.1.4",
     "qrcode>=8.2",
     "pyyaml>=6.0.3",
+    "regex>=2026.9.3",
 ]
 
 [project.scripts]

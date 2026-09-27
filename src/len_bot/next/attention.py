@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from .chat import Chat
 from .config import Attention
+from .delivery import report_parts, split_expression
 from .messages import ChatMessage, Segment, parse_message, plain_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import check_creation, platform_role, wake_text
@@ -418,36 +419,38 @@ class SceneRunner:
 
     async def quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
         state = self.consumed_state()
-        expression, notice = None, None
+        parts, note = None, None
         expressions = []
-        prefix = "[宿主安静时段固定表达]\n"
+        prefix = ("[宿主安静时段固定表达；模拟，未发送到 QQ]\n" if self.chat.send_text is None
+                  else "[宿主安静时段固定表达]\n")
         if state.quiet_notice_until != until:
             expression = self.chat.simulated_message([
                 Segment("text", {"text": self.settings.quiet_hours.notice_text})])
-            if self.chat.send_text is None:
-                rendered = self.chat.render(expression)
-                note = "[宿主安静时段固定表达；模拟，未发送到 QQ]\n" + rendered
-                expressions.append(rendered)
-                state.contact(expression.time, self.settings.focus_seconds)
-            else:
-                expression.send_status = "unconfirmed"
-                note = prefix + self.chat.unconfirmed_content(expression)
-            notice = expression, note
+            parts = split_expression(expression, self.config.text_delivery.max_chars)
+            note = prefix + report_parts(parts, [], self.chat.render)
             state.quiet_notice_until = until
-        positions = self.store.append_quiet(
+        entry_seq = self.store.append_quiet(
             self.config.scene, self.batch(pending, "[安静时段直接消息；本批未调用模型]"),
-            attention_state=asdict(state), notice=notice,
+            attention_state=asdict(state), note=note,
         )
         self.state = state
-        if expression is not None and self.chat.send_text is not None:
-            expressions.append(await self.chat.send_prepared_expression(positions, expression, prefix=prefix))
-            if expression.send_status == "sent":
-                # Receipt callbacks may have persisted newer attention while sending.
-                state = copy.deepcopy(self.state)
-                state.contact(expression.time, self.settings.focus_seconds)
-                self.save_state(state)
-        delivery = "none" if expression is None else "simulated" if self.chat.send_text is None else "onebot"
-        self.emit({"type": "notice", "status": "stored" if expression is None else expression.send_status,
+        status, error_text = "stored", None
+        if parts is not None:
+            try:
+                async with asyncio.timeout(self.config.turn_timeout_seconds):
+                    content, status = await self.chat.send_prepared_expression(entry_seq, parts, prefix=prefix)
+            except TimeoutError as error:
+                status, error_text = "timeout", f"{type(error).__name__}: fixed notice time limit"
+                content = self.store.expression_error(entry_seq, error_text)
+            expressions.append(content)
+            # Receipt callbacks may have persisted newer attention while sending.
+            state = copy.deepcopy(self.state)
+            own_at = self.store.last_self_time(self.config.scene)
+            if own_at is not None:
+                state.contact(own_at, self.settings.focus_seconds)
+            self.save_state(state)
+        delivery = "none" if parts is None else "simulated" if self.chat.send_text is None else "onebot"
+        self.emit({"type": "notice", "status": status, "error": error_text,
                    "delivery": delivery, "expressions": expressions,
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
 

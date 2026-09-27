@@ -233,6 +233,10 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.compaction.trigger_ratio == 0.6
     assert config.compaction.keep_recent_entries == 30
     assert config.compaction.max_output_tokens == 1024
+    assert config.text_delivery.max_chars == 300
+    assert config.text_delivery.min_interval_seconds == 0.6
+    assert config.text_delivery.max_interval_seconds == 2.0
+    assert config.text_delivery.chars_per_second == 40.0
     assert config.attention.direct_idle_seconds == 1.5
     assert config.attention.direct_max_seconds == 4.0
     assert config.attention.max_extensions == 2
@@ -261,6 +265,63 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.model_settings("voice").model == "sample-voice"
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"max_chars": 25, "min_interval_seconds": 0.1,
+         "max_interval_seconds": 1.5, "chars_per_second": 75.0},
+        {"max_chars": 1, "min_interval_seconds": 0.0,
+         "max_interval_seconds": 0.0, "chars_per_second": 1.0},
+    ],
+)
+def test_text_delivery_configuration_preserves_explicit_values_and_roundtrips(tmp_path, settings):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["text_delivery"] = settings
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    for field, value in settings.items():
+        assert getattr(config.text_delivery, field) == value
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("settings", "field"),
+    [
+        ({"max_chars": 0}, "max_chars"),
+        ({"max_chars": -1}, "max_chars"),
+        ({"max_chars": 300.0}, "max_chars"),
+        ({"max_chars": True}, "max_chars"),
+        ({"min_interval_seconds": -0.1}, "min_interval_seconds"),
+        ({"min_interval_seconds": True}, "min_interval_seconds"),
+        ({"min_interval_seconds": float("nan")}, "min_interval_seconds"),
+        ({"max_interval_seconds": -0.1}, "max_interval_seconds"),
+        ({"max_interval_seconds": float("inf")}, "max_interval_seconds"),
+        ({"max_interval_seconds": False}, "max_interval_seconds"),
+        ({"chars_per_second": 0}, "chars_per_second"),
+        ({"chars_per_second": -1}, "chars_per_second"),
+        ({"chars_per_second": float("nan")}, "chars_per_second"),
+        ({"chars_per_second": float("inf")}, "chars_per_second"),
+        ({"chars_per_second": True}, "chars_per_second"),
+        ({"min_interval_seconds": 2.1, "max_interval_seconds": 2.0},
+         "min_interval_seconds must not exceed max_interval_seconds"),
+        ({"unknown": True}, "unknown"),
+    ],
+)
+def test_text_delivery_configuration_rejects_invalid_values(tmp_path, settings, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["text_delivery"] = settings
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 @pytest.mark.parametrize(
