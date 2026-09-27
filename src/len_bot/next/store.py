@@ -32,6 +32,16 @@ class Schedule:
     reason: str | None
 
 
+@dataclass(frozen=True)
+class WebPage:
+    url: str
+    final_url: str
+    fetched_at: float
+    media_type: str
+    content: str
+    notice: str
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,18 +52,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 8:
+                if application_id != 0x4C424E31 or version != 9:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 8;
+                    PRAGMA user_version = 9;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -94,6 +104,9 @@ class Store:
                         status TEXT NOT NULL, delivered_at REAL, reason TEXT
                     );
                     CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
+                    CREATE TABLE web_documents (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL
+                    );
                     COMMIT;
                 """)
         except BaseException:
@@ -105,6 +118,20 @@ class Store:
 
     def __exit__(self, *_: object) -> None:
         self.db.close()
+
+    def save_web_page(self, scene: str, page: WebPage) -> int:
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT INTO web_documents(scene,body) VALUES (?,?)",
+                (scene, encode(asdict(page))),
+            )
+        return cursor.lastrowid
+
+    def web_page(self, scene: str, document: int) -> WebPage | None:
+        row = self.db.execute(
+            "SELECT body FROM web_documents WHERE scene=? AND id=?", (scene, document)
+        ).fetchone()
+        return None if row is None else WebPage(**json.loads(row[0]))
 
     def active_history(self, scene: str) -> tuple[str | None, list[tuple[int, dict]]]:
         session = self.db.execute(
