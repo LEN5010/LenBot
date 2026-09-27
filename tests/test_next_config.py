@@ -1065,7 +1065,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "Offline migration completed" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
     with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 9
     with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:

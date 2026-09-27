@@ -23,3 +23,9 @@ JPEG cache row. All contents, identities, times, usage, and image pixels are
 synthetic; this is not a platform or model response recording. The repeated
 tool-call ID is deliberately local to each native exchange and must not be
 used to backfill the new format-11 call-position column.
+The format-11 fixture was upgraded from the same synthetic format-10 fixture
+using the committed format-11 model_calls column and index. Two synthetic
+model calls have distinct, explicit existing assistant entry positions; all
+other rows and identities remain synthetic. It has no expression-latency
+columns, so the format-12 upgrade must preserve those positions and leave
+the new turn facts null rather than infer older timestamps.
