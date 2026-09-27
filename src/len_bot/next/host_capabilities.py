@@ -90,9 +90,10 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "web_search": chat.config.web_search is not None,
                          "memory": chat.memory is not None,
                          "vision": chat.config.models.roles.vision is not None,
+                         "worker": chat.tasks is not None,
                          "schedules": chat.config.schedules.enabled},
             "not_implemented": [
-                {"name": "delegate", "description": "独立任务执行与文件交付尚未接入。"},
+                {"name": "send_file", "description": "任务副本可登记和下载；QQ 上传工具尚未接入。"},
                 {"name": "skills", "description": "角色技能声明尚未接入执行环境。"},
                 {"name": "plugins / MCP", "description": "当前宿主尚未装载插件和 MCP 服务。"},
             ],

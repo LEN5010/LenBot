@@ -6,7 +6,8 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 
 const snapshot = ref(null), loading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), localError = ref(''), savedNotice = ref('')
-const providers = ref([]), roles = ref(null), prices = ref([]), visionEnabled = ref(false), memoryEnabled = ref(false)
+const providers = ref([]), roles = ref(null), prices = ref([])
+const visionEnabled = ref(false), memoryEnabled = ref(false), workerEnabled = ref(false)
 const beginRead = useRequestGuard(), beginSave = useRequestGuard()
 const providerOptions = computed(() => providers.value.filter(row => row.alias).map(row => row.alias))
 
@@ -23,9 +24,11 @@ function adopt(result) {
   }))
   roles.value = { mind: binding(models.roles.mind), voice: binding(models.roles.voice),
     vision: models.roles.vision === null ? null : binding(models.roles.vision),
-    memory: models.roles.memory === null ? null : binding(models.roles.memory) }
+    memory: models.roles.memory === null ? null : binding(models.roles.memory),
+    worker: models.roles.worker === null ? null : binding(models.roles.worker) }
   visionEnabled.value = models.roles.vision !== null
   memoryEnabled.value = models.roles.memory !== null
+  workerEnabled.value = models.roles.worker !== null
   prices.value = Object.entries(models.prices).flatMap(([provider, entries]) =>
     Object.entries(entries).map(([model, value]) => ({ provider, model, ...copy(value) })))
   localError.value = ''
@@ -33,7 +36,7 @@ function adopt(result) {
 }
 function roleBody() {
   const output = copy(roles.value)
-  for (const name of ['mind','voice','vision','memory']) {
+  for (const name of ['mind','voice','vision','memory','worker']) {
     if (output[name] === null) continue
     output[name].reasoning_effort = output[name].reasoning_effort === '' ? null : output[name].reasoning_effort
   }
@@ -103,6 +106,13 @@ function enableMemory(value) {
     max_output_tokens: '', timeout_seconds: 60, reasoning_effort: '',
   } : null
 }
+function enableWorker(value) {
+  workerEnabled.value = value
+  roles.value.worker = value ? {
+    provider: '', model: '', context_window_tokens: '', temperature: 0.6,
+    max_output_tokens: '', timeout_seconds: 60, reasoning_effort: '',
+  } : null
+}
 function draftProblem() {
   const aliases = providers.value.map(row => row.alias)
   if (aliases.length !== new Set(aliases).size) return '提供方别名重复；保存前请明确保留哪一项。'
@@ -110,6 +120,9 @@ function draftProblem() {
   const keys = prices.value.map(row => `${row.provider}\u0000${row.model}`)
   if (keys.length !== new Set(keys).size) return '同一提供方与模型的价格重复；保存前请删除重复项。'
   if (prices.value.some(row => !row.provider.trim() || !row.model.trim())) return '价格项须给出提供方别名和精确模型名。'
+  if (workerEnabled.value && (!roles.value.worker.provider || !roles.value.worker.model ||
+      !roles.value.worker.context_window_tokens || !roles.value.worker.max_output_tokens))
+    return '任务模型须显式填写提供方、精确模型名、上下文窗口和输出上限；不会继承大脑绑定。'
   return ''
 }
 async function save() {
@@ -157,14 +170,14 @@ onMounted(() => read(false))
             {{ snapshot.restart_required.models?'保存值待重启':'保存值与运行值一致' }}
           </v-chip></div>
         <dl class="facts">
-          <div v-for="name in ['mind','voice','vision','memory']" :key="name"><dt>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取'})[name] }}</dt>
+          <div v-for="name in ['mind','voice','vision','memory','worker']" :key="name"><dt>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取',worker:'任务执行'})[name] }}</dt>
             <dd>{{ snapshot.running.models.roles[name] === null ? '未配置' : `${snapshot.running.models.roles[name].provider} / ${snapshot.running.models.roles[name].model}` }}</dd></div>
         </dl>
         <p class="muted">运行中提供方：{{ Object.keys(snapshot.running.models.providers).join('、') }}。密钥只显示是否已填写，不回显原值。</p>
         <details class="runtime-detail"><summary>查看运行中的提供方、完整绑定与配置价格</summary>
           <h3>提供方</h3><dl class="facts"><div v-for="(provider,alias) in snapshot.running.models.providers" :key="alias">
             <dt>{{ alias }} · {{ provider.api }}</dt><dd>{{ provider.base_url }} · {{ provider.api_key_configured?'已配置密钥':'未配置密钥' }}</dd></div></dl>
-          <h3>用途绑定</h3><dl class="facts"><div v-for="name in ['mind','voice','vision','memory']" :key="name"><dt>{{ name }}</dt>
+          <h3>用途绑定</h3><dl class="facts"><div v-for="name in ['mind','voice','vision','memory','worker']" :key="name"><dt>{{ name }}</dt>
             <dd v-if="snapshot.running.models.roles[name]">{{ snapshot.running.models.roles[name].provider }} / {{ snapshot.running.models.roles[name].model }} · 窗口 {{ snapshot.running.models.roles[name].context_window_tokens }} · 输出 {{ snapshot.running.models.roles[name].max_output_tokens }} · 温度 {{ snapshot.running.models.roles[name].temperature }} · 超时 {{ snapshot.running.models.roles[name].timeout_seconds }} 秒 · 思考强度 {{ snapshot.running.models.roles[name].reasoning_effort ?? '未设置' }}</dd>
             <dd v-else>未配置</dd></div></dl>
           <h3>配置价格</h3><dl class="facts"><template v-for="(entries,provider) in snapshot.running.models.prices" :key="provider">
@@ -181,7 +194,7 @@ onMounted(() => read(false))
           <p class="muted">已有密钥留空即保留；只有输入非空新值才替换。新提供方必须填写密钥。不会把旧密钥显示在页面。</p>
           <div v-for="(row,index) in providers" :key="index" class="entry-card provider-grid">
             <v-text-field v-model="row.alias" label="提供方别名" :readonly="row.api_key_configured" hide-details="auto" />
-            <v-select v-model="row.api" label="协议" :items="['openai-chat']" hide-details="auto" />
+            <v-select v-model="row.api" label="协议" :items="['openai-chat']" :disabled="saving || loading" hide-details="auto" />
             <v-text-field v-model="row.base_url" label="服务地址" hide-details="auto" />
             <v-text-field v-model="row.api_key" label="新密钥（留空保留已有）" type="password" autocomplete="new-password" hide-details="auto" />
             <p class="muted">{{ row.api_key_configured?'已保存密钥；此页不显示原文':'尚无保存密钥' }}</p>
@@ -192,14 +205,17 @@ onMounted(() => read(false))
 
         <fieldset :disabled="saving || loading" class="surface editor-section">
           <legend>用途绑定 · 根配置保存值</legend>
-          <div v-for="name in ['mind','voice','vision','memory']" :key="name" class="entry-card">
-            <div class="binding-title"><h3>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取'})[name] }}</h3>
+          <div v-for="name in ['mind','voice','vision','memory','worker']" :key="name" class="entry-card">
+            <div class="binding-title"><h3>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取',worker:'任务执行'})[name] }}</h3>
               <v-switch v-if="name==='vision'" :model-value="visionEnabled" label="启用视觉绑定"
-                hide-details @update:model-value="enableVision" />
+                hide-details :disabled="saving || loading" @update:model-value="enableVision" />
               <v-switch v-else-if="name==='memory'" :model-value="memoryEnabled" label="启用记忆抽取绑定"
-                hide-details @update:model-value="enableMemory" /></div>
+                hide-details :disabled="saving || loading" @update:model-value="enableMemory" />
+              <v-switch v-else-if="name==='worker'" :model-value="workerEnabled" label="配置任务执行模型绑定"
+                hide-details :disabled="saving || loading" @update:model-value="enableWorker" /></div>
+            <p v-if="name==='worker'" class="muted">任务执行使用独立用途绑定；须手动填写真实提供方和精确模型，不自动取大脑或表达器。启用有金额上限时，还须配置本提供方与模型的精确价格。</p>
             <div v-if="roles[name] !== null" class="form-grid">
-              <v-select v-model="roles[name].provider" label="提供方" :items="providerOptions" hide-details="auto" />
+              <v-select v-model="roles[name].provider" label="提供方" :items="providerOptions" :disabled="saving || loading" hide-details="auto" />
               <v-text-field v-model="roles[name].model" label="精确模型名" hide-details="auto" />
               <v-text-field :model-value="roles[name].context_window_tokens" type="number" label="上下文窗口 token"
                 hide-details="auto" @update:model-value="value=>roles[name].context_window_tokens=numberValue(value)" />
@@ -211,7 +227,7 @@ onMounted(() => read(false))
                 hide-details="auto" @update:model-value="value=>roles[name].timeout_seconds=numberValue(value)" />
               <v-text-field v-model="roles[name].reasoning_effort" label="思考强度（可留空）" hide-details="auto" />
             </div>
-            <p v-else class="muted">{{ name==='vision'?'未配置视觉模型；看图工具不会注册。':'未配置记忆抽取模型；本地自动抽取不能运行。' }}</p>
+            <p v-else class="muted">{{ name==='vision'?'未配置视觉模型；看图工具不会注册。':name==='memory'?'未配置记忆抽取模型；本地自动抽取不能运行。':'未配置任务执行模型；任务不能启动。' }}</p>
           </div>
         </fieldset>
 
@@ -219,7 +235,7 @@ onMounted(() => read(false))
           <legend>每百万 token 的配置价格</legend>
           <p class="muted">仅为按配置估算，不是供应商账单；没有价格或缺少必要用量时费用保持未知，不按零计算。</p>
           <div v-for="(row,index) in prices" :key="index" class="entry-card price-grid">
-            <v-select v-model="row.provider" label="提供方" :items="providerOptions" hide-details="auto" />
+            <v-select v-model="row.provider" label="提供方" :items="providerOptions" :disabled="saving || loading" hide-details="auto" />
             <v-text-field v-model="row.model" label="精确模型名" hide-details="auto" />
             <v-text-field v-model="row.currency" label="币种（三位大写）" hide-details="auto" />
             <v-text-field v-model="row.input" label="普通输入" inputmode="decimal" hide-details="auto" />

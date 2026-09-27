@@ -196,15 +196,26 @@ class TaskStore:
             )
         return cursor.lastrowid
 
-    def events(self, scene: str, id: int, after: int = 0, limit: int = 100) -> list[dict]:
-        if limit <= 0:
-            raise ValueError("task event limit must be positive")
+    def event_previews(self, scene: str, id: int, *, after: int = 0,
+                       limit: int = 100) -> list[dict]:
         self.get(scene, id)
         rows = self.db.execute(
-            "SELECT * FROM task_events WHERE scene=? AND task_id=? AND id>? ORDER BY id LIMIT ?",
+            "SELECT id,kind,created,delivered_at,"
+            "CASE WHEN kind='native' THEN json_extract(body,'$.type') ELSE kind END AS event_type,"
+            "substr(body,1,1200) AS preview,length(body)>1200 AS truncated "
+            "FROM task_events WHERE scene=? AND task_id=? AND id>? ORDER BY id LIMIT ?",
             (scene, id, after, limit),
         ).fetchall()
-        return [{**dict(row), "body": json.loads(row["body"])} for row in rows]
+        return [{**dict(row), "truncated": bool(row["truncated"])} for row in rows]
+
+    def event(self, scene: str, id: int, event_id: int) -> dict:
+        row = self.db.execute(
+            "SELECT * FROM task_events WHERE scene=? AND task_id=? AND id=?",
+            (scene, id, event_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Scene {scene} task {id} has no event {event_id}")
+        return {**dict(row), "body": json.loads(row["body"])}
 
     def pending_notices(self, scene: str) -> list[tuple[int, str]]:
         return [(row[0], row[1]) for row in self.db.execute(

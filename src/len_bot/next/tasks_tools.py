@@ -39,6 +39,7 @@ class TaskArguments(BaseModel):
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
     text: str | None = None
     confirmed: bool | None = None
+    question_id: str | None = Field(default=None, min_length=1)
     status: TaskStatus = "active"
     offset: int = Field(default=0, ge=0, strict=True)
     limit: int = Field(default=20, ge=1, le=20, strict=True)
@@ -50,7 +51,7 @@ class TaskArguments(BaseModel):
             "status": {"action", "id"},
             "append": {"action", "id", "requester", "text"},
             "continue": {"action", "id", "requester", "text"},
-            "answer": {"action", "id", "requester", "text", "confirmed"},
+            "answer": {"action", "id", "requester", "text", "confirmed", "question_id"},
             "cancel": {"action", "id", "requester"},
         }[self.action]
         unexpected = self.model_fields_set - allowed
@@ -63,6 +64,8 @@ class TaskArguments(BaseModel):
         if self.action in {"append", "continue"} and (self.text is None or not self.text.strip()):
             raise ValueError(f"task action {self.action!r} requires nonblank text")
         if self.action == "answer":
+            if self.question_id is None:
+                raise ValueError("task answer requires the current question_id returned by task status")
             text_supplied = "text" in self.model_fields_set
             confirmed_supplied = "confirmed" in self.model_fields_set
             if text_supplied == confirmed_supplied:
@@ -85,6 +88,7 @@ TASK_TOOL = {"type": "function", "function": {
     "name": "task",
     "description": "查询或管理当前场景的真实任务：list/status 查看状态，append 追加运行中要求，"
     "continue 续接已结束任务，answer 回答待输入，cancel 取消。执行结束不等于目标完成；"
+    "answer 的 question_id 使用当前 question.id，避免答复到已变化的另一个问题；"
     "文件已复制到交付区也不等于已上传到平台。需要操作者的动作填写实际 requester QQ。",
     "parameters": TaskArguments.model_json_schema(),
 }}
@@ -117,5 +121,6 @@ async def perform_task_action(service: WorkTasks, scene: str, parsed: TaskArgume
         return await service.answer(
             scene, parsed.id, requester=parsed.requester,
             text=parsed.text, confirmed=parsed.confirmed,
+            question_id=parsed.question_id,
         )
     return await service.cancel(scene, parsed.id, requester=parsed.requester)

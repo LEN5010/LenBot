@@ -105,7 +105,7 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
 
 def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
     if persona.tools != "all":
-        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory", "delegate", "task"):
+        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory"):
             if name in persona.tools:
                 reasons = tool_unavailable_reasons(config, persona, name)
                 if reasons:

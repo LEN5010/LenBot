@@ -4,6 +4,7 @@ import { api, sceneName } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import HostWorkerSettings from '../components/HostWorkerSettings.vue'
 
 const route = useRoute(), router = useRouter()
 let sceneEpoch = 0
@@ -13,6 +14,7 @@ const beginPersona = useRequestGuard(selection)
 const beginSceneSave = useRequestGuard(selection)
 const beginServiceSave = useRequestGuard()
 const snapshot = ref(null), personaSnapshot = ref(null), scene = ref('')
+const workerDirty = ref(false), workerSceneDirty = ref(false), workerSaving = ref(false), workerPanelKey = ref(0)
 const loading = ref(false), personaLoading = ref(false), saving = ref('')
 const readError = ref(''), personaError = ref(''), saveError = ref(''), localError = ref(''), savedNotice = ref('')
 const draft = ref(null), webRead = ref(null), webSearch = ref(null)
@@ -66,9 +68,10 @@ const sceneDirty = computed(() => {
 })
 const readDirty = computed(() => snapshot.value && JSON.stringify(webRead.value) !== JSON.stringify(snapshot.value.saved.web_read))
 const searchDirty = computed(() => snapshot.value && JSON.stringify(webSearch.value) !== JSON.stringify(snapshot.value.saved.web_search))
-const dirty = computed(() => Boolean(sceneDirty.value || readDirty.value || searchDirty.value))
+const dirty = computed(() => Boolean(sceneDirty.value || readDirty.value || searchDirty.value || workerDirty.value))
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !sceneDirty.value || window.confirm('有尚未保存的场景草稿。放弃并打开另一场景？'))
+onBeforeRouteUpdate(() => !workerSaving.value && (!sceneDirty.value && !workerSceneDirty.value ||
+  window.confirm('有尚未保存的场景草稿。放弃并打开另一场景？')))
 function adoptScene(value) {
   const record = value.saved.scenes[scene.value]
   draft.value = { voice_mode: record.voice_mode, attention: copy(record.attention), schedules: copy(record.schedules),
@@ -90,6 +93,7 @@ function adoptAll(value) {
   webRead.value = copy(value.saved.web_read)
   webSearch.value = copy(value.saved.web_search)
   savedNotice.value = ''
+  ++workerPanelKey.value
 }
 async function readPersona() {
   if (!scene.value) return
@@ -106,7 +110,9 @@ async function readPersona() {
   }
 }
 async function read(confirmDiscard = true) {
-  if (confirmDiscard && dirty.value && !window.confirm('放弃全部未保存草稿，重新读取根配置？')) return
+  if (workerSaving.value) return
+  if (confirmDiscard && dirty.value &&
+      !window.confirm('放弃全部未保存草稿，重新读取根配置？')) return
   const fresh = beginRead()
   loading.value = true
   try {
@@ -125,7 +131,9 @@ async function read(confirmDiscard = true) {
 }
 function changeScene(next, fromRoute = false) {
   if (next === scene.value) return
-  if (!fromRoute && sceneDirty.value && !window.confirm('放弃当前场景尚未保存的修改并切换？')) return
+  if (workerSaving.value) return
+  if (!fromRoute && (sceneDirty.value || workerSceneDirty.value) &&
+      !window.confirm('放弃当前场景尚未保存的修改并切换？')) return
   if (!snapshot.value.saved.scenes[next]) return
   scene.value = next
   ++sceneEpoch
@@ -208,7 +216,7 @@ watch(() => route.query.scene, value => {
   <div class="page-stack host-settings">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>群聊设置与角色</h1>
       <p class="muted">分别编辑场景和外部服务的根配置保存值。运行中的设置与角色文件保持原样，重启宿主后才生效；不在这里启动、重载或发送消息。</p></div>
-      <v-btn variant="outlined" :loading="loading" :disabled="Boolean(saving)" @click="read()">重读根配置</v-btn></header>
+      <v-btn variant="outlined" :loading="loading" :disabled="Boolean(saving) || workerSaving" @click="read()">重读根配置</v-btn></header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert" :title="snapshot?'读取失败 · 保留上次草稿':'读取设置失败'">{{ readError }}</v-alert>
     <v-alert v-if="saveError" type="error" variant="tonal" role="alert">{{ saveError }}</v-alert>
     <v-alert v-if="localError" type="warning" variant="tonal" role="alert">{{ localError }}</v-alert>
@@ -217,7 +225,7 @@ watch(() => route.query.scene, value => {
     <template v-if="snapshot && draft">
       <section class="surface"><div class="section-heading"><h2>当前配置场景</h2>
         <v-chip variant="tonal" :color="snapshot.restart_required.scenes[scene]?'warning':'info'">{{ snapshot.restart_required.scenes[scene]?'场景保存值待重启':'场景保存值与运行值一致' }}</v-chip></div>
-        <v-select :model-value="scene" :items="sceneOptions" label="选择场景" hide-details="auto" :disabled="Boolean(saving) || loading" @update:model-value="changeScene" />
+        <v-select :model-value="scene" :items="sceneOptions" label="选择场景" hide-details="auto" :disabled="Boolean(saving) || loading || workerSaving" @update:model-value="changeScene" />
         <p class="muted mt-4">运行值：{{ runningScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}；保存值：{{ savedScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}。场景与角色包的绑定路径不在此页修改。</p>
         <details v-if="runningScene"><summary>查看当前运行的场景设置</summary>
           <h3>参与与安静时段</h3><dl class="role-facts"><div v-for="(value,key) in runningScene.attention" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></div></dl>
@@ -263,6 +271,8 @@ watch(() => route.query.scene, value => {
         </fieldset>
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="saving==='scene'" :disabled="!sceneDirty || Boolean(saving) || loading">保存此场景</v-btn><span class="muted">完整场景设置一次提交；后端校验失败时保留草稿与原始错误。</span></div>
       </form>
+      <HostWorkerSettings :key="workerPanelKey" :scene="scene" @dirty="workerDirty=$event"
+        @scene-dirty="workerSceneDirty=$event" @saving="workerSaving=$event" />
       <section class="surface" aria-labelledby="persona-title"><div class="section-heading"><h2 id="persona-title">当前运行的角色资料</h2><span class="muted">只读 · 角色文件改动需重启</span></div>
         <p v-if="personaLoading" role="status">正在读取当前角色…</p>
         <v-alert v-if="personaError" type="error" variant="tonal" role="alert">{{ personaError }}<span v-if="personaSnapshot"> 下方保留上次读取值。</span></v-alert>

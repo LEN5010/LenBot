@@ -9,7 +9,7 @@ export function returnPath(value) {
   if (context?.mode === 'isolated') return internalPath(value)==='/chat-test/settings' ? '/chat-test/settings' : '/chat-test'
   if (context?.mode === 'isolated-multi') {
     const path = internalPath(value)
-    return path && ['/host', '/host/overview', '/host/capabilities', '/host/models', '/host/settings', '/host/persona', '/host/system', '/host/history', '/host/memory']
+    return path && ['/host', '/host/overview', '/host/capabilities', '/host/models', '/host/settings', '/host/persona', '/host/system', '/host/history', '/host/memory', '/host/tasks']
       .includes(path.split(/[?#]/, 1)[0]) ? path : '/host'
   }
   return internalPath(value) || context?.home || '/overview'
@@ -18,6 +18,12 @@ const router = createRouter({
   history:createWebHashHistory(),
   routes:[
     {path:'/',redirect:{name:'overview'}},
+    {
+      path:'/host/tasks',
+      name:'host-tasks',
+      component:()=>import('../views/HostTasksView.vue'),
+      meta:{title:'独立任务'}
+    },
     {
       path:'/host/memory',
       name:'host-memory',
@@ -222,7 +228,7 @@ router.beforeEach(async to=>{
   const auth=useAuth()
   if(auth.status==='error')return true
   if(auth.panelContext?.mode==='isolated-multi'){
-    const hostPages=['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory']
+    const hostPages=['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-tasks']
     if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:hostPages.includes(to.name)?to.fullPath:'/host'}}
     if(to.name==='login' && auth.status==='authenticated')return returnPath(to.query.redirect)
     if(to.name!=='login' && !hostPages.includes(to.name))return {name:'host'}
@@ -234,7 +240,7 @@ router.beforeEach(async to=>{
     if(to.name!=='login' && to.name!=='chat-test' && to.name!=='chat-test-settings')return {name:'chat-test'}
     return true
   }
-  if(['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','chat-test','chat-test-settings'].includes(to.name))return {name:'overview'}
+  if(['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-tasks','chat-test','chat-test-settings'].includes(to.name))return {name:'overview'}
   if(to.name==='settings'&&['persona','attention','time'].includes(to.query.tab))return {name:'agent-settings',query:to.query}
   if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:to.fullPath}}
   if(to.name==='login' && auth.status==='authenticated')return returnPath(to.query.redirect)

@@ -25,6 +25,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
     async def state(_: str = Depends(user)):
         service = runtime.tasks
         return {"configured": service is not None,
+                "timezone": runtime.config.timezone,
                 "accepting": service is not None and service.accepting,
                 "error": None if service is None else service.error,
                 "scenes": [{"scene": scene, **chat.config.tasks.model_dump(mode="json")}
@@ -49,10 +50,18 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         scene_exists(scene)
         try:
             item = records.get(scene, id)
-            events = records.events(scene, id, after=after, limit=limit)
+            events = records.event_previews(scene, id, after=after, limit=limit)
             return {"task": asdict(item), "events": events,
                     "next_after": events[-1]["id"] if events else after,
                     "files": [file_info(file) for file in records.list_files(scene, id)]}
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/host/tasks/{id}/events/{event_id}")
+    async def event(id: int, event_id: int, scene: str, _: str = Depends(user)):
+        scene_exists(scene)
+        try:
+            return records.event(scene, id, event_id)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
 

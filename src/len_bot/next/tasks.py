@@ -168,7 +168,7 @@ class WorkTasks:
         return self.status(scene, id)
 
     async def answer(self, scene: str, id: int, *, requester: str,
-                     text: str | None, confirmed: bool | None) -> dict:
+                     text: str | None, confirmed: bool | None, question_id: str) -> dict:
         if not self.accepting:
             raise RuntimeError("任务执行器正在启动或停止，不能恢复等待中的任务")
         item = self.records.get(scene, id)
@@ -176,6 +176,8 @@ class WorkTasks:
             raise PermissionError("回答者必须是实际人类 QQ，不用 Bot 冒充回答者")
         if item.status != "waiting_input":
             raise ValueError("任务当前没有等待回答的问题")
+        if item.question["id"] != question_id:
+            raise ValueError("当前问题已经变化；请重读任务后针对新的问题回答，没有发送这次旧答复")
         current = self.running[id]
         if current.answer.done():
             raise ValueError("当前问题已收到回答或已超时，正在等待执行槽")
@@ -418,7 +420,7 @@ class WorkTasks:
             except TimeoutError:
                 continue
             body = record.body
-            if record.type == "message_update":
+            if record.type in {"message_update", "tool_execution_update", "bash_execution_update"}:
                 continue
             self.records.add_event(item.scene, item.id, "native", body)
             self.on_update(item.scene)
