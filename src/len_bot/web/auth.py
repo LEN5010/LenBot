@@ -71,10 +71,8 @@ def revoke_session(token: str) -> None:
     """Revokes a session token on logout."""
     _ACTIVE_SESSIONS.pop(token, None)
 
-async def get_current_user(request: Request) -> str:
-    """FastAPI dependency to extract and validate the authenticated session (Cookie-only, ADR-0031)."""
-    token = request.cookies.get("session_token")
-
+def session_user(token: str | None) -> str:
+    """Validate an existing cookie session without depending on a runtime store."""
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -90,3 +88,8 @@ async def get_current_user(request: Request) -> str:
         )
 
     return session["username"]
+
+
+async def get_current_user(request: Request) -> str:
+    """The legacy panel keeps its existing cookie name and session behavior."""
+    return session_user(request.cookies.get("session_token"))

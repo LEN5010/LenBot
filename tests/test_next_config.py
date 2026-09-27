@@ -6,8 +6,9 @@ from datetime import time as WallTime
 import pytest
 from pydantic import ValidationError
 
-from len_bot.next.config import ONEBOT_SETTINGS, LabConfig, OneBotForward, OneBotReverse, QuietHours, load_config
+from len_bot.next.config import ONEBOT_SETTINGS, LabConfig, OneBotForward, OneBotReverse, PanelSettings, QuietHours, load_config
 from len_bot.next.persona import load_persona
+from len_bot.web.auth import hash_password
 
 
 def _config(persona: str) -> dict:
@@ -230,6 +231,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.persona == external_persona
     assert config.voice_mode == "voice" and config.max_steps == 8
     assert config.onebot is None and config.delivery == "simulated"
+    assert config.panel is None
     assert config.compaction.trigger_ratio == 0.6
     assert config.compaction.keep_recent_entries == 30
     assert config.compaction.max_output_tokens == 1024
@@ -265,6 +267,115 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.model_settings("voice").model == "sample-voice"
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+@pytest.mark.parametrize("port", [0, 65535])
+def test_panel_configuration_uses_existing_hash_and_resolves_external_assets(tmp_path, port):
+    root = tmp_path / "lab"
+    password_hash = hash_password("synthetic-panel-password", salt="synthetic-salt")
+    source = _config("personas/example")
+    source["panel"] = {
+        "host": "127.0.0.1", "port": port, "username": "operator",
+        "password_hash": password_hash, "cookie_secure": True,
+        "assets_dir": "../isolated-assets",
+    }
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    assert isinstance(config.panel, PanelSettings)
+    assert config.panel.host == "127.0.0.1" and config.panel.port == port
+    assert config.panel.username == "operator" and config.panel.password_hash == password_hash
+    assert config.panel.cookie_secure is True
+    assert config.panel.assets_dir == tmp_path / "isolated-assets"
+    assert config.onebot is None and config.delivery == "simulated"
+    assert config.model_settings("mind").reasoning_effort == "high"
+    assert config.model_settings("mind").model == "sample-mind"
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+    assert password_hash not in repr(config.panel)
+    assert password_hash not in repr(config)
+
+
+def test_panel_configuration_defaults_and_absolute_asset_path(tmp_path):
+    root = tmp_path / "lab"
+    password_hash = hash_password("synthetic-panel-password", salt="synthetic-salt")
+    source = _config("personas/example")
+    source["panel"] = {"host": "::1", "port": 8090, "username": "operator",
+                       "password_hash": password_hash}
+    _write_config(root, source)
+
+    panel = load_config(root).panel
+
+    assert panel.cookie_secure is False and panel.assets_dir is None
+    assert PanelSettings.model_validate_json(panel.model_dump_json()) == panel
+
+    source["panel"]["assets_dir"] = str(tmp_path / "built-assets")
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    assert load_config(root).panel.assets_dir == tmp_path / "built-assets"
+
+
+@pytest.mark.parametrize(
+    ("panel", "field"),
+    [
+        ({"port": 0, "username": "operator"}, "host"),
+        ({"host": "127.0.0.1", "username": "operator"}, "port"),
+        ({"host": "127.0.0.1", "port": 0}, "username"),
+        ({"host": "127.0.0.1", "port": 0, "username": "operator"}, "password_hash"),
+        ({"host": "  "}, "host"),
+        ({"username": "  "}, "username"),
+        ({"host": 123}, "host"),
+        ({"username": 123}, "username"),
+        ({"port": -1}, "port"),
+        ({"port": 65536}, "port"),
+        ({"port": True}, "port"),
+        ({"port": 0.0}, "port"),
+        ({"port": "0"}, "port"),
+        ({"cookie_secure": "false"}, "cookie_secure"),
+        ({"assets_dir": ""}, "panel.assets_dir"),
+        ({"assets_dir": 123}, "panel.assets_dir"),
+        ({"unexpected": True}, "unexpected"),
+        ("not-an-object", "panel"),
+    ],
+)
+def test_panel_configuration_rejects_missing_or_invalid_fields(tmp_path, panel, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["panel"] = {"host": "127.0.0.1", "port": 0, "username": "operator",
+                       "password_hash": hash_password("synthetic-panel-password", salt="synthetic-salt")}
+    if isinstance(panel, dict):
+        source["panel"].update(panel)
+        for required in ("host", "port", "username", "password_hash"):
+            if required not in panel and field == required:
+                source["panel"].pop(required)
+    else:
+        source["panel"] = panel
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-panel-password" not in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("invalid_hash", [
+    "synthetic-panel-secret", "", "$" + "a" * 64,
+    "salt$" + "a" * 63, "salt$" + "a" * 65,
+    "salt$" + "G" * 64, "salt$" + "A" * 64, "salt$" + "a" * 64 + "$extra",
+])
+def test_panel_password_hash_format_error_does_not_echo_secret(tmp_path, invalid_hash):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["panel"] = {"host": "127.0.0.1", "port": 0, "username": "operator",
+                       "password_hash": invalid_hash}
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert "panel.password_hash" in str(failure.value)
+    if invalid_hash:
+        assert invalid_hash not in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 @pytest.mark.parametrize(

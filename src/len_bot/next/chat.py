@@ -73,10 +73,12 @@ def voice_prompt(persona: Persona) -> str:
 class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
                  mind: ChatModel, voice: ChatModel, *,
-                 send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None):
+                 send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
+                 on_update: Callable[[], None] | None = None):
         self.config, self.persona, self.store = config, persona, store
         self.mind, self.voice = mind, voice
         self.send_text = send_text
+        self.on_update = on_update
         say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
             **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
         }}
@@ -118,6 +120,10 @@ class Chat:
     def tools(self) -> list[dict]:
         return self.core_tools + [tool for tool in self.deferred_tools
                                   if tool["function"]["name"] in self.discovered_tools]
+
+    def notify(self) -> None:
+        if self.on_update is not None:
+            self.on_update()
 
     @property
     def tool_names(self) -> set[str]:
@@ -162,6 +168,7 @@ class Chat:
             "estimated_total_tokens": estimated,
             "context_window_tokens": binding.context_window_tokens,
         })
+        self.notify()
         reply = None
         try:
             if role == "recap":
@@ -182,10 +189,12 @@ class Chat:
             if isinstance(error, ModelProtocolError):
                 response, usage = error.response, error.usage
             self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}")
+            self.notify()
             raise
         self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
                             append_to_scene=self.config.scene if role == "mind" else None,
                             recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
+        self.notify()
         return reply
 
     def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
@@ -276,12 +285,14 @@ class Chat:
             errors.append(None)
             content = report_parts(parts, errors, self.render)
             message_seq = self.store.start_expression_part(entry_seq, part, prefix + content)
+            self.notify()
             if self.send_text is not None:
                 result = await self.send_text(part)
                 part.send_status, part.platform_message_id = result.status, result.platform_message_id
                 errors[-1] = result.error
                 content = report_parts(parts, errors, self.render)
                 self.store.finish_expression((message_seq, entry_seq), part, prefix + content)
+                self.notify()
                 if result.status != "sent":
                     break
         states = {part.send_status for part in parts[:len(errors)]}
@@ -325,6 +336,7 @@ class Chat:
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None) -> dict:
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state, scheduled=scheduled)
+        self.notify()
         expressions: list[str] = []
         extensions = 0
         failed_tools = 0
@@ -348,6 +360,7 @@ class Chat:
                                 expressions.append(content)
                                 if delivery_status not in {"sent", "simulated"}:
                                     failed_tools += 1
+                        self.notify()
                     if step + 1 < self.config.max_steps and extensions < self.config.attention.max_extensions:
                         if await append_new(bool(reply.tool_calls), turn_id):
                             extensions += 1

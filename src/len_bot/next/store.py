@@ -349,6 +349,27 @@ class Store:
         ).fetchall()
         return [self._message(row[0]) for row in reversed(rows)]
 
+    def recent_records(self, scene: str, limit: int = 50) -> list[tuple[int, ChatMessage]]:
+        rows = self.db.execute("SELECT seq,body FROM messages WHERE scene=? ORDER BY seq DESC LIMIT ?",
+                               (scene, limit)).fetchall()
+        return [(row[0], self._message(row[1])) for row in reversed(rows)]
+
+    def recent_turns(self, scene: str, limit: int = 20) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM turns WHERE scene=? ORDER BY started DESC,id DESC LIMIT ?", (scene, limit))]
+
+    def turn_detail(self, scene: str, turn_id: str) -> dict | None:
+        turn = self.db.execute("SELECT * FROM turns WHERE scene=? AND id=?", (scene, turn_id)).fetchone()
+        if turn is None:
+            return None
+        calls = []
+        for row in self.db.execute("SELECT * FROM model_calls WHERE turn_id=? ORDER BY id", (turn_id,)):
+            call = dict(row)
+            for key in ("request", "response", "usage"):
+                call[key] = None if call[key] is None else json.loads(call[key])
+            calls.append(call)
+        return {"turn": dict(turn), "calls": calls}
+
     def recent_context_messages(self, scene: str, limit: int = 20) -> list[ChatMessage]:
         """Only inbound messages already batched for the mind, plus saved outbound."""
         rows = self.db.execute(

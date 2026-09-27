@@ -12,7 +12,8 @@ import { returnTarget, sourcePath } from '../router/navigation.js'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const logoutGuard=useRequestGuard()
-const sections=[
+const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
+const legacySections=[
   {
     id:'overview',
     label:'运行概览',
@@ -30,15 +31,20 @@ const sections=[
     ['人格与参与',{name:'agent-settings'}],['能力状态',{name:'capabilities'}],
     ['插件与开发',{name:'plugins'}],['运行诊断',{name:'activity'}]]},
 ]
+const sections=computed(()=>isolated.value?[{
+  id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]
+}]:legacySections)
 const activeSection=computed(()=>{
+  if(isolated.value)return 'chat-test'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
   if(['memories','skills','media'].includes(route.name))return 'memory'
   return 'system'
 })
-const section=computed(()=>sections.find(item=>item.id===activeSection.value))
+const section=computed(()=>sections.value.find(item=>item.id===activeSection.value))
 const origin=computed(()=>{
+  if(isolated.value)return ''
   const target=returnTarget(route.query.return_to);
   return target&&target!==sourcePath(route)&&router.resolve(target).name!=='not-found'?target:''
 })
@@ -53,11 +59,13 @@ watch(()=>route.fullPath,()=>{
   if(mobile.value)drawer.value=false
 })
 function visible(){
-  if(document.visibilityState==='visible')refreshStatus()
+  if(!isolated.value && document.visibilityState==='visible')refreshStatus()
 }
 onMounted(()=>{
-  refreshStatus();
-  document.addEventListener('visibilitychange',visible)
+  if(!isolated.value){
+    refreshStatus()
+    document.addEventListener('visibilitychange',visible)
+  }
 })
 onUnmounted(()=>document.removeEventListener('visibilitychange',visible))
 async function exit(){
@@ -87,7 +95,7 @@ async function exit(){
   >
     <div class="app-brand">
       <img class="app-mark" :src="markUrl" alt="LenBot" />
-      <div><strong>LenBot</strong><span>运行管理中心</span></div>
+      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':'运行管理中心' }}</span></div>
       <v-btn
         v-if="mobile"
         :icon="mdiClose"
@@ -118,7 +126,7 @@ async function exit(){
   <v-app-bar flat :height="64" class="app-toolbar">
     <v-btn v-if="mobile" :icon="mdiMenu" variant="text" aria-label="打开导航" @click="drawer=true" />
     <v-app-bar-title><span class="toolbar-title">{{ route.meta.title }}</span></v-app-bar-title>
-    <v-menu location="bottom end" :close-on-content-click="false">
+    <v-menu v-if="!isolated" location="bottom end" :close-on-content-click="false">
       <template #activator="{props}">
         <v-btn
           v-bind="props"
@@ -148,9 +156,12 @@ async function exit(){
         </v-card-actions>
       </v-card>
     </v-menu>
-    <v-divider vertical class="toolbar-divider" />
+    <v-chip v-if="isolated" size="small" variant="tonal" color="secondary" class="isolated-chip">
+      隔离 · 模拟发送
+    </v-chip>
+    <v-divider v-else vertical class="toolbar-divider" />
     <v-chip
-      v-if="app.status"
+      v-if="!isolated && app.status"
       size="small"
       variant="tonal"
       :color="app.status.shadow_mode?'secondary':'warning'"
@@ -202,11 +213,13 @@ async function exit(){
 .status-indicator{width:6px;height:6px;border-radius:50%;background:var(--status-warning);display:inline-block;margin-right:8px}
 .status-indicator.healthy{background:var(--success)}
 .mode-chip{margin-inline:16px 24px}
+.isolated-chip{margin-inline:8px 20px;flex:none}
 .toolbar-divider{height:20px;align-self:center;margin-left:8px}
 .status-details p{margin:0 0 12px;line-height:1.6}
 .status-details{display:grid;gap:4px}
 @media(max-width:600px){
   .mode-chip,.toolbar-divider{display:none}
+  .isolated-chip{margin-inline:4px 12px}
   .toolbar-title{font-size:13px}
   .toolbar-status{margin-right:8px}
   .app-brand{padding:20px 16px}
