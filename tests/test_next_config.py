@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from len_bot.next.config import (
     ONEBOT_SETTINGS, HistoryExportSettings, HistoryImportSettings, HostConfig, LabConfig, OneBotForward, OneBotReverse,
-    PanelSettings, QuietHours, load_config, load_host_config, load_instance_config,
+    PanelSettings, QuietHours, ScenePersona, load_config, load_host_config, load_instance_config,
+    read_scene_persona, save_scene_persona,
 )
 from len_bot.next.persona import load_persona
 from len_bot.web.auth import hash_password
@@ -427,6 +428,113 @@ def test_multiscene_persona_overrides_reject_wrong_place_or_invalid_scene(tmp_pa
     with pytest.raises(ValueError) as failure:
         load_host_config(root)
     assert ("persona_aliases" if placement == "top" else "scenes.group:80001.relationships") in str(failure.value)
+
+
+def test_scene_persona_write_contract_requires_all_three_fields():
+    values = {
+        "persona_aliases": ["群内称呼"],
+        "relationships": {"80002": "熟悉"},
+        "behavior_addendum": None,
+    }
+    assert ScenePersona.model_validate_json(json.dumps(values)).model_dump() == values
+    for missing in values:
+        with pytest.raises(ValidationError, match=missing):
+            ScenePersona.model_validate({key: value for key, value in values.items() if key != missing})
+    with pytest.raises(ValidationError, match="unexpected"):
+        ScenePersona.model_validate({**values, "unexpected": "not a scene field"})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("persona_aliases", "not a list"),
+    ("persona_aliases", ["  "]),
+    ("relationships", {"0": "熟悉"}),
+    ("relationships", {"80002": "\n "}),
+    ("behavior_addendum", " "),
+    ("behavior_addendum", 3),
+])
+def test_scene_persona_write_contract_reuses_scene_validation(field, value):
+    source = {"persona_aliases": [], "relationships": {}, "behavior_addendum": None}
+    source[field] = value
+    with pytest.raises(ValidationError, match=field):
+        ScenePersona.model_validate(source)
+
+
+def test_scene_persona_public_save_preserves_unedited_root_values_and_relative_paths(tmp_path):
+    root = tmp_path / "isolated"
+    source = _config("personas/relative-package")
+    source["persona_aliases"] = ["原称呼"]
+    source["relationships"] = {"80002": "原说明"}
+    source["behavior_addendum"] = "原行为补充"
+    _write_config(root, source)
+    persona_path = root / "personas" / "relative-package" / "persona.yaml"
+    persona_path.parent.mkdir(parents=True)
+    persona_path.write_bytes(b"operator-owned persona source\n")
+
+    assert read_scene_persona(root).model_dump() == {
+        "persona_aliases": ["原称呼"], "relationships": {"80002": "原说明"},
+        "behavior_addendum": "原行为补充",
+    }
+    changes = ScenePersona(
+        persona_aliases=[" 新称呼 ", "第二个"],
+        relationships={"80003": " 熟人，保留空白 "},
+        behavior_addendum=None,
+    )
+    save_scene_persona(root, changes)
+
+    saved = json.loads((root / "lenbot.config.json").read_text(encoding="utf-8"))
+    assert {key: value for key, value in saved.items() if key not in ScenePersona.model_fields} == {
+        key: value for key, value in source.items() if key not in ScenePersona.model_fields
+    }
+    assert saved["database"] == "data/isolated-chat.db"
+    assert saved["persona"] == "personas/relative-package"
+    assert saved["models"]["providers"]["sample"]["api_key"] == "synthetic-secret-marker"
+    assert {key: saved[key] for key in ScenePersona.model_fields} == changes.model_dump()
+    assert read_scene_persona(root) == changes
+    assert persona_path.read_bytes() == b"operator-owned persona source\n"
+
+
+def test_scene_persona_read_uses_full_root_validation_with_original_defaults(tmp_path):
+    root = tmp_path / "isolated"
+    _write_config(root, _config("personas/example"))
+    assert read_scene_persona(root).model_dump() == {
+        "persona_aliases": [], "relationships": {}, "behavior_addendum": None,
+    }
+
+
+@pytest.mark.parametrize("fault,field", [
+    (lambda source: source.update(unexpected_root_field=True), "unexpected_root_field"),
+    (lambda source: source["models"]["roles"]["mind"].update(provider="missing"),
+     "models.roles.mind.provider"),
+])
+def test_scene_persona_save_rejects_invalid_full_root_without_writing(tmp_path, fault, field):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    fault(source)
+    _write_config(root, source)
+    path = root / "lenbot.config.json"
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError) as failure:
+        save_scene_persona(root, ScenePersona(
+            persona_aliases=["合法的新称呼"], relationships={}, behavior_addendum=None,
+        ))
+    assert field in str(failure.value)
+    assert path.read_bytes() == before
+    assert not list(root.glob(".lenbot-config-*.json"))
+
+
+def test_scene_persona_save_rejects_malformed_root_without_writing(tmp_path):
+    root = tmp_path / "isolated"
+    root.mkdir()
+    path = root / "lenbot.config.json"
+    before = b'{"mode":"isolated", invalid JSON}\n'
+    path.write_bytes(before)
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        save_scene_persona(root, ScenePersona(
+            persona_aliases=[], relationships={}, behavior_addendum=None,
+        ))
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize(
