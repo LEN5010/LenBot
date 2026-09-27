@@ -24,6 +24,7 @@ from .pricing import ModelPrice
 from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
 from .memory_embeddings import EmbeddingBinding
+from .tasks_config import TaskSettings
 from len_bot.web.auth import hash_password
 
 
@@ -95,6 +96,17 @@ class OpenVikingMemoryChange(RecallSettings):
 class MemoryChange(BaseModel):
     model_config = STRICT
     memory: Annotated[LocalMemoryChange | OpenVikingMemoryChange, Field(discriminator="backend")] | None
+
+
+class WorkerChange(BaseModel):
+    model_config = STRICT
+    # The root loader resolves its paths and validates the whole candidate once.
+    worker: dict | None
+
+
+class TaskSceneChange(BaseModel):
+    model_config = STRICT
+    tasks: TaskSettings
 
 
 def _memory_settings(config: HostConfig) -> dict | None:
@@ -194,6 +206,7 @@ def _project(config: HostConfig) -> dict:
                 "voice_mode": settings.voice_mode,
                 "attention": settings.attention.model_dump(mode="json"),
                 "schedules": settings.schedules.model_dump(mode="json"),
+                "tasks": settings.tasks.model_dump(mode="json"),
                 "scene_persona": {
                     "persona_aliases": settings.persona_aliases,
                     "relationships": settings.relationships,
@@ -205,6 +218,7 @@ def _project(config: HostConfig) -> dict:
         "web_read": None if config.web_read is None else config.web_read.model_dump(mode="json"),
         "web_search": None if config.web_search is None else config.web_search.model_dump(mode="json"),
         "memory": _memory_settings(config),
+        "worker": None if config.worker is None else config.worker.model_dump(mode="json"),
     }
 
 
@@ -228,6 +242,7 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
             "web_read": running.web_read != saved.web_read,
             "web_search": running.web_search != saved.web_search,
             "memory": running.memory != saved.memory,
+            "worker": running.worker != saved.worker,
         },
     }
 
@@ -297,6 +312,13 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                             "运行中不能保存大脑协议、地址或模型变更；即使此刻没有历史，"
                             "当前进程仍可能写入旧绑定。请先停机，再显式转换可移植历史。根配置未保存"
                         )
+                    if running.worker is not None and candidate.worker is not None:
+                        if any(getattr(running.worker, key) != getattr(candidate.worker, key)
+                               for key in ("docker_host", "workspace_root", "runtime_root")):
+                            raise ValueError(
+                                "运行中不能保存任务 Docker 地址、工作区或运行目录的迁移；"
+                                "先停机清理任务容器，再搬迁原文件和修改根配置。根配置未保存"
+                            )
                     temporary.replace(path)
                 finally:
                     temporary.unlink(missing_ok=True)
@@ -359,6 +381,24 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         return await save(lambda source, _: source.update(web_read=(
             None if change.web_read is None else change.web_read.model_dump(mode="json")
         )))
+
+    @app.put("/api/host/settings/worker")
+    async def put_worker(request: Request, _: str = Depends(user)):
+        change: WorkerChange = await _body(request, WorkerChange)
+        return await save(lambda source, _: source.update(worker=change.worker))
+
+    @app.put("/api/host/settings/scenes/{scene}/tasks")
+    async def put_tasks(scene: str, request: Request, _: str = Depends(user)):
+        if scene not in running.scenes:
+            raise HTTPException(404, "当前宿主未配置这一场景")
+        change: TaskSceneChange = await _body(request, TaskSceneChange)
+
+        def edit(source: dict, saved: HostConfig) -> None:
+            if scene not in saved.scenes:
+                raise ValueError(f"根配置已不包含场景 {scene!r}")
+            source["scenes"][scene]["tasks"] = change.tasks.model_dump(mode="json")
+
+        return await save(edit)
 
     @app.put("/api/host/settings/web-search")
     async def put_web_search(request: Request, _: str = Depends(user)):
