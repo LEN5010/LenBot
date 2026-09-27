@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -137,7 +136,6 @@ async def extract_local(
     timezone: str,
     context_window_tokens: int,
     max_steps: int,
-    write_lock: asyncio.Lock,
     start_call: Callable[[dict], int],
     finish_call: Callable[[int, object | None, dict | None, str | None, dict | None], None],
     record_tool: Callable[[str, str, dict, str, str | None], None],
@@ -145,7 +143,7 @@ async def extract_local(
     price: ModelPrice | None = None,
     slots: ModelSlots | None = None,
 ) -> ExtractResult:
-    """Run one bounded extraction; the host owns job status and successful position."""
+    """Run under the host-held scene write lock with its freshly selected input."""
     if max_steps <= 0 or context_window_tokens <= model.settings.max_output_tokens:
         raise ValueError("memory extraction needs positive steps and a window larger than output reservation")
     source = _source_messages(scene, messages, timezone)
@@ -155,53 +153,52 @@ async def extract_local(
     ]
     written = 0
     failed_tools = 0
-    async with write_lock:
-        for _ in range(max_steps):
-            estimated = estimate_request(conversation, TOOLS, model.settings.max_output_tokens)
-            if estimated > context_window_tokens:
-                raise ContextBudgetError(
-                    f"memory extraction request with reserved output estimates {estimated} tokens, "
-                    f"exceeding configured window {context_window_tokens}; model was not called")
-            reply: ModelReply | None = None
-            async with (slots.slot(direct=False) if slots is not None else nullcontext()):
-                call_id = start_call({
-                    "settings": model.settings.model_dump(exclude={"api_key"}),
-                    "messages": conversation, "tools": TOOLS,
-                    "estimated_total_tokens": estimated,
-                    "context_window_tokens": context_window_tokens,
-                    "price": None if price is None else price.model_dump(mode="json"),
-                })
-                try:
-                    reply = await model.complete(conversation, TOOLS)
-                except BaseException as error:
-                    response: object | None = None
-                    usage: dict | None = None
-                    token_usage = None
-                    if isinstance(error, ModelProtocolError):
-                        response, usage, token_usage = error.response, error.usage, error.token_usage
-                    finish_call(call_id, response, usage, f"{type(error).__name__}: {error}",
-                                estimate_cost(price, token_usage))
-                    raise
-                finish_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason},
-                            reply.usage, None, estimate_cost(price, reply.token_usage))
-            conversation.append(reply.message)
-            if not reply.tool_calls:
-                return ExtractResult(summary=reply.text, write_count=written,
-                                     failed_tools=failed_tools)
-            for call in reply.tool_calls:
-                try:
-                    content, change = await _tool(scene, backend, call)
-                except Exception as error:
-                    original = f"{type(error).__name__}: {error}"
-                    content = f"{call.name} 失败：{original}"
-                    record_tool(call.id, call.name, call.arguments, content, original)
-                    failed_tools += 1
-                else:
-                    if change is not None:
-                        record_write(change)
-                    record_tool(call.id, call.name, call.arguments, content, None)
-                    if change is not None:
-                        written += 1
-                conversation.append({"role": "tool", "tool_call_id": call.id, "content": content})
+    for _ in range(max_steps):
+        estimated = estimate_request(conversation, TOOLS, model.settings.max_output_tokens)
+        if estimated > context_window_tokens:
+            raise ContextBudgetError(
+                f"memory extraction request with reserved output estimates {estimated} tokens, "
+                f"exceeding configured window {context_window_tokens}; model was not called")
+        reply: ModelReply | None = None
+        async with (slots.slot(direct=False) if slots is not None else nullcontext()):
+            call_id = start_call({
+                "settings": model.settings.model_dump(exclude={"api_key"}),
+                "messages": conversation, "tools": TOOLS,
+                "estimated_total_tokens": estimated,
+                "context_window_tokens": context_window_tokens,
+                "price": None if price is None else price.model_dump(mode="json"),
+            })
+            try:
+                reply = await model.complete(conversation, TOOLS)
+            except BaseException as error:
+                response: object | None = None
+                usage: dict | None = None
+                token_usage = None
+                if isinstance(error, ModelProtocolError):
+                    response, usage, token_usage = error.response, error.usage, error.token_usage
+                finish_call(call_id, response, usage, f"{type(error).__name__}: {error}",
+                            estimate_cost(price, token_usage))
+                raise
+            finish_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason},
+                        reply.usage, None, estimate_cost(price, reply.token_usage))
+        conversation.append(reply.message)
+        if not reply.tool_calls:
+            return ExtractResult(summary=reply.text, write_count=written,
+                                 failed_tools=failed_tools)
+        for call in reply.tool_calls:
+            try:
+                content, change = await _tool(scene, backend, call)
+            except Exception as error:
+                original = f"{type(error).__name__}: {error}"
+                content = f"{call.name} 失败：{original}"
+                record_tool(call.id, call.name, call.arguments, content, original)
+                failed_tools += 1
+            else:
+                if change is not None:
+                    record_write(change)
+                record_tool(call.id, call.name, call.arguments, content, None)
+                if change is not None:
+                    written += 1
+            conversation.append({"role": "tool", "tool_call_id": call.id, "content": content})
     raise RuntimeError(f"memory extraction exhausted max_steps={max_steps} after "
                        f"{written} actual writes and {failed_tools} failed tools; final response still called tools")

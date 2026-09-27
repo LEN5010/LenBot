@@ -72,7 +72,7 @@ async def run() -> None:
             ChatModel(config.model_settings("voice")) as voice,
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
-            open_memory(config) as memory,
+            open_memory(config, store) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,

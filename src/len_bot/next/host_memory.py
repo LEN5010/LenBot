@@ -5,14 +5,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .config import STRICT
 from .memory_local import LocalMemory
 from .network import NetworkRuntime
+from .recall import RecallArguments, message_page
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,13 @@ class DeleteRequest(BaseModel):
     path: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     forget: bool
+    exclude_records: list[Annotated[int, Field(gt=0)]] | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def matching_operation(self):
+        if self.forget != (self.exclude_records is not None):
+            raise ValueError("forget 必须显式选择 exclude_records（可为 []）；普通删除不接受来源排除")
+        return self
 
 
 def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None:
@@ -103,7 +111,27 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
     @app.post("/api/host/memory/delete")
     async def delete(body: DeleteRequest, _: str = Depends(user)):
         async with operation(body.scene) as memory:
-            return await memory.delete(body.scene, body.path, body.reason, forget=body.forget)
+            return await memory.delete(body.scene, body.path, body.reason, forget=body.forget,
+                                       exclude_records=body.exclude_records)
+
+    @app.get("/api/host/memory/sources")
+    async def sources(scene: str, query: str | None = None, who: str | None = None,
+                      snapshot: int | None = Query(default=None, ge=0), offset: int = Query(default=0, ge=0),
+                      _: str = Depends(user)):
+        async with operation(scene) as memory:
+            arguments = RecallArguments(query=query, who=who, snapshot=snapshot, offset=offset)
+            current = runtime.store.max_message_seq(scene)
+            boundary = current if arguments.snapshot is None else arguments.snapshot
+            if boundary > current:
+                raise ValueError("snapshot 超过当前场景消息末尾")
+            rows = runtime.store.search_messages(scene, query=arguments.query, who=arguments.who,
+                                                after=None, before=None, snapshot=boundary,
+                                                offset=arguments.offset, limit=11)
+            excluded = set(memory.jobs.excluded_records(scene))
+            return {"snapshot": boundary, "offset": arguments.offset,
+                    "next_offset": arguments.offset + 10 if len(rows) > 10 else None,
+                    "previews": [{**message_page(seq, message, runtime.config.timezone, offset=0, size=500),
+                                  "excluded": seq in excluded} for seq, message in rows[:10]]}
 
     @app.get("/api/host/memory/ingest")
     async def ingest_state(_: str = Depends(user)):

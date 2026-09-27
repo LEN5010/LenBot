@@ -153,15 +153,9 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     if "schedule" in names:
         system += "\n" + (PROMPTS / "next_schedule.md").read_text()
     if "memory" in names:
-        details = ("本地后端使用相对 Markdown 路径，例如 people/<真实QQ>/profile.md、events/日期-主题.md。"
-                   "write 保存修改前后正文与原因；history 查看历史；delete 保留历史，forget 移除当前文件、索引和该路径可访问的正文版本。"
-                   if config.memory.backend == "local" else
-                   "OpenViking 后端使用原生路径 memories/... 或 peers/<真实QQ>/memories/...。"
-                   "write 和 delete 按返回值说明实际刷新结果；当前没有 history 和 forget 能力，修改原因不会保存为服务端历史。")
-        if config.memory.ingest is not None:
-            details += "\n当前开启自动抽取，来源补抽排除尚未接入，forget 暂不可用。"
         system += "\n" + Template((PROMPTS / "next_memory.md").read_text()).substitute(
-            backend=config.memory.backend, backend_details=details,
+            backend=config.memory.backend,
+            backend_details=(PROMPTS / f"next_memory_{config.memory.backend}.md").read_text(),
         )
     elif config.memory is not None and config.memory.auto_recall:
         system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()

@@ -21,14 +21,19 @@ class MemoryJobs:
         try:
             tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             if tables:
-                if (self.db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424D4A
-                        or self.db.execute("PRAGMA user_version").fetchone()[0] != 1):
+                application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
+                version = self.db.execute("PRAGMA user_version").fetchone()[0]
+                if application_id == 0x4C424D4A and version == 1:
+                    raise ValueError(
+                        f"Memory processing database format 1 requires offline migration while stopped: {path}; "
+                        "run python -m len_bot.next.migrate_memory_jobs from the instance directory")
+                if application_id != 0x4C424D4A or version != 2:
                     raise ValueError(f"unsupported memory processing database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id=1279413578;
-                    PRAGMA user_version=1;
+                    PRAGMA user_version=2;
                     CREATE TABLE memory_cursors (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL,
                         enabled_at REAL NOT NULL
@@ -40,6 +45,10 @@ class MemoryJobs:
                         details TEXT NOT NULL, error TEXT
                     );
                     CREATE INDEX memory_jobs_scene ON memory_jobs(scene,id);
+                    CREATE TABLE memory_exclusions (
+                        scene TEXT NOT NULL, message_seq INTEGER NOT NULL,
+                        PRIMARY KEY(scene,message_seq)
+                    );
                     COMMIT;
                 """)
         except BaseException:
@@ -48,6 +57,12 @@ class MemoryJobs:
 
     def close(self) -> None:
         self.db.close()
+
+    def __enter__(self) -> MemoryJobs:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def initialize(self, scene: str, latest_seq: int) -> None:
         with self.db:
@@ -59,6 +74,29 @@ class MemoryJobs:
 
     def after(self, scene: str) -> int:
         return self.db.execute("SELECT after_seq FROM memory_cursors WHERE scene=?", (scene,)).fetchone()[0]
+
+    def exclude_records(self, scene: str, records: list[int]) -> int:
+        """Persist selected real message positions; ownership is checked by the host."""
+        with self.db:
+            before = self.db.total_changes
+            self.db.executemany(
+                "INSERT OR IGNORE INTO memory_exclusions(scene,message_seq) VALUES(?,?)",
+                ((scene, record) for record in records),
+            )
+            return self.db.total_changes - before
+
+    def excluded_records(self, scene: str, after: int = 0,
+                         through: int | None = None) -> list[int]:
+        conditions = ["scene=?", "message_seq>?"]
+        values: list[object] = [scene, after]
+        if through is not None:
+            conditions.append("message_seq<=?")
+            values.append(through)
+        rows = self.db.execute(
+            "SELECT message_seq FROM memory_exclusions WHERE " + " AND ".join(conditions)
+            + " ORDER BY message_seq", values,
+        ).fetchall()
+        return [row[0] for row in rows]
 
     def latest(self, scene: str) -> dict | None:
         row = self.db.execute("SELECT * FROM memory_jobs WHERE scene=? ORDER BY id DESC LIMIT 1",

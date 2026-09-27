@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Sequence
 
 from .memory import MemoryService
 from .memory_extract import extract_local
-from .memory_jobs import MemoryJobs
 from .memory_local import LocalMemory, LocalMemoryChange
 from .memory_openviking import OpenVikingMemory
 from .model import ChatModel
@@ -53,34 +52,30 @@ class MemoryIngestor:
         self.slots = slots
         self.settings = settings
         self.scenes = tuple(dict.fromkeys(scenes))
-        self.jobs = MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3"))
+        self.jobs = memory.jobs
         self._wake = {scene: asyncio.Event() for scene in self.scenes}
         self._force: set[str] = set()
         self._refresh: set[str] = set()
         self._workers: dict[str, asyncio.Task[None]] = {}
         self.errors: dict[str, BaseException] = {}
-        try:
-            for scene in self.scenes:
-                self.jobs.initialize(scene, store.max_message_seq(scene))
-                latest = self.jobs.latest(scene)
-                if latest is None:
-                    continue
-                if latest["backend"] != memory.settings.backend and latest["status"] != "complete":
-                    raise ValueError(
-                        f"scene {scene}: unfinished {latest['backend']} memory job "
-                        f"{latest['id']} cannot be processed by {memory.settings.backend}")
-                if latest["backend"] == "openviking":
-                    task_id = latest["details"].get("task_id")
-                    if latest["status"] == "submitted" and task_id:
-                        memory.pending_native_tasks[scene] = task_id
-                    elif (latest["status"] in {"failed", "interrupted"}
-                          and latest["details"].get("native_phase") == "submitting"
-                          and not task_id):
-                        # The commit may have happened, even without a receipt here.
-                        memory.pending_native_tasks[scene] = "submission outcome unknown"
-        except BaseException:
-            self.jobs.close()
-            raise
+        for scene in self.scenes:
+            self.jobs.initialize(scene, store.max_message_seq(scene))
+            latest = self.jobs.latest(scene)
+            if latest is None:
+                continue
+            if latest["backend"] != memory.settings.backend and latest["status"] != "complete":
+                raise ValueError(
+                    f"scene {scene}: unfinished {latest['backend']} memory job "
+                    f"{latest['id']} cannot be processed by {memory.settings.backend}")
+            if latest["backend"] == "openviking":
+                task_id = latest["details"].get("task_id")
+                if latest["status"] == "submitted" and task_id:
+                    memory.pending_native_tasks[scene] = task_id
+                elif (latest["status"] in {"failed", "interrupted"}
+                      and latest["details"].get("native_phase") == "submitting"
+                      and not task_id):
+                    # The commit may have happened, even without a receipt here.
+                    memory.pending_native_tasks[scene] = "submission outcome unknown"
 
     def start(self) -> None:
         if self._workers:
@@ -96,7 +91,6 @@ class MemoryIngestor:
             for scene, result in zip(self._workers, results, strict=True):
                 if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     self.errors[scene] = result
-        self.jobs.close()
         self._workers.clear()
 
     def _scene(self, scene: str) -> None:
@@ -184,14 +178,18 @@ class MemoryIngestor:
                 self._force.discard(scene)
                 return False
         after = self.jobs.after(scene)
-        rows = self.store.memory_messages(scene, after, limit=self.settings.batch_size)
+        excluded = self.jobs.excluded_records(scene, after=after)
+        rows = self.store.memory_messages(
+            scene, after, limit=max(self.settings.batch_size, self.settings.min_messages),
+            exclude_records=excluded,
+        )
         force = scene in self._force
         self._force.discard(scene)
         if not rows:
             return False
         now = time.time()
         oldest = rows[0][2]
-        last = self.store.last_memory_input_at(scene, after)
+        last = self.store.last_memory_input_at(scene, after, exclude_records=excluded)
         if last is None:
             raise ValueError(f"scene {scene}: stored memory input has no actual arrival/sent time")
         due = (force or now - oldest >= self.settings.max_age_seconds
@@ -199,34 +197,36 @@ class MemoryIngestor:
                    and now - last >= self.settings.idle_seconds))
         if not due:
             return False
+        rows = rows[:self.settings.batch_size]
         job = self.jobs.create(scene, self.memory.settings.backend, rows[0][0], rows[-1][0])
         job["details"]["message_count"] = len(rows)
         self.jobs.details(job)
-        await self._run(scene, job, rows)
+        await self._run(scene, job)
         return True
 
-    async def _run(self, scene: str, job: dict,
-                   rows: list[tuple] | None = None) -> None:
-        if rows is None:
-            try:
-                rows = self.store.memory_messages(
-                    scene, self.jobs.after(scene), limit=100, through=job["through_seq"])
-            except Exception as error:
-                self.jobs.status(job, "failed", _error_text(error))
-                return
-        if (not rows or rows[0][0] != job["first_seq"]
-                or rows[-1][0] != job["through_seq"]
-                or ("message_count" in job["details"]
-                    and len(rows) != job["details"]["message_count"])):
-            error = ValueError(f"memory source range changed for job {job['id']}; original messages required")
-            self.jobs.status(job, "failed", _error_text(error))
-            return
+    async def _run(self, scene: str, job: dict) -> None:
         if isinstance(self.memory.backend, LocalMemory):
-            await self._run_local(scene, job, rows)
+            await self._run_local(scene, job)
         else:
-            await self._submit_native(scene, job, rows)
+            await self._submit_native(scene, job)
 
-    async def _run_local(self, scene: str, job: dict, rows: list[tuple]) -> None:
+    def _selected_input(self, scene: str, job: dict) -> list[tuple]:
+        """Read under the scene write lock, after any earlier forget has finished."""
+        excluded = self.jobs.excluded_records(scene, after=job["first_seq"] - 1,
+                                              through=job["through_seq"])
+        rows = self.store.memory_messages(scene, job["first_seq"] - 1, limit=100,
+                                          through=job["through_seq"], exclude_records=excluded)
+        job["details"].update(excluded_records=excluded, selected_message_count=len(rows))
+        self.jobs.details(job)
+        if not rows:
+            if not excluded:
+                raise ValueError(f"memory source range has no readable original messages: {job['id']}")
+            job["details"]["result"] = {"status": "input_excluded", "write_count": 0,
+                                        "model_calls": 0}
+            self.jobs.status(job, "complete")
+        return rows
+
+    async def _run_local(self, scene: str, job: dict) -> None:
         binding = self.config.models.roles.memory
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         self.jobs.status(job, "running")
@@ -265,15 +265,18 @@ class MemoryIngestor:
 
         try:
             async with asyncio.timeout(self.settings.timeout_seconds):
-                result = await extract_local(
-                    scene, [message for _, message, _ in rows], self.memory.backend,
-                    self.model, timezone=self.config.timezone,
-                    context_window_tokens=binding.context_window_tokens,
-                    max_steps=self.settings.max_steps,
-                    write_lock=self.memory.write_lock(scene), start_call=start_call,
-                    finish_call=finish_call, record_tool=record_tool,
-                    record_write=record_write, price=price, slots=self.slots,
-                )
+                async with self.memory.write_lock(scene):
+                    rows = self._selected_input(scene, job)
+                    if not rows:
+                        return
+                    result = await extract_local(
+                        scene, [message for _, message, _ in rows], self.memory.backend,
+                        self.model, timezone=self.config.timezone,
+                        context_window_tokens=binding.context_window_tokens,
+                        max_steps=self.settings.max_steps, start_call=start_call,
+                        finish_call=finish_call, record_tool=record_tool,
+                        record_write=record_write, price=price, slots=self.slots,
+                    )
         except asyncio.CancelledError as error:
             detail = "Process stopped during local extraction"
             if error.__cause__ is not None:
@@ -289,12 +292,15 @@ class MemoryIngestor:
         else:
             self.jobs.status(job, "complete")
 
-    async def _submit_native(self, scene: str, job: dict, rows: list[tuple]) -> None:
-        job["details"]["native_phase"] = "submitting"
-        self.jobs.status(job, "running")
-        self.memory.pending_native_tasks[scene] = "submitting"
+    async def _submit_native(self, scene: str, job: dict) -> None:
         try:
             async with self.memory.write_lock(scene):
+                rows = self._selected_input(scene, job)
+                if not rows:
+                    return
+                job["details"]["native_phase"] = "submitting"
+                self.jobs.status(job, "running")
+                self.memory.pending_native_tasks[scene] = "submitting"
                 async with asyncio.timeout(self.settings.timeout_seconds):
                     receipt = await self.memory.backend.ingest(
                         scene, [message for _, message, _ in rows])
