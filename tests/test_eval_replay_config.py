@@ -40,6 +40,51 @@ def test_synthetic_structured_cases_keep_original_onebot_envelopes_and_boundarie
     assert [type(step) for step in loaded.cases[1].steps] == [MessageStep, ObserveStep]
     assert loaded.cases[0].steps[0].event == source["cases"][0]["steps"][0]["event"]
     assert loaded.cases[0].expect == source["cases"][0]["expect"]
+    assert all(case.start_time is None for case in loaded.cases)
+
+
+def test_explicit_case_start_time_preserves_platform_event_time_and_words(tmp_path):
+    source = _source()
+    original_event = copy.deepcopy(source["cases"][0]["steps"][0]["event"])
+    source["cases"][0]["start_time"] = 1790000300.25
+    path = _write(tmp_path, source)
+
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+
+    assert loaded.cases[0].start_time == 1790000300.25
+    assert loaded.cases[1].start_time is None
+    assert loaded.cases[0].steps[0].event == original_event
+    assert loaded.cases[0].steps[0].event["time"] == 1790000000
+
+
+def test_case_start_time_accepts_integer_json_seconds_as_float(tmp_path):
+    source = _source()
+    original_event = copy.deepcopy(source["cases"][0]["steps"][0]["event"])
+    source["cases"][0]["start_time"] = 1735689600
+    path = _write(tmp_path, source)
+
+    loaded = load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    assert loaded.cases[0].start_time == 1735689600.0
+    assert type(loaded.cases[0].start_time) is float
+    assert loaded.cases[0].steps[0].event == original_event
+
+
+@pytest.mark.parametrize("value,fragment", [
+    (True, "start_time"),
+    ("1790000000.0", "start_time"),
+    (float("nan"), "NaN"),
+    (float("inf"), "Infinity"),
+    (1e100, "start_time"),
+])
+def test_case_start_time_rejects_nonnumber_nonfinite_or_unrepresentable_values(tmp_path, value, fragment):
+    source = _source()
+    source["cases"][0]["start_time"] = value
+    path = _write(tmp_path, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_cases(path, set_name="coherence", scene=SCENE, bot_qq=BOT)
+    assert str(path) in str(failure.value)
+    assert fragment in str(failure.value)
 
 
 @pytest.mark.parametrize("change,field", [

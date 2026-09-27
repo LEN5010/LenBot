@@ -104,6 +104,7 @@ class SceneRunner:
     def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool,
                  ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None):
         self.chat = chat
+        self.now = chat.now
         self.store, self.config = chat.store, chat.config
         self.settings = self.config.attention
         self.emit = emit
@@ -211,9 +212,9 @@ class SceneRunner:
         existing = self.store.find_message(message.scene, message.platform_message_id)
         if existing is not None:
             if existing.is_self and existing.send_status == "sent":
-                self.store.attach_echo(message, raw, time.time())
+                self.store.attach_echo(message, raw, self.now())
             return {"status": "duplicate", "platform_message_id": message.platform_message_id}
-        now = time.time()
+        now = self.now()
         state = copy.deepcopy(self.state)
         period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
         self.clear_quiet_wake(state, now, period)
@@ -249,7 +250,7 @@ class SceneRunner:
         deadline = started + seconds
         while True:
             self.changed.clear()
-            now = time.time()
+            now = self.now()
             period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
             if period is None:
                 available = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None
@@ -322,7 +323,7 @@ class SceneRunner:
                                         list[tuple[int, str]]] | None:
         while True:
             self.changed.clear()
-            now = time.time()
+            now = self.now()
             period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
             state = copy.deepcopy(self.state)
             self.clear_quiet_wake(state, now, period)
@@ -386,9 +387,9 @@ class SceneRunner:
         state = copy.deepcopy(self.state)
         if state.pending is not None:
             if state.pending.keywords:
-                state.keyword_last.update(dict.fromkeys(state.pending.keywords, time.time()))
+                state.keyword_last.update(dict.fromkeys(state.pending.keywords, self.now()))
             if state.pending.channel == "ambient":
-                state.ambient_last_at = time.time()
+                state.ambient_last_at = self.now()
             state.pending = None
         return state
 
@@ -511,11 +512,11 @@ class SceneRunner:
                 continue
             if self.closing:
                 return
-            deadline = self.schedule_deadline(time.time())
+            deadline = self.schedule_deadline(self.now())
             if deadline is None:
                 await self.changed.wait()
             else:
                 try:
-                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, deadline - time.time()))
+                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, deadline - self.now()))
                 except TimeoutError:
                     pass  # Recheck the actual due time and quiet interval.

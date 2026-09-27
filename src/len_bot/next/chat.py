@@ -82,8 +82,10 @@ class Chat:
                  vision: ChatModel | None = None,
                  slots: ModelSlots | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
-                 on_update: Callable[[], None] | None = None):
+                 on_update: Callable[[], None] | None = None,
+                 now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
+        self.now = now
         self.mind, self.voice, self.vision = mind, voice, vision
         self.slots = slots
         self.direct_request = False
@@ -259,7 +261,7 @@ class Chat:
             recap, entries = self.store.active_history(self.config.scene)
             # Refresh only between model requests, never midway through a tool group.
             self.discovered_tools = set(self.store.load_discovered_tools(self.config.scene))
-            now = datetime.now(ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+            now = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
             state = {"role": "user", "content": f"当前时间：{now}"}
             schedules = self.store.list_schedules(self.config.scene, limit=21)
             if schedules:
@@ -337,7 +339,7 @@ class Chat:
                 delay = min(settings.max_interval_seconds,
                             max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
                 await asyncio.sleep(delay)
-            part.time = time.time()
+            part.time = self.now()
             part.send_status = "simulated" if self.send_text is None else "unconfirmed"
             errors.append(None)
             content = report_parts(parts, errors, self.render)
@@ -359,7 +361,7 @@ class Chat:
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
             id=str(uuid4()), platform="qq", scene=self.config.scene, platform_message_id=None,
-            sender=Sender(self.config.bot_qq, self.persona.name, None, None), time=time.time(),
+            sender=Sender(self.config.bot_qq, self.persona.name, None, None), time=self.now(),
             segments=segments, reply_to=reply_to, mentions_bot=False,
             is_self=True, send_status="simulated",
         )
@@ -392,7 +394,7 @@ class Chat:
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
                                           WebReadArguments.model_validate(call.arguments)), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
-            return execute_schedule(self.store, self.config, call.name, call.arguments), None, None
+            return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
         if call.name == "look":
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,

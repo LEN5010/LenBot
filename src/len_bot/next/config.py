@@ -7,18 +7,31 @@ import json
 import os
 import re
 import tempfile
+from datetime import UTC, datetime
 from datetime import time as WallTime
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from len_bot.next.model import ModelSettings
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+
+def _epoch_seconds(seconds: float) -> float:
+    try:
+        datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, OSError, ValueError) as error:
+        raise ValueError("Unix seconds are outside the representable UTC date range") from error
+    return seconds
+
+
+EpochSeconds = Annotated[float, Field(strict=True, allow_inf_nan=False), AfterValidator(_epoch_seconds)]
+_FiniteSeconds = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
 class OneBotCommon(BaseModel):
@@ -420,6 +433,13 @@ class EvaluationSettings(BaseModel):
         return values
 
 
+class ReplayClockSettings(BaseModel):
+    model_config = STRICT
+
+    epoch: EpochSeconds
+    monotonic_origin: _FiniteSeconds
+
+
 class SharedConfig(BaseModel):
     model_config = STRICT
 
@@ -557,6 +577,7 @@ class LabConfig(SharedConfig, SceneSettings):
     scene: str
     panel: PanelSettings | None = None
     evaluation: EvaluationSettings | None = None
+    replay_clock: ReplayClockSettings | None = None
 
     @field_validator("scene")
     @classmethod
@@ -570,6 +591,23 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("history_import.scenes must contain only the configured scene")
         if self.history_export is not None and self.history_export.scenes != [self.scene]:
             raise ValueError("history_export.scenes must contain only the configured scene")
+        if self.replay_clock is not None:
+            incompatible = [
+                field for field, enabled in (
+                    ("onebot", self.onebot is not None),
+                    ("panel", self.panel is not None),
+                    ("web_read", self.web_read is not None),
+                    ("models.roles.vision", self.models.roles.vision is not None),
+                    ("history_import", self.history_import is not None),
+                    ("history_export", self.history_export is not None),
+                    ("delivery", self.delivery != "simulated"),
+                ) if enabled
+            ]
+            if incompatible:
+                raise ValueError(
+                    "replay_clock requires isolated stdin with delivery=simulated and no external "
+                    f"or offline entry settings; incompatible: {', '.join(incompatible)}"
+                )
         return self
 
 
