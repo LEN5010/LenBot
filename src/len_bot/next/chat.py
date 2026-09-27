@@ -28,6 +28,7 @@ from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .persona import Persona
+from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import ImageAsset, Store, encode
@@ -102,12 +103,15 @@ class Chat:
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
         if vision is None and persona.tools != "all" and "look" in persona.tools:
             raise ValueError("角色开放 look 时必须在根配置提供 models.roles.vision 绑定")
+        if not persona.knowledge and persona.tools != "all" and "persona_knowledge" in persona.tools:
+            raise ValueError("角色开放 persona_knowledge 时必须在角色包 knowledge/ 中提供 Markdown 资料")
         allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, WEB_READ_TOOL, LOOK_TOOL,
-                                     *SCHEDULE_TOOLS, TOOL_SEARCH)
+                                     *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, TOOL_SEARCH)
                    if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
                    and (config.schedules.enabled or tool["function"]["name"] != "schedule")
                    and (config.web_read is not None or tool["function"]["name"] != "web_read")
-                   and (vision is not None or tool["function"]["name"] != "look")]
+                   and (vision is not None or tool["function"]["name"] != "look")
+                   and (bool(persona.knowledge) or tool["function"]["name"] != "persona_knowledge")]
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -362,6 +366,10 @@ class Chat:
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None
+        if call.name == "persona_knowledge":
+            arguments = PersonaKnowledgeArguments.model_validate(call.arguments)
+            return persona_knowledge(self.persona.id, self.persona.name, self.persona.knowledge,
+                                     arguments), None, None
         if call.name == "web_read":
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
                                           WebReadArguments.model_validate(call.arguments)), None, None

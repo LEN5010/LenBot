@@ -14,7 +14,9 @@ from .store import Store
 
 async def run() -> None:
     config = load_host_config(Path.cwd())
-    scenes = [(config.scene_config(scene), load_persona(settings.persona))
+    personas = {path: load_persona(path)
+                for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}
+    scenes = [(config.scene_config(scene), personas[settings.persona])
               for scene, settings in config.scenes.items()]
     slots = ModelSlots(config.max_model_requests)
     with Store(config.database) as store:
