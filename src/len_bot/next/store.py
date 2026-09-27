@@ -12,6 +12,7 @@ from typing import Literal
 from uuid import uuid4
 
 from .messages import ChatMessage, Segment, Sender, plain_text
+from .pricing import cost_summary
 
 
 def encode(value: object) -> str:
@@ -207,11 +208,113 @@ class Store:
         )]
         return (None if session is None else session[1]), history
 
+    def install_portable_recaps(self, updates: dict[str, tuple[int, int, str]]) -> None:
+        """Set checked scene cutpoints together, preserving every original entry.
+
+        Each value is (previous compact_through, final entry seq, portable text).
+        """
+        if not updates:
+            return
+        self.db.execute("BEGIN EXCLUSIVE")
+        try:
+            for scene, (expected_through, through, recap) in updates.items():
+                session = self.db.execute(
+                    "SELECT compact_through FROM mind_sessions WHERE scene=?", (scene,)
+                ).fetchone()
+                current_through = 0 if session is None else session[0]
+                latest = self.db.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM mind_entries WHERE scene=?", (scene,)
+                ).fetchone()[0]
+                if current_through != expected_through or latest != through:
+                    raise ValueError(f"Portable history changed before commit in {scene}")
+                active = self.db.execute(
+                    "SELECT id,status FROM turns WHERE scene=? AND ended IS NULL "
+                    "AND status IN ('running','settling') LIMIT 1", (scene,),
+                ).fetchone()
+                if active is not None:
+                    raise ValueError(f"Scene {scene} still has turn {active['id']} in {active['status']}")
+                call = self.db.execute(
+                    "SELECT model_calls.id FROM model_calls JOIN turns ON turns.id=model_calls.turn_id "
+                    "WHERE turns.scene=? AND model_calls.ended IS NULL LIMIT 1", (scene,),
+                ).fetchone()
+                if call is not None:
+                    raise ValueError(f"Scene {scene} still has unfinished model call {call['id']}")
+                self.db.execute(
+                    "INSERT INTO mind_sessions(scene,compact_through,recap,discovered_tools) "
+                    "VALUES (?,?,?,'[]') ON CONFLICT(scene) DO UPDATE SET "
+                    "compact_through=excluded.compact_through,recap=excluded.recap,"
+                    "discovered_tools=excluded.discovered_tools",
+                    (scene, through, recap),
+                )
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+
     def entries(self, scene: str) -> list[dict]:
         recap, history = self.active_history(scene)
         return ([{"role": "user", "content": recap}] if recap is not None else []) + [
             message for _, message in history
         ]
+
+    def mind_history_page(self, scene: str, *, before: int | None, limit: int,
+                          active_only: bool) -> dict:
+        session = self.db.execute(
+            "SELECT compact_through,recap,last_message_seq FROM mind_sessions WHERE scene=?", (scene,),
+        ).fetchone()
+        through = 0 if session is None else session[0]
+        conditions, values = ["scene=?"], [scene]
+        if active_only:
+            conditions.append("seq>?")
+            values.append(through)
+        if before is not None:
+            conditions.append("seq<?")
+            values.append(before)
+        rows = self.db.execute(
+            "SELECT seq,message,created FROM mind_entries WHERE " + " AND ".join(conditions)
+            + " ORDER BY seq DESC LIMIT ?", (*values, limit + 1),
+        ).fetchall()
+        selected = rows[:limit]
+        return {
+            "recap": None if session is None else session[1], "compact_through": through,
+            "last_message_seq": 0 if session is None else session[2],
+            "entries": [{"seq": row[0], "message": json.loads(row[1]), "created": row[2],
+                         "active": row[0] > through} for row in reversed(selected)],
+            "next_before": selected[-1][0] if len(rows) > limit else None,
+        }
+
+    def daily_overview(self, scenes: Sequence[str], since: float, until: float) -> dict:
+        placeholders = ",".join("?" for _ in scenes)
+        messages = dict(self.db.execute(
+            "SELECT json_extract(body,'$.send_status'),COUNT(*) FROM messages "
+            f"WHERE scene IN ({placeholders}) "
+            "AND CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END>=? "
+            "AND CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END<? "
+            "GROUP BY json_extract(body,'$.send_status')", (*scenes, since, until),
+        ))
+        turns = dict(self.db.execute(
+            f"SELECT status,COUNT(*) FROM turns WHERE scene IN ({placeholders}) "
+            "AND started>=? AND started<? GROUP BY status", (*scenes, since, until),
+        ))
+        calls = self.db.execute(
+            "SELECT model_calls.ended,model_calls.cost FROM model_calls "
+            "JOIN turns ON turns.id=model_calls.turn_id "
+            f"WHERE turns.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
+            (*scenes, since, until),
+        ).fetchall()
+        costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])
+        unfinished = sum(ended is None for ended, _ in calls)
+        pending = self.db.execute(
+            f"SELECT COUNT(*) FROM schedules WHERE scene IN ({placeholders}) AND status='pending'", scenes,
+        ).fetchone()[0]
+        errors = [dict(row) for row in self.db.execute(
+            f"SELECT id,scene,started,status,error FROM turns WHERE scene IN ({placeholders}) "
+            "AND error IS NOT NULL ORDER BY started DESC LIMIT 10", scenes,
+        )]
+        return {"messages": messages, "turns": turns, "model_calls": len(calls),
+                "unfinished_calls": unfinished, "unknown_cost_calls": costs["unknown_calls"],
+                "estimated_costs": costs["known_amounts"],
+                "pending_schedules": pending, "recent_errors": errors}
 
     def _append(self, scene: str, message: dict) -> int:
         cursor = self.db.execute(
@@ -547,6 +650,29 @@ class Store:
         return self.db.execute(
             "SELECT COALESCE(MAX(seq),0) FROM messages WHERE scene=?", (scene,)
         ).fetchone()[0]
+
+    def memory_messages(self, scene: str, after: int, *, limit: int,
+                        through: int | None = None) -> list[tuple[int, ChatMessage, float]]:
+        """Actual inbound and confirmed outbound content, never simulated expressions."""
+        conditions = ["scene=?", "seq>?", "json_extract(body,'$.send_status') IN ('received','sent')",
+                      "(raw IS NULL OR received_at IS NOT NULL)"]
+        values: list[object] = [scene, after]
+        if through is not None:
+            conditions.append("seq<=?")
+            values.append(through)
+        rows = self.db.execute(
+            "SELECT seq,body,CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END "
+            "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY seq LIMIT ?", [*values, limit],
+        ).fetchall()
+        return [(row[0], self._message(row[1]), row[2]) for row in rows]
+
+    def last_memory_input_at(self, scene: str, after: int) -> float | None:
+        row = self.db.execute(
+            "SELECT MAX(CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END) "
+            "FROM messages WHERE scene=? AND seq>? AND json_extract(body,'$.send_status') IN ('received','sent') "
+            "AND (raw IS NULL OR received_at IS NOT NULL)", (scene, after),
+        ).fetchone()
+        return row[0]
 
     def search_messages(self, scene: str, *, query: str | None, who: str | None,
                         after: float | None, before: float | None, snapshot: int,

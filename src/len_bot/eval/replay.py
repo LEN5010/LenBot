@@ -16,7 +16,6 @@ import time
 import traceback
 from contextlib import closing
 from datetime import datetime, timezone
-from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +25,7 @@ from .cases import CaseFile, ReplayCase, load_cases
 from ..next.chat import PROMPTS
 from ..next.config import LabConfig, load_config
 from ..next.persona import Persona, load_persona
+from ..next.pricing import cost_summary
 from ..next.store import encode, turn_record
 
 
@@ -99,8 +99,9 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         raise ValueError(f"Unknown configured evaluation set/profile: {set_name!r}/{profile!r}")
     if config.onebot is not None or config.delivery != "simulated" or config.panel is not None:
         raise ValueError("Development replay requires onebot=null, delivery=simulated and panel=null")
-    if config.web_read is not None or config.models.roles.vision is not None:
-        raise ValueError("Development replay does not yet provide fixed web/vision tool material")
+    if (config.web_read is not None or config.web_search is not None or config.memory is not None
+            or config.models.roles.vision is not None):
+        raise ValueError("Development replay does not yet provide isolated fixed web/vision/memory material")
     persona = load_persona(config.persona)
     if persona.tools != "all" and (unsupported := set(persona.tools) - LOCAL_TOOLS):
         raise ValueError(f"Development replay does not implement these declared tools: {sorted(unsupported)}")
@@ -172,25 +173,6 @@ def snapshot_code(destination: Path) -> dict:
     (destination / "working-tree.txt").write_text(status, encoding="utf-8")
     return {"revision": revision, "working_tree": status,
             "note": "本次实际源码、提示词与依赖锁随附；运行期间不要修改源码。"}
-
-
-def cost_summary(costs: list[dict | None]) -> dict:
-    amounts: dict[str, Decimal] = {}
-    known = 0
-    with localcontext() as context:
-        for cost in costs:
-            if cost is None:
-                continue
-            known += 1
-            currency = cost["currency"]
-            amount = Decimal(cost["amount"])
-            previous = amounts.get(currency, Decimal(0))
-            context.prec = max(previous.adjusted(), amount.adjusted(), 0) - min(
-                previous.as_tuple().exponent, amount.as_tuple().exponent) + 2
-            amounts[currency] = previous + amount
-    return {"basis": "configured_estimate",
-            "known_amounts": {currency: format(amount, "f") for currency, amount in sorted(amounts.items())},
-            "known_calls": known, "unknown_calls": len(costs) - known}
 
 
 def observed_database(path: Path, *, after_turn: int = 0, after_call: int = 0) -> dict:

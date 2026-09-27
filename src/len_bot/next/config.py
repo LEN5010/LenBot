@@ -18,6 +18,8 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, 
 
 from len_bot.next.model import ModelSettings
 from len_bot.next.pricing import ModelPrice
+from len_bot.next.web_search import WebSearchSettings
+from len_bot.next.memory import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -168,6 +170,7 @@ class Roles(BaseModel):
     mind: Binding
     voice: Binding
     vision: Binding | None = None
+    memory: Binding | None = None
 
 
 class Models(BaseModel):
@@ -179,7 +182,7 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice", "vision"):
+        for role in ("mind", "voice", "vision", "memory"):
             binding = getattr(self.roles, role)
             if binding is None:
                 continue
@@ -462,10 +465,23 @@ class SharedConfig(BaseModel):
     compaction: Compaction = Field(default_factory=Compaction)
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
     web_read: WebReadSettings | None = None
+    web_search: WebSearchSettings | None = None
+    memory: MemorySettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     history_import: HistoryImportSettings | None = None
     history_export: HistoryExportSettings | None = None
     models: Models
+
+    @model_validator(mode="after")
+    def memory_provider_exists(self) -> SharedConfig:
+        if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
+            provider = self.memory.local.embedding.provider
+            if provider not in self.models.providers:
+                raise ValueError(f"memory.local.embedding.provider references unknown provider {provider!r}")
+        if (isinstance(self.memory, LocalMemoryConfig) and self.memory.ingest is not None
+                and self.models.roles.memory is None):
+            raise ValueError("local memory ingest requires explicit models.roles.memory")
+        return self
 
     @field_validator("bot_qq")
     @classmethod
@@ -516,7 +532,7 @@ class SharedConfig(BaseModel):
                 raise ValueError("history_export.target, history_export.backup and database must differ")
         return self
 
-    def model_settings(self, role: Literal["mind", "voice", "vision"]) -> ModelSettings:
+    def model_settings(self, role: Literal["mind", "voice", "vision", "memory"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
             raise ValueError(f"models.roles.{role} is not configured")
@@ -596,6 +612,8 @@ class LabConfig(SharedConfig, SceneSettings):
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> LabConfig:
         _check_schedule_identity(self.bot_qq, self.schedules)
+        if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
+            raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
             raise ValueError("history_import.scenes must contain only the configured scene")
         if self.history_export is not None and self.history_export.scenes != [self.scene]:
@@ -606,6 +624,8 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("onebot", self.onebot is not None),
                     ("panel", self.panel is not None),
                     ("web_read", self.web_read is not None),
+                    ("web_search", self.web_search is not None),
+                    ("memory", self.memory is not None),
                     ("models.roles.vision", self.models.roles.vision is not None),
                     ("history_import", self.history_import is not None),
                     ("history_export", self.history_export is not None),
@@ -623,6 +643,7 @@ class LabConfig(SharedConfig, SceneSettings):
 class HostConfig(SharedConfig):
     mode: Literal["isolated-multi"]
     onebot: OneBotSettings
+    panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)
     max_model_requests: int = Field(default=4, gt=0, strict=True)
 
@@ -635,6 +656,8 @@ class HostConfig(SharedConfig):
 
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> HostConfig:
+        if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != set(self.scenes):
+            raise ValueError("memory.openviking.scenes must exactly match configured scenes")
         for scene, settings in self.scenes.items():
             try:
                 _check_schedule_identity(self.bot_qq, settings.schedules)
@@ -713,6 +736,14 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
         )
 
 
+def _resolve_memory_path(root: Path, source: dict) -> None:
+    memory = source.get("memory")
+    if isinstance(memory, dict) and isinstance(memory.get("local"), dict):
+        memory["local"]["directory"] = _resolved_path(
+            root, memory["local"].get("directory"), within_root=True, field="memory.local.directory",
+        )
+
+
 def _load_lab_source(path: Path, source: dict) -> LabConfig:
     root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
@@ -735,6 +766,7 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
                     root, location, within_root=False, field=f"evaluation.sets.{name}",
                 )
     _resolve_history_paths(root, source)
+    _resolve_memory_path(root, source)
     try:
         return LabConfig.model_validate(source)
     except ValidationError as error:
@@ -744,6 +776,11 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
 def _load_host_source(path: Path, source: dict) -> HostConfig:
     root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
+    panel = source.get("panel")
+    if isinstance(panel, dict) and panel.get("assets_dir") is not None:
+        panel["assets_dir"] = _resolved_path(
+            root, panel["assets_dir"], within_root=False, field="panel.assets_dir"
+        )
     scenes = source.get("scenes")
     if isinstance(scenes, dict):
         for scene, settings in scenes.items():
@@ -753,6 +790,7 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                     field=f"scenes.{scene}.persona",
                 )
     _resolve_history_paths(root, source)
+    _resolve_memory_path(root, source)
     try:
         return HostConfig.model_validate(source)
     except ValidationError as error:

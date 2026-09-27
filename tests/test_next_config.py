@@ -384,6 +384,7 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     assert host.database == root / "data/isolated-chat.db"
     assert host.bot_qq == "90001" and host.max_model_requests == 4
     assert host.delivery == "simulated"
+    assert host.panel is None
     assert host.history_import is None
     assert host.history_export is None
     assert isinstance(host.onebot, OneBotReverse)
@@ -415,6 +416,50 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     with pytest.raises(ValueError, match="group:99999.*not configured"):
         host.scene_config("group:99999")
     assert "synthetic-secret-marker" not in repr(host)
+
+
+def test_host_panel_configuration_resolves_assets_without_leaking_into_scene_views(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["panel"] = {
+        "host": "127.0.0.1", "port": 0, "username": "host-operator",
+        "password_hash": hash_password("synthetic-host-password", salt="synthetic-host-salt"),
+        "cookie_secure": True, "assets_dir": "../host-static",
+    }
+    _write_config(root, source)
+
+    host = load_host_config(root)
+    assert host.panel.host == "127.0.0.1"
+    assert host.panel.port == 0
+    assert host.panel.assets_dir == tmp_path / "host-static"
+    assert host.panel.cookie_secure is True
+    assert host.scene_config("group:80001").panel is None
+    assert host.scene_config("private:80002").panel is None
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
+    assert host.model_settings("mind").model == "sample-mind"
+    assert "synthetic-host-password" not in repr(host)
+
+
+@pytest.mark.parametrize("panel,field", [
+    ({"host": "127.0.0.1", "port": 0, "username": "host-operator"}, "password_hash"),
+    ({"host": "127.0.0.1", "port": True, "username": "host-operator",
+      "password_hash": "salt$" + "a" * 64}, "port"),
+    ({"host": "127.0.0.1", "port": 0, "username": "host-operator",
+      "password_hash": "invalid"}, "password_hash"),
+    ({"host": "127.0.0.1", "port": 0, "username": "host-operator",
+      "password_hash": "salt$" + "a" * 64, "assets_dir": 12}, "panel.assets_dir"),
+    ({"host": "127.0.0.1", "port": 0, "username": "host-operator",
+      "password_hash": "salt$" + "a" * 64, "extra": True}, "extra"),
+])
+def test_host_panel_rejects_invalid_configuration(tmp_path, panel, field):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["panel"] = panel
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_host_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 def test_scene_persona_overrides_roundtrip_without_cross_scene_inheritance(tmp_path):
@@ -833,7 +878,6 @@ def test_scene_persona_save_rejects_malformed_root_without_writing(tmp_path):
         (lambda source: source["scenes"].update({"group:0": {"persona": "personas/invalid"}}), "group:<QQ>"),
         (lambda source: source.update(scene="group:80001"), "scene"),
         (lambda source: source.update(persona="personas/group"), "persona"),
-        (lambda source: source.update(panel=None), "panel"),
         (lambda source: source["scenes"]["group:80001"].update(database="other.db"), "database"),
         (lambda source: source["scenes"]["group:80001"].pop("persona"), "scenes.group:80001.persona"),
         (lambda source: source["models"]["roles"]["mind"].update(provider="missing"), "models.roles.mind.provider"),

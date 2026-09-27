@@ -32,9 +32,11 @@ class OneBotCallError(RuntimeError):
 
 class OneBot:
     def __init__(self, settings: OneBotForward | OneBotReverse, *, bot_qq: str,
-                 on_event: Callable[[dict], None], on_error: Callable[[str], None]):
+                 on_event: Callable[[dict], None], on_error: Callable[[str], None],
+                 on_connection_change: Callable[[], None] | None = None):
         self.settings, self.bot_qq = settings, bot_qq
         self.on_event, self.on_error = on_event, on_error
+        self.on_connection_change = on_connection_change
         self._running = False
         self._ws: ClientConnection | ServerConnection | None = None
         self._server: Server | None = None
@@ -164,6 +166,8 @@ class OneBot:
         self._verified_ws = None
         self._ws = websocket
         self._connection_changed.set()
+        if self.on_connection_change is not None:
+            self.on_connection_change()
 
     async def _accept(self, websocket: ServerConnection) -> None:
         # Two handshakes may finish before either handler attaches its socket.
@@ -220,6 +224,8 @@ class OneBot:
                 for future in self._pending.values():
                     if not future.done():
                         future.set_exception(OneBotCallError(reason, submitted=True))
+                if self.on_connection_change is not None:
+                    self.on_connection_change()
             await websocket.close()
 
     async def call(self, action: str, params: dict) -> dict:
