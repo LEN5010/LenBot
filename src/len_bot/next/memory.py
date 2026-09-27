@@ -11,9 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from .memory_embeddings import EmbeddingClient, EmbeddingSettings
 from .memory_local import LocalMemory, LocalMemorySettings
+from .memory_jobs import MemoryJobs
 from .memory_openviking import OpenVikingMemory, OpenVikingSettings
 from .messages import ChatMessage, plain_text
-from .store import encode
+from .store import Store, encode
 
 if TYPE_CHECKING:
     from .config import SharedConfig
@@ -94,9 +95,17 @@ class WriteMemory(BaseModel):
 
 class DeleteMemory(BaseModel):
     model_config = STRICT
-    action: Literal["delete", "forget"]
+    action: Literal["delete"]
     path: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+
+
+class ForgetMemory(BaseModel):
+    model_config = STRICT
+    action: Literal["forget"]
+    path: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    exclude_records: list[Annotated[int, Field(gt=0)]] = Field(max_length=500)
 
 
 class HistoryMemory(BaseModel):
@@ -106,7 +115,7 @@ class HistoryMemory(BaseModel):
 
 
 MEMORY_ARGUMENTS = TypeAdapter(Annotated[
-    BrowseMemory | ReadMemory | SearchMemory | WriteMemory | DeleteMemory | HistoryMemory,
+    BrowseMemory | ReadMemory | SearchMemory | WriteMemory | DeleteMemory | ForgetMemory | HistoryMemory,
     Field(discriminator="action"),
 ])
 MEMORY_TOOL = {"type": "function", "function": {
@@ -121,6 +130,9 @@ MEMORY_TOOL = {"type": "function", "function": {
             "query": {"type": "string", "description": "search 必填的检索文字。"},
             "content": {"type": "string", "description": "write 必填的新完整正文。"},
             "reason": {"type": "string", "description": "write/delete/forget 必填的实际原因。"},
+            "exclude_records": {"type": "array", "items": {"type": "integer", "minimum": 1},
+                                "maxItems": 500, "description": "仅 forget 必填：选中的 recall_chat 原话 record 此后不再后台抽取。"
+                                "显式 [] 表示不排除旧输入；不扩大到未选择的消息或未来再次讲述。"},
             "offset": {"type": "integer", "minimum": 0, "description": "仅 browse 的分页起点，默认 0。"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                       "description": "browse 默认 20、最多 100；search 默认 5、最多 20。"},
@@ -131,11 +143,22 @@ MEMORY_TOOL = {"type": "function", "function": {
 
 class MemoryService:
     def __init__(self, settings: LocalMemoryConfig | OpenVikingMemoryConfig,
-                 backend: LocalMemory | OpenVikingMemory):
+                 backend: LocalMemory | OpenVikingMemory, *, jobs: MemoryJobs, store: Store):
         self.settings, self.backend = settings, backend
+        self.jobs, self.store = jobs, store
         # A complete read/generate/write extraction shares this queue with edits.
         self.write_locks: dict[str, asyncio.Lock] = {}
         self.pending_native_tasks: dict[str, str] = {}
+        if isinstance(settings, OpenVikingMemoryConfig):
+            for scene in settings.openviking.scenes:
+                latest = jobs.latest(scene)
+                if latest is None or latest["backend"] != "openviking":
+                    continue
+                task_id = latest["details"].get("task_id")
+                if latest["status"] == "submitted" and task_id is not None:
+                    self.pending_native_tasks[scene] = task_id
+                elif latest["details"].get("native_phase") == "submitting" and task_id is None:
+                    self.pending_native_tasks[scene] = "submission outcome unknown"
 
     def write_lock(self, scene: str) -> asyncio.Lock:
         return self.write_locks.setdefault(scene, asyncio.Lock())
@@ -144,9 +167,7 @@ class MemoryService:
     def actions(self) -> list[str]:
         common = ["browse", "read", "search", "write", "delete"]
         if isinstance(self.backend, LocalMemory):
-            common.append("history")
-            if self.settings.ingest is None:
-                common.append("forget")
+            common.extend(["history", "forget"])
         return common
 
     async def search(self, scene: str, query: str, limit: int) -> list[dict]:
@@ -172,17 +193,28 @@ class MemoryService:
                 result = await self.backend.write(scene, path, content)
             return asdict(result)
 
-    async def delete(self, scene: str, path: str, reason: str, *, forget: bool) -> dict:
+    async def delete(self, scene: str, path: str, reason: str, *, forget: bool,
+                     exclude_records: list[int] | None = None) -> dict:
         if not reason.strip():
             raise ValueError("memory delete reason must not be blank")
-        if forget and self.settings.ingest is not None:
-            raise ValueError("自动抽取的来源排除尚未接入；当前不能把删文件声称为遗忘，forget 暂不可用")
+        if forget != (exclude_records is not None):
+            raise ValueError("forget 必须显式选择 exclude_records（可为 []）；普通 delete 不接受来源排除")
         async with self.write_lock(scene):
             if scene in self.pending_native_tasks:
                 raise ValueError(f"OpenViking 抽取仍在处理：{self.pending_native_tasks[scene]}")
             if isinstance(self.backend, LocalMemory):
-                result = (await self.backend.forget(scene, path) if forget
-                          else await self.backend.delete(scene, path, reason))
+                if forget:
+                    selected = sorted(set(exclude_records))
+                    self.store.check_message_records(scene, selected)
+                    added = self.jobs.exclude_records(scene, selected)
+                    try:
+                        result = await self.backend.forget(scene, path)
+                    except Exception as error:
+                        raise RuntimeError(
+                            f"已保存 {len(selected)} 条原话的抽取排除；记忆删除失败：{type(error).__name__}: {error}"
+                        ) from error
+                    return {**asdict(result), "excluded_records": selected, "new_exclusions": added}
+                result = await self.backend.delete(scene, path, reason)
             else:
                 if forget:
                     raise ValueError("当前 OpenViking 接口未实现可访问历史和派生内容的完整遗忘")
@@ -205,8 +237,9 @@ class MemoryService:
             result = {"hits": await self.search(scene, item.query, item.limit)}
         elif isinstance(item, WriteMemory):
             result = await self.write(scene, item.path, item.content, item.reason)
-        elif isinstance(item, DeleteMemory):
-            result = await self.delete(scene, item.path, item.reason, forget=item.action == "forget")
+        elif isinstance(item, (DeleteMemory, ForgetMemory)):
+            result = await self.delete(scene, item.path, item.reason, forget=isinstance(item, ForgetMemory),
+                                       exclude_records=item.exclude_records if isinstance(item, ForgetMemory) else None)
         else:
             result = {"changes": await self.history(scene, item.path)}
         return encode(result)
@@ -251,21 +284,31 @@ class MemoryService:
 
 
 @asynccontextmanager
-async def open_memory(config: SharedConfig):
+async def open_memory_backend(config: SharedConfig):
     settings = config.memory
     if settings is None:
         yield None
     elif isinstance(settings, OpenVikingMemoryConfig):
         async with OpenVikingMemory(settings.openviking) as backend:
-            yield MemoryService(settings, backend)
+            yield backend
     else:
         binding = settings.local.embedding
         if binding is None:
-            yield MemoryService(settings, await asyncio.to_thread(LocalMemory, settings.local))
+            yield await asyncio.to_thread(LocalMemory, settings.local)
         else:
             provider = config.models.providers[binding.provider]
             resolved = EmbeddingSettings(**binding.model_dump(), base_url=provider.base_url,
                                          api_key=provider.api_key)
             async with EmbeddingClient(resolved) as embedding:
                 backend = await asyncio.to_thread(LocalMemory, settings.local, embedding=embedding)
-                yield MemoryService(settings, backend)
+                yield backend
+
+
+@asynccontextmanager
+async def open_memory(config: SharedConfig, store: Store):
+    async with open_memory_backend(config) as backend:
+        if backend is None:
+            yield None
+        else:
+            with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
+                yield MemoryService(config.memory, backend, jobs=jobs, store=store)

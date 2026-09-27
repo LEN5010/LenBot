@@ -6,6 +6,7 @@ import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import HostMemorySettings from '../components/HostMemorySettings.vue'
 import HostMemoryIngest from '../components/HostMemoryIngest.vue'
+import HostMemorySources from '../components/HostMemorySources.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), scene = ref(''), scope = ref('scene'), directory = ref('')
@@ -15,6 +16,7 @@ const searchQuery = ref(''), hits = ref([]), history = ref([]), lastResult = ref
 const searched = ref(false)
 const tab = ref('browse')
 const settingsDirty = ref(false)
+const sourceSelections = ref([])
 const stateLoading = ref(false), browsing = ref(false), reading = ref(false), searching = ref(false)
 const writing = ref(false), deleting = ref(false), historyLoading = ref(false)
 const stateError = ref(''), browseError = ref(''), fileError = ref(''), searchError = ref('')
@@ -29,7 +31,10 @@ const beginDelete = useRequestGuard(fileSelection)
 const enabled = computed(() => state.value?.enabled === true)
 const can = action => enabled.value && state.value.actions.includes(action)
 const writable = computed(() => can('write') && (scope.value === 'scene' || state.value.public_writable))
-const deletable = computed(() => scope.value === 'scene' && can('delete') && selected.value !== null && !staleFile.value)
+const deletable = computed(() => scope.value === 'scene' && can('delete') && selected.value !== null
+  && editPath.value === selected.value && !staleFile.value)
+const forgettable = computed(() => scope.value === 'scene' && can('forget') && selected.value !== null
+  && editPath.value === selected.value)
 const dirty = computed(() => selected.value === null
   ? editPath.value !== '' || content.value !== '' || reason.value !== ''
   : editPath.value !== selected.value || content.value !== original.value || reason.value !== '')
@@ -48,6 +53,7 @@ function parentOf(path) { return path.split('/').slice(0, -1).join('/') }
 function displayTime(value) { return new Date(value * 1000).toISOString() }
 function resetFile() {
   ++editorEpoch
+  sourceSelections.value = []
   selected.value = null; editPath.value = ''; content.value = ''; original.value = ''; reason.value = ''
   staleFile.value = false; history.value = []; fileError.value = ''; historyError.value = ''
   historyLoading.value = false
@@ -105,6 +111,7 @@ async function readFile(path, access = scope.value) {
     const result = await api(query('/api/host/memory/read', { scene: target, path, scope: actualScope }))
     if (!fresh()) return
     selected.value = result.path; editPath.value = result.path
+    sourceSelections.value = []
     content.value = result.content; original.value = result.content; reason.value = ''
     staleFile.value = false; history.value = []; historyError.value = ''; historyLoading.value = false
     directory.value = parentOf(result.path); nodes.value = []; hasMore.value = false
@@ -156,6 +163,7 @@ async function writeFile() {
     if (!fresh()) return
     lastResult.value = { kind: 'write', scope: access, path, value: result }
     if (result.action === 'write' || result.content_updated === true) {
+      if (path !== selected.value) sourceSelections.value = []
       selected.value = path; original.value = typeof result.after === 'string' ? result.after : text
       content.value = original.value; reason.value = ''; staleFile.value = false
       directory.value = parentOf(path); nodes.value = []; hasMore.value = false
@@ -165,21 +173,25 @@ async function writeFile() {
   finally { writing.value = false }
 }
 async function deleteFile(forget) {
-  if (!deletable.value || deleting.value || writing.value) return
-  if (forget && !can('forget')) return
-  const description = forget
-    ? '忘记会移除当前路径及可访问的历史版本；不等于清除日志或备份。确定继续？'
-    : '普通删除会移除当前文件；若后端保留历史，历史版本仍可能可访问。确定继续？'
-  if (!window.confirm(description)) return
+  if (!(forget ? forgettable.value : deletable.value) || deleting.value || writing.value) return
   const target = scene.value, path = selected.value, why = reason.value
   if (!why.trim()) { deleteError.value = '请先填写本次删除或忘记的实际原因。'; return }
+  const excludeRecords = forget ? sourceSelections.value.map(item => item.record) : null
+  const description = forget
+    ? `定向遗忘 ${path}：移除目标文件及可访问的记忆历史版本，并使明确选中的 ${excludeRecords.length} 条原消息停止后台抽取。${excludeRecords.length===0?'本次未选择原消息，旧原话仍可能再次参与抽取。':''}不清理聊天记录、模型请求、日志或备份，也不保证未选内容与未来重复讲述不再学习。确定继续？`
+    : `普通删除 ${path}：只删除当前文件，不新增任何原消息排除；后端如保留历史，历史版本仍可能可访问。确定继续？`
+  if (!window.confirm(description)) return
   const fresh = beginDelete()
   deleting.value = true; deleteError.value = ''; lastResult.value = null
   try {
     const result = await api('/api/host/memory/delete', { method: 'POST',
-      body: JSON.stringify({ scene: target, path, reason: why, forget }) })
+      body: JSON.stringify({ scene: target, path, reason: why, forget, exclude_records: excludeRecords }) })
     if (!fresh() || path !== selected.value) return
     lastResult.value = { kind: forget ? 'forget' : 'delete', scope: 'scene', path, value: result }
+    if (forget) {
+      ++editorEpoch
+      history.value = []; content.value = ''; original.value = ''; sourceSelections.value = []
+    }
     staleFile.value = true
     reason.value = ''
     nodes.value = []; hasMore.value = false
@@ -208,6 +220,9 @@ async function loadState(confirmDiscard = true) {
 onMounted(() => loadState(false))
 watch(() => route.query.scene, value => {
   if (typeof value === 'string' && state.value && value !== scene.value) changeScene(value, true)
+})
+watch(editPath, value => {
+  if (value !== selected.value) sourceSelections.value = []
 })
 </script>
 
@@ -261,10 +276,11 @@ watch(() => route.query.scene, value => {
             <span class="muted">写入只保存当前正文；向量、语义和概览状态看下方后端实际返回，不统一称“已索引”。</span></div></form>
         <template v-else-if="selected"><p class="muted">此范围当前只读。</p><pre class="original-text">{{ content }}</pre></template>
         <v-alert v-if="writeError" type="error" variant="tonal" role="alert">{{ writeError }}</v-alert>
+        <HostMemorySources v-if="forgettable" :key="`${scene}:${selected}:${editorEpoch}`" :scene="scene" :target="selected" @selection="value=>sourceSelections=value" />
         <div v-if="selected && scope==='scene'" class="file-actions"><v-btn v-if="can('history')" variant="outlined" :loading="historyLoading" @click="readHistory">查看修改历史</v-btn>
           <v-btn v-if="deletable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(false)">普通删除</v-btn>
-          <v-btn v-if="deletable && can('forget')" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(true)">忘记当前路径与可访问版本</v-btn></div>
-        <p v-if="deletable && can('history')" class="muted">普通删除保留本地可访问历史；忘记移除当前路径及其可访问版本，不等于清除日志或备份。</p>
+          <v-btn v-if="forgettable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(true)">定向遗忘 · 已选 {{ sourceSelections.length }} 条原消息</v-btn></div>
+        <p v-if="deletable && can('history')" class="muted">普通删除保留本地可访问历史且不影响原消息；定向遗忘只针对目标文件、其可访问记忆历史版本及本次选中的原消息后台抽取。</p>
         <v-alert v-if="deleteError" type="error" variant="tonal" role="alert">{{ deleteError }}</v-alert>
         <v-alert v-if="historyError" type="error" variant="tonal" role="alert">历史读取失败：{{ historyError }}</v-alert>
         <div v-if="history.length" class="history"><h3>实际修改历史</h3><ul><li v-for="(item,index) in history" :key="`${item.changed_at}:${index}`">
@@ -272,6 +288,7 @@ watch(() => route.query.scene, value => {
           <details><summary>查看改动前后原文</summary><h4>改动前</h4><pre>{{ item.before===null?'无':item.before }}</pre><h4>改动后</h4><pre>{{ item.after===null?'无':item.after }}</pre></details></li></ul></div>
       </section>
       <section v-if="lastResult" class="surface"><h2>后端实际操作结果</h2><p class="muted">{{ lastResult.scope==='public'?'公共':'场景' }} · {{ lastResult.path }} · {{ lastResult.kind }}。下方状态逐字段保留；返回写入不代表所有索引阶段都已成功。</p>
+        <p v-if="lastResult.kind==='forget' && lastResult.value.excluded_records" class="muted">本次明确选择并保存排除 {{ lastResult.value.excluded_records.length }} 条原消息，其中新增加 {{ lastResult.value.new_exclusions }} 条；不等于聊天、模型请求或备份已删除。</p>
         <pre>{{ JSON.stringify(lastResult.value,null,2) }}</pre></section>
     </template>
     <HostMemoryIngest :scene="scene" />

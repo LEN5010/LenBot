@@ -652,7 +652,8 @@ class Store:
         ).fetchone()[0]
 
     def memory_messages(self, scene: str, after: int, *, limit: int,
-                        through: int | None = None) -> list[tuple[int, ChatMessage, float]]:
+                        through: int | None = None,
+                        exclude_records: Sequence[int] = ()) -> list[tuple[int, ChatMessage, float]]:
         """Actual inbound and confirmed outbound content, never simulated expressions."""
         conditions = ["scene=?", "seq>?", "json_extract(body,'$.send_status') IN ('received','sent')",
                       "(raw IS NULL OR received_at IS NOT NULL)"]
@@ -660,19 +661,32 @@ class Store:
         if through is not None:
             conditions.append("seq<=?")
             values.append(through)
+        if exclude_records:
+            conditions.append("seq NOT IN (SELECT value FROM json_each(?))")
+            values.append(encode(exclude_records))
         rows = self.db.execute(
             "SELECT seq,body,CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END "
             "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY seq LIMIT ?", [*values, limit],
         ).fetchall()
         return [(row[0], self._message(row[1]), row[2]) for row in rows]
 
-    def last_memory_input_at(self, scene: str, after: int) -> float | None:
+    def last_memory_input_at(self, scene: str, after: int, *, exclude_records: Sequence[int] = ()) -> float | None:
         row = self.db.execute(
             "SELECT MAX(CASE WHEN raw IS NULL THEN json_extract(body,'$.time') ELSE received_at END) "
             "FROM messages WHERE scene=? AND seq>? AND json_extract(body,'$.send_status') IN ('received','sent') "
-            "AND (raw IS NULL OR received_at IS NOT NULL)", (scene, after),
+            "AND (raw IS NULL OR received_at IS NOT NULL) "
+            "AND seq NOT IN (SELECT value FROM json_each(?))", (scene, after, encode(exclude_records)),
         ).fetchone()
         return row[0]
+
+    def check_message_records(self, scene: str, records: Sequence[int]) -> None:
+        found = {row[0] for row in self.db.execute(
+            "SELECT seq FROM messages WHERE scene=? AND seq IN (SELECT value FROM json_each(?))",
+            (scene, encode(records)),
+        )}
+        missing = sorted(set(records) - found)
+        if missing:
+            raise ValueError(f"当前场景没有这些原话记录：{missing}")
 
     def search_messages(self, scene: str, *, query: str | None, who: str | None,
                         after: float | None, before: float | None, snapshot: int,

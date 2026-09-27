@@ -53,7 +53,7 @@ onMounted(read)
     <header class="section-heading"><div><p class="eyebrow">运行事实 · 手动读取</p><h2 id="ingest-title">记忆后台抽取</h2></div>
       <v-btn variant="outlined" :loading="loading" @click="read">重读作业状态</v-btn></header>
     <p class="muted">首次开启只从当时已保存消息末尾之后接收新输入，不自动回填旧历史。手动“检查一批”若无新输入可能不会创建作业；页面不自动轮询，也不会把提交远端任务称作完成。</p>
-    <p v-if="snapshot?.enabled" class="muted">后台抽取启用期间，来源补抽排除尚未实现；当前不提供完整遗忘操作，也不把普通删除称为已清除所有来源。</p>
+    <p v-if="snapshot?.enabled" class="muted">定向遗忘只作用于目标文件及其可访问记忆历史版本，并使明确选择的原消息停止后台抽取；未选的相同内容、未来再次讲述、聊天记录和备份不因此清除。</p>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert" :title="snapshot?'读取失败 · 保留上次作业结果':'读取抽取状态失败'">{{ readError }}</v-alert>
     <p v-if="loading && !snapshot" role="status" class="muted">正在读取抽取配置与作业…</p>
     <template v-if="snapshot">

@@ -138,7 +138,7 @@ onMounted(() => read(false))
           <div class="ingest-editor"><h3>后台自动抽取 · 重启后生效</h3>
             <v-switch :model-value="draft.ingest!==null" label="启用后台小批抽取" hide-details @update:model-value="toggleIngest" />
             <p class="muted">首次启用只从当时已保存消息末尾之后读取新输入，不自动回填旧历史。保存不会立即运行，也不会据此声称已整理了记忆。</p>
-            <p v-if="draft.ingest" class="muted">来源补抽排除尚未接入；启用期间完整 forget 不可用，普通删除不能解释为来源及备份都已遗忘。</p>
+            <p v-if="draft.ingest" class="muted">定向遗忘须明确选择确实要排除的原消息；它只处理目标文件及其可访问记忆历史版本、所选原消息的后续后台抽取，不清除聊天原文或备份。</p>
             <p v-if="draft.backend==='local'" class="muted">本地抽取使用专门的记忆模型，产生真实模型请求并可能计费；须在 <RouterLink :to="{name:'host-models'}">模型配置</RouterLink> 显式绑定 memory 用途，不能自动取大脑模型。</p>
             <v-alert v-if="draft.backend==='local' && draft.ingest!==null && snapshot.saved.models.roles.memory===null" type="warning" variant="tonal">最近读取的根配置尚无 memory 用途绑定；先保存明确模型，再重读本配置。否则后端会拒绝启用抽取。</v-alert>
             <p v-else class="muted">OpenViking 抽取由服务自身模型处理；此处不选择本地模型，也不把已提交任务说成完成。</p>
