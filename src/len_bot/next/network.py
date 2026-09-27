@@ -144,6 +144,8 @@ class NetworkRuntime:
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.add_signal_handler(sig, self.stop)
                     installed.append(sig)
+            if self.tasks is not None:
+                await self.tasks.recover()
             async with asyncio.TaskGroup() as group:
                 pending: list[asyncio.Task] = []
                 try:

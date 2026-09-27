@@ -229,12 +229,15 @@ class WorkTasks:
                 raise ValueError("任务累计模型费用已达上限")
         return Limits(calls, self.settings.max_request_bytes, self.settings.max_response_bytes, budget)
 
-    async def start(self) -> None:
+    async def recover(self) -> None:
+        """Clean interrupted work even when the platform cannot connect."""
         for item in self.records.containers():
             await self.sandbox.stop_recorded(item.scene, str(item.id), item.container)
             self.records.set_container(item.scene, item.id, None)
         for item in self.records.active():
             self._finish(item, "failed", item.summary, "宿主中断；保留会话与未答问题，须显式继续")
+
+    async def start(self) -> None:
         self.accepting = True
         self._pump = asyncio.create_task(self._schedule())
 
