@@ -1173,7 +1173,7 @@ def test_invalid_lab_configuration_names_field_without_leaking_key(tmp_path, cha
     assert "synthetic-secret-marker" not in str(failure.value)
 
 
-def test_persona_package_keeps_explicit_fields_and_selects_first_eight_examples(tmp_path):
+def test_persona_package_keeps_explicit_fields_and_all_examples(tmp_path):
     path = tmp_path / "example"
     path.mkdir()
     (path / "persona.yaml").write_text(
@@ -1208,7 +1208,11 @@ skills: []
     assert persona.styles[1].note == "语气轻快"
     assert persona.voice == "短句，清楚。"
     assert persona.boundaries == "不声称拥有真实经历。"
-    assert [example.line for example in persona.examples] == [f"台词 {number}" for number in range(8)]
+    assert [example.line for example in persona.examples] == [f"台词 {number}" for number in range(9)]
+    assert persona.example_tags == []
+    assert [example["line"] for example in persona.model_dump()["examples"]] == [
+        f"台词 {number}" for number in range(9)
+    ]
     assert persona.knowledge == {}
     assert "knowledge" not in persona.model_dump()
 
@@ -1239,6 +1243,72 @@ def _synthetic_persona_package(path: Path) -> None:
     (path / "voice.md").write_text("短句", encoding="utf-8")
     (path / "boundaries.md").write_text("示例", encoding="utf-8")
     (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
+
+
+def test_persona_loads_explicit_example_tags_without_discarding_other_examples(tmp_path):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    with (path / "persona.yaml").open("a", encoding="utf-8") as output:
+        output.write("example_tags: [跟风, 日常]\n")
+    (path / "examples.yaml").write_text(
+        """- context: 情境一
+  line: 台词一
+  tags: [跟风, 日常]
+- context: 情境二
+  line: 台词二
+  tags: [日常]
+- context: 情境三
+  line: 台词三
+  tags: [其他]
+""",
+        encoding="utf-8",
+    )
+
+    persona = load_persona(path)
+
+    assert persona.example_tags == ["跟风", "日常"]
+    assert [example.line for example in persona.examples] == ["台词一", "台词二", "台词三"]
+    dumped = persona.model_dump()
+    assert dumped["example_tags"] == ["跟风", "日常"]
+    assert [example["line"] for example in dumped["examples"]] == ["台词一", "台词二", "台词三"]
+
+
+@pytest.mark.parametrize("setting,field", [
+    ("[不存在]", "不存在"),
+    ("['   ']", "example_tags"),
+    ('[" 跟风 "]', " 跟风 "),
+    ("跟风", "example_tags"),
+    ("[跟风, 3]", "example_tags"),
+])
+def test_persona_rejects_invalid_example_tags_at_load(tmp_path, setting, field):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    with (path / "persona.yaml").open("a", encoding="utf-8") as output:
+        output.write(f"example_tags: {setting}\n")
+    (path / "examples.yaml").write_text(
+        "- context: 情境\n  line: 台词\n  tags: [跟风]\n", encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as failure:
+        load_persona(path)
+    assert field in str(failure.value)
+
+
+def test_persona_still_validates_later_examples_and_rejects_unknown_metadata(tmp_path):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    (path / "examples.yaml").write_text(
+        "".join(f"- context: 情境 {number}\n  line: 台词 {number}\n" for number in range(8))
+        + "- context: 第九条\n  line: 应被校验\n  tags: 3\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="examples.8.tags"):
+        load_persona(path)
+    (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
+    with (path / "persona.yaml").open("a", encoding="utf-8") as output:
+        output.write("unknown_field: 不应接受\n")
+    with pytest.raises(ValueError, match="unknown_field"):
+        load_persona(path)
 
 
 def test_persona_knowledge_loads_nested_original_text_as_private_snapshot(tmp_path):

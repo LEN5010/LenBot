@@ -1,10 +1,12 @@
 """Load a descriptive role package without changing the running role."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .persona_knowledge import PersonaDocument, load_knowledge
 
@@ -43,6 +45,7 @@ class Persona(BaseModel):
     voice: str
     boundaries: str
     examples: list[Example]
+    example_tags: list[str] = Field(default_factory=list)
     knowledge: dict[str, PersonaDocument] = Field(default_factory=dict, exclude=True, repr=False)
 
     @field_validator("name")
@@ -59,6 +62,29 @@ class Persona(BaseModel):
             raise ValueError("aliases must not contain blank entries")
         return values
 
+    @field_validator("example_tags")
+    @classmethod
+    def nonblank_example_tags(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("example_tags must not contain blank entries")
+        return values
+
+    @model_validator(mode="after")
+    def known_example_tags(self) -> Persona:
+        available = {tag for example in self.examples for tag in example.tags}
+        unknown = [tag for tag in self.example_tags if tag not in available]
+        if unknown:
+            raise ValueError(f"example_tags not present in examples.yaml: {unknown!r}")
+        return self
+
+
+def select_examples(persona: Persona) -> list[Example]:
+    """Use the operator's exact tags, or the original first eight by default."""
+    if not persona.example_tags:
+        return persona.examples[:8]
+    wanted = set(persona.example_tags)
+    return [example for example in persona.examples if wanted.intersection(example.tags)][:8]
+
 
 def _read_yaml(path: Path) -> object:
     try:
@@ -68,7 +94,7 @@ def _read_yaml(path: Path) -> object:
 
 
 def load_persona(path: Path) -> Persona:
-    """Load one package; P1 selects its first at most eight examples in file order."""
+    """Load one package, preserving its complete validated example list."""
     path = path.resolve()
     metadata = _read_yaml(path / "persona.yaml")
     if not isinstance(metadata, dict):
@@ -86,10 +112,7 @@ def load_persona(path: Path) -> Persona:
             "boundaries": (path / "boundaries.md").read_text(encoding="utf-8"),
             "examples": examples,
         })
-        return persona.model_copy(update={
-            "examples": persona.examples[:8],
-            "knowledge": load_knowledge(path),
-        })
+        return persona.model_copy(update={"knowledge": load_knowledge(path)})
     except ValidationError as error:
         details = "; ".join(
             f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
