@@ -305,6 +305,7 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.models.roles.mind.context_window_tokens == 8192
     assert config.models.roles.voice.context_window_tokens == 4096
     assert config.models.roles.vision is None
+    assert config.models.prices == {}
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
     assert config.model_settings("voice").model == "sample-voice"
@@ -312,6 +313,65 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
         config.model_settings("vision")
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
+
+
+def test_model_prices_are_explicit_per_provider_and_exact_model(tmp_path):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["models"]["providers"]["other"] = {
+        "api": "openai-chat", "base_url": "http://127.0.0.1:18081/v1", "api_key": "other-test-key",
+    }
+    source["models"]["prices"] = {
+        "sample": {
+            "sample-mind": {"currency": "USD", "input": "0.123456789", "output": 2,
+                            "cache_read": 0.01},
+            "unbound-model": {"currency": "USD", "input": 1, "output": 2,
+                              "cache_read": 0},
+        },
+        "other": {
+            "sample-mind": {"currency": "CNY", "input": 3, "output": 4,
+                            "cache_read": 1},
+        },
+    }
+    _write_config(root, source)
+
+    config = load_config(root)
+    assert str(config.models.prices["sample"]["sample-mind"].input) == "0.123456789"
+    assert str(config.models.prices["sample"]["sample-mind"].cache_read) == "0.01"
+    assert config.models.prices["other"]["sample-mind"].currency == "CNY"
+    assert config.models.prices["other"]["sample-mind"].input != config.models.prices["sample"]["sample-mind"].input
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize("change,field", [
+    (lambda prices: prices["sample"]["sample-mind"].update(currency="usd"), "currency"),
+    (lambda prices: prices["sample"]["sample-mind"].pop("currency"), "currency"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input=True), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input=-1), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input="NaN"), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input=float("inf")), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input="0.1234567891"), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input="1.0000000000"), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(input="1234567890123456789"), "input"),
+    (lambda prices: prices["sample"]["sample-mind"].update(extra=1), "extra"),
+    (lambda prices: prices["sample"]["sample-mind"].pop("output"), "output"),
+    (lambda prices: prices.update(missing=prices.pop("sample")), "models.prices"),
+    (lambda prices: prices.update({" ": prices.pop("sample")}), "models.prices"),
+    (lambda prices: prices["sample"].update({" ": prices["sample"].pop("sample-mind")}), "models.prices"),
+])
+def test_model_prices_reject_invalid_configuration(tmp_path, change, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["models"]["prices"] = {
+        "sample": {"sample-mind": {"currency": "USD", "input": 1, "output": 2,
+                                    "cache_read": 0.5}},
+    }
+    change(source["models"]["prices"])
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract(tmp_path):
@@ -1065,7 +1125,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "Offline migration completed" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
     with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 9
     with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:

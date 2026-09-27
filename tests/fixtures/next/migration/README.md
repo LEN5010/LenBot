@@ -29,3 +29,9 @@ model calls have distinct, explicit existing assistant entry positions; all
 other rows and identities remain synthetic. It has no expression-latency
 columns, so the format-12 upgrade must preserve those positions and leave
 the new turn facts null rather than infer older timestamps.
+The format-12 fixture was upgraded from the synthetic format-11 fixture with
+the committed three nullable `turns` columns. One existing settled turn has
+synthetic `sent` expression timing; one added settled turn has distinct
+synthetic `simulated` timing. The queued turn remains without a first
+expression. Existing native call anchors are unchanged. No timestamp or
+delivery value comes from a real platform or model run.

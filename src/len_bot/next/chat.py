@@ -29,6 +29,7 @@ from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .persona import Persona, select_examples, select_style
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
+from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .store import ImageAsset, Store, encode
@@ -202,9 +203,12 @@ class Chat:
                 f"{role} {scope}含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
         settings = model.settings.model_dump(exclude={"api_key"})
         settings["max_output_tokens"] = output_tokens
+        price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         async with (self.slots.slot(direct=self.direct_request) if self.slots is not None else nullcontext()):
             call_id = self.store.start_call(turn_id, role, {
                 "settings": settings, "messages": messages, "tools": tools,
+                "provider": binding.provider,
+                "price": None if price is None else price.model_dump(mode="json"),
                 **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
                    else {"estimated_total_tokens": estimated}),
                 "context_window_tokens": binding.context_window_tokens,
@@ -229,12 +233,16 @@ class Chat:
             except BaseException as error:
                 response = None if reply is None else {"message": reply.message, "finish_reason": reply.finish_reason}
                 usage = None if reply is None else reply.usage
+                token_usage = None if reply is None else reply.token_usage
                 if isinstance(error, ModelProtocolError):
                     response, usage = error.response, error.usage
-                self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}")
+                    token_usage = error.token_usage
+                self.store.end_call(call_id, response, usage, f"{type(error).__name__}: {error}",
+                                    cost=estimate_cost(price, token_usage))
                 self.notify()
                 raise
             self.store.end_call(call_id, {"message": reply.message, "finish_reason": reply.finish_reason}, reply.usage,
+                                cost=estimate_cost(price, reply.token_usage),
                                 append_to_scene=self.config.scene if role == "mind" else None,
                                 recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
             self.notify()

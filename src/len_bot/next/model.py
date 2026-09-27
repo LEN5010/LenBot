@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from len_bot.next.pricing import TokenUsage
+
 
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -63,16 +65,18 @@ class ModelReply:
     tool_calls: list[ToolCall]
     finish_reason: str
     usage: dict[str, Any] | None
+    token_usage: TokenUsage | None
 
 
 class ModelProtocolError(RuntimeError):
     """A successful HTTP response did not contain a complete model reply."""
 
     def __init__(self, message: str, *, response: object | None = None,
-                 usage: dict[str, Any] | None = None):
+                 usage: dict[str, Any] | None = None, token_usage: TokenUsage | None = None):
         super().__init__(message)
         self.response = copy.deepcopy(response)
         self.usage = copy.deepcopy(usage)
+        self.token_usage = token_usage
 
 
 class ModelHTTPError(RuntimeError):
@@ -83,11 +87,39 @@ def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant in tool arguments: {value}")
 
 
+def _parse_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
+    if usage is None:
+        return None
+
+    def token(value: object, field: str) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value < 0:
+            raise ValueError(f"usage.{field} must be a nonnegative integer or null")
+        return value
+
+    prompt = token(usage.get("prompt_tokens"), "prompt_tokens")
+    completion = token(usage.get("completion_tokens"), "completion_tokens")
+    details = usage.get("prompt_tokens_details")
+    if details is not None and not isinstance(details, dict):
+        raise ValueError("usage.prompt_tokens_details must be an object or null")
+    cached = token(None if details is None else details.get("cached_tokens"),
+                   "prompt_tokens_details.cached_tokens")
+    if prompt is not None and cached is not None and cached > prompt:
+        raise ValueError("usage.prompt_tokens_details.cached_tokens exceeds prompt_tokens")
+    return TokenUsage(prompt, completion, cached)
+
+
 def parse_chat_completion(body: object) -> ModelReply:
     """Parse a provider response once, retaining its native assistant message."""
+    token_usage = None
     try:
         if not isinstance(body, dict):
             raise ValueError("expected a response object")
+        usage = body.get("usage")
+        if usage is not None and not isinstance(usage, dict):
+            raise ValueError("usage must be an object or null")
+        token_usage = _parse_token_usage(usage)
         choices = body["choices"]
         if not isinstance(choices, list) or not choices:
             raise ValueError("expected a nonempty choices array")
@@ -137,16 +169,13 @@ def parse_chat_completion(body: object) -> ModelReply:
         if (finish_reason == "tool_calls") != bool(calls):
             raise ValueError("finish_reason and tool calls disagree")
 
-        usage = body.get("usage")
-        if usage is not None and not isinstance(usage, dict):
-            raise ValueError("usage must be an object or null")
     except (KeyError, TypeError, ValueError) as error:
         fragment = json.dumps(body, ensure_ascii=False, default=repr)[:500]
         raw_usage = body.get("usage") if isinstance(body, dict) else None
         usage = raw_usage if isinstance(raw_usage, dict) else None
         raise ModelProtocolError(
             f"Invalid chat completion: {error}; response fragment: {fragment}",
-            response=body, usage=usage,
+            response=body, usage=usage, token_usage=token_usage,
         ) from error
 
     return ModelReply(
@@ -155,6 +184,7 @@ def parse_chat_completion(body: object) -> ModelReply:
         tool_calls=calls,
         finish_reason=finish_reason,
         usage=copy.deepcopy(usage),
+        token_usage=token_usage,
     )
 
 

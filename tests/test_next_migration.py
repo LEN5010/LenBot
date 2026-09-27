@@ -76,15 +76,16 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
 
     original_backup = migrate_database(path)
     assert original_backup == tmp_path / f"isolated.sqlite3.v{format_number}.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(original_backup) == (0x4C424E31, format_number)
-    for intermediate_format in range(format_number + 1, 12):
+    for intermediate_format in range(format_number + 1, 13):
         assert _version(tmp_path / f"isolated.sqlite3.v{intermediate_format}.bak") == (
             0x4C424E31, intermediate_format
         )
     assert _old_columns(path) == before == _old_columns(original_backup)
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM model_calls WHERE mind_entry_seq IS NOT NULL").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM model_calls WHERE cost IS NOT NULL").fetchone()[0] == 0
         assert db.execute(
             f"SELECT {','.join(FIRST_EXPRESSION_COLUMNS)} FROM turns ORDER BY rowid"
         ).fetchall() == [(None, None, None)] * db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
@@ -246,7 +247,7 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v7.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(backup) == (0x4C424E31, 7)
     assert _version(tmp_path / "isolated.sqlite3.v8.bak") == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
@@ -300,7 +301,7 @@ def test_v8_web_documents_upgrade_preserves_all_existing_records(tmp_path: Path)
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v8.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(backup) == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
@@ -335,7 +336,7 @@ def test_v9_image_cache_upgrade_preserves_synthetic_web_and_chat_records(tmp_pat
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v9.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(backup) == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -395,13 +396,14 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v10.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(backup) == (0x4C424E31, 10)
     assert _rows(path) == before == _rows(backup)
     assert _version(tmp_path / "isolated.sqlite3.v11.bak") == (0x4C424E31, 11)
+    assert _version(tmp_path / "isolated.sqlite3.v12.bak") == (0x4C424E31, 12)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(model_calls)")] == [
-            *MODEL_CALL_COLUMNS, "mind_entry_seq",
+            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost",
         ]
         assert [row[2] for row in db.execute("PRAGMA index_info(turn_calls)")] == [
             "turn_id", "id",
@@ -410,6 +412,9 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
         assert [row[1] for row in old.execute("PRAGMA table_info(model_calls)")] == old_columns
         assert db.execute("SELECT role,mind_entry_seq FROM model_calls ORDER BY id").fetchall() == [
             ("mind", None), ("mind", None), ("voice", None),
+        ]
+        assert db.execute("SELECT cost FROM model_calls ORDER BY id").fetchall() == [
+            (None,), (None,), (None,),
         ]
         assert db.execute(
             f"SELECT {','.join(FIRST_EXPRESSION_COLUMNS)} FROM turns ORDER BY rowid"
@@ -446,9 +451,10 @@ def test_v11_first_expression_upgrade_preserves_synthetic_records_and_rowids(tmp
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v11.bak"
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
     assert _version(backup) == (0x4C424E31, 11)
     assert _rows(path) == before == _rows(backup)
+    assert _version(tmp_path / "isolated.sqlite3.v12.bak") == (0x4C424E31, 12)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(turns)")] == [
             *TURN_COLUMNS, *FIRST_EXPRESSION_COLUMNS,
@@ -460,11 +466,74 @@ def test_v11_first_expression_upgrade_preserves_synthetic_records_and_rowids(tmp
         assert db.execute(
             "SELECT id,turn_id,role,mind_entry_seq FROM model_calls ORDER BY id"
         ).fetchall() == calls_before
+        assert db.execute("SELECT cost FROM model_calls ORDER BY id").fetchall() == [
+            (None,), (None,), (None,),
+        ]
         assert db.execute(
             f"SELECT {','.join(FIRST_EXPRESSION_COLUMNS)} FROM turns ORDER BY rowid"
         ).fetchall() == [(None, None, None)] * len(turns_before)
     with Store(path):
         pass
+
+
+def test_v12_cost_upgrade_keeps_existing_latency_and_call_facts(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    shutil.copyfile(FIXTURES / "v12-synthetic.sqlite3", path)
+    before = _rows(path)
+    with sqlite3.connect(path) as old:
+        turns_before = old.execute("SELECT rowid,* FROM turns ORDER BY rowid").fetchall()
+        calls_before = old.execute("SELECT rowid,* FROM model_calls ORDER BY id").fetchall()
+        assert old.execute("SELECT first_expression_delivery FROM turns WHERE first_expression_at IS NOT NULL ORDER BY rowid").fetchall() == [
+            ("sent",), ("simulated",),
+        ]
+        assert old.execute("SELECT mind_entry_seq FROM model_calls ORDER BY id").fetchall() == [
+            (2,), (5,), (None,),
+        ]
+    assert _version(path) == (0x4C424E31, 12)
+    with pytest.raises(ValueError, match="format 12 requires offline migration"):
+        Store(path)
+
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v12.bak"
+    assert _version(path) == (0x4C424E31, 13)
+    assert _version(backup) == (0x4C424E31, 12)
+    assert _rows(path) == before == _rows(backup)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        assert [row[1] for row in db.execute("PRAGMA table_info(model_calls)")] == [
+            *MODEL_CALL_COLUMNS, "mind_entry_seq", "cost",
+        ]
+        assert [row[1] for row in old.execute("PRAGMA table_info(model_calls)")] == [
+            *MODEL_CALL_COLUMNS, "mind_entry_seq",
+        ]
+        assert db.execute("SELECT rowid,* FROM turns ORDER BY rowid").fetchall() == turns_before
+        assert db.execute(
+            f"SELECT rowid,{','.join(MODEL_CALL_COLUMNS)},mind_entry_seq FROM model_calls ORDER BY id"
+        ).fetchall() == calls_before
+        assert db.execute("SELECT cost FROM model_calls ORDER BY id").fetchall() == [
+            (None,), (None,), (None,),
+        ]
+    with Store(path):
+        pass
+
+
+def test_v12_cost_column_conflict_rolls_back_without_changing_call_rows(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    shutil.copyfile(FIXTURES / "v12-synthetic.sqlite3", path)
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE model_calls ADD COLUMN cost TEXT")
+        db.execute("UPDATE model_calls SET cost=? WHERE id=1", ('{"basis":"synthetic-preexisting"}',))
+        columns_before = db.execute("PRAGMA table_info(model_calls)").fetchall()
+        calls_before = db.execute("SELECT rowid,* FROM model_calls ORDER BY id").fetchall()
+
+    with pytest.raises(sqlite3.OperationalError, match="duplicate column name: cost"):
+        migrate_database(path)
+    backup = tmp_path / "isolated.sqlite3.v12.bak"
+    assert _version(path) == _version(backup) == (0x4C424E31, 12)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        assert db.execute("PRAGMA table_info(model_calls)").fetchall() == columns_before
+        assert old.execute("PRAGMA table_info(model_calls)").fetchall() == columns_before
+        assert db.execute("SELECT rowid,* FROM model_calls ORDER BY id").fetchall() == calls_before
+        assert old.execute("SELECT rowid,* FROM model_calls ORDER BY id").fetchall() == calls_before
 
 
 def test_v11_column_conflict_rolls_back_all_three_columns(tmp_path: Path) -> None:
@@ -542,15 +611,15 @@ def test_migration_rejects_current_and_wrong_database(tmp_path: Path) -> None:
     path = tmp_path / "isolated.sqlite3"
     shutil.copyfile(FIXTURES / "v2-synthetic.sqlite3", path)
     migrate_database(path)
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 11 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 12 database"):
         migrate_database(path)
-    assert _version(path) == (0x4C424E31, 12)
+    assert _version(path) == (0x4C424E31, 13)
 
     unrelated = tmp_path / "unrelated.sqlite3"
     with sqlite3.connect(unrelated) as db:
         db.execute("CREATE TABLE other (value TEXT)")
         db.execute("INSERT INTO other VALUES ('untouched')")
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 11 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 12 database"):
         migrate_database(unrelated)
     assert not unrelated.with_name(unrelated.name + ".v1.bak").exists()
     with sqlite3.connect(unrelated) as db:

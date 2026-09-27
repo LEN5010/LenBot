@@ -74,18 +74,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+                if application_id == 0x4C424E31 and version in range(1, 13):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 12:
+                if application_id != 0x4C424E31 or version != 13:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 12;
+                    PRAGMA user_version = 13;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -117,7 +117,7 @@ class Store:
                     CREATE TABLE model_calls (
                         id INTEGER PRIMARY KEY, turn_id TEXT NOT NULL, role TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
-                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER
+                        response TEXT, usage TEXT, error TEXT, mind_entry_seq INTEGER, cost TEXT
                     );
                     CREATE INDEX turn_calls ON model_calls(turn_id, id);
                     CREATE TABLE schedules (
@@ -468,7 +468,7 @@ class Store:
         calls = []
         for row in self.db.execute("SELECT * FROM model_calls WHERE turn_id=? ORDER BY id", (turn_id,)):
             call = dict(row)
-            for key in ("request", "response", "usage"):
+            for key in ("request", "response", "usage", "cost"):
                 call[key] = None if call[key] is None else json.loads(call[key])
             entry_seq = call.pop("mind_entry_seq")
             call["tool_results"] = None if entry_seq is None else []
@@ -781,15 +781,16 @@ class Store:
         return cursor.lastrowid
 
     def end_call(self, call_id: int, response: dict | None, usage: dict | None,
-                 error: str | None = None, *, append_to_scene: str | None = None,
+                 error: str | None = None, *, cost: dict | None = None, append_to_scene: str | None = None,
                  recap_for: tuple[str, int] | None = None) -> None:
         with self.db:
             entry_seq = (None if append_to_scene is None else
                          self._append(append_to_scene, response["message"]))
             self.db.execute(
-                "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=? WHERE id=?",
+                "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=?,cost=? WHERE id=?",
                 (self.now(), None if response is None else encode(response),
-                 None if usage is None else encode(usage), error, entry_seq, call_id),
+                 None if usage is None else encode(usage), error, entry_seq,
+                 None if cost is None else encode(cost), call_id),
             )
             if append_to_scene is not None:
                 if error is None and not response["message"].get("tool_calls"):
