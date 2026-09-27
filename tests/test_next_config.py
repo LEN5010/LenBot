@@ -1245,6 +1245,63 @@ def _synthetic_persona_package(path: Path) -> None:
     (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
 
 
+def _set_synthetic_styles(path: Path, styles: str) -> None:
+    metadata = path / "persona.yaml"
+    metadata.write_text(
+        metadata.read_text(encoding="utf-8").replace("styles: []\n", f"styles:\n{styles}"),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("styles,total", [
+    ("  - name: 少于一\n    weight: 0.7\n", "0.7"),
+    ("  - name: 甲\n    weight: 0.8\n  - name: 乙\n    weight: 0.3\n", "1.1"),
+    ("  - name: 甲\n    weight: 0\n  - name: 乙\n    weight: 0\n", "0.0"),
+])
+def test_persona_rejects_style_probability_sum_outside_one(tmp_path, styles, total):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    _set_synthetic_styles(path, styles)
+
+    with pytest.raises(ValueError) as failure:
+        load_persona(path)
+    assert "styles" in str(failure.value)
+    assert total in str(failure.value)
+
+
+def test_persona_accepts_empty_decimal_and_zero_plus_one_style_probabilities(tmp_path):
+    empty = tmp_path / "empty"
+    _synthetic_persona_package(empty)
+    assert load_persona(empty).styles == []
+
+    decimal = tmp_path / "decimal"
+    _synthetic_persona_package(decimal)
+    _set_synthetic_styles(decimal, "".join(
+        f"  - name: 风格{number}\n    weight: 0.1\n" for number in range(10)
+    ))
+    assert len(load_persona(decimal).styles) == 10
+
+    zero_one = tmp_path / "zero-one"
+    _synthetic_persona_package(zero_one)
+    _set_synthetic_styles(zero_one,
+        '  - name: 零权重\n    weight: 0\n  - name: " 原样保留 "\n    weight: 1\n'
+        '    note: " 补充口吻 "\n')
+    persona = load_persona(zero_one)
+    assert [style.weight for style in persona.styles] == [0.0, 1.0]
+    assert persona.styles[1].name == " 原样保留 "
+    assert persona.styles[1].note == " 补充口吻 "
+
+
+def test_persona_rejects_blank_style_name(tmp_path):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    _set_synthetic_styles(path, '  - name: "   "\n    weight: 1\n')
+
+    with pytest.raises(ValueError) as failure:
+        load_persona(path)
+    assert "styles.0.name" in str(failure.value)
+
+
 def test_persona_loads_explicit_example_tags_without_discarding_other_examples(tmp_path):
     path = tmp_path / "example"
     _synthetic_persona_package(path)

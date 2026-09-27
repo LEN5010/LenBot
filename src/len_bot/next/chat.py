@@ -27,7 +27,7 @@ from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
-from .persona import Persona, select_examples
+from .persona import Persona, select_examples, select_style
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
@@ -241,7 +241,7 @@ class Chat:
     def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
 
-    async def prepare_context(self, turn_id: str) -> list[dict]:
+    async def prepare_context(self, turn_id: str, *, expression_style: str | None = None) -> list[dict]:
         binding = self.config.models.roles.mind
         trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
         while True:
@@ -256,6 +256,8 @@ class Chat:
                     describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"
                 if len(schedules) > 20:
                     state["content"] += "\n这里只列前 20 条；schedule_list 可继续查看。"
+            if self.config.voice_mode == "direct" and expression_style is not None:
+                state["content"] += "\n" + expression_style
             messages = self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
@@ -269,7 +271,8 @@ class Chat:
             )
             await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
 
-    async def express(self, turn_id: str, arguments: SayArguments) -> ChatMessage:
+    async def express(self, turn_id: str, arguments: SayArguments, *,
+                      expression_style: str | None = None) -> ChatMessage:
         quote = None
         if arguments.reply_to is not None:
             quote = self.store.find_message(self.config.scene, arguments.reply_to)
@@ -291,6 +294,8 @@ class Chat:
                         messages.append({"role": "user", "content": rendered})
             task = {"要表达": arguments.content, "长度": arguments.length,
                     "回复对象": None if quote is None else self.render(quote), "提及QQ": arguments.mention}
+            if expression_style is not None:
+                messages.append({"role": "user", "content": expression_style})
             messages.append({"role": "user", "content": encode(task)})
             reply = await self.request(turn_id, "voice", messages, [])
             if reply.tool_calls or not reply.text.strip():
@@ -349,7 +354,8 @@ class Chat:
         )
 
     async def execute_tool(self, turn_id: str, call: ToolCall,
-                           wait_for_messages: Callable[[float], Awaitable[str]]
+                           wait_for_messages: Callable[[float], Awaitable[str]], *,
+                           expression_style: str | None = None,
                            ) -> tuple[str, ChatMessage | None, list[str] | None]:
         if call.name not in self.tool_names:
             raise ValueError(f"当前请求未开放工具：{call.name}")
@@ -361,7 +367,8 @@ class Chat:
             return encode({"query": arguments.query, "matched_names": names,
                            "available_from": "next_model_request", "tools": matched}), None, discovered
         if call.name == "say":
-            expression = await self.express(turn_id, SayArguments.model_validate(call.arguments))
+            expression = await self.express(turn_id, SayArguments.model_validate(call.arguments),
+                                           expression_style=expression_style)
             return self.render(expression), expression, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
@@ -398,12 +405,20 @@ class Chat:
         status, error_text = "step_limit", None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
+                style = select_style(self.persona)
+                expression_style = None
+                if style is not None:
+                    expression_style = Template((PROMPTS / "next_style.md").read_text()).substitute(
+                        name=style.name, note="" if style.note is None else style.note,
+                    )
                 for step in range(self.config.max_steps):
-                    messages = await self.prepare_context(turn_id)
+                    messages = await self.prepare_context(turn_id, expression_style=expression_style)
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     for call in reply.tool_calls:
                         try:
-                            content, expression, discovered = await self.execute_tool(turn_id, call, wait_for_messages)
+                            content, expression, discovered = await self.execute_tool(
+                                turn_id, call, wait_for_messages, expression_style=expression_style,
+                            )
                         except Exception as error:
                             failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")

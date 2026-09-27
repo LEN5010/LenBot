@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from itertools import accumulate
+from math import fsum, isclose
 from pathlib import Path
+from random import random
 from typing import Literal
 
 import yaml
@@ -20,6 +24,13 @@ class Style(BaseModel):
     name: str
     weight: float = Field(ge=0, le=1, allow_inf_nan=False)
     note: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("style name must not be blank")
+        return value
 
 
 class Example(BaseModel):
@@ -77,6 +88,14 @@ class Persona(BaseModel):
             raise ValueError(f"example_tags not present in examples.yaml: {unknown!r}")
         return self
 
+    @model_validator(mode="after")
+    def complete_style_probability(self) -> Persona:
+        if self.styles:
+            total = fsum(style.weight for style in self.styles)
+            if not isclose(total, 1.0, rel_tol=0, abs_tol=1e-12):
+                raise ValueError(f"styles weights must sum to 1, got {total!r}")
+        return self
+
 
 def select_examples(persona: Persona) -> list[Example]:
     """Use the operator's exact tags, or the original first eight by default."""
@@ -84,6 +103,16 @@ def select_examples(persona: Persona) -> list[Example]:
         return persona.examples[:8]
     wanted = set(persona.example_tags)
     return [example for example in persona.examples if wanted.intersection(example.tags)][:8]
+
+
+def select_style(persona: Persona) -> Style | None:
+    """Sample one validated per-turn style without normalizing its probabilities."""
+    if not persona.styles:
+        return None
+    positive = [style for style in persona.styles if style.weight > 0]
+    endpoints = list(accumulate(style.weight for style in positive))
+    endpoints[-1] = 1.0
+    return positive[bisect_right(endpoints, random())]
 
 
 def _read_yaml(path: Path) -> object:
