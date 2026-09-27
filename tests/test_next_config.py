@@ -1209,6 +1209,8 @@ skills: []
     assert persona.voice == "短句，清楚。"
     assert persona.boundaries == "不声称拥有真实经历。"
     assert [example.line for example in persona.examples] == [f"台词 {number}" for number in range(8)]
+    assert persona.knowledge == {}
+    assert "knowledge" not in persona.model_dump()
 
 
 def test_persona_rejects_blank_alias_at_package_boundary(tmp_path):
@@ -1224,4 +1226,80 @@ def test_persona_rejects_blank_alias_at_package_boundary(tmp_path):
     (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="aliases"):
+        load_persona(path)
+
+
+def _synthetic_persona_package(path: Path) -> None:
+    path.mkdir()
+    (path / "persona.yaml").write_text(
+        "id: example\nname: 示例角色\nbrief: 示例\nbehavior: 示例\n"
+        "self_reference: [我]\naliases: [小例]\ntools: all\nskills: []\nstyles: []\n",
+        encoding="utf-8",
+    )
+    (path / "voice.md").write_text("短句", encoding="utf-8")
+    (path / "boundaries.md").write_text("示例", encoding="utf-8")
+    (path / "examples.yaml").write_text("[]\n", encoding="utf-8")
+
+
+def test_persona_knowledge_loads_nested_original_text_as_private_snapshot(tmp_path):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    document = path / "knowledge" / "world" / "story.md"
+    document.parent.mkdir(parents=True)
+    original = (
+        "---\r\ntags: [舞台, 二期]\r\ndate: 2020-01-02\r\n"
+        "confidence: 传闻，待核实\r\n---\r\n# 世界观\r\n原文与日期保持不变。\r\n"
+    )
+    document.write_bytes(original.encode("utf-8"))
+
+    persona = load_persona(path)
+
+    assert list(persona.knowledge) == ["world/story.md"]
+    assert persona.knowledge["world/story.md"].tags == ("舞台", "二期")
+    assert persona.knowledge["world/story.md"].content == original
+    assert "knowledge" not in persona.model_dump()
+    assert "knowledge" not in repr(persona)
+    document.write_text("运行后磁盘上的新内容", encoding="utf-8")
+    assert persona.knowledge["world/story.md"].content == original
+
+
+@pytest.mark.parametrize("header", ["tags: 舞台", "tags: [舞台, 3]", "tags: null"])
+def test_persona_knowledge_rejects_non_string_list_tags(tmp_path, header):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    document = path / "knowledge" / "invalid.md"
+    document.parent.mkdir()
+    document.write_text(f"---\n{header}\n---\n正文\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as failure:
+        load_persona(path)
+    assert "invalid.md" in str(failure.value)
+    assert "tags" in str(failure.value)
+
+
+@pytest.mark.parametrize("source,fragment", [
+    (b"---\ntags: [broken\n---\nbody\n", "tags: [broken"),
+    (b"---\ntags: [ok]\nbody without ending line\n", "tags: [ok]"),
+    (b"\xff\n", "ff"),
+])
+def test_persona_knowledge_reports_invalid_source_and_fragment(tmp_path, source, fragment):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    document = path / "knowledge" / "invalid.md"
+    document.parent.mkdir()
+    document.write_bytes(source)
+
+    with pytest.raises((ValueError, UnicodeError)) as failure:
+        load_persona(path)
+    assert "invalid.md" in str(failure.value)
+    assert fragment in str(failure.value)
+
+
+def test_persona_yaml_cannot_inject_knowledge_snapshot(tmp_path):
+    path = tmp_path / "example"
+    _synthetic_persona_package(path)
+    with (path / "persona.yaml").open("a", encoding="utf-8") as output:
+        output.write("knowledge: {forged.md: {content: 假资料, tags: []}}\n")
+
+    with pytest.raises(ValueError, match="knowledge"):
         load_persona(path)

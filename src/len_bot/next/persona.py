@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .persona_knowledge import PersonaDocument, load_knowledge
+
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
@@ -41,6 +43,7 @@ class Persona(BaseModel):
     voice: str
     boundaries: str
     examples: list[Example]
+    knowledge: dict[str, PersonaDocument] = Field(default_factory=dict, exclude=True, repr=False)
 
     @field_validator("name")
     @classmethod
@@ -70,8 +73,8 @@ def load_persona(path: Path) -> Persona:
     metadata = _read_yaml(path / "persona.yaml")
     if not isinstance(metadata, dict):
         raise ValueError(f"{path / 'persona.yaml'}: expected a YAML object")
-    if any(field in metadata for field in ("voice", "boundaries", "examples")):
-        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries and examples belong in separate files")
+    if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge")):
+        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples and knowledge belong in separate files")
 
     examples = _read_yaml(path / "examples.yaml")
     if not isinstance(examples, list):
@@ -83,7 +86,10 @@ def load_persona(path: Path) -> Persona:
             "boundaries": (path / "boundaries.md").read_text(encoding="utf-8"),
             "examples": examples,
         })
-        return persona.model_copy(update={"examples": persona.examples[:8]})
+        return persona.model_copy(update={
+            "examples": persona.examples[:8],
+            "knowledge": load_knowledge(path),
+        })
     except ValidationError as error:
         details = "; ".join(
             f"{'.'.join(map(str, item['loc']))}: {item['msg']}"
