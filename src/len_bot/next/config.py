@@ -352,6 +352,30 @@ class Attention(BaseModel):
         return self
 
 
+def _valid_scene(value: str) -> str:
+    if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
+        raise ValueError("must be group:<QQ> or private:<QQ>")
+    return value
+
+
+class HistoryImportSettings(BaseModel):
+    model_config = STRICT
+
+    source: Path
+    backup: Path
+    scenes: list[str] = Field(min_length=1)
+    recent_messages: int = Field(default=50, gt=0, strict=True)
+
+    @field_validator("scenes")
+    @classmethod
+    def valid_scenes(cls, scenes: list[str]) -> list[str]:
+        for scene in scenes:
+            _valid_scene(scene)
+        if len(scenes) != len(set(scenes)):
+            raise ValueError("history_import.scenes must not repeat")
+        return scenes
+
+
 class SharedConfig(BaseModel):
     model_config = STRICT
 
@@ -366,6 +390,7 @@ class SharedConfig(BaseModel):
     text_delivery: TextDelivery = Field(default_factory=TextDelivery)
     web_read: WebReadSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
+    history_import: HistoryImportSettings | None = None
     models: Models
 
     @field_validator("bot_qq")
@@ -403,6 +428,15 @@ class SharedConfig(BaseModel):
             raise ValueError("delivery=onebot requires onebot transport")
         return self
 
+    @model_validator(mode="after")
+    def distinct_history_paths(self) -> SharedConfig:
+        settings = self.history_import
+        if settings is not None:
+            paths = [self.database.resolve(), settings.source.resolve(), settings.backup.resolve()]
+            if len(set(paths)) != len(paths):
+                raise ValueError("history_import.source, history_import.backup and database must differ")
+        return self
+
     def model_settings(self, role: Literal["mind", "voice", "vision"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
@@ -429,12 +463,6 @@ class SceneSettings(BaseModel):
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
 
 
-def _valid_scene(value: str) -> str:
-    if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
-        raise ValueError("must be group:<QQ> or private:<QQ>")
-    return value
-
-
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
     if (schedules.owner == bot_qq or bot_qq in schedules.admins
             or bot_qq in schedules.whitelist):
@@ -454,6 +482,8 @@ class LabConfig(SharedConfig, SceneSettings):
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> LabConfig:
         _check_schedule_identity(self.bot_qq, self.schedules)
+        if self.history_import is not None and self.history_import.scenes != [self.scene]:
+            raise ValueError("history_import.scenes must contain only the configured scene")
         return self
 
 
@@ -477,6 +507,10 @@ class HostConfig(SharedConfig):
                 _check_schedule_identity(self.bot_qq, settings.schedules)
             except ValueError as error:
                 raise ValueError(f"scenes.{scene}: {error}") from error
+        if self.history_import is not None:
+            unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
+            if unknown:
+                raise ValueError(f"history_import.scenes are not configured: {unknown!r}")
         return self
 
     def scene_config(self, scene: str) -> LabConfig:
@@ -485,6 +519,9 @@ class HostConfig(SharedConfig):
         # Both typed parts were validated at the single root boundary. Keep
         # parsed local clocks and paths as typed values rather than roundtripping.
         shared = {name: getattr(self, name) for name in SharedConfig.model_fields}
+        # Import settings belong to the original root object and its offline
+        # command, not to this derived runtime scene view or a saved root file.
+        shared["history_import"] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
 
@@ -519,9 +556,18 @@ def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueErr
     return ValueError(f"{path}: invalid {kind} configuration: {details}")
 
 
-def load_config(root: Path) -> LabConfig:
-    """Load only ``root/lenbot.config.json``; no environment or CLI overlay."""
-    path, source = _read_root(root)
+def _resolve_history_paths(root: Path, source: dict) -> None:
+    settings = source.get("history_import")
+    if isinstance(settings, dict):
+        settings["source"] = _resolved_path(
+            root, settings.get("source"), within_root=False, field="history_import.source"
+        )
+        settings["backup"] = _resolved_path(
+            root, settings.get("backup"), within_root=True, field="history_import.backup"
+        )
+
+
+def _load_lab_source(path: Path, source: dict) -> LabConfig:
     root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
     source["persona"] = _resolved_path(root, source.get("persona"), within_root=False, field="persona")
@@ -530,15 +576,14 @@ def load_config(root: Path) -> LabConfig:
         panel["assets_dir"] = _resolved_path(
             root, panel["assets_dir"], within_root=False, field="panel.assets_dir"
         )
+    _resolve_history_paths(root, source)
     try:
         return LabConfig.model_validate(source)
     except ValidationError as error:
         raise _validation_error(path, error, "lab") from error
 
 
-def load_host_config(root: Path) -> HostConfig:
-    """Load one explicit multi-scene host from its sole root configuration."""
-    path, source = _read_root(root)
+def _load_host_source(path: Path, source: dict) -> HostConfig:
     root = path.parent
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
     scenes = source.get("scenes")
@@ -549,7 +594,30 @@ def load_host_config(root: Path) -> HostConfig:
                     root, settings.get("persona"), within_root=False,
                     field=f"scenes.{scene}.persona",
                 )
+    _resolve_history_paths(root, source)
     try:
         return HostConfig.model_validate(source)
     except ValidationError as error:
         raise _validation_error(path, error, "host") from error
+
+
+def load_config(root: Path) -> LabConfig:
+    """Load only ``root/lenbot.config.json``; no environment or CLI overlay."""
+    path, source = _read_root(root)
+    return _load_lab_source(path, source)
+
+
+def load_host_config(root: Path) -> HostConfig:
+    """Load one explicit multi-scene host from its sole root configuration."""
+    path, source = _read_root(root)
+    return _load_host_source(path, source)
+
+
+def load_instance_config(root: Path) -> LabConfig | HostConfig:
+    """Select the explicitly declared instance format from the one root file."""
+    path, source = _read_root(root)
+    if source.get("mode") == "isolated":
+        return _load_lab_source(path, source)
+    if source.get("mode") == "isolated-multi":
+        return _load_host_source(path, source)
+    raise ValueError(f"{path}: mode must explicitly be isolated or isolated-multi")

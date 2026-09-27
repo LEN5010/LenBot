@@ -8,7 +8,7 @@ import json
 import sqlite3
 import sys
 
-from .config import load_config
+from .config import load_instance_config
 from .messages import plain_text
 from .store import Store, encode
 
@@ -147,8 +147,8 @@ def migrate_database(path: Path) -> Path:
 
 def main() -> None:
     if len(sys.argv) != 1:
-        raise SystemExit("Migration takes no arguments; run from the isolated instance directory")
-    config = load_config(Path.cwd())
+        raise SystemExit("Migration takes no arguments; run from the configured instance directory")
+    config = load_instance_config(Path.cwd())
     backup = migrate_database(config.database)
     print(f"Offline migration completed; input-format copy: {backup}")
 
