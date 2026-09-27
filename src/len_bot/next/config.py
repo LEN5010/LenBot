@@ -358,6 +358,14 @@ def _valid_scene(value: str) -> str:
     return value
 
 
+def _history_scenes(scenes: list[str], setting: str) -> list[str]:
+    for scene in scenes:
+        _valid_scene(scene)
+    if len(scenes) != len(set(scenes)):
+        raise ValueError(f"{setting}.scenes must not repeat")
+    return scenes
+
+
 class HistoryImportSettings(BaseModel):
     model_config = STRICT
 
@@ -369,11 +377,20 @@ class HistoryImportSettings(BaseModel):
     @field_validator("scenes")
     @classmethod
     def valid_scenes(cls, scenes: list[str]) -> list[str]:
-        for scene in scenes:
-            _valid_scene(scene)
-        if len(scenes) != len(set(scenes)):
-            raise ValueError("history_import.scenes must not repeat")
-        return scenes
+        return _history_scenes(scenes, "history_import")
+
+
+class HistoryExportSettings(BaseModel):
+    model_config = STRICT
+
+    target: Path
+    backup: Path
+    scenes: list[str] = Field(min_length=1)
+
+    @field_validator("scenes")
+    @classmethod
+    def valid_scenes(cls, scenes: list[str]) -> list[str]:
+        return _history_scenes(scenes, "history_export")
 
 
 class SharedConfig(BaseModel):
@@ -391,6 +408,7 @@ class SharedConfig(BaseModel):
     web_read: WebReadSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
     history_import: HistoryImportSettings | None = None
+    history_export: HistoryExportSettings | None = None
     models: Models
 
     @field_validator("bot_qq")
@@ -430,11 +448,16 @@ class SharedConfig(BaseModel):
 
     @model_validator(mode="after")
     def distinct_history_paths(self) -> SharedConfig:
-        settings = self.history_import
-        if settings is not None:
-            paths = [self.database.resolve(), settings.source.resolve(), settings.backup.resolve()]
+        importing = self.history_import
+        if importing is not None:
+            paths = [self.database.resolve(), importing.source.resolve(), importing.backup.resolve()]
             if len(set(paths)) != len(paths):
                 raise ValueError("history_import.source, history_import.backup and database must differ")
+        exporting = self.history_export
+        if exporting is not None:
+            paths = [self.database.resolve(), exporting.target.resolve(), exporting.backup.resolve()]
+            if len(set(paths)) != len(paths):
+                raise ValueError("history_export.target, history_export.backup and database must differ")
         return self
 
     def model_settings(self, role: Literal["mind", "voice", "vision"]) -> ModelSettings:
@@ -484,6 +507,8 @@ class LabConfig(SharedConfig, SceneSettings):
         _check_schedule_identity(self.bot_qq, self.schedules)
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
             raise ValueError("history_import.scenes must contain only the configured scene")
+        if self.history_export is not None and self.history_export.scenes != [self.scene]:
+            raise ValueError("history_export.scenes must contain only the configured scene")
         return self
 
 
@@ -511,6 +536,10 @@ class HostConfig(SharedConfig):
             unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
             if unknown:
                 raise ValueError(f"history_import.scenes are not configured: {unknown!r}")
+        if self.history_export is not None:
+            unknown = [scene for scene in self.history_export.scenes if scene not in self.scenes]
+            if unknown:
+                raise ValueError(f"history_export.scenes are not configured: {unknown!r}")
         return self
 
     def scene_config(self, scene: str) -> LabConfig:
@@ -519,9 +548,10 @@ class HostConfig(SharedConfig):
         # Both typed parts were validated at the single root boundary. Keep
         # parsed local clocks and paths as typed values rather than roundtripping.
         shared = {name: getattr(self, name) for name in SharedConfig.model_fields}
-        # Import settings belong to the original root object and its offline
-        # command, not to this derived runtime scene view or a saved root file.
+        # Both offline settings belong to the original root object and their
+        # commands, not to this derived runtime scene view or a saved root file.
         shared["history_import"] = None
+        shared["history_export"] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
 
@@ -557,13 +587,21 @@ def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueErr
 
 
 def _resolve_history_paths(root: Path, source: dict) -> None:
-    settings = source.get("history_import")
-    if isinstance(settings, dict):
-        settings["source"] = _resolved_path(
-            root, settings.get("source"), within_root=False, field="history_import.source"
+    importing = source.get("history_import")
+    if isinstance(importing, dict):
+        importing["source"] = _resolved_path(
+            root, importing.get("source"), within_root=False, field="history_import.source"
         )
-        settings["backup"] = _resolved_path(
-            root, settings.get("backup"), within_root=True, field="history_import.backup"
+        importing["backup"] = _resolved_path(
+            root, importing.get("backup"), within_root=True, field="history_import.backup"
+        )
+    exporting = source.get("history_export")
+    if isinstance(exporting, dict):
+        exporting["target"] = _resolved_path(
+            root, exporting.get("target"), within_root=True, field="history_export.target"
+        )
+        exporting["backup"] = _resolved_path(
+            root, exporting.get("backup"), within_root=True, field="history_export.backup"
         )
 
 
