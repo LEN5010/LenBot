@@ -630,6 +630,96 @@ def test_host_does_not_accept_evaluation_configuration(tmp_path):
         load_host_config(root)
 
 
+def test_replay_clock_is_optional_and_roundtrips_only_for_isolated_stdin(tmp_path):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    _write_config(root, source)
+    assert load_config(root).replay_clock is None
+
+    source["replay_clock"] = {"epoch": 1790000000.5, "monotonic_origin": 12345.25}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    config = load_config(root)
+    assert config.replay_clock.epoch == 1790000000.5
+    assert config.replay_clock.monotonic_origin == 12345.25
+    assert config.delivery == "simulated" and config.onebot is None
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_replay_clock_accepts_integer_json_seconds_and_normalizes_to_float(tmp_path):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["replay_clock"] = {"epoch": 1735689600, "monotonic_origin": 1200}
+    _write_config(root, source)
+
+    clock = load_config(root).replay_clock
+    assert clock.epoch == 1735689600.0 and type(clock.epoch) is float
+    assert clock.monotonic_origin == 1200.0 and type(clock.monotonic_origin) is float
+
+
+@pytest.mark.parametrize("clock,field", [
+    ({"monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": 1790000000.0}, "replay_clock.monotonic_origin"),
+    ({"epoch": True, "monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": "1790000000.0", "monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": float("nan"), "monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": float("inf"), "monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": 1e100, "monotonic_origin": 12.5}, "replay_clock.epoch"),
+    ({"epoch": 1790000000.0, "monotonic_origin": True}, "replay_clock.monotonic_origin"),
+    ({"epoch": 1790000000.0, "monotonic_origin": "12.5"}, "replay_clock.monotonic_origin"),
+    ({"epoch": 1790000000.0, "monotonic_origin": float("inf")}, "replay_clock.monotonic_origin"),
+    ({"epoch": 1790000000.0, "monotonic_origin": float("nan")}, "replay_clock.monotonic_origin"),
+    ({"epoch": 1790000000.0, "monotonic_origin": 12.5, "extra": 1}, "replay_clock.extra"),
+])
+def test_replay_clock_rejects_invalid_values(tmp_path, clock, field):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["replay_clock"] = clock
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize("change,field", [
+    (lambda source: source.update(onebot={"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9"}), "onebot"),
+    (lambda source: source.update(onebot={"mode": "forward_ws", "ws_url": "ws://127.0.0.1:9"},
+                                  delivery="onebot"), "delivery"),
+    (lambda source: source.update(panel={"host": "127.0.0.1", "port": 0,
+                                  "username": "synthetic-operator",
+                                  "password_hash": hash_password("synthetic-password", salt="synthetic-salt")}), "panel"),
+    (lambda source: source.update(web_read={}), "web_read"),
+    (lambda source: source["models"]["roles"].update(vision={
+        "provider": "sample", "model": "synthetic-vision", "context_window_tokens": 4096,
+    }), "models.roles.vision"),
+    (lambda source: source.update(history_import={
+        "source": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"],
+    }), "history_import"),
+    (lambda source: source.update(history_export={
+        "target": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"],
+    }), "history_export"),
+])
+def test_replay_clock_rejects_entries_without_shared_time_source(tmp_path, change, field):
+    root = tmp_path / "isolated"
+    source = _config("personas/example")
+    source["replay_clock"] = {"epoch": 1790000000.0, "monotonic_origin": 12.5}
+    change(source)
+    _write_config(root, source)
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert "replay_clock" in str(failure.value)
+    assert field in str(failure.value)
+
+
+def test_host_does_not_accept_replay_clock(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["replay_clock"] = {"epoch": 1790000000.0, "monotonic_origin": 12.5}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="replay_clock"):
+        load_host_config(root)
+
+
 def test_scene_persona_read_uses_full_root_validation_with_original_defaults(tmp_path):
     root = tmp_path / "isolated"
     _write_config(root, _config("personas/example"))

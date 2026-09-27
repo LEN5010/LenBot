@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from len_bot.next.config import EpochSeconds
 from len_bot.next.messages import parse_message
 
 
@@ -51,6 +52,7 @@ class ReplayCase(BaseModel):
 
     id: str
     set: str
+    start_time: EpochSeconds | None = None
     expect: list[str] = Field(min_length=1)
     steps: list[ReplayStep] = Field(min_length=1)
 

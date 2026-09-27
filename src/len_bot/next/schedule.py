@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal, TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -150,11 +151,11 @@ def wake_text(item: Schedule, now: float) -> str:
 
 
 def execute_schedule(store: Store, config: LabConfig, name: Literal["schedule", "schedule_list", "schedule_cancel"],
-                     arguments: dict) -> str:
+                     arguments: dict, *, now: Callable[[], float] = time.time) -> str:
     if name == "schedule":
         args = ScheduleArguments.model_validate(arguments)
         when = args.when.timestamp()
-        if when <= time.time():
+        if when <= now():
             raise ValueError("when 必须晚于当前执行时刻；未创建过去的安排")
         check_creation(config.schedules, requester=args.requester, target=args.target,
                        bot_qq=config.bot_qq, group_role=platform_role(store, config, args.requester))

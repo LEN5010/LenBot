@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -49,7 +50,15 @@ async def input_lines():
 async def run() -> None:
     config = load_config(Path.cwd())
     persona = load_persona(config.persona)
-    with Store(config.database) as store:
+    now = time.time
+    if config.replay_clock is not None:
+        epoch = config.replay_clock.epoch
+        origin = config.replay_clock.monotonic_origin
+
+        def now() -> float:
+            return epoch + (time.monotonic() - origin)
+
+    with Store(config.database, now=now) as store:
         async with (
             ChatModel(config.model_settings("mind")) as mind,
             ChatModel(config.model_settings("voice")) as voice,
@@ -59,7 +68,7 @@ async def run() -> None:
             if config.onebot is not None:
                 await run_network(config, [(config, persona)], store, mind, voice, vision=vision)
                 return
-            chat = Chat(config, persona, store, mind, voice, vision=vision)
+            chat = Chat(config, persona, store, mind, voice, vision=vision, now=now)
             resume = chat.restore()
             runner = SceneRunner(chat, lambda result: print(encode({"type": "turn", **result}), flush=True), resume=resume)
             async with asyncio.TaskGroup() as tasks:

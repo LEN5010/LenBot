@@ -51,6 +51,8 @@ def write_json(path: Path, value: object) -> None:
 
 def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona, CaseFile, dict]:
     config = load_config(root)
+    if config.replay_clock is not None:
+        raise ValueError("Evaluation template root must not contain replay_clock; each repeat creates its own anchor")
     if config.evaluation is None:
         raise ValueError("Root configuration has no evaluation settings")
     if set_name not in config.evaluation.sets or profile not in config.evaluation.profiles:
@@ -71,13 +73,19 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
                    for role in ("mind", "voice")},
         "case_ids": [case.id for case in cases.cases],
+        "case_clocks": [
+            {"case_id": case.id,
+             "mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
+             "start_time": case.start_time}
+            for case in cases.cases
+        ],
         "repetitions": config.evaluation.repetitions,
         "case_timeout_seconds": config.evaluation.case_timeout_seconds,
         "max_steps_per_turn": config.max_steps,
         "turn_timeout_seconds": config.turn_timeout_seconds,
-        "clock": "real-host-clock", "delivery": "simulated",
+        "delivery": "simulated",
         "estimated_model_calls": None, "estimated_cost": None,
-        "notice": "调用数取决于实际工具与压缩，费用未核定。此开发回放不是虚拟时钟历史时机对照；完成执行不等于质量通过。",
+        "notice": "调用数取决于实际工具与压缩，费用未核定。固定起点按真实秒数推进；此开发回放尚非历史时机对照，完成执行不等于质量通过。",
     }
     return config, persona, cases, plan
 
@@ -137,7 +145,7 @@ def observed_database(path: Path) -> dict:
 async def run_case(directory: Path, config: LabConfig, persona: Persona,
                    case: ReplayCase, voice_mode: str, timeout: float) -> dict:
     directory.mkdir(parents=True, mode=0o700)
-    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export"})
+    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
     config_path = directory / "lenbot.config.json"
     started = time.time()
@@ -201,9 +209,13 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
 
     try:
         snapshot_persona(persona, directory / "persona")
+        write_json(directory / "case.json", case.model_dump(mode="json"))
+        # The same per-repeat anchor stays in this child config across normal restarts.
+        effective["replay_clock"] = (None if case.start_time is None else {
+            "epoch": case.start_time, "monotonic_origin": time.monotonic(),
+        })
         write_json(config_path, effective)
         config_path.chmod(0o600)
-        write_json(directory / "case.json", case.model_dump(mode="json"))
         with (directory / "stdout.jsonl").open("wb") as stdout, \
              (directory / "stderr.log").open("wb") as stderr:
             async with asyncio.timeout(timeout):
@@ -249,6 +261,14 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
         finally:
             config_path.unlink(missing_ok=True)
     result = {"case_id": case.id, "script_completed": error is None, "error": error,
+              "clock": {"mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
+                        "start_time": case.start_time},
+              "time_axes": {
+                  "started_ended_inputs_processes": "host-physical-unix-seconds",
+                  "database_turns_and_model_calls": (
+                      "fixed-start-replay-unix-seconds" if case.start_time is not None
+                      else "host-physical-unix-seconds"),
+              },
               "started": started, "ended": time.time(), "inputs": inputs, "processes": processes,
               "failed_tools": failed_tools,
               **observed_database(directory / "chat.sqlite3")}
@@ -333,7 +353,7 @@ def report(root: Path, run_id: str) -> dict:
     summary = {"run": metadata, "quality": counts, "scored": scored,
                "pass_rate": None if scored == 0 else counts["pass"] / scored,
                "cost": None, "results": results,
-               "notice": "实时时序开发回放；未标注不计通过，费用未知不计零，完整输出见各实例数据库。"}
+               "notice": "1 倍速开发回放；每例时间轴见结果，未标注不计通过，费用未知不计零，完整输出见各实例数据库。"}
     write_json(directory / "report.json", summary)
     return summary
 

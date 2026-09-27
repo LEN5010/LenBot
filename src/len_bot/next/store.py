@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -55,7 +55,8 @@ class ImageAsset:
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, now: Callable[[], float] = time.time):
+        self.now = now
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
@@ -205,7 +206,7 @@ class Store:
     def _append(self, scene: str, message: dict) -> int:
         cursor = self.db.execute(
             "INSERT INTO mind_entries(scene,message,created) VALUES (?,?,?)",
-            (scene, encode(message), time.time()),
+            (scene, encode(message), self.now()),
         )
         return cursor.lastrowid
 
@@ -476,7 +477,7 @@ class Store:
 
     def attention_sample(self, scene: str, limit: int = 20, *,
                          exclude_uids: Sequence[str] = ()) -> list[tuple[ChatMessage, float]]:
-        """Recent messages with actual host observation or saved outbound time."""
+        """Recent messages with instance observation or saved outbound time."""
         excluded = tuple(exclude_uids)
         exclude_clause = (
             " AND (json_extract(body,'$.is_self')=1 OR "
@@ -610,7 +611,7 @@ class Store:
             cursor = self.db.execute(
                 "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status) "
                 "VALUES (?,?,?,?,?,?,?,'pending')",
-                (scene, time.time(), due_at, timezone, note, target, requester),
+                (scene, self.now(), due_at, timezone, note, target, requester),
             )
             row = self.db.execute(
                 "SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)
@@ -691,10 +692,10 @@ class Store:
             self.db.execute(
                 "UPDATE turns SET ended=?,status='interrupted',error=COALESCE(error,?) "
                 "WHERE scene=? AND ended IS NULL",
-                (time.time(), "Previous turn handed off to a resumed turn", scene),
+                (self.now(), "Previous turn handed off to a resumed turn", scene),
             )
             self.db.execute("INSERT INTO turns VALUES (?,?,?,NULL,'queued',NULL)",
-                            (turn_id, scene, time.time()))
+                            (turn_id, scene, self.now()))
             if batch is not None:
                 self._append_batch(scene, batch[0], batch[1])
             if scheduled is not None:
@@ -709,7 +710,7 @@ class Store:
             updated = self.db.execute(
                 "UPDATE schedules SET status='delivered',delivered_at=? "
                 "WHERE scene=? AND id=? AND status='pending'",
-                (time.time(), scene, id),
+                (self.now(), scene, id),
             )
             if updated.rowcount != 1:
                 raise ValueError(f"Scene {scene} schedule {id} is not pending")
@@ -739,7 +740,7 @@ class Store:
                 if queued.rowcount == 1:
                     return True
             self.db.execute("UPDATE turns SET ended=?,status=?,error=? WHERE id=?",
-                            (time.time(), status, error, turn_id))
+                            (self.now(), status, error, turn_id))
         return False
 
     def start_call(self, turn_id: str, role: str, request: dict) -> int:
@@ -751,7 +752,7 @@ class Store:
                 raise ValueError(f"No active turn {turn_id}")
             cursor = self.db.execute(
                 "INSERT INTO model_calls(turn_id,role,started,request) VALUES (?,?,?,?)",
-                (turn_id, role, time.time(), encode(request)),
+                (turn_id, role, self.now(), encode(request)),
             )
         return cursor.lastrowid
 
@@ -763,7 +764,7 @@ class Store:
                          self._append(append_to_scene, response["message"]))
             self.db.execute(
                 "UPDATE model_calls SET ended=?,response=?,usage=?,error=?,mind_entry_seq=? WHERE id=?",
-                (time.time(), None if response is None else encode(response),
+                (self.now(), None if response is None else encode(response),
                  None if usage is None else encode(usage), error, entry_seq, call_id),
             )
             if append_to_scene is not None:
@@ -818,11 +819,11 @@ class Store:
             self.db.execute(
                 "UPDATE model_calls SET ended=?,error=? WHERE ended IS NULL AND turn_id IN "
                 "(SELECT id FROM turns WHERE scene=?)",
-                (time.time(), "Interrupted: previous process exited without a response", scene),
+                (self.now(), "Interrupted: previous process exited without a response", scene),
             )
             self.db.execute(
                 "UPDATE turns SET ended=?,status='settled' WHERE scene=? AND status='settling' "
                 "AND ended IS NULL",
-                (time.time(), scene),
+                (self.now(), scene),
             )
         return needs_resume
