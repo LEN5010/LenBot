@@ -147,6 +147,7 @@ def _speaker(message: ChatMessage) -> str:
 
 def _body(segments: list[Segment]) -> str:
     parts: list[str] = []
+    image_index = 0
     for segment in segments:
         if segment.type == "reply":
             continue
@@ -155,6 +156,11 @@ def _body(segments: list[Segment]) -> str:
         elif segment.type == "at":
             qq = segment.data["qq"]
             parts.append("@全体成员" if qq == "all" else f"@QQ {qq}")
+        elif segment.type == "image":
+            image_index += 1
+            summary = segment.data.get("summary")
+            details = "" if summary is None else f"：{summary}"
+            parts.append(f"[图片{image_index}{details}]")
         else:
             identifiers = [
                 f"{field}={segment.data[field]}"

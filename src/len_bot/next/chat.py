@@ -14,19 +14,21 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from len_bot.media.images import image_block
 from .config import LabConfig
 from .context import (
-    CompactionPlan, ContextBudgetError, estimate_content, estimate_request,
+    CompactionPlan, ContextBudgetError, estimate_content, estimate_request, estimate_text_request,
     plan_compaction, project_history,
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
 from .delivery import part_length, report_parts, split_expression
+from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .persona import Persona
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
-from .store import Store, encode
+from .store import ImageAsset, Store, encode
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 
 
@@ -74,10 +76,11 @@ def voice_prompt(persona: Persona) -> str:
 class Chat:
     def __init__(self, config: LabConfig, persona: Persona, store: Store,
                  mind: ChatModel, voice: ChatModel, *,
+                 vision: ChatModel | None = None,
                  send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
                  on_update: Callable[[], None] | None = None):
         self.config, self.persona, self.store = config, persona, store
-        self.mind, self.voice = mind, voice
+        self.mind, self.voice, self.vision = mind, voice, vision
         self.send_text = send_text
         self.on_update = on_update
         say_tool = SAY_TOOL if send_text is None else {"type": "function", "function": {
@@ -85,10 +88,16 @@ class Chat:
         }}
         if config.web_read is None and persona.tools != "all" and "web_read" in persona.tools:
             raise ValueError("角色开放 web_read 时必须在根配置提供 web_read 设置")
-        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, WEB_READ_TOOL, *SCHEDULE_TOOLS, TOOL_SEARCH)
+        if (config.models.roles.vision is None) != (vision is None):
+            raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
+        if vision is None and persona.tools != "all" and "look" in persona.tools:
+            raise ValueError("角色开放 look 时必须在根配置提供 models.roles.vision 绑定")
+        allowed = [tool for tool in (say_tool, WAIT_TOOL, RECALL_TOOL, WEB_READ_TOOL, LOOK_TOOL,
+                                     *SCHEDULE_TOOLS, TOOL_SEARCH)
                    if (persona.tools == "all" or tool["function"]["name"] in persona.tools)
                    and (config.schedules.enabled or tool["function"]["name"] != "schedule")
-                   and (config.web_read is not None or tool["function"]["name"] != "web_read")]
+                   and (config.web_read is not None or tool["function"]["name"] != "web_read")
+                   and (vision is not None or tool["function"]["name"] != "look")]
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -155,21 +164,25 @@ class Chat:
                  self.store.find_message(message.scene, message.reply_to))
         return render_message(message, timezone=self.config.timezone, reply=quote)
 
-    async def request(self, turn_id: str, role: Literal["mind", "voice", "recap"],
+    async def request(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
                       messages: list[dict], tools: list[dict], *,
                       recap_target: CompactionPlan | None = None) -> ModelReply:
-        model = self.voice if role == "voice" else self.mind
-        binding = self.config.models.roles.voice if role == "voice" else self.config.models.roles.mind
+        model_role = "mind" if role == "recap" else role
+        model = getattr(self, model_role)
+        binding = getattr(self.config.models.roles, model_role)
         output_tokens = self.config.compaction.max_output_tokens if role == "recap" else binding.max_output_tokens
-        estimated = estimate_request(messages, tools, output_tokens)
+        estimate = estimate_text_request if role == "vision" else estimate_request
+        estimated = estimate(messages, tools, output_tokens)
         if estimated > binding.context_window_tokens:
+            scope = "文本部分" if role == "vision" else "请求"
             raise ContextBudgetError(
-                f"{role} 请求含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
+                f"{role} {scope}含预留输出估算 {estimated} token，超过配置窗口 {binding.context_window_tokens}；未调用模型")
         settings = model.settings.model_dump(exclude={"api_key"})
         settings["max_output_tokens"] = output_tokens
         call_id = self.store.start_call(turn_id, role, {
             "settings": settings, "messages": messages, "tools": tools,
-            "estimated_total_tokens": estimated,
+            **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
+               else {"estimated_total_tokens": estimated}),
             "context_window_tokens": binding.context_window_tokens,
         })
         self.notify()
@@ -179,6 +192,8 @@ class Chat:
                 reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
             else:
                 reply = await model.complete(messages, tools)
+            if role == "vision" and (reply.tool_calls or not reply.text.strip()):
+                raise ValueError(f"视觉模型未返回完整描述：{encode(reply.message)}")
             if recap_target is not None:
                 if reply.tool_calls or not reply.text.strip():
                     raise ValueError(f"压缩模型未返回完整回想：{encode(reply.message)}")
@@ -200,6 +215,17 @@ class Chat:
                             recap_for=None if recap_target is None else (self.config.scene, recap_target.through))
         self.notify()
         return reply
+
+    async def describe_image(self, turn_id: str, asset: ImageAsset) -> str:
+        messages = [
+            {"role": "system", "content": (PROMPTS / "next_vision.md").read_text()},
+            {"role": "user", "content": [
+                {"type": "text", "text": encode({"width": asset.width, "height": asset.height,
+                                                "animated_first_frame_only": asset.animated})},
+                image_block(asset.jpeg),
+            ]},
+        ]
+        return (await self.request(turn_id, "vision", messages, [])).text
 
     def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
@@ -334,6 +360,11 @@ class Chat:
                                           WebReadArguments.model_validate(call.arguments)), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments), None, None
+        if call.name == "look":
+            return await execute_look(
+                self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
+                model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
+            ), None, None
         arguments = WaitArguments.model_validate(call.arguments)
         return await wait_for_messages(arguments.seconds), None, None
 

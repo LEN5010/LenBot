@@ -11,3 +11,7 @@ and cancelled arrangements with their original metadata.
 The format-8 fixture was upgraded from the format-7 synthetic fixture with
 the migration code in `f555d4c`, then given one synthetic discovered-tool
 name to check that the next upgrade preserves existing session state.
+The format-9 fixture was produced with the format-9 store and migration code
+from `8b2c2ec`, then given one synthetic webpage document. Its URL, extracted
+text, notice, timestamps, and all other rows are placeholders, not network
+captures or real chat data.

@@ -42,6 +42,18 @@ class WebPage:
     notice: str
 
 
+@dataclass(frozen=True)
+class ImageAsset:
+    jpeg: bytes
+    width: int
+    height: int
+    animated: bool
+    fetched_at: float
+    description: str | None = None
+    description_model: str | None = None
+    described_at: float | None = None
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,18 +64,18 @@ class Store:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8):
+                if application_id == 0x4C424E31 and version in (1, 2, 3, 4, 5, 6, 7, 8, 9):
                     raise ValueError(
                         f"Next-core database format {version} requires offline migration while stopped: {path}; "
                         "run python -m len_bot.next.migrate from the isolated instance directory"
                     )
-                if application_id != 0x4C424E31 or version != 9:
+                if application_id != 0x4C424E31 or version != 10:
                     raise ValueError(f"Not a supported next-core database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id = 1279413809;
-                    PRAGMA user_version = 9;
+                    PRAGMA user_version = 10;
                     CREATE TABLE messages (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         platform_id TEXT, body TEXT NOT NULL, raw TEXT,
@@ -107,6 +119,14 @@ class Store:
                     CREATE TABLE web_documents (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, body TEXT NOT NULL
                     );
+                    CREATE TABLE image_cache (
+                        scene TEXT NOT NULL, platform_id TEXT NOT NULL,
+                        image_index INTEGER NOT NULL, jpeg BLOB NOT NULL,
+                        width INTEGER NOT NULL, height INTEGER NOT NULL,
+                        animated INTEGER NOT NULL, fetched_at REAL NOT NULL,
+                        description TEXT, description_model TEXT, described_at REAL,
+                        PRIMARY KEY(scene, platform_id, image_index)
+                    );
                     COMMIT;
                 """)
         except BaseException:
@@ -132,6 +152,37 @@ class Store:
             "SELECT body FROM web_documents WHERE scene=? AND id=?", (scene, document)
         ).fetchone()
         return None if row is None else WebPage(**json.loads(row[0]))
+
+    def image(self, scene: str, platform_id: str, image_index: int) -> ImageAsset | None:
+        row = self.db.execute(
+            "SELECT jpeg,width,height,animated,fetched_at,description,description_model,described_at "
+            "FROM image_cache WHERE scene=? AND platform_id=? AND image_index=?",
+            (scene, platform_id, image_index),
+        ).fetchone()
+        if row is None:
+            return None
+        return ImageAsset(row[0], row[1], row[2], bool(row[3]), row[4], row[5], row[6], row[7])
+
+    def save_image(self, scene: str, platform_id: str, image_index: int, asset: ImageAsset) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO image_cache(scene,platform_id,image_index,jpeg,width,height,animated,"
+                "fetched_at,description,description_model,described_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (scene, platform_id, image_index, asset.jpeg, asset.width, asset.height,
+                 int(asset.animated), asset.fetched_at, asset.description,
+                 asset.description_model, asset.described_at),
+            )
+
+    def save_image_description(self, scene: str, platform_id: str, image_index: int,
+                               description: str, model: str, described_at: float) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE image_cache SET description=?,description_model=?,described_at=? "
+                "WHERE scene=? AND platform_id=? AND image_index=?",
+                (description, model, described_at, scene, platform_id, image_index),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"No cached image {image_index} for platform message {platform_id} in {scene}")
 
     def active_history(self, scene: str) -> tuple[str | None, list[tuple[int, dict]]]:
         session = self.db.execute(

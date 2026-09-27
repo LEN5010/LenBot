@@ -240,6 +240,10 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.text_delivery.max_interval_seconds == 2.0
     assert config.text_delivery.chars_per_second == 40.0
     assert config.web_read is None
+    assert config.images.max_bytes == 10000000
+    assert config.images.max_pixels == 25000000
+    assert config.images.max_dimension == 1280
+    assert config.images.timeout_seconds == 20
     assert config.attention.direct_idle_seconds == 1.5
     assert config.attention.direct_max_seconds == 4.0
     assert config.attention.max_extensions == 2
@@ -263,9 +267,12 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.schedules.autonomous is True
     assert config.models.roles.mind.context_window_tokens == 8192
     assert config.models.roles.voice.context_window_tokens == 4096
+    assert config.models.roles.vision is None
     assert config.model_settings("mind").model == "sample-mind"
     assert config.model_settings("mind").reasoning_effort == "high"
     assert config.model_settings("voice").model == "sample-voice"
+    with pytest.raises(ValueError, match="models.roles.vision is not configured"):
+        config.model_settings("vision")
     assert "context_window_tokens" not in config.model_settings("mind").model_dump()
     assert "synthetic-secret-marker" not in repr(config)
 
@@ -472,6 +479,87 @@ def test_web_read_configuration_rejects_invalid_values(tmp_path, value, field):
     root = tmp_path / "lab"
     source = _config("personas/example")
     source["web_read"] = value
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_config(root)
+    assert field in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+def test_explicit_vision_binding_and_image_limits_roundtrip_without_changing_other_roles(tmp_path):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["models"]["providers"]["image"] = {
+        "api": "openai-chat", "base_url": "http://127.0.0.1:18081/v1",
+        "api_key": "synthetic-image-secret",
+    }
+    source["models"]["roles"]["vision"] = {
+        "provider": "image", "model": "sample-vision", "context_window_tokens": 4096,
+        "temperature": 0.3, "max_output_tokens": 512, "timeout_seconds": 15.0,
+        "reasoning_effort": "low",
+    }
+    source["images"] = {
+        "max_bytes": 2048, "max_pixels": 4096,
+        "max_dimension": 128, "timeout_seconds": 2.5,
+    }
+    _write_config(root, source)
+
+    config = load_config(root)
+
+    assert config.images.model_dump() == source["images"]
+    vision = config.model_settings("vision")
+    assert vision.api == "openai-chat"
+    assert vision.base_url == "http://127.0.0.1:18081/v1"
+    assert vision.model == "sample-vision"
+    assert vision.temperature == 0.3 and vision.max_output_tokens == 512
+    assert vision.timeout_seconds == 15.0 and vision.reasoning_effort == "low"
+    assert config.model_settings("mind").model == "sample-mind"
+    assert config.model_settings("mind").reasoning_effort == "high"
+    assert config.model_settings("voice").model == "sample-voice"
+    assert LabConfig.model_validate_json(config.model_dump_json()) == config
+    assert "synthetic-image-secret" not in repr(config)
+
+
+def test_vision_binding_rejects_unknown_provider(tmp_path):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["models"]["roles"]["vision"] = {
+        "provider": "missing", "model": "sample-vision", "context_window_tokens": 4096,
+    }
+    _write_config(root, source)
+
+    with pytest.raises(ValueError, match="models.roles.vision.provider references unknown provider") as failure:
+        load_config(root)
+    assert "synthetic-secret-marker" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("images", "field"),
+    [
+        ({"max_bytes": 0}, "max_bytes"),
+        ({"max_bytes": -1}, "max_bytes"),
+        ({"max_bytes": 1.5}, "max_bytes"),
+        ({"max_bytes": True}, "max_bytes"),
+        ({"max_pixels": 0}, "max_pixels"),
+        ({"max_pixels": -1}, "max_pixels"),
+        ({"max_pixels": False}, "max_pixels"),
+        ({"max_dimension": 0}, "max_dimension"),
+        ({"max_dimension": -1}, "max_dimension"),
+        ({"max_dimension": "1280"}, "max_dimension"),
+        ({"timeout_seconds": 0}, "timeout_seconds"),
+        ({"timeout_seconds": -1}, "timeout_seconds"),
+        ({"timeout_seconds": float("nan")}, "timeout_seconds"),
+        ({"timeout_seconds": float("inf")}, "timeout_seconds"),
+        ({"timeout_seconds": "20"}, "timeout_seconds"),
+        ({"timeout_seconds": True}, "timeout_seconds"),
+        ({"unknown": 1}, "unknown"),
+    ],
+)
+def test_image_limits_reject_invalid_values(tmp_path, images, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example")
+    source["images"] = images
     _write_config(root, source)
 
     with pytest.raises(ValueError) as failure:
