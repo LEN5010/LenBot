@@ -1025,8 +1025,10 @@ class Store:
                 del pending[entry["tool_call_id"]]
         with self.db:
             for call_id, name in pending.items():
+                upload_notice = (" 文件上传结果未确认；用 task status 查看已保存回执，不自动重传。"
+                                 if name == "send_file" else "")
                 self._append(scene, {"role": "tool", "tool_call_id": call_id,
-                                     "content": f"{name} 中断：{reason}。未重放此调用。"})
+                                     "content": f"{name} 中断：{reason}。未重放此调用。{upload_notice}"})
 
     def recover(self, scene: str) -> bool:
         needs_resume = self.db.execute(

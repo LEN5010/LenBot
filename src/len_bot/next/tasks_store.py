@@ -7,6 +7,7 @@ import json
 import sqlite3
 from typing import Literal
 
+from .messages import UploadResult
 from .store import Store, encode
 
 
@@ -274,3 +275,46 @@ class TaskStore:
             "SELECT * FROM task_files WHERE scene=? AND task_id=? ORDER BY id", (scene, id)
         ).fetchall()
         return [TaskFile(**dict(row)) for row in rows]
+
+    def start_file_upload(self, file: TaskFile, platform_path: str) -> int:
+        """Persist the actual upload attempt before the platform call begins."""
+        return self.add_event(file.scene, file.task_id, "file_upload", {
+            "file_id": file.id,
+            "name": file.name,
+            "size": file.size,
+            "platform_path": platform_path,
+            "status": "unconfirmed",
+            "error": "尚未记录可靠平台回执",
+            "platform_file_id": None,
+            "raw": None,
+            "ended": None,
+        })
+
+    def finish_file_upload(self, scene: str, task_id: int, event_id: int,
+                           result: UploadResult) -> dict:
+        """Replace the pending facts in the same native event, not a second event."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT kind,body,created FROM task_events WHERE scene=? AND task_id=? AND id=?",
+                (scene, task_id, event_id),
+            ).fetchone()
+            if row is None or row["kind"] != "file_upload":
+                raise ValueError(f"Scene {scene} task {task_id} has no file upload event {event_id}")
+            body = json.loads(row["body"])
+            if body["ended"] is not None:
+                raise ValueError(f"File upload event {event_id} is already finished")
+            body.update(status=result.status, error=result.error,
+                        platform_file_id=result.file_id, raw=result.raw, ended=self.now())
+            self.db.execute(
+                "UPDATE task_events SET body=? WHERE scene=? AND task_id=? AND id=?",
+                (encode(body), scene, task_id, event_id),
+            )
+        return {"created": row["created"], **body}
+
+    def latest_file_upload(self, file: TaskFile) -> dict | None:
+        row = self.db.execute(
+            "SELECT created,body FROM task_events WHERE scene=? AND task_id=? AND kind='file_upload' "
+            "AND json_extract(body,'$.file_id')=? ORDER BY id DESC LIMIT 1",
+            (file.scene, file.task_id, file.id),
+        ).fetchone()
+        return None if row is None else {"created": row["created"], **json.loads(row["body"])}

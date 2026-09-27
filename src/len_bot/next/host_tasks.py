@@ -31,7 +31,9 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
                 "scenes": [{"scene": scene, **chat.config.tasks.model_dump(mode="json")}
                            for scene, chat in runtime.chats.items()],
                 "public_network": False,
-                "notice": "模型经宿主管道访问；公共联网与 QQ 文件上传尚未接入。"}
+                "file_upload": (runtime.config.delivery == "onebot" and service is not None
+                                and runtime.config.onebot.upload_visible_root is not None),
+                "notice": "模型经宿主管道访问；公共联网尚未接入。文件复制登记与平台上传回执分别显示。"}
 
     @app.get("/api/host/tasks")
     async def listing(scene: str, status: str = "active", offset: int = Query(0, ge=0),
@@ -53,7 +55,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
             events = records.event_previews(scene, id, after=after, limit=limit)
             return {"task": asdict(item), "events": events,
                     "next_after": events[-1]["id"] if events else after,
-                    "files": [file_info(file) for file in records.list_files(scene, id)]}
+                    "files": [file_info(file, records) for file in records.list_files(scene, id)]}
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
 

@@ -56,10 +56,10 @@ class RunningTask:
     next_progress: float = 300
 
 
-def file_info(file: TaskFile) -> dict:
+def file_info(file: TaskFile, records: TaskStore) -> dict:
     return {"id": file.id, "task_id": file.task_id, "name": file.name,
             "size": file.size, "note": file.note, "status": "registered",
-            "uploaded": False}
+            "upload": records.latest_file_upload(file)}
 
 
 class WorkTasks:
@@ -121,7 +121,7 @@ class WorkTasks:
     def status(self, scene: str, id: int) -> dict:
         item = self.records.get(scene, id)
         costs = self.records.call_costs(scene, id)
-        return {**asdict(item), "files": [file_info(file) for file in self.records.list_files(scene, id)],
+        return {**asdict(item), "files": [file_info(file, self.records) for file in self.records.list_files(scene, id)],
                 "model_calls": len(costs), "cost": cost_summary(costs),
                 "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。公共联网尚未接入。"}
 
@@ -328,7 +328,7 @@ class WorkTasks:
 
     def _finish(self, item: Task, status: str, summary: str | None, error: str | None) -> None:
         finished = self.records.finish(item.scene, item.id, status, summary, error)
-        files = [file_info(file) for file in self.records.list_files(item.scene, item.id)]
+        files = [file_info(file, self.records) for file in self.records.list_files(item.scene, item.id)]
         body = {"status": status, "summary": summary, "error": error, "files": files,
                 "started": finished.started, "ended": finished.ended,
                 "cost": cost_summary(self.records.call_costs(item.scene, item.id))}
@@ -494,6 +494,6 @@ class WorkTasks:
         except BaseException:
             target.unlink(missing_ok=True)
             raise
-        self.records.add_event(item.scene, item.id, "file", file_info(file))
+        self.records.add_event(item.scene, item.id, "file", file_info(file, self.records))
         self._notify(item.scene)
-        return file_info(file)
+        return file_info(file, self.records)

@@ -20,6 +20,7 @@ function onebotBody(value) {
     ping_interval_seconds: value.ping_interval_seconds,
     ping_timeout_seconds: value.ping_timeout_seconds,
     max_frame_bytes: value.max_frame_bytes,
+    upload_visible_root: value.upload_visible_root === '' ? null : value.upload_visible_root,
   }
   return value.mode === 'forward_ws'
     ? { ...common, ws_url: value.ws_url }
@@ -139,6 +140,7 @@ onMounted(() => read(false))
           <div><dt>OneBot 模式</dt><dd>{{ snapshot.running.connection.onebot.mode }}</dd></div>
           <div><dt>平台入口</dt><dd>{{ snapshot.running.connection.onebot.mode==='forward_ws'?snapshot.running.connection.onebot.ws_url:`${snapshot.running.connection.onebot.listen_host}:${snapshot.running.connection.onebot.listen_port}` }}</dd></div>
           <div><dt>动作出口</dt><dd>{{ snapshot.running.connection.onebot.action_transport }}{{ snapshot.running.connection.onebot.http_url?` · ${snapshot.running.connection.onebot.http_url}`:'' }}</dd></div>
+          <div><dt>NapCat 可见交付目录</dt><dd>{{ snapshot.running.connection.onebot.upload_visible_root ?? '未开放文件上传路径' }}</dd></div>
           <div><dt>时区 / 消息出口</dt><dd>{{ snapshot.running.connection.timezone }} / {{ snapshot.running.connection.delivery==='onebot'?'OneBot':'模拟发送' }}</dd></div>
           <div><dt>轮次 / 模型并发</dt><dd>最多 {{ snapshot.running.connection.max_steps }} 步 · {{ snapshot.running.connection.turn_timeout_seconds }} 秒 · {{ snapshot.running.connection.max_model_requests }} 个模型请求</dd></div></dl>
         <details><summary>查看当前运行的完整节奏与传输参数</summary><dl class="facts"><div v-for="(value,key) in snapshot.running.connection.onebot" :key="key"><dt>{{ key }}</dt><dd>{{ key==='access_token_configured'?(value?'已配置':'未配置'):value===null?'未设置':value }}</dd></div>
@@ -157,8 +159,10 @@ onMounted(() => read(false))
             <v-text-field :model-value="connection.onebot.ping_interval_seconds" type="number" label="心跳间隔（秒）" hide-details="auto" @update:model-value="value=>connection.onebot.ping_interval_seconds=numeric(value)" />
             <v-text-field :model-value="connection.onebot.ping_timeout_seconds" type="number" label="心跳超时（秒）" hide-details="auto" @update:model-value="value=>connection.onebot.ping_timeout_seconds=numeric(value)" />
             <v-text-field :model-value="connection.onebot.max_frame_bytes" type="number" step="1" label="最大传输帧字节" hide-details="auto" @update:model-value="value=>connection.onebot.max_frame_bytes=numeric(value)" />
+            <v-text-field v-model="connection.onebot.upload_visible_root" label="NapCat 可见交付目录（绝对 POSIX 路径，可留空）" hide-details="auto" />
             <v-text-field v-model="token" type="password" autocomplete="new-password" label="替换 OneBot 访问令牌（留空保留）" hide-details="auto" />
           </div><p class="muted">保存值中的令牌：{{ snapshot.saved.connection.onebot.access_token_configured?'已配置，原文不显示':'未配置' }}；空输入仅保留现值，不代表清除。</p>
+          <p class="muted">文件上传前须实际把同一交付副本目录挂载给 NapCat，并在任务配置中另填 worker.delivery_root。保存这个可见路径不代表挂载已完成、任务文件已上传或客户端已收到。</p>
           <div class="form-grid"><v-text-field v-model="connection.timezone" label="业务时区（IANA）" hide-details="auto" />
             <v-select v-model="connection.delivery" label="消息出口" :items="[{title:'模拟发送',value:'simulated'},{title:'OneBot 实际发送',value:'onebot'}]" hide-details="auto" />
             <v-text-field :model-value="connection.max_steps" type="number" step="1" label="单轮最多步数" hide-details="auto" @update:model-value="value=>connection.max_steps=numeric(value)" />

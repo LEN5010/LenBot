@@ -91,9 +91,11 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "memory": chat.memory is not None,
                          "vision": chat.config.models.roles.vision is not None,
                          "worker": chat.tasks is not None,
+                         "file_upload": (chat.config.delivery == "onebot" and chat.tasks is not None
+                                         and chat.config.onebot.upload_visible_root is not None),
                          "schedules": chat.config.schedules.enabled},
             "not_implemented": [
-                {"name": "send_file", "description": "任务副本可登记和下载；QQ 上传工具尚未接入。"},
+                {"name": "public_network", "description": "任务容器的公共联网尚未接入。"},
                 {"name": "skills", "description": "角色技能声明尚未接入执行环境。"},
                 {"name": "plugins / MCP", "description": "当前宿主尚未装载插件和 MCP 服务。"},
             ],
