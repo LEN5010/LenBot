@@ -13,7 +13,7 @@ SendStatus = Literal["received", "sent", "failed", "unconfirmed", "simulated"]
 @dataclass(slots=True)
 class Sender:
     uid: str
-    nickname: str
+    nickname: str | None
     card: str | None
     role: str | None
 
@@ -142,7 +142,7 @@ def _speaker(message: ChatMessage) -> str:
             return "我（模拟）"
         return "我"
     name = message.sender.card or message.sender.nickname
-    return f"{name}(QQ {message.sender.uid})"
+    return f"{name}(QQ {message.sender.uid})" if name else f"QQ {message.sender.uid}"
 
 
 def _body(segments: list[Segment]) -> str:
