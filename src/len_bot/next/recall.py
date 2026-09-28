@@ -14,7 +14,7 @@ from .store import Store, encode
 class RecallArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    action: Literal["search", "read", "context"] = "search"
+    action: Literal["search", "recent", "read", "context"] = "search"
     query: str | None = None
     who: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
     after: datetime | None = None
@@ -51,6 +51,11 @@ class RecallArguments(BaseModel):
                 raise ValueError("search continuation requires its original snapshot")
             if self.after is not None and self.before is not None and self.after >= self.before:
                 raise ValueError("after must be earlier than before")
+        elif self.action == "recent":
+            if any(value is not None for value in (self.query, self.who, self.after, self.before, self.record)):
+                raise ValueError("recent accepts only snapshot and offset")
+            if self.offset and self.snapshot is None:
+                raise ValueError("recent continuation requires its original snapshot")
         else:
             if self.record is None:
                 raise ValueError(f"{self.action} requires record from the history result")
@@ -63,8 +68,9 @@ class RecallArguments(BaseModel):
 
 RECALL_TOOL = {"type": "function", "function": {
     "name": "recall_chat",
-    "description": "查当前场景历史原话。search按时间升序，每页10条；续页带snapshot和offset；"
-                   "read用已有record与字符offset分段读全文；context查看前后各3条。who是实际QQ，时间须含时区。",
+    "description": "查当前场景历史原话。search按消息时间升序，每页10条；recent按落库位置取最新10条，"
+                   "页内正序，向前续页；两者续页均带原snapshot和offset。read用已有record与字符offset"
+                   "分段读全文；context查看前后各3条。who是实际QQ，时间须含时区。",
     "parameters": RecallArguments.model_json_schema(),
 }}
 PROMPT = Path(__file__).resolve().parents[1] / "prompts" / "next_recall.md"
@@ -83,21 +89,26 @@ def message_page(record: int, message: ChatMessage, timezone: str, *, offset: in
 
 
 def recall_chat(store: Store, scene: str, timezone: str, arguments: RecallArguments) -> str:
-    if arguments.action == "search":
+    if arguments.action in {"search", "recent"}:
         current = store.max_message_seq(scene)
         snapshot = current if arguments.snapshot is None else arguments.snapshot
         if snapshot > current:
             raise ValueError(f"snapshot {snapshot} exceeds current scene position {current}")
-        rows = store.search_messages(
-            scene, query=arguments.query, who=arguments.who,
-            after=None if arguments.after is None else arguments.after.timestamp(),
-            before=None if arguments.before is None else arguments.before.timestamp(),
-            snapshot=snapshot, offset=arguments.offset, limit=11,
-        )
-        result = {"action": "search", "snapshot": snapshot, "offset": arguments.offset,
+        if arguments.action == "search":
+            rows = store.search_messages(
+                scene, query=arguments.query, who=arguments.who,
+                after=None if arguments.after is None else arguments.after.timestamp(),
+                before=None if arguments.before is None else arguments.before.timestamp(),
+                snapshot=snapshot, offset=arguments.offset, limit=11,
+            )
+            page = rows[:10]
+        else:
+            rows = store.recent_records(scene, limit=11, snapshot=snapshot, offset=arguments.offset)
+            page = rows[-10:]
+        result = {"action": arguments.action, "snapshot": snapshot, "offset": arguments.offset,
                   "next_offset": arguments.offset + 10 if len(rows) > 10 else None,
                   "previews": [message_page(seq, message, timezone, offset=0, size=160)
-                               for seq, message in rows[:10]]}
+                               for seq, message in page]}
     elif arguments.action == "read":
         message = store.read_message(scene, arguments.record)
         if message is None:

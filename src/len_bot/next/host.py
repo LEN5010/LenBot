@@ -2,12 +2,14 @@
 
 import asyncio
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from pathlib import Path
 import signal
 
 import uvicorn
 
 from .config import load_host_config
+from .chat import PROMPTS, build_tools
 from .host_panel import create_app
 from .model import ChatModel
 from .model_slots import ModelSlots
@@ -90,7 +92,20 @@ async def run() -> None:
                     runner.changed.set()
                 runtime.notify()
 
+            data_tools = {}
+            for settings, persona in scenes:
+                selected = [deepcopy(tool["function"]) for tool in build_tools(
+                    settings, persona, platform=config.delivery == "onebot",
+                ) if tool["function"]["name"] in {"recall_chat", "memory"}]
+                for tool in selected:
+                    if tool["name"] == "memory":
+                        tool["parameters"]["properties"]["action"]["enum"] = memory.actions
+                        tool["description"] += "\n" + (
+                            PROMPTS / f"next_memory_{memory.settings.backend}.md"
+                        ).read_text()
+                data_tools[settings.scene] = selected
             tasks = (WorkTasks(config, store, slots, task_update, skills=skills,
+                              memory=memory, data_tools=data_tools,
                               skill_permissions={settings.scene: persona.skills
                                                  for settings, persona in scenes})
                      if config.worker is not None else None)

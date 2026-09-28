@@ -16,12 +16,14 @@ from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .config import HostConfig
 from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
+from .memory import MemoryService
 from .pricing import cost_summary
+from .recall import RecallArguments, recall_chat
 from .sandbox import DockerSandbox, DockerSettings
 from .skills import Skill, load_task_skills, merge_task_skills
 from .store import Store
@@ -72,6 +74,7 @@ def file_info(file: TaskFile, records: TaskStore) -> dict:
 class WorkTasks:
     def __init__(self, config: HostConfig, store: Store, slots: ModelSlots | None,
                  on_update: Callable[[str], None], *, skills: dict[str, tuple[Skill, ...]],
+                 memory: MemoryService | None, data_tools: dict[str, list[dict]],
                  skill_permissions: dict[str, Literal["all"] | list[str]]):
         self.config, self.store, self.slots = config, store, slots
         self.settings = config.worker
@@ -79,6 +82,8 @@ class WorkTasks:
         self.on_update = on_update
         self.skills = skills
         self.skill_permissions = skill_permissions
+        self.memory = memory
+        self.data_tools = data_tools
         self.egress = EgressUsage(config, self.records, on_update)
         settings = self.settings
         self.sandbox = DockerSandbox(DockerSettings(
@@ -379,6 +384,8 @@ class WorkTasks:
                 async with worker_session(
                     self.sandbox, scene=item.scene, task_id=str(item.id),
                     skills=current.skills,
+                    data_tools=self.data_tools[item.scene],
+                    task_timeout_seconds=self.settings.active_timeout_seconds,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
                     context_window_tokens=binding.context_window_tokens, price=price,
                     limits=self._limits(item), model_reasoning=self.settings.model_reasoning,
@@ -458,6 +465,7 @@ class WorkTasks:
                 "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
+                "data_tools": [tool["name"] for tool in self.data_tools[item.scene]],
                 "skills": [{"name": skill.name, "source": skill.source,
                             "path": skill.container_path + "/SKILL.md"}
                            for skill in current.skills if not skill.disable_model_invocation],
@@ -547,6 +555,24 @@ class WorkTasks:
         self._notify(item.scene)
 
     async def _request(self, current: RunningTask, path: str, raw: bytes) -> dict:
+        if path in {"/task/recall-chat", "/task/memory"}:
+            name = "recall_chat" if path == "/task/recall-chat" else "memory"
+            scene = current.item.scene
+            if name not in {tool["name"] for tool in self.data_tools[scene]}:
+                raise PermissionError(f"当前场景的任务未开放 {name}")
+            if name == "recall_chat":
+                try:
+                    arguments = RecallArguments.model_validate_json(raw)
+                except ValidationError as error:
+                    raise ValueError(f"Invalid task recall_chat request: {raw[:500]!r}; {error}") from error
+                content = recall_chat(self.store, scene, self.config.timezone, arguments)
+            else:
+                try:
+                    arguments = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    raise ValueError(f"Invalid task memory JSON: {raw[:500]!r}; {error}") from error
+                content = await self.memory.execute(scene, arguments)
+            return {"content": content}
         if path == "/task/network":
             try:
                 request = json.loads(raw)

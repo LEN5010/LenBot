@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Annotated, Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from .memory_embeddings import EmbeddingClient, EmbeddingSettings
 from .memory_local import LocalMemory, LocalMemorySettings
@@ -227,7 +227,12 @@ class MemoryService:
         return [asdict(change) for change in await self.backend.history(scene, path)]
 
     async def execute(self, scene: str, arguments: dict) -> str:
-        item = MEMORY_ARGUMENTS.validate_python(arguments)
+        try:
+            item = MEMORY_ARGUMENTS.validate_python(arguments)
+        except ValidationError as error:
+            raise ValueError(f"Invalid memory arguments: {repr(arguments)[:500]}; {error}") from error
+        if item.action not in self.actions:
+            raise ValueError(f"当前 {self.settings.backend} 记忆后端不支持 {item.action}")
         if isinstance(item, BrowseMemory):
             result = asdict(await self.backend.browse(scene, item.path, scope=item.scope,
                                                      offset=item.offset, limit=item.limit))

@@ -351,6 +351,7 @@ class DockerSandbox:
                 raise SandboxError(f"Pi selected a different model than {provider}/{model}: {selected!r}")
             return rpc
         except BaseException as error:
+            error.add_note(f"Pi startup stderr: {stderr_path}")
             if rpc is not None:
                 try:
                     await rpc.close()

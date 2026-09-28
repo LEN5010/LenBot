@@ -4,12 +4,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const TASK_API_FILE = "/run/lenbot/task-api.json";
 const TASK_API_BASE = "http://127.0.0.1:18181";
+type DataToolName = "recall_chat" | "memory";
+type DataTool = { name: DataToolName; description: string; parameters: Record<string, unknown> };
+type TaskApiSettings = { token: string; timeoutMs: number; tools: DataTool[] };
 
 function result(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
-async function taskApi() {
+async function taskApi(): Promise<TaskApiSettings> {
   const raw = await readFile(TASK_API_FILE, "utf8");
   const value: unknown = JSON.parse(raw);
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -21,20 +24,44 @@ async function taskApi() {
     || settings.timeout_seconds <= 0) {
     throw new Error(`${TASK_API_FILE}: invalid loopback task API settings`);
   }
-  return { token: settings.token, timeoutMs: settings.timeout_seconds * 1000 };
+  if (!Array.isArray(settings.tools)) throw new Error(`${TASK_API_FILE}: tools must be an array`);
+  const tools: DataTool[] = [];
+  const names = new Set<DataToolName>();
+  for (const [index, value] of settings.tools.entries()) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`${TASK_API_FILE}: tools[${index}] must be an object`);
+    }
+    const tool = value as Record<string, unknown>;
+    const name = tool.name;
+    if (name !== "recall_chat" && name !== "memory") {
+      throw new Error(`${TASK_API_FILE}: tools[${index}].name must be recall_chat or memory`);
+    }
+    if (names.has(name)) throw new Error(`${TASK_API_FILE}: duplicate tool name ${name}`);
+    if (typeof tool.description !== "string" || !tool.description.trim()) {
+      throw new Error(`${TASK_API_FILE}: tools[${index}].description must be nonblank`);
+    }
+    const parameters = tool.parameters;
+    if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters)
+      || (parameters as Record<string, unknown>).type !== "object") {
+      throw new Error(`${TASK_API_FILE}: tools[${index}].parameters must be an object schema`);
+    }
+    names.add(name);
+    tools.push({ name, description: tool.description, parameters: parameters as Record<string, unknown> });
+  }
+  return { token: settings.token, timeoutMs: settings.timeout_seconds * 1000, tools };
 }
 
 async function taskPost(
-  route: "/task/deliver-file" | "/task/network",
-  operation: "deliver_file" | "network_status",
+  settings: TaskApiSettings,
+  route: "/task/deliver-file" | "/task/network" | "/task/recall-chat" | "/task/memory",
+  operation: "deliver_file" | "network_status" | DataToolName,
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ) {
-  const { token, timeoutMs } = await taskApi();
-  const timeout = AbortSignal.timeout(Math.ceil(timeoutMs));
+  const timeout = AbortSignal.timeout(Math.ceil(settings.timeoutMs));
   const response = await fetch(`${TASK_API_BASE}${route}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${settings.token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     redirect: "error",
@@ -47,10 +74,11 @@ async function taskPost(
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     throw new Error(`${operation} expected JSON object; raw=${raw}`);
   }
-  return { raw, payload };
+  return { raw, payload: payload as Record<string, unknown> };
 }
 
-export default function lenbotExtension(pi: ExtensionAPI) {
+export default async function lenbotExtension(pi: ExtensionAPI) {
+  const settings = await taskApi();
   pi.registerTool({
     name: "report_progress",
     executionMode: "sequential",
@@ -102,7 +130,7 @@ export default function lenbotExtension(pi: ExtensionAPI) {
       note: Type.String({ description: "Delivery note" }),
     }),
     async execute(_id, { path, name, note }, signal) {
-      const { raw, payload } = await taskPost("/task/deliver-file", "deliver_file", { path, name, note }, signal);
+      const { raw, payload } = await taskPost(settings, "/task/deliver-file", "deliver_file", { path, name, note }, signal);
       return result(`宿主原始结果：${raw}\n文件复制登记与 QQ 上传是不同状态；以宿主实际返回字段为准。`, payload);
     },
   });
@@ -114,10 +142,28 @@ export default function lenbotExtension(pi: ExtensionAPI) {
     description: "Read the host's known task and scene-today egress usage, limits, and last recorded network error. This does not probe connectivity or change limits; enabled does not mean connected.",
     parameters: Type.Object({}),
     async execute(_id, _args, signal) {
-      const { raw, payload } = await taskPost("/task/network", "network_status", {}, signal);
+      const { raw, payload } = await taskPost(settings, "/task/network", "network_status", {}, signal);
       return result(raw, payload);
     },
   });
+
+  for (const tool of settings.tools) {
+    const route = tool.name === "recall_chat" ? "/task/recall-chat" : "/task/memory";
+    pi.registerTool({
+      name: tool.name,
+      executionMode: "sequential",
+      label: tool.name === "recall_chat" ? "Recall chat" : "Memory",
+      description: tool.description,
+      parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters),
+      async execute(_id, args, signal) {
+        const { raw, payload } = await taskPost(settings, route, tool.name, args, signal);
+        if (typeof payload.content !== "string") {
+          throw new Error(`${tool.name} expected a string content; raw=${raw}`);
+        }
+        return result(payload.content, payload);
+      },
+    });
+  }
 
   pi.on("session_before_compact", (event) => {
     if (event.willRetry === true) return { cancel: true };
