@@ -26,7 +26,7 @@ from ..next.chat import PROMPTS
 from ..next.config import LabConfig, load_config
 from ..next.persona import Persona, load_persona
 from ..next.pricing import cost_summary
-from ..next.store import encode, turn_record
+from ..next.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
@@ -61,11 +61,16 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
             raise ValueError(f"Initial database must be offline without nonempty {suffix}: {path}")
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
         if (db.execute("PRAGMA application_id").fetchone()[0] != 0x4C424E31
-                or db.execute("PRAGMA user_version").fetchone()[0] != 13):
-            raise ValueError(f"Initial database requires current next-core format 13; no automatic migration: {path}")
+                or db.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION):
+            raise ValueError(
+                f"Initial database requires current next-core format {FORMAT_VERSION}; "
+                f"no automatic migration: {path}"
+            )
         scenes = {row[0] for row in db.execute(" UNION ".join(
             f"SELECT scene FROM {table}" for table in (
-                "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents", "image_cache",
+                "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents",
+                "image_cache", "tasks", "task_events", "task_files", "learning_state",
+                "learning_batches", "expressions", "expression_embedding_calls",
             )
         ))}
         if scenes - {config.scene}:
@@ -110,12 +115,20 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
     for case in cases.cases:
         if case.initial_database is not None:
             check_initial_database(case.initial_database, config)
+    embedding = None if config.learning is None else config.learning.embedding
     plan = {
         "set": set_name, "profile": profile,
         "voice_mode": config.evaluation.profiles[profile].voice_mode,
         "scene": config.scene, "persona": persona.id,
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
                    for role in ("mind", "voice")},
+        "expression_embedding": None if embedding is None else {
+            "provider": embedding.provider,
+            "base_url": config.models.providers[embedding.provider].base_url,
+            "model": embedding.model,
+            "dimensions": embedding.dimensions,
+            "voice_selection_only": True,
+        },
         "case_ids": [case.id for case in cases.cases],
         "case_initial_databases": {
             case.id: None if case.initial_database is None else str(case.initial_database)
@@ -133,7 +146,9 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "turn_timeout_seconds": config.turn_timeout_seconds,
         "delivery": "simulated",
         "estimated_model_calls": None, "estimated_cost": None,
-        "notice": "调用数取决于实际工具与压缩，费用未核定。固定起点按真实秒数推进；此开发回放尚非历史时机对照，完成执行不等于质量通过。",
+        "notice": "调用数取决于实际工具、压缩与表达向量查询，费用未核定。"
+                  "配置embedding仅表示本轮可按已采用表达检索，不代表种子里已有可用向量。"
+                  "固定起点按真实秒数推进；此开发回放尚非历史时机对照，完成执行不等于质量通过。",
     }
     return config, persona, cases, plan
 
@@ -175,23 +190,39 @@ def snapshot_code(destination: Path) -> dict:
             "note": "本次实际源码、提示词与依赖锁随附；运行期间不要修改源码。"}
 
 
-def observed_database(path: Path, *, after_turn: int = 0, after_call: int = 0) -> dict:
+def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call: int = 0,
+                      after_embedding_call: int = 0) -> dict:
     if not path.exists():
-        return {"database": None, "turns": None, "model_calls": None, "usage": None, "cost": None}
+        return {"database": None, "turns": None, "model_calls": None,
+                "chat_model_calls": None, "embedding_model_calls": None,
+                "usage": None, "cost": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         turns = [turn_record(row) for row in db.execute(
             "SELECT * FROM turns WHERE rowid>? ORDER BY started,id", (after_turn,),
         )]
-        calls = [dict(row) for row in db.execute(
+        chat_calls = [dict(row) for row in db.execute(
             "SELECT id,turn_id,role,started,ended,usage,cost,error FROM model_calls WHERE id>? ORDER BY id", (after_call,),
         )]
+        embedding_calls = [dict(row) for row in db.execute(
+            "SELECT id,scene,turn_id,purpose,started,ended,usage,cost,error "
+            "FROM expression_embedding_calls WHERE scene=? AND id>? ORDER BY id",
+            (scene, after_embedding_call),
+        )]
+        for call in chat_calls:
+            call["source"] = "chat"
+        for call in embedding_calls:
+            call["source"] = "expression_embedding"
+        calls = sorted([*chat_calls, *embedding_calls],
+                       key=lambda call: (call["started"], call["source"], call["id"]))
         for call in calls:
             call["usage"] = None if call["usage"] is None else json.loads(call["usage"])
             call["cost"] = None if call["cost"] is None else json.loads(call["cost"])
         return {"database": path.name, "turns": turns, "model_calls": len(calls),
+                "chat_model_calls": len(chat_calls), "embedding_model_calls": len(embedding_calls),
                 "usage": calls, "cost": cost_summary([call["cost"] for call in calls]),
-                "note": "仅统计本次新增轮次和调用；用量保留提供方原对象，缺失不计为零。初始历史及完整原文在数据库中。"}
+                "note": "仅统计本次新增轮次、聊天模型及表达embedding调用；用量按source保留各提供方原对象，"
+                        "缺失不计为零。初始历史及完整原文在数据库中。"}
 
 
 async def run_case(directory: Path, config: LabConfig, persona: Persona,
@@ -213,7 +244,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
     changed = asyncio.Condition()
     processes = []
     inputs = []
-    after_turn = after_call = 0
+    after_turn = after_call = after_embedding_call = 0
 
     async def consume(child, stream) -> None:
         nonlocal completed_turns, failed_tools, output_closed
@@ -271,6 +302,9 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
             with closing(sqlite3.connect(initial_database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
                 after_turn = db.execute("SELECT COALESCE(MAX(rowid),0) FROM turns").fetchone()[0]
                 after_call = db.execute("SELECT COALESCE(MAX(id),0) FROM model_calls").fetchone()[0]
+                after_embedding_call = db.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM expression_embedding_calls"
+                ).fetchone()[0]
             shutil.copyfile(initial_database, directory / "chat.sqlite3")
         # The same per-repeat anchor stays in this child config across normal restarts.
         effective["replay_clock"] = (None if case.start_time is None else {
@@ -331,11 +365,16 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
                   "database_turns_and_model_calls": (
                       "fixed-start-replay-unix-seconds" if case.start_time is not None
                       else "host-physical-unix-seconds"),
+                  "database_embedding_calls": (
+                      "fixed-start-replay-unix-seconds" if case.start_time is not None
+                      else "host-physical-unix-seconds"),
               },
               "started": started, "ended": time.time(), "inputs": inputs, "processes": processes,
               "failed_tools": failed_tools,
               "notice_errors": notice_errors,
-              **observed_database(directory / "chat.sqlite3", after_turn=after_turn, after_call=after_call)}
+              **observed_database(directory / "chat.sqlite3", scene=config.scene,
+                                  after_turn=after_turn, after_call=after_call,
+                                  after_embedding_call=after_embedding_call)}
     write_json(directory / "result.json", result)
     if interruption is not None:
         raise interruption

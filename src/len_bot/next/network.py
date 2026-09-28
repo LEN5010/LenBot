@@ -16,6 +16,7 @@ from .model_slots import ModelSlots
 from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
+from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
 from .store import Store, encode
@@ -30,6 +31,7 @@ class NetworkRuntime:
                  ingestor: MemoryIngestor | None = None,
                  tasks: WorkTasks | None = None,
                  learning: ExpressionLearner | None = None,
+                 expression_service: ExpressionService | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
@@ -37,6 +39,9 @@ class NetworkRuntime:
         self.memory = memory
         self.ingestor = ingestor
         self.learning = learning
+        self.expression_service = expression_service
+        if expression_service is not None:
+            expression_service.on_update = self.notify
         if learning is not None:
             learning.on_update = self.notify
         self.tasks = tasks
@@ -55,7 +60,7 @@ class NetworkRuntime:
                 raise ValueError(f"Duplicate network scene {scene}")
             self.chats[scene] = Chat(
                 scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
-                tasks=tasks,
+                tasks=tasks, expression_service=expression_service,
                 on_compaction=lambda scene=scene: self.compacted(scene),
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
@@ -239,7 +244,8 @@ class NetworkRuntime:
 async def run_network(config: SharedConfig, scene_configs: list[tuple[LabConfig, Persona]],
                       store: Store, mind: ChatModel, voice: ChatModel, *,
                       vision: ChatModel | None = None, slots: ModelSlots | None = None,
-                      memory: MemoryService | None = None, ingestor: MemoryIngestor | None = None) -> None:
+                      memory: MemoryService | None = None, ingestor: MemoryIngestor | None = None,
+                      expression_service: ExpressionService | None = None) -> None:
     runtime = NetworkRuntime(config, scene_configs, store, mind, voice, vision=vision, slots=slots,
-                             memory=memory, ingestor=ingestor)
+                             memory=memory, ingestor=ingestor, expression_service=expression_service)
     await runtime.run()

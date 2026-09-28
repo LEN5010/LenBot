@@ -20,6 +20,7 @@ from .config import load_config
 from .model import ChatModel
 from .memory import open_memory
 from .memory_ingest import open_memory_ingestor
+from .expression_selection import open_expression_service
 from .network import run_network
 from .persona import load_persona
 from .store import Store, encode
@@ -66,14 +67,20 @@ async def run() -> None:
             ChatModel(config.model_settings("voice")) as voice,
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
+            open_expression_service(config, store) as expression_service,
             open_memory(config, store) as memory,
             open_memory_ingestor(config, store, memory, [config.scene]) as ingestor,
         ):
+            if expression_service is not None:
+                for scene in expression_service.scenes:
+                    expression_service.validate(scene)
             if config.onebot is not None:
                 await run_network(config, [(config, persona)], store, mind, voice,
-                                  vision=vision, memory=memory, ingestor=ingestor)
+                                  vision=vision, memory=memory, ingestor=ingestor,
+                                  expression_service=expression_service)
                 return
             chat = Chat(config, persona, store, mind, voice, vision=vision, memory=memory, now=now,
+                        expression_service=expression_service,
                         on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
             resume = chat.restore()
             runner = SceneRunner(chat, lambda result: print(encode({"type": "turn", **result}), flush=True), resume=resume)

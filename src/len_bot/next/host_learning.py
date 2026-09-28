@@ -1,15 +1,19 @@
 """Authenticated scene-local expression learning records and operator decisions."""
 
 from dataclasses import asdict
+import logging
 import sqlite3
 from typing import Callable, Literal
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from .config import STRICT
 from .learning_store import LearningStore
 from .network import NetworkRuntime
+
+logger = logging.getLogger(__name__)
 
 
 class ExpressionChange(BaseModel):
@@ -41,7 +45,11 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
 
     def active(scene: str) -> bool:
         return (runtime.learning is not None and scene in runtime.learning.scenes
-                and chat_for(scene).config.learning is not None)
+                and chat_for(scene).config.learning is not None
+                and chat_for(scene).config.learning.extract)
+
+    def selection_enabled(scene: str) -> bool:
+        return runtime.expression_service is not None and scene in runtime.expression_service.scenes
 
     def trigger(scene: str, action: Literal["run", "retry"]) -> dict:
         chat_for(scene)
@@ -64,10 +72,13 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
         chat = chat_for(scene)
         latest = learning.latest(scene)
         return {"scene": scene, "enabled": active(scene),
+                "selection_enabled": selection_enabled(scene), "voice_mode": chat.config.voice_mode,
                 "settings": None if chat.config.learning is None else
                 chat.config.learning.model_dump(mode="json"),
                 "cursor": learning.state(scene),
-                "latest": latest,
+                "latest": None if latest is None else {
+                    key: latest[key] for key in ("id", "after_seq", "through_seq", "started", "ended",
+                                                  "status", "model_started", "usage", "cost", "error")},
                 "expression_counts": learning.counts(scene),
                 "service_state": service_state(scene)}
 
@@ -83,6 +94,20 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
         item = learning.batch(scene, id)
         if item is None:
             raise HTTPException(404, "当前场景没有这一学习批次")
+        return item
+
+    @app.get("/api/host/scenes/{scene}/learning/embedding-calls")
+    async def embedding_calls(scene: str, limit: int = Query(20, ge=1, le=20),
+                              offset: int = Query(0, ge=0), _: str = Depends(user)):
+        chat_for(scene)
+        return learning.embedding_calls(scene, limit=limit, offset=offset)
+
+    @app.get("/api/host/scenes/{scene}/learning/embedding-calls/{id}")
+    async def embedding_call(scene: str, id: int, _: str = Depends(user)):
+        chat_for(scene)
+        item = learning.embedding_call(scene, id)
+        if item is None:
+            raise HTTPException(404, "当前场景没有这一表达向量请求")
         return item
 
     @app.post("/api/host/scenes/{scene}/learning/request")
@@ -118,13 +143,25 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
     async def update_expression(scene: str, id: int, change: ExpressionChange,
                                 _: str = Depends(user)):
         chat_for(scene)
+        service = runtime.expression_service if selection_enabled(scene) else None
         try:
-            item = learning.update_expression(scene, id, situation=change.situation,
-                                              style=change.style, status=change.status)
+            item = (await service.update(scene, id, situation=change.situation,
+                                         style=change.style, status=change.status)
+                    if service is not None else
+                    learning.update_expression(scene, id, situation=change.situation,
+                                               style=change.style, status=change.status))
         except sqlite3.IntegrityError as error:
+            logger.exception("更新表达候选冲突：scene=%s id=%s", scene, id)
             raise HTTPException(409, f"{type(error).__name__}: {error}") from error
         except ValueError as error:
-            raise HTTPException(422, str(error)) from error
+            logger.exception("更新表达候选被拒绝：scene=%s id=%s", scene, id)
+            raise HTTPException(409 if service is not None else 422, str(error)) from error
+        except (httpx.HTTPError, TimeoutError) as error:
+            logger.exception("更新表达候选向量请求失败：scene=%s id=%s", scene, id)
+            raise HTTPException(502, f"{type(error).__name__}: {error}") from error
+        except Exception as error:
+            logger.exception("更新表达候选失败：scene=%s id=%s", scene, id)
+            raise HTTPException(500, f"{type(error).__name__}: {error}") from error
         if item is None:
             raise HTTPException(404, "当前场景没有这条表达候选")
         runtime.notify()
@@ -133,7 +170,20 @@ def register_host_learning(app: FastAPI, *, runtime: NetworkRuntime,
     @app.delete("/api/host/scenes/{scene}/learning/expressions/{id}")
     async def delete_expression(scene: str, id: int, _: str = Depends(user)):
         chat_for(scene)
-        if not learning.delete_expression(scene, id):
+        service = runtime.expression_service if selection_enabled(scene) else None
+        try:
+            deleted = (await service.delete(scene, id) if service is not None else
+                       learning.delete_expression(scene, id))
+        except ValueError as error:
+            logger.exception("删除表达候选被拒绝：scene=%s id=%s", scene, id)
+            raise HTTPException(409 if service is not None else 422, str(error)) from error
+        except (httpx.HTTPError, TimeoutError) as error:
+            logger.exception("删除表达候选向量请求失败：scene=%s id=%s", scene, id)
+            raise HTTPException(502, f"{type(error).__name__}: {error}") from error
+        except Exception as error:
+            logger.exception("删除表达候选失败：scene=%s id=%s", scene, id)
+            raise HTTPException(500, f"{type(error).__name__}: {error}") from error
+        if not deleted:
             raise HTTPException(404, "当前场景没有这条表达候选")
         runtime.notify()
         return {"deleted": True}

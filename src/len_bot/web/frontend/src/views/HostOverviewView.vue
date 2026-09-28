@@ -61,7 +61,7 @@ onMounted(refresh)
         <div class="paired"><div><h3>消息状态</h3><dl v-if="messages.length" class="breakdown"><div v-for="[status,count] in messages" :key="status"><dt>{{ messageLabels[status] || status }}</dt><dd>{{ count }}</dd></div></dl><p v-else class="muted">本时段没有已保存消息。</p></div>
           <div><h3>轮次状态</h3><dl v-if="turns.length" class="breakdown"><div v-for="[status,count] in turns" :key="status"><dt>{{ turnLabels[status] || status }}</dt><dd>{{ count }}</dd></div></dl><p v-else class="muted">本时段没有已开启轮次。</p></div></div>
       </section>
-      <section class="surface"><div class="section-heading"><h2>聊天与表达学习模型费用估算</h2><span class="muted">不含记忆抽取及嵌入，非账单</span></div>
+      <section class="surface"><div class="section-heading"><h2>聊天与表达学习模型费用估算</h2><span class="muted">不含记忆抽取及记忆嵌入，非账单</span></div>
         <p><strong>{{ overview.unknown_cost_calls }}</strong> 次调用费用未知；未知不并入 0，不与币种金额相加。</p>
         <dl v-if="costs.length" class="breakdown costs"><div v-for="[currency,amount] in costs" :key="currency"><dt>{{ currency }}</dt><dd>{{ amount }}</dd></div></dl>
         <p v-else class="muted">本时段没有可汇总的已知费用金额。</p>
