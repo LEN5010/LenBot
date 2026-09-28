@@ -253,7 +253,7 @@ watch(() => route.query.scene, value => {
             <v-textarea v-if="draft.attention.quiet_hours.direct==='notice'" v-model="draft.attention.quiet_hours.notice_text" label="安静提示原文" rows="3" auto-grow hide-details="auto" />
           </div>
         </fieldset>
-        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>一次性提醒权限</legend>
+        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>提醒与周期安排权限</legend>
           <p class="muted">权限身份可组合命中；列表只影响此场景的安排能力。</p>
           <div class="form-grid"><v-switch v-model="draft.schedules.enabled" label="启用提醒" hide-details />
             <v-switch v-model="draft.schedules.autonomous" label="允许 Bot 自主安排" hide-details />

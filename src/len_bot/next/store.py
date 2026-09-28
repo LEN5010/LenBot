@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
@@ -15,7 +16,7 @@ from .messages import ChatMessage, Segment, Sender, plain_text
 from .pricing import cost_summary
 
 
-FORMAT_VERSION = 14
+FORMAT_VERSION = 15
 
 
 def encode(value: object) -> str:
@@ -43,6 +44,7 @@ class Schedule:
     status: str
     delivered_at: float | None
     reason: str | None
+    interval_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,8 @@ class Store:
                         created REAL NOT NULL, due_at REAL NOT NULL,
                         timezone TEXT NOT NULL, note TEXT NOT NULL,
                         target TEXT NOT NULL, requester TEXT,
-                        status TEXT NOT NULL, delivered_at REAL, reason TEXT
+                        status TEXT NOT NULL, delivered_at REAL, reason TEXT,
+                        interval_seconds INTEGER CHECK(interval_seconds BETWEEN 60 AND 31536000)
                     );
                     CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
                     CREATE TABLE tasks (
@@ -797,7 +800,7 @@ class Store:
 
     def create_schedule(self, scene: str, *, due_at: float, timezone: str,
                         note: str, target: str, requester: str | None,
-                        limit: int) -> Schedule:
+                        limit: int, interval_seconds: int | None = None) -> Schedule:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             unfinished = self.db.execute(
@@ -807,9 +810,9 @@ class Store:
             if unfinished >= limit:
                 raise ValueError(f"Scene {scene} has reached its unfinished schedule limit {limit}")
             cursor = self.db.execute(
-                "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status) "
-                "VALUES (?,?,?,?,?,?,?,'pending')",
-                (scene, self.now(), due_at, timezone, note, target, requester),
+                "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status,interval_seconds) "
+                "VALUES (?,?,?,?,?,?,?,'pending',?)",
+                (scene, self.now(), due_at, timezone, note, target, requester, interval_seconds),
             )
             row = self.db.execute(
                 "SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)
@@ -908,11 +911,18 @@ class Store:
 
     def _append_schedules(self, scene: str, scheduled: list[tuple[int, str]]) -> None:
         for id, content in scheduled:
+            item = self.get_schedule(scene, id)
+            delivered_at = self.now()
+            due_at, status = item.due_at, "delivered"
+            if item.interval_seconds is not None:
+                steps = max(1, math.floor((delivered_at - due_at) / item.interval_seconds) + 1)
+                due_at += steps * item.interval_seconds
+                status = "pending"
             self._append(scene, {"role": "user", "content": content})
             updated = self.db.execute(
-                "UPDATE schedules SET status='delivered',delivered_at=? "
+                "UPDATE schedules SET status=?,delivered_at=?,due_at=? "
                 "WHERE scene=? AND id=? AND status='pending'",
-                (self.now(), scene, id),
+                (status, delivered_at, due_at, scene, id),
             )
             if updated.rowcount != 1:
                 raise ValueError(f"Scene {scene} schedule {id} is not pending")
