@@ -377,11 +377,13 @@ class SceneRunner:
             except LimitReached as error:
                 if in_turn or self.closing:
                     return None
-                if self.state.pending is not None and self.state.pending.channel == "direct":
+                quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+                if (self.state.pending is not None and self.state.pending.channel == "direct"
+                        and (quiet is None or self.settings.quiet_hours.direct != "defer")):
                     async with self.execution:
                         await self.limit_notice(error)
                 try:
-                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, error.until - self.now()))
+                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, min(error.until, quiet[1] if quiet is not None else error.until) - self.now()))
                 except TimeoutError:
                     pass  # The configured allowance window ended; no failed request is retried.
                 continue
@@ -516,6 +518,9 @@ class SceneRunner:
 
     async def limit_notice(self, error: LimitReached) -> None:
         """At most one host explanation per blocked window, persisted before delivery."""
+        quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, self.now())
+        if quiet is not None and self.settings.quiet_hours.direct == "defer":
+            return
         if self.state.limit_notice_until is not None and self.state.limit_notice_until >= error.until:
             return
         state = copy.deepcopy(self.state)

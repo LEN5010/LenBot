@@ -66,10 +66,27 @@ def check_speech(store, config) -> None:
 
 
 class ModelBudget:
-    def __init__(self, config, store, memory):
+    def __init__(self, config, store, memory, *, root: Path | None = None):
         self.config, self.store, self.memory = config, store, memory
         self.started_at = store.now()
-        self.trials_root: Path | None = None
+        self.trials_root: Path | None = None if root is None else root / '.runtime' / 'chat-tests'
+        if config.limits.daily_model_cost is not None or config.limits.scene_daily_model_cost:
+            self.validate_sources()
+
+    def validate_sources(self) -> None:
+        from .memory_jobs import FORMAT_VERSION as MEMORY_FORMAT
+        paths = [self.config.database.with_name(self.config.database.name + '.memory.sqlite3')]
+        if self.trials_root is not None:
+            paths.extend(self.trials_root.glob('*/state.db.memory.sqlite3'))
+        outdated = []
+        for path in paths:
+            if path.exists():
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                    app, version = db.execute('PRAGMA application_id').fetchone()[0], db.execute('PRAGMA user_version').fetchone()[0]
+                    if app != 0x4C424D4A or version != MEMORY_FORMAT:
+                        outdated.append(f'{path} (application={app}, format={version})')
+        if outdated:
+            raise ValueError('预算计量源需要停机离线迁移；运行 python -m len_bot.next.migrate_memory_jobs：' + '; '.join(outdated))
 
     def totals(self, scene: str | None, since: float, until: float) -> dict:
         selected = None if scene is None else [scene]

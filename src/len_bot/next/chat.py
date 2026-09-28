@@ -689,7 +689,7 @@ class Chat:
                     except LimitReached as error:
                         content = prefix + report_parts(parts, errors, self.render) + "\n" + str(error)
                         self.store.expression_error(entry_seq, str(error))
-                        return content, "limited"
+                        raise
                 part.time = self.now()
                 part.send_status = "simulated" if self.send_message is None else "unconfirmed"
                 errors.append(None)
@@ -903,6 +903,8 @@ class Chat:
                         except Exception as error:
                             failed_tools += 1
                             self.store.complete_tool(scene, call.id, f"{call.name} 失败：{type(error).__name__}: {error}")
+                            if isinstance(error, LimitReached):
+                                raise
                         else:
                             if expression is None:
                                 self.store.complete_tool(scene, call.id, content, discovered_tools=discovered)

@@ -83,6 +83,28 @@ def register_host_operations(app, *, runtime, user):
                             'SELECT name,size,note,created FROM task_files WHERE scene=? AND task_id=?',
                             (scene, task_id))], 'scope': '已保存任务事件与文件清单；不包含文件字节或原生会话文件'})
 
+    @app.get('/api/host/retention')
+    async def retention_state(_: str = Depends(user)):
+        manager = runtime.retention
+        return {'enabled': config.retention is not None, 'busy': manager.lock.locked(),
+                'last_result': manager.last_result, 'error': manager.error,
+                'preview': None if config.retention is None else manager.batch(preview=True)}
+
+    @app.post('/api/host/retention')
+    async def retention_run(confirmed: bool = False, _: str = Depends(user)):
+        if not confirmed:
+            raise HTTPException(422, '清理不可撤销，请先预览并明确确认')
+        manager = runtime.retention
+        if manager.lock.locked():
+            raise HTTPException(409, '已有清理批次正在执行')
+        async with manager.lock:
+            try:
+                result = manager.batch()
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+            runtime.notify()
+            return result
+
     @app.get('/api/host/limits')
     async def limits_state(_: str = Depends(user)):
         items = []

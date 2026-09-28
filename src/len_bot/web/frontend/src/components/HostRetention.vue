@@ -1,0 +1,20 @@
+<script setup>
+import { computed,onMounted,ref } from 'vue'
+import { api } from '../api.js'
+import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+const labels={preview:'预览',at:'采样时间',model_snapshots:'对话模型快照',auxiliary_snapshots:'学习与媒体快照',task_snapshots:'任务模型快照',turns:'无依赖轮次',messages:'过期原话',notices:'平台通知',protected_latest_mind_requests:'保留的最新恢复请求',memory_snapshots:'记忆模型快照',extraction_jobs:'已完成抽取快照',scope:'范围说明'}
+const snapshot=ref(null),state=ref(null),draft=ref(null),days=ref('{}'),busy=ref(false),error=ref(''),notice=ref('')
+const dirty=computed(()=>snapshot.value&&(JSON.stringify(draft.value)!==JSON.stringify(snapshot.value.saved.retention)||(draft.value!==null&&days.value!==JSON.stringify(snapshot.value.saved.retention?.message_days||{},null,2))))
+useUnsavedChanges(dirty)
+function adopt(value){snapshot.value=value;draft.value=value.saved.retention===null?null:JSON.parse(JSON.stringify(value.saved.retention));days.value=JSON.stringify(draft.value?.message_days||{},null,2)}
+function enable(value){draft.value=value?{request_days:7,timeline_days:90,message_days:{}}:null;days.value='{}'}
+async function read(){if(busy.value||(dirty.value&&!window.confirm('放弃保留策略草稿？')))return;busy.value=true;try{const [settings,current]=await Promise.all([api('/api/host/settings'),api('/api/host/retention')]);adopt(settings);state.value=current;error.value=''}catch(e){error.value=e.message}finally{busy.value=false}}
+async function save(){busy.value=true;try{adopt(await api('/api/host/settings/retention',{method:'PUT',body:JSON.stringify({retention:draft.value===null?null:{...draft.value,message_days:JSON.parse(days.value)}})}));error.value='';notice.value='策略已保存，重启生效；此次保存不立即清理。'}catch(e){error.value=`保存未完成或结果未确认：${e.message}，请重读核对。`}finally{busy.value=false}}
+async function prune(){if(!window.confirm('按当前运行策略执行一批不可撤销清理？请先核对预览，清理不会创建备份。'))return;busy.value=true;try{const result=await api('/api/host/retention?confirmed=true',{method:'POST'});state.value=await api('/api/host/retention');notice.value=`本批完成：${JSON.stringify(result)}`;error.value=''}catch(e){error.value=`清理失败或结果未确认：${e.message}。部分记录可能已清理，请读取最新状态。`}finally{busy.value=false}}
+onMounted(read)
+</script>
+<template><section class="surface"><div class="heading"><h2>数据保留与清理</h2><v-btn :loading="busy" @click="read">读取清理预览</v-btn></div><v-alert v-if="error" type="error">{{error}}</v-alert><v-alert v-if="notice" type="info">{{notice}}</v-alert>
+<p>仅启用后按天分批清理。当前会话、未完成调用、最新恢复请求和素材来源保留；原话仅在该场景没有活动上下文时清理；清理不是完整遗忘，不会删除角色、长期记忆或外部备份。文件空间复用，不在线执行 VACUUM。</p>
+<form v-if="snapshot" @submit.prevent="save"><fieldset :disabled="busy"><v-switch :model-value="draft!==null" label="启用自动保留策略（重启生效）" @update:model-value="enable" /><template v-if="draft"><div class="grid"><v-text-field v-model.number="draft.request_days" type="number" step="1" label="模型快照保留天数" /><v-text-field v-model.number="draft.timeline_days" type="number" step="1" label="无依赖轮次保留天数（至少32）" /></div><v-textarea v-model="days" label="按场景原话保留天数（JSON）" hint='例如 {"group:80001":90}；未列出的场景永久保留' persistent-hint /></template></fieldset><p v-if="snapshot.restart_required.retention">保存值待重启。</p><v-btn type="submit" color="primary" :disabled="busy||!dirty">保存保留策略</v-btn></form>
+<template v-if="state"><p v-if="!state.enabled">当前运行未启用，不执行清理。</p><v-alert v-if="state.error" type="error">自动清理已停止：{{state.error}}</v-alert><template v-if="state.preview"><h3>当前策略本批预览</h3><dl><template v-for="(value,key) in state.preview" :key="key"><dt>{{labels[key]}}</dt><dd>{{key==='at'?new Date(value*1000).toLocaleString():key==='preview'?(value?'是':'否'):value}}</dd></template></dl><v-btn color="warning" :disabled="busy||state.busy" @click="prune">按预览策略清理一批</v-btn></template></template></section></template>
+<style scoped>.heading{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}fieldset{border:0;padding:0}dl{display:grid;grid-template-columns:minmax(130px,1fr) 3fr;gap:6px}dd{margin:0}p,dd{overflow-wrap:anywhere}</style>

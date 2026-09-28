@@ -65,7 +65,7 @@ async def run() -> None:
 
     with Store(config.database, now=now) as store:
         slots = ModelSlots(config.max_model_requests)
-        budget = ModelBudget(config, store, None)
+        budget = ModelBudget(config, store, None, root=config._instance_root)
         slots.admit = budget.check
         async with (
             ChatModel(config.model_settings("mind")) as mind,

@@ -18,6 +18,7 @@ from .messages import parse_message, parse_notice
 from .model import ChatModel
 from .model_slots import ModelSlots
 from .limits import ModelBudget
+from .retention import Retention
 from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
@@ -55,7 +56,7 @@ class NetworkRuntime:
         self.log_secrets = credentials(config)
         self.logs: deque[dict] = deque(maxlen=500)
         self.memory = memory
-        self.budget = ModelBudget(config, store, memory) if budget is None else budget
+        self.budget = ModelBudget(config, store, memory, root=config._instance_root) if budget is None else budget
         if slots is None and (config.limits.daily_model_cost is not None or config.limits.scene_daily_model_cost):
             raise ValueError("配置模型金额预算时必须装配共享ModelSlots")
         if slots is not None:
@@ -88,6 +89,7 @@ class NetworkRuntime:
         self.status = "created"
         self.last_platform_error: str | None = None
         self.stopped = asyncio.Event()
+        self.retention = Retention(self)
         self.accepting = True
         self.storage_error: sqlite3.Error | None = None
         self.platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
@@ -331,6 +333,7 @@ class NetworkRuntime:
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
+                    pending.append(group.create_task(self.retention.run()))
                     running = [group.create_task(runner.run()) for runner in self.runners.values()]
                     pending.extend(running)
                     done, _ = await asyncio.wait({*running, stopping, terminated}, return_when=asyncio.FIRST_COMPLETED)

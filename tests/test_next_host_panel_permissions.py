@@ -82,7 +82,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     assert (await client.get("/api/panel-context")).json() == {
                         "mode": "isolated-multi", "home": "/host/overview",
                     }
-                    for path in ("/api/auth/me", "/api/host/state", "/api/host/scenes/group:80001",
+                    for path in ("/api/auth/me", "/api/host/state", "/api/host/retention", "/api/host/limits", "/api/host/scenes/group:80001",
                                  f"/api/host/scenes/group:80001/turns/{configured_turn}"):
                         assert (await client.get(path)).status_code == 401
 
@@ -94,6 +94,13 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                         "username": "host-operator", "password": "synthetic-password",
                     })
                     assert login.status_code == 200
+                    assert (await client.post("/api/host/retention")).status_code == 422
+                    assert (await client.post("/api/host/retention?confirmed=true")).status_code == 422
+                    saved = (root / "lenbot.config.json").read_bytes()
+                    assert (await client.put("/api/host/settings/retention", json={
+                        "retention": {"timeline_days": 31},
+                    })).status_code == 422
+                    assert (root / "lenbot.config.json").read_bytes() == saved
                     state = (await client.get("/api/host/state")).json()
                     assert state["delivery"] == "simulated"
                     assert [item["scene"] for item in state["scenes"]] == ["group:80001", "group:80002"]

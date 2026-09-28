@@ -82,9 +82,20 @@ def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Memory processing migration takes no arguments; stop the instance and run from its root")
     config = load_instance_config(Path.cwd())
-    path = config.database.with_name(config.database.name + ".memory.sqlite3")
-    backup = migrate_memory_jobs(path)
-    print(f"Offline memory processing migration completed; input-format copy: {backup}")
+    paths = [config.database.with_name(config.database.name + ".memory.sqlite3")]
+    paths.extend(sorted((Path.cwd() / '.runtime' / 'chat-tests').glob('*/state.db.memory.sqlite3')))
+    for path in paths:
+        if not path.exists():
+            continue
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+            app, version = (db.execute('PRAGMA application_id').fetchone()[0],
+                                     db.execute('PRAGMA user_version').fetchone()[0])
+        if app == APPLICATION_ID and version == FORMAT_VERSION:
+            print(f"Already current: {path}")
+            continue
+        backup = migrate_memory_jobs(path)
+        print(f"Offline memory processing migration completed; input-format copy: {backup}")
+
 
 
 if __name__ == "__main__":

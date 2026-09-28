@@ -97,3 +97,28 @@ def test_memory_costs_remain_counted_when_backend_disabled(tmp_path):
                     ('public','index',1790618400.,1790618400.,'{}','{"currency":"USD","amount":"1"}'))
         budget=ModelBudget(settings(path,daily_model_cost='1'),store,None)
         with pytest.raises(LimitReached):budget.check('group:80001')
+
+
+def test_trial_budget_uses_explicit_root_and_requires_migrated_sidecar(tmp_path):
+    root=tmp_path/'instance'
+    path=root/'nested'/'state.db'
+    trial=root/'.runtime'/'chat-tests'/'closed'/'state.db'
+    with Store(trial,now=lambda:1790618400.) as other:
+        cost(other,'group:80001','1')
+    with Store(path,now=lambda:1790618400.) as store:
+        cfg=settings(path,daily_model_cost='1')
+        with pytest.raises(LimitReached):
+            ModelBudget(cfg,store,None,root=root).check('group:80001')
+        with MemoryJobs(trial.with_name(trial.name+'.memory.sqlite3')) as jobs:
+            jobs.db.execute('PRAGMA user_version=3')
+        with pytest.raises(ValueError,match='migrate_memory_jobs'):
+            ModelBudget(cfg,store,None,root=root)
+
+
+@pytest.mark.parametrize('value',[{'request_days':0},{'timeline_days':31},
+    {'message_days':{'nickname':1}},{'message_days':{'group:1':0}},
+    {'message_days':{'group:1':True}},{'message_days':{'private:1':'2'}}])
+def test_retention_configuration_rejects_ambiguous_or_unmetered_windows(value):
+    from len_bot.next.retention import RetentionSettings
+    with pytest.raises(ValidationError):
+        RetentionSettings.model_validate(value)

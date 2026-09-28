@@ -185,6 +185,7 @@ onMounted(refresh)
         <div class="actions"><v-btn variant="text" :disabled="callLoading" @click="openCall(entry.id)">{{ call?.id===entry.id ? '收起详情' : '查看真实请求与响应' }}</v-btn>
           <v-btn v-if="['failed','interrupted'].includes(entry.status)" variant="outlined" :loading="requesting==='retry'" :disabled="!state?.enabled || busy" @click="request('retry', entry.id)">重做这一批</v-btn></div>
         <div v-if="call?.id===entry.id" class="detail"><p>实际用量：{{ call.usage===null ? '未知' : JSON.stringify(call.usage) }}；结束 {{ localTime(call.ended) }}</p>
+          <p v-if="call.request?.snapshot_expired_at" class="muted">输入快照已过保留期；调用结果状态和计量保留，不代表原始请求仍可查看。</p>
           <details><summary>请求原文</summary><pre>{{ JSON.stringify(call.request,null,2) }}</pre></details>
           <details><summary>原响应</summary><pre>{{ JSON.stringify(call.response,null,2) }}</pre></details></div>
       </li></ul>
