@@ -16,10 +16,10 @@ from .messages import ChatMessage, Segment, Sender, plain_text
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 from .pricing import cost_summary
-from .schedule_time import CronTimeError, next_daily_cron
+from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 23
+FORMAT_VERSION = 24
 
 
 def encode(value: object) -> str:
@@ -48,7 +48,7 @@ class Schedule:
     delivered_at: float | None
     reason: str | None
     interval_seconds: int | None = None
-    cron_minute_of_day: int | None = None
+    cron: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,8 +137,7 @@ class Store:
                         target TEXT NOT NULL, requester TEXT,
                         status TEXT NOT NULL, delivered_at REAL, reason TEXT,
                         interval_seconds INTEGER CHECK(interval_seconds BETWEEN 60 AND 31536000),
-                        cron_minute_of_day INTEGER CHECK(cron_minute_of_day IS NULL OR
-                            (cron_minute_of_day BETWEEN 0 AND 1439 AND interval_seconds IS NULL))
+                        cron TEXT CHECK(cron IS NULL OR interval_seconds IS NULL)
                     );
                     CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
                     CREATE TABLE tasks (
@@ -287,6 +286,13 @@ class Store:
                         response TEXT, usage TEXT, cost TEXT, error TEXT
                     );
                     CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id);
+                    CREATE TABLE proactive_wakes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        turn_id TEXT NOT NULL UNIQUE, woke_at REAL NOT NULL,
+                        local_date TEXT NOT NULL, idle_since REAL NOT NULL,
+                        outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),
+                        closed_at REAL, UNIQUE(scene,local_date)
+                    );
                     COMMIT;
                 """)
         except BaseException:
@@ -1028,7 +1034,7 @@ class Store:
     def create_schedule(self, scene: str, *, due_at: float, timezone: str,
                         note: str, target: str, requester: str | None,
                         limit: int, interval_seconds: int | None = None,
-                        cron_minute_of_day: int | None = None) -> Schedule:
+                        cron: str | None = None) -> Schedule:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             unfinished = self.db.execute(
@@ -1039,9 +1045,9 @@ class Store:
                 raise ValueError(f"Scene {scene} has reached its unfinished schedule limit {limit}")
             cursor = self.db.execute(
                 "INSERT INTO schedules(scene,created,due_at,timezone,note,target,requester,status,"
-                "interval_seconds,cron_minute_of_day) VALUES (?,?,?,?,?,?,?,'pending',?,?)",
+                "interval_seconds,cron) VALUES (?,?,?,?,?,?,?,'pending',?,?)",
                 (scene, self.now(), due_at, timezone, note, target, requester,
-                 interval_seconds, cron_minute_of_day),
+                 interval_seconds, cron),
             )
             row = self.db.execute(
                 "SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)
@@ -1118,7 +1124,9 @@ class Store:
                    attention_state: dict | None = None,
                    scheduled: list[tuple[int, str]] | None = None,
                    task_notices: list[tuple[int, str]] | None = None,
-                   wake_received_at: float | None = None) -> str:
+                   wake_received_at: float | None = None,
+                   proactive: tuple[str, str, float] | None = None) -> str:
+        """Start a turn; ``proactive`` is (wake text, scene-local date, idle since)."""
         turn_id = str(uuid4())
         with self.db:
             self.db.execute(
@@ -1134,6 +1142,13 @@ class Store:
                 self._append_schedules(scene, scheduled)
             if task_notices is not None:
                 self._append_task_notices(scene, task_notices)
+            if proactive is not None:
+                content, local_date, idle_since = proactive
+                self._append(scene, {"role": "user", "content": content})
+                self.db.execute(
+                    "INSERT INTO proactive_wakes(scene,turn_id,woke_at,local_date,idle_since) VALUES (?,?,?,?,?)",
+                    (scene, turn_id, self.now(), local_date, idle_since),
+                )
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
         return turn_id
@@ -1148,9 +1163,9 @@ class Store:
                 steps = max(1, math.floor((delivered_at - due_at) / item.interval_seconds) + 1)
                 due_at += steps * item.interval_seconds
                 status = "pending"
-            elif item.cron_minute_of_day is not None:
+            elif item.cron is not None:
                 try:
-                    due_at = next_daily_cron(item.cron_minute_of_day, item.timezone, delivered_at)
+                    due_at = next_cron(parse_cron(item.cron), item.timezone, delivered_at)
                     status = "pending"
                 except CronTimeError as error:
                     status, reason = "blocked", str(error)

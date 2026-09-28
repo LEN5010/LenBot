@@ -48,17 +48,19 @@ function displayValue(value) {
 function sceneBody() {
   if (!draft.value) return null
   return {
+    timezone: draft.value.timezone === '' ? null : draft.value.timezone,
     voice_mode: draft.value.voice_mode,
     attention: { ...draft.value.attention, keywords: cleanList(keywords.value), other_bot_qqs: cleanList(otherBots.value) },
     schedules: { ...draft.value.schedules, admins: cleanList(admins.value), whitelist: cleanList(whitelist.value) },
+    proactive: draft.value.proactive,
     persona_aliases: cleanList(aliases.value),
     relationships: Object.fromEntries(relationships.value.map(row => [row.qq, row.text])),
     behavior_addendum: draft.value.behavior_addendum === '' ? null : draft.value.behavior_addendum,
   }
 }
 function savedBody(value) {
-  return { voice_mode: value.voice_mode, attention: value.attention, schedules: value.schedules,
-    persona_aliases: value.scene_persona.persona_aliases, relationships: value.scene_persona.relationships,
+  return { timezone: value.timezone, voice_mode: value.voice_mode, attention: value.attention, schedules: value.schedules,
+    proactive: value.proactive, persona_aliases: value.scene_persona.persona_aliases, relationships: value.scene_persona.relationships,
     behavior_addendum: value.scene_persona.behavior_addendum }
 }
 const sceneDirty = computed(() => {
@@ -74,8 +76,8 @@ onBeforeRouteUpdate(() => !workerSaving.value && (!sceneDirty.value && !workerSc
   window.confirm('有尚未保存的场景草稿。放弃并打开另一场景？')))
 function adoptScene(value) {
   const record = value.saved.scenes[scene.value]
-  draft.value = { voice_mode: record.voice_mode, attention: copy(record.attention), schedules: copy(record.schedules),
-    behavior_addendum: record.scene_persona.behavior_addendum ?? '' }
+  draft.value = { timezone: record.timezone ?? '', voice_mode: record.voice_mode, attention: copy(record.attention), schedules: copy(record.schedules),
+    proactive: copy(record.proactive), behavior_addendum: record.scene_persona.behavior_addendum ?? '' }
   aliases.value = listRows(record.scene_persona.persona_aliases)
   relationships.value = Object.entries(record.scene_persona.relationships).map(([qq,text]) => ({ qq, text }))
   keywords.value = listRows(record.attention.keywords)
@@ -150,6 +152,9 @@ function changeScene(next, fromRoute = false) {
 function toggleQuiet(value) {
   draft.value.attention.quiet_hours = value
     ? { start: '23:00', end: '07:00', direct: 'defer', notice_text: null } : null
+}
+function toggleProactive(value) {
+  draft.value.proactive = value ? { idle_seconds: 10800, start: '10:00', end: '22:00' } : null
 }
 function toggleWebRead(value) { webRead.value = value ? { timeout_seconds: 20 } : null }
 function toggleWebSearch(value) { webSearch.value = value ? { provider: 'bing_rss', timeout_seconds: 15, max_results: 5 } : null }
@@ -226,10 +231,11 @@ watch(() => route.query.scene, value => {
       <section class="surface"><div class="section-heading"><h2>当前配置场景</h2>
         <v-chip variant="tonal" :color="snapshot.restart_required.scenes[scene]?'warning':'info'">{{ snapshot.restart_required.scenes[scene]?'场景保存值待重启':'场景保存值与运行值一致' }}</v-chip></div>
         <v-select :model-value="scene" :items="sceneOptions" label="选择场景" hide-details="auto" :disabled="Boolean(saving) || loading || workerSaving" @update:model-value="changeScene" />
-        <p class="muted mt-4">运行值：{{ runningScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}；保存值：{{ savedScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}。场景与角色包的绑定路径不在此页修改。</p>
+        <p class="muted mt-4">运行值：{{ runningScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}；保存值：{{ savedScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}。本群时区运行值：{{ runningScene?.timezone ?? `沿用全局 ${snapshot?.running.connection.timezone}` }}；保存值：{{ savedScene?.timezone ?? `沿用全局 ${snapshot?.saved.connection.timezone}` }}。场景与角色包的绑定路径不在此页修改。</p>
         <details v-if="runningScene"><summary>查看当前运行的场景设置</summary>
           <h3>参与与安静时段</h3><dl class="role-facts"><div v-for="(value,key) in runningScene.attention" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></div></dl>
           <h3>提醒权限</h3><dl class="role-facts"><div v-for="(value,key) in runningScene.schedules" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></div></dl>
+          <h3>主动开话题</h3><p>{{ runningScene.proactive ? displayValue(runningScene.proactive) : '未启用' }}</p>
           <h3>角色补充</h3><dl class="role-facts"><div><dt>补充称呼</dt><dd>{{ displayValue(runningScene.scene_persona.persona_aliases) }}</dd></div>
             <div><dt>关系说明</dt><dd>{{ displayValue(runningScene.scene_persona.relationships) }}</dd></div>
             <div><dt>行为风格补充</dt><dd>{{ displayValue(runningScene.scene_persona.behavior_addendum) }}</dd></div></dl>
@@ -239,6 +245,8 @@ watch(() => route.query.scene, value => {
       <form class="page-stack" @submit.prevent="saveScene">
         <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>场景参与与安静时段</legend>
           <v-select v-model="draft.voice_mode" label="表达方式" :items="[{title:'表达器组织台词',value:'voice'},{title:'大脑直接表达',value:'direct'}]" hide-details="auto" />
+          <v-text-field v-model="draft.timezone" label="本群时区（IANA 名称，留空沿用全局时区）" placeholder="例如 Asia/Shanghai" hide-details="auto" />
+          <p class="muted">影响本群的时间显示、安静时段和新建安排的钟点；已有安排保留创建时保存的时区，不会被追溯改写。</p>
           <v-switch v-model="draft.attention.only_direct" label="只处理直接呼唤" hide-details />
           <div class="list-block"><h3>关键词</h3><p class="muted">逐项编辑；合法关键词会由配置入口校验，不按行拆分。</p>
             <div v-for="(row,index) in keywords" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`关键词 ${index+1}`" hide-details="auto" /><v-btn variant="outlined" @click="keywords.splice(index,1)">删除</v-btn></div>
@@ -251,6 +259,15 @@ watch(() => route.query.scene, value => {
             <v-text-field v-model="draft.attention.quiet_hours.end" label="结束钟面时间 HH:MM" hide-details="auto" />
             <v-select v-model="draft.attention.quiet_hours.direct" label="直接呼唤处理" :items="[{title:'允许',value:'allow'},{title:'告知安静',value:'notice'},{title:'延后',value:'defer'}]" hide-details="auto" @update:model-value="value=>{if(value!=='notice') draft.attention.quiet_hours.notice_text=null}" />
             <v-textarea v-if="draft.attention.quiet_hours.direct==='notice'" v-model="draft.attention.quiet_hours.notice_text" label="安静提示原文" rows="3" auto-grow hide-details="auto" />
+          </div>
+        </fieldset>
+        <fieldset v-if="scene.startsWith('group:')" class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>主动开话题</legend>
+          <p class="muted">群里在活跃时段安静够久时叫醒大脑一次，它可以开个话题，也可以不说话。每群按本群时区每天最多一次，安静时段内不叫醒；连续两次开口后 30 分钟内都没有群友说话，暂停一周。叫醒记录和暂停原因在安排页查看。</p>
+          <v-switch :model-value="draft.proactive!==null" label="启用主动开话题" hide-details @update:model-value="toggleProactive" />
+          <div v-if="draft.proactive" class="entry-card form-grid">
+            <v-text-field :model-value="draft.proactive.idle_seconds" type="number" step="any" label="安静多少秒后叫醒（至少 600，默认 10800 即 3 小时）" hide-details="auto" @update:model-value="value=>draft.proactive.idle_seconds=numeric(value)" />
+            <v-text-field v-model="draft.proactive.start" label="活跃时段开始 HH:MM" hide-details="auto" />
+            <v-text-field v-model="draft.proactive.end" label="活跃时段结束 HH:MM（早于开始表示跨午夜）" hide-details="auto" />
           </div>
         </fieldset>
         <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>提醒与周期安排权限</legend>

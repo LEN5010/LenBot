@@ -1,6 +1,6 @@
-"""Resolve one configured local quiet interval to its actual UTC bounds."""
+"""Resolve configured daily local intervals to their actual UTC bounds."""
 
-from datetime import datetime, timedelta, timezone as DateTimeZone
+from datetime import datetime, time as WallTime, timedelta, timezone as DateTimeZone
 from math import ceil, floor
 from zoneinfo import ZoneInfo
 
@@ -28,33 +28,44 @@ def _boundary(local: datetime, zone: ZoneInfo, *, later: bool) -> float:
     return float(upper)
 
 
+def local_period(start_clock: WallTime, end_clock: WallTime, timezone: str,
+                 now: float) -> tuple[float, float] | None:
+    """Return the daily local [start, end) containing ``now`` in UTC epoch seconds, if any."""
+    zone = ZoneInfo(timezone)
+    today = datetime.fromtimestamp(now, zone).date()
+    crosses_midnight = end_clock < start_clock
+    for start_day in (today, today - timedelta(days=1)):
+        end_day = start_day + timedelta(days=1) if crosses_midnight else start_day
+        start = _boundary(datetime.combine(start_day, start_clock), zone, later=False)
+        end = _boundary(datetime.combine(end_day, end_clock), zone, later=True)
+        if start < end and start <= now < end:
+            return start, end
+    return None
+
+
+def next_local_start(start_clock: WallTime, end_clock: WallTime, timezone: str, after: float) -> float:
+    """Find the first nonempty daily local interval beginning strictly after an instant."""
+    zone = ZoneInfo(timezone)
+    start_day = datetime.fromtimestamp(after, zone).date()
+    crosses_midnight = end_clock < start_clock
+    while True:
+        end_day = start_day + timedelta(days=1) if crosses_midnight else start_day
+        start = _boundary(datetime.combine(start_day, start_clock), zone, later=False)
+        end = _boundary(datetime.combine(end_day, end_clock), zone, later=True)
+        if start < end and start > after:
+            return start
+        start_day += timedelta(days=1)
+
+
 def quiet_period(settings: QuietHours | None, timezone: str, now: float) -> tuple[float, float] | None:
     """Return the containing [start, end) in UTC epoch seconds, if any."""
     if settings is None:
         return None
-    zone = ZoneInfo(timezone)
-    today = datetime.fromtimestamp(now, zone).date()
-    crosses_midnight = settings.end < settings.start
-    for start_day in (today, today - timedelta(days=1)):
-        end_day = start_day + timedelta(days=1) if crosses_midnight else start_day
-        start = _boundary(datetime.combine(start_day, settings.start), zone, later=False)
-        end = _boundary(datetime.combine(end_day, settings.end), zone, later=True)
-        if start < end and start <= now < end:
-            return start, end
-    return None
+    return local_period(settings.start, settings.end, timezone, now)
 
 
 def next_quiet_start(settings: QuietHours | None, timezone: str, after: float) -> float | None:
     """Find the first nonempty quiet interval beginning strictly after an instant."""
     if settings is None:
         return None
-    zone = ZoneInfo(timezone)
-    start_day = datetime.fromtimestamp(after, zone).date()
-    crosses_midnight = settings.end < settings.start
-    while True:
-        end_day = start_day + timedelta(days=1) if crosses_midnight else start_day
-        start = _boundary(datetime.combine(start_day, settings.start), zone, later=False)
-        end = _boundary(datetime.combine(end_day, settings.end), zone, later=True)
-        if start < end and start > after:
-            return start
-        start_day += timedelta(days=1)
+    return next_local_start(settings.start, settings.end, timezone, after)

@@ -35,6 +35,14 @@ def _epoch_seconds(seconds: float) -> float:
     return seconds
 
 
+def _valid_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(f"unknown timezone {value!r}") from error
+    return value
+
+
 EpochSeconds = Annotated[float, Field(strict=True, allow_inf_nan=False), AfterValidator(_epoch_seconds)]
 _FiniteSeconds = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
@@ -317,6 +325,12 @@ class ScheduleSettings(BaseModel):
         return values
 
 
+def _local_clock(value: object) -> WallTime:
+    if not isinstance(value, str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?", value) is None:
+        raise ValueError("must be a local HH:MM or HH:MM:SS clock without offset or fraction")
+    return WallTime.fromisoformat(value)
+
+
 class QuietHours(BaseModel):
     model_config = STRICT
 
@@ -328,9 +342,7 @@ class QuietHours(BaseModel):
     @field_validator("start", "end", mode="before")
     @classmethod
     def local_clock(cls, value: object) -> WallTime:
-        if not isinstance(value, str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?", value) is None:
-            raise ValueError("must be a local HH:MM or HH:MM:SS clock without offset or fraction")
-        return WallTime.fromisoformat(value)
+        return _local_clock(value)
 
     @model_validator(mode="after")
     def valid_period(self) -> "QuietHours":
@@ -341,6 +353,27 @@ class QuietHours(BaseModel):
                 raise ValueError("quiet_hours notice requires nonblank notice_text")
         elif self.notice_text is not None:
             raise ValueError("quiet_hours notice_text is only accepted for direct=notice")
+        return self
+
+
+class Proactive(BaseModel):
+    """Wake a quiet group at most once per scene-local day inside active hours."""
+
+    model_config = STRICT
+
+    idle_seconds: float = Field(default=10800.0, ge=600, allow_inf_nan=False)
+    start: WallTime = WallTime(10, 0)
+    end: WallTime = WallTime(22, 0)
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def local_clock(cls, value: object) -> WallTime:
+        return _local_clock(value)
+
+    @model_validator(mode="after")
+    def valid_period(self) -> Proactive:
+        if self.start == self.end:
+            raise ValueError("proactive start and end must differ")
         return self
 
 
@@ -548,11 +581,7 @@ class SharedConfig(BaseModel):
     @field_validator("timezone")
     @classmethod
     def valid_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError) as error:
-            raise ValueError(f"unknown timezone {value!r}") from error
-        return value
+        return _valid_timezone(value)
 
     @model_validator(mode="after")
     def mind_output_fits_compaction_trigger(self) -> SharedConfig:
@@ -637,6 +666,8 @@ class ScenePersona(BaseModel):
 
 
 class SceneSettings(ScenePersona):
+    # Explicit IANA override for this scene; None uses the root timezone.
+    timezone: str | None = None
     persona_aliases: list[str] = Field(default_factory=list)
     relationships: dict[str, str] = Field(default_factory=dict)
     behavior_addendum: str | None = None
@@ -646,6 +677,12 @@ class SceneSettings(ScenePersona):
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)
     learning: LearningSettings | None = None
+    proactive: Proactive | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_scene_timezone(cls, value: str | None) -> str | None:
+        return None if value is None else _valid_timezone(value)
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
@@ -687,6 +724,8 @@ class LabConfig(SharedConfig, SceneSettings):
                     and self.learning.embedding.provider not in self.models.providers):
                 raise ValueError("learning.embedding.provider references unknown provider "
                                  f"{self.learning.embedding.provider!r}")
+        if self.proactive is not None:
+            raise ValueError("proactive requires the isolated-multi host, not the single-scene lab or replay")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -714,6 +753,11 @@ class LabConfig(SharedConfig, SceneSettings):
                     f"or offline entry settings; incompatible: {', '.join(incompatible)}"
                 )
         return self
+
+    def scene_timezone(self, scene: str) -> str:
+        if scene != self.scene:
+            raise ValueError(f"Scene {scene} is not configured")
+        return self.timezone
 
 
 class HostConfig(SharedConfig):
@@ -744,6 +788,8 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
             if settings.tasks.enabled and self.worker is None:
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
+            if settings.proactive is not None and not scene.startswith("group:"):
+                raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
             if settings.learning is not None:
                 if not scene.startswith("group:"):
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
@@ -777,7 +823,13 @@ class HostConfig(SharedConfig):
         shared["history_import"] = None
         shared["history_export"] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
+        shared["timezone"] = self.scene_timezone(scene)
+        del local["timezone"]
         return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
+
+    def scene_timezone(self, scene: str) -> str:
+        override = self.scenes[scene].timezone
+        return self.timezone if override is None else override
 
 
 def _resolved_path(root: Path, value: object, *, within_root: bool, field: str) -> Path:

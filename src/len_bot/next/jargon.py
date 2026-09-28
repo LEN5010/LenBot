@@ -251,7 +251,7 @@ class JargonLearner:
                 "text": plain_text(message)}
 
     def _meaning_messages(self, scene: str, term: dict) -> list[dict]:
-        timezone = ZoneInfo(self.config.timezone)
+        timezone = ZoneInfo(self.config.scene_timezone(scene))
         sample_records = term["sample_seqs"][-20:]
         nearby = {row[0]: self._row(row, timezone) for seq in sample_records
                   for row in self.records.context(scene, seq, self._exclude_uids(scene))}
@@ -292,7 +292,7 @@ class JargonLearner:
 
     async def _run_discovery(self, scene: str, after: int, through: int,
                              rows: list[tuple[int, ChatMessage, float]]) -> None:
-        timezone = ZoneInfo(self.config.timezone)
+        timezone = ZoneInfo(self.config.scene_timezone(scene))
         messages = [{"role": "system", "content": self._discovery_prompt},
                     {"role": "user", "content": encode({"scene": scene,
                                                          "messages": [self._row(row, timezone) for row in rows]})}]

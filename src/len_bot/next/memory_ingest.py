@@ -271,7 +271,7 @@ class MemoryIngestor:
                         return
                     result = await extract_local(
                         scene, [message for _, message, _ in rows], self.memory.backend,
-                        self.model, timezone=self.config.timezone,
+                        self.model, timezone=self.config.scene_timezone(scene),
                         context_window_tokens=binding.context_window_tokens,
                         max_steps=self.settings.max_steps, start_call=start_call,
                         finish_call=finish_call, record_tool=record_tool,

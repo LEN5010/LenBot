@@ -677,13 +677,14 @@ class Chat:
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
                        task_notices: list[tuple[int, str]] | None = None,
                        direct: bool = False, wake_received_at: float | None = None,
-                       channels: set[str] | None = None) -> dict:
+                       channels: set[str] | None = None,
+                       proactive: tuple[str, str, float] | None = None) -> dict:
         self.direct_request = direct
         self.turn_channels = set() if channels is None else set(channels)
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
                                        scheduled=scheduled, task_notices=task_notices,
-                                       wake_received_at=wake_received_at)
+                                       wake_received_at=wake_received_at, proactive=proactive)
         self.notify()
         expressions: list[str] = []
         extensions = 0

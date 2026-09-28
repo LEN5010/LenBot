@@ -74,7 +74,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             "scenes": [
                 {"scene": scene, "persona": {"id": runtime.chats[scene].persona.id,
                                               "name": runtime.chats[scene].persona.name},
-                 "voice_mode": settings.voice_mode}
+                 "voice_mode": settings.voice_mode, "timezone": config.scene_timezone(scene)}
                 for scene, settings in config.scenes.items()
             ],
         }
@@ -94,7 +94,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
         chat = runtime.chats[scene]
         return {
             "scene": scene,
-            "timezone": config.timezone,
+            "timezone": config.scene_timezone(scene),
             "bot_qq": config.bot_qq,
             "persona": {"id": chat.persona.id, "name": chat.persona.name},
             "delivery": config.delivery,
@@ -132,7 +132,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
                       limit: int = Query(default=50, ge=1, le=200), active_only: bool = True,
                       _: str = Depends(user)):
         configured_scene(scene)
-        return {"scene": scene, "timezone": config.timezone, "active_only": active_only,
+        return {"scene": scene, "timezone": config.scene_timezone(scene), "active_only": active_only,
                 **runtime.store.mind_history_page(scene, before=before, limit=limit,
                                                  active_only=active_only)}
 

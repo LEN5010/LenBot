@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import LabConfig, ScheduleSettings
-from .schedule_time import DailyCron, format_daily_cron, next_daily_cron, parse_daily_cron
+from .schedule_time import Cron, next_cron, parse_cron
 
 if TYPE_CHECKING:
     from .store import Schedule, Store
@@ -26,18 +26,18 @@ _MAX_INTERVAL_SECONDS = 365 * 86400
 class ScheduleArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    when: datetime | int | DailyCron
+    when: datetime | int | Cron
     note: str = Field(min_length=1)
     target: str = Field(alias="for", pattern=r"^(self|[1-9][0-9]*)$")
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
 
     @field_validator("when", mode="before", json_schema_input_type=str)
     @classmethod
-    def supported_time(cls, value: object) -> datetime | int | DailyCron:
+    def supported_time(cls, value: object) -> datetime | int | Cron:
         if not isinstance(value, str):
-            raise ValueError("when must be an offset ISO datetime, 'every <positive integer>m|h|d', or daily cron")
+            raise ValueError("when must be an offset ISO datetime, 'every <positive integer>m|h|d', or cron")
         if value.startswith("cron:"):
-            return parse_daily_cron(value)
+            return parse_cron(value)
         interval = _INTERVAL.fullmatch(value)
         if interval is not None:
             number, unit = interval.groups()
@@ -82,7 +82,8 @@ SCHEDULE_TOOLS = [
     {"type": "function", "function": {
         "name": "schedule", "description": "为当前场景创建一次性或周期安排。when 为未来且含 UTC 偏移的 ISO 时间，"
         "或严格 every <正整数>m|h|d（1分钟至365天固定UTC秒，d=24小时），"
-        "或每日钟点 cron:<分钟0-59> <小时0-23> * * *，按保存时区；其它cron语法不支持。"
+        "或 cron:<分钟> <小时> <日> <月> <星期>，按场景时区；每字段支持 *、数字、a-b、逗号列表、*/n 与 a-b/n，"
+        "星期 0-6（0 为周日），日与星期不能同时限制，不支持英文名、L、W、#。"
         "缺失/重复时刻明确报错或阻止后续，不自动顺延、选偏移。"
         "for=self 是未来自己要做的事，for=QQ 是提醒对象；requester 是实际请求人 QQ，Bot 自主安排用 null。"
         "相对时间请结合原话和当前时刻理解；返回已保存不等于提醒已发。",
@@ -166,19 +167,19 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
     if preview and len(note) > 160:
         note = note[:160] + "…（说明预览；用 schedule_list 查看全文）"
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
-    if item.interval_seconds is None and item.cron_minute_of_day is None:
+    if item.interval_seconds is None and item.cron is None:
         timing = f"原定 {display_time(item.due_at, item.timezone)} ({item.timezone})"
     else:
         label = "下次" if item.status == "pending" else "已保存原定" if item.status == "blocked" else "取消前原定"
         recurrence = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）"
                       if item.interval_seconds is not None else
-                      f"每日钟点 {format_daily_cron(item.cron_minute_of_day)}（{item.timezone}）")
+                      f"按 {item.cron}（{item.timezone}）")
         timing = (f"{recurrence}；"
                   f"{label} {display_time(item.due_at, item.timezone)} ({item.timezone})")
     result = (f"#{item.id}；{item.status}；{timing}；"
               f"创建者：{creator}；对象：{item.target}\n{note}")
     if item.delivered_at is not None:
-        prior = "上次已交付会话" if item.interval_seconds is not None or item.cron_minute_of_day is not None else "已交付会话"
+        prior = "上次已交付会话" if item.interval_seconds is not None or item.cron is not None else "已交付会话"
         result += f"\n{prior}：{display_time(item.delivered_at, item.timezone)}（不代表已发送提醒）"
     if item.reason is not None:
         result += "\n阻止原因：" + item.reason
@@ -188,11 +189,11 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
 def wake_text(item: Schedule, now: float) -> str:
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
     timing = ""
-    recurring = item.interval_seconds is not None or item.cron_minute_of_day is not None
+    recurring = item.interval_seconds is not None or item.cron is not None
     if recurring:
         recurrence = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）"
                       if item.interval_seconds is not None else
-                      f"每日 {format_daily_cron(item.cron_minute_of_day)}（{item.timezone}）")
+                      f"按 {item.cron}（{item.timezone}）")
         timing = (f"周期{recurrence}；"
                   "离线错过多次也只补交一次；本次交付后用 schedule_list 查看持久化的下一时刻。\n")
         if item.delivered_at is not None:
@@ -209,11 +210,11 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
                        now: Callable[[], float] = time.time) -> Schedule:
     started = now()
     interval_seconds = args.when if isinstance(args.when, int) else None
-    cron_minute = args.when.minute_of_day if isinstance(args.when, DailyCron) else None
+    cron = args.when if isinstance(args.when, Cron) else None
     if interval_seconds is not None:
         when = started + interval_seconds
-    elif cron_minute is not None:
-        when = next_daily_cron(cron_minute, config.timezone, started)
+    elif cron is not None:
+        when = next_cron(cron, config.timezone, started)
     else:
         when = args.when.timestamp()
     if when <= started:
@@ -223,7 +224,7 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
     return store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
                                  note=args.note, target=args.target, requester=args.requester,
                                  limit=config.schedules.max_pending, interval_seconds=interval_seconds,
-                                 cron_minute_of_day=cron_minute)
+                                 cron=None if cron is None else cron.expression)
 
 
 def cancel_arrangement(store: Store, config: LabConfig, *, id: int,

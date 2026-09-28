@@ -190,7 +190,7 @@ class StickerCollector:
                                        f"{self.config.images.timeout_seconds} seconds") from error
                 raise
 
-            timezone = ZoneInfo(self.config.timezone)
+            timezone = ZoneInfo(self.config.scene_timezone(scene))
             source = {"scene": scene, "source_message_seq": candidate["source_message_seq"],
                       "image_index": image_index, "qq": message.sender.uid,
                       "display_name": message.sender.card or message.sender.nickname,

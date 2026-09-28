@@ -70,6 +70,12 @@ def _version(path: Path) -> tuple[int, int]:
                 db.execute("PRAGMA user_version").fetchone()[0])
 
 
+def _daily_cron_rows(rows: list[tuple]) -> list[tuple]:
+    """Format 24 keeps each schedule row and turns its daily minute into full cron text."""
+    return [(*row[:-1], None if row[-1] is None else f"cron:{row[-1] % 60} {row[-1] // 60} * * *")
+            for row in rows]
+
+
 def _old_columns(path: Path) -> dict[str, list[tuple]]:
     rows = _rows(path)
     with sqlite3.connect(path) as db:
@@ -105,7 +111,7 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
         ).fetchall() == [(None, None, None)] * db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         assert db.execute("SELECT COUNT(*) FROM schedules").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM schedules WHERE interval_seconds IS NOT NULL").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM schedules WHERE cron_minute_of_day IS NOT NULL").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM schedules WHERE cron IS NOT NULL").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM web_documents").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM image_cache").fetchone()[0] == 0
         assert [row[0] for row in db.execute(
@@ -276,7 +282,7 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
                 f"SELECT {columns} FROM {table} ORDER BY rowid"
             ).fetchall()
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute(f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id").fetchall() == old.execute(
             f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id"
         ).fetchall()
@@ -332,7 +338,7 @@ def test_v8_web_documents_upgrade_preserves_all_existing_records(tmp_path: Path)
                 f"SELECT {columns} FROM {table} ORDER BY rowid"
             ).fetchall()
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute(f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id").fetchall() == old.execute(
             f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id"
         ).fetchall()
@@ -369,7 +375,7 @@ def test_v9_image_cache_upgrade_preserves_synthetic_web_and_chat_records(tmp_pat
                 f"SELECT {columns} FROM {table} ORDER BY rowid"
             ).fetchall()
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute(f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id").fetchall() == old.execute(
             f"SELECT {','.join(MODEL_CALL_COLUMNS)} FROM model_calls ORDER BY id"
         ).fetchall()
@@ -452,7 +458,7 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
             assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
             assert old.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == search_before
         assert old.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == search_before
         assert db.execute("SELECT length(jpeg),description FROM image_cache").fetchone()[1] == "合成图片描述"
@@ -703,7 +709,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
     assert _rows(path) == chat_before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(schedules)")] == [
-            *SCHEDULE_COLUMNS, "interval_seconds", "cron_minute_of_day",
+            *SCHEDULE_COLUMNS, "interval_seconds", "cron",
         ]
         assert [row[1] for row in old.execute("PRAGMA table_info(schedules)")] == list(SCHEDULE_COLUMNS)
         for source in (db, old):
@@ -713,7 +719,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
             for table, rows in task_rows_before.items():
                 assert source.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
     with Store(path) as store:
         assert [schedule.status for schedule in store.list_schedules("group:12345", status="all")] == [
             "delivered", "blocked", "pending",
@@ -770,7 +776,7 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
     assert _rows(path) == chat_before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         assert [row[1] for row in db.execute("PRAGMA table_info(schedules)")] == [
-            *SCHEDULE_V15_COLUMNS, "cron_minute_of_day",
+            *SCHEDULE_V15_COLUMNS, "cron",
         ]
         assert [row[1] for row in old.execute("PRAGMA table_info(schedules)")] == list(SCHEDULE_V15_COLUMNS)
         for source in (db, old):
@@ -779,14 +785,12 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
             ).fetchall() == schedules_before
             for table, rows in task_rows_before.items():
                 assert source.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
-        assert db.execute("SELECT cron_minute_of_day FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
+        assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         with pytest.raises(sqlite3.IntegrityError):
-            db.execute("UPDATE schedules SET cron_minute_of_day=1440 WHERE id=2")
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute("UPDATE schedules SET cron_minute_of_day=720 WHERE id=1")
+            db.execute("UPDATE schedules SET cron='cron:0 12 * * *' WHERE id=1")
     with Store(path) as store:
         assert store.get_schedule("group:12345", 1).interval_seconds == 3600
-        assert store.get_schedule("group:12345", 1).cron_minute_of_day is None
+        assert store.get_schedule("group:12345", 1).cron is None
         assert TaskStore(store).get("group:12345", 52).question == {"question": "还需要哪一页？"}
         assert TaskStore(store).get_file("group:12345", 52, 82).name == "draft.txt"
 
@@ -843,7 +847,8 @@ def test_v16_media_upgrade_preserves_existing_chat_identity_tasks_and_schedules(
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
             columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
-            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
+            expected = _daily_cron_rows(rows) if table == "schedules" else rows
+            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == expected
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
         for source in (db, old):
             assert source.execute(
@@ -926,7 +931,8 @@ def test_v17_learning_upgrade_preserves_original_media_chat_and_task_records(tmp
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
             columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
-            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
+            expected = _daily_cron_rows(rows) if table == "schedules" else rows
+            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == expected
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
         assert all(row == (None, None) for row in db.execute(
             "SELECT source_message_seq,source_image_index FROM media ORDER BY id"
@@ -1064,6 +1070,8 @@ def test_v18_expression_vector_upgrade_keeps_learning_and_other_synthetic_record
                 assert db.execute(
                     "SELECT rowid," + ",".join(OLD_MEDIA_COLUMNS) + " FROM media ORDER BY rowid"
                 ).fetchall() == rows
+            elif table == "schedules":
+                assert db.execute("SELECT rowid,* FROM schedules ORDER BY rowid").fetchall() == _daily_cron_rows(rows)
             else:
                 assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
@@ -1535,7 +1543,7 @@ def test_format22_reply_effect_tables_keep_all_existing_rows(tmp_path: Path) -> 
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v22.bak"
-    assert _version(path) == (0x4C424E31, 23)
+    assert _version(path) == (0x4C424E31, FORMAT_VERSION)
     assert _version(backup) == (0x4C424E31, 22)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
@@ -1560,3 +1568,85 @@ def test_format22_reply_effect_collision_rolls_back(tmp_path: Path) -> None:
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT name FROM sqlite_master WHERE name='reply_effects'").fetchone() is None
         assert db.execute("SELECT name FROM sqlite_master WHERE name='reply_effects_scene'").fetchone() is None
+
+
+def _format23_source(path: Path) -> None:
+    """Upgrade the format-22 synthetic source with the committed step and add daily schedules."""
+    _format22_source(path)
+    from len_bot.next import migrate as migration
+    with sqlite3.connect(path, isolation_level=None) as db:
+        migration._upgrade_one_step(db, path, 22)
+    path.with_name(path.name + ".v22.bak").unlink()
+    with sqlite3.connect(path) as db:
+        rows = [
+            (101, "group:80001", 1790000100.0, 1790003600.0, "Asia/Shanghai", "合成每日零点", "group",
+             "70001", "pending", None, None, None, 0),
+            (102, "group:80001", 1790000101.0, 1790007200.0, "Asia/Shanghai", "合成早会", "group",
+             "70001", "pending", 1790000200.0, None, None, 545),
+            (103, "group:80001", 1790000102.0, 1790010800.0, "America/New_York", "合成晚间", "group",
+             "70001", "blocked", 1790000300.0, "合成原始原因", None, 1439),
+            (104, "group:80001", 1790000103.0, 1790014400.0, "Asia/Shanghai", "合成每小时", "group",
+             "70001", "cancelled", None, None, 3600, None),
+        ]
+        db.executemany(
+            "INSERT INTO schedules(id,scene,created,due_at,timezone,note,target,requester,status,"
+            "delivered_at,reason,interval_seconds,cron_minute_of_day) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+
+def test_format23_schedule_cron_text_and_proactive_table_keep_rows(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format23_source(path)
+    with sqlite3.connect(path) as db:
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'message_search%' "
+            "AND name!='sqlite_sequence' ORDER BY name")]
+        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() for table in tables}
+        search_before = db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall()
+        assert before["messages"] and before["media"] and len(before["schedules"]) >= 4
+    with pytest.raises(ValueError, match="format 23 requires offline migration"):
+        Store(path)
+
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v23.bak"
+    assert _version(path) == (0x4C424E31, FORMAT_VERSION)
+    assert _version(backup) == (0x4C424E31, 23)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        for table, rows in before.items():
+            expected = _daily_cron_rows(rows) if table == "schedules" else rows
+            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == expected
+            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+        assert db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == search_before
+        assert db.execute("SELECT id,cron FROM schedules WHERE id>100 ORDER BY id").fetchall() == [
+            (101, "cron:0 0 * * *"), (102, "cron:5 9 * * *"), (103, "cron:59 23 * * *"), (104, None),
+        ]
+        assert [row[1] for row in db.execute("PRAGMA table_info(schedules)")][-2:] == ["interval_seconds", "cron"]
+        assert [row[2] for row in db.execute("PRAGMA index_info(schedules_status_due)")] == [
+            "scene", "status", "due_at", "id",
+        ]
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE schedules SET cron='cron:0 12 * * *' WHERE id=104")
+        assert db.execute("SELECT COUNT(*) FROM proactive_wakes").fetchone() == (0,)
+        assert old.execute("SELECT name FROM sqlite_master WHERE name='proactive_wakes'").fetchone() is None
+    with Store(path) as store:
+        assert [(item.id, item.cron, item.status, item.reason) for item in
+                (store.get_schedule("group:80001", id) for id in (101, 102, 103, 104))] == [
+            (101, "cron:0 0 * * *", "pending", None), (102, "cron:5 9 * * *", "pending", None),
+            (103, "cron:59 23 * * *", "blocked", "合成原始原因"), (104, None, "cancelled", None),
+        ]
+
+
+def test_format23_proactive_collision_rolls_back_schedule_rebuild(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format23_source(path)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE proactive_wakes (collision TEXT)")
+        schedules = db.execute("SELECT * FROM schedules ORDER BY id").fetchall()
+    with pytest.raises(sqlite3.OperationalError, match="already exists"):
+        migrate_database(path)
+    assert _version(path) == (0x4C424E31, 23)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM schedules ORDER BY id").fetchall() == schedules
+        assert "cron_minute_of_day" in [row[1] for row in db.execute("PRAGMA table_info(schedules)")]
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='schedules_next'").fetchone() is None

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .chat import build_tools
 from .config import (
-    STRICT, Attention, HostConfig, LearningSettings, Roles, ScenePersona, ScheduleSettings,
+    STRICT, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona, ScheduleSettings,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
 from .persona import load_persona
@@ -46,9 +46,11 @@ class ModelsChange(BaseModel):
 
 
 class SceneChange(ScenePersona):
+    timezone: str | None
     voice_mode: Literal["voice", "direct"]
     attention: Attention
     schedules: ScheduleSettings
+    proactive: Proactive | None
 
 
 class WebReadChange(BaseModel):
@@ -210,9 +212,11 @@ def _project(config: HostConfig) -> dict:
         },
         "scenes": {
             scene: {
+                "timezone": settings.timezone,
                 "voice_mode": settings.voice_mode,
                 "attention": settings.attention.model_dump(mode="json"),
                 "schedules": settings.schedules.model_dump(mode="json"),
+                "proactive": None if settings.proactive is None else settings.proactive.model_dump(mode="json"),
                 "tasks": settings.tasks.model_dump(mode="json"),
                 "learning": None if settings.learning is None else settings.learning.model_dump(mode="json"),
                 "scene_persona": {
