@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 31
+FORMAT_VERSION = 32
 
 
 def encode(value: object) -> str:
@@ -203,7 +203,7 @@ class Store:
                     CREATE TABLE audio_calls (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,
                         audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
-                        request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT
+                        request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT, cost TEXT
                     );
                     CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id);
                     CREATE TABLE media (
@@ -578,7 +578,7 @@ class Store:
             (*scenes, since, until),
         ).fetchall()
         calls.extend(self.db.execute(
-            "SELECT ended,NULL FROM audio_calls "
+            "SELECT ended,cost FROM audio_calls "
             f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
             (*scenes, since, until),
         ).fetchall())

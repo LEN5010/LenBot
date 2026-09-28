@@ -122,3 +122,15 @@ def test_retention_configuration_rejects_ambiguous_or_unmetered_windows(value):
     from len_bot.next.retention import RetentionSettings
     with pytest.raises(ValidationError):
         RetentionSettings.model_validate(value)
+
+
+def test_budget_rejects_unmigrated_trial_business_source(tmp_path):
+    root=tmp_path/'root'
+    path=root/'state.db'
+    trial=root/'.runtime'/'chat-tests'/'closed'/'state.db'
+    with Store(trial) as old:
+        old.db.execute('ALTER TABLE audio_calls DROP COLUMN cost')
+        old.db.execute('PRAGMA user_version=31')
+    with Store(path) as store:
+        with pytest.raises(ValueError,match='试聊计量源.*离线迁移'):
+            ModelBudget(settings(path,daily_model_cost='1'),store,None,root=root)

@@ -12,7 +12,7 @@ async function save(){if(busy.value)return;busy.value=true;notice.value='';try{c
 onMounted(read)
 </script>
 <template><section class="surface"><div class="heading"><h2>模型预算与发言额度</h2><v-btn :loading="busy" @click="read">读取额度状态</v-btn></div><v-alert v-if="error" type="error">{{error}}</v-alert><v-alert v-if="notice" type="success">{{notice}}</v-alert>
-<p class="muted">按已结算费用限制后续请求，存在在途超支窗口，不是供应商账单硬上限。金额预算要求所有模型配置同币种价格；费用未知暂停，不计为零。ASR目前无计价口径，不能与金额预算同时启用。OpenViking内部调用不受宿主金额额度控制。</p>
+<p class="muted">按已结算费用限制后续请求，存在在途超支窗口，不是供应商账单硬上限。金额预算要求所有模型配置同币种价格；费用未知暂停，不计为零。ASR须单独配置同币种价格；响应缺必要计量时费用仍未知。OpenViking内部调用不受宿主金额额度控制。</p>
 <template v-if="status"><p v-for="item in status.scenes" :key="item.scene"><strong>{{item.scene}}</strong>：{{item.blocked?item.reason:'当前未触及额度'}}<span v-if="item.until"> · 截至 {{fmtTime(item.until)}}</span></p></template>
 <form v-if="draft" @submit.prevent="save"><fieldset :disabled="busy"><div class="grid"><v-text-field v-model="draft.currency" label="计价币种（如 USD）" /><v-text-field :model-value="draft.daily_model_cost??''" label="全局每日模型金额（留空不限，0暂停）" @update:model-value="v=>draft.daily_model_cost=v===''?null:v" /><v-text-field :model-value="draft.messages_per_hour??''" type="number" step="1" label="默认每群每小时条数（留空不限）" @update:model-value="v=>draft.messages_per_hour=v===''?null:Number(v)" /></div>
 <v-textarea v-model="daily" label="按场景日金额（JSON对象）" hint='例如 {"group:80001":"2.50"}；金额用十进制文本' persistent-hint /><v-textarea v-model="hourly" label="按群小时条数覆盖（JSON对象）" hint='例如 {"group:80001":20}；null表示不限' persistent-hint /></fieldset><p>发言按UTC自然小时统计；固定额度说明每个阻断时段最多一次，不调用表达器。</p><p v-if="snapshot.restart_required.limits">保存值待重启。</p><v-btn type="submit" color="primary" :disabled="busy||!dirty">保存额度设置</v-btn></form></section></template>

@@ -428,6 +428,8 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                                  ("jargon_calls","model_started"),("sticker_calls","model_started"),
                                  ("reply_effect_calls","model_started"),("expression_embedding_calls","started")):
                 db.execute(f"CREATE INDEX {table}_usage ON {table}({start},scene)")
+        elif version == 31:
+            db.execute("ALTER TABLE audio_calls ADD COLUMN cost TEXT")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -459,8 +461,15 @@ def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("Migration takes no arguments; run from the configured instance directory")
     config = load_instance_config(Path.cwd())
-    backup = migrate_database(config.database)
-    print(f"Offline migration completed; input-format copy: {backup}")
+    paths = [config.database, *(Path.cwd() / '.runtime' / 'chat-tests').glob('*/state.db')]
+    for path in paths:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+            app, version = _format(db)
+        if app == APPLICATION_ID and version == FORMAT_VERSION:
+            print(f"Already current: {path}")
+            continue
+        backup = migrate_database(path)
+        print(f"Offline migration completed: {path}; input-format copy: {backup}")
 
 
 if __name__ == "__main__":

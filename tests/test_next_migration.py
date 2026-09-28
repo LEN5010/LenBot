@@ -1195,6 +1195,8 @@ def test_format19_jargon_migration_collision_rolls_back(tmp_path: Path) -> None:
 
 
 def _remove_format31_indexes(db):
+    if "cost" in [row[1] for row in db.execute("PRAGMA table_info(audio_calls)")]:
+        db.execute("ALTER TABLE audio_calls DROP COLUMN cost")
     # Construct an earlier-format input from the current schema, not a partial current database.
     for name in ('message_send_window','message_retention','model_call_usage','model_call_expiry',
                  'turns_scene_time','turns_expiry','task_model_usage','audio_calls_usage','learning_batches_usage',
@@ -1883,8 +1885,26 @@ def test_format29_adds_notice_storage_without_rewriting_original_messages(tmp_pa
     # Keep the earlier fixture migration backup, but this explicit new input needs its own backup name.
     path.with_name(path.name + '.v29.bak').unlink()
     path.with_name(path.name + '.v30.bak').unlink()
+    path.with_name(path.name + '.v31.bak').unlink()
     migrate_database(path)
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT * FROM messages').fetchall() == before
         assert db.execute('SELECT COUNT(*) FROM notices').fetchone()[0] == 0
         assert db.execute('PRAGMA user_version').fetchone()[0] == FORMAT_VERSION
+
+
+def test_format31_audio_cost_migration_preserves_actual_exchanges(tmp_path):
+    path=tmp_path/'state.db'
+    with Store(path) as store:
+        store.db.execute("INSERT INTO audio_calls(scene,platform_id,audio_index,started,ended,request,response,usage) "
+                         "VALUES(?,?,?,?,?,?,?,?)",('group:80001','123',1,1,2,'{}','{"text":"合成原响应"}','{"type":"duration","seconds":4}'))
+        store.db.commit()
+    with sqlite3.connect(path) as db:
+        db.execute('ALTER TABLE audio_calls DROP COLUMN cost')
+        db.execute('PRAGMA user_version=31')
+        before=db.execute('SELECT * FROM audio_calls').fetchall()
+    backup=migrate_database(path)
+    with Store(path) as store,sqlite3.connect(backup) as original:
+        assert original.execute('SELECT * FROM audio_calls').fetchall()==before
+        actual=[tuple(row) for row in store.db.execute('SELECT * FROM audio_calls')]
+        assert actual==[row+(None,) for row in before]

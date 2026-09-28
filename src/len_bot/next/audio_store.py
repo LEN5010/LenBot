@@ -81,14 +81,14 @@ class AudioStore:
             items = []
             for row in rows:
                 item = dict(row)
-                for field in ("request", "response", "usage"):
+                for field in ("request", "response", "usage", "cost"):
                     item[field] = None if item[field] is None else json.loads(item[field])
                 items.append(item)
             return items
         return {
-            "off_turn": decoded(self.db.execute("SELECT id,started,ended,request,response,usage,error FROM audio_calls "
+            "off_turn": decoded(self.db.execute("SELECT id,started,ended,request,response,usage,cost,error FROM audio_calls "
                 "WHERE scene=? AND platform_id=? AND audio_index=? ORDER BY id DESC LIMIT 20", (scene, message, index))),
-            "in_turn": decoded(self.db.execute("SELECT c.id,c.turn_id,c.started,c.ended,c.request,c.response,c.usage,c.error "
+            "in_turn": decoded(self.db.execute("SELECT c.id,c.turn_id,c.started,c.ended,c.request,c.response,c.usage,c.cost,c.error "
                 "FROM model_calls c JOIN turns t ON t.id=c.turn_id WHERE t.scene=? AND c.role='asr' "
                 "AND json_extract(c.request,'$.file.platform_message_id')=? "
                 "AND json_extract(c.request,'$.file.audio')=? ORDER BY c.id DESC LIMIT 20", (scene, message, index))),
@@ -99,8 +99,8 @@ class AudioStore:
             return self.db.execute("INSERT INTO audio_calls(scene,platform_id,audio_index,started,request) VALUES (?,?,?,?,?)",
                                    (scene, message, index, self.store.now(), encode(request))).lastrowid
 
-    def end_call(self, call: int, response, usage, error: str | None = None) -> None:
+    def end_call(self, call: int, response, usage, error: str | None = None, *, cost: dict | None = None) -> None:
         with self.db:
-            self.db.execute("UPDATE audio_calls SET ended=?,response=?,usage=?,error=? WHERE id=?",
+            self.db.execute("UPDATE audio_calls SET ended=?,response=?,usage=?,error=?,cost=? WHERE id=?",
                 (self.store.now(), None if response is None else encode(response),
-                 None if usage is None else encode(usage), error, call))
+                 None if usage is None else encode(usage), error, None if cost is None else encode(cost), call))
