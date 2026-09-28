@@ -35,3 +35,10 @@ synthetic `sent` expression timing; one added settled turn has distinct
 synthetic `simulated` timing. The queued turn remains without a first
 expression. Existing native call anchors are unchanged. No timestamp or
 delivery value comes from a real platform or model run.
+
+The format-19 fixture was created from the actual format-19 new-database DDL
+before the format-20 change. Its message, native mind entry/call, arrangement,
+task, expression, and expression-embedding call are all synthetic records. It
+contains no jargon table or real platform/model response. The 19→20 test checks
+that these existing rows and FTS text remain unchanged while the three empty
+jargon tables are added offline.

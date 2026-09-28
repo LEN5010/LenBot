@@ -399,6 +399,7 @@ class LearningSettings(BaseModel):
     model_config = STRICT
 
     extract: bool = True
+    jargon_extract: bool = False
     min_messages: int = Field(default=20, ge=1, le=100, strict=True)
     batch_size: int = Field(default=50, ge=1, le=100, strict=True)
     idle_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
@@ -674,7 +675,7 @@ class LabConfig(SharedConfig, SceneSettings):
         if self.learning is not None:
             if not self.scene.startswith("group:"):
                 raise ValueError("learning is only supported for group scenes")
-            if self.learning.extract:
+            if self.learning.extract or self.learning.jargon_extract:
                 raise ValueError(
                     "learning requires the isolated-multi host for extraction, "
                     "not the single-scene lab or replay"
@@ -743,7 +744,7 @@ class HostConfig(SharedConfig):
             if settings.learning is not None:
                 if not scene.startswith("group:"):
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
-                if settings.learning.extract and self.models.roles.learner is None:
+                if (settings.learning.extract or settings.learning.jargon_extract) and self.models.roles.learner is None:
                     raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
                 if (settings.learning.embedding is not None
                         and settings.learning.embedding.provider not in self.models.providers):

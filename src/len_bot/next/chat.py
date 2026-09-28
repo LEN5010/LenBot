@@ -27,7 +27,8 @@ from .delivery import Expression, part_length, report_parts, split_expression
 from .expression_selection import ExpressionService
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
-from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, render_message
+from .jargon_store import JargonStore
+from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .memory import MEMORY_TOOL, MemoryService
@@ -397,6 +398,22 @@ class Chat:
     def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
 
+    def jargon_context(self, messages: list[ChatMessage], *, intent: str | None = None) -> str | None:
+        if self.config.learning is None:
+            return None
+        excluded = (self.config.bot_qq, *self.config.attention.other_bot_qqs)
+        texts = [plain_text(message) for message in messages
+                 if not message.is_self and message.send_status == "received"
+                 and message.sender.uid not in excluded]
+        if intent is not None:
+            texts.append(intent)
+        terms = JargonStore(self.store).matches(self.config.scene, texts, limit=10)
+        if not terms:
+            return None
+        return Template((PROMPTS / "next_jargon_context.md").read_text()).substitute(
+            jargon=encode([{"词": item["term"], "含义": item["meaning"]} for item in terms]),
+        )
+
     async def prepare_context(self, turn_id: str, *, expression_style: str | None = None,
                               recalled: str | None = None) -> list[dict]:
         binding = self.config.models.roles.mind
@@ -417,6 +434,9 @@ class Chat:
                 state["content"] += "\n" + expression_style
             if recalled is not None:
                 state["content"] += "\n<相关长期记忆>\n" + recalled + "\n</相关长期记忆>"
+            jargon = self.jargon_context(self.store.recent_context_messages(self.config.scene))
+            if jargon is not None:
+                state["content"] += "\n" + jargon
             messages = self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
@@ -443,7 +463,8 @@ class Chat:
             text = arguments.content
         else:
             messages = [{"role": "system", "content": voice_prompt(self.persona)}]
-            for message in self.store.recent_context_messages(self.config.scene):
+            recent = self.store.recent_context_messages(self.config.scene)
+            for message in recent:
                 if message.is_self and message.send_status in {"received", "sent", "simulated"}:
                     text = "".join(segment.data["text"] for segment in message.segments if segment.type == "text")
                     messages.append({"role": "assistant", "content": (
@@ -459,6 +480,9 @@ class Chat:
                     "回复对象": None if quote is None else self.render(quote), "提及QQ": arguments.mention}
             if expression_style is not None:
                 messages.append({"role": "user", "content": expression_style})
+            jargon = self.jargon_context(recent + ([] if quote is None else [quote]), intent=arguments.content)
+            if jargon is not None:
+                messages.append({"role": "user", "content": jargon})
             selected = []
             if self.expression_service is not None and self.config.scene in self.expression_service.scenes:
                 selected = await self.expression_service.select(
