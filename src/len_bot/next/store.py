@@ -19,7 +19,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 26
+FORMAT_VERSION = 27
 
 
 def encode(value: object) -> str:
@@ -177,6 +177,12 @@ class Store:
                         animated INTEGER NOT NULL, fetched_at REAL NOT NULL,
                         description TEXT, description_model TEXT, described_at REAL,
                         PRIMARY KEY(scene, platform_id, image_index)
+                    );
+                    CREATE TABLE audio_cache (
+                        scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,
+                        wav BLOB NOT NULL, duration REAL NOT NULL, fetched_at REAL NOT NULL,
+                        transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,
+                        PRIMARY KEY(scene, platform_id, audio_index)
                     );
                     CREATE TABLE media (
                         id INTEGER PRIMARY KEY, persona_id TEXT, file TEXT,

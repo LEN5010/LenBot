@@ -1749,3 +1749,34 @@ def test_format25_assessment_collision_rolls_back(tmp_path):
     with sqlite3.connect(path) as db:
         assert 'assessment' not in [row[1] for row in db.execute('PRAGMA table_info(proactive_wakes)')]
         assert db.execute('SELECT * FROM proactive_wakes').fetchall() == before
+
+
+def test_format26_audio_cache_preserves_existing_data(tmp_path):
+    path = tmp_path / 'state.db'
+    with Store(path) as store:
+        store.append('group:80001', {'role': 'user', 'content': '迁移前原话'})
+    with sqlite3.connect(path) as db:
+        db.execute('DROP TABLE audio_cache')
+        db.execute('PRAGMA user_version=26')
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence'")]
+        before = {table: db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() for table in tables}
+    backup = migrate_database(path)
+    assert _version(backup) == (0x4C424E31, 26)
+    with Store(path) as store, sqlite3.connect(backup) as original:
+        for table, rows in before.items():
+            assert [tuple(row) for row in store.db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid')] == rows
+            assert original.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == rows
+        assert store.db.execute('SELECT COUNT(*) FROM audio_cache').fetchone()[0] == 0
+        assert original.execute("SELECT name FROM sqlite_master WHERE name='audio_cache'").fetchone() is None
+
+
+def test_format26_audio_cache_collision_rolls_back(tmp_path):
+    path = tmp_path / 'state.db'
+    with Store(path):
+        pass
+    with sqlite3.connect(path) as db:
+        db.execute('PRAGMA user_version=26')
+    with pytest.raises(sqlite3.OperationalError, match='already exists'):
+        migrate_database(path)
+    assert _version(path) == (0x4C424E31, 26)

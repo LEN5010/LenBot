@@ -23,6 +23,7 @@ from len_bot.next.tasks_config import TaskSettings, WorkerSettings
 from len_bot.next.web_search import WebSearchSettings
 from len_bot.next.memory import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
 from len_bot.next.mcp_config import MCPService, SERVICE_NAME
+from len_bot.next.asr_model import ASRBinding, AudioSettings
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -195,6 +196,7 @@ class Roles(BaseModel):
     memory: Binding | None = None
     worker: Binding | None = None
     learner: Binding | None = None
+    asr: ASRBinding | None = None
 
 
 class Models(BaseModel):
@@ -206,7 +208,7 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice", "vision", "memory", "worker", "learner"):
+        for role in ("mind", "voice", "vision", "memory", "worker", "learner", "asr"):
             binding = getattr(self.roles, role)
             if binding is None:
                 continue
@@ -568,6 +570,7 @@ class SharedConfig(BaseModel):
     memory: MemorySettings | None = None
     worker: WorkerSettings | None = None
     images: ImageSettings = Field(default_factory=ImageSettings)
+    audio: AudioSettings = Field(default_factory=AudioSettings)
     history_import: HistoryImportSettings | None = None
     history_export: HistoryExportSettings | None = None
     models: Models
