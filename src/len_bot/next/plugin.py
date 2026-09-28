@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Literal, Protocol
 
-from .messages import ChatMessage
+from .messages import ChatMessage, Notice
 
 
 INTERFACE = 1
@@ -89,16 +89,6 @@ class Mention:
 Content = Text | Image | Mention
 
 
-@dataclass(frozen=True)
-class Notice:
-    """One OneBot notice routed to a configured scene; ``raw`` keeps every original field."""
-    scene: str
-    notice_type: str
-    sub_type: str | None
-    user_id: str | None
-    operator_id: str | None
-    time: float
-    raw: Mapping[str, object]
 
 
 class HostPort(Protocol):

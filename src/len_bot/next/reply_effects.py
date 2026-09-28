@@ -259,7 +259,7 @@ class ReplyEffectTracker:
                 raise ContextBudgetError(
                     f"reply effect request estimated {estimate} tokens, exceeding "
                     f"configured window {binding.context_window_tokens}; model was not called")
-            async with (self.slots.slot(direct=False) if self.slots is not None else nullcontext()):
+            async with (self.slots.slot(direct=False, scene=scene) if self.slots is not None else nullcontext()):
                 self.records.mark_model_started(call_id)
                 try:
                     reply = await self.model.complete(messages, [])

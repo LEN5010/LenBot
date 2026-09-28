@@ -409,6 +409,12 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("ALTER TABLE tasks ADD COLUMN account_browser INTEGER NOT NULL DEFAULT 0 CHECK(account_browser IN (0,1))")
             db.execute("ALTER TABLE tasks ADD COLUMN browser_active INTEGER NOT NULL DEFAULT 0 CHECK(browser_active IN (0,1))")
             db.execute("ALTER TABLE tasks ADD COLUMN browser_session TEXT")
+        elif version == 29:
+            db.execute("CREATE TABLE notices (id INTEGER PRIMARY KEY, scene TEXT NOT NULL, kind TEXT NOT NULL,"
+                       "platform_id TEXT, time REAL NOT NULL, received_at REAL NOT NULL, raw TEXT NOT NULL)")
+            db.execute("CREATE INDEX scene_notices ON notices(scene,id)")
+            db.execute("CREATE INDEX recalled_messages ON notices(scene,platform_id) "
+                       "WHERE kind IN ('group_recall','friend_recall')")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

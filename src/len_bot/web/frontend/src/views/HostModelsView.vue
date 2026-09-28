@@ -1,4 +1,5 @@
 <script setup>
+import HostUsage from '../components/HostUsage.vue'
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
@@ -295,6 +296,7 @@ onMounted(() => read(false))
           <span class="muted">大脑协议、地址或模型变更须先停机完成离线会话转换；运行中保存会被后端拒绝。</span></div>
       </form>
     </template>
+    <HostUsage />
   </div>
 </template>
 

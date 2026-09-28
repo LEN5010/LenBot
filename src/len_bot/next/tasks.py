@@ -59,6 +59,7 @@ class RunningTask:
     job: asyncio.Task | None = None
     session: WorkerSession | None = None
     answer: asyncio.Future[dict] | None = None
+    input_ready: bool = False
     timer: asyncio.Timeout | None = None
     remaining: float = 0
     active_limit: float = 0
@@ -241,6 +242,8 @@ class WorkTasks:
             raise ValueError("任务当前没有等待回答的问题")
         if item.account_browser:
             self._browser_owner(requester)
+        if item.question["method"] == "request_help":
+            raise ValueError("请在专用浏览器完成当前人工接手；此处不能代答")
         if item.question["id"] != question_id:
             raise ValueError("当前问题已经变化；请重读任务后针对新的问题回答，没有发送这次旧答复")
         current = self.running[id]
@@ -365,7 +368,7 @@ class WorkTasks:
             while self.accepting:
                 self.changed.clear()
                 resumable = any(
-                    run.answer is not None and run.answer.done() and not run.cancelled
+                    run.input_ready and not run.cancelled
                     and self.records.get(run.item.scene, run.item.id).status == "waiting_input"
                     and self._room(run.item.scene, new_container=False)
                     for run in self.running.values())
@@ -543,11 +546,12 @@ class WorkTasks:
             raise RuntimeError("Pi 处理了输入但未开始执行任务")
         final: dict | None = None
         while True:
-            elapsed = current.active_limit - max(
-                0, current.timer.when() - asyncio.get_running_loop().time())
-            if elapsed >= current.next_progress:
-                self._progress(current, current.last_progress or "任务仍在执行，尚未报告阶段说明")
-                current.next_progress = elapsed + 600
+            deadline = current.timer.when()
+            if deadline is not None:
+                elapsed = current.active_limit - max(0, deadline - asyncio.get_running_loop().time())
+                if elapsed >= current.next_progress:
+                    self._progress(current, current.last_progress or "任务仍在执行，尚未报告阶段说明")
+                    current.next_progress = elapsed + 600
             try:
                 record = await asyncio.wait_for(session.pi.next_event(), timeout=60)
             except TimeoutError:
@@ -590,6 +594,34 @@ class WorkTasks:
                                notice=f"[任务进度] #{item.id}；{item.goal}\n{text}")
         self._notify(item.scene)
 
+    def _pause_input(self, current: RunningTask, question: dict) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = current.timer.when()
+        if deadline is None:
+            raise RuntimeError("任务已有人工等待，不能同时发起另一项")
+        current.remaining = deadline - loop.time()
+        if current.remaining <= 0:
+            raise TimeoutError("任务活动执行时长已达上限")
+        current.timer.reschedule(None)
+        current.input_ready = False
+        self.records.set_question(current.item.scene, current.item.id, question)
+        self._notify(current.item.scene)
+
+    async def _resume_input(self, current: RunningTask) -> None:
+        if current.cancelled or current.job.cancelling():
+            raise asyncio.CancelledError
+        current.input_ready = True
+        self._notify(current.item.scene)
+        while not self._room(current.item.scene, new_container=False):
+            self.changed.clear()
+            await self.changed.wait()
+        if current.cancelled or current.job.cancelling():
+            raise asyncio.CancelledError
+        self.records.set_question(current.item.scene, current.item.id, None)
+        current.input_ready = False
+        current.timer.reschedule(asyncio.get_running_loop().time() + current.remaining)
+        self._notify(current.item.scene)
+
     async def _question(self, current: RunningTask, body: dict) -> None:
         item = current.item
         if (not isinstance(body.get("title"), str)
@@ -598,13 +630,8 @@ class WorkTasks:
         if body["method"] == "select" and (not isinstance(body.get("options"), list)
                 or not all(isinstance(option, str) for option in body["options"])):
             raise ValueError(f"Pi 选择题选项无效：{body!r}")
-        loop = asyncio.get_running_loop()
-        current.remaining = current.timer.when() - loop.time()
-        if current.remaining <= 0:
-            raise TimeoutError("任务活动执行时长已达上限")
-        current.timer.reschedule(None)
-        current.answer = loop.create_future()
-        self.records.set_question(item.scene, item.id, body)
+        current.answer = asyncio.get_running_loop().create_future()
+        self._pause_input(current, body)
         self.records.add_event(item.scene, item.id, "question", body,
             notice=f"[任务{'操作确认' if body['method'] == 'confirm' else '提问'}] #{item.id}；"
                    f"请求人 QQ {item.requester}\n{json.dumps(body, ensure_ascii=False)}")
@@ -614,11 +641,7 @@ class WorkTasks:
         except TimeoutError:
             response = {"confirmed": False} if body["method"] == "confirm" else {"cancelled": True}
             self.records.add_event(item.scene, item.id, "answer_timeout", response)
-        while not self._room(item.scene, new_container=False):
-            self.changed.clear()
-            await self.changed.wait()
-        self.records.set_question(item.scene, item.id, None)
-        current.timer.reschedule(loop.time() + current.remaining)
+        await self._resume_input(current)
         await current.session.pi.respond_ui(body["id"], **response)
         self._notify(item.scene)
 
@@ -633,7 +656,26 @@ class WorkTasks:
             action = BrowserAction.model_validate_json(raw)
             if action.method == 'screenshot' and self.settings.input_support != 'text-image':
                 raise ValueError('当前工作模型未配置图像输入，不能向它提供浏览器截图')
-            result = await self.browser.execute(item.browser_session, action)
+            if action.method == 'request_help':
+                # The host's existing input wait limit governs human time, not active execution.
+                params = {**action.params, 'timeout_ms': int(self.settings.input_timeout_seconds * 1000)}
+                action = BrowserAction(method=action.method, params=params)
+                question = {'method': 'request_help', 'title': params['prompt'], 'params': params}
+                self._pause_input(current, question)
+                self.records.add_event(item.scene, item.id, 'question', question,
+                    notice=f"[任务浏览器接手] #{item.id}；请在专用浏览器完成：{params['prompt']}")
+                try:
+                    result = await self.browser.execute(item.browser_session, action)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await self._resume_input(current)
+                    raise
+                else:
+                    self.records.add_event(item.scene, item.id, 'answer', result)
+                    await self._resume_input(current)
+            else:
+                result = await self.browser.execute(item.browser_session, action)
             if action.method == 'screenshot':
                 if not isinstance(result.get('image_base64'), str):
                     raise ValueError(f'Browser screenshot lacks image_base64: {result!r}')

@@ -36,6 +36,7 @@ from .jargon_store import JargonStore
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
+from .limits import LimitReached, check_speech
 from .memory import MEMORY_TOOL, MemoryService
 from .persona import Persona, select_examples, select_style
 from .persona_stickers import PersonaSticker
@@ -183,9 +184,10 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
             if tool["function"]["name"] == "react" else tool for tool in allowed]
 
 
-def voice_prompt(persona: Persona) -> str:
+def voice_prompt(persona: Persona, *, platform: bool) -> str:
     return Template((PROMPTS / "next_voice.md").read_text()).substitute(
         name=persona.name, brief=persona.brief,
+        outlet=(PROMPTS / ("next_platform_outlet.md" if platform else "next_simulated_outlet.md")).read_text().strip(),
         self_reference="、".join(persona.self_reference), voice=persona.voice,
         boundaries=persona.boundaries,
         examples="\n\n".join(f"{e.context}\n台词：{e.line}" for e in select_examples(persona)),
@@ -399,7 +401,7 @@ class Chat:
         settings = model.settings.model_dump(exclude={"api_key"})
         settings["max_output_tokens"] = output_tokens
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
-        async with (self.slots.slot(direct=self.direct_request) if self.slots is not None else nullcontext()):
+        async with (self.slots.slot(direct=self.direct_request, scene=self.config.scene) if self.slots is not None else nullcontext()):
             call_id = self.store.start_call(turn_id, role, {
                 "settings": settings, "messages": messages, "tools": tools,
                 "provider": binding.provider,
@@ -478,6 +480,32 @@ class Chat:
             jargon=encode([{"词": item["term"], "含义": item["meaning"]} for item in terms]),
         )
 
+    async def compact_now(self) -> dict:
+        """One explicit operator-requested compaction; caller owns the scene lock."""
+        recap, entries = self.store.active_history(self.config.scene)
+        binding = self.config.models.roles.mind
+        state = {"role": "user", "content": "运营者请求压缩已有完整对话，原始记录保留。"}
+        plan = plan_compaction(
+            entries, system={"role": "system", "content": self.system}, state=state,
+            tools=self.core_tools, output_tokens=binding.max_output_tokens,
+            trigger_tokens=int(binding.context_window_tokens * self.config.compaction.trigger_ratio),
+            keep_recent_entries=self.config.compaction.keep_recent_entries,
+            summary_output_tokens=self.config.compaction.max_output_tokens, recap=recap,
+            summary_template=(PROMPTS / "next_recap.md").read_text(), window_tokens=binding.context_window_tokens,
+        )
+        turn_id = self.store.start_turn(self.config.scene)
+        try:
+            async with asyncio.timeout(self.config.turn_timeout_seconds):
+                reply = await self.request(turn_id, "recap", plan.request_messages, [], recap_target=plan)
+        except BaseException as error:
+            self.store.end_turn(turn_id, "error", f"{type(error).__name__}: {error}")
+            raise
+        self.store.end_turn(turn_id, "manual_compaction")
+        if self.on_compaction is not None:
+            self.on_compaction()
+        self.notify()
+        return {"turn_id": turn_id, "compact_through": plan.through, "recap": reply.text}
+
     async def prepare_context(self, turn_id: str, *, expression_style: str | None = None,
                               recalled: str | None = None) -> list[dict]:
         binding = self.config.models.roles.mind
@@ -495,6 +523,13 @@ class Chat:
                     describe(item, preview=True) for item in schedules[:20]) + "\n</未完成安排>"
                 if len(schedules) > 20:
                     state["content"] += "\n这里只列前 20 条；schedule_list 可继续查看。"
+            tasks = TaskStore(self.store).list(self.config.scene, limit=21)
+            if tasks:
+                state["content"] += "\n<未完成工作>\n" + encode([
+                    {"id": item.id, "requester": item.requester, "goal": item.goal,
+                     "status": item.status, "question": item.question} for item in tasks[:20]]) + "\n</未完成工作>"
+                if len(tasks) > 20:
+                    state["content"] += "\n这里只列前20项；task可继续查看。"
             if self.config.voice_mode == "direct" and expression_style is not None:
                 state["content"] += "\n" + expression_style
             if recalled is not None:
@@ -517,8 +552,14 @@ class Chat:
             if self.on_compaction is not None:
                 self.on_compaction()
 
+    def check_limits(self, *, model: bool = False) -> None:
+        check_speech(self.store, self.config)
+        if model and self.slots is not None and self.slots.admit is not None:
+            self.slots.admit(self.config.scene)
+
     async def express(self, turn_id: str, arguments: SayArguments, *,
                       expression_style: str | None = None) -> ChatMessage:
+        self.check_limits()
         quote = None
         if arguments.reply_to is not None:
             quote = self.store.find_message(self.config.scene, arguments.reply_to)
@@ -527,7 +568,7 @@ class Chat:
         if self.config.voice_mode == "direct":
             text = arguments.content
         else:
-            messages = [{"role": "system", "content": voice_prompt(self.persona)}]
+            messages = [{"role": "system", "content": voice_prompt(self.persona, platform=self.config.delivery == "onebot")}]
             recent = self.store.recent_context_messages(self.config.scene)
             for message in recent:
                 if message.is_self and message.send_status in {"received", "sent", "simulated"}:
@@ -542,7 +583,7 @@ class Chat:
                     else:
                         messages.append({"role": "user", "content": rendered})
             task = {"要表达": arguments.content, "长度": arguments.length,
-                    "回复对象": None if quote is None else self.render(quote), "提及QQ": arguments.mention}
+                    "回复对象": None if quote is None else self.render(quote), "平台已负责提及的QQ": arguments.mention}
             if expression_style is not None:
                 messages.append({"role": "user", "content": expression_style})
             jargon = self.jargon_context(recent + ([] if quote is None else [quote]), intent=arguments.content)
@@ -564,12 +605,15 @@ class Chat:
                                        expression_ids=[item["id"] for item in selected])
             text = reply.text
         segments = []
-        if arguments.reply_to is not None:
-            segments.append(Segment("reply", {"id": arguments.reply_to}))
+        platform_reply = (arguments.reply_to if quote is not None and (
+            self.now() - quote.time > 120 or self.store.messages_after(self.config.scene, arguments.reply_to) > 3
+        ) else None)
+        if platform_reply is not None:
+            segments.append(Segment("reply", {"id": platform_reply}))
         if arguments.mention is not None:
             segments.append(Segment("at", {"qq": arguments.mention}))
         segments.append(Segment("text", {"text": text}))
-        return self.simulated_message(segments, reply_to=arguments.reply_to)
+        return self.simulated_message(segments, reply_to=platform_reply)
 
     def react(self, arguments: ReactArguments) -> Expression:
         if arguments.reply_to is not None and self.store.find_message(self.config.scene, arguments.reply_to) is None:
@@ -620,14 +664,14 @@ class Chat:
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
                                        *, prefix: str = "", turn_id: str | None = None,
                                        sticker: PersonaSticker | CollectedSticker | None = None,
-                                       channels: set[str] | None = None) -> tuple[str, str]:
+                                       channels: set[str] | None = None, quota_notice: bool = False) -> tuple[str, str]:
         async with self.outlet:
             return await self._send_prepared(entry_seq, parts, prefix=prefix, turn_id=turn_id,
-                                             sticker=sticker, channels=channels)
+                                             sticker=sticker, channels=channels, quota_notice=quota_notice)
 
     async def _send_prepared(self, entry_seq: int, parts: list[ChatMessage], *, prefix: str,
                              turn_id: str | None, sticker: PersonaSticker | CollectedSticker | None,
-                             channels: set[str] | None) -> tuple[str, str]:
+                             channels: set[str] | None, quota_notice: bool) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         # Snapshot now: a later append in this turn does not change why this was said.
@@ -639,6 +683,13 @@ class Chat:
                     delay = min(settings.max_interval_seconds,
                                 max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
                     await asyncio.sleep(delay)
+                if not quota_notice:
+                    try:
+                        self.check_limits(model=False)
+                    except LimitReached as error:
+                        content = prefix + report_parts(parts, errors, self.render) + "\n" + str(error)
+                        self.store.expression_error(entry_seq, str(error))
+                        return content, "limited"
                 part.time = self.now()
                 part.send_status = "simulated" if self.send_message is None else "unconfirmed"
                 errors.append(None)
@@ -677,6 +728,7 @@ class Chat:
         """Send ordered plugin content through one scene outlet and retain actual results."""
         if reply_to is not None and self.store.find_message(self.config.scene, reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {reply_to}")
+        self.check_limits(model=False)
         prepared = await prepare_parts(plugin, content, self.config.text_delivery.max_chars, reply_to)
         parts = [self.simulated_message(part.segments, reply_to=reply_to if index == 0 else None)
                  for index, part in enumerate(prepared)]
@@ -689,6 +741,7 @@ class Chat:
                     if index:
                         await asyncio.sleep(min(settings.max_interval_seconds, max(
                             settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
+                    self.check_limits(model=False)
                     part.time = self.now()
                     part.send_status = "simulated" if self.send_message is None else "unconfirmed"
                     errors.append(None)
@@ -821,6 +874,7 @@ class Chat:
         extensions = 0
         failed_tools = 0
         status, error_text = "step_limit", None
+        limit_until = None
         try:
             async with asyncio.timeout(self.config.turn_timeout_seconds):
                 recalled = None
@@ -834,6 +888,7 @@ class Chat:
                         name=style.name, note="" if style.note is None else style.note,
                     )
                 for step in range(self.config.max_steps):
+                    self.check_limits()
                     messages = await self.prepare_context(turn_id, expression_style=expression_style, recalled=recalled)
                     reply = await self.request(turn_id, "mind", messages, self.tools)
                     for call in reply.tool_calls:
@@ -871,10 +926,11 @@ class Chat:
             self.store.end_turn(turn_id, "cancelled", "CancelledError")
             raise
         except Exception as error:
-            status = "timeout" if isinstance(error, TimeoutError) else "error"
+            status = "limited" if isinstance(error, LimitReached) else "timeout" if isinstance(error, TimeoutError) else "error"
+            limit_until = error.until if isinstance(error, LimitReached) else None
             error_text = f"{type(error).__name__}: {error}"
         self.store.finish_pending_tools(scene, error_text or status)
         return {"turn_id": turn_id, "status": status, "error": error_text,
                 "delivery": "simulated" if self.send_message is None else "onebot",
                 "expressions": expressions, "extensions": extensions,
-                "failed_tools": failed_tools}
+                "failed_tools": failed_tools, "limit_until": limit_until}

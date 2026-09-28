@@ -10,8 +10,10 @@ import sqlite3
 import sys
 
 from .config import SharedConfig, load_instance_config
-from .memory import LocalMemoryConfig, open_memory_backend
-from .store import encode
+from .memory import LocalMemoryConfig, open_memory
+from .store import Store, encode
+from .model_slots import ModelSlots
+from .limits import ModelBudget
 
 
 def _backup(index: Path) -> Path | None:
@@ -37,11 +39,16 @@ async def rebuild(config: SharedConfig) -> dict:
     # Stopping the host is an operator precondition, not a claim inferred from
     # an idle SQLite connection. The Markdown files themselves are not rewritten.
     backup = await asyncio.to_thread(_backup, config.memory.local.directory / ".memory-index.sqlite3")
-    async with open_memory_backend(config) as backend:
-        if config.memory.local.embedding is None:
-            count = await asyncio.to_thread(backend.reindex)
-        else:
-            count = await backend.reindex_embeddings()
+    with Store(config.database) as store:
+        slots = ModelSlots(config.max_model_requests)
+        budget = ModelBudget(config, store, None)
+        slots.admit = budget.check
+        async with open_memory(config, store, slots=slots) as memory:
+            budget.memory = memory
+            if config.memory.local.embedding is None:
+                count = await asyncio.to_thread(memory.backend.reindex)
+            else:
+                count = await memory.backend.reindex_embeddings()
     return {"backend": "local", "directory": str(config.memory.local.directory),
             "indexed_files": count,
             "retrieval": "text" if config.memory.local.embedding is None else "hybrid",

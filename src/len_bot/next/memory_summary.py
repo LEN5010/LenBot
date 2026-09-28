@@ -76,7 +76,8 @@ class MemorySummarizer:
         """Summarize one directory; the caller holds the partition's memory write lock."""
         inputs = await self.backend.summary_inputs(scene, path, scope=scope)
         if not inputs["files"] and not inputs["directories"]:
-            return {"path": path, "skipped": "目录为空，没有可摘要的内容"}
+            await self.backend.clear_summary(scene, path, scope=scope)
+            return {"path": path, "cleared": True, "skipped": "目录为空，已清除派生摘要"}
         binding = self.config.models.roles.memory
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         partition = "公共分区" if scope == "public" else scene
@@ -89,12 +90,13 @@ class MemorySummarizer:
                    "context_window_tokens": binding.context_window_tokens,
                    "price": None if price is None else price.model_dump(mode="json")}
         source = "public" if scope == "public" else scene
-        run = self.jobs.begin_summary(scene, source, path, request)
+        if estimate > binding.context_window_tokens:
+            raise ContextBudgetError(f"memory summary request estimated {estimate} tokens, exceeding "
+                                     f"configured window {binding.context_window_tokens}; model was not called")
+        run = None
         try:
-            if estimate > binding.context_window_tokens:
-                raise ContextBudgetError(f"memory summary request estimated {estimate} tokens, exceeding "
-                                         f"configured window {binding.context_window_tokens}; model was not called")
-            async with (self.slots.slot(direct=False) if self.slots is not None else nullcontext()):
+            async with (self.slots.slot(direct=False, scene=scene) if self.slots is not None else nullcontext()):
+                run = self.jobs.begin_summary(scene, source, path, request)
                 try:
                     reply = await self.model.complete(messages, [])
                 except ModelProtocolError as error:
@@ -105,10 +107,12 @@ class MemorySummarizer:
             abstract, overview = parse_summary(reply)
             summary = await self.backend.write_summary(scene, path, abstract, overview, scope=scope)
         except asyncio.CancelledError as error:
-            self.jobs.finish_summary(run, "interrupted", _error_text(error))
+            if run is not None:
+                self.jobs.finish_summary(run, "interrupted", _error_text(error))
             raise
         except Exception as error:
-            self.jobs.finish_summary(run, "failed", _error_text(error))
+            if run is not None:
+                self.jobs.finish_summary(run, "failed", _error_text(error))
             raise
         self.jobs.finish_summary(run, "complete")
         return {"run_id": run, **asdict(summary)}

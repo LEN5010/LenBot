@@ -82,7 +82,7 @@ class ExpressionService:
                      turn_id: str | None = None, direct: bool = False) -> EmbeddingBatch:
         client = self._client(scene)
         price = self.prices[scene]
-        async with (self.slots.slot(direct=direct) if self.slots is not None else nullcontext()):
+        async with (self.slots.slot(direct=direct, scene=scene) if self.slots is not None else nullcontext()):
             call_id = self.records.start_embedding_call(
                 scene, purpose,
                 {"settings": client.settings.model_dump(exclude={"api_key"}), "texts": list(texts),

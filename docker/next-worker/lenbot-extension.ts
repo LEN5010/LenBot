@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -58,16 +59,37 @@ async function taskPost(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ) {
-  const timeout = AbortSignal.timeout(Math.ceil(settings.timeoutMs));
-  const response = await fetch(`${TASK_API_BASE}${route}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${settings.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-    redirect: "error",
-  });
-  const raw = await response.text();
-  if (!response.ok) throw new Error(`${operation} HTTP ${response.status}: ${raw}`);
+  const humanWait = operation === "account_browser" && body.method === "request_help";
+  const encoded = JSON.stringify(body);
+  const headers = { Authorization: `Bearer ${settings.token}`, "Content-Type": "application/json" };
+  let raw: string, status: number;
+  if (humanWait) {
+    // Human time is bounded by the host; fetch's built-in header timeout is not an input deadline.
+    const response = await new Promise<{ raw: string; status: number }>((resolve, reject) => {
+      const request = httpRequest(`${TASK_API_BASE}${route}`, {
+        method: "POST", headers: { ...headers, "Content-Length": Buffer.byteLength(encoded) }, signal,
+      }, response => {
+        if (response.statusCode === undefined) { response.destroy(); reject(new Error("Task bridge omitted HTTP status")); return; }
+        const status = response.statusCode;
+        response.setEncoding("utf8");
+        let raw = "";
+        response.on("data", chunk => { raw += chunk; });
+        response.on("error", reject);
+        response.on("end", () => resolve({ raw, status }));
+      });
+      request.on("error", reject);
+      request.end(encoded);
+    });
+    ({ raw, status } = response);
+  } else {
+    const timeout = AbortSignal.timeout(Math.ceil(settings.timeoutMs));
+    const response = await fetch(`${TASK_API_BASE}${route}`, {
+      method: "POST", headers, body: encoded,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout, redirect: "error",
+    });
+    raw = await response.text(); status = response.status;
+  }
+  if (status < 200 || status >= 300) throw new Error(`${operation} HTTP ${status}: ${raw}`);
   let payload: unknown;
   try { payload = JSON.parse(raw); }
   catch (error) { throw new Error(`${operation} invalid JSON: ${String(error)}; raw=${raw}`); }

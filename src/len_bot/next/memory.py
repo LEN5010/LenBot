@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
 from typing import Annotated, Literal, TYPE_CHECKING
 
@@ -18,6 +18,7 @@ from .messages import ChatMessage, plain_text
 from .model import ChatModel
 from .model_slots import ModelSlots
 from .store import Store, encode
+from .pricing import estimate_cost
 
 if TYPE_CHECKING:
     from .config import SharedConfig
@@ -178,16 +179,17 @@ class MemoryService:
         """Read the current derived profile under the backend's existing write/read lock."""
         if self.summarizer is None:
             return None
-        return (await self.backend.summary(scene)).overview
+        summary = await self.backend.summary(scene)
+        return summary.overview if summary.changed_after is None else None
 
     def write_lock(self, scene: str) -> asyncio.Lock:
         return self.write_locks.setdefault(scene, asyncio.Lock())
 
     @property
     def actions(self) -> list[str]:
-        common = ["browse", "read", "search", "write", "delete"]
+        common = ["browse", "read", "search", "write", "delete", "history"]
         if isinstance(self.backend, LocalMemory):
-            common.extend(["history", "forget"])
+            common.append("forget")
         return common
 
     async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
@@ -244,7 +246,7 @@ class MemoryService:
 
     async def history(self, scene: str, path: str) -> list[dict]:
         if not isinstance(self.backend, LocalMemory):
-            raise ValueError("当前 OpenViking 接口不提供持久修改历史")
+            return await self.backend.history(scene, path)
         return [asdict(change) for change in await self.backend.history(scene, path)]
 
     async def execute(self, scene: str, arguments: dict) -> str:
@@ -338,6 +340,34 @@ async def open_memory(config: SharedConfig, store: Store, *, slots: ModelSlots |
             return
         with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
             service = MemoryService(config.memory, backend, jobs=jobs, store=store)
+            if isinstance(backend, LocalMemory) and backend.embedding is not None:
+                binding = config.memory.local.embedding
+                price = config.models.prices.get(binding.provider, {}).get(binding.model)
+                async def embed(source, texts, purpose):
+                    async with (slots.slot(scene=source) if slots is not None else nullcontext()):
+                        with jobs.db:
+                            call_id = jobs.db.execute(
+                                "INSERT INTO memory_embedding_calls(scene,purpose,started,request) VALUES(?,?,?,?)",
+                                (source, purpose, store.now(), encode({"texts": texts,
+                                 "settings": backend.embedding.settings.model_dump(mode="json", exclude={"api_key"}),
+                                 "price": None if price is None else price.model_dump(mode="json")})),
+                            ).lastrowid
+                        try:
+                            batch = await backend.embedding.embed(texts)
+                        except BaseException as error:
+                            with jobs.db:
+                                jobs.db.execute("UPDATE memory_embedding_calls SET ended=?,error=? WHERE id=?",
+                                                (store.now(), f"{type(error).__name__}: {error}", call_id))
+                            raise
+                        with jobs.db:
+                            cost = estimate_cost(price, batch.token_usage)
+                            jobs.db.execute("UPDATE memory_embedding_calls SET ended=?,response=?,usage=?,cost=? WHERE id=?",
+                                            (store.now(), encode({"vector_count":len(batch.vectors),"dimensions":batch.dimensions}),
+                                             None if batch.usage is None else encode(batch.usage),
+                                             None if cost is None else encode(cost), call_id))
+                        return batch
+                backend.track_embedding = embed
+
             if not (isinstance(config.memory, LocalMemoryConfig) and config.memory.summaries):
                 yield service
                 return

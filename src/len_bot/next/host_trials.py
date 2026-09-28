@@ -164,7 +164,7 @@ class HostTrials:
                 voice = await stack.enter_async_context(ChatModel(config.model_settings('voice')))
                 vision = (None if config.models.roles.vision is None else
                           await stack.enter_async_context(ChatModel(config.model_settings('vision'))))
-                local_memory = await stack.enter_async_context(open_memory(config, store))
+                local_memory = await stack.enter_async_context(open_memory(config, store, slots=self.runtime.chats[scene].slots))
                 session = PanelSession(config, store, mind, voice, vision=vision, memory=local_memory,
                                        persona=persona, slots=self.runtime.chats[scene].slots)
                 trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded, context)

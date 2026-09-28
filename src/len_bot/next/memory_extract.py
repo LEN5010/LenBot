@@ -160,7 +160,7 @@ async def extract_local(
                 f"memory extraction request with reserved output estimates {estimated} tokens, "
                 f"exceeding configured window {context_window_tokens}; model was not called")
         reply: ModelReply | None = None
-        async with (slots.slot(direct=False) if slots is not None else nullcontext()):
+        async with (slots.slot(direct=False, scene=scene) if slots is not None else nullcontext()):
             call_id = start_call({
                 "settings": model.settings.model_dump(exclude={"api_key"}),
                 "messages": conversation, "tools": TOOLS,

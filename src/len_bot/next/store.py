@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from .messages import ChatMessage, Segment, Sender, plain_text
+from .messages import Notice, ChatMessage, Segment, Sender, plain_text
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 from .image_assets import OriginalImage
@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 29
+FORMAT_VERSION = 30
 
 
 def encode(value: object) -> str:
@@ -107,6 +107,13 @@ class Store:
                     CREATE VIRTUAL TABLE message_search USING fts5(
                         search_text, tokenize='trigram case_sensitive 1'
                     );
+                    CREATE TABLE notices (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, kind TEXT NOT NULL,
+                        platform_id TEXT, time REAL NOT NULL, received_at REAL NOT NULL, raw TEXT NOT NULL
+                    );
+                    CREATE INDEX scene_notices ON notices(scene,id);
+                    CREATE INDEX recalled_messages ON notices(scene,platform_id)
+                        WHERE kind IN ('group_recall','friend_recall');
                     CREATE TABLE mind_entries (
                         seq INTEGER PRIMARY KEY, scene TEXT NOT NULL,
                         message TEXT NOT NULL, created REAL NOT NULL
@@ -500,6 +507,17 @@ class Store:
             message for _, message in history
         ]
 
+    def new_context(self, scene: str) -> int:
+        """Keep original history and unread input; only move the active mind boundary."""
+        with self.db:
+            through = self.db.execute("SELECT COALESCE(MAX(seq),0) FROM mind_entries WHERE scene=?",
+                                      (scene,)).fetchone()[0]
+            self.db.execute(
+                "INSERT INTO mind_sessions(scene,compact_through,recap,discovered_tools) VALUES (?,?,NULL,'[]') "
+                "ON CONFLICT(scene) DO UPDATE SET compact_through=excluded.compact_through,"
+                "recap=NULL,discovered_tools='[]'", (scene, through))
+        return through
+
     def mind_history_page(self, scene: str, *, before: int | None, limit: int,
                           active_only: bool) -> dict:
         session = self.db.execute(
@@ -606,8 +624,34 @@ class Store:
         with self.db:
             self._append(scene, message)
 
+    def save_notice(self, notice: Notice) -> None:
+        platform_id = (str(notice.raw["message_id"])
+                       if notice.notice_type in {"group_recall", "friend_recall"} else None)
+        with self.db:
+            self.db.execute(
+                "INSERT INTO notices(scene,kind,platform_id,time,received_at,raw) VALUES (?,?,?,?,?,?)",
+                (notice.scene, notice.notice_type, platform_id, notice.time, self.now(), encode(dict(notice.raw))),
+            )
+            if platform_id is not None:
+                self.db.execute("UPDATE messages SET body=json_set(body,'$.recalled',json('true')) "
+                                "WHERE scene=? AND platform_id=?", (notice.scene, platform_id))
+
+    def notice_page(self, scene: str, *, before: int | None = None, limit: int = 50) -> dict:
+        rows = self.db.execute(
+            "SELECT * FROM notices WHERE scene=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT ?",
+            (scene, before, before, limit + 1),
+        ).fetchall()
+        return {"items": [{**dict(row), "raw": json.loads(row["raw"])} for row in rows[:limit]],
+                "next_before": rows[limit-1]["id"] if len(rows) > limit else None}
+
     def _save_message(self, message: ChatMessage, raw: dict | None,
                       received_at: float | None = None) -> int:
+        if message.platform_message_id is not None and self.db.execute(
+            "SELECT 1 FROM notices WHERE scene=? AND platform_id=? "
+            "AND kind IN ('group_recall','friend_recall') LIMIT 1",
+            (message.scene, message.platform_message_id),
+        ).fetchone() is not None:
+            message = replace(message, recalled=True)
         cursor = self.db.execute(
             "INSERT INTO messages(scene,platform_id,body,raw,received_at) VALUES (?,?,?,?,?)",
             (message.scene, message.platform_message_id, encode(asdict(message)),
@@ -747,6 +791,11 @@ class Store:
             if attention_state is not None:
                 self._save_attention(scene, attention_state)
 
+    def prepare_limit_notice(self, scene: str, state: dict, content: str) -> int:
+        with self.db:
+            self._save_attention(scene, state)
+            return self._append(scene, {"role": "user", "content": content})
+
     def append_quiet(self, scene: str, batch: tuple[int, list[str]], *,
                      attention_state: dict, note: str | None) -> int | None:
         """Persist the batch, once-per-period attempt and actual notice together."""
@@ -819,6 +868,12 @@ class Store:
         message_seq, entry_seq = positions
         kept = message_seq
         with self.db:
+            if expression.platform_message_id is not None and self.db.execute(
+                "SELECT 1 FROM notices WHERE scene=? AND platform_id=? "
+                "AND kind IN ('group_recall','friend_recall') LIMIT 1",
+                (expression.scene, expression.platform_message_id),
+            ).fetchone() is not None:
+                expression = replace(expression, recalled=True)
             echo = (None if expression.platform_message_id is None else self.db.execute(
                 "SELECT seq,body FROM messages WHERE scene=? AND platform_id=?",
                 (expression.scene, expression.platform_message_id),
@@ -860,7 +915,7 @@ class Store:
             if row[2] is not None:
                 return
             self.db.execute("UPDATE messages SET body=?,raw=?,received_at=? WHERE seq=?",
-                            (encode(asdict(replace(message, id=saved.id, send_status="sent"))),
+                            (encode(asdict(replace(message, id=saved.id, send_status="sent", recalled=saved.recalled))),
                              encode(raw), received_at, row[0]))
             self.db.execute("UPDATE message_search SET search_text=? WHERE rowid=?",
                             (plain_text(message).casefold(), row[0]))
@@ -966,6 +1021,15 @@ class Store:
             "SELECT body FROM messages WHERE scene=? AND platform_id=?", (scene, platform_id)
         ).fetchone()
         return None if row is None else self._message(row[0])
+
+    def messages_after(self, scene: str, platform_id: str) -> int:
+        """Count actual visible messages after a known reply target in this scene."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM messages WHERE scene=? AND seq>("
+            "SELECT seq FROM messages WHERE scene=? AND platform_id=?) "
+            "AND json_extract(body,'$.send_status') IN ('received','sent','simulated')",
+            (scene, scene, platform_id),
+        ).fetchone()[0]
 
     def max_message_seq(self, scene: str) -> int:
         return self.db.execute(
@@ -1328,6 +1392,10 @@ class Store:
             if attention_state is not None:
                 scene = self.db.execute("SELECT scene FROM turns WHERE id=?", (turn_id,)).fetchone()[0]
                 self._save_attention(scene, attention_state)
+            if status == "limited":
+                self.db.execute("UPDATE turns SET status='queued',error=? WHERE id=? AND ended IS NULL",
+                                (error, turn_id))
+                return True
             if status in {"timeout", "cancelled"}:
                 queued = self.db.execute(
                     "UPDATE turns SET error=? WHERE id=? AND status='queued' AND ended IS NULL",

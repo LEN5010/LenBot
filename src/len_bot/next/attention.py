@@ -13,6 +13,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from .chat import Chat
+from .limits import LimitReached
 from .config import Attention
 from .delivery import report_parts, split_expression
 from .messages import ChatMessage, Segment, parse_message, plain_text
@@ -44,6 +45,7 @@ class AttentionState:
     keyword_last: dict[str, float] = field(default_factory=dict)
     pending: PendingWake | None = None
     quiet_notice_until: float | None = None
+    limit_notice_until: float | None = None
 
     def contact(self, at: float, duration: float) -> None:
         if self.last_contact_at is None or at > self.last_contact_at:
@@ -106,6 +108,7 @@ class SceneRunner:
     def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool,
                  ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None,
                  connected_since: Callable[[], float | None] = lambda: None):
+        self.execution = asyncio.Lock()
         self.chat = chat
         self.connected_since = connected_since
         self.now = chat.now
@@ -369,6 +372,19 @@ class SceneRunner:
         while True:
             self.changed.clear()
             now = self.now()
+            try:
+                self.chat.check_limits(model=True)
+            except LimitReached as error:
+                if in_turn or self.closing:
+                    return None
+                if self.state.pending is not None and self.state.pending.channel == "direct":
+                    async with self.execution:
+                        await self.limit_notice(error)
+                try:
+                    await asyncio.wait_for(self.changed.wait(), timeout=max(0, error.until - self.now()))
+                except TimeoutError:
+                    pass  # The configured allowance window ended; no failed request is retried.
+                continue
             period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
             state = copy.deepcopy(self.state)
             self.clear_quiet_wake(state, now, period)
@@ -498,7 +514,29 @@ class SceneRunner:
         self.state = state
         return True
 
-    async def quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
+    async def limit_notice(self, error: LimitReached) -> None:
+        """At most one host explanation per blocked window, persisted before delivery."""
+        if self.state.limit_notice_until is not None and self.state.limit_notice_until >= error.until:
+            return
+        state = copy.deepcopy(self.state)
+        state.limit_notice_until = error.until
+        until = datetime.fromtimestamp(error.until, ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+        text = f"[宿主额度说明] {error} 本时段截至 {until}，未读消息保留。"
+        parts = [self.chat.simulated_message([Segment("text", {"text": text})])]
+        entry = self.store.prepare_limit_notice(self.config.scene, asdict(state), text + "（尚未发送）")
+        self.state = state
+        try:
+            async with asyncio.timeout(self.config.turn_timeout_seconds):
+                await self.chat.send_prepared_expression(entry, parts, channels={"limit_notice"}, quota_notice=True)
+        except Exception as failure:
+            self.store.expression_error(entry, f"{type(failure).__name__}: {failure}")
+            self.emit({"type": "limit_notice", "status": "failed", "error": f"{type(failure).__name__}: {failure}"})
+
+    async def quiet_notice(self, pending, until):
+        async with self.execution:
+            await self._quiet_notice(pending, until)
+
+    async def _quiet_notice(self, pending: list[tuple[int, ChatMessage, float]], until: float) -> None:
         state = self.consumed_state()
         parts, note = None, None
         expressions = []
@@ -537,6 +575,10 @@ class SceneRunner:
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
 
     async def turn(self, channel: str, **turn) -> None:
+        async with self.execution:
+            await self._turn(channel, **turn)
+
+    async def _turn(self, channel: str, **turn) -> None:
         state = self.consumed_state()
         contact_before = state.last_contact_at
         self.state, self.resume = state, False
@@ -558,8 +600,12 @@ class SceneRunner:
         pending_wake = self.store.end_turn(result["turn_id"], result["status"], result["error"],
                                            attention_state=asdict(state))
         self.state = state
+        if result["status"] == "limited":
+            self.resume = True
         result["pending_wake"] = pending_wake
         self.emit(result)
+        if result["status"] == "limited" and channel == "direct":
+            await self.limit_notice(LimitReached(result["error"], result["limit_until"]))
 
     def proactive_times(self) -> tuple[float | None, float | None]:
         """Close finished observations; return the next allowed wake and the next observation end."""

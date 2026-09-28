@@ -14,7 +14,7 @@ import time
 from .store import encode
 
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 
 class MemoryJobs:
@@ -26,7 +26,7 @@ class MemoryJobs:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424D4A and version in {1, 2}:
+                if application_id == 0x4C424D4A and version in range(1, FORMAT_VERSION):
                     raise ValueError(
                         f"Memory processing database format {version} requires offline migration while stopped: "
                         f"{path}; run python -m len_bot.next.migrate_memory_jobs from the instance directory")
@@ -36,7 +36,7 @@ class MemoryJobs:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id=1279413578;
-                    PRAGMA user_version=3;
+                    PRAGMA user_version=4;
                     CREATE TABLE memory_cursors (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL,
                         enabled_at REAL NOT NULL
@@ -56,9 +56,15 @@ class MemoryJobs:
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, scope TEXT NOT NULL, path TEXT NOT NULL,
                         started REAL NOT NULL, ended REAL,
                         status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
-                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
+                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT, model_started REAL
                     );
                     CREATE INDEX memory_summary_runs_path ON memory_summary_runs(scope,path,id);
+                    CREATE TABLE memory_embedding_calls (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, purpose TEXT NOT NULL,
+                        started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
+                        response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX memory_embedding_usage ON memory_embedding_calls(started,scene);
                     COMMIT;
                 """)
         except BaseException:
@@ -154,8 +160,8 @@ class MemoryJobs:
     def begin_summary(self, scene: str, scope: str, path: str, request: dict) -> int:
         with self.db:
             return self.db.execute(
-                "INSERT INTO memory_summary_runs(scene,scope,path,started,status,request) VALUES(?,?,?,?,'running',?)",
-                (scene, scope, path, time.time(), encode(request)),
+                "INSERT INTO memory_summary_runs(scene,scope,path,started,status,request,model_started) VALUES(?,?,?,?,'running',?,?)",
+                (scene, scope, path, time.time(), encode(request), time.time()),
             ).lastrowid
 
     def summary_response(self, id: int, response: object, usage: object, cost: object) -> None:

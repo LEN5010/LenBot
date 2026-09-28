@@ -106,6 +106,8 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
             raise HTTPException(409, f'这些场景的运行快照仍引用此目录：{scenes}；先取消该项许可并重启，再移动或删除')
 
     def affected(config: HostConfig, scene: str, source: str) -> list[str]:
+        if source != 'shared' and scene not in config.scenes:
+            raise HTTPException(409, '此场景已从保存配置移除，不能修改其场景技能')
         return list(config.scenes) if source == 'shared' else [scene]
 
     def saved_references(config: HostConfig, scenes: list[str], name: str) -> list[str]:

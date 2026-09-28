@@ -3,18 +3,20 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, sceneName } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
-import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import HostSceneBindings from '../components/HostSceneBindings.vue'
 import HostWorkerSettings from '../components/HostWorkerSettings.vue'
 
 const route = useRoute(), router = useRouter()
 let sceneEpoch = 0
 const selection = () => `${scene.value}\u0000${sceneEpoch}`
-const beginRead = useRequestGuard(selection)
+const beginRead = useRequestGuard()
 const beginPersona = useRequestGuard(selection)
 const beginSceneSave = useRequestGuard(selection)
 const beginServiceSave = useRequestGuard()
 const snapshot = ref(null), personaSnapshot = ref(null), scene = ref('')
 const workerDirty = ref(false), workerSceneDirty = ref(false), workerSaving = ref(false), workerPanelKey = ref(0)
+const bindingDirty = ref(false), bindingPanelKey = ref(0), bindingBusy = ref(false)
 const loading = ref(false), personaLoading = ref(false), saving = ref('')
 const readError = ref(''), personaError = ref(''), saveError = ref(''), localError = ref(''), savedNotice = ref('')
 const draft = ref(null), webRead = ref(null), webSearch = ref(null)
@@ -31,7 +33,7 @@ const attentionNumbers = [
   ['ambient_min_interval_seconds','旁听最短间隔秒数'], ['ambient_max_interval_seconds','旁听最长间隔秒数'],
   ['max_extensions','最多延长次数'],
 ]
-const sceneOptions = computed(() => Object.keys(snapshot.value?.saved.scenes || {}).map(value => ({ title: sceneName(value), value })))
+const sceneOptions = computed(() => Object.keys(snapshot.value?.saved.scenes || {}).filter(key => snapshot.value.running.scenes[key]).map(value => ({ title: sceneName(value), value })))
 const savedScene = computed(() => snapshot.value?.saved.scenes[scene.value] || null)
 const runningScene = computed(() => snapshot.value?.running.scenes[scene.value] || null)
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
@@ -71,9 +73,10 @@ const sceneDirty = computed(() => {
 })
 const readDirty = computed(() => snapshot.value && JSON.stringify(webRead.value) !== JSON.stringify(snapshot.value.saved.web_read))
 const searchDirty = computed(() => snapshot.value && JSON.stringify(webSearch.value) !== JSON.stringify(snapshot.value.saved.web_search))
-const dirty = computed(() => Boolean(sceneDirty.value || readDirty.value || searchDirty.value || workerDirty.value))
+const dirty = computed(() => Boolean(bindingBusy.value || bindingDirty.value || sceneDirty.value || readDirty.value || searchDirty.value || workerDirty.value))
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !workerSaving.value && (!sceneDirty.value && !workerSceneDirty.value ||
+onBeforeRouteLeave(() => !bindingBusy.value)
+onBeforeRouteUpdate(() => !bindingBusy.value && !workerSaving.value && (!sceneDirty.value && !workerSceneDirty.value ||
   window.confirm('有尚未保存的场景草稿。放弃并打开另一场景？')))
 function adoptScene(value) {
   const record = value.saved.scenes[scene.value]
@@ -87,11 +90,13 @@ function adoptScene(value) {
   whitelist.value = listRows(record.schedules.whitelist)
 }
 function adoptAll(value) {
+  bindingDirty.value = false; ++bindingPanelKey.value
   const previousScene = scene.value
   snapshot.value = value
-  if (!value.saved.scenes[scene.value]) scene.value = Object.keys(value.saved.scenes)[0] || ''
+  if (!value.saved.scenes[scene.value] || !value.running.scenes[scene.value]) scene.value = Object.keys(value.saved.scenes).find(key => value.running.scenes[key]) || ''
   if (scene.value !== previousScene) personaSnapshot.value = null
   if (scene.value) adoptScene(value)
+  else { draft.value = null; personaSnapshot.value = null }
   if (scene.value !== route.query.scene) router.replace({ name: 'host-settings', query: { scene: scene.value } })
   webRead.value = copy(value.saved.web_read)
   webSearch.value = copy(value.saved.web_search)
@@ -113,7 +118,7 @@ async function readPersona() {
   }
 }
 async function read(confirmDiscard = true) {
-  if (workerSaving.value) return
+  if (workerSaving.value || bindingBusy.value) return
   if (confirmDiscard && dirty.value &&
       !window.confirm('放弃全部未保存草稿，重新读取根配置？')) return
   const fresh = beginRead()
@@ -134,10 +139,10 @@ async function read(confirmDiscard = true) {
 }
 function changeScene(next, fromRoute = false) {
   if (next === scene.value) return
-  if (workerSaving.value) return
+  if (workerSaving.value || bindingBusy.value) return
   if (!fromRoute && (sceneDirty.value || workerSceneDirty.value) &&
       !window.confirm('放弃当前场景尚未保存的修改并切换？')) return
-  if (!snapshot.value.saved.scenes[next]) return
+  if (!snapshot.value.saved.scenes[next] || !snapshot.value.running.scenes[next]) return
   scene.value = next
   ++sceneEpoch
   loading.value = false
@@ -209,7 +214,7 @@ onMounted(() => {
 })
 watch(() => route.query.scene, value => {
   if (typeof value !== 'string' || value === scene.value) return
-  if (snapshot.value?.saved.scenes[value]) changeScene(value, true)
+  if ((snapshot.value?.saved.scenes[value] && snapshot.value?.running.scenes[value])) changeScene(value, true)
   else if (!snapshot.value) {
     scene.value = value
     ++sceneEpoch
@@ -219,7 +224,7 @@ watch(() => route.query.scene, value => {
 </script>
 
 <template>
-  <div class="page-stack host-settings">
+  <div class="page-stack host-settings" :inert="bindingBusy">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>群聊设置与角色</h1>
       <p class="muted">分别编辑场景和外部服务的根配置保存值。运行中的设置与角色文件保持原样，重启宿主后才生效；不在这里启动、重载或发送消息。</p></div>
       <v-btn variant="outlined" :loading="loading" :disabled="Boolean(saving) || workerSaving" @click="read()">重读根配置</v-btn></header>
@@ -228,11 +233,14 @@ watch(() => route.query.scene, value => {
     <v-alert v-if="localError" type="warning" variant="tonal" role="alert">{{ localError }}</v-alert>
     <v-alert v-if="savedNotice" type="success" variant="tonal" role="status">{{ savedNotice }}</v-alert>
     <div v-if="loading && !snapshot" class="surface empty-state" role="status">正在读取场景与服务的运行值、保存值…</div>
+    <HostSceneBindings v-if="snapshot" :key="bindingPanelKey" :snapshot="snapshot" :disabled="Boolean(saving) || loading || workerSaving || sceneDirty || readDirty || searchDirty || workerDirty"
+      @saving="value => bindingBusy=value" @dirty="value => bindingDirty=value" @saved="value => { bindingBusy=false; adoptAll(value); savedNotice='场景绑定已保存；当前运行配置不变，重启后生效。'; readPersona() }" />
+    <p v-if="snapshot && !draft" class="surface" role="status">当前保存与运行配置没有共同场景；重启后编辑新增场景的详细设置。</p>
     <template v-if="snapshot && draft">
       <section class="surface"><div class="section-heading"><h2>当前配置场景</h2>
         <v-chip variant="tonal" :color="snapshot.restart_required.scenes[scene]?'warning':'info'">{{ snapshot.restart_required.scenes[scene]?'场景保存值待重启':'场景保存值与运行值一致' }}</v-chip></div>
-        <v-select :model-value="scene" :items="sceneOptions" label="选择场景" hide-details="auto" :disabled="Boolean(saving) || loading || workerSaving" @update:model-value="changeScene" />
-        <p class="muted mt-4">运行值：{{ runningScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}；保存值：{{ savedScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}。本群时区运行值：{{ runningScene?.timezone ?? `沿用全局 ${snapshot?.running.connection.timezone}` }}；保存值：{{ savedScene?.timezone ?? `沿用全局 ${snapshot?.saved.connection.timezone}` }}。场景与角色包的绑定路径不在此页修改。</p>
+        <v-select :model-value="scene" :items="sceneOptions" label="选择场景" hide-details="auto" :disabled="Boolean(saving) || loading || workerSaving || bindingDirty" @update:model-value="changeScene" />
+        <p class="muted mt-4">运行值：{{ runningScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}；保存值：{{ savedScene?.voice_mode === 'voice' ? '表达器发言' : '大脑直接发言' }}。本群时区运行值：{{ runningScene?.timezone ?? `沿用全局 ${snapshot?.running.connection.timezone}` }}；保存值：{{ savedScene?.timezone ?? `沿用全局 ${snapshot?.saved.connection.timezone}` }}。角色目录在上方场景绑定区修改，重启后生效。</p>
         <details v-if="runningScene"><summary>查看当前运行的场景设置</summary>
           <h3>参与与安静时段</h3><dl class="role-facts"><div v-for="(value,key) in runningScene.attention" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></div></dl>
           <h3>提醒权限</h3><dl class="role-facts"><div v-for="(value,key) in runningScene.schedules" :key="key"><dt>{{ key }}</dt><dd>{{ displayValue(value) }}</dd></div></dl>
@@ -244,10 +252,10 @@ watch(() => route.query.scene, value => {
         <p v-if="sceneDirty" class="dirty-note" role="status">当前场景有未保存修改。</p>
       </section>
       <form class="page-stack" @submit.prevent="saveScene">
-        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>场景参与与安静时段</legend>
+        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading || bindingDirty"><legend>场景参与与安静时段</legend>
           <v-select v-model="draft.voice_mode" label="表达方式" :items="[{title:'表达器组织台词',value:'voice'},{title:'大脑直接表达',value:'direct'}]" hide-details="auto" />
           <v-text-field v-model="draft.timezone" label="本群时区（IANA 名称，留空沿用全局时区）" placeholder="例如 Asia/Shanghai" hide-details="auto" />
-          <v-switch v-model="draft.transcribe_audio" label="自动转写本场景新收到的真人语音" hide-details :disabled="Boolean(saving) || loading" />
+          <v-switch v-model="draft.transcribe_audio" label="自动转写本场景新收到的真人语音" hide-details :disabled="Boolean(saving) || loading || bindingDirty" />
           <p class="muted">须先配置 ASR 模型及真实 OneBot 出口，不扫描历史、失败不自动重试。运行值：{{ runningScene?.transcribe_audio ? '开启' : '关闭' }}；保存后重启生效。</p>
           <p class="muted">影响本群的时间显示、安静时段和新建安排的钟点；已有安排保留创建时保存的时区，不会被追溯改写。</p>
           <v-switch v-model="draft.attention.only_direct" label="只处理直接呼唤" hide-details />
@@ -264,7 +272,7 @@ watch(() => route.query.scene, value => {
             <v-textarea v-if="draft.attention.quiet_hours.direct==='notice'" v-model="draft.attention.quiet_hours.notice_text" label="安静提示原文" rows="3" auto-grow hide-details="auto" />
           </div>
         </fieldset>
-        <fieldset v-if="scene.startsWith('group:')" class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>主动开话题</legend>
+        <fieldset v-if="scene.startsWith('group:')" class="surface editor-section" :disabled="Boolean(saving) || loading || bindingDirty"><legend>主动开话题</legend>
           <p class="muted">群里在活跃时段安静够久时叫醒大脑一次，它可以开个话题，也可以不说话。每群按本群时区每天最多一次，安静时段内不叫醒；连续两次开口后 30 分钟内都没有群友说话，暂停一周。叫醒记录和暂停原因在安排页查看。</p>
           <v-switch :model-value="draft.proactive!==null" label="启用主动开话题" hide-details @update:model-value="toggleProactive" />
           <p class="muted">开启前须在学习页启用本群回复效果并配置 learner；回应关系由该判断结果决定，不按消息数量猜测。活跃时段不能被安静时段完全覆盖。</p>
@@ -274,7 +282,7 @@ watch(() => route.query.scene, value => {
             <v-text-field v-model="draft.proactive.end" label="活跃时段结束 HH:MM（早于开始表示跨午夜）" hide-details="auto" />
           </div>
         </fieldset>
-        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>提醒与周期安排权限</legend>
+        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading || bindingDirty"><legend>提醒与周期安排权限</legend>
           <p class="muted">权限身份可组合命中；列表只影响此场景的安排能力。</p>
           <div class="form-grid"><v-switch v-model="draft.schedules.enabled" label="启用提醒" hide-details />
             <v-switch v-model="draft.schedules.autonomous" label="允许 Bot 自主安排" hide-details />
@@ -284,7 +292,7 @@ watch(() => route.query.scene, value => {
           <div class="list-block"><h3>白名单 QQ</h3><div v-for="(row,index) in whitelist" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`白名单 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" @click="whitelist.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="whitelist.push({value:''})">添加白名单</v-btn></div>
           <div class="form-grid"><v-select v-for="[key,label] in [['own','安排自己的提醒'],['others','安排他人的提醒'],['manage','管理提醒']]" :key="key" v-model="draft.schedules[key]" :label="label" :items="roleOptions.map(value=>({title:roleLabels[value],value}))" multiple chips closable-chips hide-details="auto" /></div>
         </fieldset>
-        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>此场景的角色补充</legend>
+        <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading || bindingDirty"><legend>此场景的角色补充</legend>
           <p class="muted">只改场景附加文字，不编辑角色文件或人工样例；原文可保留换行。</p>
           <div class="list-block"><h3>补充称呼</h3><div v-for="(row,index) in aliases" :key="index" class="list-row"><v-textarea v-model="row.value" :label="`称呼 ${index+1}`" rows="2" auto-grow hide-details="auto" /><v-btn variant="outlined" @click="aliases.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="aliases.push({value:''})">添加称呼</v-btn></div>
           <div class="list-block"><h3>关系说明</h3><div v-for="(row,index) in relationships" :key="index" class="list-row"><v-text-field v-model="row.qq" :label="`对象 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-textarea v-model="row.text" :label="`关系原文 ${index+1}`" rows="2" auto-grow hide-details="auto" /><v-btn variant="outlined" @click="relationships.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="relationships.push({qq:'',text:''})">添加关系</v-btn></div>

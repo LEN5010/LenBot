@@ -88,7 +88,7 @@ def message_page(record: int, message: ChatMessage, timezone: str, *, offset: in
     return {"record": record, "platform_message_id": message.platform_message_id,
             "sender_qq": message.sender.uid, "send_status": message.send_status,
             "time": datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(),
-            "is_self": message.is_self,
+            "is_self": message.is_self, "recalled": message.recalled,
             "audio_descriptions": audio if offset == 0 else None,
             "offset": offset, "total_chars": len(text),
             "next_offset": end if end < len(text) else None, "text": text[offset:end]}

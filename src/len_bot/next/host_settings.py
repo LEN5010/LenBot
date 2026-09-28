@@ -16,10 +16,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .chat import build_tools
 from .config import (
-    STRICT, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona, ScheduleSettings,
+    STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona, ScheduleSettings,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
 from .persona import load_persona
+from .asr_model import AudioSettings
+from .operations import LoggingSettings
+from .limits import ResourceLimits
 from .skills import load_catalog, select_skills
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
@@ -27,6 +30,14 @@ from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
 from .memory_embeddings import EmbeddingBinding
 from .tasks_config import TaskSettings
 from len_bot.web.auth import hash_password
+
+
+class ProcessingChange(BaseModel):
+    model_config = STRICT
+    compaction: Compaction
+    images: ImageSettings
+    audio: AudioSettings
+    logging: LoggingSettings | None
 
 
 class ProviderChange(BaseModel):
@@ -43,6 +54,11 @@ class ModelsChange(BaseModel):
     providers: dict[str, ProviderChange]
     roles: Roles
     prices: dict[str, dict[str, ModelPrice]]
+
+
+class SceneBindingChange(BaseModel):
+    model_config = STRICT
+    persona: str = Field(min_length=1)
 
 
 class SceneChange(ScenePersona):
@@ -82,6 +98,11 @@ class MemorySceneIdentityChange(BaseModel):
     model_config = STRICT
     user_id: str
     api_key: str | None = Field(default=None, repr=False)
+
+
+class SceneCreate(SceneBindingChange):
+    scene: str
+    memory_identity: MemorySceneIdentityChange | None = None
 
 
 class OpenVikingChangeSettings(BaseModel):
@@ -185,6 +206,9 @@ def _project(config: HostConfig) -> dict:
     onebot = config.onebot.model_dump(mode="json", exclude={"access_token"})
     onebot["access_token_configured"] = bool(config.onebot.access_token)
     return {
+        "limits": config.limits.model_dump(mode="json"),
+        "processing": {key: (None if getattr(config, key) is None else getattr(config, key).model_dump(mode="json"))
+                       for key in ("compaction", "images", "audio", "logging")},
         "connection": {
             "bot_qq": config.bot_qq,
             "owner_qq": config.owner_qq,
@@ -216,6 +240,7 @@ def _project(config: HostConfig) -> dict:
         },
         "scenes": {
             scene: {
+                "persona": str(settings.persona),
                 "timezone": settings.timezone,
                 "voice_mode": settings.voice_mode,
                 "attention": settings.attention.model_dump(mode="json"),
@@ -250,6 +275,8 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
                 for name in ("bot_qq", "owner_qq", "onebot", "timezone", "delivery", "max_steps",
                              "turn_timeout_seconds", "max_model_requests", "text_delivery")
             ),
+            "limits": running.limits != saved.limits,
+            "processing": current["processing"] != recorded["processing"],
             "panel": running.panel != saved.panel,
             "models": running.models != saved.models,
             "scenes": {
@@ -324,6 +351,8 @@ async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
 def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                            user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
     def learning_snapshot(scene: str, snapshot: dict) -> dict:
+        if scene not in snapshot["saved"]["scenes"]:
+            raise HTTPException(404, "此场景已从保存配置移除，运行学习配置保留到重启")
         current = snapshot["running"]["scenes"][scene]["learning"]
         recorded = snapshot["saved"]["scenes"][scene]["learning"]
         return {"scene": scene, "running": current, "saved": recorded,
@@ -364,6 +393,19 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                                     f"{type(error).__name__}: {error}") from error
             return _snapshot(running, saved)
 
+    @app.put("/api/host/settings/limits")
+    async def limits(request: Request, _: str = Depends(user)):
+        change = await _body(request, ResourceLimits)
+        return await save(lambda source, saved: source.update(limits=change.model_dump(mode="json")))
+
+    @app.put("/api/host/settings/processing")
+    async def processing(request: Request, _: str = Depends(user)):
+        try:
+            change = ProcessingChange.model_validate_json(await request.body())
+        except ValidationError as error:
+            raise HTTPException(422, _validation_detail(error)) from error
+        return await save(lambda source, saved: source.update(change.model_dump(mode="json")))
+
     @app.put("/api/host/settings/models")
     async def put_models(request: Request, _: str = Depends(user)):
         change: ModelsChange = await _body(request, ModelsChange)
@@ -387,6 +429,40 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 },
             }
 
+        return await save(edit)
+
+    @app.post("/api/host/settings/scenes")
+    async def create_scene(request: Request, _: str = Depends(user)):
+        change: SceneCreate = await _body(request, SceneCreate)
+        def edit(source: dict, saved: HostConfig) -> None:
+            if change.scene in saved.scenes:
+                raise ValueError(f"场景已存在：{change.scene}")
+            source["scenes"][change.scene] = {"persona": change.persona, "attention": {"only_direct": True}}
+            if isinstance(saved.memory, OpenVikingMemoryConfig):
+                if change.memory_identity is None or change.memory_identity.api_key is None:
+                    raise ValueError("远端记忆新增场景需要明确的 user_id 与 api_key")
+                source["memory"]["openviking"]["scenes"][change.scene] = change.memory_identity.model_dump()
+            elif change.memory_identity is not None:
+                raise ValueError("当前未配置远端记忆，不接收场景远端身份")
+        return await save(edit)
+
+    @app.put("/api/host/settings/scenes/{scene}/persona")
+    async def bind_scene_persona(scene: str, request: Request, _: str = Depends(user)):
+        change: SceneBindingChange = await _body(request, SceneBindingChange)
+        def edit(source: dict, saved: HostConfig) -> None:
+            if scene not in saved.scenes:
+                raise ValueError(f"保存配置没有场景：{scene}")
+            source["scenes"][scene]["persona"] = change.persona
+        return await save(edit)
+
+    @app.delete("/api/host/settings/scenes/{scene}")
+    async def delete_scene(scene: str, _: str = Depends(user)):
+        def edit(source: dict, saved: HostConfig) -> None:
+            if scene not in saved.scenes:
+                raise ValueError(f"保存配置没有场景：{scene}")
+            del source["scenes"][scene]
+            if isinstance(saved.memory, OpenVikingMemoryConfig):
+                del source["memory"]["openviking"]["scenes"][scene]
         return await save(edit)
 
     @app.put("/api/host/settings/scenes/{scene}")

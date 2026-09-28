@@ -217,7 +217,7 @@ class StickerCollector:
                 raise ContextBudgetError(
                     f"sticker vision text with reserved output estimated {estimated} tokens, "
                     f"exceeding configured window {binding.context_window_tokens}; model was not called")
-            async with (self.slots.slot(direct=False) if self.slots is not None else nullcontext()):
+            async with (self.slots.slot(direct=False, scene=scene) if self.slots is not None else nullcontext()):
                 self.records.mark_model_started(call_id)
                 try:
                     reply = await self.vision.complete(messages, [])

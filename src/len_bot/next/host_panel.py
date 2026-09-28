@@ -22,6 +22,7 @@ from .host_trials import HostTrials, register_host_trials
 from .host_browser import register_host_browser
 from .host_permissions import register_host_permissions
 from .host_settings import register_host_settings
+from .host_operations import register_host_operations
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
 from .host_skills import register_host_skills
@@ -38,6 +39,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     if config.panel is None:
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
+    runtime.budget.trials_root = root / ".runtime" / "chat-tests"
     trials = HostTrials(config, runtime, root)
 
     @asynccontextmanager
@@ -61,6 +63,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
         trials.notify()
 
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
+    register_host_operations(app, runtime=runtime, user=user)
     register_host_trials(app, trials, user)
     write_lock = asyncio.Lock()
     register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)

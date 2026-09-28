@@ -1,4 +1,6 @@
 <script setup>
+import HostLimits from '../components/HostLimits.vue'
+import HostProcessingSettings from '../components/HostProcessingSettings.vue'
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import { developerMode } from '../composables/useDeveloperMode.js'
@@ -201,6 +203,8 @@ onMounted(() => read(false))
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="saving==='panel'" :disabled="!panelDirty||Boolean(saving)||loading">保存面板设置</v-btn><span class="muted">当前监听与登录会话不变；重启后按保存值运行。</span></div>
       </form>
     </template>
+    <HostProcessingSettings />
+    <HostLimits />
   </div>
 </template>
 

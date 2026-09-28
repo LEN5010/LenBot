@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, contextmanager
+from contextlib import AsyncExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal, TypeVar
@@ -149,7 +149,7 @@ def _atomic_replace(path: Path, content: str) -> None:
 
 
 def scene_overview(root: Path, scene: str) -> str | None:
-    """Read a scene partition's root overview without opening the index (also used offline)."""
+    """Read a scene root overview only when the recorded source changes have not invalidated it."""
     category, qq = _SCENE.fullmatch(_scene_scope(scene)).groups()
     base = root.expanduser().resolve() / ("groups" if category == "group" else "private") / qq
     files = [base / name for name in SUMMARY_FILES]
@@ -161,6 +161,12 @@ def scene_overview(root: Path, scene: str) -> str | None:
         return None
     if not all(present):
         raise ValueError(f"incomplete memory summary files in {base}: {dict(zip(SUMMARY_FILES, present))}")
+    index = root.expanduser().resolve() / _INDEX_NAME
+    if index.exists():
+        with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
+            latest = db.execute("SELECT MAX(changed_at) FROM memory_changes WHERE scope=?", (scene,)).fetchone()[0]
+        if latest is not None and latest > min(file.stat().st_mtime for file in files):
+            return None
     return _source_text(files[1])
 
 
@@ -176,6 +182,7 @@ class LocalMemory:
             raise ValueError("local memory embedding client does not match configured provider/model/dimensions")
         self.settings = settings
         self.embedding = embedding
+        self.track_embedding = None
         self.root = settings.directory.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = self.root / _INDEX_NAME
@@ -421,7 +428,7 @@ class LocalMemory:
             raise ValueError("reindex_embeddings requires configured embedding")
         files = self._source_files()
         ordered = sorted(files.items())
-        batch = await self.embedding.embed([content for _, content in ordered]) if ordered else None
+        batch = await self._embedding("public", [content for _, content in ordered], "reindex") if ordered else None
         with self._db() as db:
             db.execute("BEGIN EXCLUSIVE")
             if self._vector_table_exists(db):
@@ -529,7 +536,7 @@ class LocalMemory:
         source = _scene_scope(scene)
         async with self._lock(source):
             self._target(source, path, file=True)
-            vector = await self._embed_text(content)
+            vector = await self._embed_text(source, content)
             return await _finish_write_thread(self._write_sync, source, path, content, reason, vector)
 
     async def owner_write_public(self, path: str, content: str, reason: str) -> LocalMemoryChange:
@@ -538,14 +545,19 @@ class LocalMemory:
             raise ValueError("public memory write reason must not be blank")
         async with self._lock("public"):
             self._target("public", path, file=True)
-            vector = await self._embed_text(content)
+            vector = await self._embed_text("public", content)
             return await _finish_write_thread(self._write_sync, "public", path, content, reason, vector)
 
-    async def _embed_text(self, content: str) -> tuple[float, ...] | None:
+    async def _embedding(self, source: str, texts: list[str], purpose: str):
+        if self.track_embedding is not None:
+            return await self.track_embedding(source, texts, purpose)
+        return await self.embedding.embed(texts)
+
+    async def _embed_text(self, source: str, content: str) -> tuple[float, ...] | None:
         if self.embedding is None:
             return None
         dimensions = await asyncio.to_thread(self._vector_preflight)
-        batch = await self.embedding.embed([content])
+        batch = await self._embedding(source, [content], "index")
         if dimensions is not None and batch.dimensions != dimensions:
             raise ValueError(f"embedding dimensions {batch.dimensions} differ from memory index {dimensions}")
         return batch.vectors[0]
@@ -635,7 +647,7 @@ class LocalMemory:
             dimensions = await asyncio.to_thread(self._vector_preflight)
             if dimensions is None:
                 return []
-            batch = await self.embedding.embed([query])
+            batch = await self._embedding(source, [query], "query")
             if batch.dimensions != dimensions:
                 raise ValueError(f"embedding dimensions {batch.dimensions} differ from memory index {dimensions}")
             return await asyncio.to_thread(self._search_hybrid_sync, source, query,
@@ -749,9 +761,9 @@ class LocalMemory:
                 continue
             if entry.is_dir():
                 self._target(scope, relative, file=False)
-                abstract = entry / ".abstract.md"
+                summary = self._summary_sync(scope, relative)
                 directories.append({"name": entry.name,
-                                    "abstract": _source_text(abstract) if abstract.exists() else None})
+                                    "abstract": summary.abstract if summary.changed_after is None else None})
             elif entry.suffix == ".md" and entry.name not in SUMMARY_FILES:
                 files.append({"name": entry.name, "content": _source_text(self._target(scope, relative, file=True))})
         return {"path": path, "files": files, "directories": directories}
@@ -778,6 +790,17 @@ class LocalMemory:
         source = self._source(scene, scope)
         async with self._lock(source):
             return await _finish_write_thread(self._write_summary_sync, source, path, abstract, overview)
+
+    async def clear_summary(self, scene: str, path: str, *,
+                            scope: Literal["scene", "public"] = "scene") -> None:
+        """Remove this directory's derived files when it has no source content."""
+        source = self._source(scene, scope)
+        def remove() -> None:
+            directory = self._summary_directory(source, path)
+            for name in SUMMARY_FILES:
+                (directory / name).unlink(missing_ok=True)
+        async with self._lock(source):
+            await _finish_write_thread(remove)
 
     def _drop_summaries(self, scope: str, path: str) -> tuple[str, ...]:
         parts = _parts(path, file=True)[:-1]

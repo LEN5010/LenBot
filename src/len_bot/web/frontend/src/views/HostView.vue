@@ -1,4 +1,5 @@
 <script setup>
+import HostNotices from '../components/HostNotices.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
@@ -189,7 +190,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-stack host-view">
     <header class="page-intro">
-      <div><p class="eyebrow">LenBot 运行管理</p><h1>{{ route.name === "host-logs" ? "日志" : "群聊" }}</h1><p v-if="route.name === 'host-logs'" class="muted">当前提供消息与轮次时间线；系统日志尚未接入本页。</p>
+      <div><p class="eyebrow">LenBot 运行管理</p><h1>{{ route.name === "host-logs" ? "日志" : "群聊" }}</h1><p v-if="route.name === 'host-logs'" class="muted">当前提供消息与轮次时间线；系统日志请进入上方“系统”分区。</p>
         <p class="muted">查看当前连接、聊天原话与实际调用。本页只读；工具范围、模型与场景设置从下方入口管理。</p>
         <div class="management-links">
           <v-btn variant="text" :to="{name:'host-capabilities',query:route.query}">工具能力</v-btn>
@@ -275,6 +276,8 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </div>
+    <a v-if="detail && selectedTurn" :href="`/api/host/scenes/${encodeURIComponent(selectedScene)}/turns/${encodeURIComponent(selectedTurn)}/export`">下载当前轮次脱敏诊断包</a>
+    <HostNotices v-if="selectedScene" :scene="selectedScene" />
   </div>
 </template>
 

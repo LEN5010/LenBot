@@ -52,3 +52,29 @@ def test_browser_native_frames():
 def test_browser_bound_arguments(body):
     with pytest.raises(ValidationError):
         BrowserAction.model_validate(body)
+
+
+def test_human_wait_uses_native_deadline_not_normal_rpc_deadline():
+    async def exercise(root):
+        seen = []
+        async def serve(reader, writer):
+            request = json.loads(await reader.readline()); seen.append(request)
+            await asyncio.sleep(.12)
+            writer.write((json.dumps({'id': request['id'], 'result': {'outcome': 'completed'}})+'\n').encode())
+            await writer.drain(); writer.close(); await writer.wait_closed()
+        settings = AccountBrowserSettings(socket=root/'ipc.sock', binary=root/'bsk', home=root, timeout_seconds=.04)
+        server = await asyncio.start_unix_server(serve, path=settings.socket)
+        async with server:
+            reply = await AccountBrowser(settings).execute('fixture-session', BrowserAction(
+                method='request_help', params={'prompt': '合成人工等待', 'timeout_ms': 1000}))
+            assert reply['outcome'] == 'completed'
+            assert [request['method'] for request in seen] == ['tool.request_help']
+            assert seen[0]['params']['session_id'] == 'fixture-session'
+    with tempfile.TemporaryDirectory(prefix='lb-bsk-wait-', dir='/private/tmp') as directory:
+        asyncio.run(exercise(Path(directory)))
+
+
+@pytest.mark.parametrize('params', [{'ref': 'e1', 'value': 'red'}, {'values': 'red'}, {'values': [1]}])
+def test_select_rejects_non_native_values(params):
+    with pytest.raises(ValidationError, match='values'):
+        BrowserAction(method='select', params=params)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 
@@ -13,6 +13,7 @@ class ModelSlots:
         if limit <= 0:
             raise ValueError("model request slot limit must be positive")
         self.limit = limit
+        self.admit: Callable[[str | None], None] | None = None
         self._active = 0
         self._direct: deque[asyncio.Future[None]] = deque()
         self._normal: deque[asyncio.Future[None]] = deque()
@@ -31,7 +32,7 @@ class ModelSlots:
         self._fill()
 
     @asynccontextmanager
-    async def slot(self, *, direct: bool = False) -> AsyncIterator[None]:
+    async def slot(self, *, direct: bool = False, scene: str | None = None) -> AsyncIterator[None]:
         waiter: asyncio.Future[None] | None = None
         granted = False
         queue = self._direct if direct else self._normal
@@ -45,6 +46,8 @@ class ModelSlots:
         try:
             if waiter is not None:
                 await waiter
+            if self.admit is not None:
+                self.admit(scene)
             yield
         finally:
             # A waiter may be granted and then cancelled before its await resumes.
