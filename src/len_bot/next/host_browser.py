@@ -6,10 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .account_browser import AccountBrowser, AccountBrowserSettings
-from .host_settings import _body, _prepare, _read_saved
+from .host_settings import _prepare, _read_saved
 from .tasks_store import TaskStore, TERMINAL
 
 
@@ -44,11 +44,18 @@ def register_host_browser(app: FastAPI, *, root: Path, runtime, user, write_lock
 
     @app.get('/api/host/browser')
     async def state(_: str = Depends(user)):
-        return view(await asyncio.to_thread(_read_saved, root))
+        try:
+            return view(await asyncio.to_thread(_read_saved, root))
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.put('/api/host/browser')
     async def save(request: Request, _: str = Depends(user)):
-        body = await _body(request, BrowserChange)
+        try:
+            body = BrowserChange.model_validate_json(await request.body())
+        except ValidationError as error:
+            detail = '; '.join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors(include_input=False))
+            raise HTTPException(422, detail) from error
         async with write_lock:
             if records.browser_in_use() and body.settings != running:
                 raise HTTPException(409, '仍有账号浏览器占用，先完成原会话清理再改绑定')

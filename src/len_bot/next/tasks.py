@@ -61,6 +61,7 @@ class RunningTask:
     answer: asyncio.Future[dict] | None = None
     timer: asyncio.Timeout | None = None
     remaining: float = 0
+    active_limit: float = 0
     cancelled: bool = False
     last_progress: str | None = None
     next_progress: float = 300
@@ -115,13 +116,16 @@ class WorkTasks:
         if requester == self.config.bot_qq:
             raise PermissionError("委托与管理任务须使用实际人类 QQ，不能用 Bot 账号")
         settings = self.config.scenes[scene].tasks
+        identities = self.config.scene_config(scene).permissions
         return roles_for(requester, owner=self.config.owner_qq, scoped_owner=settings.owner,
-                         admins=settings.admins, whitelist=settings.whitelist,
+                         admins=[*settings.admins, *identities.admins], whitelist=[*settings.whitelist, *identities.whitelist],
                          group_role=self.store.latest_sender_role(scene, requester) if scene.startswith('group:') else None)
 
     def _can_delegate(self, scene: str, requester: str) -> None:
         if not self.accepting:
             raise RuntimeError(f"任务执行器未接受新任务：{self.error or '宿主正在启动或停止'}")
+        if requester in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError(f'QQ {requester} 在当前场景黑名单中，不能创建或继续任务')
         settings = self.config.scenes[scene].tasks
         if not settings.enabled:
             raise PermissionError("当前场景未开放任务执行")
@@ -129,6 +133,8 @@ class WorkTasks:
             raise PermissionError(f"QQ {requester} 没有当前场景的委托任务权限")
 
     def _can_manage(self, item: Task, requester: str) -> None:
+        if requester != item.requester and requester in self.config.scene_config(item.scene).permissions.blacklist:
+            raise PermissionError('黑名单账号只能取消本人的任务，不能管理他人任务')
         if item.account_browser:
             self._browser_owner(requester)
         roles = self._roles(item.scene, requester)
@@ -136,11 +142,19 @@ class WorkTasks:
                 self.config.scenes[item.scene].tasks.manage_roles):
             raise PermissionError("只能管理自己的任务，或由有任务管理权限的账号操作")
 
+    def active_timeout(self, item: Task) -> float:
+        current = self.running.get(item.id)
+        if current is not None and current.active_limit > 0:
+            return current.active_limit
+        requester = self.records.execution_requester(item)
+        allowed = self._roles(item.scene, requester).intersection(self.config.scenes[item.scene].tasks.long_running_roles)
+        return self.settings.active_timeout_seconds if allowed else min(self.settings.active_timeout_seconds, 1800)
+
     def status(self, scene: str, id: int) -> dict:
         item = self.records.get(scene, id)
         costs = self.records.call_costs(scene, id)
         return {**asdict(item), "files": [file_info(file, self.records) for file in self.records.list_files(scene, id)],
-                "model_calls": len(costs), "cost": cost_summary(costs),
+                "model_calls": len(costs), "cost": cost_summary(costs), "active_timeout_seconds": self.active_timeout(item),
                 "network": self.egress.status(scene, id),
                 "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。出网配置不等于目标连通。"}
 
@@ -191,6 +205,8 @@ class WorkTasks:
             raise RuntimeError("任务执行器正在启动或停止，不能追加运行要求")
         item = self.records.get(scene, id)
         self._can_manage(item, requester)
+        if requester in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError('当前黑名单账号不能追加任务要求')
         if item.status not in {"running", "waiting_input"}:
             raise ValueError("追加只适用于已开始的任务；已结束任务用 continue")
         current = self.running[id]
@@ -219,6 +235,8 @@ class WorkTasks:
         item = self.records.get(scene, id)
         if requester == self.config.bot_qq:
             raise PermissionError("回答者必须是实际人类 QQ，不用 Bot 冒充回答者")
+        if requester in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError('黑名单账号不能恢复等待回答的任务')
         if item.status != "waiting_input":
             raise ValueError("任务当前没有等待回答的问题")
         if item.account_browser:
@@ -392,7 +410,8 @@ class WorkTasks:
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         status, summary, error_text = "failed", None, None
         try:
-            async with asyncio.timeout(self.settings.active_timeout_seconds) as timer:
+            current.active_limit = self.active_timeout(item)
+            async with asyncio.timeout(current.active_limit) as timer:
                 current.timer = timer
                 current.skills = self.skills[item.scene]
                 if item.account_browser:
@@ -415,7 +434,7 @@ class WorkTasks:
                     self.sandbox, scene=item.scene, task_id=str(item.id),
                     skills=current.skills,
                     data_tools=self.data_tools[item.scene] + ([BROWSER_TOOL] if item.account_browser else []),
-                    task_timeout_seconds=self.settings.active_timeout_seconds,
+                    task_timeout_seconds=current.active_limit,
                     public_browser=self.settings.public_browser,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
                     context_window_tokens=binding.context_window_tokens, price=price,
@@ -507,6 +526,7 @@ class WorkTasks:
                 "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
+                "active_timeout_seconds": current.active_limit,
                 "data_tools": [tool["name"] for tool in self.data_tools[item.scene]] + (["account_browser"] if item.account_browser else []),
                 "public_browser": None if session.browser_cli_version is None else {
                     "command": "lenbot-browser", "cli_version": session.browser_cli_version,
@@ -523,7 +543,7 @@ class WorkTasks:
             raise RuntimeError("Pi 处理了输入但未开始执行任务")
         final: dict | None = None
         while True:
-            elapsed = self.settings.active_timeout_seconds - max(
+            elapsed = current.active_limit - max(
                 0, current.timer.when() - asyncio.get_running_loop().time())
             if elapsed >= current.next_progress:
                 self._progress(current, current.last_progress or "任务仍在执行，尚未报告阶段说明")

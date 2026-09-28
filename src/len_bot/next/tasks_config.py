@@ -122,6 +122,7 @@ class TaskSettings(BaseModel):
     admins: list[str] = Field(default_factory=list)
     whitelist: list[str] = Field(default_factory=list)
     delegate_roles: list[TaskRole] = Field(default_factory=lambda: ["owner", "admin", "whitelist"])
+    long_running_roles: list[TaskRole] = Field(default_factory=lambda: ["owner", "whitelist"])
     manage_roles: list[TaskRole] = Field(default_factory=lambda: ["owner", "admin"])
     max_running: int = Field(default=2, gt=0, strict=True)
     max_daily_tasks: int = Field(default=5, gt=0, strict=True)
@@ -143,7 +144,7 @@ class TaskSettings(BaseModel):
             raise ValueError("must contain positive QQ numbers as text")
         return values
 
-    @field_validator("delegate_roles", "manage_roles")
+    @field_validator("delegate_roles", "manage_roles", "long_running_roles")
     @classmethod
     def unique_roles(cls, values: list[TaskRole]) -> list[TaskRole]:
         if len(values) != len(set(values)):

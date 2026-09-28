@@ -202,7 +202,8 @@ class NetworkRuntime:
             self._emit({"type": "receipt", "scene": message.scene, "status": "ignored",
                         "platform_message_id": message.platform_message_id})
             return
-        command = (None if self.plugins is None else
+        blocked = message.sender.uid in runner.config.permissions.blacklist
+        command = (None if self.plugins is None or blocked else
                    self.plugins.match_command(message, tuple(runner.settings.other_bot_qqs)))
         try:
             receipt = runner.receive_message(message, raw, wake=command is None)
@@ -214,7 +215,7 @@ class NetworkRuntime:
             self.reply_effects.wake(message.scene)
         if (self.sticker_collection is not None and message.scene in self.sticker_collection.scenes
                 and message.scene not in self.sticker_collection.errors
-                and receipt["status"] != "duplicate" and not message.is_self
+                and receipt["status"] != "duplicate" and not message.is_self and not blocked
                 and any(segment.type == "image" for segment in message.segments)):
             self.sticker_collection.request(message.scene)
         if command is not None and receipt["status"] != "duplicate":

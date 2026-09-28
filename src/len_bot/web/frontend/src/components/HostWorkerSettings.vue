@@ -251,12 +251,13 @@ onMounted(() => read(false))
       <v-alert v-if="taskDraft.enabled && (snapshot.saved.worker===null || snapshot.saved.models.roles.worker===null)" type="warning" variant="tonal">启用任务须先保存全局执行环境和 worker 模型绑定；此保存请求将由完整配置校验拒绝，不能自动借用大脑模型。</v-alert>
       <form @submit.prevent="saveTasks"><fieldset :disabled="loading || Boolean(saving)">
         <div class="form-grid"><v-switch v-model="taskDraft.enabled" label="启用此场景任务" :disabled="loading || Boolean(saving)" hide-details />
-          <v-text-field :model-value="taskDraft.owner ?? ''" label="主人 QQ（留空表示无主人）" inputmode="numeric" hide-details="auto" @update:model-value="value=>taskDraft.owner=value===''?null:value" />
+          <v-text-field :model-value="taskDraft.owner ?? ''" label="本能力范围主人 QQ（留空不增加局部主人）" inputmode="numeric" hide-details="auto" @update:model-value="value=>taskDraft.owner=value===''?null:value" />
           <v-text-field :model-value="taskDraft.max_running" type="number" step="1" label="此场景同时执行上限" hide-details="auto" @update:model-value="value=>taskDraft.max_running=numeric(value)" />
           <v-text-field :model-value="taskDraft.max_daily_tasks" type="number" step="1" label="每人每日新任务上限" hide-details="auto" @update:model-value="value=>taskDraft.max_daily_tasks=numeric(value)" /></div>
         <div class="list-block"><h3>管理员 QQ</h3><div v-for="(row,index) in admins" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`管理员 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" :aria-label="`删除管理员 QQ ${index+1}`" @click="admins.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="admins.push({value:''})">添加管理员</v-btn></div>
         <div class="list-block"><h3>白名单 QQ</h3><div v-for="(row,index) in whitelist" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`白名单 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" :aria-label="`删除白名单 QQ ${index+1}`" @click="whitelist.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="whitelist.push({value:''})">添加白名单</v-btn></div>
         <div class="form-grid"><v-select v-model="taskDraft.delegate_roles" label="允许委托任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" />
+          <v-select v-model="taskDraft.long_running_roles" label="允许超过 30 分钟任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" />
           <v-select v-model="taskDraft.manage_roles" label="允许管理他人任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" /></div>
         <h3>此场景公共联网限额覆盖</h3>
         <p class="muted">三项留空表示沿用上方全局限额，不表示 0；不会自动增减或重试限制。</p>

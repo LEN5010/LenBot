@@ -317,6 +317,8 @@ class PluginHost:
     def require_owner(self, scene: str, requester_qq: str) -> None:
         if scene not in self.config.scenes:
             raise PermissionError(f"未配置场景 {scene}")
+        if requester_qq in self.config.scene_config(scene).permissions.blacklist:
+            raise PermissionError(f'QQ {requester_qq} 在当前场景黑名单中')
         if self.config.owner_qq is None or requester_qq != self.config.owner_qq:
             raise PermissionError(f"QQ {requester_qq} 没有主人账号权限（按根配置 owner_qq 判断）")
 

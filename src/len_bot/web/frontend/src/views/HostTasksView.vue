@@ -441,7 +441,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="creating" :disabled="!acceptingScene || !createForm.requester || !createForm.goal.trim() || !createForm.deliverable.trim()">登记并排队</v-btn>
           <span class="muted">创建成功仅说明真实任务已排队，不表示模型已运行。</span></div></form>
       <v-alert v-if="createError" type="error" variant="tonal" role="alert">{{ createError }}</v-alert>
-      <v-alert v-if="createResult" type="success" variant="tonal" role="status">后端返回任务 {{ createResult.id }} · {{ statusLabel(createResult.status) }}。列表尚未重读；请手动刷新确认后续状态。</v-alert>
+      <v-alert v-if="createResult" type="success" variant="tonal" role="status">后端返回任务 {{ createResult.id }} · {{ statusLabel(createResult.status) }} · 此次活动执行时限 {{ createResult.active_timeout_seconds }} 秒。列表尚未重读；请手动刷新确认后续状态。</v-alert>
     </section>
     <section v-if="selectedScene" class="surface"><div class="section-heading"><h2>任务列表</h2><v-btn variant="outlined" :loading="refreshing" @click="manualRefresh">重读列表</v-btn></div>
       <p v-if="listStale" class="muted">任务操作后此列表尚未重新读取；下方保留上次结果。</p>
@@ -485,6 +485,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
           <p v-if="detail.network.last_error" class="original-text">最近保存的连接错误（{{ localTime(detail.network.last_error.at) }}）：{{ detail.network.last_error.message }}</p>
         </section>
         <p v-if="sceneSettings?.network_today || detail.network" class="muted">这些是代理进程内实时计量、按连接合并保存的已知字节；异常退出可能丢失未存尾部，不是跨断电精确硬封顶，也不表示远端已收到。</p>
+        <p class="muted">{{ ['running','waiting_input'].includes(task.status)?'本次活动执行时限':'按当前权限可用的活动执行时限' }}：{{ task.active_timeout_seconds ?? '未装配执行器' }} 秒。账号浏览任务不续接旧工作区。</p>
         <v-alert v-if="task.error" type="error" variant="tonal" role="alert">任务错误原文：<pre>{{ task.error }}</pre></v-alert>
         <details><summary>查看原始任务输入</summary><pre>{{ task.input }}</pre></details>
         <section v-if="task.question" class="question"><h3>当前等待的问题</h3><p class="original-text">{{ task.question.title }}</p>
