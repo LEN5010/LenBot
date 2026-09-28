@@ -558,13 +558,19 @@ class ReplayClockSettings(BaseModel):
 
 from .operations import LoggingSettings
 from .limits import ResourceLimits
+from .retention import RetentionSettings
 
 
 class SharedConfig(BaseModel):
     model_config = STRICT
+    @property
+    def _instance_root(self) -> Path | None:
+        # Loader location is not a runtime setting and is not serialized or compared.
+        return self.__dict__.get('_source_root')
 
     logging: LoggingSettings | None = None
     limits: ResourceLimits = Field(default_factory=ResourceLimits)
+    retention: RetentionSettings | None = None
     max_model_requests: int = Field(default=4, gt=0, strict=True)
     bot_qq: str
     owner_qq: str | None = None
@@ -959,7 +965,9 @@ class HostConfig(SharedConfig):
         shared["timezone"] = self.scene_timezone(scene)
         del local["timezone"]
         shared["permissions"] = combine_identities(self.permissions, local.pop("permissions"))
-        return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
+        config = LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
+        object.__setattr__(config, '_source_root', self._instance_root)
+        return config
 
     def scene_timezone(self, scene: str) -> str:
         override = self.scenes[scene].timezone
@@ -1079,7 +1087,9 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
     try:
-        return LabConfig.model_validate(source)
+        config = LabConfig.model_validate(source)
+        object.__setattr__(config, '_source_root', root)
+        return config
     except ValidationError as error:
         raise _validation_error(path, error, "lab") from error
 
@@ -1130,7 +1140,9 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                     transport["cwd"] = _resolved_path(root, transport.get("cwd", "."), within_root=False,
                                                        field=f"mcp.{name}.transport.cwd")
     try:
-        return HostConfig.model_validate(source)
+        config = HostConfig.model_validate(source)
+        object.__setattr__(config, '_source_root', root)
+        return config
     except ValidationError as error:
         raise _validation_error(path, error, "host") from error
 

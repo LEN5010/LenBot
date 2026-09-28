@@ -375,6 +375,9 @@ async def test_export_conflicts_and_invalid_source_roll_back_every_scene(tmp_pat
     group = added["new-confirmed"]["scene"]
     if problem == "broken_new_body":
         with closing(sqlite3.connect(new_path)) as db, db:
+            # Reconstruct a corrupt source without expression indexes rejecting the fixture.
+            db.execute("DROP INDEX message_send_window")
+            db.execute("DROP INDEX message_retention")
             db.execute("UPDATE messages SET body=? WHERE seq=?",
                        ("{synthetic invalid JSON", added["new-simulated"]["seq"]))
     else:

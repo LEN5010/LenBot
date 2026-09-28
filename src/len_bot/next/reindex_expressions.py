@@ -15,7 +15,7 @@ async def rebuild() -> None:
     config = load_instance_config(Path.cwd())
     with Store(config.database) as store:
         slots = ModelSlots(config.max_model_requests)
-        slots.admit = ModelBudget(config, store, None).check
+        slots.admit = ModelBudget(config, store, None, root=config._instance_root).check
         async with open_expression_service(config, store, slots=slots) as service:
             if service is None:
                 raise ValueError("No configured expression embedding backend to rebuild")

@@ -92,7 +92,7 @@ async def run() -> None:
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with host_logging(config.logging, credentials(config)), Store(config.database) as store:
-        budget = ModelBudget(config, store, None)
+        budget = ModelBudget(config, store, None, root=config._instance_root)
         budget.trials_root = root / ".runtime" / "chat-tests"
         slots.admit = budget.check
         sticker_records = StickerStore(store)

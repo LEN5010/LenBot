@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 30
+FORMAT_VERSION = 31
 
 
 def encode(value: object) -> str:
@@ -330,6 +330,20 @@ class Store:
                         content TEXT NOT NULL, created REAL NOT NULL, delivered_at REAL
                     );
                     CREATE INDEX plugin_events_pending ON plugin_events(scene,id) WHERE delivered_at IS NULL;
+                    CREATE INDEX message_send_window ON messages(scene,json_extract(body,'$.time'))
+                        WHERE json_extract(body,'$.is_self')=1;
+                    CREATE INDEX message_retention ON messages(scene,COALESCE(received_at,json_extract(body,'$.time')),seq);
+                    CREATE INDEX model_call_usage ON model_calls(started,turn_id);
+                    CREATE INDEX model_call_expiry ON model_calls(ended,id);
+                    CREATE INDEX turns_scene_time ON turns(scene,started);
+                    CREATE INDEX turns_expiry ON turns(ended,id);
+                    CREATE INDEX task_model_usage ON task_events(scene,created) WHERE kind='model_call';
+                    CREATE INDEX audio_calls_usage ON audio_calls(started,scene);
+                    CREATE INDEX learning_batches_usage ON learning_batches(model_started,scene);
+                    CREATE INDEX jargon_calls_usage ON jargon_calls(model_started,scene);
+                    CREATE INDEX sticker_calls_usage ON sticker_calls(model_started,scene);
+                    CREATE INDEX reply_effect_calls_usage ON reply_effect_calls(model_started,scene);
+                    CREATE INDEX expression_embedding_calls_usage ON expression_embedding_calls(started,scene);
                     COMMIT;
                 """)
         except BaseException:
@@ -951,17 +965,24 @@ class Store:
                 call[key] = None if call[key] is None else json.loads(call[key])
             entry_seq = call.pop("mind_entry_seq")
             call["tool_results"] = None if entry_seq is None else []
-            if entry_seq is not None and call["response"]["message"].get("tool_calls"):
+            call["snapshot_expired_at"] = call["request"].get("snapshot_expired_at")
+            native = None if entry_seq is None else self.db.execute(
+                "SELECT message FROM mind_entries WHERE scene=? AND seq=?", (scene, entry_seq)).fetchone()
+            if call["role"] == "mind" and call["response"] is not None and call["error"] is None:
+                tool_calls = call["response"]["message"].get("tool_calls", [])
+            else:
+                tool_calls = [] if native is None else json.loads(native[0]).get("tool_calls", [])
+            call["native_tool_calls"] = tool_calls
+            if tool_calls and entry_seq is not None:
                 for entry in self.db.execute(
-                    "SELECT message FROM mind_entries WHERE scene=? AND seq>? ORDER BY seq",
-                    (scene, entry_seq),
+                    "SELECT message FROM mind_entries WHERE scene=? AND seq>? ORDER BY seq", (scene, entry_seq),
                 ):
                     message = json.loads(entry[0])
                     if message["role"] == "assistant":
                         break
                     if message["role"] == "tool":
                         call["tool_results"].append(message)
-                        if len(call["tool_results"]) == len(call["response"]["message"]["tool_calls"]):
+                        if len(call["tool_results"]) == len(tool_calls):
                             break
             calls.append(call)
         return {"turn": turn_record(turn), "calls": calls}

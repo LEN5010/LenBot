@@ -415,6 +415,19 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("CREATE INDEX scene_notices ON notices(scene,id)")
             db.execute("CREATE INDEX recalled_messages ON notices(scene,platform_id) "
                        "WHERE kind IN ('group_recall','friend_recall')")
+        elif version == 30:
+            db.execute("CREATE INDEX message_send_window ON messages(scene,json_extract(body,'$.time')) "
+                       "WHERE json_extract(body,'$.is_self')=1")
+            db.execute("CREATE INDEX message_retention ON messages(scene,COALESCE(received_at,json_extract(body,'$.time')),seq)")
+            db.execute("CREATE INDEX model_call_usage ON model_calls(started,turn_id)")
+            db.execute("CREATE INDEX model_call_expiry ON model_calls(ended,id)")
+            db.execute("CREATE INDEX turns_scene_time ON turns(scene,started)")
+            db.execute("CREATE INDEX turns_expiry ON turns(ended,id)")
+            db.execute("CREATE INDEX task_model_usage ON task_events(scene,created) WHERE kind='model_call'")
+            for table, start in (("audio_calls","started"),("learning_batches","model_started"),
+                                 ("jargon_calls","model_started"),("sticker_calls","model_started"),
+                                 ("reply_effect_calls","model_started"),("expression_embedding_calls","started")):
+                db.execute(f"CREATE INDEX {table}_usage ON {table}({start},scene)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

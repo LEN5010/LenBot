@@ -369,7 +369,8 @@ onMounted(readHost)
           <p v-if="item.error" class="original-text">{{ item.error }}</p>
           <v-btn variant="text" :disabled="batchDetailLoading" @click="openBatch(item.id)">{{ batch?.id===item.id?'收起经过':'查看实际请求与响应' }}</v-btn>
           <div v-if="batch?.id===item.id" class="detail"><p>模型开始：{{ localTime(batch.model_started) }}；用量 {{ batch.usage===null?'未知':JSON.stringify(batch.usage) }}</p>
-            <details><summary>原始请求</summary><pre>{{ JSON.stringify(batch.request,null,2) }}</pre></details>
+            <p v-if="batch.request?.snapshot_expired_at" class="muted">输入快照已过保留期；调用结果状态和计量保留，不代表原始请求仍可查看。</p>
+          <details><summary>原始请求</summary><pre>{{ JSON.stringify(batch.request,null,2) }}</pre></details>
             <details><summary>原始响应</summary><pre>{{ JSON.stringify(batch.response,null,2) }}</pre></details></div>
         </li></ul>
         <v-alert v-if="batchDetailError" type="error" variant="tonal" role="alert">{{ batchDetailError }}</v-alert>
@@ -385,7 +386,8 @@ onMounted(readHost)
           <p v-if="item.error" class="original-text">{{ item.error }}</p>
           <v-btn variant="text" :disabled="embeddingDetailLoading" @click="openEmbeddingCall(item.id)">{{ embeddingCall?.id===item.id?'收起详情':'查看实际输入与用量' }}</v-btn>
           <div v-if="embeddingCall?.id===item.id" class="detail"><p>关联聊天轮次：{{ embeddingCall.turn_id ?? '无（候选索引或离线重建）' }}；用量 {{ embeddingCall.usage===null?'未知':JSON.stringify(embeddingCall.usage) }}</p>
-            <details><summary>实际请求（含输入文字与当时价格）</summary><pre>{{ JSON.stringify(embeddingCall.request,null,2) }}</pre></details>
+            <p v-if="embeddingCall.request?.snapshot_expired_at" class="muted">输入快照已过保留期；调用结果状态和计量保留，不代表原始请求仍可查看。</p>
+          <details><summary>实际请求（含输入文字与当时价格）</summary><pre>{{ JSON.stringify(embeddingCall.request,null,2) }}</pre></details>
             <details><summary>几何响应与错误</summary><pre>{{ JSON.stringify({response:embeddingCall.response,error:embeddingCall.error},null,2) }}</pre></details></div>
         </li></ul>
         <v-alert v-if="embeddingDetailError" type="error" variant="tonal" role="alert">{{ embeddingDetailError }}</v-alert>

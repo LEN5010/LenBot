@@ -8,8 +8,7 @@ const props = defineProps({
 })
 
 const detailCalls = computed(() => props.detail.calls.map(call => {
-  const nativeCalls = call.error == null && call.response?.finish_reason === 'tool_calls'
-    ? call.response.message.tool_calls : []
+  const nativeCalls = call.native_tool_calls
   const tools = nativeCalls.map(native => ({
     id: native.id,
     name: native.function.name,
@@ -53,6 +52,7 @@ function raw(value) {
     <article v-for="call in detailCalls" :key="call.id" class="call-card">
       <div class="call-heading"><h4>{{ ({mind:'大脑',voice:'表达器',recap:'回想',vision:'视觉'})[call.role] || call.role }}</h4>
         <span>{{ localTime(call.started) }} · {{ call.ended==null?'请求中':'已结束' }}</span></div>
+      <p v-if="call.snapshot_expired_at" class="muted">请求与响应快照已过保留期；费用、用量及仍保存的原生工具结果保留。</p>
       <p v-if="call.error" class="turn-error">{{ call.error }}</p>
       <p v-if="call.cost == null" class="muted">按配置估算费用未知；不计为 0。</p>
       <p v-else class="cost-fact">按调用时配置估算：<strong>{{ call.cost.currency }} {{ call.cost.amount }}</strong> <span class="muted">· 非供应商账单</span></p>

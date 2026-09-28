@@ -23,6 +23,7 @@ from .persona import load_persona
 from .asr_model import AudioSettings
 from .operations import LoggingSettings
 from .limits import ResourceLimits
+from .retention import RetentionSettings
 from .skills import load_catalog, select_skills
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
@@ -30,6 +31,11 @@ from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
 from .memory_embeddings import EmbeddingBinding
 from .tasks_config import TaskSettings
 from len_bot.web.auth import hash_password
+
+
+class RetentionChange(BaseModel):
+    model_config = STRICT
+    retention: RetentionSettings | None
 
 
 class ProcessingChange(BaseModel):
@@ -207,6 +213,7 @@ def _project(config: HostConfig) -> dict:
     onebot["access_token_configured"] = bool(config.onebot.access_token)
     return {
         "limits": config.limits.model_dump(mode="json"),
+        "retention": None if config.retention is None else config.retention.model_dump(mode="json"),
         "processing": {key: (None if getattr(config, key) is None else getattr(config, key).model_dump(mode="json"))
                        for key in ("compaction", "images", "audio", "logging")},
         "connection": {
@@ -276,6 +283,7 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
                              "turn_timeout_seconds", "max_model_requests", "text_delivery")
             ),
             "limits": running.limits != saved.limits,
+            "retention": running.retention != saved.retention,
             "processing": current["processing"] != recorded["processing"],
             "panel": running.panel != saved.panel,
             "models": running.models != saved.models,
@@ -392,6 +400,11 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                 raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                     f"{type(error).__name__}: {error}") from error
             return _snapshot(running, saved)
+
+    @app.put("/api/host/settings/retention")
+    async def retention(request: Request, _: str = Depends(user)):
+        change = await _body(request, RetentionChange)
+        return await save(lambda source, saved: source.update(change.model_dump(mode="json")))
 
     @app.put("/api/host/settings/limits")
     async def limits(request: Request, _: str = Depends(user)):

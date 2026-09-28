@@ -1194,6 +1194,14 @@ def test_format19_jargon_migration_collision_rolls_back(tmp_path: Path) -> None:
         assert db.execute("SELECT name FROM sqlite_master WHERE name='jargon_calls'").fetchone() is None
 
 
+def _remove_format31_indexes(db):
+    # Construct an earlier-format input from the current schema, not a partial current database.
+    for name in ('message_send_window','message_retention','model_call_usage','model_call_expiry',
+                 'turns_scene_time','turns_expiry','task_model_usage','audio_calls_usage','learning_batches_usage',
+                 'jargon_calls_usage','sticker_calls_usage','reply_effect_calls_usage','expression_embedding_calls_usage'):
+        db.execute(f'DROP INDEX IF EXISTS {name}')
+
+
 def _format20_source(path: Path) -> None:
     """A format-19 synthetic fixture plus the committed format-20 jargon DDL."""
     shutil.copyfile(FIXTURES / "v19-synthetic.sqlite3", path)
@@ -1772,6 +1780,7 @@ def test_format26_audio_cache_preserves_existing_data(tmp_path):
         db.execute('DROP TABLE audio_cache')
         db.execute('DROP TABLE audio_calls')
         db.execute('DROP TABLE notices')
+        _remove_format31_indexes(db)
         db.execute('PRAGMA user_version=26')
         tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence'")]
@@ -1792,6 +1801,7 @@ def test_format26_audio_cache_collision_rolls_back(tmp_path):
         pass
     with sqlite3.connect(path) as db:
         db.execute('DROP TABLE notices')
+        _remove_format31_indexes(db)
         db.execute('PRAGMA user_version=26')
     with pytest.raises(sqlite3.OperationalError, match='already exists'):
         migrate_database(path)
@@ -1812,6 +1822,7 @@ def _format27_source(path):
             ('group:80001','7001',1,b'synthetic-existing-wav',0.1,100,'旧成功文字','fixture','exact-audio',105),
             ('group:80001','7002',1,b'synthetic-unfinished-wav',0.2,101,None,None,None,None)])
         db.execute('DROP TABLE notices')
+        _remove_format31_indexes(db)
         db.execute('PRAGMA user_version=27')
 
 
@@ -1849,6 +1860,7 @@ def test_format28_browser_binding_preserves_existing_tasks(tmp_path):
     with sqlite3.connect(path) as db:
         _remove_browser_columns(db)
         db.execute('DROP TABLE notices')
+        _remove_format31_indexes(db)
         db.execute('PRAGMA user_version=28')
         before = db.execute(f'SELECT {TASK_V28_COLUMNS} FROM tasks').fetchall()
     backup = migrate_database(path)
@@ -1866,9 +1878,11 @@ def test_format29_adds_notice_storage_without_rewriting_original_messages(tmp_pa
     with sqlite3.connect(path) as db:
         before = db.execute('SELECT * FROM messages').fetchall()
         db.execute('DROP TABLE notices')
+        _remove_format31_indexes(db)
         db.execute('PRAGMA user_version=29')
     # Keep the earlier fixture migration backup, but this explicit new input needs its own backup name.
     path.with_name(path.name + '.v29.bak').unlink()
+    path.with_name(path.name + '.v30.bak').unlink()
     migrate_database(path)
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT * FROM messages').fetchall() == before

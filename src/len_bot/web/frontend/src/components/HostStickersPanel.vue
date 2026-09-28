@@ -257,6 +257,7 @@ onMounted(refresh)
         <v-btn variant="text" :disabled="callLoading" @click="openCall(item.id)">{{ call?.id===item.id?'收起详情':'查看实际请求与响应' }}</v-btn>
         <div v-if="call?.id===item.id" class="call-detail"><p>模型用量：{{ call.model_started===null?'未开始':call.usage===null?'未知':JSON.stringify(call.usage) }}；结束 {{ localTime(call.ended) }}</p>
           <details><summary>来源消息原话与原生段</summary><pre>{{ JSON.stringify(call.source_message,null,2) }}</pre></details>
+          <p v-if="call.request?.snapshot_expired_at" class="muted">输入快照已过保留期；调用结果状态和计量保留，不代表原始请求仍可查看。</p>
           <details><summary>请求原文</summary><pre>{{ JSON.stringify(call.request,null,2) }}</pre></details>
           <details><summary>原始响应</summary><pre>{{ JSON.stringify(call.response,null,2) }}</pre></details></div>
       </li></ul>

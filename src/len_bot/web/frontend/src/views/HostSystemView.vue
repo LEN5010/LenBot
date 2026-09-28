@@ -1,4 +1,5 @@
 <script setup>
+import HostRetention from '../components/HostRetention.vue'
 import HostLimits from '../components/HostLimits.vue'
 import HostProcessingSettings from '../components/HostProcessingSettings.vue'
 import { computed, onMounted, ref } from 'vue'
@@ -205,6 +206,7 @@ onMounted(() => read(false))
     </template>
     <HostProcessingSettings />
     <HostLimits />
+    <HostRetention />
   </div>
 </template>
 
