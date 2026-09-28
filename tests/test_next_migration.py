@@ -1682,7 +1682,8 @@ def test_format24_plugin_events_table_keeps_all_rows(tmp_path: Path) -> None:
     assert _version(backup) == (0x4C424E31, 24)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            expected = [(*row, "arrival_count") for row in rows] if table == "proactive_wakes" else rows
+            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == expected
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT COUNT(*) FROM plugin_events").fetchone() == (0,)
         assert old.execute("SELECT name FROM sqlite_master WHERE name='plugin_events'").fetchone() is None
@@ -1706,3 +1707,45 @@ def test_format24_plugin_events_collision_rolls_back(tmp_path: Path) -> None:
     assert _version(path) == (0x4C424E31, 24)
     with sqlite3.connect(path) as db:
         assert [row[1] for row in db.execute("PRAGMA table_info(plugin_events)")] == ["collision"]
+
+
+def _format25_source(path: Path) -> None:
+    _format24_source(path)
+    from len_bot.next import migrate as migration
+    with sqlite3.connect(path, isolation_level=None) as db:
+        migration._upgrade_one_step(db, path, 24)
+    path.with_name(path.name + '.v24.bak').unlink()
+
+
+def test_format25_proactive_assessment_preserves_historical_facts(tmp_path):
+    path = tmp_path / 'state.db'
+    _format25_source(path)
+    with sqlite3.connect(path) as db:
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence' ORDER BY name")]
+        before = {table: db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() for table in tables}
+    backup = migrate_database(path)
+    assert _version(backup) == (0x4C424E31, 25)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as original:
+        for table, rows in before.items():
+            expected = [(*row, 'arrival_count') for row in rows] if table == 'proactive_wakes' else rows
+            assert db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == expected
+            assert original.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == rows
+        assert [row[2] for row in db.execute('PRAGMA index_info(reply_effects_turn)')] == ['scene', 'turn_id']
+    with Store(path) as store:
+        turn = store.start_turn('group:80001', proactive=('synthetic new wake', '2026-09-29', 1790100100.0))
+        assert store.db.execute('SELECT assessment FROM proactive_wakes WHERE turn_id=?', (turn,)).fetchone()[0] == 'reply_effects'
+
+
+def test_format25_assessment_collision_rolls_back(tmp_path):
+    path = tmp_path / 'state.db'
+    _format25_source(path)
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE INDEX reply_effects_turn ON reply_effects(scene)')
+        before = db.execute('SELECT * FROM proactive_wakes').fetchall()
+    with pytest.raises(sqlite3.OperationalError, match='already exists'):
+        migrate_database(path)
+    assert _version(path) == (0x4C424E31, 25)
+    with sqlite3.connect(path) as db:
+        assert 'assessment' not in [row[1] for row in db.execute('PRAGMA table_info(proactive_wakes)')]
+        assert db.execute('SELECT * FROM proactive_wakes').fetchall() == before

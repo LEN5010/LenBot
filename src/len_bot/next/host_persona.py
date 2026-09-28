@@ -65,7 +65,12 @@ def append_example(content: str, example: dict) -> str:
            for item in current):
         raise ValueError("examples.yaml 已有相同场景和台词的样例")
     block = yaml.safe_dump([example], allow_unicode=True, sort_keys=False)
-    updated = block if not current else content + ("" if content.endswith("\n") else "\n") + block
+    if current:
+        updated = content + ("" if content.endswith("\n") else "\n") + block
+    else:
+        node = yaml.compose(content)
+        # Replace only the empty sequence, retaining surrounding comments/document markers.
+        updated = content[:node.start_mark.index] + "\n" + block.rstrip("\n") + content[node.end_mark.index:]
     not_block = "examples.yaml 不是可在末尾追加的块状列表；请在角色文件编辑器里手动添加"
     try:
         appended = yaml.safe_load(updated)

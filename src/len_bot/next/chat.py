@@ -297,6 +297,16 @@ class Chat:
                                      "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
+        self.skills = () if tasks is None else tasks.skills[config.scene]
+        self.set_external_tools(external_tools)
+        self.system = self.profile_system(None if memory is None else memory.group_profile(config.scene))
+        # One outlet per scene: plugin sends never interleave with a multi-part expression.
+        self.outlet = asyncio.Lock()
+
+    def set_external_tools(self, external_tools: list[ExternalTool]) -> None:
+        """Replace the actual external capability set after service startup/closure."""
+        config, persona = self.config, self.persona
+        send_message, upload_file, platform_call = self.send_message, self.upload_file, self.platform_call
         allowed = build_tools(config, persona, platform=send_message is not None)
         # Plugin and MCP tools are always low-frequency and still need the role's permission.
         self.external = {tool.name: tool for tool in external_tools
@@ -317,13 +327,16 @@ class Chat:
                                + [tool.definition for tool in self.external.values()])
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & self.deferred_names
-        self.skills = () if tasks is None else tasks.skills[config.scene]
-        self.system = build_system(config, persona, allowed, platform=send_message is not None,
+        self._base_system = build_system(config, persona, allowed, platform=send_message is not None,
                                    skills=self.skills,
-                                   group_profile=None if memory is None else memory.group_profile(config.scene),
                                    external=[tool.definition for tool in self.external.values()])
-        # One outlet per scene: plugin sends never interleave with a multi-part expression.
-        self.outlet = asyncio.Lock()
+        self.system = self._base_system
+
+    def profile_system(self, profile: str | None) -> str:
+        if profile is None:
+            return self._base_system
+        return self._base_system + "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
+            profile=profile.strip())
 
     @property
     def tools(self) -> list[dict]:
@@ -433,7 +446,9 @@ class Chat:
         ]
         return (await self.request(turn_id, "vision", messages, [])).text
 
-    def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
+    async def project(self, recap: str | None, entries: list[tuple[int, dict]], state: dict) -> list[dict]:
+        profile = None if self.memory is None else await self.memory.read_group_profile(self.config.scene)
+        self.system = self.profile_system(profile)
         return [{"role": "system", "content": self.system}] + project_history(recap, entries) + [state]
 
     def jargon_context(self, messages: list[ChatMessage], *, intent: str | None = None) -> str | None:
@@ -475,7 +490,7 @@ class Chat:
             jargon = self.jargon_context(self.store.recent_context_messages(self.config.scene))
             if jargon is not None:
                 state["content"] += "\n" + jargon
-            messages = self.project(recap, entries, state)
+            messages = await self.project(recap, entries, state)
             if estimate_request(messages, self.tools, binding.max_output_tokens) <= trigger:
                 return messages
             plan = plan_compaction(
@@ -656,34 +671,43 @@ class Chat:
                                  self.config.text_delivery.max_chars)
         settings = self.config.text_delivery
         errors: list[str | None] = []
+        interruption: str | None = None
         async with self.outlet:
-            for index, part in enumerate(parts):
-                if index:
-                    await asyncio.sleep(min(settings.max_interval_seconds, max(
-                        settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
-                part.time = self.now()
-                part.send_status = "simulated" if self.send_message is None else "unconfirmed"
-                errors.append(None)
-                seq = self.store.start_outgoing(part)
-                self.notify()
-                if self.send_message is None:
-                    continue
-                result = await self.send_message(part)
-                part.send_status, part.platform_message_id = result.status, result.platform_message_id
-                errors[-1] = result.error
-                self.store.finish_expression((seq, None), part, "")
-                self.notify()
-                if result.status != "sent":
-                    break
-        report = report_parts(parts, errors, self.render)
+            try:
+                for index, part in enumerate(parts):
+                    if index:
+                        await asyncio.sleep(min(settings.max_interval_seconds, max(
+                            settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
+                    part.time = self.now()
+                    part.send_status = "simulated" if self.send_message is None else "unconfirmed"
+                    errors.append(None)
+                    seq = self.store.start_outgoing(part)
+                    self.notify()
+                    if self.send_message is None:
+                        continue
+                    result = await self.send_message(part)
+                    part.send_status, part.platform_message_id = result.status, result.platform_message_id
+                    errors[-1] = result.error
+                    self.store.finish_expression((seq, None), part, "")
+                    self.notify()
+                    if result.status != "sent":
+                        break
+            except BaseException as error:
+                interruption = f"{type(error).__name__}: {error}"
+                raise
+            finally:
+                if errors:
+                    report = report_parts(parts, errors, self.render)
+                    if interruption is not None:
+                        report += "\n" + interruption
+                    moment = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+                    self.store.add_plugin_event(self.config.scene, plugin, "reply", Template(
+                        (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
+                        plugin=plugin, time=moment,
+                        report=("模拟表达（未发送到 QQ）：" if self.send_message is None else "") + report).strip())
+                    self.notify()
         states = {part.send_status for part in parts[:len(errors)]}
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
-        moment = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
-        self.store.add_plugin_event(self.config.scene, plugin, "reply", Template(
-            (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
-            plugin=plugin, time=moment,
-            report=("模拟表达（未发送到 QQ）：" if self.send_message is None else "") + report).strip())
-        self.notify()
         return report, status
 
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:

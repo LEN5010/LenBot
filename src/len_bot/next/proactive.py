@@ -8,11 +8,11 @@ from zoneinfo import ZoneInfo
 
 from .config import Proactive, QuietHours
 from .quiet import local_period, next_local_start, quiet_period
+from .reply_effect_store import ReplyEffectStore
 from .store import Store
 
 
 PROMPT = Path(__file__).resolve().parents[1] / "prompts" / "next_proactive.md"
-OBSERVE_SECONDS = 1800.0
 PAUSE_SECONDS = 7 * 86400.0
 OUTCOMES = ("silent", "answered", "ignored", "unobserved")
 # Enough steps to pass a week-long pause, skipped days and quiet intervals.
@@ -54,44 +54,37 @@ class ProactiveStore:
     def pause(self, scene: str) -> dict | None:
         """The latest two observed spoken openings both ignored: pause from the later window end."""
         rows = self.db.execute(
-            "SELECT p.id,p.outcome,t.first_expression_at FROM proactive_wakes p JOIN turns t ON t.id=p.turn_id "
-            "WHERE p.scene=? AND p.outcome IN ('answered','ignored') ORDER BY p.id DESC LIMIT 2",
+            "SELECT p.id,p.outcome,(SELECT MAX(e.deadline) FROM reply_effects e "
+            "WHERE e.scene=p.scene AND e.turn_id=p.turn_id) FROM proactive_wakes p "
+            "WHERE p.scene=? AND p.assessment='reply_effects' AND p.outcome IN ('answered','ignored') "
+            "ORDER BY p.id DESC LIMIT 2",
             (scene,),
         ).fetchall()
         if len(rows) < 2 or any(row[1] != "ignored" for row in rows):
             return None
-        return {"until": rows[0][2] + OBSERVE_SECONDS + PAUSE_SECONDS, "wakes": [rows[1][0], rows[0][0]]}
+        return {"until": rows[0][2] + PAUSE_SECONDS, "wakes": [rows[1][0], rows[0][0]]}
 
     def _wake(self, row) -> dict:
         item = dict(row)
         spoke = item.pop("first_expression_at")
         delivery = item.pop("first_expression_delivery")
         item["spoke_at"] = spoke if delivery == "sent" else None
-        item["observe_until"] = None if item["spoke_at"] is None else item["spoke_at"] + OBSERVE_SECONDS
         return item
 
     def _select(self, where: str, parameters: tuple) -> list[dict]:
         rows = self.db.execute(
-            "SELECT p.id,p.scene,p.turn_id,p.woke_at,p.local_date,p.idle_since,p.outcome,p.closed_at,"
+            "SELECT p.id,p.scene,p.turn_id,p.woke_at,p.local_date,p.idle_since,p.outcome,p.closed_at,p.assessment,"
+            "(SELECT MAX(e.deadline) FROM reply_effects e WHERE e.scene=p.scene AND e.turn_id=p.turn_id) AS observe_until,"
             "t.status AS turn_status,t.ended AS turn_ended,t.first_expression_at,t.first_expression_delivery "
             "FROM proactive_wakes p JOIN turns t ON t.id=p.turn_id WHERE " + where, parameters,
         ).fetchall()
         return [self._wake(row) for row in rows]
 
     def open_wakes(self, scene: str) -> list[dict]:
-        return self._select("p.scene=? AND p.outcome IS NULL ORDER BY p.id", (scene,))
+        return self._select("p.scene=? AND p.outcome IS NULL AND p.assessment='reply_effects' ORDER BY p.id", (scene,))
 
     def page(self, scene: str, *, limit: int, offset: int) -> list[dict]:
         return self._select("p.scene=? ORDER BY p.id DESC LIMIT ? OFFSET ?", (scene, limit, offset))
-
-    def humans_after(self, scene: str, after: float, through: float, exclude_uids: tuple[str, ...]) -> int:
-        placeholders = ",".join("?" for _ in exclude_uids)
-        excluded = f" AND json_extract(body,'$.sender.uid') NOT IN ({placeholders})" if exclude_uids else ""
-        return self.db.execute(
-            "SELECT COUNT(*) FROM messages WHERE scene=? AND raw IS NOT NULL AND received_at>? "
-            "AND received_at<=? AND json_extract(body,'$.is_self')=0" + excluded,
-            (scene, after, through, *exclude_uids),
-        ).fetchone()[0]
 
     def close(self, id: int, outcome: str) -> None:
         if outcome not in OUTCOMES:
@@ -104,10 +97,10 @@ class ProactiveStore:
             if updated.rowcount != 1:
                 raise ValueError(f"Proactive wake {id} is already closed")
 
-    def settle(self, scene: str, now: float, *, connected_since: float | None,
-               exclude_uids: tuple[str, ...]) -> float | None:
-        """Close finished observations; return the next observation end still pending."""
+    def settle(self, scene: str, now: float) -> float | None:
+        """Use the existing reply judgments, never infer a response from a human arrival."""
         pending = None
+        effects = ReplyEffectStore(self.store)
         for wake in self.open_wakes(scene):
             if wake["turn_ended"] is None:
                 continue
@@ -115,14 +108,18 @@ class ProactiveStore:
             if spoke is None:
                 self.close(wake["id"], "silent")
                 continue
-            end = wake["observe_until"]
-            if self.humans_after(scene, spoke, min(now, end), exclude_uids):
+            samples = effects.for_turn(scene, wake["turn_id"])
+            if not samples:
+                self.close(wake["id"], "unobserved")
+            elif any(item["reaction"] in {"agree", "continue", "correct", "negative"} for item in samples):
                 self.close(wake["id"], "answered")
-            elif now >= end:
-                observed = connected_since is not None and connected_since <= spoke
-                self.close(wake["id"], "ignored" if observed else "unobserved")
+            elif any(item["state"] in {"observing", "waiting", "failed"} for item in samples):
+                # Failed judgments stay retryable in M12; they are not "ignored".
+                pending = now + 30.0
+            elif any(item["input_gap"] or item["reaction"] == "uncertain" for item in samples):
+                self.close(wake["id"], "unobserved")
             else:
-                pending = end if pending is None else min(pending, end)
+                self.close(wake["id"], "ignored")
         return pending
 
     def next_at(self, scene: str, settings: Proactive, timezone: str, quiet: QuietHours | None,

@@ -4,7 +4,7 @@ import { api, fmtTime, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 
 const props = defineProps({ scene: { type: String, required: true } })
-const emit = defineEmits(['dirty'])
+const emit = defineEmits(['dirty', 'busy'])
 const snapshot = ref(null), loading = ref(false), saving = ref('')
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
 const drafts = ref({}), sceneDraft = ref([]), pathsDraft = ref(''), dataDraft = ref('')
@@ -37,12 +37,18 @@ function initial(name) {
   }
   return { enabled: Boolean(saved), values }
 }
-function adopt(value) {
+function adopt(value, savedPart = null) {
+  const retained = savedPart === null ? {} : Object.fromEntries(names.value
+    .filter(name => !(savedPart.kind === 'plugin' && name === savedPart.name) && pluginDirty(name)).map(name => [name, drafts.value[name]]))
+  const keepScene = savedPart !== null && savedPart.kind !== 'scene' && sceneDirty.value
+  const keepPaths = savedPart !== null && savedPart.kind !== 'paths' && pathsDirty.value
   snapshot.value = value
-  drafts.value = Object.fromEntries(names.value.map(name => [name, initial(name)]))
-  sceneDraft.value = [...(value.scenes[props.scene]?.saved || [])]
-  pathsDraft.value = value.saved.paths.join('\n')
-  dataDraft.value = value.saved.data_directory
+  drafts.value = Object.fromEntries(names.value.map(name => [name, retained[name] || initial(name)]))
+  if (!keepScene) sceneDraft.value = [...(value.scenes[props.scene]?.saved || [])]
+  if (!keepPaths) {
+    pathsDraft.value = value.saved.paths.join('\n')
+    dataDraft.value = value.saved.data_directory
+  }
 }
 const pluginDirty = name => snapshot.value && JSON.stringify(drafts.value[name]) !== JSON.stringify(initial(name))
 const sceneDirty = computed(() => sceneState.value && JSON.stringify(sceneDraft.value) !== JSON.stringify(sceneState.value.saved || []))
@@ -50,7 +56,8 @@ const pathsDirty = computed(() => snapshot.value && (pathsDraft.value !== snapsh
   || dataDraft.value !== snapshot.value.saved.data_directory))
 const dirty = computed(() => Boolean(snapshot.value) && (names.value.some(pluginDirty) || sceneDirty.value || pathsDirty.value))
 watch(dirty, value => emit('dirty', value), { immediate: true })
-onBeforeUnmount(() => emit('dirty', false))
+watch(saving, value => emit('busy', Boolean(value)), { immediate: true })
+onBeforeUnmount(() => { emit('dirty', false); emit('busy', false) })
 watch(() => props.scene, () => { if (snapshot.value) sceneDraft.value = [...(snapshot.value.scenes[props.scene]?.saved || [])] })
 
 async function read(confirmDiscard = true) {
@@ -75,24 +82,24 @@ function configBody(name) {
     }
     if (field.type === 'string_list') {
       const items = value.split('\n').map(item => item.trim()).filter(Boolean)
-      if (items.length || field.required) config[field.key] = items
+      config[field.key] = items
     } else if (field.type === 'integer' || field.type === 'number') {
       if (value === '' || value === null) { if (field.required) config[field.key] = value; continue }
       config[field.key] = Number(value)
-    } else if (field.type === 'string' && value === '' && !field.required) {
-      continue
     } else config[field.key] = value
   }
   return config
 }
-async function send(label, path, body, notice) {
+async function send(label, path, body, notice, part = { kind: 'plugin', name: label }) {
   if (saving.value) return
   const fresh = beginSave()
+  beginRead() // An older full read cannot replace drafts after this save.
+  loading.value = false
   saving.value = label; saveError.value = ''; savedNotice.value = ''
   try {
     const value = await api(path, { method: 'PUT', body: JSON.stringify(body) })
     if (!fresh()) return
-    adopt(value)
+    adopt(value, part)
     savedNotice.value = notice + (value.restart_required ? '当前运行的插件不变，重启宿主后生效。' : '与当前运行值一致。')
   } catch (error) {
     if (fresh()) saveError.value = error.status >= 400 && error.status < 500
@@ -108,12 +115,12 @@ function savePlugin(name) {
 }
 function saveScene() {
   send('scene', `/api/host/scenes/${encodeURIComponent(props.scene)}/plugins`, { plugins: sceneDraft.value },
-    `${sceneName(props.scene)} 的插件启用名单已保存；`)
+    `${sceneName(props.scene)} 的插件启用名单已保存；`, { kind: 'scene' })
 }
 function savePaths() {
   send('paths', '/api/host/plugin-paths', {
     paths: pathsDraft.value.split('\n').map(item => item.trim()).filter(Boolean), data_directory: dataDraft.value.trim()
-  }, '插件目录已保存；')
+  }, '插件目录已保存；', { kind: 'paths' })
 }
 function toggleScene(name, enabled) {
   sceneDraft.value = enabled ? [...sceneDraft.value, name] : sceneDraft.value.filter(item => item !== name)

@@ -11,7 +11,7 @@ const route = useRoute(), router = useRouter()
 const host = ref(null), snapshot = ref(null)
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
-const skillDirty = ref(false), pluginDirty = ref(false)
+const skillDirty = ref(false), pluginDirty = ref(false), pluginBusy = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -27,7 +27,7 @@ const toolDirty = computed(() => {
 })
 const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value)
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !(toolDirty.value || skillDirty.value) || window.confirm('有尚未保存的工具或技能许可草稿。放弃并切换场景？'))
+onBeforeRouteUpdate(() => !pluginBusy.value && (!dirty.value || window.confirm('有尚未保存的工具、技能或插件草稿。放弃并切换场景？')))
 
 let request = 0
 const beginRead = useRequestGuard(() => scene.value)
@@ -207,7 +207,7 @@ onMounted(readHost)
         </div>
       </section>
       <HostSkillSettings :key="scene" :scene="scene" @dirty="skillDirty=$event" />
-      <HostPluginsPanel :scene="scene" @dirty="pluginDirty=$event" />
+      <HostPluginsPanel :key="scene" :scene="scene" @dirty="pluginDirty=$event" @busy="pluginBusy=$event" />
     </template>
   </div>
 </template>

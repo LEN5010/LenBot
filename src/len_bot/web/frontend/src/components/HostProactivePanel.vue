@@ -6,8 +6,8 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 
 const props = defineProps({ scene: { type:String, required:true } })
 const OUTCOMES = {
-  silent:'被叫醒后没有开口', answered:'开口后 30 分钟内有群友说话', ignored:'开口后 30 分钟内没有群友说话',
-  unobserved:'观察期间连接中断或重启，无法判断',
+  silent:'被叫醒后没有开口', answered:'回复效果判断：有人回应', ignored:'观察窗口内未发现回应',
+  unobserved:'样本缺失、观察有缺口或无法确定回应关系',
 }
 const data = ref(null), loading = ref(false), error = ref('')
 const begin = useRequestGuard(() => props.scene)
@@ -22,9 +22,11 @@ function hours(seconds) {
   return minutes % 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟` : `${minutes / 60} 小时`
 }
 function outcome(item) {
+  if (item.assessment === 'arrival_count') return '历史消息活跃统计（非回应判断，不参与暂停）：' + (item.outcome || '未结束')
   if (item.outcome) return OUTCOMES[item.outcome] || item.outcome
   if (item.turn_ended === null) return '本轮仍在进行'
   if (item.spoke_at === null) return '轮次已结束，等待宿主记录结果'
+  if (item.observe_until === null || item.observe_until <= data.value.now) return '等待回复效果判断；失败批次可在学习页重做'
   return `观察中，到 ${time(item.observe_until)}`
 }
 async function read(more = false) {
@@ -61,7 +63,7 @@ onMounted(read)
         <p class="muted">最早可叫醒时间按读取时的数据计算；有新消息时会后移，宿主正在处理其他轮次时会顺延。</p>
       </template>
       <v-alert v-if="data.pause" type="warning" variant="tonal" role="status" title="已暂停一周">
-        最近两次开口（记录 #{{ data.pause.wakes[0] }}、#{{ data.pause.wakes[1] }}）后 30 分钟内都没有群友说话，暂停到 {{ time(data.pause.until) }}，之后自动恢复。
+        最近两次可判断的开话题（记录 #{{ data.pause.wakes[0] }}、#{{ data.pause.wakes[1] }}）在回复效果窗口内都未发现回应，暂停到 {{ time(data.pause.until) }}，之后自动恢复。
       </v-alert>
       <p v-if="!data.items.length" class="muted">还没有主动叫醒记录。</p>
       <ul v-else class="wake-list"><li v-for="item in data.items" :key="item.id" class="wake-card">

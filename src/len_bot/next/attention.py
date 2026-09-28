@@ -533,8 +533,7 @@ class SceneRunner:
         """Close finished observations; return the next allowed wake and the next observation end."""
         now = self.now()
         exclude = tuple(self.settings.other_bot_qqs)
-        observe_until = self.proactive.settle(self.config.scene, now, connected_since=self.connected_since(),
-                                              exclude_uids=exclude)
+        observe_until = self.proactive.settle(self.config.scene, now)
         wake_at, _ = self.proactive.next_at(self.config.scene, self.config.proactive, self.config.timezone,
                                             self.settings.quiet_hours, now, exclude)
         return wake_at, observe_until

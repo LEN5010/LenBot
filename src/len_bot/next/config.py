@@ -711,6 +711,25 @@ class SceneSettings(ScenePersona):
     # Plugins enabled in this scene; each must be loaded by root ``plugins``.
     plugins: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def proactive_requirements(self) -> SceneSettings:
+        if self.proactive is None:
+            return self
+        quiet = self.attention.quiet_hours
+        if quiet is not None:
+            def intervals(start: WallTime, end: WallTime) -> list[tuple[int, int]]:
+                a = start.hour * 3600 + start.minute * 60 + start.second
+                b = end.hour * 3600 + end.minute * 60 + end.second
+                return [(a, b)] if a < b else [(a, 86400), (0, b)]
+
+            active = intervals(self.proactive.start, self.proactive.end)
+            silent = intervals(quiet.start, quiet.end)
+            available = sum(b - a - sum(max(0, min(b, d) - max(a, c)) for c, d in silent)
+                            for a, b in active)
+            if available == 0:
+                raise ValueError("proactive active hours are entirely covered by quiet_hours")
+        return self
+
     @field_validator("timezone")
     @classmethod
     def valid_scene_timezone(cls, value: str | None) -> str | None:
@@ -832,6 +851,8 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
             if settings.proactive is not None and not scene.startswith("group:"):
                 raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
+            if settings.proactive is not None and (settings.learning is None or not settings.learning.reply_effects):
+                raise ValueError(f"scenes.{scene}.proactive requires learning.reply_effects to judge actual responses")
             loaded = {} if self.plugins is None else self.plugins.configured
             unknown = [name for name in settings.plugins if name not in loaded]
             if unknown:
