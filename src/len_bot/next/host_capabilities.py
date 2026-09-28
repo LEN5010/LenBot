@@ -99,7 +99,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                 "deferred": name in DEFERRED_NAMES,
                 "reasons": tool_unavailable_reasons(chat.config, chat.persona, name),
             })
-        for tool in ([] if runtime.plugins is None else runtime.plugins.tools_for(scene)):
+        for tool in (([] if runtime.plugins is None else runtime.plugins.tools_for(scene))
+                     + ([] if runtime.mcp is None else runtime.mcp.tools_for(scene))):
             allowed = chat.persona.tools == "all" or tool.name in chat.persona.tools
             tools.append({
                 "name": tool.name, "description": tool.description, "source": tool.source,
@@ -127,9 +128,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "file_upload": (chat.config.delivery == "onebot" and chat.tasks is not None
                                          and chat.config.onebot.upload_visible_root is not None),
                          "schedules": chat.config.schedules.enabled},
-            "not_implemented": [
-                {"name": "MCP", "description": "当前宿主尚未接入 MCP 服务。"},
-            ],
+            "not_implemented": [],
         }
 
     def skills_state(scene: str) -> dict:

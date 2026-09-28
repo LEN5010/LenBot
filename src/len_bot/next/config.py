@@ -22,6 +22,7 @@ from len_bot.next.pricing import ModelPrice
 from len_bot.next.tasks_config import TaskSettings, WorkerSettings
 from len_bot.next.web_search import WebSearchSettings
 from len_bot.next.memory import MemorySettings, LocalMemoryConfig, OpenVikingMemoryConfig
+from len_bot.next.mcp_config import MCPService, SERVICE_NAME
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -827,6 +828,14 @@ class HostConfig(SharedConfig):
     scenes: dict[str, SceneSettings] = Field(min_length=1)
     max_model_requests: int = Field(default=4, gt=0, strict=True)
     plugins: PluginSettings | None = None
+    mcp: dict[str, MCPService] = Field(default_factory=dict)
+
+    @field_validator("mcp")
+    @classmethod
+    def mcp_names(cls, value: dict[str, MCPService]) -> dict[str, MCPService]:
+        if any(SERVICE_NAME.fullmatch(name) is None or "__" in name for name in value):
+            raise ValueError("MCP names use 1–24 lowercase letters/digits/underscores, start with a letter, and exclude '__'")
+        return value
 
     @field_validator("scenes")
     @classmethod
@@ -897,6 +906,16 @@ class HostConfig(SharedConfig):
     def scene_timezone(self, scene: str) -> str:
         override = self.scenes[scene].timezone
         return self.timezone if override is None else override
+
+    @model_validator(mode="after")
+    def configured_mcp_scenes(self) -> HostConfig:
+        for name, service in self.mcp.items():
+            unknown = set(service.scenes) - self.scenes.keys()
+            if unknown:
+                raise ValueError(f"mcp.{name}.scenes references unconfigured scenes: {sorted(unknown)}")
+            if service.enabled and not service.scenes:
+                raise ValueError(f"mcp.{name}: enabled service requires at least one scene")
+        return self
 
 
 def _resolved_path(root: Path, value: object, *, within_root: bool, field: str) -> Path:
@@ -1033,6 +1052,13 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
         plugins["data_directory"] = _resolved_path(
             root, plugins.get("data_directory", "plugin-data"), within_root=True, field="plugins.data_directory",
         )
+    services = source.get("mcp")
+    if isinstance(services, dict):
+        for name, service in services.items():
+            if isinstance(service, dict) and isinstance(transport := service.get("transport"), dict):
+                if transport.get("type") == "stdio":
+                    transport["cwd"] = _resolved_path(root, transport.get("cwd", "."), within_root=False,
+                                                       field=f"mcp.{name}.transport.cwd")
     try:
         return HostConfig.model_validate(source)
     except ValidationError as error:

@@ -23,6 +23,7 @@ from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
 from .plugin_host import PluginHost
+from .mcp_host import MCPHost
 from .store import Store, encode
 from .tasks import WorkTasks
 
@@ -40,6 +41,7 @@ class NetworkRuntime:
                  reply_effects: ReplyEffectTracker | None = None,
                  expression_service: ExpressionService | None = None,
                  plugins: PluginHost | None = None,
+                 mcp: MCPHost | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
@@ -66,6 +68,7 @@ class NetworkRuntime:
             learning.on_update = self.notify
         self.tasks = tasks
         self.plugins = plugins
+        self.mcp = mcp
         if plugins is not None:
             plugins.on_update = self.notify
         self.on_update = on_update
@@ -90,7 +93,8 @@ class NetworkRuntime:
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 platform_call=self.platform.call if config.delivery == "onebot" else None,
-                external_tools=[] if plugins is None else plugins.tools_for(scene, preparing=True),
+                external_tools=(([] if plugins is None else plugins.tools_for(scene, preparing=True))
+                                + ([] if mcp is None else mcp.tools_for(scene))),
                 on_update=self.notify,
             )
         self.runners: dict[str, SceneRunner] = {}
@@ -102,6 +106,14 @@ class NetworkRuntime:
             )
         if plugins is not None:
             plugins.bind(self)
+        if mcp is not None:
+            mcp.on_update = self.refresh_external_tools
+
+    def refresh_external_tools(self) -> None:
+        for scene, chat in self.chats.items():
+            chat.set_external_tools(([] if self.plugins is None else self.plugins.tools_for(scene, preparing=self.status != "running"))
+                                    + ([] if self.mcp is None else self.mcp.tools_for(scene)))
+        self.notify()
 
     def compacted(self, scene: str) -> None:
         if self.ingestor is not None:
@@ -265,8 +277,7 @@ class NetworkRuntime:
                         self.reply_effects.start()
                     if self.plugins is not None:
                         await self.plugins.start()
-                        for scene, chat in self.chats.items():
-                            chat.set_external_tools(self.plugins.tools_for(scene))
+                    self.refresh_external_tools()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -323,7 +334,11 @@ class NetworkRuntime:
                                     if self.reply_effects is not None:
                                         await self.reply_effects.close()
                                 finally:
-                                    await self.platform.close()
+                                    try:
+                                        if self.mcp is not None:
+                                            await self.mcp.close()
+                                    finally:
+                                        await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:
