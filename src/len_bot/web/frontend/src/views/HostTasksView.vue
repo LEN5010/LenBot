@@ -4,6 +4,7 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+import TaskSkillCandidates from '../components/TaskSkillCandidates.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), items = ref([]), nextOffset = ref(null), detail = ref(null)
@@ -518,6 +519,8 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
               <pre>{{ JSON.stringify(fullEvents[event.id].record,null,2) }}</pre></details></li></ol>
           <v-btn v-if="moreEvents" variant="outlined" :loading="detailLoading" :disabled="dirty || detailLoading || refreshing" @click="readDetail(true)">读取更多事件预览</v-btn>
         </section>
+        <TaskSkillCandidates v-if="['done','failed','cancelled'].includes(task.status)" :key="`${selectedScene}:${task.id}`" :scene="selectedScene" :task-id="task.id"
+          :status="task.status" :container="task.container" :configured="Boolean(state?.configured)" />
       </template>
     </section>
   </div>
