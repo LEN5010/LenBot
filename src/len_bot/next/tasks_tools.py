@@ -22,6 +22,7 @@ class DelegateArguments(BaseModel):
     deliverable: str
     requester: str = Field(pattern=r"^[1-9][0-9]*$")
     context: str = ""
+    account_browser: bool = False
 
     @field_validator("goal", "deliverable")
     @classmethod
@@ -80,7 +81,8 @@ class TaskArguments(BaseModel):
 DELEGATE_TOOL = {"type": "function", "function": {
     "name": "delegate",
     "description": "为当前场景登记一项独立工作并排队。返回已创建只表示任务入队，"
-    "不表示已开始执行、已满足交付物或已向平台发送文件。requester 必须是实际人类 QQ。",
+    "不表示已开始执行、已满足交付物或已向平台发送文件。requester 必须是实际人类 QQ。"
+    "account_browser=true仅在主人已明确同意此次专用账号浏览任务时使用；另建独立任务，不提升普通任务。",
     "parameters": DelegateArguments.model_json_schema(),
 }}
 
@@ -100,7 +102,7 @@ async def execute_tasks(service: WorkTasks, scene: str, name: str, args: dict) -
         parsed = DelegateArguments.model_validate(args)
         return await service.delegate(
             scene, requester=parsed.requester, goal=parsed.goal,
-            deliverable=parsed.deliverable, context=parsed.context,
+            deliverable=parsed.deliverable, context=parsed.context, account_browser=parsed.account_browser,
         )
     if name != "task":
         raise ValueError(f"unknown task tool {name!r}")

@@ -1,4 +1,5 @@
 <script setup>
+import { developerDetails } from '../composables/useDeveloperMode.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
@@ -17,7 +18,7 @@ const createResult = ref(null), actionResult = ref(null), listStale = ref(false)
 const socketState = ref('connecting'), socketError = ref(''), newData = ref(false), refreshing = ref(false), refreshError = ref('')
 const liveSnapshot = ref(null), liveState = ref('idle'), liveError = ref(''), liveStale = ref(false)
 const questionChanged = ref(false)
-const createForm = ref({ requester: '', goal: '', deliverable: '', context: '' })
+const createForm = ref({ requester: '', goal: '', deliverable: '', context: '', account_browser: false })
 const operator = ref(''), appendText = ref(''), continueText = ref(''), answerText = ref(''), selectedAnswer = ref(null)
 const detailHeading = ref(null)
 const statusOptions = [
@@ -35,11 +36,11 @@ const canDownloadSession = computed(() => Boolean(state.value?.configured && tas
 const sessionHref = computed(() => `/api/host/tasks/${encodeURIComponent(selectedId.value)}/session?${new URLSearchParams({ scene:selectedScene.value })}`)
 const acceptingScene = computed(() => state.value?.configured && state.value.accepting && sceneSettings.value?.enabled)
 const canAppend = computed(() => state.value?.accepting && ['running','waiting_input'].includes(task.value?.status))
-const canContinue = computed(() => acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
+const canContinue = computed(() => !task.value?.account_browser && acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
 const canAnswer = computed(() => state.value?.accepting && task.value?.status === 'waiting_input' && task.value.question)
 const canCancel = computed(() => state.value?.configured && ['queued','running','waiting_input'].includes(task.value?.status)
   && (state.value.accepting || task.value.status === 'queued'))
-const dirty = computed(() => Object.values(createForm.value).some(value => value !== '') || operator.value !== ''
+const dirty = computed(() => Object.values(createForm.value).some(value => value !== '' && value !== false) || operator.value !== ''
   || appendText.value !== '' || continueText.value !== '' || answerText.value !== '' || selectedAnswer.value !== null)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(to => {
@@ -94,7 +95,7 @@ function resetDetail() {
 function resetList() {
   items.value = []; nextOffset.value = null; listLoading.value = false; listError.value = ''; listStale.value = false
   resetDetail()
-  createForm.value = { requester: '', goal: '', deliverable: '', context: '' }
+  createForm.value = { requester: '', goal: '', deliverable: '', context: '', account_browser: false }
   createError.value = ''; createResult.value = null; creating.value = false
 }
 async function readState() {
@@ -286,6 +287,21 @@ function connectLive() {
   }
 }
 function reconnectLive() { closeLive(); connectLive() }
+function eventContent(record) {
+  const body = record.body
+  const content = body.type === 'tool_execution_end' ? body.result?.content
+    : body.type === 'message_end' ? body.message?.content : null
+  return Array.isArray(content) ? content.filter(part => part.type === 'text'
+    || (part.type === 'image' && ['image/png','image/jpeg','image/webp'].includes(part.mimeType))) : []
+}
+function eventLabel(event) {
+  const labels = {tool_execution_start:'开始工具操作', tool_execution_end:'工具操作结果',
+    message_start:'开始生成', message_end:'生成结束', agent_start:'开始执行', agent_end:'本次执行结束',
+    extension_ui_request:'等待补充或确认', finished:'任务结束', input:'新增要求',
+    question:'向请求人提问', answer:'收到回答', browser_started:'专用浏览器会话已建立',
+    browser_stopped:'专用浏览器会话已关闭', browser_released:'残留会话已清理'}
+  return labels[event.event_type] || '任务记录'
+}
 async function readEvent(event) {
   if (eventReading.value !== null) return
   const name = selectedScene.value, id = selectedId.value, fresh = beginEvent()
@@ -308,7 +324,7 @@ async function createTask() {
     const result = await api(`/api/host/tasks/delegate?${new URLSearchParams({scene:name})}`, { method:'POST', body:JSON.stringify(payload) })
     if (!fresh()) return
     createResult.value = result; listStale.value = true
-    createForm.value = { requester:'', goal:'', deliverable:'', context:'' }
+    createForm.value = { requester:'', goal:'', deliverable:'', context:'', account_browser:false }
   } catch (error) { if (fresh()) createError.value = errorMessage(error, '新建任务') }
   finally { if (fresh()) creating.value = false }
 }
@@ -420,7 +436,8 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
         <v-text-field v-model="createForm.requester" label="实际请求人 QQ" inputmode="numeric" hide-details="auto" />
         <v-textarea v-model="createForm.goal" label="任务原目标" rows="3" auto-grow hide-details="auto" />
         <v-textarea v-model="createForm.deliverable" label="期望交付物" rows="3" auto-grow hide-details="auto" />
-        <v-textarea v-model="createForm.context" label="补充上下文（可空）" rows="3" auto-grow hide-details="auto" /></fieldset>
+        <v-textarea v-model="createForm.context" label="补充上下文（可空）" rows="3" auto-grow hide-details="auto" />
+        <v-checkbox v-model="createForm.account_browser" label="主人已明确同意此次专用账号浏览任务（独立工作区，不续接）" hide-details /></fieldset>
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="creating" :disabled="!acceptingScene || !createForm.requester || !createForm.goal.trim() || !createForm.deliverable.trim()">登记并排队</v-btn>
           <span class="muted">创建成功仅说明真实任务已排队，不表示模型已运行。</span></div></form>
       <v-alert v-if="createError" type="error" variant="tonal" role="alert">{{ createError }}</v-alert>
@@ -493,7 +510,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
           <v-btn v-if="canCancel && !detailStale" variant="outlined" color="error" :loading="acting==='cancel'" :disabled="!operator || Boolean(acting)" @click="submitAction('cancel')">确认取消此任务</v-btn>
           <v-alert v-if="actionError" type="error" variant="tonal" role="alert">{{ actionError }}</v-alert>
           <div v-if="actionResult" class="action-result"><p>后端实际返回：{{ actionResult.action }}。这不代替重新读取当前任务状态。</p>
-            <details><summary>查看操作原始结果</summary><pre>{{ JSON.stringify(actionResult.result,null,2) }}</pre></details></div>
+            <details v-if="developerDetails"><summary>查看操作原始结果</summary><pre>{{ JSON.stringify(actionResult.result,null,2) }}</pre></details></div>
         </section>
         <section class="files"><h3>已登记交付副本</h3><p class="muted">登记只说明副本已保存；是否上传以最近一次平台回执为准。下载只获取已保存副本，不会发往 QQ。</p>
           <p v-if="!detail.files.length" class="muted">当前没有已登记的文件。</p>
@@ -504,17 +521,26 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
               <p class="muted">尝试 / 回执：{{ localTime(file.upload.created) }} / {{ localTime(file.upload.ended) }}</p>
               <p v-if="file.upload.platform_file_id" class="muted">平台文件回执：{{ file.upload.platform_file_id }}</p>
               <p v-if="file.upload.error" class="original-text">错误原文：{{ file.upload.error }}</p>
-              <details><summary>查看最近一次上传回执原文</summary><pre>{{ JSON.stringify(file.upload,null,2) }}</pre></details></template>
+              <details v-if="developerDetails"><summary>查看最近一次上传回执原文</summary><pre>{{ JSON.stringify(file.upload,null,2) }}</pre></details></template>
             <v-btn variant="outlined" :loading="fileReading===file.id" :disabled="fileReading!==null" @click="downloadFile(file)">下载副本</v-btn></li></ul>
           <v-alert v-if="fileError" type="error" variant="tonal" role="alert">下载失败：{{ fileError }}</v-alert>
           <p v-if="downloadNotice" class="muted" role="status">{{ downloadNotice }}</p></section>
-        <section class="events"><h3>原生任务事件</h3><p class="muted">默认只取轻量预览；点击单条才读取完整记录，不一次加载全部模型上下文。</p>
+        <section class="events"><h3>任务过程</h3><p class="muted">点击单条读取实际文字与图像结果；完整事件结构只在开发者模式显示，不一次加载全部上下文。</p>
           <v-alert v-if="eventError" type="error" variant="tonal" role="alert">事件读取失败：{{ eventError }}</v-alert>
           <p v-if="!events.length" class="muted">当前没有已保存事件。</p>
-          <ol v-else><li v-for="event in events" :key="event.id"><div><strong>{{ event.kind }}</strong><span class="muted">{{ localTime(event.created) }}<template v-if="event.event_type"> · {{ event.event_type }}</template></span></div>
-            <p class="original-text">{{ event.preview }}</p><p v-if="event.truncated" class="muted">预览已截短；完整原文须单独读取。</p>
-            <v-btn variant="outlined" :loading="eventReading===event.id" :disabled="eventReading!==null" @click="readEvent(event)">{{ fullEvents[event.id]?'重读此条原文':'读取此条原文' }}</v-btn>
-            <details v-if="fullEvents[event.id]"><summary>查看此条完整记录 · {{ localTime(fullEvents[event.id].readAt) }} 快照</summary>
+          <ol v-else><li v-for="event in events" :key="event.id"><div><strong>{{ eventLabel(event) }}</strong><span class="muted">{{ localTime(event.created) }}<template v-if="event.tool_name"> · {{ event.tool_name }} {{ event.browser_method || '' }}</template></span></div>
+            <p v-if="developerDetails" class="original-text">{{ event.preview }}</p><p v-if="developerDetails && event.truncated" class="muted">预览已截短；完整原文须单独读取。</p>
+            <v-btn variant="outlined" :loading="eventReading===event.id" :disabled="eventReading!==null" @click="readEvent(event)">{{ fullEvents[event.id]?'重读此条详情':'读取此条详情' }}</v-btn>
+            <div v-if="fullEvents[event.id]" class="task-event-content">
+              <template v-for="(part,index) in eventContent(fullEvents[event.id].record)" :key="index">
+                <pre v-if="part.type==='text'">{{ part.text }}</pre>
+                <img v-else :src="`data:${part.mimeType};base64,${part.data}`" alt="此条原生工具结果中的实际图像" loading="lazy" style="max-width:100%;height:auto" />
+              </template>
+              <p v-if="fullEvents[event.id].record.body.summary">{{ fullEvents[event.id].record.body.summary }}</p>
+              <pre v-if="fullEvents[event.id].record.body.error">{{ fullEvents[event.id].record.body.error }}</pre>
+              <p v-if="!developerDetails && !eventContent(fullEvents[event.id].record).length" class="muted">此记录没有文字或图像结果；原生结构在设置中的开发者模式查看。</p>
+            </div>
+            <details v-if="developerDetails && fullEvents[event.id]"><summary>查看此条完整记录 · {{ localTime(fullEvents[event.id].readAt) }} 快照</summary>
               <p class="muted">模型调用的 response 等字段可能随后补写；此处只反映上次读取，必要时点“重读此条原文”。</p>
               <pre>{{ JSON.stringify(fullEvents[event.id].record,null,2) }}</pre></details></li></ol>
           <v-btn v-if="moreEvents" variant="outlined" :loading="detailLoading" :disabled="dirty || detailLoading || refreshing" @click="readDetail(true)">读取更多事件预览</v-btn>

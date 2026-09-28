@@ -32,6 +32,9 @@ class Task:
     question: dict | None
     summary: str | None
     error: str | None
+    account_browser: bool = False
+    browser_active: bool = False
+    browser_session: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,8 @@ class TaskFile:
 def _task(row: sqlite3.Row) -> Task:
     values = dict(row)
     values["question"] = None if values["question"] is None else json.loads(values["question"])
+    values["account_browser"] = bool(values["account_browser"])
+    values["browser_active"] = bool(values["browser_active"])
     return Task(**values)
 
 
@@ -60,14 +65,22 @@ class TaskStore:
         self.now = store.now
 
     def create(self, scene: str, requester: str, goal: str, deliverable: str,
-               context: str, input: str) -> Task:
+               context: str, input: str, *, account_browser: bool = False) -> Task:
         with self.db:
             cursor = self.db.execute(
-                "INSERT INTO tasks(scene,requester,goal,deliverable,context,input,status,created) "
-                "VALUES (?,?,?,?,?,?,'queued',?)",
-                (scene, requester, goal, deliverable, context, input, self.now()),
+                "INSERT INTO tasks(scene,requester,goal,deliverable,context,input,status,created,account_browser) "
+                "VALUES (?,?,?,?,?,?,'queued',?,?)",
+                (scene, requester, goal, deliverable, context, input, self.now(), int(account_browser)),
             )
         return self.get(scene, cursor.lastrowid)
+
+    def browser_in_use(self) -> list[Task]:
+        return [_task(row) for row in self.db.execute("SELECT * FROM tasks WHERE browser_active=1 ORDER BY id")]
+
+    def browser_binding(self, scene: str, id: int, *, active: bool, session: str | None) -> None:
+        with self.db:
+            self.db.execute("UPDATE tasks SET browser_active=?,browser_session=? WHERE scene=? AND id=?",
+                            (int(active), session, scene, id))
 
     def get(self, scene: str, id: int) -> Task:
         row = self.db.execute("SELECT * FROM tasks WHERE scene=? AND id=?", (scene, id)).fetchone()
@@ -203,6 +216,8 @@ class TaskStore:
         rows = self.db.execute(
             "SELECT id,kind,created,delivered_at,"
             "CASE WHEN kind='native' THEN json_extract(body,'$.type') ELSE kind END AS event_type,"
+            "CASE WHEN kind='native' THEN json_extract(body,'$.toolName') END AS tool_name,"
+            "CASE WHEN kind='native' THEN json_extract(body,'$.args.method') END AS browser_method,"
             "substr(body,1,1200) AS preview,length(body)>1200 AS truncated "
             "FROM task_events WHERE scene=? AND task_id=? AND id>? ORDER BY id LIMIT ?",
             (scene, id, after, limit),

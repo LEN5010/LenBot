@@ -19,6 +19,9 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .config import HostConfig
+from .audio import AudioService, TranscribeArguments
+from .account_browser import AccountBrowser, BrowserAction, BROWSER_TOOL
+from .identity import roles_for
 from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
 from .memory import MemoryService
@@ -78,11 +81,13 @@ class WorkTasks:
                  skill_permissions: dict[str, Literal["all"] | list[str]]):
         self.config, self.store, self.slots = config, store, slots
         self.settings = config.worker
+        self.browser = None if config.account_browser is None else AccountBrowser(config.account_browser)
         self.records = TaskStore(store)
         self.on_update = on_update
         self.skills = skills
         self.skill_permissions = skill_permissions
         self.memory = memory
+        self.audio: AudioService | None = None
         self.data_tools = data_tools
         self.egress = EgressUsage(config, self.records, on_update)
         settings = self.settings
@@ -110,16 +115,9 @@ class WorkTasks:
         if requester == self.config.bot_qq:
             raise PermissionError("委托与管理任务须使用实际人类 QQ，不能用 Bot 账号")
         settings = self.config.scenes[scene].tasks
-        roles = {"member"}
-        if requester == settings.owner:
-            roles.add("owner")
-        if requester in settings.admins:
-            roles.add("admin")
-        if requester in settings.whitelist:
-            roles.add("whitelist")
-        if scene.startswith("group:") and self.store.latest_sender_role(scene, requester) in {"admin", "owner"}:
-            roles.add("group_manager")
-        return roles
+        return roles_for(requester, owner=self.config.owner_qq, scoped_owner=settings.owner,
+                         admins=settings.admins, whitelist=settings.whitelist,
+                         group_role=self.store.latest_sender_role(scene, requester) if scene.startswith('group:') else None)
 
     def _can_delegate(self, scene: str, requester: str) -> None:
         if not self.accepting:
@@ -131,6 +129,8 @@ class WorkTasks:
             raise PermissionError(f"QQ {requester} 没有当前场景的委托任务权限")
 
     def _can_manage(self, item: Task, requester: str) -> None:
+        if item.account_browser:
+            self._browser_owner(requester)
         roles = self._roles(item.scene, requester)
         if requester != item.requester and not roles.intersection(
                 self.config.scenes[item.scene].tasks.manage_roles):
@@ -159,9 +159,19 @@ class WorkTasks:
         return {"items": [asdict(item) for item in items[:limit]],
                 "next_offset": offset + limit if len(items) > limit else None}
 
+    def _browser_owner(self, requester: str) -> None:
+        if self.config.owner_qq is None or requester != self.config.owner_qq:
+            raise PermissionError('账号浏览仅允许根配置的主人QQ')
+        if self.browser is None or self.browser.settings.browser_instance_id is None:
+            raise ValueError('账号浏览服务尚未配置或未明确绑定专用浏览器')
+
     async def delegate(self, scene: str, *, requester: str, goal: str,
-                       deliverable: str, context: str) -> dict:
+                       deliverable: str, context: str, account_browser: bool = False) -> dict:
         self._can_delegate(scene, requester)
+        if account_browser:
+            self._browser_owner(requester)
+            if self.records.browser_in_use():
+                raise ValueError('专用账号浏览器仍被任务占用；先结束或明确清理原会话')
         timezone = self.config.scene_timezone(scene)
         local = datetime.fromtimestamp(self.store.now(), ZoneInfo(timezone))
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -170,7 +180,9 @@ class WorkTasks:
         prompt = Template((PROMPTS / "next_worker.md").read_text()).substitute(
             scene=scene, requester=requester, goal=goal, deliverable=deliverable, context=context,
             timezone=timezone, created_at=local.isoformat())
-        item = self.records.create(scene, requester, goal, deliverable, context, prompt)
+        if account_browser:
+            prompt += '\n\n' + (PROMPTS / 'next_worker_account_browser.md').read_text()
+        item = self.records.create(scene, requester, goal, deliverable, context, prompt, account_browser=account_browser)
         self._notify(scene)
         return self.status(scene, item.id)
 
@@ -192,6 +204,8 @@ class WorkTasks:
     async def resume(self, scene: str, id: int, *, requester: str, text: str) -> dict:
         item = self.records.get(scene, id)
         self._can_manage(item, requester)
+        if item.account_browser:
+            raise ValueError('账号浏览任务不续接旧工作区；请由主人明确新建独立任务')
         self._can_delegate(scene, requester)
         self._limits(item)
         self.records.requeue(scene, id, text, requester=requester)
@@ -207,6 +221,8 @@ class WorkTasks:
             raise PermissionError("回答者必须是实际人类 QQ，不用 Bot 冒充回答者")
         if item.status != "waiting_input":
             raise ValueError("任务当前没有等待回答的问题")
+        if item.account_browser:
+            self._browser_owner(requester)
         if item.question["id"] != question_id:
             raise ValueError("当前问题已经变化；请重读任务后针对新的问题回答，没有发送这次旧答复")
         current = self.running[id]
@@ -379,7 +395,18 @@ class WorkTasks:
             async with asyncio.timeout(self.settings.active_timeout_seconds) as timer:
                 current.timer = timer
                 current.skills = self.skills[item.scene]
-                if (self.settings.skills_directory is not None
+                if item.account_browser:
+                    self._browser_owner(item.requester)
+                    async with self.browser.lock:
+                        if self.records.browser_in_use() or await self.browser.sessions():
+                            raise ValueError('专用账号浏览器仍被占用，未启动本任务')
+                        self.records.browser_binding(item.scene, item.id, active=True, session=None)
+                        session_id = await self.browser.start()
+                        self.records.browser_binding(item.scene, item.id, active=True, session=session_id)
+                    self.records.add_event(item.scene, item.id, 'browser_started', {'session_id': session_id,
+                        'socket': str(self.browser.settings.socket), 'browser_instance_id': self.browser.settings.browser_instance_id})
+                    current.skills = tuple(skill for skill in current.skills if skill.source == 'builtin')
+                if (not item.account_browser and self.settings.skills_directory is not None
                         and self.skill_permissions[item.scene] == "all"):
                     workspace = self.settings.workspace_root / item.scene / "tasks" / str(item.id)
                     authored = await asyncio.to_thread(load_task_skills, workspace)
@@ -387,7 +414,7 @@ class WorkTasks:
                 async with worker_session(
                     self.sandbox, scene=item.scene, task_id=str(item.id),
                     skills=current.skills,
-                    data_tools=self.data_tools[item.scene],
+                    data_tools=self.data_tools[item.scene] + ([BROWSER_TOOL] if item.account_browser else []),
                     task_timeout_seconds=self.settings.active_timeout_seconds,
                     public_browser=self.settings.public_browser,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
@@ -452,6 +479,17 @@ class WorkTasks:
                 except Exception as error:
                     status = "failed"
                     error_text = f"{error_text or ''}\n容器清理失败：{type(error).__name__}: {error}"
+            actual = self.records.get(item.scene, item.id)
+            if actual.browser_active:
+                try:
+                    if actual.browser_session is None:
+                        raise RuntimeError('浏览器创建结果未知，保留配置占用；请从能力页检查实际会话并明确清理')
+                    result = await self.browser.stop(actual.browser_session)
+                    self.records.browser_binding(item.scene, item.id, active=False, session=None)
+                    self.records.add_event(item.scene, item.id, 'browser_stopped', result)
+                except Exception as error:
+                    status = 'failed'
+                    error_text = f'{error_text or ""}\n浏览器清理失败：{type(error).__name__}: {error}'
             self._finish(item, status, summary, error_text)
         finally:
             try:
@@ -469,7 +507,7 @@ class WorkTasks:
                 "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
-                "data_tools": [tool["name"] for tool in self.data_tools[item.scene]],
+                "data_tools": [tool["name"] for tool in self.data_tools[item.scene]] + (["account_browser"] if item.account_browser else []),
                 "public_browser": None if session.browser_cli_version is None else {
                     "command": "lenbot-browser", "cli_version": session.browser_cli_version,
                     "session": "public", "profile": "in-memory",
@@ -565,12 +603,34 @@ class WorkTasks:
         self._notify(item.scene)
 
     async def _request(self, current: RunningTask, path: str, raw: bytes) -> dict:
-        if path in {"/task/recall-chat", "/task/memory"}:
-            name = "recall_chat" if path == "/task/recall-chat" else "memory"
+        if path == '/task/account-browser':
+            item = self.records.get(current.item.scene, current.item.id)
+            if not item.account_browser:
+                raise PermissionError('普通任务不能获得账号浏览能力，请另建主人授权任务')
+            self._browser_owner(item.requester)
+            if not item.browser_active or item.browser_session is None:
+                raise RuntimeError('此任务没有已确认的账号浏览会话')
+            action = BrowserAction.model_validate_json(raw)
+            if action.method == 'screenshot' and self.settings.input_support != 'text-image':
+                raise ValueError('当前工作模型未配置图像输入，不能向它提供浏览器截图')
+            result = await self.browser.execute(item.browser_session, action)
+            if action.method == 'screenshot':
+                if not isinstance(result.get('image_base64'), str):
+                    raise ValueError(f'Browser screenshot lacks image_base64: {result!r}')
+                return {'content': json.dumps({k:v for k,v in result.items() if k != 'image_base64'}, ensure_ascii=False),
+                        'image': {'data': result['image_base64'], 'mimeType': 'image/png'}}
+            return {'content': json.dumps(result, ensure_ascii=False)}
+        if path in {"/task/recall-chat", "/task/memory", "/task/transcribe"}:
+            name = {"/task/recall-chat": "recall_chat", "/task/memory": "memory", "/task/transcribe": "transcribe"}[path]
             scene = current.item.scene
             if name not in {tool["name"] for tool in self.data_tools[scene]}:
                 raise PermissionError(f"当前场景的任务未开放 {name}")
-            if name == "recall_chat":
+            if name == "transcribe":
+                if self.audio is None:
+                    raise RuntimeError("任务语音服务尚未绑定")
+                arguments = TranscribeArguments.model_validate_json(raw)
+                content = await self.audio.transcribe(scene, arguments)
+            elif name == "recall_chat":
                 try:
                     arguments = RecallArguments.model_validate_json(raw)
                 except ValidationError as error:

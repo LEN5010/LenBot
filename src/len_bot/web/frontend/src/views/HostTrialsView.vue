@@ -6,6 +6,7 @@ import ChatTestView from './ChatTestView.vue'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 const route = useRoute(), router = useRouter()
 const host = ref(null), trials = ref([]), loading = ref(false), busy = ref(false), error = ref('')
+const contextMessages = ref(0)
 const scene = ref(''), acknowledged = ref(false)
 const beginRead = useRequestGuard()
 const options = computed(() => host.value?.scenes.map(item => ({ value: item.scene, title: `${sceneName(item.scene)} · ${item.persona.name}` })) || [])
@@ -27,7 +28,7 @@ async function start() {
   if (busy.value || !scene.value || !acknowledged.value) return
   busy.value = true; error.value = ''; beginRead()
   try {
-    const trial = await api('/api/host/trials', { method: 'POST', body: JSON.stringify({ scene: scene.value, acknowledge_model_cost: true }) })
+    const trial = await api('/api/host/trials', { method: 'POST', body: JSON.stringify({ scene: scene.value, acknowledge_model_cost: true, context_messages: Number(contextMessages.value) }) })
     await select(trial); acknowledged.value = false; await read()
   } catch (err) { error.value = `${err.message} 不会自动重试；若结果未确认，请重读列表。` }
   finally { busy.value = false }
@@ -48,9 +49,10 @@ onMounted(read)
         <v-btn variant="outlined" :loading="loading" :disabled="busy" @click="read">重读试聊列表</v-btn></div>
       <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
       <p>模型会真实调用并可能计费，测试用量与生产记录分开，使用相同模型并发槽。停止不退回已发生的费用。</p>
-      <p class="muted">使用独立会话、消息库、媒体和模拟提醒。本地记忆从空白目录开始；本次不开放工作任务、文件上传、插件、MCP、账号浏览、平台查询/语音转写及公网读取。还不支持导入真实上下文。</p>
+      <p class="muted">使用独立会话、消息库、媒体和模拟提醒。本地记忆从空白目录开始；本次不开放工作任务、文件上传、插件、MCP、账号浏览、平台查询/语音转写及公网读取。可选择复制最近聊天的已渲染文字，不导入生产工具会话或媒体原件。</p>
       <form v-if="!active" class="start-form" @submit.prevent="start">
         <v-select v-model="scene" :items="options" label="使用哪个场景的运行快照" :disabled="busy || loading" hide-details="auto" />
+        <v-select v-model="contextMessages" :items="[{title:'空白对话',value:0},{title:'复制最近 20 条原文',value:20},{title:'复制最近 50 条原文',value:50},{title:'复制最近 100 条原文',value:100}]" label="开始时的聊天背景" :disabled="busy" hide-details />
         <v-checkbox v-model="acknowledged" label="我知道模型会真实调用并计费，发送始终模拟" :disabled="busy" hide-details />
         <v-btn type="submit" color="primary" :disabled="!acknowledged || !scene || busy || loading" :loading="busy">新建独立试聊</v-btn>
       </form>
@@ -64,6 +66,7 @@ onMounted(read)
     <section v-if="selected" class="surface">
       <h2>本次实际范围</h2><p>{{ selected.memory }}；大脑 {{ selected.models.mind }}，表达 {{ selected.models.voice }}。</p>
       <p class="muted">未接入的生产工具：{{ selected.excluded_tools.join('、') || '无额外工具' }}。虚拟身份不能获得主人账号能力。</p>
+      <details v-if="selected.context.length"><summary>已复制 {{ selected.context.length }} 条历史原文（只读背景）</summary><pre>{{ selected.context.join('\n\n') }}</pre></details>
       <details><summary>测试文件位置</summary><code>{{ selected.root }}</code></details>
     </section>
     <ChatTestView v-if="selected" :key="selected.id" :api-base="`/api/host/trials/${encodeURIComponent(selected.id)}`" />
@@ -72,5 +75,5 @@ onMounted(read)
 <style scoped>
 .host-trials{max-width:1200px;margin-inline:auto}.section-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
 h1{margin-top:0}h2{font-size:18px}.surface{overflow-wrap:anywhere;min-width:0}.start-form{display:grid;gap:12px;max-width:680px}.active-trial{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.active-trial p{flex-basis:100%}
-.trial-list{list-style:none;padding:0}.host-trials :deep(.v-btn),summary{min-height:44px}.host-trials code{white-space:pre-wrap;overflow-wrap:anywhere}
+.trial-list{list-style:none;padding:0}.host-trials :deep(.v-btn),summary{min-height:44px}.host-trials pre{white-space:pre-wrap;max-height:360px;overflow:auto}.host-trials code{white-space:pre-wrap;overflow-wrap:anywhere}
 </style>

@@ -120,9 +120,11 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                         "scene": "group:80001", "acknowledge_model_cost": False,
                     })).status_code == 422
                     trial = await client.post("/api/host/trials", json={
-                        "scene": "group:80001", "acknowledge_model_cost": True,
+                        "scene": "group:80001", "acknowledge_model_cost": True, "context_messages": 20,
                     })
                     assert trial.status_code == 200
+                    assert len(trial.json()['context']) == 1
+                    assert '隔离测试原文' in trial.json()['context'][0]
                     prefix = f"/api/host/trials/{trial.json()['id']}"
                     try:
                         assert (await client.get(f"{prefix}/turns/{configured_turn}")).status_code == 404

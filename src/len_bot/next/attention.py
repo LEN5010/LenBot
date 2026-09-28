@@ -322,7 +322,7 @@ class SceneRunner:
                 if "schedule" not in self.chat.allowed_tool_names:
                     raise PermissionError("当前角色或场景未开放 schedule，安排未交付")
                 check_creation(self.config.schedules, requester=item.requester, target=item.target,
-                               bot_qq=self.config.bot_qq,
+                               bot_qq=self.config.bot_qq, root_owner=self.config.owner_qq,
                                group_role=platform_role(self.store, self.config, item.requester))
             except PermissionError as error:
                 reason = f"{type(error).__name__}: {error}"

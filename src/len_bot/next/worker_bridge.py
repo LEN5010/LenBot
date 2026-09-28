@@ -104,7 +104,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.close_connection = True
         if self.path not in {"/v1/chat/completions", "/task/deliver-file", "/task/network",
-                             "/task/recall-chat", "/task/memory"}:
+                             "/task/recall-chat", "/task/memory", "/task/transcribe", "/task/account-browser"}:
             self._error(404, f"unsupported worker route: {self.path}")
             return
         lengths = self.headers.get_all("Content-Length", [])

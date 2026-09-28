@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const TASK_API_FILE = "/run/lenbot/task-api.json";
 const TASK_API_BASE = "http://127.0.0.1:18181";
-type DataToolName = "recall_chat" | "memory";
+type DataToolName = "recall_chat" | "memory" | "transcribe" | "account_browser";
 type DataTool = { name: DataToolName; description: string; parameters: Record<string, unknown> };
 type TaskApiSettings = { token: string; timeoutMs: number; tools: DataTool[] };
 
@@ -33,8 +33,8 @@ async function taskApi(): Promise<TaskApiSettings> {
     }
     const tool = value as Record<string, unknown>;
     const name = tool.name;
-    if (name !== "recall_chat" && name !== "memory") {
-      throw new Error(`${TASK_API_FILE}: tools[${index}].name must be recall_chat or memory`);
+    if (name !== "recall_chat" && name !== "memory" && name !== "transcribe" && name !== "account_browser") {
+      throw new Error(`${TASK_API_FILE}: tools[${index}].name must be recall_chat, memory, transcribe or account_browser`);
     }
     if (names.has(name)) throw new Error(`${TASK_API_FILE}: duplicate tool name ${name}`);
     if (typeof tool.description !== "string" || !tool.description.trim()) {
@@ -53,7 +53,7 @@ async function taskApi(): Promise<TaskApiSettings> {
 
 async function taskPost(
   settings: TaskApiSettings,
-  route: "/task/deliver-file" | "/task/network" | "/task/recall-chat" | "/task/memory",
+  route: "/task/deliver-file" | "/task/network" | "/task/recall-chat" | "/task/memory" | "/task/transcribe" | "/task/account-browser",
   operation: "deliver_file" | "network_status" | DataToolName,
   body: Record<string, unknown>,
   signal?: AbortSignal,
@@ -148,17 +148,22 @@ export default async function lenbotExtension(pi: ExtensionAPI) {
   });
 
   for (const tool of settings.tools) {
-    const route = tool.name === "recall_chat" ? "/task/recall-chat" : "/task/memory";
+    const route = {recall_chat: "/task/recall-chat", memory: "/task/memory", transcribe: "/task/transcribe", account_browser: "/task/account-browser"}[tool.name] as "/task/recall-chat" | "/task/memory" | "/task/transcribe" | "/task/account-browser";
     pi.registerTool({
       name: tool.name,
       executionMode: "sequential",
-      label: tool.name === "recall_chat" ? "Recall chat" : "Memory",
+      label: {recall_chat: "Recall chat", memory: "Memory", transcribe: "Transcribe scene audio", account_browser: "Account browser"}[tool.name],
       description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters),
       async execute(_id, args, signal) {
         const { raw, payload } = await taskPost(settings, route, tool.name, args, signal);
         if (typeof payload.content !== "string") {
           throw new Error(`${tool.name} expected a string content; raw=${raw}`);
+        }
+        if (tool.name === "account_browser" && payload.image !== undefined) {
+          const image = payload.image as {data?: unknown; mimeType?: unknown};
+          if (typeof image.data !== "string" || image.mimeType !== "image/png") throw new Error(`Invalid browser image: ${raw.slice(0,500)}`);
+          return {content:[{type:"text" as const, text:payload.content}, {type:"image" as const, data:image.data, mimeType:image.mimeType}], details:{content:payload.content}};
         }
         return result(payload.content, payload);
       },

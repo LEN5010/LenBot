@@ -1,4 +1,5 @@
 <script setup>
+import { developerDetails } from '../composables/useDeveloperMode.js'
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -55,8 +56,8 @@ function raw(value) {
       <p v-if="call.error" class="turn-error">{{ call.error }}</p>
       <p v-if="call.cost == null" class="muted">按配置估算费用未知；不计为 0。</p>
       <p v-else class="cost-fact">按调用时配置估算：<strong>{{ call.cost.currency }} {{ call.cost.amount }}</strong> <span class="muted">· 非供应商账单</span></p>
-      <p v-if="call.usage == null" class="muted">提供方用量未知；不按 0 费用显示。</p>
-      <p v-else class="usage">提供方返回用量：<code>{{ raw(call.usage) }}</code></p>
+      <p v-if="developerDetails && call.usage == null" class="muted">提供方用量未知；不按 0 费用显示。</p>
+      <p v-else-if="developerDetails" class="usage">提供方返回用量：<code>{{ raw(call.usage) }}</code></p>
       <section v-if="call.tools.length" class="call-tools" aria-label="本次原生工具调用与已保存结果">
         <h5>原生工具调用与已保存结果</h5>
         <div v-for="tool in call.tools" :key="tool.id" class="tool-entry">
@@ -67,7 +68,7 @@ function raw(value) {
           <details v-else class="tool-text"><summary>已保存工具结果 · 不代表执行完成</summary><pre>{{ tool.result.content }}</pre></details>
         </div>
       </section>
-      <details><summary>查看原始请求与响应</summary>
+      <details v-if="developerDetails"><summary>查看原始请求与响应</summary>
         <h5>请求</h5><pre>{{ raw(call.request) }}</pre>
         <h5>响应</h5><pre>{{ raw(call.response) }}</pre>
       </details>

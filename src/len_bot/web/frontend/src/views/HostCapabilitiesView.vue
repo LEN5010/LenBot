@@ -6,6 +6,7 @@ import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import HostSkillSettings from '../components/HostSkillSettings.vue'
 import HostPluginsPanel from '../components/HostPluginsPanel.vue'
+import HostBrowserPanel from '../components/HostBrowserPanel.vue'
 import HostMcpPanel from '../components/HostMcpPanel.vue'
 
 const route = useRoute(), router = useRouter()
@@ -14,6 +15,7 @@ const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
 const skillDirty = ref(false), pluginDirty = ref(false), pluginBusy = ref(false)
 const mcpDirty = ref(false), mcpBusy = ref(false)
+const browserDirty = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -27,7 +29,7 @@ const toolDirty = computed(() => {
   if (draftMode.value === 'all') return saved !== 'all'
   return saved === 'all' || JSON.stringify([...draftNames.value].sort()) !== JSON.stringify([...saved].sort())
 })
-const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value || mcpDirty.value)
+const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value || mcpDirty.value || browserDirty.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(() => !pluginBusy.value && !mcpBusy.value && (!dirty.value || window.confirm('有尚未保存的能力配置草稿。放弃并切换场景？')))
 
@@ -92,6 +94,7 @@ function toggleName(name, enabled) {
 function serviceLabel(name, enabled) {
   return name === 'schedules' ? (enabled ? '当前已启用' : '当前未启用')
     : name === 'skills' ? (enabled ? '当前配置了技能目录' : '当前未配置技能目录')
+    : name === 'account_browser' ? (enabled ? '账号浏览已配置（仅主人新任务）' : '账号浏览未绑定')
     : name === 'public_browser' ? (enabled ? '公共浏览已配置' : '公共浏览未配置')
     : (enabled ? '当前已配置' : '当前未配置')
 }
@@ -210,6 +213,7 @@ onMounted(readHost)
       </section>
       <HostSkillSettings :key="scene" :scene="scene" @dirty="skillDirty=$event" />
       <HostPluginsPanel :key="scene" :scene="scene" @dirty="pluginDirty=$event" @busy="pluginBusy=$event" />
+      <HostBrowserPanel @dirty="browserDirty=$event" />
       <HostMcpPanel :key="`mcp-${scene}`" :scene="scene" @dirty="mcpDirty=$event" @busy="mcpBusy=$event" />
     </template>
   </div>

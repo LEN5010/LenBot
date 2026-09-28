@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 28
+FORMAT_VERSION = 29
 
 
 def encode(value: object) -> str:
@@ -148,7 +148,10 @@ class Store:
                         status TEXT NOT NULL CHECK(status IN
                             ('queued','running','waiting_input','done','failed','cancelled')),
                         created REAL NOT NULL, started REAL, ended REAL,
-                        container TEXT, question TEXT, summary TEXT, error TEXT
+                        container TEXT, question TEXT, summary TEXT, error TEXT,
+                        account_browser INTEGER NOT NULL DEFAULT 0 CHECK(account_browser IN (0,1)),
+                        browser_active INTEGER NOT NULL DEFAULT 0 CHECK(browser_active IN (0,1)),
+                        browser_session TEXT
                     );
                     CREATE INDEX tasks_scene_status ON tasks(scene,status,id);
                     CREATE INDEX tasks_status ON tasks(status,id);

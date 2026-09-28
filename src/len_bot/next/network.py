@@ -6,6 +6,7 @@ import asyncio
 import signal
 import sqlite3
 from collections.abc import Callable
+from collections import deque
 
 from .attention import SceneRunner
 from .audio import AudioService
@@ -47,6 +48,7 @@ class NetworkRuntime:
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
         self.config, self.store = config, store
+        self.logs: deque[dict] = deque(maxlen=500)
         self.memory = memory
         self.ingestor = ingestor
         self.learning = learning
@@ -83,6 +85,8 @@ class NetworkRuntime:
         self.audio = AudioService(store, {cfg.scene: cfg for cfg, _ in scene_configs},
                                   self.platform.call if config.delivery == "onebot" else None, slots,
                                   self.audio_updated)
+        if tasks is not None:
+            tasks.audio = self.audio
         self.chats: dict[str, Chat] = {}
         for scene_config, persona in scene_configs:
             scene = scene_config.scene
@@ -154,6 +158,7 @@ class NetworkRuntime:
             self.notify()
 
     def _emit(self, result: dict) -> None:
+        self.logs.append({"time": self.store.now(), "record": result})
         print(encode(result), flush=True)
         self.notify()
 

@@ -1,4 +1,5 @@
 <script setup>
+import { developerDetails } from '../composables/useDeveloperMode.js'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
@@ -127,7 +128,7 @@ watch(() => route.query.scene, value => {
           <p v-else class="muted">无正文。</p>
           <template v-if="entry.message.tool_calls?.length"><div v-for="call in entry.message.tool_calls" :key="call.id" class="tool-call">
             <strong>调用工具：{{ call.function.name }}</strong><pre>{{ content(call.function.arguments) }}</pre></div></template>
-          <details><summary>查看此条原生结构</summary><pre>{{ raw(entry) }}</pre></details>
+          <details v-if="developerDetails"><summary>查看此条原生结构</summary><pre>{{ raw(entry) }}</pre></details>
         </li></ol>
         <div class="page-actions"><v-btn v-if="nextBefore!==null" variant="outlined" :loading="loading" @click="loadOlder">读取更早的 50 条</v-btn>
           <span v-else class="muted">此范围没有更早的条目。</span></div>
