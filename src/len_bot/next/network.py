@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable
 
 from .attention import SceneRunner
+from .audio import AudioService
 from .chat import Chat
 from .config import LabConfig, OneBotForward, SharedConfig
 from .messages import parse_message
@@ -79,6 +80,9 @@ class NetworkRuntime:
         self.storage_error: sqlite3.Error | None = None
         self.platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
                                on_error=self._platform_error, on_connection_change=self._connection_changed)
+        self.audio = AudioService(store, {cfg.scene: cfg for cfg, _ in scene_configs},
+                                  self.platform.call if config.delivery == "onebot" else None, slots,
+                                  self.audio_updated)
         self.chats: dict[str, Chat] = {}
         for scene_config, persona in scene_configs:
             scene = scene_config.scene
@@ -95,6 +99,7 @@ class NetworkRuntime:
                 platform_call=self.platform.call if config.delivery == "onebot" else None,
                 external_tools=(([] if plugins is None else plugins.tools_for(scene, preparing=True))
                                 + ([] if mcp is None else mcp.tools_for(scene))),
+                audio_service=self.audio,
                 on_update=self.notify,
             )
         self.runners: dict[str, SceneRunner] = {}
@@ -113,6 +118,10 @@ class NetworkRuntime:
         for scene, chat in self.chats.items():
             chat.set_external_tools(([] if self.plugins is None else self.plugins.tools_for(scene, preparing=self.status != "running"))
                                     + ([] if self.mcp is None else self.mcp.tools_for(scene)))
+        self.notify()
+
+    def audio_updated(self, scene: str) -> None:
+        self.runners[scene].changed.set()
         self.notify()
 
     def compacted(self, scene: str) -> None:
@@ -206,6 +215,8 @@ class NetworkRuntime:
         if command is not None and receipt["status"] != "duplicate":
             self.plugins.dispatch_command(message, command)
             receipt["plugin_command"] = f"{command[0].name} /{command[1]}"
+        if receipt["status"] != "duplicate":
+            self.audio.request(message.scene)
         self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
     async def _ready(self, wait: bool) -> bool:
@@ -269,6 +280,7 @@ class NetworkRuntime:
                         pending.append(group.create_task(self.tasks.wait_failure()))
                     if self.learning is not None:
                         self.learning.start()
+                    self.audio.start()
                     if self.jargon is not None:
                         self.jargon.start()
                     if self.sticker_collection is not None:
@@ -293,6 +305,7 @@ class NetworkRuntime:
                     self.stopped.set()
                     if self.plugins is not None:
                         await self.plugins.close()
+                    await self.audio.close()
                     if self.reply_effects is not None:
                         await self.reply_effects.close()
                     if self.sticker_collection is not None:
@@ -338,7 +351,10 @@ class NetworkRuntime:
                                         if self.mcp is not None:
                                             await self.mcp.close()
                                     finally:
-                                        await self.platform.close()
+                                        try:
+                                            await self.audio.close()
+                                        finally:
+                                            await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:

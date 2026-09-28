@@ -53,6 +53,7 @@ function sceneBody() {
     attention: { ...draft.value.attention, keywords: cleanList(keywords.value), other_bot_qqs: cleanList(otherBots.value) },
     schedules: { ...draft.value.schedules, admins: cleanList(admins.value), whitelist: cleanList(whitelist.value) },
     proactive: draft.value.proactive,
+    transcribe_audio: draft.value.transcribe_audio,
     persona_aliases: cleanList(aliases.value),
     relationships: Object.fromEntries(relationships.value.map(row => [row.qq, row.text])),
     behavior_addendum: draft.value.behavior_addendum === '' ? null : draft.value.behavior_addendum,
@@ -60,7 +61,7 @@ function sceneBody() {
 }
 function savedBody(value) {
   return { timezone: value.timezone, voice_mode: value.voice_mode, attention: value.attention, schedules: value.schedules,
-    proactive: value.proactive, persona_aliases: value.scene_persona.persona_aliases, relationships: value.scene_persona.relationships,
+    proactive: value.proactive, transcribe_audio: value.transcribe_audio, persona_aliases: value.scene_persona.persona_aliases, relationships: value.scene_persona.relationships,
     behavior_addendum: value.scene_persona.behavior_addendum }
 }
 const sceneDirty = computed(() => {
@@ -77,7 +78,7 @@ onBeforeRouteUpdate(() => !workerSaving.value && (!sceneDirty.value && !workerSc
 function adoptScene(value) {
   const record = value.saved.scenes[scene.value]
   draft.value = { timezone: record.timezone ?? '', voice_mode: record.voice_mode, attention: copy(record.attention), schedules: copy(record.schedules),
-    proactive: copy(record.proactive), behavior_addendum: record.scene_persona.behavior_addendum ?? '' }
+    proactive: copy(record.proactive), transcribe_audio: record.transcribe_audio, behavior_addendum: record.scene_persona.behavior_addendum ?? '' }
   aliases.value = listRows(record.scene_persona.persona_aliases)
   relationships.value = Object.entries(record.scene_persona.relationships).map(([qq,text]) => ({ qq, text }))
   keywords.value = listRows(record.attention.keywords)
@@ -246,6 +247,8 @@ watch(() => route.query.scene, value => {
         <fieldset class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>场景参与与安静时段</legend>
           <v-select v-model="draft.voice_mode" label="表达方式" :items="[{title:'表达器组织台词',value:'voice'},{title:'大脑直接表达',value:'direct'}]" hide-details="auto" />
           <v-text-field v-model="draft.timezone" label="本群时区（IANA 名称，留空沿用全局时区）" placeholder="例如 Asia/Shanghai" hide-details="auto" />
+          <v-switch v-model="draft.transcribe_audio" label="自动转写本场景新收到的真人语音" hide-details :disabled="Boolean(saving) || loading" />
+          <p class="muted">须先配置 ASR 模型及真实 OneBot 出口，不扫描历史、失败不自动重试。运行值：{{ runningScene?.transcribe_audio ? '开启' : '关闭' }}；保存后重启生效。</p>
           <p class="muted">影响本群的时间显示、安静时段和新建安排的钟点；已有安排保留创建时保存的时区，不会被追溯改写。</p>
           <v-switch v-model="draft.attention.only_direct" label="只处理直接呼唤" hide-details />
           <div class="list-block"><h3>关键词</h3><p class="muted">逐项编辑；合法关键词会由配置入口校验，不按行拆分。</p>

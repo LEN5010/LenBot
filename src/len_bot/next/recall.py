@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .messages import ChatMessage, render_message
 from .store import Store, encode
+from .audio_store import AudioStore
 
 
 class RecallArguments(BaseModel):
@@ -77,7 +78,8 @@ RECALL_TOOL = {"type": "function", "function": {
 PROMPT = Path(__file__).resolve().parents[1] / "prompts" / "next_recall.md"
 
 
-def message_page(record: int, message: ChatMessage, timezone: str, *, offset: int, size: int) -> dict:
+def message_page(record: int, message: ChatMessage, timezone: str, *, offset: int, size: int,
+                 audio: dict[int, str] | None = None) -> dict:
     # Keep the original reply reference instead of expanding a later-arriving quote.
     text = render_message(message, timezone=timezone)
     if offset > len(text):
@@ -87,11 +89,15 @@ def message_page(record: int, message: ChatMessage, timezone: str, *, offset: in
             "sender_qq": message.sender.uid, "send_status": message.send_status,
             "time": datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(),
             "is_self": message.is_self,
+            "audio_descriptions": audio if offset == 0 else None,
             "offset": offset, "total_chars": len(text),
             "next_offset": end if end < len(text) else None, "text": text[offset:end]}
 
 
 def recall_chat(store: Store, scene: str, timezone: str, arguments: RecallArguments) -> str:
+    def render_page(seq, message, *, offset=0, size=160):
+        return message_page(seq, message, timezone, offset=offset, size=size,
+                            audio=AudioStore(store).captions(scene, message.platform_message_id))
     if arguments.action in {"search", "recent"}:
         current = store.max_message_seq(scene)
         snapshot = current if arguments.snapshot is None else arguments.snapshot
@@ -110,17 +116,16 @@ def recall_chat(store: Store, scene: str, timezone: str, arguments: RecallArgume
             page = rows[-10:]
         result = {"action": arguments.action, "snapshot": snapshot, "offset": arguments.offset,
                   "next_offset": arguments.offset + 10 if len(rows) > 10 else None,
-                  "previews": [message_page(seq, message, timezone, offset=0, size=160)
+                  "previews": [render_page(seq, message)
                                for seq, message in page]}
     elif arguments.action == "read":
         message = store.read_message(scene, arguments.record)
         if message is None:
             raise ValueError(f"当前场景没有消息记录 {arguments.record}")
-        result = {"action": "read", **message_page(arguments.record, message, timezone,
-                                                    offset=arguments.offset, size=4000)}
+        result = {"action": "read", **render_page(arguments.record, message, offset=arguments.offset, size=4000)}
     else:
         rows = store.context_messages(scene, arguments.record)
         result = {"action": "context", "center": arguments.record,
-                  "previews": [message_page(seq, message, timezone, offset=0, size=160)
+                  "previews": [render_page(seq, message)
                                for seq, message in rows]}
     return Template(PROMPT.read_text()).substitute(scene=scene, result=encode(result))

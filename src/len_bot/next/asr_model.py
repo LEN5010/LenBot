@@ -30,6 +30,7 @@ class AudioSettings(BaseModel):
     max_bytes: int = Field(default=16 * 1024 * 1024, gt=0, le=25 * 1024 * 1024)
     max_seconds: float = Field(default=300, gt=0, le=3600, allow_inf_nan=False)
     timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    wait_seconds: float = Field(default=2, ge=0, le=30, allow_inf_nan=False)
 
 
 class UsageDetails(BaseModel):

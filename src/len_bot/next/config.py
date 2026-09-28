@@ -712,6 +712,7 @@ class SceneSettings(ScenePersona):
     tasks: TaskSettings = Field(default_factory=TaskSettings)
     learning: LearningSettings | None = None
     proactive: Proactive | None = None
+    transcribe_audio: bool = False
     # Plugins enabled in this scene; each must be loaded by root ``plugins``.
     plugins: list[str] = Field(default_factory=list)
 
@@ -790,6 +791,8 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("proactive requires the isolated-multi host, not the single-scene lab or replay")
         if self.plugins:
             raise ValueError("plugins require the isolated-multi host, not the single-scene lab or replay")
+        if self.transcribe_audio:
+            raise ValueError("automatic audio transcription requires the isolated-multi host")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -861,6 +864,8 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
             if settings.tasks.enabled and self.worker is None:
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
+            if settings.transcribe_audio and (self.models.roles.asr is None or self.delivery != "onebot"):
+                raise ValueError(f"scenes.{scene}.transcribe_audio requires explicit models.roles.asr and onebot delivery")
             if settings.proactive is not None and not scene.startswith("group:"):
                 raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
             if settings.proactive is not None and (settings.learning is None or not settings.learning.reply_effects):

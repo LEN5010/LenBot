@@ -384,6 +384,27 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                        "wav BLOB NOT NULL, duration REAL NOT NULL, fetched_at REAL NOT NULL,"
                        "transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,"
                        "PRIMARY KEY(scene,platform_id,audio_index))")
+        elif version == 27:
+            db.execute("CREATE TABLE audio_cache_next ("
+                       "scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,"
+                       "wav BLOB, duration REAL, fetched_at REAL,"
+                       "transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,"
+                       "status TEXT NOT NULL CHECK(status IN ('idle','queued','running','complete','failed','interrupted')),"
+                       "created REAL NOT NULL, updated REAL NOT NULL, error TEXT, announced_at REAL,"
+                       "PRIMARY KEY(scene,platform_id,audio_index))")
+            db.execute("INSERT INTO audio_cache_next SELECT *,"
+                       "CASE WHEN transcript IS NULL THEN 'idle' ELSE 'complete' END,"
+                       "fetched_at,COALESCE(transcribed_at,fetched_at),NULL,transcribed_at FROM audio_cache")
+            db.execute("DROP TABLE audio_cache")
+            db.execute("ALTER TABLE audio_cache_next RENAME TO audio_cache")
+            db.execute("CREATE INDEX audio_queued ON audio_cache(scene,created) WHERE status='queued'")
+            db.execute("CREATE INDEX audio_results ON audio_cache(scene,transcribed_at) "
+                       "WHERE announced_at IS NULL AND transcript IS NOT NULL")
+            db.execute("CREATE TABLE audio_calls ("
+                       "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,"
+                       "audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,"
+                       "request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT)")
+            db.execute("CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

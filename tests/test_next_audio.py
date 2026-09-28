@@ -82,3 +82,29 @@ def test_asr_configuration_is_explicit_and_does_not_need_chat_parameters():
         Models.model_validate(source)
     with pytest.raises(ValidationError):
         TranscribeArguments(message=" ", audio=1)
+
+
+def test_automatic_transcription_requires_explicit_runtime_binding(tmp_path):
+    import json
+    from len_bot.next.config import load_host_config
+    model = {'provider':'fixture','model':'synthetic','context_window_tokens':4096}
+    source = {'mode':'isolated-multi','bot_qq':'90001','timezone':'UTC','database':'state.db',
+        'onebot':{'mode':'reverse_ws','listen_host':'127.0.0.1','listen_port':0},
+        'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'synthetic'}},
+                  'roles':{'mind':model,'voice':model}},
+        'scenes':{'group:80001':{'persona':'role','transcribe_audio':True}}}
+    def load():
+        (tmp_path/'lenbot.config.json').write_text(json.dumps(source))
+        return load_host_config(tmp_path)
+    with pytest.raises(ValueError,match='transcribe_audio requires'):
+        load()
+    source['models']['roles']['asr']={'provider':'fixture','model':'exact-audio'}
+    with pytest.raises(ValueError,match='onebot delivery'):
+        load()
+    source['delivery']='onebot'
+    assert load().scene_config('group:80001').transcribe_audio is True
+    source['scenes']['group:80001']['transcribe_audio']=False
+    source['models']['roles'].pop('asr')
+    assert load().models.roles.asr is None
+    with pytest.raises(ValidationError):
+        AudioSettings(wait_seconds=-1)

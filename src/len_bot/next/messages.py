@@ -156,9 +156,10 @@ def _speaker(message: ChatMessage) -> str:
     return f"{name}(QQ {message.sender.uid})" if name else f"QQ {message.sender.uid}"
 
 
-def _body(segments: list[Segment]) -> str:
+def _body(segments: list[Segment], audio: dict[int, str] | None = None) -> str:
     parts: list[str] = []
     image_index = 0
+    audio_index = 0
     for segment in segments:
         if segment.type == "reply":
             continue
@@ -172,6 +173,11 @@ def _body(segments: list[Segment]) -> str:
             summary = segment.data.get("summary")
             details = "" if summary is None else f"：{summary}"
             parts.append(f"[图片{image_index}{details}]")
+        elif segment.type == "record":
+            audio_index += 1
+            description = None if audio is None else audio.get(audio_index)
+            details = "" if description is None else "：" + description
+            parts.append(f"[语音{audio_index}{details}]")
         else:
             identifiers = [
                 f"{field}={segment.data[field]}"
@@ -188,7 +194,8 @@ def render_body(segments: list[Segment]) -> str:
     return _body(segments)
 
 
-def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | None = None) -> str:
+def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | None = None,
+                   audio: dict[int, str] | None = None) -> str:
     """Render a single message with its actual sender, words, and known reply."""
     clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(sep=" ", timespec="seconds")
     quote = ""
@@ -197,7 +204,7 @@ def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | 
             quote = f"（回复消息 {message.reply_to}）"
         else:
             quote = f"（回复 {_speaker(reply)}：{_body(reply.segments)[:40]}）"
-    return f"[{clock}] {_speaker(message)}：{quote}{_body(message.segments)}"
+    return f"[{clock}] {_speaker(message)}：{quote}{_body(message.segments, audio)}"
 
 
 def parse_send_result(raw: dict) -> SendResult:
