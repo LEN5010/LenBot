@@ -7,7 +7,8 @@ and calls the marked methods at the plugin's own error boundary.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -101,12 +102,16 @@ class Notice:
 
 
 class HostPort(Protocol):
+    @property
+    def bot_qq(self) -> str: ...
     def scene_timezone(self, scene: str) -> str: ...
     def now(self) -> float: ...
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
     async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
     def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]: ...
+    def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
+    def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -117,6 +122,16 @@ class PluginContext:
     data_dir: Path
     scenes: tuple[str, ...]
     host: HostPort = field(repr=False)
+
+    @property
+    def bot_qq(self) -> str:
+        return self.host.bot_qq
+
+    def start_task(self, name: str, coroutine: Coroutine) -> asyncio.Task:
+        return self.host.start_task(self.name, name, coroutine)
+
+    def report_error(self, where: str, error: Exception) -> str:
+        return self.host.report_error(self.name, where, error)
 
     def _scene(self, scene: str) -> str:
         if scene not in self.scenes:
