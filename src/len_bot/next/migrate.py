@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 16."""
+"""Explicit offline upgrade of an isolated next-core database to format 17."""
 
 from __future__ import annotations
 
@@ -170,6 +170,21 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "ALTER TABLE schedules ADD COLUMN cron_minute_of_day INTEGER "
                 "CHECK(cron_minute_of_day IS NULL OR "
                 "(cron_minute_of_day BETWEEN 0 AND 1439 AND interval_seconds IS NULL))"
+            )
+        elif version == 16:
+            db.execute(
+                "CREATE TABLE media ("
+                "id INTEGER PRIMARY KEY, persona_id TEXT NOT NULL, file TEXT NOT NULL,"
+                "mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,"
+                "animated INTEGER NOT NULL, data BLOB NOT NULL)"
+            )
+            db.execute("CREATE INDEX media_persona_file ON media(persona_id,file,id)")
+            db.execute(
+                "CREATE TABLE message_media ("
+                "message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,"
+                "media_id INTEGER NOT NULL, description TEXT NOT NULL,"
+                "emotions TEXT NOT NULL, tags TEXT NOT NULL,"
+                "PRIMARY KEY(message_seq,image_index))"
             )
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()

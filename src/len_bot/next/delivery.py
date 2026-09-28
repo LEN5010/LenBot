@@ -1,12 +1,19 @@
 """Lossless expression splitting and the actual per-part delivery report."""
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 import regex
 
 from .messages import ChatMessage, Segment
+from .persona_stickers import PersonaSticker
+
+
+@dataclass(frozen=True)
+class Expression:
+    message: ChatMessage
+    sticker: PersonaSticker | None = None
 
 
 def split_expression(expression: ChatMessage, max_chars: int) -> list[ChatMessage]:
@@ -41,7 +48,11 @@ def report_parts(parts: list[ChatMessage], errors: list[str | None],
     if len(errors) < len(parts):
         remaining = "".join(segment.data["text"] for part in parts[len(errors):]
                             for segment in part.segments if segment.type == "text")
-        lines.append("尚未发送的原文（中断后不自动续发）：\n" + remaining)
+        images = [f"[图片：{segment.data['summary']}]" for part in parts[len(errors):]
+                  for segment in part.segments if segment.type == "image"]
+        if images:
+            remaining = "\n".join(([remaining] if remaining else []) + images)
+        lines.append("尚未发送的内容（中断后不自动续发）：\n" + remaining)
     if any(part.send_status == "unconfirmed" for part in parts[:len(errors)]):
         lines.append("尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。")
     return "\n".join(lines)

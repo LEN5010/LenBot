@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .chat import build_tools
@@ -55,10 +55,37 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                 temporary.replace(path / edit[0])
             finally:
                 temporary.unlink(missing_ok=True)
-        running = runtime.chats[scene].persona.model_dump()
+        running_persona = runtime.chats[scene].persona
+        running = running_persona.model_dump()
+        stickers_restart_required = candidate.stickers != running_persona.stickers
         return {"saved": files, "running": running,
-                "restart_required": candidate.model_dump() != running,
+                "restart_required": candidate.model_dump() != running or stickers_restart_required,
+                "stickers_restart_required": stickers_restart_required,
                 "affected_scenes": affected}
+
+    @app.get("/api/host/scenes/{scene}/persona-stickers")
+    async def stickers(scene: str, response: Response, _: str = Depends(user)):
+        require_scene(scene)
+        response.headers["Cache-Control"] = "no-store"
+        persona = runtime.chats[scene].persona
+        uses = runtime.store.sticker_usage(scene, persona.id)
+        return {"scene": scene, "persona": {"id": persona.id, "name": persona.name},
+                "stickers": [{"file": sticker.file, "description": sticker.description,
+                              "emotions": sticker.emotions, "tags": sticker.tags,
+                              "mime_type": sticker.mime_type, "width": sticker.width,
+                              "height": sticker.height, "animated": sticker.animated,
+                              "bytes": len(sticker.data), "confirmed_uses": uses.get(sticker.file, 0)}
+                             for sticker in persona.stickers.values()]}
+
+    @app.get("/api/host/scenes/{scene}/persona-stickers/image")
+    async def sticker_image(scene: str, file: str, _: str = Depends(user)):
+        require_scene(scene)
+        sticker = runtime.chats[scene].persona.stickers.get(file)
+        if sticker is None:
+            raise HTTPException(404, "当前运行角色没有这张表情",
+                                headers={"Cache-Control": "no-store"})
+        return Response(sticker.data, media_type=sticker.mime_type,
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/api/host/scenes/{scene}/persona-files")
     async def files(scene: str, _: str = Depends(user)):

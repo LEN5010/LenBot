@@ -9,6 +9,7 @@ const state = ref(null), scene = ref(null), detail = ref(null)
 const stateError = ref(''), sceneError = ref(''), detailError = ref('')
 const loading = ref(false), sceneLoading = ref(false), detailLoading = ref(false)
 const selectedTurn = ref(null), detailHeading = ref(null)
+const imageErrors = ref({})
 const socketState = ref('connecting'), socketError = ref('')
 const selectedScene = computed(() => route.query.scene)
 const sceneOptions = computed(() => state.value ? state.value.scenes.map(item => ({
@@ -31,6 +32,9 @@ function runtimeLabel(value) {
 function statusLabel(value) {
   return ({ received: '平台入站 · 已保存', sent: '平台已确认发送', simulated: '模拟表达 · 未发送到 QQ',
     failed: '发送失败', unconfirmed: '发送结果未确认' })[value] || value
+}
+function imageUrl(message, image) {
+  return `/api/host/scenes/${encodeURIComponent(scene.value.scene)}/messages/${message.seq}/images/${image.image_index}`
 }
 function turnLabel(value) {
   return ({ queued: '等待执行', running: '正在执行', settling: '即将结束', settled: '已结束',
@@ -121,6 +125,7 @@ watch(selectedScene, () => {
   ++sceneRequest
   ++detailRequest
   scene.value = null
+  imageErrors.value = {}
   detail.value = null
   selectedTurn.value = null
   sceneError.value = ''
@@ -228,6 +233,16 @@ onBeforeUnmount(() => {
               <span>QQ {{ message.sender.uid }}</span><span>{{ localTime(message.time) }}</span></div>
             <div class="message-text">{{ message.rendered }}</div>
             <p class="muted message-status">{{ statusLabel(message.send_status) }}</p>
+            <div v-if="message.images.length" class="message-images">
+              <div v-for="image in message.images" :key="image.image_index" class="saved-image">
+                <a :href="imageUrl(message,image)" target="_blank" rel="noopener" :aria-label="`打开已保存图片原件：${image.description || image.file}`">
+                  <span v-if="imageErrors[`${message.seq}:${image.image_index}`]" class="image-error" role="status">已保存图片当前不可读取；打开链接可查看接口错误。</span>
+                  <img v-else :src="imageUrl(message,image)" :alt="image.description || image.file" loading="lazy" :width="image.width" :height="image.height" @error="imageErrors[`${message.seq}:${image.image_index}`]=true" />
+                </a>
+                <p class="muted">{{ image.description || image.file }} · {{ image.mime_type }}<span v-if="image.animated"> · 动图</span></p>
+              </div>
+              <p class="muted media-fact">这里读取已保存的本地原件；发送状态以上方真实回执为准，平台 API 确认也不代表客户端已收到。</p>
+            </div>
           </li>
         </ol>
       </section>
@@ -282,6 +297,12 @@ onBeforeUnmount(() => {
 .message-meta strong{color:var(--ink);font-size:14px}
 .message-text{margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;line-height:1.75}
 .message-status{font-size:12px;border-top:1px solid var(--line);padding-top:8px;margin:0}
+.message-images{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}.saved-image{width:min(100%,220px);min-width:0;overflow-wrap:anywhere}
+.saved-image>a{display:grid;place-items:center;width:100%;height:180px;border:1px solid var(--line);border-radius:8px;background:var(--list-heading-bg);overflow:hidden}
+.saved-image>a:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.saved-image img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+.saved-image p{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0}.image-error{color:var(--error-text);font-size:12px;padding:12px;text-align:center}
+.media-fact{flex-basis:100%;font-size:12px;margin:0}
 .turn-item{border-bottom:1px solid var(--line);padding-bottom:10px;min-width:0}
 .turn-summary,.turn-summary>div{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .turn-summary{justify-content:space-between}

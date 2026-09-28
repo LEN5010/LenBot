@@ -7,6 +7,7 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), scene = ref(''), snapshot = ref(null)
+const stickerSnapshot = ref(null), stickerLoading = ref(false), stickerError = ref(''), stickerImageErrors = ref({})
 const file = ref('persona.yaml'), draft = ref('')
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
@@ -28,6 +29,27 @@ const selection = () => `${scene.value}\u0000${selectionEpoch}`
 const beginRead = useRequestGuard(selection)
 const beginHost = useRequestGuard()
 const beginSave = useRequestGuard(selection)
+const beginStickers = useRequestGuard(selection)
+
+function stickerUrl(name) {
+  return `/api/host/scenes/${encodeURIComponent(scene.value)}/persona-stickers/image?file=${encodeURIComponent(name)}`
+}
+async function readStickers() {
+  if (!scene.value) return
+  const target = scene.value, fresh = beginStickers()
+  stickerLoading.value = true
+  try {
+    const value = await api(`/api/host/scenes/${encodeURIComponent(target)}/persona-stickers`)
+    if (!fresh()) return
+    stickerSnapshot.value = value
+    stickerImageErrors.value = {}
+    stickerError.value = ''
+  } catch (error) {
+    if (fresh()) stickerError.value = error.message
+  } finally {
+    if (fresh()) stickerLoading.value = false
+  }
+}
 
 function selectFile(next) {
   if (next === file.value) return
@@ -43,6 +65,10 @@ function selectScene(next, fromRoute = false) {
   scene.value = next
   ++selectionEpoch
   snapshot.value = null
+  stickerSnapshot.value = null
+  stickerImageErrors.value = {}
+  stickerError.value = ''
+  stickerLoading.value = false
   draft.value = ''
   readError.value = ''
   saveError.value = ''
@@ -50,6 +76,7 @@ function selectScene(next, fromRoute = false) {
   loading.value = false
   if (!fromRoute) router.replace({ name: 'host-persona', query: { scene: next } })
   readFiles(false)
+  readStickers()
 }
 async function readFiles(confirmDiscard = true) {
   if (confirmDiscard && dirty.value && !window.confirm('放弃当前文件尚未保存的原文，重新读取角色包？')) return
@@ -82,6 +109,7 @@ async function readHost() {
       ? requested : value.scenes[0].scene
     if (scene.value !== route.query.scene) router.replace({ name: 'host-persona', query: { scene: scene.value } })
     await readFiles(false)
+    await readStickers()
   } catch (error) {
     if (fresh()) readError.value = error.message
   } finally {
@@ -135,6 +163,26 @@ watch(() => route.query.scene, value => {
         <v-chip variant="tonal" :color="snapshot.restart_required?'warning':'info'">{{ snapshot.restart_required?'角色包保存值待重启':'角色包与运行值一致' }}</v-chip>
       </template>
     </section>
+    <section v-if="scene" class="surface" aria-labelledby="stickers-title">
+      <div class="section-heading"><h2 id="stickers-title">当前运行角色的表情目录</h2>
+        <v-btn variant="outlined" :loading="stickerLoading" :disabled="stickerLoading" @click="readStickers">重读目录</v-btn></div>
+      <p class="muted">只展示本次启动已加载的角色原件，不从磁盘热加载。平台确认次数只计该场景已保存为 sent 的图片发送，不代表 QQ 客户端已收到。</p>
+      <v-chip v-if="snapshot" variant="tonal" :color="snapshot.stickers_restart_required?'warning':'info'">{{ snapshot.stickers_restart_required?'保存目录与运行表情不同 · 待重启':'保存目录与运行表情一致' }}</v-chip>
+      <v-alert v-if="stickerError" type="error" variant="tonal" role="alert" :title="stickerSnapshot?'目录读取失败 · 保留上次快照':'目录读取失败'">{{ stickerError }}</v-alert>
+      <p v-if="stickerLoading && !stickerSnapshot" role="status">正在读取当前角色表情目录…</p>
+      <p v-if="stickerSnapshot && !stickerSnapshot.stickers.length" class="muted">当前运行角色没有已加载的表情原件。</p>
+      <ul v-if="stickerSnapshot?.stickers.length" class="sticker-grid">
+        <li v-for="item in stickerSnapshot.stickers" :key="item.file" class="sticker-card">
+          <a :href="stickerUrl(item.file)" target="_blank" rel="noopener" :aria-label="`打开表情原件：${item.description}`">
+            <span v-if="stickerImageErrors[item.file]" class="image-error" role="status">原件当前不可读取；可打开链接查看接口错误。</span>
+            <img v-else :src="stickerUrl(item.file)" :alt="item.description" loading="lazy" :width="item.width" :height="item.height" @error="stickerImageErrors[item.file]=true" />
+          </a>
+          <div><strong>{{ item.description }}</strong><p class="muted">{{ item.file }} · {{ item.width }}×{{ item.height }} · {{ item.mime_type }}<span v-if="item.animated"> · 动图</span></p>
+            <p class="muted">情绪：{{ item.emotions.join('、') || '未标注' }}；标签：{{ item.tags.join('、') || '未标注' }}</p>
+            <p class="muted">本场景平台确认发送 {{ item.confirmed_uses }} 次 · {{ item.bytes }} 字节</p></div>
+        </li>
+      </ul>
+    </section>
     <template v-if="snapshot">
       <form class="surface editor" @submit.prevent="save"><div class="section-heading"><h2>编辑角色文件原文</h2><span class="muted">只保存所选文件</span></div>
         <v-select :model-value="file" :items="files" item-title="title" item-value="value" label="选择文件" hide-details="auto" :disabled="saving || loading" @update:model-value="selectFile" />
@@ -167,5 +215,12 @@ watch(() => route.query.scene, value => {
 .role-facts{display:grid;gap:12px}.role-facts>div{border-top:1px solid var(--line);padding-top:10px}.role-facts dt{font-weight:700}.role-facts dd{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .dirty-note{border-left:3px solid var(--primary);background:var(--selected-bg);padding:8px 12px}
 .host-persona :deep(.v-btn){min-height:44px}.host-persona :deep(.v-alert),.host-persona .muted{overflow-wrap:anywhere}
+.sticker-grid{list-style:none;margin:16px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px}
+.sticker-card{min-width:0;border:1px solid var(--line);border-radius:10px;padding:12px;overflow-wrap:anywhere}
+.sticker-card>a{display:grid;place-items:center;width:100%;height:180px;border-radius:8px;background:var(--list-heading-bg);overflow:hidden}
+.sticker-card>a:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.sticker-card img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+.sticker-card strong{display:block;margin-top:10px}.sticker-card p{font-size:13px;margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.image-error{text-align:center;padding:12px;color:var(--error-text);font-size:13px}
 @media(max-width:600px){.page-intro{display:grid}.page-intro>.v-btn{width:100%}.surface{padding:16px}}
 </style>

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket
 
 from len_bot.web.shell import mount_panel
 from .config import HostConfig
@@ -94,11 +94,22 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             "models": {"mind": config.models.roles.mind.model,
                        "voice": config.models.roles.voice.model},
             "messages": [
-                {"seq": seq, "rendered": chat.render(message), **asdict(message)}
+                {"seq": seq, "rendered": chat.render(message), **asdict(message),
+                 "images": runtime.store.message_media(scene, seq)}
                 for seq, message in runtime.store.recent_records(scene)
             ],
             "turns": runtime.store.recent_turns(scene),
         }
+
+    @app.get("/api/host/scenes/{scene}/messages/{seq}/images/{image_index}")
+    async def original_image(scene: str, seq: int, image_index: int, _: str = Depends(user)):
+        configured_scene(scene)
+        image = runtime.store.original_image(scene, seq, image_index)
+        if image is None:
+            raise HTTPException(404, "当前场景没有这张已保存图片",
+                                headers={"Cache-Control": "no-store"})
+        mime_type, data = image
+        return Response(data, media_type=mime_type, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/host/scenes/{scene}/turns/{turn_id}")
     async def turn(scene: str, turn_id: str, _: str = Depends(user)):

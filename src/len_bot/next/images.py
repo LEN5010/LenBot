@@ -33,7 +33,7 @@ class LookArguments(BaseModel):
 
 LOOK_TOOL = {"type": "function", "function": {
     "name": "look",
-    "description": "描述当前场景已收到消息里的第几张图片。message 是原平台消息 ID，image 从1开始按原段顺序计数；"
+    "description": "描述当前场景已保存消息里的第几张图片。message 是原平台消息 ID，image 从1开始按原段顺序计数；"
                    "refresh 仅重做已保存像素的视觉描述，不重新下载。",
     "parameters": LookArguments.model_json_schema(),
 }}
@@ -96,20 +96,24 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
     if asset is None:
         if arguments.refresh:
             raise ValueError("该图片尚未保存像素；先用 refresh=false 读取，再重新描述")
-        url = _image_url(pictures[arguments.image - 1].data)
+        original = store.platform_image(scene, arguments.message, arguments.image)
         deadline = asyncio.timeout(settings.timeout_seconds)
         try:
             async with deadline:
-                _, _, body = await fetch_public(
-                    url, settings.timeout_seconds, lambda _type, _prefix: settings.max_bytes,
-                )
+                if original is not None:
+                    body = original[1]
+                else:
+                    url = _image_url(pictures[arguments.image - 1].data)
+                    _, _, body = await fetch_public(
+                        url, settings.timeout_seconds, lambda _type, _prefix: settings.max_bytes,
+                    )
                 jpeg, animated, width, height = await _prepare(body, settings)
                 asset = ImageAsset(jpeg=jpeg, width=width, height=height, animated=animated,
                                    fetched_at=time.time())
                 store.save_image(scene, arguments.message, arguments.image, asset)
         except TimeoutError as error:
             if deadline.expired():
-                raise TimeoutError(f"look image download and preparation exceeded {settings.timeout_seconds} seconds") from error
+                raise TimeoutError(f"look image loading and preparation exceeded {settings.timeout_seconds} seconds") from error
             raise
     description_reused = asset.description is not None and not arguments.refresh
     if not description_reused:
