@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import LabConfig, ScheduleSettings
+from .schedule_time import DailyCron, format_daily_cron, next_daily_cron, parse_daily_cron
 
 if TYPE_CHECKING:
     from .store import Schedule, Store
@@ -25,16 +26,18 @@ _MAX_INTERVAL_SECONDS = 365 * 86400
 class ScheduleArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    when: datetime | int
+    when: datetime | int | DailyCron
     note: str = Field(min_length=1)
     target: str = Field(alias="for", pattern=r"^(self|[1-9][0-9]*)$")
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
 
     @field_validator("when", mode="before", json_schema_input_type=str)
     @classmethod
-    def supported_time(cls, value: object) -> datetime | int:
+    def supported_time(cls, value: object) -> datetime | int | DailyCron:
         if not isinstance(value, str):
-            raise ValueError("when must be an ISO datetime with a UTC offset or 'every <positive integer>m|h|d'")
+            raise ValueError("when must be an offset ISO datetime, 'every <positive integer>m|h|d', or daily cron")
+        if value.startswith("cron:"):
+            return parse_daily_cron(value)
         interval = _INTERVAL.fullmatch(value)
         if interval is not None:
             number, unit = interval.groups()
@@ -42,8 +45,8 @@ class ScheduleArguments(BaseModel):
             if seconds > _MAX_INTERVAL_SECONDS:
                 raise ValueError("interval must be at most 365 days")
             return seconds
-        if value.startswith("every ") or value.startswith("cron:"):
-            raise ValueError("when supports only 'every <positive integer>m|h|d'; cron is not supported")
+        if value.startswith("every "):
+            raise ValueError("fixed interval supports only 'every <positive integer>m|h|d'")
         try:
             parsed = datetime.fromisoformat(value)
         except ValueError as error:
@@ -77,8 +80,10 @@ class ScheduleCancelArguments(BaseModel):
 
 SCHEDULE_TOOLS = [
     {"type": "function", "function": {
-        "name": "schedule", "description": "为当前场景创建一次性或固定间隔安排。when 为未来且含 UTC 偏移的 ISO 时间，"
-        "或严格 every <正整数>m|h|d（1分钟至365天，固定UTC秒；d=24小时，不是本地每日钟点）；cron 未开放。"
+        "name": "schedule", "description": "为当前场景创建一次性或周期安排。when 为未来且含 UTC 偏移的 ISO 时间，"
+        "或严格 every <正整数>m|h|d（1分钟至365天固定UTC秒，d=24小时），"
+        "或每日钟点 cron:<分钟0-59> <小时0-23> * * *，按保存时区；其它cron语法不支持。"
+        "缺失/重复时刻明确报错或阻止后续，不自动顺延、选偏移。"
         "for=self 是未来自己要做的事，for=QQ 是提醒对象；requester 是实际请求人 QQ，Bot 自主安排用 null。"
         "相对时间请结合原话和当前时刻理解；返回已保存不等于提醒已发。",
         "parameters": ScheduleArguments.model_json_schema(),
@@ -161,16 +166,19 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
     if preview and len(note) > 160:
         note = note[:160] + "…（说明预览；用 schedule_list 查看全文）"
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
-    if item.interval_seconds is None:
+    if item.interval_seconds is None and item.cron_minute_of_day is None:
         timing = f"原定 {display_time(item.due_at, item.timezone)} ({item.timezone})"
     else:
-        label = "下次" if item.status == "pending" else "受阻原定" if item.status == "blocked" else "取消前原定"
-        timing = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）；"
+        label = "下次" if item.status == "pending" else "已保存原定" if item.status == "blocked" else "取消前原定"
+        recurrence = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）"
+                      if item.interval_seconds is not None else
+                      f"每日钟点 {format_daily_cron(item.cron_minute_of_day)}（{item.timezone}）")
+        timing = (f"{recurrence}；"
                   f"{label} {display_time(item.due_at, item.timezone)} ({item.timezone})")
     result = (f"#{item.id}；{item.status}；{timing}；"
               f"创建者：{creator}；对象：{item.target}\n{note}")
     if item.delivered_at is not None:
-        prior = "上次已交付会话" if item.interval_seconds is not None else "已交付会话"
+        prior = "上次已交付会话" if item.interval_seconds is not None or item.cron_minute_of_day is not None else "已交付会话"
         result += f"\n{prior}：{display_time(item.delivered_at, item.timezone)}（不代表已发送提醒）"
     if item.reason is not None:
         result += "\n阻止原因：" + item.reason
@@ -180,13 +188,17 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
 def wake_text(item: Schedule, now: float) -> str:
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
     timing = ""
-    if item.interval_seconds is not None:
-        timing = (f"周期每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）；"
+    recurring = item.interval_seconds is not None or item.cron_minute_of_day is not None
+    if recurring:
+        recurrence = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）"
+                      if item.interval_seconds is not None else
+                      f"每日 {format_daily_cron(item.cron_minute_of_day)}（{item.timezone}）")
+        timing = (f"周期{recurrence}；"
                   "离线错过多次也只补交一次；本次交付后用 schedule_list 查看持久化的下一时刻。\n")
         if item.delivered_at is not None:
             timing += (f"上次已交付会话：{display_time(item.delivered_at, item.timezone)}"
                        "（不代表已发送提醒）。\n")
-    due_label = "本期原定" if item.interval_seconds is not None else "原定"
+    due_label = "本期原定" if recurring else "原定"
     return (f"[定时唤醒] #{item.id}；已交付当前会话，尚未发送提醒\n"
             f"创建者：{creator}；对象：{item.target}；创建于 {display_time(item.created, item.timezone)}\n"
             f"{timing}{due_label} {display_time(item.due_at, item.timezone)} ({item.timezone})；"
@@ -197,14 +209,21 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
                        now: Callable[[], float] = time.time) -> Schedule:
     started = now()
     interval_seconds = args.when if isinstance(args.when, int) else None
-    when = started + interval_seconds if interval_seconds is not None else args.when.timestamp()
+    cron_minute = args.when.minute_of_day if isinstance(args.when, DailyCron) else None
+    if interval_seconds is not None:
+        when = started + interval_seconds
+    elif cron_minute is not None:
+        when = next_daily_cron(cron_minute, config.timezone, started)
+    else:
+        when = args.when.timestamp()
     if when <= started:
         raise ValueError("when 必须晚于当前执行时刻；未创建过去的安排")
     check_creation(config.schedules, requester=args.requester, target=args.target,
                    bot_qq=config.bot_qq, group_role=platform_role(store, config, args.requester))
     return store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
                                  note=args.note, target=args.target, requester=args.requester,
-                                 limit=config.schedules.max_pending, interval_seconds=interval_seconds)
+                                 limit=config.schedules.max_pending, interval_seconds=interval_seconds,
+                                 cron_minute_of_day=cron_minute)
 
 
 def cancel_arrangement(store: Store, config: LabConfig, *, id: int,
