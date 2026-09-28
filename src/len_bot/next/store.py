@@ -585,9 +585,14 @@ class Store:
         ).fetchall()
         return [self._message(row[0]) for row in reversed(rows)]
 
-    def recent_records(self, scene: str, limit: int = 50) -> list[tuple[int, ChatMessage]]:
-        rows = self.db.execute("SELECT seq,body FROM messages WHERE scene=? ORDER BY seq DESC LIMIT ?",
-                               (scene, limit)).fetchall()
+    def recent_records(self, scene: str, limit: int = 50, *, snapshot: int | None = None,
+                       offset: int = 0) -> list[tuple[int, ChatMessage]]:
+        conditions = "scene=?" if snapshot is None else "scene=? AND seq<=?"
+        values = (scene,) if snapshot is None else (scene, snapshot)
+        rows = self.db.execute(
+            f"SELECT seq,body FROM messages WHERE {conditions} ORDER BY seq DESC LIMIT ? OFFSET ?",
+            (*values, limit, offset),
+        ).fetchall()
         return [(row[0], self._message(row[1])) for row in reversed(rows)]
 
     def recent_turns(self, scene: str, limit: int = 20) -> list[dict]:

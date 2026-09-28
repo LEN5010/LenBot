@@ -154,6 +154,8 @@ async def worker_session(
     price: ModelPrice | None,
     limits: Limits,
     skills: tuple[Skill, ...],
+    data_tools: list[dict],
+    task_timeout_seconds: float,
     egress_settings: EgressSettings,
     egress_bytes_per_second: int,
     before_bytes: Callable[[int, str, int], None],
@@ -190,7 +192,8 @@ async def worker_session(
         handle = await sandbox.ensure(scene, task_id, skills=skills, on_container=on_container)
         _write_json(handle.control / "task-api.json", {
             "base_url": "http://127.0.0.1:18181", "token": token,
-            "timeout_seconds": sandbox.settings.command_timeout_seconds,
+            "timeout_seconds": task_timeout_seconds,
+            "tools": data_tools,
         })
         bridge = await sandbox.spawn_model_bridge(
             handle, proxy=proxy, stderr_path=handle.workspace / "model-bridge.stderr",

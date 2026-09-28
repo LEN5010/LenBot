@@ -113,7 +113,8 @@ class WorkerTransport:
                         or set(request) != {"token", "path", "body_bytes"}
                         or not isinstance(request["token"], str)
                         or not isinstance(request["path"], str)
-                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file", "/task/network"}
+                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file", "/task/network",
+                                                   "/task/recall-chat", "/task/memory"}
                         or type(request["body_bytes"]) is not int
                         or not 0 < request["body_bytes"] <= self.proxy.limits.max_request_bytes):
                     raise WorkerTransportError(f"invalid worker request frame {kind!r}: {data[:500]!r}")
@@ -121,7 +122,8 @@ class WorkerTransport:
                 if kind != b"B" or len(body) != request["body_bytes"]:
                     raise WorkerTransportError(f"invalid worker body frame {kind!r}: {body[:500]!r}")
                 try:
-                    if request["path"] in {"/task/deliver-file", "/task/network"}:
+                    if request["path"] in {"/task/deliver-file", "/task/network",
+                                          "/task/recall-chat", "/task/memory"}:
                         self.proxy.authorize(request["token"])
                         if self.task_request is None:
                             raise WorkerTransportError("Task API is not configured")
@@ -145,8 +147,8 @@ class WorkerTransport:
                                 await self._write_frame(b"D", chunk[offset:offset + CHUNK_BYTES])
                     await self._write_frame(b"E")
                 except Exception as error:
-                    # One model-call boundary: send the original failure and end
-                    # only this response. The proxy records the actual call.
+                    # One model/tool call boundary: return the original failure
+                    # and end only this response, without retrying a mutation.
                     detail = f"{type(error).__name__}: {error}".encode("utf-8")
                     if len(detail) > CHUNK_BYTES:
                         detail = detail[:CHUNK_BYTES - 64].decode(
