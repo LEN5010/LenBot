@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 15."""
+"""Explicit offline upgrade of an isolated next-core database to format 16."""
 
 from __future__ import annotations
 
@@ -164,6 +164,12 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute(
                 "ALTER TABLE schedules ADD COLUMN interval_seconds INTEGER "
                 "CHECK(interval_seconds BETWEEN 60 AND 31536000)"
+            )
+        elif version == 15:
+            db.execute(
+                "ALTER TABLE schedules ADD COLUMN cron_minute_of_day INTEGER "
+                "CHECK(cron_minute_of_day IS NULL OR "
+                "(cron_minute_of_day BETWEEN 0 AND 1439 AND interval_seconds IS NULL))"
             )
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()

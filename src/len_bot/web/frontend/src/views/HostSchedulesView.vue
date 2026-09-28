@@ -39,20 +39,33 @@ function time(value, zone) {
     timeZone: zone, timeZoneName: 'short', hour12: false,
   })
 }
-function interval(value) {
+function recurring(item) {
+  return item.interval_seconds !== null || item.cron_minute_of_day !== null
+}
+function cronExpression(item) {
+  const hour = Math.floor(item.cron_minute_of_day / 60)
+  const minute = item.cron_minute_of_day % 60
+  return `cron:${minute} ${hour} * * *`
+}
+function cadence(item) {
+  if (item.cron_minute_of_day !== null) {
+    const hour = String(Math.floor(item.cron_minute_of_day / 60)).padStart(2, '0')
+    const minute = String(item.cron_minute_of_day % 60).padStart(2, '0')
+    return `每日 ${hour}:${minute} · ${item.timezone}`
+  }
+  const value = item.interval_seconds
   if (value === null) return '一次性'
-  if (value % 86400 === 0) return `每 ${value / 86400} 天`
-  if (value % 3600 === 0) return `每 ${value / 3600} 小时`
-  return `每 ${value / 60} 分钟`
+  if (value % 86400 === 0) return `每 ${value / 86400} 天 · 固定 UTC 秒`
+  if (value % 3600 === 0) return `每 ${value / 3600} 小时 · 固定 UTC 秒`
+  return `每 ${value / 60} 分钟 · 固定 UTC 秒`
 }
 function statusLabel(value) {
   return { pending:'待交付', blocked:'受阻', delivered:'已交付会话', cancelled:'已取消' }[value] || value
 }
 function dueLabel(item) {
-  if (item.interval_seconds === null) return '原定时间'
-  if (item.status === 'pending') return '下次到期'
-  if (item.status === 'blocked') return '受阻原定时间'
+  if (item.status === 'blocked') return '已保存原定时刻（未安排后续）'
   if (item.status === 'cancelled') return '取消前原定时间'
+  if (recurring(item) && item.status === 'pending') return '下次到期'
   return '原定时间'
 }
 function operationError(error, action) {
@@ -131,9 +144,9 @@ async function create() {
 async function cancel(item) {
   if (!selectedSettings.value || cancelling.value !== null || creating.value) return
   if (!cancelRequester.value) { cancelError.value = '请填写实际操作者 QQ。'; return }
-  if (!window.confirm(item.interval_seconds === null
-    ? `取消这条安排？\n${item.note}`
-    : `停止此周期安排后续唤醒？已交付的过去次数不会撤回。\n${item.note}`)) return
+  if (!window.confirm(recurring(item)
+    ? `停止此周期安排后续唤醒？已交付的过去次数不会撤回。\n${item.note}`
+    : `取消这条一次性安排？\n${item.note}`)) return
   const fresh = beginCancel(), scene = selectedScene.value
   cancelling.value = item.id; cancelError.value = ''; cancelNotice.value = ''
   try {
@@ -142,9 +155,9 @@ async function cancel(item) {
     })
     if (!fresh()) return
     cancelRequester.value = ''
-    cancelNotice.value = item.interval_seconds === null
-      ? '取消已保存；这条一次性安排不再交付会话。'
-      : '取消已保存；此周期安排后续唤醒已停止，过去交付未撤回。'
+    cancelNotice.value = recurring(item)
+      ? '取消已保存；此周期安排后续唤醒已停止，过去交付未撤回。'
+      : '取消已保存；这条一次性安排不再交付会话。'
     await readList()
   } catch (error) {
     if (fresh()) cancelError.value = operationError(error, '取消')
@@ -165,7 +178,7 @@ onMounted(readState)
 <template>
   <div class="page-stack host-schedules">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>场景安排</h1>
-      <p class="muted">查看真实已保存的一次性提醒与固定间隔安排。创建和取消都需要填写实际操作者 QQ；面板账户不代替聊天身份。</p></div>
+      <p class="muted">查看真实已保存的一次性提醒、固定秒数间隔与每日本地钟点安排。创建和取消都需要填写实际操作者 QQ；面板账户不代替聊天身份。</p></div>
       <v-btn variant="outlined" :loading="stateLoading || listLoading" :disabled="stateLoading || listLoading || creating || cancelling!==null" @click="readState">手动刷新</v-btn></header>
     <v-alert v-if="stateError" type="error" variant="tonal" role="alert" :title="state?'场景状态读取失败 · 保留上次快照':'场景状态读取失败'">{{ stateError }}</v-alert>
     <p v-if="stateLoading && !state" role="status">正在读取场景安排状态…</p>
@@ -179,11 +192,12 @@ onMounted(readState)
         <p class="muted">本人、他人及管理权限按实际 QQ 和场景身份判断；不会自动填入配置中的主人 QQ。</p></template>
       </section>
       <section v-if="selectedSettings" class="surface" aria-labelledby="create-title"><h2 id="create-title">创建安排</h2>
-        <p class="muted">未来时间须带 UTC 偏移，如 2026-10-01T09:00:00+08:00；固定周期写 <code>every 30m</code>、<code>every 2h</code> 或 <code>every 1d</code>（1 分钟至 365 天，按固定 UTC 秒，不是每天本地钟点）。暂不支持 cron。</p>
+        <p class="muted">一次性时间须带 UTC 偏移，如 2026-10-01T09:00:00+08:00。固定秒数周期写 <code>every 30m</code>、<code>every 2h</code> 或 <code>every 1d</code>（1 分钟至 365 天，d=24 小时）；每日本地钟点写 <code>cron:0 20 * * *</code>（当前场景 {{ state.timezone }} 的 20:00）。cron 仅支持固定分钟与小时、每天执行，不支持列表、范围、星期或每月。</p>
+        <p class="muted">遇夏令时跳过或重复的本地钟点不会猜测偏移：创建时明确拒绝，后续推进冲突会受阻并保留原因。需要特定真实时刻时可使用带偏移的一次性时间；不会把每日钟点自动改成 24 小时间隔。</p>
         <form @submit.prevent="create"><div class="form-grid">
           <v-text-field v-model="form.requester" label="实际请求人 QQ" inputmode="numeric" required hide-details="auto" :disabled="creating" />
           <v-text-field v-model="form.for" label="对象：self 或实际 QQ" required hide-details="auto" :disabled="creating" />
-          <v-text-field v-model="form.when" label="何时执行（带偏移的 ISO 时间或 every 周期）" required hide-details="auto" :disabled="creating" />
+          <v-text-field v-model="form.when" label="何时执行（带偏移 ISO、every 或每日 cron）" required hide-details="auto" :disabled="creating" />
         </div><v-textarea v-model="form.note" label="安排原文" rows="3" auto-grow required hide-details="auto" :disabled="creating" />
           <v-alert v-if="createError" type="error" variant="tonal" role="alert">{{ createError }}</v-alert>
           <p v-if="createNotice" class="success-note" role="status">{{ createNotice }}</p>
@@ -191,7 +205,7 @@ onMounted(readState)
         </form>
       </section>
       <section v-if="selectedSettings" class="surface" aria-labelledby="list-title"><div class="section-heading"><h2 id="list-title">已保存安排</h2><span class="muted">按保存的到期时间排序 · 每页最多 20 条</span></div>
-        <p class="muted">“已交付”只表示进入会话，不等于已向 QQ 发出或对方收到。受阻仍属于待处理；周期待交付项显示下次到期，受阻或取消项显示原定时间。</p>
+        <p class="muted">“已交付”只表示进入会话，不等于已向 QQ 发出或对方收到。受阻仍属于待处理；周期待交付项显示下次到期，受阻项只保留已确定的原定时刻，不表示已安排下一次。</p>
         <v-alert v-if="listError" type="error" variant="tonal" role="alert" :title="items.length?'列表读取失败 · 保留上次结果':'列表读取失败'">{{ listError }}</v-alert>
         <p v-if="listLoading && !items.length" role="status">正在读取安排…</p>
         <p v-else-if="!listLoading && !items.length && !listError" class="muted">此筛选下没有已保存安排。</p>
@@ -199,7 +213,8 @@ onMounted(readState)
         <p v-if="cancelNotice" class="success-note" role="status">{{ cancelNotice }}</p>
         <template v-if="items.length"><div class="cancel-operator"><v-text-field v-model="cancelRequester" label="取消时的实际操作者 QQ" inputmode="numeric" hide-details="auto" :disabled="cancelling!==null" /><span class="muted">本人或有管理权限的 QQ 可取消；不以面板登录账户代填。</span></div>
           <ul class="schedule-list"><li v-for="item in items" :key="item.id" class="schedule-card">
-            <div class="card-heading"><strong>{{ statusLabel(item.status) }}</strong><span>{{ interval(item.interval_seconds) }}</span></div>
+            <div class="card-heading"><strong>{{ statusLabel(item.status) }}</strong><span>{{ cadence(item) }}</span></div>
+            <p v-if="item.cron_minute_of_day!==null" class="muted">每日钟点表达式：<code>{{ cronExpression(item) }}</code></p>
             <p class="original-text">{{ item.note }}</p>
             <dl><div><dt>{{ dueLabel(item) }}</dt><dd>{{ time(item.due_at,item.timezone) }}（{{ item.timezone }}）</dd></div>
               <div><dt>对象 / 请求人</dt><dd>{{ item.target==='self'?'self':`QQ ${item.target}` }} / {{ item.requester===null?'Bot 自主':`QQ ${item.requester}` }}</dd></div>
