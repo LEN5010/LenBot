@@ -20,6 +20,7 @@ from .config import (
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
 from .persona import load_persona
+from .skills import load_catalog, select_skills
 from .pricing import ModelPrice
 from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
@@ -259,6 +260,9 @@ def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
     for scene, settings in candidate.scenes.items():
         build_tools(candidate.scene_config(scene), personas[settings.persona],
                     platform=candidate.delivery == "onebot")
+        if candidate.worker is not None and candidate.worker.skills_directory is not None:
+            select_skills(load_catalog(candidate.worker.skills_directory, scene),
+                          personas[settings.persona].skills)
 
     descriptor, name = tempfile.mkstemp(prefix=".lenbot-config-", suffix=".json", dir=path.parent)
     temporary = Path(name)

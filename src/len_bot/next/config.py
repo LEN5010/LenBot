@@ -798,6 +798,10 @@ def _resolve_worker_paths(root: Path, source: dict) -> None:
         worker[name] = _resolved_path(
             root, worker.get(name), within_root=True, field=f"worker.{name}",
         )
+    if worker.get("skills_directory") is not None:
+        worker["skills_directory"] = _resolved_path(
+            root, worker["skills_directory"], within_root=True, field="worker.skills_directory",
+        )
 
 
 def _load_lab_source(path: Path, source: dict) -> LabConfig:

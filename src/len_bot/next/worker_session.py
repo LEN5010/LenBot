@@ -18,6 +18,7 @@ from .model_slots import ModelSlots
 from .pi_rpc import PiRpc
 from .pricing import ModelPrice
 from .sandbox import DockerSandbox, SandboxHandle
+from .skills import Skill
 from .tasks_config import EgressSettings
 from .worker_egress import EgressTransport
 from .worker_model import Limits, WorkerModelProxy
@@ -152,6 +153,7 @@ async def worker_session(
     context_window_tokens: int,
     price: ModelPrice | None,
     limits: Limits,
+    skills: tuple[Skill, ...],
     egress_settings: EgressSettings,
     egress_bytes_per_second: int,
     before_bytes: Callable[[int, str, int], None],
@@ -185,7 +187,7 @@ async def worker_session(
     original: BaseException | None = None
     try:
         await proxy.__aenter__()
-        handle = await sandbox.ensure(scene, task_id, on_container=on_container)
+        handle = await sandbox.ensure(scene, task_id, skills=skills, on_container=on_container)
         _write_json(handle.control / "task-api.json", {
             "base_url": "http://127.0.0.1:18181", "token": token,
             "timeout_seconds": sandbox.settings.command_timeout_seconds,
@@ -213,6 +215,7 @@ async def worker_session(
             handle, provider=_PI_PROVIDER, model=settings.model,
             stderr_path=handle.workspace / "pi.stderr",
             proxy_port=None if egress is None else egress.port,
+            skills=skills,
         )
         yield WorkerSession(handle, pi, bridge, proxy, egress)
     except BaseException as error:

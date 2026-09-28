@@ -18,6 +18,7 @@ from .persona import load_persona
 from .store import Store
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
+from .skills import load_catalog, select_skills
 
 
 class HostPanelServer(uvicorn.Server):
@@ -67,6 +68,10 @@ async def run() -> None:
                 for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}
     scenes = [(config.scene_config(scene), personas[settings.persona])
               for scene, settings in config.scenes.items()]
+    skills = {settings.scene: (
+        select_skills(load_catalog(config.worker.skills_directory, settings.scene), persona.skills)
+        if config.worker is not None and config.worker.skills_directory is not None else ()
+    ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with Store(config.database) as store:
         if config.worker is None and TaskStore(store).containers():
@@ -85,7 +90,10 @@ async def run() -> None:
                     runner.changed.set()
                 runtime.notify()
 
-            tasks = (WorkTasks(config, store, slots, task_update) if config.worker is not None else None)
+            tasks = (WorkTasks(config, store, slots, task_update, skills=skills,
+                              skill_permissions={settings.scene: persona.skills
+                                                 for settings, persona in scenes})
+                     if config.worker is not None else None)
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
                                      memory=memory, ingestor=ingestor, tasks=tasks)
             if config.panel is None:

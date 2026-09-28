@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from .pi_rpc import PiRpc
+from .skills import Skill
 from .tasks_config import EgressSettings
 from .worker_egress import EgressTransport
 from .worker_model import WorkerModelProxy
@@ -206,8 +207,7 @@ class DockerSandbox:
         return output.decode("utf-8").strip()
 
     async def ensure(self, scene: str, task_id: str, *,
-                     shared_skills: Path | None = None,
-                     group_dir: Path | None = None,
+                     skills: tuple[Skill, ...] = (),
                      on_container: Callable[[str], None] | None = None) -> SandboxHandle:
         """Create a fresh container; never infer a usable network from Docker defaults."""
         if _SCENE.fullmatch(scene) is None or _TASK.fullmatch(task_id) is None:
@@ -228,12 +228,9 @@ class DockerSandbox:
         mounts = [*_mount(workspace, "/workspace"),
                   *_mount(home, "/home/agent"),
                   *_mount(control, "/run/lenbot", readonly=True)]
-        for source, target in ((shared_skills, "/shared/skills"), (group_dir, "/group")):
-            if source is not None:
-                resolved = source.resolve(strict=True)
-                if not resolved.is_dir():
-                    raise ValueError(f"{target} source is not a directory: {resolved}")
-                mounts.extend(_mount(resolved, target, readonly=True))
+        for skill in skills:
+            if skill.source != "task":
+                mounts.extend(_mount(skill.host_path, skill.container_path, readonly=True))
         name = f"lenbot-next-{uuid.uuid4().hex}"
         if on_container is not None:
             on_container(name)
@@ -315,7 +312,8 @@ class DockerSandbox:
         )
 
     async def spawn_pi(self, sandbox: SandboxHandle, *, provider: str, model: str,
-                       stderr_path: Path, proxy_port: int | None = None) -> PiRpc:
+                       stderr_path: Path, proxy_port: int | None = None,
+                       skills: tuple[Skill, ...] = ()) -> PiRpc:
         """Start exactly one configured Pi RPC session, not an arbitrary argv."""
         if not provider.strip() or not model.strip():
             raise ValueError("Pi provider and model must be explicitly configured")
@@ -337,6 +335,8 @@ class DockerSandbox:
             "--no-context-files", "--no-approve",
             "--extension", "/opt/lenbot/lenbot-extension.ts",
         ]
+        for skill in skills:
+            command.extend(("--skill", str(PurePosixPath(skill.container_path) / "SKILL.md")))
         rpc: PiRpc | None = None
         try:
             rpc = await PiRpc.spawn(command, cwd=sandbox.workspace,

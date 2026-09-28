@@ -37,6 +37,7 @@ class WorkerSettings(BaseModel):
     workspace_root: Path
     runtime_root: Path
     delivery_root: Path
+    skills_directory: Path | None = None
     uid: int = Field(gt=0, strict=True)
     gid: int = Field(gt=0, strict=True)
     cpus: float = Field(default=2.0, gt=0, allow_inf_nan=False)
@@ -82,6 +83,13 @@ class WorkerSettings(BaseModel):
             raise ValueError("image must not be blank")
         return value
 
+    @field_validator("skills_directory")
+    @classmethod
+    def absolute_skills_directory(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("skills_directory must be an explicit absolute path")
+        return value
+
     @model_validator(mode="after")
     def separate_task_trees(self) -> WorkerSettings:
         roots = {
@@ -89,6 +97,8 @@ class WorkerSettings(BaseModel):
             "runtime_root": self.runtime_root,
             "delivery_root": self.delivery_root,
         }
+        if self.skills_directory is not None:
+            roots["skills_directory"] = self.skills_directory
         for first_name, first in roots.items():
             for second_name, second in roots.items():
                 if first_name != second_name and first.is_relative_to(second):

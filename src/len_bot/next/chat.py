@@ -34,6 +34,7 @@ from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
+from .skills import Skill
 from .store import ImageAsset, Store, encode
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
@@ -141,7 +142,8 @@ def voice_prompt(persona: Persona) -> str:
     )
 
 
-def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool) -> str:
+def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
+                 skills: tuple[Skill, ...] = ()) -> str:
     """Render the actual stable mind system text for this scene and outlet."""
     names = {tool["function"]["name"] for tool in allowed}
     deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -187,6 +189,11 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         )
     if "send_file" in names:
         system += "\n" + (PROMPTS / "next_files.md").read_text()
+    if "delegate" in names and skills:
+        system += "\n" + Template((PROMPTS / "next_skills.md").read_text()).substitute(
+            catalog=encode([{"name": skill.name, "description": skill.description}
+                            for skill in skills if not skill.disable_model_invocation]),
+        )
     if "tool_search" in names:
         system += "\n" + Template((PROMPTS / "next_tools.md").read_text()).substitute(
             catalog="\n".join(f"- {tool['function']['name']}：{tool['function']['description'].split('；')[0]}"
@@ -239,7 +246,9 @@ class Chat:
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
-        self.system = build_system(config, persona, allowed, platform=send_text is not None)
+        self.skills = () if tasks is None else tasks.skills[config.scene]
+        self.system = build_system(config, persona, allowed, platform=send_text is not None,
+                                   skills=self.skills)
 
     @property
     def tools(self) -> list[dict]:

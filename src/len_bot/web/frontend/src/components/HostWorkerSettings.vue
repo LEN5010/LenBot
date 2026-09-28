@@ -49,6 +49,7 @@ function freshWorker() {
     compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
     active_timeout_seconds: 1800, input_timeout_seconds: 1800,
     max_file_bytes: 25 * 1024 * 1024, input_support: 'text', model_reasoning: null,
+    skills_directory: null,
     egress: { enabled: true, max_task_bytes: 524288000, max_scene_daily_bytes: 2147483648,
       max_connections: 16, bytes_per_second: 8388608,
       connect_timeout_seconds: 30, header_timeout_seconds: 30 },
@@ -61,7 +62,8 @@ function taskBody() {
 }
 function workerBody() {
   if (workerDraft.value === null) return null
-  return { ...copy(workerDraft.value), max_cost: workerDraft.value.max_cost === '' ? null : workerDraft.value.max_cost }
+  return { ...copy(workerDraft.value), max_cost: workerDraft.value.max_cost === '' ? null : workerDraft.value.max_cost,
+    skills_directory: workerDraft.value.skills_directory === '' ? null : workerDraft.value.skills_directory }
 }
 const workerDirty = computed(() => snapshot.value !== null &&
   JSON.stringify(workerBody()) !== JSON.stringify(snapshot.value.saved.worker))
@@ -180,12 +182,13 @@ onMounted(() => read(false))
         <div class="status-row"><strong>当前运行：{{ snapshot.running.worker===null?'未配置任务执行器':snapshot.running.worker.image }}</strong>
           <v-chip variant="tonal" :color="snapshot.restart_required.worker?'warning':'info'">{{ snapshot.restart_required.worker?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
         <p class="muted">公共联网代理：运行值 {{ snapshot.running.worker?.egress.enabled?'配置启用':'未启用' }}；保存值 {{ snapshot.saved.worker?.egress.enabled?'计划启用':'未启用' }}。这里不表示域名已实际联网。</p>
+        <p class="muted">技能目录：运行值 {{ snapshot.running.worker?.skills_directory ?? '未设置' }}；保存值 {{ snapshot.saved.worker?.skills_directory ?? '未设置' }}。目录保存不表示角色已选择技能或任务实际执行过技能。</p>
         <p class="muted">保存值中的任务模型：{{ snapshot.saved.models.roles.worker===null?'未绑定':`${snapshot.saved.models.roles.worker.provider} / ${snapshot.saved.models.roles.worker.model}` }}。配置费用上限时，须在模型页为此提供方与精确模型设置价格。</p>
         <form @submit.prevent="saveWorker"><fieldset :disabled="loading || Boolean(saving)">
           <v-switch :model-value="workerDraft!==null" label="在根配置中启用任务执行环境" :disabled="loading || Boolean(saving)" hide-details @update:model-value="toggleWorker" />
           <p v-if="workerDraft===null" class="muted">未配置执行环境；场景任务不能启用。若已有场景启用任务，须先分别停用，完整配置校验才会接受移除此环境。</p>
           <template v-else>
-            <p class="muted">请填本机真实 Docker 程序与 Unix socket；不会从当前机器环境、进程变量或大脑模型推断。三个任务目录必须在实例根内且互不嵌套。</p>
+            <p class="muted">请填本机真实 Docker 程序与 Unix socket；不会从当前机器环境、进程变量或大脑模型推断。三个任务目录及可选技能目录须在实例根内且互不嵌套。</p>
             <div class="form-grid">
               <v-text-field v-model="workerDraft.docker_binary" label="Docker 可执行文件绝对路径" hide-details="auto" />
               <v-text-field v-model="workerDraft.docker_host" label="本机 Docker socket（unix:///…）" hide-details="auto" />
@@ -195,6 +198,8 @@ onMounted(() => read(false))
               <v-text-field v-model="workerDraft.workspace_root" label="任务工作区目录" hint="示例：data/tasks/workspaces；需自行确认权限" persistent-hint />
               <v-text-field v-model="workerDraft.runtime_root" label="任务运行目录" hint="示例：data/tasks/runtime；不能在工作区内" persistent-hint />
               <v-text-field v-model="workerDraft.delivery_root" label="任务交付目录" hint="示例：data/tasks/deliveries；复制成功不等于 QQ 上传" persistent-hint />
+              <v-text-field :model-value="workerDraft.skills_directory ?? ''" label="技能资料目录（留空不装载）" hint="例如 data/skills；shared/ 与 scenes/<场景>/ 保存已采用技能，内置技能随程序提供" persistent-hint
+                @update:model-value="value=>workerDraft.skills_directory=value===''||value===null?null:value" />
               <v-select v-model="workerDraft.model_reasoning" label="所选任务模型实际支持推理吗？" :items="[{title:'不支持',value:false},{title:'支持',value:true}]" :disabled="loading || Boolean(saving)" hint="必须人工选择；不从模型名推断，实际请求参数仍以根绑定为准" persistent-hint />
               <v-select v-model="workerDraft.input_support" label="所选任务模型输入能力" :items="[{title:'仅文本',value:'text'},{title:'文本与图片',value:'text-image'}]" :disabled="loading || Boolean(saving)" hide-details="auto" />
             </div>
