@@ -7,7 +7,10 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 const snapshot = ref(null), loading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), localError = ref(''), savedNotice = ref('')
 const providers = ref([]), roles = ref(null), prices = ref([])
-const visionEnabled = ref(false), memoryEnabled = ref(false), workerEnabled = ref(false)
+const visionEnabled = ref(false), memoryEnabled = ref(false), workerEnabled = ref(false), learnerEnabled = ref(false)
+const roleNames = ['mind', 'voice', 'vision', 'memory', 'learner', 'worker']
+const roleLabels = { mind: '大脑', voice: '表达器', vision: '视觉', memory: '记忆抽取',
+  learner: '群聊表达学习', worker: '任务执行' }
 const beginRead = useRequestGuard(), beginSave = useRequestGuard()
 const providerOptions = computed(() => providers.value.filter(row => row.alias).map(row => row.alias))
 
@@ -25,9 +28,11 @@ function adopt(result) {
   roles.value = { mind: binding(models.roles.mind), voice: binding(models.roles.voice),
     vision: models.roles.vision === null ? null : binding(models.roles.vision),
     memory: models.roles.memory === null ? null : binding(models.roles.memory),
-    worker: models.roles.worker === null ? null : binding(models.roles.worker) }
+    worker: models.roles.worker === null ? null : binding(models.roles.worker),
+    learner: models.roles.learner === null ? null : binding(models.roles.learner) }
   visionEnabled.value = models.roles.vision !== null
   memoryEnabled.value = models.roles.memory !== null
+  learnerEnabled.value = models.roles.learner !== null
   workerEnabled.value = models.roles.worker !== null
   prices.value = Object.entries(models.prices).flatMap(([provider, entries]) =>
     Object.entries(entries).map(([model, value]) => ({ provider, model, ...copy(value) })))
@@ -36,7 +41,7 @@ function adopt(result) {
 }
 function roleBody() {
   const output = copy(roles.value)
-  for (const name of ['mind','voice','vision','memory','worker']) {
+  for (const name of roleNames) {
     if (output[name] === null) continue
     output[name].reasoning_effort = output[name].reasoning_effort === '' ? null : output[name].reasoning_effort
   }
@@ -113,6 +118,13 @@ function enableWorker(value) {
     max_output_tokens: '', timeout_seconds: 60, reasoning_effort: '',
   } : null
 }
+function enableLearner(value) {
+  learnerEnabled.value = value
+  roles.value.learner = value ? {
+    provider: '', model: '', context_window_tokens: '', temperature: 0.6,
+    max_output_tokens: '', timeout_seconds: 60, reasoning_effort: '',
+  } : null
+}
 function draftProblem() {
   const aliases = providers.value.map(row => row.alias)
   if (aliases.length !== new Set(aliases).size) return '提供方别名重复；保存前请明确保留哪一项。'
@@ -123,6 +135,9 @@ function draftProblem() {
   if (workerEnabled.value && (!roles.value.worker.provider || !roles.value.worker.model ||
       !roles.value.worker.context_window_tokens || !roles.value.worker.max_output_tokens))
     return '任务模型须显式填写提供方、精确模型名、上下文窗口和输出上限；不会继承大脑绑定。'
+  if (learnerEnabled.value && (!roles.value.learner.provider || !roles.value.learner.model ||
+      !roles.value.learner.context_window_tokens || !roles.value.learner.max_output_tokens))
+    return '学习模型须显式填写提供方、精确模型名、上下文窗口和输出上限；不会继承大脑或记忆模型。'
   return ''
 }
 async function save() {
@@ -170,14 +185,14 @@ onMounted(() => read(false))
             {{ snapshot.restart_required.models?'保存值待重启':'保存值与运行值一致' }}
           </v-chip></div>
         <dl class="facts">
-          <div v-for="name in ['mind','voice','vision','memory','worker']" :key="name"><dt>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取',worker:'任务执行'})[name] }}</dt>
+          <div v-for="name in roleNames" :key="name"><dt>{{ roleLabels[name] }}</dt>
             <dd>{{ snapshot.running.models.roles[name] === null ? '未配置' : `${snapshot.running.models.roles[name].provider} / ${snapshot.running.models.roles[name].model}` }}</dd></div>
         </dl>
         <p class="muted">运行中提供方：{{ Object.keys(snapshot.running.models.providers).join('、') }}。密钥只显示是否已填写，不回显原值。</p>
         <details class="runtime-detail"><summary>查看运行中的提供方、完整绑定与配置价格</summary>
           <h3>提供方</h3><dl class="facts"><div v-for="(provider,alias) in snapshot.running.models.providers" :key="alias">
             <dt>{{ alias }} · {{ provider.api }}</dt><dd>{{ provider.base_url }} · {{ provider.api_key_configured?'已配置密钥':'未配置密钥' }}</dd></div></dl>
-          <h3>用途绑定</h3><dl class="facts"><div v-for="name in ['mind','voice','vision','memory','worker']" :key="name"><dt>{{ name }}</dt>
+          <h3>用途绑定</h3><dl class="facts"><div v-for="name in roleNames" :key="name"><dt>{{ name }}</dt>
             <dd v-if="snapshot.running.models.roles[name]">{{ snapshot.running.models.roles[name].provider }} / {{ snapshot.running.models.roles[name].model }} · 窗口 {{ snapshot.running.models.roles[name].context_window_tokens }} · 输出 {{ snapshot.running.models.roles[name].max_output_tokens }} · 温度 {{ snapshot.running.models.roles[name].temperature }} · 超时 {{ snapshot.running.models.roles[name].timeout_seconds }} 秒 · 思考强度 {{ snapshot.running.models.roles[name].reasoning_effort ?? '未设置' }}</dd>
             <dd v-else>未配置</dd></div></dl>
           <h3>配置价格</h3><dl class="facts"><template v-for="(entries,provider) in snapshot.running.models.prices" :key="provider">
@@ -205,15 +220,18 @@ onMounted(() => read(false))
 
         <fieldset :disabled="saving || loading" class="surface editor-section">
           <legend>用途绑定 · 根配置保存值</legend>
-          <div v-for="name in ['mind','voice','vision','memory','worker']" :key="name" class="entry-card">
-            <div class="binding-title"><h3>{{ ({mind:'大脑',voice:'表达器',vision:'视觉',memory:'记忆抽取',worker:'任务执行'})[name] }}</h3>
+          <div v-for="name in roleNames" :key="name" class="entry-card">
+            <div class="binding-title"><h3>{{ roleLabels[name] }}</h3>
               <v-switch v-if="name==='vision'" :model-value="visionEnabled" label="启用视觉绑定"
                 hide-details :disabled="saving || loading" @update:model-value="enableVision" />
               <v-switch v-else-if="name==='memory'" :model-value="memoryEnabled" label="启用记忆抽取绑定"
                 hide-details :disabled="saving || loading" @update:model-value="enableMemory" />
+              <v-switch v-else-if="name==='learner'" :model-value="learnerEnabled" label="配置群聊学习模型绑定"
+                hide-details :disabled="saving || loading" @update:model-value="enableLearner" />
               <v-switch v-else-if="name==='worker'" :model-value="workerEnabled" label="配置任务执行模型绑定"
                 hide-details :disabled="saving || loading" @update:model-value="enableWorker" /></div>
             <p v-if="name==='worker'" class="muted">任务执行使用独立用途绑定；须手动填写真实提供方和精确模型，不自动取大脑或表达器。启用有金额上限时，还须配置本提供方与模型的精确价格。</p>
+            <p v-if="name==='learner'" class="muted">群聊表达学习须显式配置独立模型，不从大脑、表达器或记忆抽取继承；仅配置绑定不会自动启用任何场景的学习。</p>
             <div v-if="roles[name] !== null" class="form-grid">
               <v-select v-model="roles[name].provider" label="提供方" :items="providerOptions" :disabled="saving || loading" hide-details="auto" />
               <v-text-field v-model="roles[name].model" label="精确模型名" hide-details="auto" />
@@ -227,7 +245,7 @@ onMounted(() => read(false))
                 hide-details="auto" @update:model-value="value=>roles[name].timeout_seconds=numberValue(value)" />
               <v-text-field v-model="roles[name].reasoning_effort" label="思考强度（可留空）" hide-details="auto" />
             </div>
-            <p v-else class="muted">{{ name==='vision'?'未配置视觉模型；看图工具不会注册。':name==='memory'?'未配置记忆抽取模型；本地自动抽取不能运行。':'未配置任务执行模型；任务不能启动。' }}</p>
+            <p v-else class="muted">{{ name==='vision'?'未配置视觉模型；看图工具不会注册。':name==='memory'?'未配置记忆抽取模型；本地自动抽取不能运行。':name==='learner'?'未配置学习模型；群聊学习不能启用。':'未配置任务执行模型；任务不能启动。' }}</p>
           </div>
         </fieldset>
 

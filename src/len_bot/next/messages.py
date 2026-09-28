@@ -1,7 +1,7 @@
 """OneBot messages and message/file action receipts for the new chat core."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -102,6 +102,7 @@ def parse_message(raw: dict, *, own_message_ids: set[str]) -> ChatMessage:
         timestamp = raw["time"]
         if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
             raise ValueError("time must be a Unix timestamp")
+        datetime.fromtimestamp(timestamp, timezone.utc)
         wire_segments = raw["message"]
         if not isinstance(wire_segments, list):
             raise ValueError("message must be a OneBot segment array")
@@ -138,7 +139,7 @@ def parse_message(raw: dict, *, own_message_ids: set[str]) -> ChatMessage:
             is_self=uid == self_id,
             send_status="received",
         )
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, OverflowError, OSError) as error:
         raise ValueError(f"OneBot message parse failed: {error}; raw={repr(raw)[:500]}") from error
 
 

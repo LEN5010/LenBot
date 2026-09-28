@@ -184,6 +184,7 @@ class Roles(BaseModel):
     vision: Binding | None = None
     memory: Binding | None = None
     worker: Binding | None = None
+    learner: Binding | None = None
 
 
 class Models(BaseModel):
@@ -195,7 +196,7 @@ class Models(BaseModel):
 
     @model_validator(mode="after")
     def known_providers(self) -> Models:
-        for role in ("mind", "voice", "vision", "memory", "worker"):
+        for role in ("mind", "voice", "vision", "memory", "worker", "learner"):
             binding = getattr(self.roles, role)
             if binding is None:
                 continue
@@ -393,6 +394,24 @@ class Attention(BaseModel):
         return self
 
 
+class LearningSettings(BaseModel):
+    model_config = STRICT
+
+    min_messages: int = Field(default=20, ge=1, le=100, strict=True)
+    batch_size: int = Field(default=50, ge=1, le=100, strict=True)
+    idle_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+    max_age_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
+    auto_adopt: bool = False
+
+    @model_validator(mode="after")
+    def valid_batch_window(self) -> LearningSettings:
+        if self.batch_size < self.min_messages:
+            raise ValueError("learning.batch_size must be at least learning.min_messages")
+        if self.max_age_seconds < self.idle_seconds:
+            raise ValueError("learning.max_age_seconds must be at least learning.idle_seconds")
+        return self
+
+
 def _valid_scene(value: str) -> str:
     if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
         raise ValueError("must be group:<QQ> or private:<QQ>")
@@ -562,7 +581,7 @@ class SharedConfig(BaseModel):
                 raise ValueError("history_export.target, history_export.backup and database must differ")
         return self
 
-    def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker"]) -> ModelSettings:
+    def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker", "learner"]) -> ModelSettings:
         binding = getattr(self.models.roles, role)
         if binding is None:
             raise ValueError(f"models.roles.{role} is not configured")
@@ -620,6 +639,7 @@ class SceneSettings(ScenePersona):
     attention: Attention = Field(default_factory=Attention)
     schedules: ScheduleSettings = Field(default_factory=ScheduleSettings)
     tasks: TaskSettings = Field(default_factory=TaskSettings)
+    learning: LearningSettings | None = None
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
@@ -648,6 +668,8 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("tasks owner, admins and whitelist must not include bot_qq")
         if self.tasks.enabled or self.worker is not None:
             raise ValueError("worker tasks require the isolated-multi host, not the single-scene lab or replay")
+        if self.learning is not None:
+            raise ValueError("learning requires the isolated-multi host, not the single-scene lab or replay")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -705,6 +727,11 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks owner, admins and whitelist must not include bot_qq")
             if settings.tasks.enabled and self.worker is None:
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
+            if settings.learning is not None:
+                if not scene.startswith("group:"):
+                    raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
+                if self.models.roles.learner is None:
+                    raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
         if self.history_import is not None:
             unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
             if unknown:

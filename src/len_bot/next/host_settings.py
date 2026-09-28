@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .chat import build_tools
 from .config import (
-    STRICT, Attention, HostConfig, Roles, ScenePersona, ScheduleSettings,
+    STRICT, Attention, HostConfig, LearningSettings, Roles, ScenePersona, ScheduleSettings,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
 from .persona import load_persona
@@ -108,6 +108,11 @@ class WorkerChange(BaseModel):
 class TaskSceneChange(BaseModel):
     model_config = STRICT
     tasks: TaskSettings
+
+
+class LearningSceneChange(BaseModel):
+    model_config = STRICT
+    learning: LearningSettings | None
 
 
 def _memory_settings(config: HostConfig) -> dict | None:
@@ -209,6 +214,7 @@ def _project(config: HostConfig) -> dict:
                 "attention": settings.attention.model_dump(mode="json"),
                 "schedules": settings.schedules.model_dump(mode="json"),
                 "tasks": settings.tasks.model_dump(mode="json"),
+                "learning": None if settings.learning is None else settings.learning.model_dump(mode="json"),
                 "scene_persona": {
                     "persona_aliases": settings.persona_aliases,
                     "relationships": settings.relationships,
@@ -308,6 +314,12 @@ async def _body(request: Request, kind: type[BaseModel]) -> BaseModel:
 
 def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
                            user: Callable[[Request], str], write_lock: asyncio.Lock) -> None:
+    def learning_snapshot(scene: str, snapshot: dict) -> dict:
+        current = snapshot["running"]["scenes"][scene]["learning"]
+        recorded = snapshot["saved"]["scenes"][scene]["learning"]
+        return {"scene": scene, "running": current, "saved": recorded,
+                "restart_required": current != recorded}
+
     async def save(edit: Callable[[dict, HostConfig], None]) -> dict:
         async with write_lock:
             try:
@@ -405,6 +417,33 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             source["scenes"][scene]["tasks"] = change.tasks.model_dump(mode="json")
 
         return await save(edit)
+
+    @app.get("/api/host/settings/scenes/{scene}/learning")
+    async def get_learning(scene: str, _: str = Depends(user)):
+        if scene not in running.scenes:
+            raise HTTPException(404, "当前宿主未配置这一场景")
+        async with write_lock:
+            try:
+                saved = await asyncio.to_thread(_read_saved, root)
+            except (ValueError, OSError) as error:
+                raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                    f"{type(error).__name__}: {error}") from error
+            return learning_snapshot(scene, _snapshot(running, saved))
+
+    @app.put("/api/host/settings/scenes/{scene}/learning")
+    async def put_learning(scene: str, request: Request, _: str = Depends(user)):
+        if scene not in running.scenes:
+            raise HTTPException(404, "当前宿主未配置这一场景")
+        change: LearningSceneChange = await _body(request, LearningSceneChange)
+
+        def edit(source: dict, saved: HostConfig) -> None:
+            if scene not in saved.scenes:
+                raise ValueError(f"根配置已不包含场景 {scene!r}")
+            source["scenes"][scene]["learning"] = (
+                None if change.learning is None else change.learning.model_dump(mode="json")
+            )
+
+        return learning_snapshot(scene, await save(edit))
 
     @app.put("/api/host/settings/web-search")
     async def put_web_search(request: Request, _: str = Depends(user)):

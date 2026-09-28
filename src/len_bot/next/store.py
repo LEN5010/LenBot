@@ -18,7 +18,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 17
+FORMAT_VERSION = 18
 
 
 def encode(value: object) -> str:
@@ -190,6 +190,24 @@ class Store:
                         emotions TEXT NOT NULL, tags TEXT NOT NULL,
                         PRIMARY KEY(message_seq,image_index)
                     );
+                    CREATE TABLE learning_state (
+                        scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL
+                    );
+                    CREATE TABLE learning_batches (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL,
+                        after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
+                        started REAL NOT NULL, ended REAL, model_started REAL,
+                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX learning_batches_scene ON learning_batches(scene,id);
+                    CREATE TABLE expressions (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, situation TEXT NOT NULL,
+                        style TEXT NOT NULL, sources TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
+                        updated REAL NOT NULL, UNIQUE(scene,situation,style)
+                    );
+                    CREATE INDEX expressions_scene_status ON expressions(scene,status,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -403,6 +421,11 @@ class Store:
             f"WHERE turns.scene IN ({placeholders}) AND model_calls.started>=? AND model_calls.started<?",
             (*scenes, since, until),
         ).fetchall()
+        calls.extend(self.db.execute(
+            "SELECT ended,cost FROM learning_batches "
+            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
+            (*scenes, since, until),
+        ).fetchall())
         costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])
         unfinished = sum(ended is None for ended, _ in calls)
         pending = self.db.execute(

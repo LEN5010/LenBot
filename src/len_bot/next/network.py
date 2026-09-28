@@ -15,6 +15,7 @@ from .model import ChatModel
 from .model_slots import ModelSlots
 from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
+from .learning import ExpressionLearner
 from .onebot import OneBot
 from .persona import Persona
 from .store import Store, encode
@@ -28,12 +29,16 @@ class NetworkRuntime:
                  memory: MemoryService | None = None,
                  ingestor: MemoryIngestor | None = None,
                  tasks: WorkTasks | None = None,
+                 learning: ExpressionLearner | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
         self.config, self.store = config, store
         self.memory = memory
         self.ingestor = ingestor
+        self.learning = learning
+        if learning is not None:
+            learning.on_update = self.notify
         self.tasks = tasks
         self.on_update = on_update
         self.status = "created"
@@ -51,7 +56,7 @@ class NetworkRuntime:
             self.chats[scene] = Chat(
                 scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
                 tasks=tasks,
-                on_compaction=(None if ingestor is None else lambda scene=scene: ingestor.request(scene)),
+                on_compaction=lambda scene=scene: self.compacted(scene),
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 on_update=self.notify,
@@ -62,6 +67,16 @@ class NetworkRuntime:
                 chat, lambda result, scene=scene: self._emit({"type": "turn", **result, "scene": scene}),
                 resume=chat.restore(), ready_for_turn=self._ready,
             )
+
+    def compacted(self, scene: str) -> None:
+        if self.ingestor is not None:
+            self.ingestor.request(scene)
+        if self.learning is not None and scene in self.learning.scenes:
+            state = self.learning.state(scene)
+            latest = state["latest"]
+            if (state["running"] and state["worker_error"] is None
+                    and (latest is None or latest["status"] == "complete")):
+                self.learning.request(scene)
 
     def notify(self) -> None:
         if self.on_update is not None:
@@ -175,6 +190,8 @@ class NetworkRuntime:
                     if self.tasks is not None:
                         await self.tasks.start()
                         pending.append(group.create_task(self.tasks.wait_failure()))
+                    if self.learning is not None:
+                        self.learning.start()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -188,6 +205,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.learning is not None:
+                        await self.learning.close()
                     if self.tasks is not None:
                         await self.tasks.close()
                     for runner in self.runners.values():
@@ -203,7 +222,11 @@ class NetworkRuntime:
                     if self.tasks is not None:
                         await self.tasks.close()
                 finally:
-                    await self.platform.close()
+                    try:
+                        if self.learning is not None:
+                            await self.learning.close()
+                    finally:
+                        await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:

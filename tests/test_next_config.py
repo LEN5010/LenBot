@@ -12,7 +12,8 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.config import (
-    ONEBOT_SETTINGS, HistoryExportSettings, HistoryImportSettings, HostConfig, LabConfig, OneBotForward, OneBotReverse,
+    ONEBOT_SETTINGS, HistoryExportSettings, HistoryImportSettings, HostConfig, LabConfig, LearningSettings,
+    OneBotForward, OneBotReverse,
     PanelSettings, QuietHours, ScenePersona, load_config, load_host_config, load_instance_config,
     read_scene_persona, save_scene_persona,
 )
@@ -438,6 +439,85 @@ def test_host_panel_configuration_resolves_assets_without_leaking_into_scene_vie
     assert HostConfig.model_validate_json(host.model_dump_json()) == host
     assert host.model_settings("mind").model == "sample-mind"
     assert "synthetic-host-password" not in repr(host)
+
+
+def test_host_learning_binding_and_group_settings_roundtrip_without_changing_other_models(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["models"]["roles"]["learner"] = {
+        "provider": "sample", "model": "sample-learner", "context_window_tokens": 16384,
+        "max_output_tokens": 512, "temperature": 0.3,
+    }
+    source["scenes"]["group:80001"]["learning"] = {
+        "min_messages": 8, "batch_size": 24, "idle_seconds": 20.5,
+        "max_age_seconds": 120.0, "auto_adopt": False,
+    }
+    _write_config(root, source)
+
+    host = load_host_config(root)
+    assert host.models.roles.learner.model == "sample-learner"
+    assert host.model_settings("learner").model == "sample-learner"
+    assert host.model_settings("mind").model == "sample-mind"
+    assert host.model_settings("voice").model == "sample-voice"
+    assert host.scenes["group:80001"].learning == LearningSettings(
+        min_messages=8, batch_size=24, idle_seconds=20.5,
+        max_age_seconds=120.0, auto_adopt=False,
+    )
+    assert host.scene_config("group:80001").learning is host.scenes["group:80001"].learning
+    assert host.scenes["private:80002"].learning is None
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
+
+    source["scenes"]["group:80001"]["learning"] = {}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    assert load_host_config(root).scenes["group:80001"].learning == LearningSettings()
+
+
+@pytest.mark.parametrize("changes", [
+    {"min_messages": 0}, {"min_messages": 101}, {"min_messages": True},
+    {"batch_size": 0}, {"batch_size": 101}, {"batch_size": 19},
+    {"idle_seconds": 0}, {"idle_seconds": -1}, {"idle_seconds": "30"},
+    {"max_age_seconds": 0}, {"max_age_seconds": 299},
+    {"auto_adopt": "true"}, {"unexpected": "unsupported"},
+])
+def test_learning_settings_reject_invalid_values(changes):
+    with pytest.raises(ValidationError):
+        LearningSettings.model_validate(changes)
+
+
+@pytest.mark.parametrize("field", ["idle_seconds", "max_age_seconds"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_learning_settings_reject_nonfinite_seconds(field, value):
+    with pytest.raises(ValidationError):
+        LearningSettings.model_validate({field: value})
+
+
+def test_learning_requires_explicit_host_group_and_learner_binding(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="scenes.group:80001.learning requires explicit models.roles.learner"):
+        load_host_config(root)
+
+    source["models"]["roles"]["learner"] = {
+        "provider": "missing", "model": "sample-learner", "context_window_tokens": 8192,
+    }
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="models.roles.learner.provider references unknown provider"):
+        load_host_config(root)
+
+    source["models"]["roles"]["learner"]["provider"] = "sample"
+    source["scenes"]["private:80002"]["learning"] = {}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="scenes.private:80002.learning is only supported for group scenes"):
+        load_host_config(root)
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
+        load_config(lab_root)
 
 
 @pytest.mark.parametrize("panel,field", [
@@ -1169,7 +1249,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "Offline migration completed" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 18
     with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 9
     with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:

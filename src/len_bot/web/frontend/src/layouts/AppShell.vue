@@ -45,13 +45,14 @@ const sections=computed(()=>isolated.value?[
   {id:'host-persona',label:'角色文件',icon:mdiBookOpenPageVariantOutline,to:{name:'host-persona'},items:[]},
   {id:'host-history',label:'大脑会话',icon:mdiForumOutline,to:{name:'host-history'},items:[]},
   {id:'host-memory',label:'认识与记忆',icon:mdiBookOpenPageVariantOutline,to:{name:'host-memory'},items:[]},
+  {id:'host-learning',label:'表达学习',icon:mdiBookOpenPageVariantOutline,to:{name:'host-learning'},items:[]},
   {id:'host-schedules',label:'场景安排',icon:mdiCalendarClockOutline,to:{name:'host-schedules'},items:[]},
   {id:'host-tasks',label:'独立任务',icon:mdiBriefcaseSearchOutline,to:{name:'host-tasks'},items:[]},
   {id:'host-system',label:'连接与运行设置',icon:mdiCogOutline,to:{name:'host-system'},items:[]}
 ]:legacySections)
 const activeSection=computed(()=>{
   if(isolated.value)return route.name==='chat-test-settings'?'chat-test-settings':'chat-test'
-  if(multi.value)return ['host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-tasks','host-schedules'].includes(route.name)?route.name:'host'
+  if(multi.value)return ['host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-learning','host-tasks','host-schedules'].includes(route.name)?route.name:'host'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
