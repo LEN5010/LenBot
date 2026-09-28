@@ -161,6 +161,7 @@ class ConnectionChange(BaseModel):
 
     onebot: Annotated[ForwardPublic | ReversePublic, Field(discriminator="mode")]
     access_token: str | None = Field(default=None, repr=False)
+    owner_qq: str | None
     timezone: str
     delivery: Literal["simulated", "onebot"]
     max_steps: int
@@ -186,6 +187,7 @@ def _project(config: HostConfig) -> dict:
     return {
         "connection": {
             "bot_qq": config.bot_qq,
+            "owner_qq": config.owner_qq,
             "onebot": onebot,
             "timezone": config.timezone,
             "delivery": config.delivery,
@@ -245,7 +247,7 @@ def _snapshot(running: HostConfig, saved: HostConfig) -> dict:
         "restart_required": {
             "connection": any(
                 getattr(running, name) != getattr(saved, name)
-                for name in ("bot_qq", "onebot", "timezone", "delivery", "max_steps",
+                for name in ("bot_qq", "owner_qq", "onebot", "timezone", "delivery", "max_steps",
                              "turn_timeout_seconds", "max_model_requests", "text_delivery")
             ),
             "panel": running.panel != saved.panel,
@@ -472,6 +474,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
             )
             source.update(
                 onebot=onebot,
+                owner_qq=change.owner_qq,
                 timezone=change.timezone,
                 delivery=change.delivery,
                 max_steps=change.max_steps,

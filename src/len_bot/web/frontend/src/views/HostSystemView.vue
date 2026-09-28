@@ -29,6 +29,7 @@ function onebotBody(value) {
 function connectionBody(value) {
   return {
     onebot: onebotBody(value.onebot), timezone: value.timezone,
+    owner_qq: value.owner_qq,
     delivery: value.delivery, max_steps: value.max_steps,
     turn_timeout_seconds: value.turn_timeout_seconds,
     max_model_requests: value.max_model_requests,
@@ -137,6 +138,7 @@ onMounted(() => read(false))
     <template v-if="snapshot && connection && panel">
       <section class="surface"><div class="section-heading"><h2>当前运行的连接与轮次</h2><v-chip variant="tonal" :color="snapshot.restart_required.connection?'warning':'info'">{{ snapshot.restart_required.connection?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
         <dl class="facts"><div><dt>Bot QQ（只读）</dt><dd>{{ snapshot.running.connection.bot_qq }}</dd></div>
+          <div><dt>主人 QQ（运行中）</dt><dd>{{ snapshot.running.connection.owner_qq || "未配置" }}</dd></div>
           <div><dt>OneBot 模式</dt><dd>{{ snapshot.running.connection.onebot.mode }}</dd></div>
           <div><dt>平台入口</dt><dd>{{ snapshot.running.connection.onebot.mode==='forward_ws'?snapshot.running.connection.onebot.ws_url:`${snapshot.running.connection.onebot.listen_host}:${snapshot.running.connection.onebot.listen_port}` }}</dd></div>
           <div><dt>动作出口</dt><dd>{{ snapshot.running.connection.onebot.action_transport }}{{ snapshot.running.connection.onebot.http_url?` · ${snapshot.running.connection.onebot.http_url}`:'' }}</dd></div>
@@ -163,7 +165,10 @@ onMounted(() => read(false))
             <v-text-field v-model="token" type="password" autocomplete="new-password" label="替换 OneBot 访问令牌（留空保留）" hide-details="auto" />
           </div><p class="muted">保存值中的令牌：{{ snapshot.saved.connection.onebot.access_token_configured?'已配置，原文不显示':'未配置' }}；空输入仅保留现值，不代表清除。</p>
           <p class="muted">文件上传前须实际把同一交付副本目录挂载给 NapCat，并在任务配置中另填 worker.delivery_root。保存这个可见路径不代表挂载已完成、任务文件已上传或客户端已收到。</p>
-          <div class="form-grid"><v-text-field v-model="connection.timezone" label="业务时区（IANA）" hide-details="auto" />
+          <div class="form-grid"><v-text-field :model-value="connection.owner_qq || ''" label="主人 QQ（owner_qq，可留空）"
+              hint="主人账号类能力的实际身份；留空不开放。不从局部任务/安排权限推断，重启后生效。" persistent-hint
+              @update:model-value="value=>connection.owner_qq=value.trim() || null" />
+            <v-text-field v-model="connection.timezone" label="业务时区（IANA）" hide-details="auto" />
             <v-select v-model="connection.delivery" label="消息出口" :items="[{title:'模拟发送',value:'simulated'},{title:'OneBot 实际发送',value:'onebot'}]" hide-details="auto" />
             <v-text-field :model-value="connection.max_steps" type="number" step="1" label="单轮最多步数" hide-details="auto" @update:model-value="value=>connection.max_steps=numeric(value)" />
             <v-text-field :model-value="connection.turn_timeout_seconds" type="number" label="整轮超时（秒）" hide-details="auto" @update:model-value="value=>connection.turn_timeout_seconds=numeric(value)" />

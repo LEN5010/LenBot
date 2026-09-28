@@ -557,6 +557,7 @@ class SharedConfig(BaseModel):
     model_config = STRICT
 
     bot_qq: str
+    owner_qq: str | None = None
     timezone: str
     database: Path
     onebot: OneBotSettings | None = None
@@ -611,6 +612,19 @@ class SharedConfig(BaseModel):
         if re.fullmatch(r"[1-9][0-9]*", value) is None:
             raise ValueError("must be a QQ number as text")
         return value
+
+    @field_validator("owner_qq")
+    @classmethod
+    def valid_owner_qq(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[1-9][0-9]*", value) is None:
+            raise ValueError("owner_qq must be a positive QQ number as text or null")
+        return value
+
+    @model_validator(mode="after")
+    def owner_is_not_bot(self) -> SharedConfig:
+        if self.owner_qq == self.bot_qq:
+            raise ValueError("owner_qq must not be bot_qq")
+        return self
 
     @field_validator("timezone")
     @classmethod

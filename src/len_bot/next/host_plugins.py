@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig, _read_root
 from .host_settings import _body, _prepare, _read_saved
 from .network import NetworkRuntime
-from .plugin_host import Manifest, discover, read_manifest
+from .plugin_host import Manifest, discover, read_manifest, redact_values
 
 
 STRICT = ConfigDict(extra="forbid", strict=True)
@@ -160,7 +160,7 @@ def register_host_plugins(app: FastAPI, *, root: Path, runtime: NetworkRuntime, 
             try:
                 manifest.values_model().model_validate(values)
             except ValidationError as error:
-                raise ValueError(f"plugins.{name}: {error}") from error
+                raise ValueError(redact_values(f"plugins.{name}: {error}", manifest, values)) from None
             plugins[name] = values
 
         return await save(edit)

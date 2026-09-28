@@ -42,6 +42,32 @@ default = [{uid = 100001, room_id = 123, name = "示例", scenes = ["group:80001
         read_manifest(directory)
 
 
+def test_plugin_owner_permission_uses_root_identity_and_enabled_scene(tmp_path):
+    root = _root(tmp_path, {"clock": {}}, ["clock"])
+    path = root / "lenbot.config.json"
+    source = json.loads(path.read_text())
+    source["owner_qq"] = "70001"
+    source["scenes"]["group:80001"]["tasks"] = {"owner": "70002"}
+    path.write_text(json.dumps(source))
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    ctx = host.plugins["clock"].context
+    ctx.require_owner("group:80001", "70001")
+    for scene, requester in (("group:80001", "70002"), ("group:80001", "90001"),
+                             ("private:80002", "70001")):
+        with pytest.raises(PermissionError):
+            ctx.require_owner(scene, requester)
+    del source["owner_qq"]
+    path.write_text(json.dumps(source))
+    host = PluginHost(load_host_config(root), core_tools=CORE)
+    with pytest.raises(PermissionError):
+        host.plugins["clock"].context.require_owner("group:80001", "70001")
+    for invalid in ("90001", "nickname", 70001, "0", ""):
+        source["owner_qq"] = invalid
+        path.write_text(json.dumps(source))
+        with pytest.raises(ValueError):
+            load_host_config(root)
+
+
 def _root(tmp_path: Path, plugins: dict | None, scene_plugins: list[str] | None = None) -> Path:
     root = tmp_path / "host"
     root.mkdir()
