@@ -14,6 +14,8 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .account_browser import AccountBrowserSettings
+
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from len_bot.next.model import ModelSettings
@@ -843,6 +845,7 @@ class LabConfig(SharedConfig, SceneSettings):
 
 class HostConfig(SharedConfig):
     mode: Literal["isolated-multi"]
+    account_browser: AccountBrowserSettings | None = None
     onebot: OneBotSettings
     panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)

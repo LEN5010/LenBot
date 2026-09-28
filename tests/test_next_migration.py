@@ -46,6 +46,18 @@ V4_ATTENTION = {
 V6_ATTENTION = {**V4_ATTENTION, "quiet_notice_until": None}
 
 
+TASK_V28_COLUMNS = "id,scene,requester,goal,deliverable,context,input,status,created,started,ended,container,question,summary,error"
+
+
+def _historical_columns(table: str) -> str:
+    return TASK_V28_COLUMNS if table == "tasks" else "*"
+
+
+def _remove_browser_columns(db) -> None:
+    for field in ("account_browser", "browser_active", "browser_session"):
+        db.execute(f"ALTER TABLE tasks DROP COLUMN {field}")
+
+
 def _rows(path: Path) -> dict[str, list[tuple]]:
     with sqlite3.connect(path) as db:
         message_columns = MESSAGE_COLUMNS + (("received_at",) if any(
@@ -695,7 +707,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
         schedules_before = db.execute(
             f"SELECT {','.join(SCHEDULE_COLUMNS)} FROM schedules ORDER BY id"
         ).fetchall()
-        task_rows_before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall()
+        task_rows_before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                             for table in ("tasks", "task_events", "task_files")}
     assert [row[8] for row in schedules_before] == ["pending", "delivered", "blocked", "cancelled"]
     chat_before = _rows(path)
@@ -717,7 +729,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
                 f"SELECT {','.join(SCHEDULE_COLUMNS)} FROM schedules ORDER BY id"
             ).fetchall() == schedules_before
             for table, rows in task_rows_before.items():
-                assert source.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+                assert source.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT interval_seconds FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
     with Store(path) as store:
@@ -760,7 +772,7 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
         schedules_before = db.execute(
             f"SELECT {','.join(SCHEDULE_V15_COLUMNS)} FROM schedules ORDER BY id"
         ).fetchall()
-        task_rows_before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall()
+        task_rows_before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                             for table in ("tasks", "task_events", "task_files")}
     assert [(row[8], row[-1]) for row in schedules_before] == [
         ("pending", 3600), ("delivered", None), ("blocked", None), ("cancelled", None),
@@ -784,7 +796,7 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
                 f"SELECT {','.join(SCHEDULE_V15_COLUMNS)} FROM schedules ORDER BY id"
             ).fetchall() == schedules_before
             for table, rows in task_rows_before.items():
-                assert source.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+                assert source.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT cron FROM schedules ORDER BY id").fetchall() == [(None,)] * 4
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE schedules SET cron='cron:0 12 * * *' WHERE id=1")
@@ -831,7 +843,7 @@ def test_v16_media_upgrade_preserves_existing_chat_identity_tasks_and_schedules(
                  "schedules", "tasks", "task_events", "task_files", "web_documents",
                  "image_cache")
     with sqlite3.connect(path) as db:
-        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall()
+        before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in preserved}
         search_before = db.execute(
             "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -846,10 +858,10 @@ def test_v16_media_upgrade_preserves_existing_chat_identity_tasks_and_schedules(
     assert _version(backup) == (0x4C424E31, 16)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
+            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else f"rowid,{_historical_columns(table)}"
             expected = _daily_cron_rows(rows) if table == "schedules" else rows
             assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == expected
-            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         for source in (db, old):
             assert source.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -914,7 +926,7 @@ def test_v17_learning_upgrade_preserves_original_media_chat_and_task_records(tmp
                  "schedules", "tasks", "task_events", "task_files", "web_documents",
                  "image_cache", "media", "message_media")
     with sqlite3.connect(path) as db:
-        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall()
+        before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in preserved}
         search_before = db.execute(
             "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -930,10 +942,10 @@ def test_v17_learning_upgrade_preserves_original_media_chat_and_task_records(tmp
     assert _version(backup) == (0x4C424E31, 17)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
+            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else f"rowid,{_historical_columns(table)}"
             expected = _daily_cron_rows(rows) if table == "schedules" else rows
             assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == expected
-            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert all(row == (None, None) for row in db.execute(
             "SELECT source_message_seq,source_image_index FROM media ORDER BY id"
         ))
@@ -1044,7 +1056,7 @@ def test_v18_expression_vector_upgrade_keeps_learning_and_other_synthetic_record
                  "image_cache", "media", "message_media", "learning_state",
                  "learning_batches", "expressions")
     with sqlite3.connect(path) as old:
-        before = {table: old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall()
+        before = {table: old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in preserved}
         search_before = old.execute(
             "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1073,8 +1085,8 @@ def test_v18_expression_vector_upgrade_keeps_learning_and_other_synthetic_record
             elif table == "schedules":
                 assert db.execute("SELECT rowid,* FROM schedules ORDER BY rowid").fetchall() == _daily_cron_rows(rows)
             else:
-                assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
-            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+                assert db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert all(row == (None, None) for row in db.execute(
             "SELECT source_message_seq,source_image_index FROM media ORDER BY id"
         ))
@@ -1129,7 +1141,7 @@ def test_format19_jargon_migration_preserves_existing_rows(tmp_path: Path) -> No
         "expression_embedding_calls",
     )
     with sqlite3.connect(path) as db:
-        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        before = {table: db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in old_tables}
         search_before = db.execute(
             "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1144,8 +1156,8 @@ def test_format19_jargon_migration_preserves_existing_rows(tmp_path: Path) -> No
     assert _version(backup) == (0x4C424E31, 19)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
-            assert old.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         for connection in (db, old):
             assert connection.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1251,7 +1263,7 @@ def test_format20_expression_ids_do_not_reuse_deleted_voice_references(tmp_path:
               "learning_batches", "expressions", "expression_embedding_calls",
               "jargon_state", "jargon", "jargon_calls")
     with sqlite3.connect(path) as db:
-        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        before = {table: db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in tables}
         fts_before = db.execute("SELECT rowid,search_text FROM message_search").fetchall()
         assert before["expressions"] and before["jargon"] and before["jargon_calls"]
@@ -1265,8 +1277,8 @@ def test_format20_expression_ids_do_not_reuse_deleted_voice_references(tmp_path:
     assert _version(backup) == (0x4C424E31, 20)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
-            assert old.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT rowid,search_text FROM message_search").fetchall() == fts_before
         assert old.execute("SELECT rowid,search_text FROM message_search").fetchall() == fts_before
         assert db.execute("SELECT seq FROM sqlite_sequence WHERE name='expressions'").fetchone() == (100,)
@@ -1377,7 +1389,7 @@ def test_format21_media_migration_preserves_originals_and_other_rows(tmp_path: P
         "jargon_state", "jargon", "jargon_calls",
     )
     with sqlite3.connect(path) as db:
-        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        before = {table: db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall()
                   for table in old_tables}
         old_media = db.execute(
             "SELECT id,persona_id,file,mime_type,width,height,animated,data FROM media ORDER BY id"
@@ -1394,8 +1406,8 @@ def test_format21_media_migration_preserves_originals_and_other_rows(tmp_path: P
     assert _version(backup) == (0x4C424E31, 21)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
-            assert old.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         for connection in (db, old):
             assert connection.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1535,7 +1547,7 @@ def test_format22_reply_effect_tables_keep_all_existing_rows(tmp_path: Path) -> 
         tables = [row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'message_search%' "
             "AND name!='sqlite_sequence' ORDER BY name")]
-        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() for table in tables}
+        before = {table: db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() for table in tables}
         search_before = db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall()
         assert before["messages"] and before["media"] and before["mind_entries"]
     with pytest.raises(ValueError, match="format 22 requires offline migration"):
@@ -1547,8 +1559,8 @@ def test_format22_reply_effect_tables_keep_all_existing_rows(tmp_path: Path) -> 
     assert _version(backup) == (0x4C424E31, 22)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
-            assert old.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT {_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == search_before
         for table in ("reply_effects", "reply_effect_calls"):
             assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
@@ -1602,7 +1614,7 @@ def test_format23_schedule_cron_text_and_proactive_table_keep_rows(tmp_path: Pat
         tables = [row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'message_search%' "
             "AND name!='sqlite_sequence' ORDER BY name")]
-        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() for table in tables}
+        before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() for table in tables}
         search_before = db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall()
         assert before["messages"] and before["media"] and len(before["schedules"]) >= 4
     with pytest.raises(ValueError, match="format 23 requires offline migration"):
@@ -1615,8 +1627,8 @@ def test_format23_schedule_cron_text_and_proactive_table_keep_rows(tmp_path: Pat
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
             expected = _daily_cron_rows(rows) if table == "schedules" else rows
-            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == expected
-            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == expected
+            assert old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall() == search_before
         assert db.execute("SELECT id,cron FROM schedules WHERE id>100 ORDER BY id").fetchall() == [
             (101, "cron:0 0 * * *"), (102, "cron:5 9 * * *"), (103, "cron:59 23 * * *"), (104, None),
@@ -1671,7 +1683,7 @@ def test_format24_plugin_events_table_keeps_all_rows(tmp_path: Path) -> None:
         tables = [row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'message_search%' "
             "AND name!='sqlite_sequence' ORDER BY name")]
-        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() for table in tables}
+        before = {table: db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() for table in tables}
         assert before["messages"] and before["proactive_wakes"] and before["schedules"]
     with pytest.raises(ValueError, match="format 24 requires offline migration"):
         Store(path)
@@ -1683,8 +1695,8 @@ def test_format24_plugin_events_table_keeps_all_rows(tmp_path: Path) -> None:
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
             expected = [(*row, "arrival_count") for row in rows] if table == "proactive_wakes" else rows
-            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == expected
-            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            assert db.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == expected
+            assert old.execute(f"SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid").fetchall() == rows
         assert db.execute("SELECT COUNT(*) FROM plugin_events").fetchone() == (0,)
         assert old.execute("SELECT name FROM sqlite_master WHERE name='plugin_events'").fetchone() is None
         with pytest.raises(sqlite3.IntegrityError):
@@ -1723,14 +1735,14 @@ def test_format25_proactive_assessment_preserves_historical_facts(tmp_path):
     with sqlite3.connect(path) as db:
         tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence' ORDER BY name")]
-        before = {table: db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() for table in tables}
+        before = {table: db.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid').fetchall() for table in tables}
     backup = migrate_database(path)
     assert _version(backup) == (0x4C424E31, 25)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as original:
         for table, rows in before.items():
             expected = [(*row, 'arrival_count') for row in rows] if table == 'proactive_wakes' else rows
-            assert db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == expected
-            assert original.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == rows
+            assert db.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid').fetchall() == expected
+            assert original.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid').fetchall() == rows
         assert [row[2] for row in db.execute('PRAGMA index_info(reply_effects_turn)')] == ['scene', 'turn_id']
     with Store(path) as store:
         turn = store.start_turn('group:80001', proactive=('synthetic new wake', '2026-09-29', 1790100100.0))
@@ -1756,18 +1768,19 @@ def test_format26_audio_cache_preserves_existing_data(tmp_path):
     with Store(path) as store:
         store.append('group:80001', {'role': 'user', 'content': '迁移前原话'})
     with sqlite3.connect(path) as db:
+        _remove_browser_columns(db)
         db.execute('DROP TABLE audio_cache')
         db.execute('DROP TABLE audio_calls')
         db.execute('PRAGMA user_version=26')
         tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence'")]
-        before = {table: db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() for table in tables}
+        before = {table: db.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid').fetchall() for table in tables}
     backup = migrate_database(path)
     assert _version(backup) == (0x4C424E31, 26)
     with Store(path) as store, sqlite3.connect(backup) as original:
         for table, rows in before.items():
-            assert [tuple(row) for row in store.db.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid')] == rows
-            assert original.execute(f'SELECT rowid,* FROM {table} ORDER BY rowid').fetchall() == rows
+            assert [tuple(row) for row in store.db.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid')] == rows
+            assert original.execute(f'SELECT rowid,{_historical_columns(table)} FROM {table} ORDER BY rowid').fetchall() == rows
         assert store.db.execute('SELECT COUNT(*) FROM audio_cache').fetchone()[0] == 0
         assert original.execute("SELECT name FROM sqlite_master WHERE name='audio_cache'").fetchone() is None
 
@@ -1787,6 +1800,7 @@ def _format27_source(path):
     with Store(path) as store:
         store.append('group:80001', {'role': 'user', 'content': '真实保存的旧条目'})
     with sqlite3.connect(path) as db:
+        _remove_browser_columns(db)
         db.execute('DROP TABLE audio_cache')
         db.execute('DROP TABLE audio_calls')
         db.execute('CREATE TABLE audio_cache (scene TEXT NOT NULL,platform_id TEXT NOT NULL,audio_index INTEGER NOT NULL,'
@@ -1823,3 +1837,19 @@ def test_format27_audio_processing_conflict_rolls_back(tmp_path):
         assert db.execute('PRAGMA user_version').fetchone()[0]==27
         assert db.execute('SELECT * FROM audio_cache').fetchall()==rows
         assert 'status' not in [row[1] for row in db.execute('PRAGMA table_info(audio_cache)')]
+
+
+def test_format28_browser_binding_preserves_existing_tasks(tmp_path):
+    path = tmp_path / 'state.db'
+    with Store(path) as store:
+        item = TaskStore(store).create('group:80001', '70001', '原目标', '原交付', '原上下文', '原输入')
+    with sqlite3.connect(path) as db:
+        _remove_browser_columns(db)
+        db.execute('PRAGMA user_version=28')
+        before = db.execute(f'SELECT {TASK_V28_COLUMNS} FROM tasks').fetchall()
+    backup = migrate_database(path)
+    with Store(path) as store, sqlite3.connect(backup) as old:
+        assert [tuple(row) for row in store.db.execute(f'SELECT {TASK_V28_COLUMNS} FROM tasks')] == before
+        assert old.execute(f'SELECT {TASK_V28_COLUMNS} FROM tasks').fetchall() == before
+        result = TaskStore(store).get(item.scene, item.id)
+        assert not result.account_browser and not result.browser_active and result.browser_session is None

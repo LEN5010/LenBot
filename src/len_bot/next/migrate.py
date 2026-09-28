@@ -405,6 +405,10 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                        "audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,"
                        "request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT)")
             db.execute("CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id)")
+        elif version == 28:
+            db.execute("ALTER TABLE tasks ADD COLUMN account_browser INTEGER NOT NULL DEFAULT 0 CHECK(account_browser IN (0,1))")
+            db.execute("ALTER TABLE tasks ADD COLUMN browser_active INTEGER NOT NULL DEFAULT 0 CHECK(browser_active IN (0,1))")
+            db.execute("ALTER TABLE tasks ADD COLUMN browser_session TEXT")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

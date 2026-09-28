@@ -73,7 +73,12 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> No
 
 
 async def run() -> None:
-    config = load_host_config(Path.cwd())
+    root = Path.cwd()
+    if not (root / 'lenbot.config.json').exists():
+        from .setup import run_setup
+        await run_setup(root)
+        return
+    config = load_host_config(root)
     personas = {path: load_persona(path)
                 for path in dict.fromkeys(settings.persona for settings in config.scenes.values())}
     scenes = [(config.scene_config(scene), personas[settings.persona])
@@ -89,6 +94,8 @@ async def run() -> None:
         for scene, settings in config.scenes.items():
             if settings.learning is None or not settings.learning.collect_stickers:
                 sticker_records.recover(scene)
+        if TaskStore(store).browser_in_use() and (config.account_browser is None or config.worker is None):
+            raise ValueError('仍有未清理的账号浏览会话；保留原account_browser与worker配置完成清理后再停用')
         if config.worker is None and TaskStore(store).containers():
             raise ValueError("仍有未清理的任务容器；保留原 worker 配置完成清理后再停用任务执行器")
         async with (
@@ -119,7 +126,7 @@ async def run() -> None:
             for settings, persona in scenes:
                 selected = [deepcopy(tool["function"]) for tool in build_tools(
                     settings, persona, platform=config.delivery == "onebot",
-                ) if tool["function"]["name"] in {"recall_chat", "memory"}]
+                ) if tool["function"]["name"] in {"recall_chat", "memory", "transcribe"}]
                 for tool in selected:
                     if tool["name"] == "memory":
                         tool["parameters"]["properties"]["action"]["enum"] = memory.actions

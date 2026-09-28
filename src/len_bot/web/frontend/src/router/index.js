@@ -20,6 +20,7 @@ const router = createRouter({
   routes:[
     {path:'/',redirect:{name:'overview'}},
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../views/HostTrialsView.vue'), meta:{title:'对话测试'} },
+    { path:'/host/logs/system', name:'host-system-logs', component:()=>import('../views/HostSystemLogsView.vue'), meta:{title:'日志 · 系统'} },
     { path:'/host/logs', name:'host-logs', component:()=>import('../views/HostView.vue'), meta:{title:'日志'} },
     { path:'/host/scenes/learning', name:'host-scene-learning', component:()=>import('../views/HostLearningView.vue'), meta:{title:'群聊 · 学习'} },
     {

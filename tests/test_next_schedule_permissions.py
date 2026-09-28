@@ -133,3 +133,11 @@ def test_creator_can_cancel_after_creation_is_disabled_but_others_still_need_man
     with pytest.raises(PermissionError, match="管理能力"):
         check_cancellation(settings, requester=OWNER, creator=MEMBER,
                            bot_qq=BOT, group_role=None)
+
+
+def test_root_owner_is_shared_with_schedule_capabilities():
+    settings = ScheduleSettings(owner=None, own=['owner'], others=['owner'], manage=['owner'])
+    check_creation(settings, requester=OWNER, target=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)
+    check_cancellation(settings, requester=OWNER, creator=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)
+    with pytest.raises(PermissionError):
+        check_creation(settings, requester=MEMBER, target=OTHER, bot_qq=BOT, group_role=None, root_owner=OWNER)

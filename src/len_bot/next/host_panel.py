@@ -19,6 +19,7 @@ from .host_plugins import register_host_plugins
 from .host_mcp import register_host_mcp
 from .host_audio import register_host_audio
 from .host_trials import HostTrials, register_host_trials
+from .host_browser import register_host_browser
 from .host_settings import register_host_settings
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
@@ -61,6 +62,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     user = install_panel_auth(app, config.panel, on_logout=logged_out)
     register_host_trials(app, trials, user)
     write_lock = asyncio.Lock()
+    register_host_browser(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_settings(app, root=root, running=config, user=user,
                            write_lock=write_lock)
@@ -113,6 +115,11 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
                  "latest_error": item["errors"][0] if item["errors"] else None} for item in runtime.mcp.state()
             ],
         }
+
+    @app.get("/api/host/logs")
+    async def logs(_: str = Depends(user)):
+        return {"items": list(reversed(runtime.logs)), "capacity": 500,
+                "scope": "本次进程宿主终端事件；不含第三方日志，重启清空"}
 
     @app.get("/api/host/overview")
     async def overview(_: str = Depends(user)):

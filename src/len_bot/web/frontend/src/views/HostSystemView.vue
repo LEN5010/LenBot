@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api.js'
+import { developerMode } from '../composables/useDeveloperMode.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 
@@ -136,7 +137,11 @@ onMounted(() => read(false))
     <v-alert v-if="savedNotice" type="success" variant="tonal" role="status">{{ savedNotice }}</v-alert>
     <div v-if="loading && !snapshot" class="surface empty-state" role="status">正在读取运行值与根配置保存值…</div>
     <template v-if="snapshot && connection && panel">
-      <section class="surface"><div class="section-heading"><h2>当前运行的连接与轮次</h2><v-chip variant="tonal" :color="snapshot.restart_required.connection?'warning':'info'">{{ snapshot.restart_required.connection?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
+      <section class="surface">
+      <h2>显示偏好</h2><v-switch v-model="developerMode" label="开发者模式：显示原始模型请求、用量及事件结构" color="primary" hide-details />
+      <p class="muted">仅改变当前浏览器页签的显示，不写入运行配置、不更改工具权限；刷新后关闭。</p>
+    </section>
+    <section class="surface"><div class="section-heading"><h2>当前运行的连接与轮次</h2><v-chip variant="tonal" :color="snapshot.restart_required.connection?'warning':'info'">{{ snapshot.restart_required.connection?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
         <dl class="facts"><div><dt>Bot QQ（只读）</dt><dd>{{ snapshot.running.connection.bot_qq }}</dd></div>
           <div><dt>主人 QQ（运行中）</dt><dd>{{ snapshot.running.connection.owner_qq || "未配置" }}</dd></div>
           <div><dt>OneBot 模式</dt><dd>{{ snapshot.running.connection.onebot.mode }}</dd></div>

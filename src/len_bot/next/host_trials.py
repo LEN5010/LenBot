@@ -10,7 +10,7 @@ import yaml
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .chat import tool_catalog, tool_unavailable_reasons
 from .config import HostConfig, LabConfig
@@ -27,6 +27,7 @@ class TrialStart(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     scene: str
     acknowledge_model_cost: bool
+    context_messages: int = Field(default=0, ge=0, le=100)
 
 
 @dataclass
@@ -39,12 +40,13 @@ class Trial:
     session: PanelSession
     resources: AsyncExitStack
     excluded: list[str]
+    context: list[str]
     stopped: float | None = None
     final_state: dict | None = None
 
     def info(self) -> dict:
         return {'id': self.id, 'scene': self.scene, 'created': self.created, 'stopped': self.stopped,
-                'active': self.stopped is None, 'root': str(self.root), 'excluded_tools': self.excluded,
+                'context': self.context, 'active': self.stopped is None, 'root': str(self.root), 'excluded_tools': self.excluded,
                 'memory': '独立空白本地记忆' if self.config.memory is not None else '本次不装配记忆',
                 'persona': self.session.chat.persona.name,
                 'models': {'mind': self.config.models.roles.mind.model, 'voice': self.config.models.roles.voice.model}}
@@ -118,7 +120,7 @@ class HostTrials:
             raise HTTPException(404, '本次宿主启动中没有这个试聊；不会自动恢复旧试聊')
         return self.records[trial_id]
 
-    async def start(self, scene: str) -> Trial:
+    async def start(self, scene: str, context_messages: int = 0) -> Trial:
         async with self.lock:
             if self.closing:
                 raise HTTPException(503, '宿主正在停止，不再新建试聊')
@@ -128,6 +130,9 @@ class HostTrials:
                 raise HTTPException(409, '已有活动试聊，请先停止；切换页面不会自动停止或重开')
             root = self.root / '.runtime' / 'chat-tests' / str(uuid4())
             root.mkdir(parents=True, mode=0o700)
+            source_chat = self.runtime.chats[scene]
+            context = [source_chat.render(message) for message in
+                       self.runtime.store.recent(scene, context_messages)] if context_messages else []
             source = self.config.scene_config(scene)
             memory = None
             if isinstance(source.memory, LocalMemoryConfig):
@@ -151,6 +156,9 @@ class HostTrials:
             stack = AsyncExitStack()
             try:
                 store = stack.enter_context(Store(config.database))
+                if context:
+                    intro = (Path(__file__).resolve().parents[1] / 'prompts' / 'next_trial_context.md').read_text()
+                    store.append(scene, {'role': 'user', 'content': intro + '\n\n' + '\n'.join(context)})
                 mind = await stack.enter_async_context(ChatModel(config.model_settings('mind')))
                 voice = await stack.enter_async_context(ChatModel(config.model_settings('voice')))
                 vision = (None if config.models.roles.vision is None else
@@ -158,7 +166,7 @@ class HostTrials:
                 local_memory = await stack.enter_async_context(open_memory(config, store))
                 session = PanelSession(config, store, mind, voice, vision=vision, memory=local_memory,
                                        persona=persona, slots=self.runtime.chats[scene].slots)
-                trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded)
+                trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded, context)
                 self.records[trial.id] = trial
                 return trial
             except BaseException:
@@ -182,7 +190,7 @@ def register_host_trials(app: FastAPI, trials: HostTrials, user):
         if not item.acknowledge_model_cost:
             raise HTTPException(422, '开始前需明确知道模型请求仍会计费；平台发送始终模拟')
         try:
-            return (await trials.start(item.scene)).info()
+            return (await trials.start(item.scene, item.context_messages)).info()
         except (ValueError, OSError) as error:
             raise HTTPException(422, f'{type(error).__name__}: {error}') from error
 
