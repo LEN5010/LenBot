@@ -112,6 +112,28 @@ def _parse_record(raw: bytes) -> PiRecord:
                 raise PiProtocolError(
                     f"Invalid Pi RPC {kind}.{field}; frame: {_fragment(raw)}", raw=raw
                 )
+        if kind in {"message_start", "message_end"}:
+            message = body["message"]
+            if not isinstance(message.get("role"), str):
+                raise PiProtocolError(f"Invalid Pi RPC {kind}.message.role; frame: {_fragment(raw)}", raw=raw)
+            if kind == "message_end" and message["role"] == "assistant":
+                content = message.get("content")
+                if (not isinstance(content, list) or not isinstance(message.get("stopReason"), str)
+                        or any(not isinstance(part, dict) or not isinstance(part.get("type"), str)
+                               or part["type"] == "text" and not isinstance(part.get("text"), str)
+                               for part in content)):
+                    raise PiProtocolError(f"Invalid Pi RPC assistant message_end; frame: {_fragment(raw)}", raw=raw)
+        elif kind == "message_update":
+            event = body["assistantMessageEvent"]
+            event_type = event.get("type")
+            if not isinstance(event_type, str):
+                raise PiProtocolError(f"Invalid Pi RPC message_update event; frame: {_fragment(raw)}", raw=raw)
+            if event_type in {"text_start", "text_delta", "text_end"}:
+                index = event.get("contentIndex")
+                field = "delta" if event_type == "text_delta" else "content"
+                if (type(index) is not int or index < 0
+                        or event_type != "text_start" and not isinstance(event.get(field), str)):
+                    raise PiProtocolError(f"Invalid Pi RPC {event_type}; frame: {_fragment(raw)}", raw=raw)
     else:
         raise PiProtocolError(f"Unknown Pi RPC record type {kind!r}; frame: {_fragment(raw)}", raw=raw)
     return PiRecord(body=body, raw=raw)

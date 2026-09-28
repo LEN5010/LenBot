@@ -14,6 +14,7 @@ const stateError = ref(''), listError = ref(''), detailError = ref(''), eventErr
 const fileError = ref(''), downloadNotice = ref(''), createError = ref(''), actionError = ref('')
 const createResult = ref(null), actionResult = ref(null), listStale = ref(false), detailStale = ref(false)
 const socketState = ref('connecting'), socketError = ref(''), newData = ref(false), refreshing = ref(false), refreshError = ref('')
+const liveSnapshot = ref(null), liveState = ref('idle'), liveError = ref(''), liveStale = ref(false)
 const questionChanged = ref(false)
 const createForm = ref({ requester: '', goal: '', deliverable: '', context: '' })
 const operator = ref(''), appendText = ref(''), continueText = ref(''), answerText = ref(''), selectedAnswer = ref(null)
@@ -28,6 +29,9 @@ const status = computed(() => typeof route.query.status === 'string' ? route.que
 const selectedId = computed(() => typeof route.query.id === 'string' ? route.query.id : null)
 const sceneSettings = computed(() => state.value?.scenes.find(item => item.scene === selectedScene.value) || null)
 const task = computed(() => detail.value?.task || null)
+const canDownloadSession = computed(() => Boolean(state.value?.configured && task.value
+  && ['done', 'failed', 'cancelled'].includes(task.value.status) && task.value.container === null))
+const sessionHref = computed(() => `/api/host/tasks/${encodeURIComponent(selectedId.value)}/session?${new URLSearchParams({ scene:selectedScene.value })}`)
 const acceptingScene = computed(() => state.value?.configured && state.value.accepting && sceneSettings.value?.enabled)
 const canAppend = computed(() => state.value?.accepting && ['running','waiting_input'].includes(task.value?.status))
 const canContinue = computed(() => acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
@@ -51,6 +55,7 @@ const beginAction = useRequestGuard(() => `${selectedScene.value}\u0000${selecte
 const beginFile = useRequestGuard(() => `${selectedScene.value}\u0000${selectedId.value}`)
 const beginSnapshot = useRequestGuard(() => `${selectedScene.value}\u0000${status.value}\u0000${selectedId.value}`)
 let active = true, socket = null, refreshPending = false
+let liveSocket = null, liveMounted = false
 function localTime(value) {
   if (value === null || value === undefined || !state.value?.timezone) return '—'
   return new Date(value * 1000).toLocaleString('zh-CN', {
@@ -239,6 +244,47 @@ function connect() {
   connection.onclose = () => { if (active && socket === connection) socketState.value = 'disconnected' }
 }
 function reconnect() { socket?.close(); socket = null; connect() }
+function closeLive(clear = false) {
+  liveSocket?.close()
+  liveSocket = null
+  if (clear) {
+    liveSnapshot.value = null; liveError.value = ''; liveStale.value = false; liveState.value = 'idle'
+  }
+}
+function connectLive() {
+  const name = selectedScene.value, id = selectedId.value
+  if (!liveMounted || !name || !id || !/^[1-9][0-9]*$/.test(id)) return
+  if (liveSocket && liveSocket.readyState <= WebSocket.OPEN) return
+  liveState.value = 'connecting'; liveError.value = ''; liveStale.value = liveSnapshot.value !== null
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const connection = new WebSocket(`${protocol}//${location.host}/api/host/tasks/${encodeURIComponent(id)}/live?${new URLSearchParams({scene:name})}`)
+  liveSocket = connection
+  connection.onopen = () => { if (active && liveSocket === connection) liveState.value = 'connected' }
+  connection.onmessage = event => {
+    if (!active || liveSocket !== connection || selectedScene.value !== name || selectedId.value !== id) return
+    try {
+      const value = JSON.parse(event.data)
+      if (value?.task_id !== Number(id) || value.scene !== name || typeof value.status !== 'string'
+          || (value.preview !== null && (typeof value.preview?.text !== 'string'
+            || typeof value.preview.truncated !== 'boolean' || typeof value.preview.complete !== 'boolean'))) {
+        throw new Error(`任务预览字段不匹配：${String(event.data).slice(0, 300)}`)
+      }
+      liveSnapshot.value = value; liveStale.value = false; liveError.value = ''
+    } catch (error) {
+      liveError.value = `任务文字预览无法读取：${error.message}`
+      connection.close()
+    }
+  }
+  connection.onerror = () => {
+    if (active && liveSocket === connection) liveError.value = '任务文字预览连接出错；不会自动重连。'
+  }
+  connection.onclose = event => {
+    if (!active || liveSocket !== connection) return
+    liveState.value = 'disconnected'; liveStale.value = liveSnapshot.value !== null
+    if (!liveError.value && event.reason) liveError.value = `连接已关闭：${event.reason}`
+  }
+}
+function reconnectLive() { closeLive(); connectLive() }
 async function readEvent(event) {
   if (eventReading.value !== null) return
   const name = selectedScene.value, id = selectedId.value, fresh = beginEvent()
@@ -328,8 +374,9 @@ watch(selectedId, () => {
   resetDetail()
   if (state.value && selectedId.value) readDetail(false)
 })
-onMounted(async () => { await readState(); if (active) connect() })
-onBeforeUnmount(() => { active = false; socket?.close() })
+watch([selectedScene, selectedId], () => { closeLive(true); if (liveMounted) connectLive() })
+onMounted(async () => { liveMounted = true; connectLive(); await readState(); if (active) connect() })
+onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); closeLive() })
 </script>
 
 <template>
@@ -393,6 +440,17 @@ onBeforeUnmount(() => { active = false; socket?.close() })
         <v-btn variant="outlined" :loading="refreshing" @click="manualRefresh">重读详情</v-btn></div>
       <v-alert v-if="detailError" type="error" variant="tonal" role="alert" :title="detail?'详情读取失败 · 保留上次结果':'详情读取失败'">{{ detailError }}</v-alert>
       <p v-if="detailLoading && !detail" role="status" class="muted">正在读取原任务与事件预览…</p>
+      <section class="live-preview" aria-labelledby="task-live-title">
+        <div class="section-heading"><h3 id="task-live-title">当前助手文字预览</h3>
+          <v-btn v-if="liveState==='disconnected'" variant="outlined" @click="reconnectLive">重新连接文字预览</v-btn></div>
+        <p class="muted">{{ liveState==='connected'?'预览连接已建立':liveState==='connecting'?'正在连接文字预览…':liveState==='disconnected'?'预览连接已断开；不会自动重连':'尚未连接文字预览' }}<template v-if="liveStale"> · 下方保留的是断线前快照</template></p>
+        <p v-if="liveError" class="original-text">{{ liveError }}</p>
+        <p v-if="liveSnapshot" class="muted">最近收到的任务状态：{{ statusLabel(liveSnapshot.status) }}</p>
+        <p v-if="liveSnapshot?.preview===null" class="muted">当前没有助手文字预览；可在下方读取已保存事件。</p>
+        <pre v-else-if="liveSnapshot?.preview" aria-label="当前助手文字预览正文">{{ liveSnapshot.preview.text }}</pre>
+        <p v-else class="muted">{{ liveState==='disconnected'?'断线前未取得文字预览。':'等待首个文字预览快照…' }}</p>
+        <p v-if="liveSnapshot?.preview" class="muted">{{ liveSnapshot.preview.complete?'该条助手消息已结束，不代表任务完成。':'该条助手消息尚未结束。' }}{{ liveSnapshot.preview.truncated?' 预览已截短。':'' }}完整原文请按需读取下方事件；任务结束后可下载原生会话。</p>
+      </section>
       <template v-if="detail"><p v-if="detailStale" class="muted">操作返回后，当前详情尚未重读；不能将下方旧状态当作最新结果。</p>
         <div class="task-header"><strong>{{ task.goal }}</strong><v-chip variant="tonal" :color="task.status==='failed'?'error':task.status==='done'?'success':'info'">{{ statusLabel(task.status) }}</v-chip></div>
         <dl class="task-facts"><div><dt>任务记录</dt><dd>{{ task.id }} · {{ sceneName(task.scene) }}</dd></div><div><dt>实际请求人</dt><dd>QQ {{ task.requester }}</dd></div>
@@ -400,6 +458,9 @@ onBeforeUnmount(() => { active = false; socket?.close() })
           <div><dt>期望交付物</dt><dd class="original-text">{{ task.deliverable }}</dd></div>
           <div><dt>补充上下文</dt><dd class="original-text">{{ task.context || '未填写' }}</dd></div>
           <div v-if="task.summary!==null"><dt>执行总结</dt><dd class="original-text">{{ task.summary }}</dd></div></dl>
+        <div class="session-download"><a v-if="canDownloadSession" :href="sessionHref" target="_blank" rel="noopener noreferrer" class="session-link">下载原生 Pi 会话</a>
+          <p v-else class="muted">运行中不可下载；仅已结束、容器已停止且配置了 worker 的任务可读取原生会话。</p>
+          <p class="muted">下载由浏览器处理，读取失败将在新页显示。下载不是锁定快照；同时续接会话可能改变原文件。</p></div>
         <section v-if="detail.network" class="network-facts"><h3>本任务代理计量</h3>
           <p>{{ detail.network.enabled?'配置启用':'配置未启用' }} · 上行 {{ byteCount(detail.network.up) }} · 下行 {{ byteCount(detail.network.down) }}</p>
           <p>限额 {{ byteCount(detail.network.limit) }} · 中断连接 {{ detail.network.incomplete_connections }}</p>
@@ -470,5 +531,6 @@ onBeforeUnmount(() => { active = false; socket?.close() })
 .task-list li,.files li,.events li,.question,.task-actions,.action-result{border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0;overflow-wrap:anywhere}.task-list li.selected{border-color:var(--primary);background:var(--selected-bg)}.task-list :deep(.v-btn){height:auto;min-height:44px;white-space:normal;text-align:left;max-width:100%}.task-list p{margin:6px 0}
 .original-text,.host-tasks pre{white-space:pre-wrap;overflow-wrap:anywhere}.task-header strong{font-size:18px}.task-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:12px}.task-facts dt{font-size:12px;color:var(--muted)}.task-facts dd{margin:4px 0 0}.task-actions>form,.task-actions>.answer{display:grid;gap:10px;margin:14px 0}.answer{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}.answer>p,.answer>.v-input{grid-column:1/-1}
 .events li>div:first-child{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.host-tasks details{margin-top:10px}.host-tasks summary{cursor:pointer;min-height:44px}.host-tasks pre{font-size:13px}.host-tasks :deep(.v-btn){min-height:44px}.host-tasks :deep(.v-alert),.host-tasks .muted{overflow-wrap:anywhere}
+.live-preview{border:1px solid var(--line);border-radius:10px;padding:14px;margin:16px 0;min-width:0}.live-preview h3{margin:0}.live-preview pre{max-height:32rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.session-download{margin:16px 0}.session-link{display:inline-flex;align-items:center;min-height:44px;padding:8px 14px;border:1px solid var(--line);border-radius:8px;color:var(--primary);font-weight:700;text-decoration:none}.session-link:hover{text-decoration:underline}.session-link:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 @media(max-width:600px){.page-intro{display:grid}.page-intro>.v-btn{width:100%}.surface{padding:16px}.task-list li,.files li,.events li,.question,.task-actions{padding:12px}}
 </style>
