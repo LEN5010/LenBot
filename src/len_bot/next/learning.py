@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from .config import HostConfig
 from .context import ContextBudgetError, estimate_request
+from .expression_selection import ExpressionService
 from .learning_store import LearningStore
 from .messages import ChatMessage, plain_text
 from .model import ChatModel, ModelProtocolError, ModelReply
@@ -75,14 +76,17 @@ class ExpressionLearner:
     """One background worker per enabled group; failures require an explicit retry."""
 
     def __init__(self, config: HostConfig, store: Store, model: ChatModel, *,
-                 slots: ModelSlots | None = None, on_update: Callable[[], None] | None = None):
+                 slots: ModelSlots | None = None, on_update: Callable[[], None] | None = None,
+                 expression_service: ExpressionService | None = None):
         self.config = config
         self.store = store
         self.model = model
         self.slots = slots
+        self.expression_service = expression_service
         self.on_update = on_update
         self.records = LearningStore(store)
-        self.scenes = tuple(scene for scene, settings in config.scenes.items() if settings.learning is not None)
+        self.scenes = tuple(scene for scene, settings in config.scenes.items()
+                            if settings.learning is not None and settings.learning.extract)
         self._wake = {scene: asyncio.Event() for scene in self.scenes}
         self._force: set[str] = set()
         self._retry: set[str] = set()
@@ -251,7 +255,10 @@ class ExpressionLearner:
                                   {"message": reply.message, "finish_reason": reply.finish_reason},
                                   reply.usage, estimate_cost(price, reply.token_usage))
             candidates = _candidates(reply, {seq for seq, _, _ in rows})
-            self.records.complete(batch_id, candidates, auto_adopt=settings.auto_adopt)
+            if self.expression_service is None:
+                self.records.complete(batch_id, candidates, auto_adopt=settings.auto_adopt)
+            else:
+                await self.expression_service.complete(scene, batch_id, candidates, auto_adopt=settings.auto_adopt)
         except asyncio.CancelledError as error:
             self.records.fail(batch_id, "interrupted", _error_text(error))
             if self.on_update is not None:

@@ -7,13 +7,17 @@ import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), overview = ref(null), settings = ref(null), settingsDraft = ref(null)
+const disabledSettingsDraft = ref(null), disabledEmbeddingDraft = ref(null)
 const batches = ref(null), batch = ref(null), expressions = ref(null), expression = ref(null), expressionDraft = ref(null)
+const embeddingCalls = ref(null), embeddingCall = ref(null)
 const filter = ref('pending')
 const loading = ref(false), overviewLoading = ref(false), settingsLoading = ref(false)
 const batchLoading = ref(false), batchDetailLoading = ref(false), expressionLoading = ref(false), expressionDetailLoading = ref(false)
+const embeddingLoading = ref(false), embeddingDetailLoading = ref(false)
 const settingsSaving = ref(false), expressionSaving = ref(false), deleting = ref(false), requesting = ref('')
 const readError = ref(''), overviewError = ref(''), settingsError = ref(''), batchError = ref(''), batchDetailError = ref('')
 const expressionError = ref(''), expressionDetailError = ref(''), settingsSaveError = ref(''), candidateSaveError = ref(''), actionError = ref('')
+const embeddingError = ref(''), embeddingDetailError = ref('')
 const settingsNotice = ref(''), candidateNotice = ref(''), actionNotice = ref('')
 const selectedScene = computed(() => typeof route.query.scene === 'string' ? route.query.scene : '')
 const options = computed(() => host.value?.scenes.map(item => ({ title:`${sceneName(item.scene)} · ${item.persona.name}`, value:item.scene })) || [])
@@ -33,6 +37,8 @@ const beginOverview = useRequestGuard(() => selectedScene.value)
 const beginSettings = useRequestGuard(() => selectedScene.value)
 const beginBatches = useRequestGuard(() => selectedScene.value)
 const beginBatch = useRequestGuard(() => selectedScene.value)
+const beginEmbeddings = useRequestGuard(() => selectedScene.value)
+const beginEmbedding = useRequestGuard(() => selectedScene.value)
 const beginExpressions = useRequestGuard(() => `${selectedScene.value}\u0000${filter.value}`)
 const beginExpression = useRequestGuard(() => selectedScene.value)
 const beginSettingsSave = useRequestGuard(() => selectedScene.value)
@@ -40,7 +46,7 @@ const beginExpressionSave = useRequestGuard(() => selectedScene.value)
 const beginAction = useRequestGuard(() => selectedScene.value)
 function endpoint(suffix = '') { return `/api/host/scenes/${encodeURIComponent(selectedScene.value)}/learning${suffix}` }
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
-function defaults() { return { min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false } }
+function defaults() { return { extract:true, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
 function numeric(value) { return value === '' ? '' : Number(value) }
 function localTime(value) {
   if (value === null || value === undefined || !host.value?.timezone) return '—'
@@ -55,12 +61,16 @@ function mutationError(error, verb) {
 function selectScene(value) { if (value && value !== selectedScene.value) router.push({ name:'host-learning', query:{ scene:value } }) }
 function resetScene() {
   overview.value = null; settings.value = null; settingsDraft.value = null
+  disabledSettingsDraft.value = null; disabledEmbeddingDraft.value = null
   batches.value = null; batch.value = null; expressions.value = null; expression.value = null; expressionDraft.value = null
+  embeddingCalls.value = null; embeddingCall.value = null
   overviewError.value = ''; settingsError.value = ''; batchError.value = ''; batchDetailError.value = ''
   expressionError.value = ''; expressionDetailError.value = ''; settingsSaveError.value = ''; candidateSaveError.value = ''; actionError.value = ''
+  embeddingError.value = ''; embeddingDetailError.value = ''
   settingsNotice.value = ''; candidateNotice.value = ''; actionNotice.value = ''
   overviewLoading.value = false; settingsLoading.value = false; batchLoading.value = false
   batchDetailLoading.value = false; expressionLoading.value = false; expressionDetailLoading.value = false
+  embeddingLoading.value = false; embeddingDetailLoading.value = false
   filter.value = 'pending'
 }
 async function readHost() {
@@ -89,6 +99,8 @@ async function readSettings(confirmDiscard = true) {
     const value = await api(`/api/host/settings/scenes/${encodeURIComponent(selectedScene.value)}/learning`)
     if (!fresh()) return
     settings.value = value; settingsDraft.value = copy(value.saved)
+    disabledSettingsDraft.value = value.saved === null ? null : copy(value.saved)
+    disabledEmbeddingDraft.value = value.saved?.embedding === null || value.saved === null ? null : copy(value.saved.embedding)
     settingsError.value = ''; settingsSaveError.value = ''; settingsNotice.value = ''
   } catch (error) { if (fresh()) settingsError.value = error.message }
   finally { if (fresh()) settingsLoading.value = false }
@@ -109,6 +121,30 @@ async function openBatch(id) {
   try { const value = await api(endpoint(`/batches/${id}`)); if (fresh()) { batch.value = value; batchDetailError.value = '' } }
   catch (error) { if (fresh()) batchDetailError.value = error.message }
   finally { if (fresh()) batchDetailLoading.value = false }
+}
+async function readEmbeddingCalls(more = false) {
+  if (!selectedScene.value || embeddingLoading.value ||
+      (more && (!embeddingCalls.value || embeddingCalls.value.items.length >= embeddingCalls.value.total))) return
+  const offset = more ? embeddingCalls.value.items.length : 0, fresh = beginEmbeddings()
+  embeddingLoading.value = true
+  try {
+    const page = await api(`${endpoint('/embedding-calls')}?${queryString({ offset, limit:20 })}`)
+    if (fresh()) {
+      embeddingCalls.value = more ? { ...page, items:[...embeddingCalls.value.items, ...page.items] } : page
+      embeddingError.value = ''
+    }
+  } catch (error) { if (fresh()) embeddingError.value = error.message }
+  finally { if (fresh()) embeddingLoading.value = false }
+}
+async function openEmbeddingCall(id) {
+  if (embeddingCall.value?.id === id) { embeddingCall.value = null; return }
+  const fresh = beginEmbedding(); embeddingDetailLoading.value = true
+  embeddingCall.value = null; embeddingDetailError.value = ''
+  try {
+    const value = await api(endpoint(`/embedding-calls/${id}`))
+    if (fresh()) embeddingCall.value = value
+  } catch (error) { if (fresh()) embeddingDetailError.value = error.message }
+  finally { if (fresh()) embeddingDetailLoading.value = false }
 }
 async function readExpressions(more = false) {
   if (!selectedScene.value || expressionLoading.value || (more && (!expressions.value || expressions.value.items.length >= expressions.value.total))) return
@@ -134,7 +170,15 @@ async function openExpression(id) {
   } catch (error) { if (fresh()) expressionDetailError.value = error.message }
   finally { if (fresh()) expressionDetailLoading.value = false }
 }
-function toggleSettings(enabled) { settingsDraft.value = enabled ? defaults() : null }
+function toggleSettings(enabled) {
+  if (enabled) settingsDraft.value = disabledSettingsDraft.value === null ? defaults() : copy(disabledSettingsDraft.value)
+  else { disabledSettingsDraft.value = copy(settingsDraft.value); settingsDraft.value = null }
+}
+function toggleEmbedding(enabled) {
+  if (enabled) settingsDraft.value.embedding = disabledEmbeddingDraft.value === null
+    ? { provider:'', model:'', dimensions:null } : copy(disabledEmbeddingDraft.value)
+  else { disabledEmbeddingDraft.value = copy(settingsDraft.value.embedding); settingsDraft.value.embedding = null }
+}
 async function saveSettings() {
   if (!settingsDirty.value || settingsSaving.value || settingsLoading.value) return
   const fresh = beginSettingsSave(), target = selectedScene.value
@@ -145,11 +189,21 @@ async function saveSettings() {
     })
     if (!fresh()) return
     settings.value = value; settingsDraft.value = copy(value.saved)
+    if (value.saved !== null) disabledSettingsDraft.value = copy(value.saved)
+    if (value.saved?.embedding != null) disabledEmbeddingDraft.value = copy(value.saved.embedding)
     settingsNotice.value = value.restart_required
       ? '学习配置已保存到根文件；当前运行服务不变，重启后生效。'
       : '学习配置已保存；与当前运行值一致。'
   } catch (error) { if (fresh()) settingsSaveError.value = mutationError(error, '保存配置') }
   finally { if (fresh()) settingsSaving.value = false }
+}
+function refreshCandidateLists() {
+  beginExpressions(); expressionLoading.value = false
+  readExpressions(); readOverview()
+}
+function refreshEmbeddingList() {
+  beginEmbeddings(); embeddingLoading.value = false
+  readEmbeddingCalls()
 }
 async function saveExpression() {
   if (!expressionDirty.value || expressionSaving.value || !expression.value) return
@@ -160,10 +214,14 @@ async function saveExpression() {
     if (!fresh() || expression.value?.id !== id) return
     expression.value = { ...value, source_messages:expression.value.source_messages }
     expressionDraft.value = { situation:value.situation, style:value.style, status:value.status }
-    candidateNotice.value = '候选的人工决定已保存；采用尚未注入表达器。'
-    readExpressions(); readOverview()
+    candidateNotice.value = value.status === 'adopted' && value.indexed && overview.value?.selection_enabled && overview.value.voice_mode === 'voice'
+      ? '候选已采用且向量已建；下次 voice 可参与检索，不保证实际引用。'
+      : '候选决定已保存；是否可被 voice 选用还取决于运行绑定、场景表达方式及向量状态。'
+    refreshCandidateLists()
   } catch (error) { if (fresh()) candidateSaveError.value = mutationError(error, '保存候选') }
-  finally { if (fresh()) expressionSaving.value = false }
+  finally {
+    if (fresh()) { expressionSaving.value = false; refreshEmbeddingList() }
+  }
 }
 async function deleteExpression() {
   if (!expression.value || deleting.value || !window.confirm(`删除这条表达候选及其审核状态？原聊天消息不删除。\n${expression.value.situation}\n${expression.value.style}`)) return
@@ -174,7 +232,7 @@ async function deleteExpression() {
     if (!fresh() || expression.value?.id !== id) return
     expression.value = null; expressionDraft.value = null
     candidateNotice.value = '候选已删除；来源聊天原话未删除。'
-    readExpressions(); readOverview()
+    refreshCandidateLists()
   } catch (error) { if (fresh()) candidateSaveError.value = mutationError(error, '删除候选') }
   finally { if (fresh()) deleting.value = false }
 }
@@ -189,10 +247,10 @@ async function requestLearning(action) {
   } catch (error) { if (fresh()) actionError.value = mutationError(error, '提交学习请求') }
   finally { if (fresh()) requesting.value = '' }
 }
-function refreshRecords() { readOverview(); readSettings(false); readBatches(); readExpressions() }
+function refreshRecords() { readOverview(); readSettings(false); readBatches(); readEmbeddingCalls(); readExpressions() }
 function refreshAll() {
   if (dirty.value && !window.confirm('放弃未保存的学习设置或候选草稿，重新读取当前场景？')) return
-  expression.value = null; expressionDraft.value = null; batch.value = null
+  expression.value = null; expressionDraft.value = null; batch.value = null; embeddingCall.value = null
   refreshRecords()
 }
 watch(selectedScene, () => { resetScene(); if (host.value && selectedScene.value) refreshRecords() })
@@ -207,8 +265,8 @@ onMounted(readHost)
 <template>
   <div class="page-stack host-learning">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>群聊表达学习</h1>
-      <p class="muted">从群聊原话提取表达候选，在这里查看来源并作人工决定。当前采用只保存选择，尚不影响回复。</p></div>
-      <v-btn variant="outlined" :loading="loading || overviewLoading || settingsLoading || batchLoading || expressionLoading" :disabled="busy" @click="refreshAll">手动重读</v-btn></header>
+      <p class="muted">从群聊原话提取表达候选，在这里查看来源并作人工决定。后台提取和 voice 选用分别配置；采用不保证回复会说出原句。</p></div>
+      <v-btn variant="outlined" :loading="loading || overviewLoading || settingsLoading || batchLoading || embeddingLoading || expressionLoading" :disabled="busy" @click="refreshAll">手动重读</v-btn></header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert">{{ readError }}</v-alert>
     <section class="surface"><h2>场景</h2><v-select :model-value="selectedScene" :items="options" label="选择群聊场景" hide-details="auto" :disabled="busy || !host" @update:model-value="selectScene" />
       <p v-if="host" class="muted">时间按 {{ host.timezone }} 显示；只读取当前宿主已配置的场景。</p></section>
@@ -216,7 +274,9 @@ onMounted(readHost)
       <section class="surface"><div class="section-heading"><h2>抽取服务现场</h2><span class="muted">手动刷新查看最新状态</span></div>
         <v-alert v-if="overviewError" type="error" variant="tonal" role="alert" :title="overview?'读取失败 · 保留上次状态':'读取失败'">{{ overviewError }}</v-alert>
         <p v-if="overviewLoading && !overview" role="status">正在读取学习状态…</p>
-        <template v-if="overview"><p><strong>{{ overview.enabled?'当前配置已启用':'当前配置未启用' }}</strong> · 工作器 {{ overview.service_state?.running?'正在运行':'未运行' }} · 已处理至原消息位置 {{ overview.cursor?.after_seq ?? '尚未建立游标' }}</p>
+        <template v-if="overview"><p><strong>后台提取 {{ overview.enabled?'已配置':'未配置' }}</strong> · 工作器 {{ overview.service_state?.running?'正在运行':'未运行' }} · 已处理至原消息位置 {{ overview.cursor?.after_seq ?? '尚未建立游标' }}</p>
+          <p><strong>表达选用 {{ overview.selection_enabled?'已配置':'未配置' }}</strong> · 当前表达方式 {{ overview.voice_mode==='voice'?'voice 表达器':'direct 直出' }}。</p>
+          <p class="muted">仅 voice 模式且显式绑定表达向量时，已采用并建好向量的候选才可在下一次 voice 检索；direct 不注入。已采用不等于一定会说出原词。</p>
           <p class="muted">待审核 {{ overview.expression_counts.pending }} · 已采用 {{ overview.expression_counts.adopted }} · 已拒绝 {{ overview.expression_counts.rejected }}。禁用服务不会删除已有候选和批次。</p>
           <p v-if="overview.latest">最近批次：{{ statusLabel(overview.latest.status) }} · {{ localTime(overview.latest.started) }}<span v-if="overview.latest.error"> · 错误原文见下方批次详情</span></p>
           <p v-else class="muted">尚无已保存学习批次。</p>
@@ -232,14 +292,23 @@ onMounted(readHost)
         <p v-if="settingsLoading && !settings" role="status">正在读取配置…</p>
         <template v-if="settings"><p>当前运行：{{ settings.running===null?'未启用':'已配置' }}；根文件保存值：{{ settings.saved===null?'未启用':'已配置' }}。</p>
           <v-chip variant="tonal" :color="settings.restart_required?'warning':'info'">{{ settings.restart_required?'保存值待重启':'保存值与运行值一致' }}</v-chip>
-          <form @submit.prevent="saveSettings"><v-switch :model-value="settingsDraft!==null" label="保存值中启用此群表达学习" :disabled="settingsSaving" hide-details @update:model-value="toggleSettings" />
-            <template v-if="settingsDraft"><div class="form-grid">
+          <form @submit.prevent="saveSettings"><v-switch :model-value="settingsDraft!==null" label="保存值中配置此群表达学习" :disabled="settingsSaving" hide-details @update:model-value="toggleSettings" />
+            <template v-if="settingsDraft"><v-switch v-model="settingsDraft.extract" label="后台提取新表达候选" :disabled="settingsSaving || settingsLoading" hide-details />
+              <p class="muted">关闭后台提取仍保留已有候选与表达选用，不要求 learner 绑定；若启用，须在模型页明确绑定 learner。</p>
+              <div class="form-grid">
               <v-text-field :model-value="settingsDraft.min_messages" type="number" step="1" label="触发所需有效群友文字数" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.min_messages=numeric(value)" />
               <v-text-field :model-value="settingsDraft.batch_size" type="number" step="1" label="每批最多扫描原始消息数（含排除项）" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.batch_size=numeric(value)" />
               <v-text-field :model-value="settingsDraft.idle_seconds" type="number" step="any" label="空闲触发秒数" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.idle_seconds=numeric(value)" />
               <v-text-field :model-value="settingsDraft.max_age_seconds" type="number" step="any" label="最长积累秒数" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.max_age_seconds=numeric(value)" />
             </div><v-switch v-model="settingsDraft.auto_adopt" label="自动标记候选为已采用" hide-details :disabled="settingsSaving || settingsLoading" />
-              <p class="muted">自动采用只改变候选审核状态；本切片仍未把已采用表达注入表达器。启用前须在模型页明确绑定 learner；不会自动选择模型。</p></template>
+              <p class="muted">自动采用只改变审核状态；未建向量或不在 voice 模式时仍不会被选用。</p>
+              <v-switch :model-value="settingsDraft.embedding!==null" label="使用显式表达向量绑定供 voice 选用" :disabled="settingsSaving || settingsLoading" hide-details @update:model-value="toggleEmbedding" />
+              <div v-if="settingsDraft.embedding" class="form-grid">
+                <v-text-field v-model="settingsDraft.embedding.provider" label="向量提供方（根 models.providers 的名称）" hide-details="auto" :disabled="settingsSaving || settingsLoading" />
+                <v-text-field v-model="settingsDraft.embedding.model" label="向量模型精确名称" hide-details="auto" :disabled="settingsSaving || settingsLoading" />
+                <v-text-field :model-value="settingsDraft.embedding.dimensions ?? ''" type="number" step="1" label="向量维度（留空不指定）" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.embedding.dimensions=value===''||value===null?null:numeric(value)" />
+              </div>
+              <p class="muted">提供方与模型须显式填写，不继承 mind、learner 或记忆嵌入。首次启用向量或更换绑定后，已有已采用候选缺向量时须停机执行 <code>uv run python -m len_bot.next.reindex_expressions</code>；保存根配置不热改，也不会自动补建。</p></template>
             <p v-else class="muted">关闭保存值不会删除已有候选或批次，当前运行服务仍须重启才改变。</p>
             <p v-if="settingsDirty" class="dirty-note" role="status">配置草稿尚未保存。</p>
             <v-alert v-if="settingsSaveError" type="error" variant="tonal" role="alert">{{ settingsSaveError }}</v-alert>
@@ -263,13 +332,29 @@ onMounted(readHost)
         <v-alert v-if="batchDetailError" type="error" variant="tonal" role="alert">{{ batchDetailError }}</v-alert>
         <v-btn v-if="batches && batches.items.length < batches.total" variant="outlined" :loading="batchLoading" :disabled="batchLoading" @click="readBatches(true)">读取更多批次</v-btn>
       </section>
-      <section class="surface"><div class="section-heading"><h2>表达候选与人工决定</h2><span class="muted">采用尚未注入表达器</span></div>
+      <section class="surface"><div class="section-heading"><h2>表达向量请求</h2><span class="muted">真实请求记录 · 非聊天轮次 · 按需读取输入原文</span></div>
+        <v-alert v-if="embeddingError" type="error" variant="tonal" role="alert" :title="embeddingCalls?'读取失败 · 保留上次列表':'读取失败'">{{ embeddingError }}</v-alert>
+        <p v-if="embeddingLoading && !embeddingCalls" role="status">正在读取表达向量请求…</p>
+        <p v-if="embeddingCalls && !embeddingCalls.items.length" class="muted">此场景没有已保存的表达向量请求。</p>
+        <ul v-if="embeddingCalls?.items.length" class="record-list"><li v-for="item in embeddingCalls.items" :key="item.id" class="record-card">
+          <div class="record-head"><strong>{{ {query:'voice 检索',index:'候选建向量',reindex:'离线重建'}[item.purpose] || item.purpose }}</strong><span>{{ localTime(item.started) }}</span></div>
+          <p class="muted">{{ item.ended===null?'尚未结束':`结束 ${localTime(item.ended)}` }} · {{ item.response===null?'几何结果未知':`${item.response.vector_count} 条向量、${item.response.dimensions} 维` }} · 费用 {{ item.cost===null?'未知':JSON.stringify(item.cost) }}</p>
+          <p v-if="item.error" class="original-text">{{ item.error }}</p>
+          <v-btn variant="text" :disabled="embeddingDetailLoading" @click="openEmbeddingCall(item.id)">{{ embeddingCall?.id===item.id?'收起详情':'查看实际输入与用量' }}</v-btn>
+          <div v-if="embeddingCall?.id===item.id" class="detail"><p>关联聊天轮次：{{ embeddingCall.turn_id ?? '无（候选索引或离线重建）' }}；用量 {{ embeddingCall.usage===null?'未知':JSON.stringify(embeddingCall.usage) }}</p>
+            <details><summary>实际请求（含输入文字与当时价格）</summary><pre>{{ JSON.stringify(embeddingCall.request,null,2) }}</pre></details>
+            <details><summary>几何响应与错误</summary><pre>{{ JSON.stringify({response:embeddingCall.response,error:embeddingCall.error},null,2) }}</pre></details></div>
+        </li></ul>
+        <v-alert v-if="embeddingDetailError" type="error" variant="tonal" role="alert">{{ embeddingDetailError }}</v-alert>
+        <v-btn v-if="embeddingCalls && embeddingCalls.items.length < embeddingCalls.total" variant="outlined" :loading="embeddingLoading" :disabled="embeddingLoading" @click="readEmbeddingCalls(true)">读取更多向量请求</v-btn>
+      </section>
+      <section class="surface"><div class="section-heading"><h2>表达候选与人工决定</h2><span class="muted">审核状态与可检索状态分别显示</span></div>
         <v-select v-model="filter" label="审核状态" :items="[{title:'待审核',value:'pending'},{title:'全部',value:'all'},{title:'已采用',value:'adopted'},{title:'已拒绝',value:'rejected'}]" hide-details="auto" class="filter" :disabled="busy" />
         <v-alert v-if="expressionError" type="error" variant="tonal" role="alert">{{ expressionError }}</v-alert>
         <p v-if="expressionLoading && !expressions" role="status">正在读取候选…</p>
         <p v-if="expressions && !expressions.items.length" class="muted">此筛选下没有表达候选。</p>
         <ul v-if="expressions?.items.length" class="record-list"><li v-for="item in expressions.items" :key="item.id" class="record-card">
-          <div class="record-head"><strong>{{ statusLabel(item.status) }}</strong><span>{{ localTime(item.updated) }}</span></div>
+          <div class="record-head"><strong>{{ statusLabel(item.status) }} · {{ item.indexed?'向量已建':'尚无向量' }}</strong><span>{{ localTime(item.updated) }}</span></div>
           <p class="original-text">情境：{{ item.situation }}</p><p class="original-text">说法：{{ item.style }}</p>
           <p class="muted">{{ item.count }} 条真实来源；点击查看原话与编辑。</p>
           <v-btn variant="text" :loading="expressionDetailLoading" :disabled="busy || expressionDetailLoading" @click="openExpression(item.id)">查看与审核</v-btn>
@@ -277,6 +362,7 @@ onMounted(readHost)
         <v-btn v-if="expressions && expressions.items.length < expressions.total" variant="outlined" :loading="expressionLoading" :disabled="expressionLoading" @click="readExpressions(true)">读取更多候选</v-btn>
         <v-alert v-if="expressionDetailError" type="error" variant="tonal" role="alert">{{ expressionDetailError }}</v-alert>
         <form v-if="expression && expressionDraft" class="candidate-editor" @submit.prevent="saveExpression"><h3>当前候选 · 原话与人工决定</h3>
+          <p class="muted">当前向量：{{ expression.indexed?'已保存；实际检索仍须运行绑定一致且使用 voice 模式':'尚无；仅采用状态不会自动补建历史向量' }}。</p>
           <v-textarea v-model="expressionDraft.situation" label="情境原文" rows="3" auto-grow hide-details="auto" :disabled="expressionSaving || deleting" />
           <v-textarea v-model="expressionDraft.style" label="说法原文" rows="3" auto-grow hide-details="auto" :disabled="expressionSaving || deleting" />
           <v-select v-model="expressionDraft.status" label="人工决定" :items="[{title:'待审核',value:'pending'},{title:'采用',value:'adopted'},{title:'拒绝',value:'rejected'}]" hide-details="auto" :disabled="expressionSaving || deleting" />

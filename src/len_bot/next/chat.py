@@ -24,6 +24,7 @@ from .context import (
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
 from .delivery import Expression, part_length, report_parts, split_expression
+from .expression_selection import ExpressionService
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, render_message
@@ -240,6 +241,7 @@ class Chat:
                  vision: ChatModel | None = None,
                  memory: MemoryService | None = None,
                  tasks: WorkTasks | None = None,
+                 expression_service: ExpressionService | None = None,
                  slots: ModelSlots | None = None,
                  send_message: MessageSender | None = None,
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
@@ -255,6 +257,7 @@ class Chat:
         if (config.worker is None) != (tasks is None):
             raise ValueError("任务服务必须与根配置的 worker 一起提供")
         self.tasks = tasks
+        self.expression_service = expression_service
         self.slots = slots
         self.direct_request = False
         self.send_message = send_message
@@ -318,7 +321,8 @@ class Chat:
 
     async def request(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
                       messages: list[dict], tools: list[dict], *,
-                      recap_target: CompactionPlan | None = None) -> ModelReply:
+                      recap_target: CompactionPlan | None = None,
+                      expression_ids: list[int] | None = None) -> ModelReply:
         model_role = "mind" if role == "recap" else role
         model = getattr(self, model_role)
         binding = getattr(self.config.models.roles, model_role)
@@ -336,6 +340,7 @@ class Chat:
             call_id = self.store.start_call(turn_id, role, {
                 "settings": settings, "messages": messages, "tools": tools,
                 "provider": binding.provider,
+                **({"expression_ids": expression_ids} if expression_ids is not None else {}),
                 "price": None if price is None else price.model_dump(mode="json"),
                 **({"estimated_text_tokens": estimated, "estimated_total_tokens": None} if role == "vision"
                    else {"estimated_total_tokens": estimated}),
@@ -348,6 +353,8 @@ class Chat:
                     reply = await model.complete(messages, tools, max_output_tokens=output_tokens)
                 else:
                     reply = await model.complete(messages, tools)
+                if role == "voice" and (reply.tool_calls or not reply.text.strip()):
+                    raise ValueError(f"表达器未返回完整台词：{encode(reply.message)}")
                 if role == "vision" and (reply.tool_calls or not reply.text.strip()):
                     raise ValueError(f"视觉模型未返回完整描述：{encode(reply.message)}")
                 if recap_target is not None:
@@ -452,10 +459,20 @@ class Chat:
                     "回复对象": None if quote is None else self.render(quote), "提及QQ": arguments.mention}
             if expression_style is not None:
                 messages.append({"role": "user", "content": expression_style})
+            selected = []
+            if self.expression_service is not None and self.config.scene in self.expression_service.scenes:
+                selected = await self.expression_service.select(
+                    self.config.scene, arguments.content, turn_id=turn_id, direct=self.direct_request,
+                )
+            if selected:
+                messages.append({"role": "user", "content": Template(
+                    (PROMPTS / "next_learned_expressions.md").read_text(),
+                ).substitute(expressions=encode([
+                    {"情境": item["situation"], "说法": item["style"]} for item in selected
+                ]))})
             messages.append({"role": "user", "content": encode(task)})
-            reply = await self.request(turn_id, "voice", messages, [])
-            if reply.tool_calls or not reply.text.strip():
-                raise ValueError(f"表达器未返回完整台词：{encode(reply.message)}")
+            reply = await self.request(turn_id, "voice", messages, [],
+                                       expression_ids=[item["id"] for item in selected])
             text = reply.text
         segments = []
         if arguments.reply_to is not None:

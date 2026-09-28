@@ -10,6 +10,10 @@ from .messages import ChatMessage, plain_text
 from .store import Store, encode
 
 
+StoredVector = tuple[bytes, str, int]
+EXPRESSION_COLUMNS = "id,scene,situation,style,sources,status,updated,vector IS NOT NULL AS indexed"
+
+
 BATCH_SUMMARY_COLUMNS = (
     "id,scene,after_seq,through_seq,started,ended,status,model_started,usage,cost,error"
 )
@@ -100,7 +104,8 @@ class LearningStore:
                             (encode(response), None if usage is None else encode(usage),
                              None if cost is None else encode(cost), batch_id))
 
-    def complete(self, batch_id: int, candidates: list[tuple[str, str, list[int]]], *, auto_adopt: bool) -> None:
+    def complete(self, batch_id: int, candidates: list[tuple[str, str, list[int]]], *, auto_adopt: bool,
+                 vectors: dict[tuple[str, str], StoredVector] | None = None) -> None:
         with self.db:
             batch = self.db.execute(
                 "SELECT scene,after_seq,through_seq FROM learning_batches WHERE id=?", (batch_id,),
@@ -111,10 +116,13 @@ class LearningStore:
                     (batch["scene"], situation, style),
                 ).fetchone()
                 if old is None:
+                    vector = None if vectors is None else vectors.get((situation, style))
                     self.db.execute(
-                        "INSERT INTO expressions(scene,situation,style,sources,status,updated) VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO expressions(scene,situation,style,sources,status,updated,"
+                        "vector,vector_binding,vector_dimensions) VALUES (?,?,?,?,?,?,?,?,?)",
                         (batch["scene"], situation, style, encode(sorted(sources)),
-                         "adopted" if auto_adopt else "pending", self.store.now()),
+                         "adopted" if auto_adopt else "pending", self.store.now(),
+                         *((None, None, None) if vector is None else vector)),
                     )
                 else:
                     merged = sorted(set(json.loads(old["sources"])) | set(sources))
@@ -166,6 +174,7 @@ class LearningStore:
         if row is None:
             return None
         result = dict(row)
+        result["indexed"] = bool(result["indexed"])
         result["sources"] = json.loads(result["sources"])
         result["count"] = len(result["sources"])
         return result
@@ -173,22 +182,94 @@ class LearningStore:
     def expressions(self, scene: str, *, status: str | None, limit: int, offset: int) -> dict:
         clause = "scene=?" if status is None else "scene=? AND status=?"
         values = (scene,) if status is None else (scene, status)
-        rows = self.db.execute("SELECT * FROM expressions WHERE " + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
+        rows = self.db.execute(f"SELECT {EXPRESSION_COLUMNS} FROM expressions WHERE " + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
                                (*values, limit, offset))
         total = self.db.execute("SELECT COUNT(*) FROM expressions WHERE " + clause, values).fetchone()[0]
         return {"items": [self._expression(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
     def expression(self, scene: str, id: int) -> dict | None:
-        return self._expression(self.db.execute("SELECT * FROM expressions WHERE scene=? AND id=?",
+        return self._expression(self.db.execute(f"SELECT {EXPRESSION_COLUMNS} FROM expressions WHERE scene=? AND id=?",
                                                 (scene, id)).fetchone())
 
-    def update_expression(self, scene: str, id: int, *, situation: str, style: str, status: str) -> dict | None:
+    def update_expression(self, scene: str, id: int, *, situation: str, style: str, status: str,
+                          vector: StoredVector | None = None) -> dict | None:
         with self.db:
-            self.db.execute("UPDATE expressions SET situation=?,style=?,status=?,updated=? WHERE scene=? AND id=?",
-                            (situation, style, status, self.store.now(), scene, id))
+            self.db.execute(
+                "UPDATE expressions SET situation=?,style=?,status=?,updated=?,vector=?,"
+                "vector_binding=?,vector_dimensions=? WHERE scene=? AND id=?",
+                (situation, style, status, self.store.now(),
+                 *((None, None, None) if vector is None else vector), scene, id),
+            )
         return self.expression(scene, id)
 
     def delete_expression(self, scene: str, id: int) -> bool:
         with self.db:
             result = self.db.execute("DELETE FROM expressions WHERE scene=? AND id=?", (scene, id))
         return result.rowcount == 1
+
+    def find_expression(self, scene: str, situation: str, style: str) -> dict | None:
+        return self._expression(self.db.execute(
+            f"SELECT {EXPRESSION_COLUMNS} FROM expressions WHERE scene=? AND situation=? AND style=?",
+            (scene, situation, style),
+        ).fetchone())
+
+    def adopted(self, scene: str) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT id,situation,style,vector,vector_binding,vector_dimensions FROM expressions "
+            "WHERE scene=? AND status='adopted' ORDER BY id", (scene,),
+        )]
+
+    def vector(self, scene: str, id: int) -> StoredVector | None:
+        row = self.db.execute("SELECT vector,vector_binding,vector_dimensions FROM expressions WHERE scene=? AND id=?",
+                              (scene, id)).fetchone()
+        return None if row is None or row[0] is None else (row[0], row[1], row[2])
+
+    def replace_vectors(self, scene: str, snapshot: list[tuple[int, str]],
+                        vectors: dict[int, StoredVector]) -> None:
+        with self.db:
+            current = [tuple(row) for row in self.db.execute(
+                "SELECT id,situation FROM expressions WHERE scene=? AND status='adopted' ORDER BY id", (scene,),
+            )]
+            if current != snapshot:
+                raise ValueError(f"Adopted expressions changed during reindex in {scene}; old vectors unchanged")
+            self.db.executemany("UPDATE expressions SET vector=?,vector_binding=?,vector_dimensions=? WHERE scene=? AND id=?",
+                                [(*vectors[id], scene, id) for id, _ in snapshot])
+
+    def recent_expression_ids(self, scene: str, limit: int = 3) -> set[int]:
+        rows = self.db.execute(
+            "SELECT json_extract(model_calls.request,'$.expression_ids') FROM model_calls "
+            "JOIN turns ON turns.id=model_calls.turn_id "
+            "WHERE turns.scene=? AND model_calls.role='voice' AND model_calls.ended IS NOT NULL "
+            "AND model_calls.error IS NULL ORDER BY model_calls.id DESC LIMIT ?", (scene, limit),
+        )
+        return {id for row in rows if row[0] is not None for id in json.loads(row[0])}
+
+    def start_embedding_call(self, scene: str, purpose: Literal["query", "index", "reindex"],
+                             request: dict, *, turn_id: str | None = None) -> int:
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT INTO expression_embedding_calls(scene,turn_id,purpose,started,request) VALUES (?,?,?,?,?)",
+                (scene, turn_id, purpose, self.store.now(), encode(request)),
+            )
+        return cursor.lastrowid
+
+    def end_embedding_call(self, id: int, response: dict | None, usage: dict | None,
+                           cost: dict | None, error: str | None = None) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE expression_embedding_calls SET ended=?,response=?,usage=?,cost=?,error=? WHERE id=?",
+                (self.store.now(), None if response is None else encode(response),
+                 None if usage is None else encode(usage), None if cost is None else encode(cost), error, id),
+            )
+
+    def embedding_calls(self, scene: str, *, limit: int, offset: int) -> dict:
+        rows = self.db.execute(
+            "SELECT id,scene,turn_id,purpose,started,ended,response,usage,cost,error "
+            "FROM expression_embedding_calls WHERE scene=? ORDER BY id DESC LIMIT ? OFFSET ?", (scene, limit, offset),
+        )
+        total = self.db.execute("SELECT COUNT(*) FROM expression_embedding_calls WHERE scene=?", (scene,)).fetchone()[0]
+        return {"items": [self._batch(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    def embedding_call(self, scene: str, id: int) -> dict | None:
+        return self._batch(self.db.execute("SELECT * FROM expression_embedding_calls WHERE scene=? AND id=?",
+                                           (scene, id)).fetchone())

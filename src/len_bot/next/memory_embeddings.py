@@ -1,4 +1,4 @@
-"""One configured OpenAI-compatible embeddings HTTP boundary for memory text."""
+"""One configured OpenAI-compatible embeddings HTTP boundary for text."""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .pricing import TokenUsage
+
 
 class EmbeddingBinding(BaseModel):
-    """Root-memory reference to an existing model provider, without another key."""
+    """Reference to an existing model provider, without another key."""
 
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
@@ -60,10 +62,28 @@ class EmbeddingBatch:
     vectors: tuple[tuple[float, ...], ...]
     dimensions: int
     usage: dict | None
+    token_usage: TokenUsage | None
 
 
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value}")
+
+
+def _token_usage(usage: dict | None) -> TokenUsage | None:
+    if usage is None:
+        return None
+    prompt = usage.get("prompt_tokens")
+    if prompt is not None and (type(prompt) is not int or prompt < 0):
+        raise ValueError("usage.prompt_tokens must be a nonnegative integer or null")
+    details = usage.get("prompt_tokens_details")
+    if details is not None and not isinstance(details, dict):
+        raise ValueError("usage.prompt_tokens_details must be an object or null")
+    cached = None if details is None else details.get("cached_tokens")
+    if cached is not None and (type(cached) is not int or cached < 0):
+        raise ValueError("usage.prompt_tokens_details.cached_tokens must be a nonnegative integer or null")
+    if prompt is not None and cached is not None and cached > prompt:
+        raise ValueError("usage.prompt_tokens_details.cached_tokens exceeds usage.prompt_tokens")
+    return TokenUsage(prompt, 0, cached)
 
 
 def parse_embeddings(body: object, count: int, expected_dimensions: int | None) -> EmbeddingBatch:
@@ -106,7 +126,8 @@ def parse_embeddings(body: object, count: int, expected_dimensions: int | None) 
         usage = body.get("usage")
         if usage is not None and not isinstance(usage, dict):
             raise ValueError("usage must be an object or null")
-        return EmbeddingBatch(vectors=tuple(ordered), dimensions=dimensions, usage=usage)
+        return EmbeddingBatch(vectors=tuple(ordered), dimensions=dimensions, usage=usage,
+                              token_usage=_token_usage(usage))
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         fragment = json.dumps(body, ensure_ascii=False, default=repr)[:500]
         raise ValueError(f"invalid embedding response: {error}; response fragment: {fragment}") from error

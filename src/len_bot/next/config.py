@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from len_bot.next.model import ModelSettings
+from len_bot.next.memory_embeddings import EmbeddingBinding
 from len_bot.next.pricing import ModelPrice
 from len_bot.next.tasks_config import TaskSettings, WorkerSettings
 from len_bot.next.web_search import WebSearchSettings
@@ -397,11 +398,13 @@ class Attention(BaseModel):
 class LearningSettings(BaseModel):
     model_config = STRICT
 
+    extract: bool = True
     min_messages: int = Field(default=20, ge=1, le=100, strict=True)
     batch_size: int = Field(default=50, ge=1, le=100, strict=True)
     idle_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
     max_age_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
     auto_adopt: bool = False
+    embedding: EmbeddingBinding | None = None
 
     @model_validator(mode="after")
     def valid_batch_window(self) -> LearningSettings:
@@ -669,7 +672,17 @@ class LabConfig(SharedConfig, SceneSettings):
         if self.tasks.enabled or self.worker is not None:
             raise ValueError("worker tasks require the isolated-multi host, not the single-scene lab or replay")
         if self.learning is not None:
-            raise ValueError("learning requires the isolated-multi host, not the single-scene lab or replay")
+            if not self.scene.startswith("group:"):
+                raise ValueError("learning is only supported for group scenes")
+            if self.learning.extract:
+                raise ValueError(
+                    "learning requires the isolated-multi host for extraction, "
+                    "not the single-scene lab or replay"
+                )
+            if (self.learning.embedding is not None
+                    and self.learning.embedding.provider not in self.models.providers):
+                raise ValueError("learning.embedding.provider references unknown provider "
+                                 f"{self.learning.embedding.provider!r}")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -730,8 +743,12 @@ class HostConfig(SharedConfig):
             if settings.learning is not None:
                 if not scene.startswith("group:"):
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
-                if self.models.roles.learner is None:
+                if settings.learning.extract and self.models.roles.learner is None:
                     raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
+                if (settings.learning.embedding is not None
+                        and settings.learning.embedding.provider not in self.models.providers):
+                    raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "
+                                     f"{settings.learning.embedding.provider!r}")
         if self.history_import is not None:
             unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
             if unknown:

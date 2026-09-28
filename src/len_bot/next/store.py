@@ -18,7 +18,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 18
+FORMAT_VERSION = 19
 
 
 def encode(value: object) -> str:
@@ -205,9 +205,17 @@ class Store:
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, situation TEXT NOT NULL,
                         style TEXT NOT NULL, sources TEXT NOT NULL,
                         status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
-                        updated REAL NOT NULL, UNIQUE(scene,situation,style)
+                        updated REAL NOT NULL, vector BLOB, vector_binding TEXT,
+                        vector_dimensions INTEGER, UNIQUE(scene,situation,style)
                     );
                     CREATE INDEX expressions_scene_status ON expressions(scene,status,id);
+                    CREATE TABLE expression_embedding_calls (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, turn_id TEXT,
+                        purpose TEXT NOT NULL CHECK(purpose IN ('query','index','reindex')),
+                        started REAL NOT NULL, ended REAL, request TEXT NOT NULL,
+                        response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -424,6 +432,11 @@ class Store:
         calls.extend(self.db.execute(
             "SELECT ended,cost FROM learning_batches "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
+            (*scenes, since, until),
+        ).fetchall())
+        calls.extend(self.db.execute(
+            "SELECT ended,cost FROM expression_embedding_calls "
+            f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
             (*scenes, since, until),
         ).fetchall())
         costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])

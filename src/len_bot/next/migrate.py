@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 18."""
+"""Explicit offline upgrade of an isolated next-core database to format 19."""
 
 from __future__ import annotations
 
@@ -204,6 +204,18 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "updated REAL NOT NULL, UNIQUE(scene,situation,style))"
             )
             db.execute("CREATE INDEX expressions_scene_status ON expressions(scene,status,id)")
+        elif version == 18:
+            db.execute("ALTER TABLE expressions ADD COLUMN vector BLOB")
+            db.execute("ALTER TABLE expressions ADD COLUMN vector_binding TEXT")
+            db.execute("ALTER TABLE expressions ADD COLUMN vector_dimensions INTEGER")
+            db.execute(
+                "CREATE TABLE expression_embedding_calls ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, turn_id TEXT,"
+                "purpose TEXT NOT NULL CHECK(purpose IN ('query','index','reindex')),"
+                "started REAL NOT NULL, ended REAL, request TEXT NOT NULL,"
+                "response TEXT, usage TEXT, cost TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

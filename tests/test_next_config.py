@@ -470,14 +470,45 @@ def test_host_learning_binding_and_group_settings_roundtrip_without_changing_oth
     source["scenes"]["group:80001"]["learning"] = {}
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     assert load_host_config(root).scenes["group:80001"].learning == LearningSettings()
+    assert load_host_config(root).scenes["group:80001"].learning.extract is True
+    assert load_host_config(root).scenes["group:80001"].learning.embedding is None
+
+
+def test_learning_read_only_embedding_is_explicit_in_host_and_replay_lab(tmp_path):
+    embedding = {"provider": "sample", "model": "sample-embed", "dimensions": 8}
+    host_root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {"extract": False, "embedding": embedding}
+    _write_config(host_root, source)
+    host = load_host_config(host_root)
+    assert host.models.roles.learner is None
+    assert host.scenes["group:80001"].learning.embedding.model == "sample-embed"
+    assert host.scene_config("group:80001").learning is host.scenes["group:80001"].learning
+    assert HostConfig.model_validate_json(host.model_dump_json()) == host
+    with pytest.raises(ValueError, match="models.roles.learner is not configured"):
+        host.model_settings("learner")
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {"extract": False, "embedding": embedding}
+    lab["replay_clock"] = {"epoch": 1790000000.0, "monotonic_origin": 12.5}
+    _write_config(lab_root, lab)
+    loaded = load_config(lab_root)
+    assert loaded.learning.extract is False
+    assert loaded.learning.embedding.provider == "sample"
+    assert loaded.replay_clock.epoch == 1790000000.0
+    assert LabConfig.model_validate_json(loaded.model_dump_json()) == loaded
 
 
 @pytest.mark.parametrize("changes", [
+    {"extract": "false"}, {"extract": 0},
     {"min_messages": 0}, {"min_messages": 101}, {"min_messages": True},
     {"batch_size": 0}, {"batch_size": 101}, {"batch_size": 19},
     {"idle_seconds": 0}, {"idle_seconds": -1}, {"idle_seconds": "30"},
     {"max_age_seconds": 0}, {"max_age_seconds": 299},
     {"auto_adopt": "true"}, {"unexpected": "unsupported"},
+    {"embedding": "sample-embed"},
+    {"embedding": {"provider": "sample", "model": "sample-embed", "extra": 1}},
 ])
 def test_learning_settings_reject_invalid_values(changes):
     with pytest.raises(ValidationError):
@@ -517,6 +548,36 @@ def test_learning_requires_explicit_host_group_and_learner_binding(tmp_path):
     lab["learning"] = {}
     _write_config(lab_root, lab)
     with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
+        load_config(lab_root)
+
+    source["scenes"]["private:80002"]["learning"] = {"extract": False}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="scenes.private:80002.learning is only supported for group scenes"):
+        load_host_config(root)
+
+
+def test_learning_embedding_rejects_unknown_provider_and_invalid_binding(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {
+        "extract": False, "embedding": {"provider": "missing", "model": "sample-embed"},
+    }
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="learning.embedding.provider references unknown provider"):
+        load_host_config(root)
+
+    source["scenes"]["group:80001"]["learning"]["embedding"] = {
+        "provider": "sample", "model": "sample-embed", "dimensions": 0,
+    }
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="learning.embedding.dimensions"):
+        load_host_config(root)
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {"extract": False, "embedding": {"provider": "missing", "model": "sample-embed"}}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="learning.embedding.provider references unknown provider"):
         load_config(lab_root)
 
 
@@ -1249,7 +1310,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "Offline migration completed" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 18
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 19
     with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 9
     with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:
