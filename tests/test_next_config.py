@@ -502,6 +502,7 @@ def test_learning_read_only_embedding_is_explicit_in_host_and_replay_lab(tmp_pat
 
 @pytest.mark.parametrize("changes", [
     {"extract": "false"}, {"extract": 0},
+    {"jargon_extract": "false"}, {"jargon_extract": 1},
     {"min_messages": 0}, {"min_messages": 101}, {"min_messages": True},
     {"batch_size": 0}, {"batch_size": 101}, {"batch_size": 19},
     {"idle_seconds": 0}, {"idle_seconds": -1}, {"idle_seconds": "30"},
@@ -513,6 +514,33 @@ def test_learning_read_only_embedding_is_explicit_in_host_and_replay_lab(tmp_pat
 def test_learning_settings_reject_invalid_values(changes):
     with pytest.raises(ValidationError):
         LearningSettings.model_validate(changes)
+
+
+def test_jargon_extraction_has_an_independent_explicit_binding(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {"extract": False, "jargon_extract": True}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="requires explicit models.roles.learner"):
+        load_host_config(root)
+    source["models"]["roles"]["learner"] = {
+        "provider": "sample", "model": "sample-learner", "context_window_tokens": 8192,
+    }
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    loaded = load_host_config(root)
+    assert loaded.scenes["group:80001"].learning.jargon_extract is True
+    assert loaded.scenes["group:80001"].learning.extract is False
+    assert LearningSettings().jargon_extract is False
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {"extract": False, "jargon_extract": True}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
+        load_config(lab_root)
+    lab["learning"]["jargon_extract"] = False
+    (lab_root / "lenbot.config.json").write_text(json.dumps(lab), encoding="utf-8")
+    assert load_config(lab_root).learning.jargon_extract is False
 
 
 @pytest.mark.parametrize("field", ["idle_seconds", "max_age_seconds"])

@@ -16,6 +16,7 @@ from .model_slots import ModelSlots
 from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
+from .jargon import JargonLearner
 from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
@@ -31,6 +32,7 @@ class NetworkRuntime:
                  ingestor: MemoryIngestor | None = None,
                  tasks: WorkTasks | None = None,
                  learning: ExpressionLearner | None = None,
+                 jargon: JargonLearner | None = None,
                  expression_service: ExpressionService | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
@@ -39,6 +41,9 @@ class NetworkRuntime:
         self.memory = memory
         self.ingestor = ingestor
         self.learning = learning
+        self.jargon = jargon
+        if jargon is not None:
+            jargon.on_update = self.notify
         self.expression_service = expression_service
         if expression_service is not None:
             expression_service.on_update = self.notify
@@ -82,6 +87,12 @@ class NetworkRuntime:
             if (state["running"] and state["worker_error"] is None
                     and (latest is None or latest["status"] == "complete")):
                 self.learning.request(scene)
+        if self.jargon is not None and scene in self.jargon.scenes:
+            state = self.jargon.state(scene)
+            latest = state["latest"]
+            if (state["running"] and state["worker_error"] is None
+                    and (latest is None or latest["status"] == "complete")):
+                self.jargon.request(scene)
 
     def notify(self) -> None:
         if self.on_update is not None:
@@ -197,6 +208,8 @@ class NetworkRuntime:
                         pending.append(group.create_task(self.tasks.wait_failure()))
                     if self.learning is not None:
                         self.learning.start()
+                    if self.jargon is not None:
+                        self.jargon.start()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -210,6 +223,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.jargon is not None:
+                        await self.jargon.close()
                     if self.learning is not None:
                         await self.learning.close()
                     if self.tasks is not None:
@@ -231,7 +246,11 @@ class NetworkRuntime:
                         if self.learning is not None:
                             await self.learning.close()
                     finally:
-                        await self.platform.close()
+                        try:
+                            if self.jargon is not None:
+                                await self.jargon.close()
+                        finally:
+                            await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:

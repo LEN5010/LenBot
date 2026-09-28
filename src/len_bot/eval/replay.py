@@ -71,6 +71,7 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
                 "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents",
                 "image_cache", "tasks", "task_events", "task_files", "learning_state",
                 "learning_batches", "expressions", "expression_embedding_calls",
+                "jargon_state", "jargon", "jargon_calls",
             )
         ))}
         if scenes - {config.scene}:
@@ -120,6 +121,7 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "set": set_name, "profile": profile,
         "voice_mode": config.evaluation.profiles[profile].voice_mode,
         "scene": config.scene, "persona": persona.id,
+        "jargon_references_enabled": config.learning is not None,
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
                    for role in ("mind", "voice")},
         "expression_embedding": None if embedding is None else {

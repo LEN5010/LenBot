@@ -18,7 +18,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 19
+FORMAT_VERSION = 20
 
 
 def encode(value: object) -> str:
@@ -216,6 +216,28 @@ class Store:
                         response TEXT, usage TEXT, cost TEXT, error TEXT
                     );
                     CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id);
+                    CREATE TABLE jargon_state (
+                        scene TEXT PRIMARY KEY, start_seq INTEGER NOT NULL, after_seq INTEGER NOT NULL
+                    );
+                    CREATE TABLE jargon (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, term TEXT NOT NULL,
+                        count INTEGER NOT NULL, sample_seqs TEXT NOT NULL,
+                        latest_meaning TEXT, confidence REAL, meaning TEXT,
+                        last_inference_count INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
+                        updated REAL NOT NULL, UNIQUE(scene,term)
+                    );
+                    CREATE INDEX jargon_scene_status ON jargon(scene,status,id);
+                    CREATE TABLE jargon_calls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        purpose TEXT NOT NULL CHECK(purpose IN ('discovery','meaning')),
+                        after_seq INTEGER, through_seq INTEGER, term_id INTEGER, inference_count INTEGER,
+                        started REAL NOT NULL, ended REAL,
+                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+                        model_started REAL, request TEXT NOT NULL,
+                        response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -437,6 +459,11 @@ class Store:
         calls.extend(self.db.execute(
             "SELECT ended,cost FROM expression_embedding_calls "
             f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
+            (*scenes, since, until),
+        ).fetchall())
+        calls.extend(self.db.execute(
+            "SELECT ended,cost FROM jargon_calls "
+            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
         costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])

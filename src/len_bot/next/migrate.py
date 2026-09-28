@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 19."""
+"""Explicit offline upgrade of an isolated next-core database to format 20."""
 
 from __future__ import annotations
 
@@ -216,6 +216,32 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "response TEXT, usage TEXT, cost TEXT, error TEXT)"
             )
             db.execute("CREATE INDEX expression_embedding_scene ON expression_embedding_calls(scene,id)")
+        elif version == 19:
+            db.execute(
+                "CREATE TABLE jargon_state ("
+                "scene TEXT PRIMARY KEY, start_seq INTEGER NOT NULL, after_seq INTEGER NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE jargon ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, term TEXT NOT NULL,"
+                "count INTEGER NOT NULL, sample_seqs TEXT NOT NULL,"
+                "latest_meaning TEXT, confidence REAL, meaning TEXT,"
+                "last_inference_count INTEGER NOT NULL DEFAULT 0,"
+                "status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),"
+                "updated REAL NOT NULL, UNIQUE(scene,term))"
+            )
+            db.execute("CREATE INDEX jargon_scene_status ON jargon(scene,status,id)")
+            db.execute(
+                "CREATE TABLE jargon_calls ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "purpose TEXT NOT NULL CHECK(purpose IN ('discovery','meaning')),"
+                "after_seq INTEGER, through_seq INTEGER, term_id INTEGER, inference_count INTEGER,"
+                "started REAL NOT NULL, ended REAL,"
+                "status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),"
+                "model_started REAL, request TEXT NOT NULL,"
+                "response TEXT, usage TEXT, cost TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

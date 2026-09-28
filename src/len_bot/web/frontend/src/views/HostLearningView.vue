@@ -4,10 +4,12 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, queryString, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+import HostJargonPanel from '../components/HostJargonPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), overview = ref(null), settings = ref(null), settingsDraft = ref(null)
 const disabledSettingsDraft = ref(null), disabledEmbeddingDraft = ref(null)
+const jargonDirty = ref(false), jargonBusy = ref(false), jargonRefreshKey = ref(0)
 const batches = ref(null), batch = ref(null), expressions = ref(null), expression = ref(null), expressionDraft = ref(null)
 const embeddingCalls = ref(null), embeddingCall = ref(null)
 const filter = ref('pending')
@@ -24,8 +26,8 @@ const options = computed(() => host.value?.scenes.map(item => ({ title:`${sceneN
 const settingsDirty = computed(() => settings.value && JSON.stringify(settingsDraft.value) !== JSON.stringify(settings.value.saved))
 const expressionDirty = computed(() => expression.value && expressionDraft.value &&
   (expressionDraft.value.situation !== expression.value.situation || expressionDraft.value.style !== expression.value.style || expressionDraft.value.status !== expression.value.status))
-const dirty = computed(() => Boolean(settingsDirty.value || expressionDirty.value))
-const busy = computed(() => settingsSaving.value || expressionSaving.value || deleting.value || Boolean(requesting.value))
+const dirty = computed(() => Boolean(settingsDirty.value || expressionDirty.value || jargonDirty.value))
+const busy = computed(() => settingsSaving.value || expressionSaving.value || deleting.value || Boolean(requesting.value) || jargonBusy.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(to => {
   if (to.query.scene === route.query.scene) return true
@@ -46,7 +48,7 @@ const beginExpressionSave = useRequestGuard(() => selectedScene.value)
 const beginAction = useRequestGuard(() => selectedScene.value)
 function endpoint(suffix = '') { return `/api/host/scenes/${encodeURIComponent(selectedScene.value)}/learning${suffix}` }
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
-function defaults() { return { extract:true, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
+function defaults() { return { extract:true, jargon_extract:false, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
 function numeric(value) { return value === '' ? '' : Number(value) }
 function localTime(value) {
   if (value === null || value === undefined || !host.value?.timezone) return '—'
@@ -251,6 +253,7 @@ function refreshRecords() { readOverview(); readSettings(false); readBatches(); 
 function refreshAll() {
   if (dirty.value && !window.confirm('放弃未保存的学习设置或候选草稿，重新读取当前场景？')) return
   expression.value = null; expressionDraft.value = null; batch.value = null; embeddingCall.value = null
+  ++jargonRefreshKey
   refreshRecords()
 }
 watch(selectedScene, () => { resetScene(); if (host.value && selectedScene.value) refreshRecords() })
@@ -264,8 +267,8 @@ onMounted(readHost)
 
 <template>
   <div class="page-stack host-learning">
-    <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>群聊表达学习</h1>
-      <p class="muted">从群聊原话提取表达候选，在这里查看来源并作人工决定。后台提取和 voice 选用分别配置；采用不保证回复会说出原句。</p></div>
+    <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>群聊表达与黑话学习</h1>
+      <p class="muted">表达和黑话各有独立后台开关，均来自当前群的真实原话；人工采用不保证下次模型会引用原句或准确理解词义。</p></div>
       <v-btn variant="outlined" :loading="loading || overviewLoading || settingsLoading || batchLoading || embeddingLoading || expressionLoading" :disabled="busy" @click="refreshAll">手动重读</v-btn></header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert">{{ readError }}</v-alert>
     <section class="surface"><h2>场景</h2><v-select :model-value="selectedScene" :items="options" label="选择群聊场景" hide-details="auto" :disabled="busy || !host" @update:model-value="selectScene" />
@@ -292,9 +295,10 @@ onMounted(readHost)
         <p v-if="settingsLoading && !settings" role="status">正在读取配置…</p>
         <template v-if="settings"><p>当前运行：{{ settings.running===null?'未启用':'已配置' }}；根文件保存值：{{ settings.saved===null?'未启用':'已配置' }}。</p>
           <v-chip variant="tonal" :color="settings.restart_required?'warning':'info'">{{ settings.restart_required?'保存值待重启':'保存值与运行值一致' }}</v-chip>
-          <form @submit.prevent="saveSettings"><v-switch :model-value="settingsDraft!==null" label="保存值中配置此群表达学习" :disabled="settingsSaving" hide-details @update:model-value="toggleSettings" />
+          <form @submit.prevent="saveSettings"><v-switch :model-value="settingsDraft!==null" label="保存值中配置此群学习能力" :disabled="settingsSaving" hide-details @update:model-value="toggleSettings" />
             <template v-if="settingsDraft"><v-switch v-model="settingsDraft.extract" label="后台提取新表达候选" :disabled="settingsSaving || settingsLoading" hide-details />
-              <p class="muted">关闭后台提取仍保留已有候选与表达选用，不要求 learner 绑定；若启用，须在模型页明确绑定 learner。</p>
+              <v-switch v-model="settingsDraft.jargon_extract" label="后台发现与推断黑话" :disabled="settingsSaving || settingsLoading" hide-details />
+              <p class="muted">两个后台开关相互独立，共用下方批次与时机设置；任一开启须在模型页明确绑定 learner。都关闭时不再后台提取，但已有候选、词库及已采用解释仍保留；整个学习配置设为 null 才停止在新请求中引用已采用解释。</p>
               <div class="form-grid">
               <v-text-field :model-value="settingsDraft.min_messages" type="number" step="1" label="触发所需有效群友文字数" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.min_messages=numeric(value)" />
               <v-text-field :model-value="settingsDraft.batch_size" type="number" step="1" label="每批最多扫描原始消息数（含排除项）" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.batch_size=numeric(value)" />
@@ -309,13 +313,15 @@ onMounted(readHost)
                 <v-text-field :model-value="settingsDraft.embedding.dimensions ?? ''" type="number" step="1" label="向量维度（留空不指定）" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.embedding.dimensions=value===''||value===null?null:numeric(value)" />
               </div>
               <p class="muted">提供方与模型须显式填写，不继承 mind、learner 或记忆嵌入。首次启用向量或更换绑定后，已有已采用候选缺向量时须停机执行 <code>uv run python -m len_bot.next.reindex_expressions</code>；保存根配置不热改，也不会自动补建。</p></template>
-            <p v-else class="muted">关闭保存值不会删除已有候选或批次，当前运行服务仍须重启才改变。</p>
+            <p v-else class="muted">学习配置设为 null 会停止新请求引用已采用黑话解释，但不删除已有候选、词库或批次；当前运行服务仍须重启才改变。</p>
             <p v-if="settingsDirty" class="dirty-note" role="status">配置草稿尚未保存。</p>
             <v-alert v-if="settingsSaveError" type="error" variant="tonal" role="alert">{{ settingsSaveError }}</v-alert>
             <p v-if="settingsNotice" class="success-note" role="status">{{ settingsNotice }}</p>
             <v-btn type="submit" color="primary" :loading="settingsSaving" :disabled="!settingsDirty || busy || settingsLoading">保存学习配置</v-btn></form>
         </template>
       </section>
+      <HostJargonPanel :key="`${selectedScene}:${jargonRefreshKey}`" :scene="selectedScene" :timezone="host.timezone"
+        @dirty="jargonDirty=$event" @busy="jargonBusy=$event" />
       <section class="surface"><div class="section-heading"><h2>实际学习批次</h2><span class="muted">列表不预载原始模型请求与响应</span></div>
         <v-alert v-if="batchError" type="error" variant="tonal" role="alert">{{ batchError }}</v-alert>
         <p v-if="batchLoading && !batches" role="status">正在读取批次…</p>
