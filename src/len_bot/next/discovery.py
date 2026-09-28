@@ -3,7 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-DEFERRED_NAMES = frozenset({"schedule_list", "schedule_cancel", "persona_knowledge"})
+DEFERRED_NAMES = frozenset({"schedule_list", "schedule_cancel", "persona_knowledge", "open_forward", "member_info"})
 
 
 class ToolSearchArguments(BaseModel):

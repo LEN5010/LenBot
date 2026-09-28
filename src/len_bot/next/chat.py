@@ -37,6 +37,8 @@ from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 from .sticker_store import StickerStore
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
+from .platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArguments, OpenForwardArguments,
+                             PlatformCall, member_info, open_forward)
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .reply_effect_store import ReplyEffectStore
@@ -112,7 +114,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TOOL_SEARCH]
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -145,6 +147,10 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
             reasons.append("当前为模拟出口，不执行或伪造文件上传")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色包没有 knowledge/ 资料")
+    if name in {"open_forward", "member_info"} and config.delivery != "onebot":
+        reasons.append("当前为模拟出口，没有可实时查询的平台")
+    if name == "member_info" and not config.scene.startswith("group:"):
+        reasons.append("只在群场景可用")
     return reasons
 
 
@@ -250,6 +256,7 @@ class Chat:
                  slots: ModelSlots | None = None,
                  send_message: MessageSender | None = None,
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
+                 platform_call: PlatformCall | None = None,
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
                  on_reply_sample: Callable[[], None] | None = None,
@@ -270,6 +277,7 @@ class Chat:
         self.turn_channels: set[str] = set()
         self.send_message = send_message
         self.upload_file = upload_file
+        self.platform_call = platform_call
         self.on_update = on_update
         self.on_compaction = on_compaction
         self.on_reply_sample = on_reply_sample
@@ -287,6 +295,8 @@ class Chat:
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         if "send_file" in self.allowed_tool_names and upload_file is None:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
+        if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
+            raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
         saved = self.store.load_discovered_tools(config.scene)
@@ -663,6 +673,12 @@ class Chat:
             ), None, None
         if call.name in {"schedule", "schedule_list", "schedule_cancel"}:
             return execute_schedule(self.store, self.config, call.name, call.arguments, now=self.now), None, None
+        if call.name == "open_forward":
+            return await open_forward(self.store, self.config.scene, self.config.timezone,
+                                      OpenForwardArguments.model_validate(call.arguments), self.platform_call), None, None
+        if call.name == "member_info":
+            return await member_info(self.config.scene, self.config.timezone,
+                                     MemberInfoArguments.model_validate(call.arguments), self.platform_call), None, None
         if call.name == "look":
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
