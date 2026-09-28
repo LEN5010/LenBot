@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import re
 from collections.abc import Callable
 from http import HTTPStatus
 from urllib.parse import quote
@@ -49,6 +51,7 @@ class OneBot:
         self._identity_lock = asyncio.Lock()
 
     def _safe(self, text: str) -> str:
+        text = re.sub(r"base64://[A-Za-z0-9+/=]+", "base64://[redacted]", text)
         if self.settings.access_token:
             text = text.replace(json.dumps(self.settings.access_token, ensure_ascii=False)[1:-1], "[redacted]")
             text = text.replace(repr(self.settings.access_token)[1:-1], "[redacted]")
@@ -296,19 +299,23 @@ class OneBot:
                                           submitted=False)
             self._verified_ws = websocket
 
-    async def send_text(self, message: ChatMessage) -> SendResult:
+    async def send_message(self, message: ChatMessage, *, image_bytes: bytes | None = None) -> SendResult:
         kind, separator, target = message.scene.partition(":")
         if (not separator or kind not in {"group", "private"} or not target.isdecimal()
                 or int(target) <= 0 or str(int(target)) != target):
             return SendResult("failed", None, f"Invalid OneBot scene: {message.scene!r}")
         unsupported = [segment.type for segment in message.segments
-                       if segment.type not in {"text", "at", "reply"}]
+                       if segment.type not in {"text", "at", "reply", "image"}]
         if unsupported:
-            return SendResult("failed", None, f"Unsupported OneBot text segments: {unsupported!r}")
+            return SendResult("failed", None, f"Unsupported OneBot message segments: {unsupported!r}")
+        image_count = sum(segment.type == "image" for segment in message.segments)
+        if image_count > 1:
+            return SendResult("failed", None, "OneBot message supports only one image segment")
+        if image_count and not image_bytes:
+            return SendResult("failed", None, "OneBot image segment requires nonempty image bytes")
+        if not image_count and image_bytes is not None:
+            return SendResult("failed", None, "OneBot image bytes require an image segment")
         action = "send_group_msg" if kind == "group" else "send_private_msg"
-        params = {"group_id" if kind == "group" else "user_id": int(target),
-                  "message": [{"type": segment.type, "data": segment.data}
-                              for segment in message.segments]}
         websocket = self._ws
         if not self._running or websocket is None:
             return SendResult("failed", None, "OneBot WebSocket is not connected; message was not sent")
@@ -317,7 +324,17 @@ class OneBot:
         except (OneBotCallError, ValueError) as error:
             return SendResult("failed", None, self._safe(f"Identity verification failed: {error}"))
         if not self._running or self._ws is not websocket or self._verified_ws is not websocket:
-            return SendResult("failed", None, "OneBot WebSocket changed before text send; message was not sent")
+            return SendResult("failed", None, "OneBot WebSocket changed before message send; message was not sent")
+        wire_image = (None if image_bytes is None else
+                      "base64://" + base64.b64encode(image_bytes).decode("ascii"))
+        wire_segments = [
+            {"type": segment.type, "data": (
+                {"file": wire_image}
+                if segment.type == "image" else segment.data)}
+            for segment in message.segments
+        ]
+        params = {"group_id" if kind == "group" else "user_id": int(target),
+                  "message": wire_segments}
         try:
             raw = (await self._call_http(action, params) if self.settings.action_transport == "http"
                    else await self._call_ws_on(websocket, action, params))

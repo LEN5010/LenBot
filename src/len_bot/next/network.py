@@ -52,7 +52,7 @@ class NetworkRuntime:
                 scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
                 tasks=tasks,
                 on_compaction=(None if ingestor is None else lambda scene=scene: ingestor.request(scene)),
-                send_text=self.platform.send_text if config.delivery == "onebot" else None,
+                send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 on_update=self.notify,
             )

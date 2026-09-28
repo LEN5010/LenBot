@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .persona_knowledge import PersonaDocument, load_knowledge
+from .persona_stickers import PersonaSticker, load_stickers
 
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
@@ -58,6 +59,7 @@ class Persona(BaseModel):
     examples: list[Example]
     example_tags: list[str] = Field(default_factory=list)
     knowledge: dict[str, PersonaDocument] = Field(default_factory=dict, exclude=True, repr=False)
+    stickers: dict[str, PersonaSticker] = Field(default_factory=dict, exclude=True, repr=False)
 
     @field_validator("name")
     @classmethod
@@ -135,8 +137,8 @@ def parse_persona_files(path: Path, files: dict[str, str]) -> Persona:
     metadata = _parse_yaml(path / "persona.yaml", files["persona.yaml"])
     if not isinstance(metadata, dict):
         raise ValueError(f"{path / 'persona.yaml'}: expected a YAML object")
-    if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge")):
-        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples and knowledge belong in separate files")
+    if any(field in metadata for field in ("voice", "boundaries", "examples", "knowledge", "stickers")):
+        raise ValueError(f"{path / 'persona.yaml'}: voice, boundaries, examples, knowledge and stickers belong in separate files")
 
     examples = _parse_yaml(path / "examples.yaml", files["examples.yaml"])
     if not isinstance(examples, list):
@@ -148,7 +150,8 @@ def parse_persona_files(path: Path, files: dict[str, str]) -> Persona:
             "boundaries": files["boundaries.md"],
             "examples": examples,
         })
-        return persona.model_copy(update={"knowledge": load_knowledge(path)})
+        return persona.model_copy(update={"knowledge": load_knowledge(path),
+                                          "stickers": load_stickers(path)})
     except ValidationError as error:
         details = "; ".join(
             f"{'.'.join(map(str, item['loc']))}: {item['msg']}"

@@ -1,4 +1,4 @@
-"""OneBot message and text/file action receipt boundaries for the new chat core."""
+"""OneBot messages and message/file action receipts for the new chat core."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -195,9 +195,9 @@ def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | 
 
 
 def parse_send_result(raw: dict) -> SendResult:
-    """Interpret a text-message send response, never a file-upload receipt."""
+    """Interpret a message send response, never a file-upload receipt."""
     if not isinstance(raw, dict):
-        raise ValueError(f"OneBot text send response must be an object; raw={repr(raw)[:500]}")
+        raise ValueError(f"OneBot message send response must be an object; raw={repr(raw)[:500]}")
     if raw.get("status") == "failed":
         wording = raw.get("wording")
         error = wording if isinstance(wording, str) and wording else repr(raw)[:500]

@@ -1,4 +1,4 @@
-"""Persistent, scene-serial chat; platform text sending is explicitly injected."""
+"""Persistent, scene-serial chat; platform message sending is explicitly injected."""
 
 from __future__ import annotations
 
@@ -8,12 +8,13 @@ from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
+from random import choice
 from string import Template
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from len_bot.media.images import image_block
 from .config import LabConfig
@@ -22,7 +23,7 @@ from .context import (
     plan_compaction, project_history,
 )
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
-from .delivery import part_length, report_parts, split_expression
+from .delivery import Expression, part_length, report_parts, split_expression
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, render_message
@@ -30,6 +31,7 @@ from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
 from .model_slots import ModelSlots
 from .memory import MEMORY_TOOL, MemoryService
 from .persona import Persona, select_examples, select_style
+from .persona_stickers import PersonaSticker
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
@@ -51,6 +53,25 @@ class SayArguments(BaseModel):
     length: Literal["短", "正常", "长"] = "正常"
 
 
+class ReactArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    emotion: str | None = Field(default=None, min_length=1)
+    query: str | None = Field(default=None, min_length=1)
+    reply_to: str | None = None
+
+    @model_validator(mode="after")
+    def one_selector(self) -> ReactArguments:
+        if (self.emotion is None) == (self.query is None):
+            raise ValueError("emotion 与 query 必须二选一")
+        if not (self.emotion if self.emotion is not None else self.query).strip():
+            raise ValueError("表情检索内容不能为空白")
+        return self
+
+
+class MessageSender(Protocol):
+    def __call__(self, message: ChatMessage, *, image_bytes: bytes | None = None) -> Awaitable[SendResult]: ...
+
+
 class WaitArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     seconds: float = Field(ge=0, allow_inf_nan=False)
@@ -68,6 +89,11 @@ SAY_TOOL = {"type": "function", "function": {
     "name": "say", "description": "在当前场景表达；隔离环境仅模拟发送。",
     "parameters": SayArguments.model_json_schema(),
 }}
+REACT_TOOL = {"type": "function", "function": {
+    "name": "react", "description": "在当前场景发送一张角色表情；emotion 精确匹配情绪标签，"
+        "或 query 按描述、标签字面检索，二选一；结果返回素材原文件与实际发送状态。",
+    "parameters": ReactArguments.model_json_schema(),
+}}
 WAIT_TOOL = {"type": "function", "function": {
     "name": "wait", "description": "短时等待补充消息，新消息可提前结束；受本轮剩余时限约束。",
     "parameters": WaitArguments.model_json_schema(),
@@ -79,7 +105,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     say = SAY_TOOL if not platform else {"type": "function", "function": {
         **SAY_TOOL["function"], "description": "在当前场景表达；结果返回实际原文和平台发送状态。",
     }}
-    return [say, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
+    return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
             SEND_FILE_TOOL, TOOL_SEARCH]
 
@@ -88,6 +114,8 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
     reasons = []
     if persona.tools != "all" and name not in persona.tools:
         reasons.append("当前角色未允许此工具")
+    if name == "react" and not persona.stickers:
+        reasons.append("角色包没有 stickers/ 素材")
     if name == "web_read" and config.web_read is None:
         reasons.append("尚未配置网页读取")
     if name == "web_search" and config.web_search is None:
@@ -116,7 +144,7 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
 
 def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[dict]:
     if persona.tools != "all":
-        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory"):
+        for name in ("web_read", "web_search", "look", "persona_knowledge", "memory", "react"):
             if name in persona.tools:
                 reasons = tool_unavailable_reasons(config, persona, name)
                 if reasons:
@@ -130,7 +158,10 @@ def build_tools(config: LabConfig, persona: Persona, *, platform: bool) -> list[
         raise ValueError("角色开放 delegate 时必须同时开放 task 管理工具")
     if names & DEFERRED_NAMES and "tool_search" not in names:
         raise ValueError("角色开放低频工具时必须同时开放 tool_search")
-    return allowed
+    emotions = sorted({value for sticker in persona.stickers.values() for value in sticker.emotions})
+    return [{**tool, "function": {**tool["function"], "description": tool["function"]["description"]
+                 + " 当前角色情绪标签：" + encode(emotions)}}
+            if tool["function"]["name"] == "react" else tool for tool in allowed]
 
 
 def voice_prompt(persona: Persona) -> str:
@@ -170,6 +201,8 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
             details=encode(scene_details),
         )
+    if "react" in names:
+        system += "\n" + (PROMPTS / "next_react.md").read_text()
     if "schedule" in names:
         system += "\n" + (PROMPTS / "next_schedule.md").read_text()
     if "memory" in names:
@@ -208,7 +241,7 @@ class Chat:
                  memory: MemoryService | None = None,
                  tasks: WorkTasks | None = None,
                  slots: ModelSlots | None = None,
-                 send_text: Callable[[ChatMessage], Awaitable[SendResult]] | None = None,
+                 send_message: MessageSender | None = None,
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
@@ -224,7 +257,7 @@ class Chat:
         self.tasks = tasks
         self.slots = slots
         self.direct_request = False
-        self.send_text = send_text
+        self.send_message = send_message
         self.upload_file = upload_file
         self.on_update = on_update
         self.on_compaction = on_compaction
@@ -238,7 +271,7 @@ class Chat:
                                      "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
-        allowed = build_tools(config, persona, platform=send_text is not None)
+        allowed = build_tools(config, persona, platform=send_message is not None)
         self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
         if "send_file" in self.allowed_tool_names and upload_file is None:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
@@ -247,7 +280,7 @@ class Chat:
         saved = self.store.load_discovered_tools(config.scene)
         self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
         self.skills = () if tasks is None else tasks.skills[config.scene]
-        self.system = build_system(config, persona, allowed, platform=send_text is not None,
+        self.system = build_system(config, persona, allowed, platform=send_message is not None,
                                    skills=self.skills)
 
     @property
@@ -405,8 +438,10 @@ class Chat:
             messages = [{"role": "system", "content": voice_prompt(self.persona)}]
             for message in self.store.recent_context_messages(self.config.scene):
                 if message.is_self and message.send_status in {"received", "sent", "simulated"}:
-                    messages.append({"role": "assistant", "content": "".join(
-                        segment.data["text"] for segment in message.segments if segment.type == "text")})
+                    text = "".join(segment.data["text"] for segment in message.segments if segment.type == "text")
+                    messages.append({"role": "assistant", "content": (
+                        self.render(message) if any(segment.type == "image" for segment in message.segments)
+                        else text)})
                 else:
                     rendered = self.render(message)
                     if messages[-1]["role"] == "user":
@@ -430,17 +465,42 @@ class Chat:
         segments.append(Segment("text", {"text": text}))
         return self.simulated_message(segments, reply_to=arguments.reply_to)
 
-    async def deliver_expression(self, call_id: str, expression: ChatMessage, *,
+    def react(self, arguments: ReactArguments) -> Expression:
+        if arguments.reply_to is not None and self.store.find_message(self.config.scene, arguments.reply_to) is None:
+            raise ValueError(f"当前场景没有平台消息 {arguments.reply_to}")
+        if arguments.emotion is not None:
+            matches = [sticker for sticker in self.persona.stickers.values()
+                       if arguments.emotion.casefold() in {value.casefold() for value in sticker.emotions}]
+        else:
+            query = arguments.query.casefold()
+            matches = [sticker for sticker in self.persona.stickers.values()
+                       if any(query in value.casefold() for value in
+                              (sticker.description, *sticker.emotions, *sticker.tags))]
+        if not matches:
+            raise ValueError(f"角色表情无匹配：{encode(arguments.model_dump(exclude_none=True))}")
+        usage = self.store.sticker_usage(self.config.scene, self.persona.id)
+        least = min(usage.get(sticker.file, 0) for sticker in matches)
+        sticker = choice([sticker for sticker in matches if usage.get(sticker.file, 0) == least])
+        segments = []
+        if arguments.reply_to is not None:
+            segments.append(Segment("reply", {"id": arguments.reply_to}))
+        segments.append(Segment("image", {"summary": f"角色表情 {sticker.file}：{sticker.description}"}))
+        return Expression(self.simulated_message(segments, reply_to=arguments.reply_to), sticker)
+
+    async def deliver_expression(self, call_id: str, expression: Expression, *,
                                  turn_id: str) -> tuple[str, str]:
-        parts = split_expression(expression, self.config.text_delivery.max_chars)
+        parts = ([expression.message] if expression.sticker is not None else
+                 split_expression(expression.message, self.config.text_delivery.max_chars))
         entry_seq = self.store.prepare_expression(
             self.config.scene, call_id, report_parts(parts, [], self.render),
         )
-        prefix = "模拟表达（未发送到 QQ）：" if self.send_text is None else ""
-        return await self.send_prepared_expression(entry_seq, parts, prefix=prefix, turn_id=turn_id)
+        prefix = "模拟表达（未发送到 QQ）：" if self.send_message is None else ""
+        return await self.send_prepared_expression(entry_seq, parts, prefix=prefix, turn_id=turn_id,
+                                                   sticker=expression.sticker)
 
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
-                                       *, prefix: str = "", turn_id: str | None = None) -> tuple[str, str]:
+                                       *, prefix: str = "", turn_id: str | None = None,
+                                       sticker: PersonaSticker | None = None) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         for index, part in enumerate(parts):
@@ -449,14 +509,15 @@ class Chat:
                             max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
                 await asyncio.sleep(delay)
             part.time = self.now()
-            part.send_status = "simulated" if self.send_text is None else "unconfirmed"
+            part.send_status = "simulated" if self.send_message is None else "unconfirmed"
             errors.append(None)
             content = report_parts(parts, errors, self.render)
             message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
-                                                          turn_id=turn_id)
+                                                          turn_id=turn_id,
+                                                          sticker=None if sticker is None else (self.persona.id, sticker))
             self.notify()
-            if self.send_text is not None:
-                result = await self.send_text(part)
+            if self.send_message is not None:
+                result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)
                 part.send_status, part.platform_message_id = result.status, result.platform_message_id
                 errors[-1] = result.error
                 content = report_parts(parts, errors, self.render)
@@ -480,7 +541,7 @@ class Chat:
     async def execute_tool(self, turn_id: str, call: ToolCall,
                            wait_for_messages: Callable[[float], Awaitable[str]], *,
                            expression_style: str | None = None,
-                           ) -> tuple[str, ChatMessage | None, list[str] | None]:
+                           ) -> tuple[str, Expression | None, list[str] | None]:
         if call.name not in self.tool_names:
             raise ValueError(f"当前请求未开放工具：{call.name}")
         if call.name == "tool_search":
@@ -493,7 +554,10 @@ class Chat:
         if call.name == "say":
             expression = await self.express(turn_id, SayArguments.model_validate(call.arguments),
                                            expression_style=expression_style)
-            return self.render(expression), expression, None
+            return self.render(expression), Expression(expression), None
+        if call.name == "react":
+            expression = self.react(ReactArguments.model_validate(call.arguments))
+            return self.render(expression.message), expression, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None
@@ -598,6 +662,6 @@ class Chat:
             error_text = f"{type(error).__name__}: {error}"
         self.store.finish_pending_tools(scene, error_text or status)
         return {"turn_id": turn_id, "status": status, "error": error_text,
-                "delivery": "simulated" if self.send_text is None else "onebot",
+                "delivery": "simulated" if self.send_message is None else "onebot",
                 "expressions": expressions, "extensions": extensions,
                 "failed_tools": failed_tools}

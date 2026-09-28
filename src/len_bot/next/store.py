@@ -13,11 +13,12 @@ from typing import Literal
 from uuid import uuid4
 
 from .messages import ChatMessage, Segment, Sender, plain_text
+from .persona_stickers import PersonaSticker
 from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 16
+FORMAT_VERSION = 17
 
 
 def encode(value: object) -> str:
@@ -177,6 +178,18 @@ class Store:
                         description TEXT, description_model TEXT, described_at REAL,
                         PRIMARY KEY(scene, platform_id, image_index)
                     );
+                    CREATE TABLE media (
+                        id INTEGER PRIMARY KEY, persona_id TEXT NOT NULL, file TEXT NOT NULL,
+                        mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+                        animated INTEGER NOT NULL, data BLOB NOT NULL
+                    );
+                    CREATE INDEX media_persona_file ON media(persona_id,file,id);
+                    CREATE TABLE message_media (
+                        message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,
+                        media_id INTEGER NOT NULL, description TEXT NOT NULL,
+                        emotions TEXT NOT NULL, tags TEXT NOT NULL,
+                        PRIMARY KEY(message_seq,image_index)
+                    );
                     COMMIT;
                 """)
         except BaseException:
@@ -202,6 +215,57 @@ class Store:
             "SELECT body FROM web_documents WHERE scene=? AND id=?", (scene, document)
         ).fetchone()
         return None if row is None else WebPage(**json.loads(row[0]))
+
+    def message_media(self, scene: str, message_seq: int) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT mm.image_index,m.file,mm.description,m.mime_type,m.width,m.height,"
+            "m.animated,length(m.data) AS bytes FROM message_media mm "
+            "JOIN messages msg ON msg.seq=mm.message_seq JOIN media m ON m.id=mm.media_id "
+            "WHERE msg.scene=? AND msg.seq=? ORDER BY mm.image_index", (scene, message_seq),
+        )
+        return [{**dict(row), "animated": bool(row["animated"])} for row in rows]
+
+    def original_image(self, scene: str, message_seq: int, image_index: int) -> tuple[str, bytes] | None:
+        row = self.db.execute(
+            "SELECT m.mime_type,m.data FROM message_media mm "
+            "JOIN messages msg ON msg.seq=mm.message_seq JOIN media m ON m.id=mm.media_id "
+            "WHERE msg.scene=? AND msg.seq=? AND mm.image_index=?",
+            (scene, message_seq, image_index),
+        ).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def platform_image(self, scene: str, platform_id: str, image_index: int) -> tuple[str, bytes] | None:
+        row = self.db.execute(
+            "SELECT seq FROM messages WHERE scene=? AND platform_id=?", (scene, platform_id),
+        ).fetchone()
+        return None if row is None else self.original_image(scene, row[0], image_index)
+
+    def sticker_usage(self, scene: str, persona_id: str) -> dict[str, int]:
+        return {row[0]: row[1] for row in self.db.execute(
+            "SELECT m.file,count(*) FROM message_media mm "
+            "JOIN messages msg ON msg.seq=mm.message_seq JOIN media m ON m.id=mm.media_id "
+            "WHERE msg.scene=? AND m.persona_id=? AND json_extract(msg.body,'$.send_status')='sent' "
+            "GROUP BY m.file", (scene, persona_id),
+        )}
+
+    def _save_sticker(self, message_seq: int, persona_id: str, sticker: PersonaSticker) -> None:
+        previous = self.db.execute(
+            "SELECT id,data FROM media WHERE persona_id=? AND file=? ORDER BY id DESC LIMIT 1",
+            (persona_id, sticker.file),
+        ).fetchone()
+        if previous is not None and previous[1] == sticker.data:
+            media_id = previous[0]
+        else:
+            media_id = self.db.execute(
+                "INSERT INTO media(persona_id,file,mime_type,width,height,animated,data) VALUES (?,?,?,?,?,?,?)",
+                (persona_id, sticker.file, sticker.mime_type, sticker.width, sticker.height,
+                 int(sticker.animated), sticker.data),
+            ).lastrowid
+        self.db.execute(
+            "INSERT INTO message_media(message_seq,image_index,media_id,description,emotions,tags) "
+            "VALUES (?,1,?,?,?,?)",
+            (message_seq, media_id, sticker.description, encode(sticker.emotions), encode(sticker.tags)),
+        )
 
     def image(self, scene: str, platform_id: str, image_index: int) -> ImageAsset | None:
         row = self.db.execute(
@@ -515,10 +579,13 @@ class Store:
             })
 
     def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str,
-                              *, turn_id: str | None = None) -> int:
+                              *, turn_id: str | None = None,
+                              sticker: tuple[str, PersonaSticker] | None = None) -> int:
         """Only attempted parts become chat messages; the remainder stays in the result."""
         with self.db:
             message_seq = self._save_message(expression, None)
+            if sticker is not None:
+                self._save_sticker(message_seq, *sticker)
             self.db.execute("UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
                             (content, entry_seq))
             if turn_id is not None and expression.send_status == "simulated":
@@ -558,6 +625,8 @@ class Store:
                     raise ValueError(f"Send receipt conflicts with an existing message: {expression.platform_message_id}")
                 self.db.execute("UPDATE messages SET body=? WHERE seq=?",
                                 (encode(asdict(replace(received, send_status="sent"))), echo[0]))
+                self.db.execute("UPDATE message_media SET message_seq=? WHERE message_seq=?",
+                                (echo[0], message_seq))
                 self.db.execute("DELETE FROM message_search WHERE rowid=?", (message_seq,))
                 self.db.execute("DELETE FROM messages WHERE seq=?", (message_seq,))
             else:
