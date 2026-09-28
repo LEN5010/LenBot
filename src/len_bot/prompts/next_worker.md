@@ -1,4 +1,5 @@
 任务来自 ${scene}，请求人 QQ ${requester}。
+任务建立于 ${created_at}，场景时区为 ${timezone}。
 
 目标：${goal}
 交付物：${deliverable}

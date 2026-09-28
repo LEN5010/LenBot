@@ -162,12 +162,14 @@ class WorkTasks:
     async def delegate(self, scene: str, *, requester: str, goal: str,
                        deliverable: str, context: str) -> dict:
         self._can_delegate(scene, requester)
-        local = datetime.fromtimestamp(self.store.now(), ZoneInfo(self.config.timezone))
+        timezone = self.config.scene_timezone(scene)
+        local = datetime.fromtimestamp(self.store.now(), ZoneInfo(timezone))
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         if self.records.count_created(scene, requester, midnight) >= self.config.scenes[scene].tasks.max_daily_tasks:
             raise PermissionError(f"QQ {requester} 今天在本场景的任务次数已达上限")
         prompt = Template((PROMPTS / "next_worker.md").read_text()).substitute(
-            scene=scene, requester=requester, goal=goal, deliverable=deliverable, context=context)
+            scene=scene, requester=requester, goal=goal, deliverable=deliverable, context=context,
+            timezone=timezone, created_at=local.isoformat())
         item = self.records.create(scene, requester, goal, deliverable, context, prompt)
         self._notify(scene)
         return self.status(scene, item.id)
@@ -573,7 +575,7 @@ class WorkTasks:
                     arguments = RecallArguments.model_validate_json(raw)
                 except ValidationError as error:
                     raise ValueError(f"Invalid task recall_chat request: {raw[:500]!r}; {error}") from error
-                content = recall_chat(self.store, scene, self.config.timezone, arguments)
+                content = recall_chat(self.store, scene, self.config.scene_timezone(scene), arguments)
             else:
                 try:
                     arguments = json.loads(raw)
