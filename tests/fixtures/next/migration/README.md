@@ -42,3 +42,8 @@ task, expression, and expression-embedding call are all synthetic records. It
 contains no jargon table or real platform/model response. The 19→20 test checks
 that these existing rows and FTS text remain unchanged while the three empty
 jargon tables are added offline.
+The format-20 expression-ID migration test does not add another binary fixture:
+it copies this synthetic format-19 database and applies the committed format-20
+jargon DDL as its old-schema setup. It then gives a deleted high expression ID
+one synthetic saved voice-call reference, to verify that the new allocation
+sequence also stays above IDs no longer present in the expression table.

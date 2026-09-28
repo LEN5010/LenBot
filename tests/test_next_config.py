@@ -18,6 +18,7 @@ from len_bot.next.config import (
     read_scene_persona, save_scene_persona,
 )
 from len_bot.next.persona import load_persona
+from len_bot.next.store import FORMAT_VERSION
 from len_bot.web.auth import hash_password
 
 
@@ -1338,7 +1339,7 @@ def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert "Offline migration completed" in completed.stdout
     with sqlite3.connect(root / "isolated.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert db.execute("PRAGMA user_version").fetchone()[0] == FORMAT_VERSION
     with sqlite3.connect(root / "isolated.sqlite3.v9.bak") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 9
     with sqlite3.connect(root / "isolated.sqlite3.v10.bak") as db:

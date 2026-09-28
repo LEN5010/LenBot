@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 20."""
+"""Explicit offline upgrade of an isolated next-core database to format 21."""
 
 from __future__ import annotations
 
@@ -242,6 +242,32 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "response TEXT, usage TEXT, cost TEXT, error TEXT)"
             )
             db.execute("CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id)")
+        elif version == 20:
+            current_max = db.execute("SELECT COALESCE(MAX(id),0) FROM expressions").fetchone()[0]
+            referenced_max = db.execute(
+                "SELECT COALESCE(MAX(j.value),0) FROM model_calls AS c, "
+                "json_each(c.request,'$.expression_ids') AS j WHERE c.role='voice'"
+            ).fetchone()[0]
+            db.execute(
+                "CREATE TABLE expressions_next ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, situation TEXT NOT NULL,"
+                "style TEXT NOT NULL, sources TEXT NOT NULL,"
+                "status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),"
+                "updated REAL NOT NULL, vector BLOB, vector_binding TEXT,"
+                "vector_dimensions INTEGER, UNIQUE(scene,situation,style))"
+            )
+            db.execute(
+                "INSERT INTO expressions_next(id,scene,situation,style,sources,status,updated,"
+                "vector,vector_binding,vector_dimensions) "
+                "SELECT id,scene,situation,style,sources,status,updated,"
+                "vector,vector_binding,vector_dimensions FROM expressions"
+            )
+            db.execute("DROP TABLE expressions")
+            db.execute("ALTER TABLE expressions_next RENAME TO expressions")
+            db.execute("CREATE INDEX expressions_scene_status ON expressions(scene,status,id)")
+            db.execute("DELETE FROM sqlite_sequence WHERE name='expressions'")
+            db.execute("INSERT INTO sqlite_sequence(name,seq) VALUES ('expressions',?)",
+                       (max(current_max, referenced_max),))
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

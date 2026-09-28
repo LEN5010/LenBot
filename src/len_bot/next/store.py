@@ -18,7 +18,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 20
+FORMAT_VERSION = 21
 
 
 def encode(value: object) -> str:
@@ -202,7 +202,7 @@ class Store:
                     );
                     CREATE INDEX learning_batches_scene ON learning_batches(scene,id);
                     CREATE TABLE expressions (
-                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, situation TEXT NOT NULL,
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, situation TEXT NOT NULL,
                         style TEXT NOT NULL, sources TEXT NOT NULL,
                         status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
                         updated REAL NOT NULL, vector BLOB, vector_binding TEXT,
