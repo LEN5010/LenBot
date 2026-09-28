@@ -59,7 +59,10 @@ class EgressTransport:
         try:
             async with asyncio.timeout(connect_timeout_seconds):
                 kind, connection_id, body = await read_frame(process.stdout)
-                ready = json.loads(body)
+                try:
+                    ready = json.loads(body)
+                except ValueError as error:
+                    raise EgressTransportError(f'invalid egress ready JSON: {body[:500]!r}; {error}') from error
                 if (kind != b"R" or connection_id != 0 or not isinstance(ready, dict)
                         or set(ready) != {"port"} or type(ready["port"]) is not int
                         or not 1 <= ready["port"] <= 65535):
