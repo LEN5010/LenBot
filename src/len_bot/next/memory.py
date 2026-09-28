@@ -174,6 +174,12 @@ class MemoryService:
             return None
         return self.backend.summary_text_sync(scene)
 
+    async def read_group_profile(self, scene: str) -> str | None:
+        """Read the current derived profile under the backend's existing write/read lock."""
+        if self.summarizer is None:
+            return None
+        return (await self.backend.summary(scene)).overview
+
     def write_lock(self, scene: str) -> asyncio.Lock:
         return self.write_locks.setdefault(scene, asyncio.Lock())
 
@@ -184,10 +190,11 @@ class MemoryService:
             common.extend(["history", "forget"])
         return common
 
-    async def search(self, scene: str, query: str, limit: int) -> list[dict]:
-        hits = await self.backend.search(scene, query, limit)
+    async def search(self, scene: str, query: str, limit: int, *, automatic: bool = False) -> list[dict]:
         if isinstance(self.backend, LocalMemory):
+            hits = await self.backend.search(scene, query, limit, exclude_pending=automatic)
             return [{**asdict(hit), "score": None} for hit in hits]
+        hits = await self.backend.search(scene, query, limit)
         return [{"scope": hit.scope, "path": hit.path, "preview": hit.abstract,
                  "total_chars": None, "score": hit.score} for hit in hits]
 
@@ -293,9 +300,7 @@ class MemoryService:
                 append("scene", profile.path, profile.content, per_profile)
         query = queries[-1][-1200:] if queries else ""
         if query and budget > 0:
-            for hit in await self.search(scene, query, self.settings.recall_limit):
-                if hit["path"].startswith(LEGACY_IMPORT + "/"):
-                    continue  # Unconfirmed legacy material stays out of automatic recall.
+            for hit in await self.search(scene, query, self.settings.recall_limit, automatic=True):
                 append(hit["scope"], hit["path"], hit["preview"], budget,
                        kind="abstract" if hit["total_chars"] is None else "excerpt",
                        source_chars=hit["total_chars"])

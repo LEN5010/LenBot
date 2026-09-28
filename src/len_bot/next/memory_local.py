@@ -30,6 +30,7 @@ _INDEX_NAME = ".memory-index.sqlite3"
 SUMMARY_FILES = (".abstract.md", ".overview.md")
 ABSTRACT_CHARS = 256
 OVERVIEW_CHARS = 4000
+PENDING_PREFIX = "legacy-import/"
 _APPLICATION_ID = 0x4C424D31
 _Result = TypeVar("_Result")
 
@@ -551,29 +552,30 @@ class LocalMemory:
 
     @staticmethod
     def _lexical_rows(db: sqlite3.Connection, scene: str, query: str,
-                      limit: int, include_public: bool) -> list[sqlite3.Row]:
+                      limit: int, include_public: bool, exclude_pending: bool) -> list[sqlite3.Row]:
         folded = query.casefold()
         scopes = (scene, "public") if include_public else (scene,)
         placeholders = ",".join("?" for _ in scopes)
+        eligible = " AND substr(path,1,14)!='legacy-import/'" if exclude_pending else ""
         if len(folded) >= 3:
             expression = '"' + folded.replace('"', '""') + '"'
             return db.execute(f"""
                 SELECT m.scope, m.path
                 FROM memory_fts JOIN memory_files AS m ON m.id=memory_fts.rowid
                 WHERE memory_fts MATCH ? AND m.scope IN ({placeholders})
-                  AND instr(m.content, ?) > 0
+                  AND instr(m.content, ?) > 0 {eligible}
                 ORDER BY CASE WHEN m.scope=? THEN 0 ELSE 1 END, m.path LIMIT ?
             """, (expression, *scopes, folded, scene, limit)).fetchall()
         return db.execute(f"""
             SELECT scope, path FROM memory_files
-            WHERE scope IN ({placeholders}) AND instr(content, ?) > 0
+            WHERE scope IN ({placeholders}) AND instr(content, ?) > 0 {eligible}
             ORDER BY CASE WHEN scope=? THEN 0 ELSE 1 END, path LIMIT ?
         """, (*scopes, folded, scene, limit)).fetchall()
 
     def _search_sync(self, scene: str, query: str, limit: int,
-                     include_public: bool) -> list[LocalMemoryHit]:
+                     include_public: bool, exclude_pending: bool) -> list[LocalMemoryHit]:
         with self._db() as db:
-            rows = self._lexical_rows(db, scene, query, limit, include_public)
+            rows = self._lexical_rows(db, scene, query, limit, include_public, exclude_pending)
         hits: list[LocalMemoryHit] = []
         for row in rows:
             content = self._read_sync(row["scope"], row["path"]).content
@@ -583,18 +585,20 @@ class LocalMemory:
 
     def _search_hybrid_sync(self, scene: str, query: str,
                             vector: tuple[float, ...], limit: int,
-                            include_public: bool) -> list[LocalMemoryHit]:
+                            include_public: bool, exclude_pending: bool) -> list[LocalMemoryHit]:
         with self._db() as db:
             dimensions = self._vector_binding(db)
             if dimensions is None or len(vector) != dimensions:
                 raise ValueError(f"memory query vector dimension {len(vector)} differs from index {dimensions}")
-            lexical = self._lexical_rows(db, scene, query, limit, include_public)
+            lexical = self._lexical_rows(db, scene, query, limit, include_public, exclude_pending)
+            eligible = (" AND rowid IN (SELECT id FROM memory_files WHERE substr(path,1,14)!='legacy-import/')"
+                        if exclude_pending else "")
             vector_rows: list[tuple[str, str, float]] = []
             query_bytes = self._vector_bytes(vector)
             for scope in ((scene, "public") if include_public else (scene,)):
-                rows = db.execute("""
+                rows = db.execute(f"""
                     SELECT rowid, distance FROM memory_vec
-                    WHERE embedding MATCH ? AND k=? AND scope=? ORDER BY distance
+                    WHERE embedding MATCH ? AND k=? AND scope=? {eligible} ORDER BY distance
                 """, (query_bytes, limit, scope)).fetchall()
                 for row in rows:
                     source = db.execute("SELECT scope,path FROM memory_files WHERE id=?",
@@ -618,7 +622,7 @@ class LocalMemory:
         return hits
 
     async def search(self, scene: str, query: str, limit: int = 10, *,
-                     include_public: bool = True) -> list[LocalMemoryHit]:
+                     include_public: bool = True, exclude_pending: bool = False) -> list[LocalMemoryHit]:
         if not query.strip() or not 1 <= limit <= 100:
             raise ValueError("search requires a nonblank query and limit 1..100")
         source = _scene_scope(scene)
@@ -627,7 +631,7 @@ class LocalMemory:
             if include_public:
                 await locks.enter_async_context(self._lock("public"))
             if self.embedding is None:
-                return await asyncio.to_thread(self._search_sync, source, query, limit, include_public)
+                return await asyncio.to_thread(self._search_sync, source, query, limit, include_public, exclude_pending)
             dimensions = await asyncio.to_thread(self._vector_preflight)
             if dimensions is None:
                 return []
@@ -635,7 +639,7 @@ class LocalMemory:
             if batch.dimensions != dimensions:
                 raise ValueError(f"embedding dimensions {batch.dimensions} differ from memory index {dimensions}")
             return await asyncio.to_thread(self._search_hybrid_sync, source, query,
-                                           batch.vectors[0], limit, include_public)
+                                           batch.vectors[0], limit, include_public, exclude_pending)
 
     def _history_sync(self, scope: str, path: str) -> list[LocalMemoryChange]:
         self._target(scope, path, file=True)
@@ -735,10 +739,14 @@ class LocalMemory:
         return scene_overview(self.root, scene)
 
     def _summary_inputs_sync(self, scope: str, path: str) -> dict:
+        if path == PENDING_PREFIX.rstrip("/") or path.startswith(PENDING_PREFIX):
+            raise ValueError("待确认旧记忆不能生成正式摘要；请先采用到正式记忆目录")
         directory = self._summary_directory(scope, path)
         files, directories = [], []
         for entry in sorted(directory.iterdir(), key=lambda item: item.name):
             relative = f"{path}/{entry.name}" if path else entry.name
+            if relative == PENDING_PREFIX.rstrip("/"):
+                continue
             if entry.is_dir():
                 self._target(scope, relative, file=False)
                 abstract = entry / ".abstract.md"

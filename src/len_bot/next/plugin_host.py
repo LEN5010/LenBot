@@ -163,6 +163,7 @@ class Loaded:
     tools: dict[str, tuple[str, type[BaseModel], str]] = field(default_factory=dict)
     backgrounds: list[Background] = field(default_factory=list)
     errors: deque = field(default_factory=lambda: deque(maxlen=ERROR_LIMIT))
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def _arguments(tool: str, function: Callable) -> type[BaseModel]:
@@ -336,10 +337,10 @@ class PluginHost:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
-    def tools_for(self, scene: str) -> list[ExternalTool]:
+    def tools_for(self, scene: str, *, preparing: bool = False) -> list[ExternalTool]:
         tools = []
         for record in self.plugins.values():
-            if record.status not in {"loaded", "running"} or scene not in record.scenes:
+            if (record.status != "running" and not (preparing and record.status == "loaded")) or scene not in record.scenes:
                 continue
             for name, (description, model, method) in record.tools.items():
                 tools.append(ExternalTool(name=name, description=description,
@@ -350,8 +351,10 @@ class PluginHost:
     def _tool_call(self, record: Loaded, name: str, model: type[BaseModel], method: str
                    ) -> Callable[[str, dict], Awaitable[str]]:
         async def call(scene: str, arguments: dict) -> str:
-            parsed = model.model_validate(arguments)
             try:
+                if record.status != "running":
+                    raise RuntimeError(f"插件 {record.name} 未运行：{record.status}；{record.error or '尚未启动或已经停止'}")
+                parsed = model.model_validate(arguments)
                 result = await getattr(record.instance, method)(
                     Invocation(record.context, scene), **{key: getattr(parsed, key) for key in model.model_fields})
                 if not isinstance(result, str):
@@ -377,7 +380,15 @@ class PluginHost:
     def dispatch_command(self, message: ChatMessage, matched: tuple[Loaded, str, str]) -> None:
         record, name, args = matched
         method = getattr(record.instance, record.commands[name][1])
-        self._spawn(record, f"命令 /{name}", method(Invocation(record.context, message.scene, message), args))
+        self._dispatch(record, f"命令 /{name}", method, Invocation(record.context, message.scene, message), args)
+
+    def _dispatch(self, record: Loaded, where: str, method: Callable, *arguments: object) -> None:
+        async def invoke() -> None:
+            await record.ready.wait()
+            if record.status != "running":
+                raise RuntimeError(f"插件 {record.name} 未运行：{record.status}；{record.error}")
+            await method(*arguments)
+        self._spawn(record, where, invoke())
 
     def handle_notice(self, raw: dict) -> int:
         notice = parse_notice(raw)
@@ -390,7 +401,7 @@ class PluginHost:
                 continue
             for key in sorted(keys & set(record.notices)):
                 method = getattr(record.instance, record.notices[key])
-                self._spawn(record, f"通知 {key}", method(Invocation(record.context, notice.scene), notice))
+                self._dispatch(record, f"通知 {key}", method, Invocation(record.context, notice.scene), notice)
                 count += 1
         return count
 
@@ -419,8 +430,10 @@ class PluginHost:
             except Exception as error:
                 record.status, record.error = "failed", self._record(record, "启动", error)
                 self._remove_entries(record)
+                record.ready.set()
                 continue
             record.status = "running"
+            record.ready.set()
             for item in record.backgrounds:
                 task = asyncio.get_running_loop().create_task(self._background(record, item))
                 self.tasks.add(task)

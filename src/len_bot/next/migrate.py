@@ -374,6 +374,10 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "content TEXT NOT NULL, created REAL NOT NULL, delivered_at REAL)"
             )
             db.execute("CREATE INDEX plugin_events_pending ON plugin_events(scene,id) WHERE delivered_at IS NULL")
+        elif version == 25:
+            db.execute("ALTER TABLE proactive_wakes ADD COLUMN assessment TEXT NOT NULL DEFAULT 'arrival_count' "
+                       "CHECK(assessment IN ('arrival_count','reply_effects'))")
+            db.execute("CREATE INDEX reply_effects_turn ON reply_effects(scene,turn_id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

@@ -2192,6 +2192,8 @@ def test_proactive_is_host_group_only_with_local_active_hours(tmp_path):
     root = tmp_path / "host"
     source = _host_config()
     source["scenes"]["group:80001"]["proactive"] = {"idle_seconds": 3600.0, "start": "20:00", "end": "02:00"}
+    source["scenes"]["group:80001"]["learning"] = {"extract": False, "reply_effects": True}
+    source["models"]["roles"]["learner"] = dict(source["models"]["roles"]["mind"])
     _write_config(root, source)
     proactive = load_host_config(root).scene_config("group:80001").proactive
     assert (proactive.idle_seconds, proactive.start.isoformat(), proactive.end.isoformat()) == (
@@ -2233,3 +2235,33 @@ def test_local_memory_summaries_require_explicit_memory_model(tmp_path):
     (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
     with pytest.raises(ValueError, match="summaries"):
         load_host_config(root)
+
+
+@pytest.mark.parametrize(('active', 'quiet', 'valid'), [
+    (('10:00', '11:00'), ('09:00', '12:00'), False),
+    (('23:00', '01:00'), ('22:00', '02:00'), False),
+    (('10:00', '12:00'), ('10:00', '12:00'), False),
+    (('23:00', '03:00'), ('22:00', '02:00'), True),
+    (('10:00', '12:00'), ('12:00', '14:00'), True),
+])
+def test_proactive_has_actual_time_outside_quiet_hours(tmp_path, active, quiet, valid):
+    source = _host_config()
+    scene = source['scenes']['group:80001']
+    scene['proactive'] = dict(zip(('start', 'end'), active))
+    scene['attention'] = {'quiet_hours': dict(zip(('start', 'end'), quiet))}
+    scene['learning'] = {'extract': False, 'reply_effects': True}
+    source['models']['roles']['learner'] = dict(source['models']['roles']['mind'])
+    _write_config(tmp_path / "host", source)
+    if valid:
+        assert load_host_config(tmp_path / "host").scenes['group:80001'].proactive is not None
+    else:
+        with pytest.raises(ValueError, match='entirely covered'):
+            load_host_config(tmp_path / "host")
+
+
+def test_proactive_requires_actual_reply_judgments(tmp_path):
+    source = _host_config()
+    source['scenes']['group:80001']['proactive'] = {}
+    _write_config(tmp_path / "host", source)
+    with pytest.raises(ValueError, match='requires learning.reply_effects'):
+        load_host_config(tmp_path / "host")

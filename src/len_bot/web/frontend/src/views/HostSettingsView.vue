@@ -264,6 +264,7 @@ watch(() => route.query.scene, value => {
         <fieldset v-if="scene.startsWith('group:')" class="surface editor-section" :disabled="Boolean(saving) || loading"><legend>主动开话题</legend>
           <p class="muted">群里在活跃时段安静够久时叫醒大脑一次，它可以开个话题，也可以不说话。每群按本群时区每天最多一次，安静时段内不叫醒；连续两次开口后 30 分钟内都没有群友说话，暂停一周。叫醒记录和暂停原因在安排页查看。</p>
           <v-switch :model-value="draft.proactive!==null" label="启用主动开话题" hide-details @update:model-value="toggleProactive" />
+          <p class="muted">开启前须在学习页启用本群回复效果并配置 learner；回应关系由该判断结果决定，不按消息数量猜测。活跃时段不能被安静时段完全覆盖。</p>
           <div v-if="draft.proactive" class="entry-card form-grid">
             <v-text-field :model-value="draft.proactive.idle_seconds" type="number" step="any" label="安静多少秒后叫醒（至少 600，默认 10800 即 3 小时）" hide-details="auto" @update:model-value="value=>draft.proactive.idle_seconds=numeric(value)" />
             <v-text-field v-model="draft.proactive.start" label="活跃时段开始 HH:MM" hide-details="auto" />

@@ -19,7 +19,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 25
+FORMAT_VERSION = 26
 
 
 def encode(value: object) -> str:
@@ -277,6 +277,7 @@ class Store:
                         reason TEXT
                     );
                     CREATE INDEX reply_effects_scene ON reply_effects(scene,id);
+                    CREATE INDEX reply_effects_turn ON reply_effects(scene,turn_id);
                     CREATE INDEX reply_effects_open ON reply_effects(scene,id) WHERE closed_at IS NULL;
                     CREATE TABLE reply_effect_calls (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
@@ -290,6 +291,8 @@ class Store:
                         id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
                         turn_id TEXT NOT NULL UNIQUE, woke_at REAL NOT NULL,
                         local_date TEXT NOT NULL, idle_since REAL NOT NULL,
+                        assessment TEXT NOT NULL DEFAULT 'reply_effects'
+                            CHECK(assessment IN ('arrival_count','reply_effects')),
                         outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),
                         closed_at REAL, UNIQUE(scene,local_date)
                     );
@@ -1159,7 +1162,8 @@ class Store:
                 content, local_date, idle_since = proactive
                 self._append(scene, {"role": "user", "content": content})
                 self.db.execute(
-                    "INSERT INTO proactive_wakes(scene,turn_id,woke_at,local_date,idle_since) VALUES (?,?,?,?,?)",
+                    "INSERT INTO proactive_wakes(scene,turn_id,woke_at,local_date,idle_since,assessment) "
+                    "VALUES (?,?,?,?,?,'reply_effects')",
                     (scene, turn_id, self.now(), local_date, idle_since),
                 )
             if attention_state is not None:

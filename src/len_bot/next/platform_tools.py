@@ -136,6 +136,9 @@ async def _expand(call: PlatformCall, forward_id: str, timezone: str, depth: int
         speaker = f"{node.name}(QQ {node.uid})" if node.name else f"QQ {node.uid}"
         lines.append(f"{indent}[{number}] [{clock}] {speaker}：{render_body(node.segments)}")
         for segment in (item for item in node.segments if item.type == "forward"):
+            if budget[0] == 0:
+                lines.append(f"{indent}  [其余嵌套转发未展开：已达 {FORWARD_NODES} 条上限]")
+                break
             nested = segment.data.get("id")
             if nested is None:
                 lines.append(f"{indent}  [嵌套转发没有平台 id，未展开]")

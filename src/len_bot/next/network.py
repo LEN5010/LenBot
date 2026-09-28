@@ -90,7 +90,7 @@ class NetworkRuntime:
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 platform_call=self.platform.call if config.delivery == "onebot" else None,
-                external_tools=[] if plugins is None else plugins.tools_for(scene),
+                external_tools=[] if plugins is None else plugins.tools_for(scene, preparing=True),
                 on_update=self.notify,
             )
         self.runners: dict[str, SceneRunner] = {}
@@ -265,6 +265,8 @@ class NetworkRuntime:
                         self.reply_effects.start()
                     if self.plugins is not None:
                         await self.plugins.start()
+                        for scene, chat in self.chats.items():
+                            chat.set_external_tools(self.plugins.tools_for(scene))
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
