@@ -60,7 +60,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
                 "timezone": runtime.config.timezone,
                 "accepting": service is not None and service.accepting,
                 "error": None if service is None else service.error,
-                "scenes": [{"scene": scene, **chat.config.tasks.model_dump(mode="json"),
+                "scenes": [{"scene": scene, "timezone": chat.config.timezone, **chat.config.tasks.model_dump(mode="json"),
                             "network_today": None if service is None else service.egress.status(scene)}
                            for scene, chat in runtime.chats.items()],
                 "public_network": service is not None and service.settings.egress.enabled,

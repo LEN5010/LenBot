@@ -58,9 +58,9 @@ const beginSnapshot = useRequestGuard(() => `${selectedScene.value}\u0000${statu
 let active = true, socket = null, refreshPending = false
 let liveSocket = null, liveMounted = false
 function localTime(value) {
-  if (value === null || value === undefined || !state.value?.timezone) return '—'
+  if (value === null || value === undefined || !sceneSettings.value?.timezone) return '—'
   return new Date(value * 1000).toLocaleString('zh-CN', {
-    hour12: false, timeZone: state.value.timezone, timeZoneName: 'short',
+    hour12: false, timeZone: sceneSettings.value.timezone, timeZoneName: 'short',
   })
 }
 function statusLabel(value) { return ({ queued:'排队中', running:'运行中', waiting_input:'等待输入', done:'正常结束', failed:'失败', cancelled:'已取消' })[value] || value }
@@ -398,7 +398,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
     <v-alert v-if="stateError" type="error" variant="tonal" role="alert" :title="state?'状态读取失败 · 保留上次结果':'状态读取失败'">{{ stateError }}</v-alert>
     <div v-if="stateLoading && !state" class="surface empty-state" role="status">正在读取任务服务与已配置场景…</div>
     <section v-if="state" class="surface"><div class="section-heading"><h2>服务现场 · 最近读取</h2><v-chip variant="tonal" :color="socketState==='connected' && !newData && state.accepting?'success':'warning'">{{ !state.configured?'未配置':state.accepting?'最近读取：接受任务':'最近读取：不接受新操作' }}</v-chip></div>
-      <p class="muted">{{ state.notice }}；公共联网代理：{{ state.public_network?'配置已启用，未据此验证域名连通':'配置未启用' }}；时间按 {{ state.timezone }} 显示。</p>
+      <p class="muted">{{ state.notice }}；公共联网代理：{{ state.public_network?'配置已启用，未据此验证域名连通':'配置未启用' }}；时间按 {{ sceneSettings?.timezone ?? '所选场景时区' }} 显示。</p>
       <p class="muted">任务文件上传出口：{{ state.file_upload?'当前已配置；挂载是否可读及每份文件上传仍须实际回执确认':'当前未配置' }}。</p>
       <v-alert v-if="state.error" type="error" variant="tonal" role="alert">执行器错误原文：{{ state.error }}</v-alert>
       <div v-if="sceneSettings" class="scene-facts"><strong>{{ sceneName(sceneSettings.scene) }}</strong><span>此场景任务：{{ sceneSettings.enabled?'开放':'未开放' }}</span>

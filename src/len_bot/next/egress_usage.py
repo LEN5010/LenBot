@@ -48,8 +48,8 @@ class EgressUsage:
         self._last_notice.clear()
         return count
 
-    def _date(self) -> str:
-        return datetime.fromtimestamp(self.records.now(), ZoneInfo(self.config.timezone)).date().isoformat()
+    def _date(self, scene: str) -> str:
+        return datetime.fromtimestamp(self.records.now(), ZoneInfo(self.config.scene_timezone(scene))).date().isoformat()
 
     def _task(self, scene: str, task_id: int) -> list[int]:
         key = (scene, task_id)
@@ -81,7 +81,7 @@ class EgressUsage:
                 raise EgressBlocked("当前宿主未开启公共出网")
             task_limit, daily_limit = self._limits(scene)
             task = self._task(scene, task_id)
-            date = self._date()
+            date = self._date(scene)
             day = self._day(scene, date)
             if sum(task) >= task_limit:
                 raise EgressBlocked(f"任务 #{task_id} 已达累计出网限额 {task_limit} 字节")
@@ -127,7 +127,7 @@ class EgressUsage:
         connection = self._connections[(scene, task_id, wire_id)]
         task_limit, daily_limit = self._limits(scene)
         task = self._task(scene, task_id)
-        date = self._date()
+        date = self._date(scene)
         day = self._day(scene, date)
         if sum(task) + amount > task_limit:
             raise EgressBlocked(f"任务 #{task_id} 出网字节会超过限额 {task_limit}；本块未转发")
@@ -169,7 +169,7 @@ class EgressUsage:
     def status(self, scene: str, task_id: int | None = None) -> dict:
         task_limit, daily_limit = self._limits(scene)
         if task_id is None:
-            date = self._date()
+            date = self._date(scene)
             up, down = self._day(scene, date)
             limit = daily_limit
         else:
