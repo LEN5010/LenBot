@@ -19,6 +19,8 @@ RUN groupadd --gid 10000 agent \
     && chown 10000:10000 /workspace /run/lenbot
 
 COPY src/len_bot/next/worker_bridge.py /opt/lenbot/worker_bridge.py
+COPY src/len_bot/next/egress_wire.py /opt/lenbot/egress_wire.py
+COPY src/len_bot/next/worker_egress_bridge.py /opt/lenbot/worker_egress_bridge.py
 COPY docker/next-worker/lenbot-extension.ts /opt/lenbot/lenbot-extension.ts
 
 ENV PATH="/opt/uv/bin:${PATH}" HOME=/home/agent
