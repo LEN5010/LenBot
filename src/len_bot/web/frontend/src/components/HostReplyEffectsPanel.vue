@@ -15,7 +15,7 @@ const STATES = [
 ]
 const CHANNELS = {
   direct:'被 @、被回复或私聊', named:'被叫到名字', focus:'对话延续', ambient:'主动插话',
-  schedule:'到期安排', task:'任务通知', resume:'重启后恢复', in_turn:'轮中新消息', quiet_notice:'安静时段固定表达', proactive:'主动开话题',
+  schedule:'到期安排', task:'任务通知', resume:'重启后恢复', in_turn:'轮中新消息', quiet_notice:'安静时段固定表达', proactive:'主动开话题', plugin:'插件事件',
 }
 const LABELS = Object.fromEntries([...REACTIONS, ...STATES])
 const state = ref(null), items = ref(null), item = ref(null), calls = ref(null), call = ref(null)

@@ -366,6 +366,14 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),"
                 "closed_at REAL, UNIQUE(scene,local_date))"
             )
+        elif version == 24:
+            db.execute(
+                "CREATE TABLE plugin_events ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, plugin TEXT NOT NULL,"
+                "kind TEXT NOT NULL CHECK(kind IN ('event','reply')),"
+                "content TEXT NOT NULL, created REAL NOT NULL, delivered_at REAL)"
+            )
+            db.execute("CREATE INDEX plugin_events_pending ON plugin_events(scene,id) WHERE delivered_at IS NULL")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

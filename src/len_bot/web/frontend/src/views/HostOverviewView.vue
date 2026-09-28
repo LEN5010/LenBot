@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { api, sceneName } from '../api.js'
+import { api, fmtAgo, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 
 const overview = ref(null), host = ref(null)
@@ -13,6 +13,7 @@ const messages = computed(() => Object.entries(overview.value?.messages || {}))
 const turns = computed(() => Object.entries(overview.value?.turns || {}))
 const costs = computed(() => Object.entries(overview.value?.estimated_costs || {}))
 const messageTotal = computed(() => messages.value.reduce((sum, [, count]) => sum + count, 0))
+const pluginIssues = computed(() => (host.value?.plugins || []).filter(item => item.status === 'failed' || item.error_count))
 const turnTotal = computed(() => turns.value.reduce((sum, [, count]) => sum + count, 0))
 function time(value, timezone) {
   return new Date(value * 1000).toLocaleString('zh-CN', { timeZone: timezone, hour12: false, timeZoneName: 'short' })
@@ -51,6 +52,16 @@ onMounted(refresh)
       <details v-if="host.connection.last_error"><summary>最近一次平台错误原文</summary><pre>{{ host.connection.last_error }}</pre></details>
       <div class="scene-links"><RouterLink v-for="item in host.scenes" :key="item.scene" :to="{name:'host',query:{scene:item.scene}}" class="scene-link">
         <strong>{{ sceneName(item.scene) }}</strong><span>{{ item.persona.name }} · 查看观察记录</span></RouterLink></div>
+    </section>
+    <section v-if="pluginIssues.length" class="surface" aria-labelledby="attention-title">
+      <div class="section-heading"><h2 id="attention-title">需要处理的事</h2><span class="muted">本次启动内的插件错误 · 宿主不重试、不自动停用</span></div>
+      <ul class="error-list"><li v-for="item in pluginIssues" :key="item.name">
+        <div class="error-heading"><strong>插件 {{ item.name }}</strong>
+          <span v-if="item.status === 'failed'">加载或启动失败</span>
+          <span v-else>{{ fmtAgo(item.latest_error.at) }}报错：{{ item.latest_error.where }}（最近 {{ item.error_count }} 条）</span></div>
+        <details><summary>查看错误原文</summary><pre>{{ item.status === 'failed' ? item.error : item.latest_error.error }}</pre></details>
+        <RouterLink :to="{name:'host-capabilities'}">到能力页查看</RouterLink>
+      </li></ul>
     </section>
     <template v-if="overview">
       <section class="surface"><div class="section-heading"><h2>今日保存事实</h2><span class="muted">{{ time(overview.since,overview.timezone) }} 至 {{ time(overview.until,overview.timezone) }}（不含终点）</span></div>

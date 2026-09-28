@@ -14,6 +14,7 @@ from len_bot.web.shell import mount_panel
 from .config import HostConfig
 from .host_capabilities import register_host_capabilities
 from .host_persona import register_host_persona
+from .host_plugins import register_host_plugins
 from .host_settings import register_host_settings
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
@@ -53,6 +54,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     register_host_jargon(app, runtime=runtime, user=user)
     register_host_stickers(app, runtime=runtime, user=user)
     register_host_reply_effects(app, runtime=runtime, user=user)
+    register_host_plugins(app, root=root, runtime=runtime, running=config, user=user, write_lock=write_lock)
 
     def configured_scene(scene: str) -> None:
         if scene not in config.scenes:
@@ -76,6 +78,13 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
                                               "name": runtime.chats[scene].persona.name},
                  "voice_mode": settings.voice_mode, "timezone": config.scene_timezone(scene)}
                 for scene, settings in config.scenes.items()
+            ],
+            # Only what needs attention on the home page; details live on the capabilities page.
+            "plugins": None if runtime.plugins is None else [
+                {"name": item["name"], "status": item["status"], "error": item["error"],
+                 "error_count": len(item["errors"]),
+                 "latest_error": item["errors"][0] if item["errors"] else None}
+                for item in runtime.plugins.state()["plugins"]
             ],
         }
 

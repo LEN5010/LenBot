@@ -5,12 +5,13 @@ import { api, sceneName } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import HostSkillSettings from '../components/HostSkillSettings.vue'
+import HostPluginsPanel from '../components/HostPluginsPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), snapshot = ref(null)
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
-const skillDirty = ref(false)
+const skillDirty = ref(false), pluginDirty = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -24,9 +25,9 @@ const toolDirty = computed(() => {
   if (draftMode.value === 'all') return saved !== 'all'
   return saved === 'all' || JSON.stringify([...draftNames.value].sort()) !== JSON.stringify([...saved].sort())
 })
-const dirty = computed(() => toolDirty.value || skillDirty.value)
+const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value)
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !dirty.value || window.confirm('有尚未保存的工具或技能许可草稿。放弃并切换场景？'))
+onBeforeRouteUpdate(() => !(toolDirty.value || skillDirty.value) || window.confirm('有尚未保存的工具或技能许可草稿。放弃并切换场景？'))
 
 let request = 0
 const beginRead = useRequestGuard(() => scene.value)
@@ -186,6 +187,7 @@ onMounted(readHost)
               <v-chip size="small" variant="tonal" :color="tool.registered?'success':'warning'">{{ tool.registered?'当前已注册':'当前未注册' }}</v-chip>
               <v-chip size="small" variant="tonal" :color="tool.allowed?'info':'default'">{{ tool.allowed?'当前许可':'当前未许可' }}</v-chip>
               <v-chip v-if="tool.deferred" size="small" variant="tonal">{{ tool.discovered?'按需已发现':'按需未发现' }}</v-chip>
+              <v-chip v-if="tool.source" size="small" variant="tonal" color="secondary">{{ tool.source }}</v-chip>
             </div></div>
             <p class="muted">{{ tool.description }}</p>
             <ul v-if="tool.reasons.length" class="reason-list"><li v-for="reason in tool.reasons" :key="reason">{{ reason }}</li></ul>
@@ -205,6 +207,7 @@ onMounted(readHost)
         </div>
       </section>
       <HostSkillSettings :key="scene" :scene="scene" @dirty="skillDirty=$event" />
+      <HostPluginsPanel :scene="scene" @dirty="pluginDirty=$event" />
     </template>
   </div>
 </template>
