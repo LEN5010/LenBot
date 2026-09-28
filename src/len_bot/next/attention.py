@@ -430,17 +430,20 @@ class SceneRunner:
         pending, _, scheduled = ready
         state = self.consumed_state()
         if pending:
+            self.chat.turn_channels.add(self.state.pending.channel if self.state.pending is not None else "in_turn")
             through, contents = self.batch(pending, self.wake_reason())
             self.store.append_batch(self.config.scene, through, contents, turn_id=turn_id,
                                     attention_state=asdict(state))
             if self.state.pending is not None and self.state.pending.channel == "direct":
                 self.chat.direct_request = True
         if scheduled:
+            self.chat.turn_channels.add("schedule")
             self.store.append_schedules(self.config.scene, scheduled, turn_id=turn_id)
         if self.chat.tasks is not None and quiet_period(
                 self.settings.quiet_hours, self.config.timezone, self.now()) is None:
             notices = self.chat.tasks.records.pending_notices(self.config.scene)
             if notices:
+                self.chat.turn_channels.add("task")
                 self.store.append_task_notices(self.config.scene, notices, turn_id=turn_id)
         self.state = state
         return True
@@ -466,7 +469,8 @@ class SceneRunner:
         if parts is not None:
             try:
                 async with asyncio.timeout(self.config.turn_timeout_seconds):
-                    content, status = await self.chat.send_prepared_expression(entry_seq, parts, prefix=prefix)
+                    content, status = await self.chat.send_prepared_expression(
+                        entry_seq, parts, prefix=prefix, channels={"quiet_notice"})
             except TimeoutError as error:
                 status, error_text = "timeout", f"{type(error).__name__}: fixed notice time limit"
                 content = self.store.expression_error(entry_seq, error_text)
@@ -500,6 +504,10 @@ class SceneRunner:
                            if self.chat.tasks is not None and quiet_period(
                                self.settings.quiet_hours, self.config.timezone, self.now()) is None else [])
                 channel = "system" if scheduled or notices else self.state.pending.channel if self.state.pending else "resume"
+                channels = {name for name, present in (
+                    ("schedule", scheduled), ("task", notices), ("resume", self.resume)) if present}
+                if self.state.pending is not None:
+                    channels.add(self.state.pending.channel)
                 reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
                 batch = self.batch(pending, reason) if pending else None
                 direct = self.state.pending is not None and self.state.pending.channel == "direct"
@@ -512,7 +520,8 @@ class SceneRunner:
                                                   wait_for_messages=self.wait_for_messages,
                                                   attention_state=asdict(state), scheduled=scheduled,
                                                   task_notices=notices,
-                                                  direct=direct, wake_received_at=wake_received_at)
+                                                  direct=direct, wake_received_at=wake_received_at,
+                                                  channels=channels)
                 state = copy.deepcopy(self.state)
                 own_at = self.store.last_self_time(self.config.scene)
                 if own_at is not None:

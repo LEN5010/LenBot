@@ -569,6 +569,30 @@ def test_sticker_collection_requires_vision_not_learner(tmp_path):
         load_config(lab_root)
 
 
+def test_reply_effects_require_learner_and_host(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {"extract": False, "reply_effects": True}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="learning requires explicit models.roles.learner"):
+        load_host_config(root)
+    source["models"]["roles"]["learner"] = {
+        "provider": "sample", "model": "sample-learner", "context_window_tokens": 8192,
+    }
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    assert load_host_config(root).scenes["group:80001"].learning.reply_effects is True
+    assert LearningSettings().reply_effects is False
+    with pytest.raises(ValidationError):
+        LearningSettings.model_validate({"reply_effects": "true"})
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {"extract": False, "reply_effects": True}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
+        load_config(lab_root)
+
+
 @pytest.mark.parametrize("field", ["idle_seconds", "max_age_seconds"])
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_learning_settings_reject_nonfinite_seconds(field, value):

@@ -18,6 +18,7 @@ from .memory_ingest import open_memory_ingestor
 from .learning import ExpressionLearner
 from .jargon import JargonLearner
 from .sticker_collection import StickerCollector
+from .reply_effects import ReplyEffectTracker
 from .sticker_store import StickerStore
 from .expression_selection import open_expression_service
 from .network import NetworkRuntime
@@ -94,7 +95,8 @@ async def run() -> None:
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
             (ChatModel(config.model_settings("learner"))
-             if any(settings.learning is not None and (settings.learning.extract or settings.learning.jargon_extract)
+             if any(settings.learning is not None and (settings.learning.extract or settings.learning.jargon_extract
+                                                       or settings.learning.reply_effects)
                     for settings in config.scenes.values())
              else nullcontext(None)) as learner_model,
             open_expression_service(config, store, slots=slots) as expression_service,
@@ -139,9 +141,14 @@ async def run() -> None:
                 settings.learning is not None and settings.learning.collect_stickers
                 for settings in config.scenes.values()) else
                 StickerCollector(config, store, vision, slots=slots))
+            reply_effects = (None if not any(
+                settings.learning is not None and settings.learning.reply_effects
+                for settings in config.scenes.values()) else
+                ReplyEffectTracker(config, store, learner_model, slots=slots))
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
                                      memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
-                                     expression_service=expression_service, sticker_collection=sticker_collection)
+                                     expression_service=expression_service, sticker_collection=sticker_collection,
+                                     reply_effects=reply_effects)
             if config.panel is None:
                 await runtime.run()
             else:

@@ -39,6 +39,7 @@ from .sticker_store import StickerStore
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
+from .reply_effect_store import ReplyEffectStore
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .skills import Skill
 from .store import ImageAsset, Store, encode
@@ -251,6 +252,7 @@ class Chat:
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
+                 on_reply_sample: Callable[[], None] | None = None,
                  now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
         self.now = now
@@ -264,10 +266,13 @@ class Chat:
         self.expression_service = expression_service
         self.slots = slots
         self.direct_request = False
+        # Actual wake channels seen by the current turn, snapshotted per expression.
+        self.turn_channels: set[str] = set()
         self.send_message = send_message
         self.upload_file = upload_file
         self.on_update = on_update
         self.on_compaction = on_compaction
+        self.on_reply_sample = on_reply_sample
         previous = self.store.last_mind_request(config.scene)
         if previous is not None:
             current = mind.settings.model_dump(exclude={"api_key"})
@@ -557,34 +562,49 @@ class Chat:
 
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
                                        *, prefix: str = "", turn_id: str | None = None,
-                                       sticker: PersonaSticker | CollectedSticker | None = None) -> tuple[str, str]:
+                                       sticker: PersonaSticker | CollectedSticker | None = None,
+                                       channels: set[str] | None = None) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
-        for index, part in enumerate(parts):
-            if index:
-                delay = min(settings.max_interval_seconds,
-                            max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
-                await asyncio.sleep(delay)
-            part.time = self.now()
-            part.send_status = "simulated" if self.send_message is None else "unconfirmed"
-            errors.append(None)
-            content = report_parts(parts, errors, self.render)
-            message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
-                                                          turn_id=turn_id,
-                                                          sticker=(sticker if isinstance(sticker, CollectedSticker)
-                                                                   else None if sticker is None
-                                                                   else (self.persona.id, sticker)))
-            self.notify()
-            if self.send_message is not None:
-                result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)
-                part.send_status, part.platform_message_id = result.status, result.platform_message_id
-                errors[-1] = result.error
+        # Snapshot now: a later append in this turn does not change why this was said.
+        seen = set(self.turn_channels if channels is None else channels)
+        confirmed: list[tuple[int, float]] = []
+        try:
+            for index, part in enumerate(parts):
+                if index:
+                    delay = min(settings.max_interval_seconds,
+                                max(settings.min_interval_seconds, part_length(part) / settings.chars_per_second))
+                    await asyncio.sleep(delay)
+                part.time = self.now()
+                part.send_status = "simulated" if self.send_message is None else "unconfirmed"
+                errors.append(None)
                 content = report_parts(parts, errors, self.render)
-                self.store.finish_expression((message_seq, entry_seq), part, prefix + content,
-                                             turn_id=turn_id)
+                message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
+                                                              turn_id=turn_id,
+                                                              sticker=(sticker if isinstance(sticker, CollectedSticker)
+                                                                       else None if sticker is None
+                                                                       else (self.persona.id, sticker)))
                 self.notify()
-                if result.status != "sent":
-                    break
+                if self.send_message is not None:
+                    result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)
+                    part.send_status, part.platform_message_id = result.status, result.platform_message_id
+                    errors[-1] = result.error
+                    content = report_parts(parts, errors, self.render)
+                    kept = self.store.finish_expression((message_seq, entry_seq), part, prefix + content,
+                                                        turn_id=turn_id)
+                    if result.status == "sent":
+                        confirmed.append((kept, self.now()))
+                    self.notify()
+                    if result.status != "sent":
+                        break
+        finally:
+            if (confirmed and self.config.learning is not None and self.config.learning.reply_effects):
+                ReplyEffectStore(self.store).record(
+                    self.config.scene, entry_seq, turn_id=turn_id, channels=sorted(seen),
+                    sent=confirmed, planned_parts=len(parts),
+                )
+                if self.on_reply_sample is not None:
+                    self.on_reply_sample()
         states = {part.send_status for part in parts[:len(errors)]}
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
         return content, status
@@ -656,8 +676,10 @@ class Chat:
                        wait_for_messages: Callable[[float], Awaitable[str]],
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
                        task_notices: list[tuple[int, str]] | None = None,
-                       direct: bool = False, wake_received_at: float | None = None) -> dict:
+                       direct: bool = False, wake_received_at: float | None = None,
+                       channels: set[str] | None = None) -> dict:
         self.direct_request = direct
+        self.turn_channels = set() if channels is None else set(channels)
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
                                        scheduled=scheduled, task_notices=task_notices,

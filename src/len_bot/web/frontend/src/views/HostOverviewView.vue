@@ -7,6 +7,7 @@ const overview = ref(null), host = ref(null)
 const overviewError = ref(''), hostError = ref(''), loading = ref(false)
 const beginRead = useRequestGuard()
 const messageLabels = { received: '平台入站 · 已保存', sent: '平台已确认发送', simulated: '模拟表达 · 未发往 QQ', failed: '发送失败', unconfirmed: '发送结果未确认' }
+const effectLabels = { agree: '认同', continue: '继续话题', correct: '纠正', negative: '否定或反感', unrelated: '与 Bot 发言无明确关系', uncertain: '无法判断', no_messages: '未观察到群友消息', waiting: '待判断或判断失败' }
 const turnLabels = { queued: '等待执行', running: '执行中', settling: '即将结束', settled: '已结束', error: '失败', timeout: '超时', cancelled: '已取消', interrupted: '已中断', step_limit: '达到轮次上限' }
 const messages = computed(() => Object.entries(overview.value?.messages || {}))
 const turns = computed(() => Object.entries(overview.value?.turns || {}))
@@ -61,7 +62,12 @@ onMounted(refresh)
         <div class="paired"><div><h3>消息状态</h3><dl v-if="messages.length" class="breakdown"><div v-for="[status,count] in messages" :key="status"><dt>{{ messageLabels[status] || status }}</dt><dd>{{ count }}</dd></div></dl><p v-else class="muted">本时段没有已保存消息。</p></div>
           <div><h3>轮次状态</h3><dl v-if="turns.length" class="breakdown"><div v-for="[status,count] in turns" :key="status"><dt>{{ turnLabels[status] || status }}</dt><dd>{{ count }}</dd></div></dl><p v-else class="muted">本时段没有已开启轮次。</p></div></div>
       </section>
-      <section class="surface"><div class="section-heading"><h2>聊天与表达学习模型费用估算</h2><span class="muted">不含记忆抽取及记忆嵌入，非账单</span></div>
+      <section class="surface"><div class="section-heading"><h2>今日回复效果</h2><span class="muted">今日首段确认发出、窗口已关闭的样本 · 模型判断，不是因果</span></div>
+        <dl v-if="Object.keys(overview.reply_effects).length" class="breakdown"><div v-for="(count,key) in overview.reply_effects" :key="key"><dt>{{ effectLabels[key] || key }}</dt><dd>{{ count }}</dd></div></dl>
+        <p v-else class="muted">今日没有已关闭的回复效果样本；未启用记录的群不会产生样本。</p>
+        <p v-if="(overview.reply_effects.correct||0) + (overview.reply_effects.negative||0)" class="muted">被纠正 {{ overview.reply_effects.correct||0 }} 次，否定或反感 {{ overview.reply_effects.negative||0 }} 次，可到学习页筛选查看原话。</p>
+      </section>
+      <section class="surface"><div class="section-heading"><h2>聊天与学习模型费用估算</h2><span class="muted">不含记忆抽取及记忆嵌入，非账单</span></div>
         <p><strong>{{ overview.unknown_cost_calls }}</strong> 次调用费用未知；未知不并入 0，不与币种金额相加。</p>
         <dl v-if="costs.length" class="breakdown costs"><div v-for="[currency,amount] in costs" :key="currency"><dt>{{ currency }}</dt><dd>{{ amount }}</dd></div></dl>
         <p v-else class="muted">本时段没有可汇总的已知费用金额。</p>

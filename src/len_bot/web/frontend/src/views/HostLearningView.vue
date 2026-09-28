@@ -6,12 +6,14 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import HostJargonPanel from '../components/HostJargonPanel.vue'
 import HostStickersPanel from '../components/HostStickersPanel.vue'
+import HostReplyEffectsPanel from '../components/HostReplyEffectsPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), overview = ref(null), settings = ref(null), settingsDraft = ref(null)
 const disabledSettingsDraft = ref(null), disabledEmbeddingDraft = ref(null)
 const jargonDirty = ref(false), jargonBusy = ref(false), jargonRefreshKey = ref(0)
 const stickersDirty = ref(false), stickersBusy = ref(false), stickersRefreshKey = ref(0)
+const replyEffectsBusy = ref(false), replyEffectsRefreshKey = ref(0)
 const batches = ref(null), batch = ref(null), expressions = ref(null), expression = ref(null), expressionDraft = ref(null)
 const embeddingCalls = ref(null), embeddingCall = ref(null)
 const filter = ref('pending')
@@ -29,7 +31,7 @@ const settingsDirty = computed(() => settings.value && JSON.stringify(settingsDr
 const expressionDirty = computed(() => expression.value && expressionDraft.value &&
   (expressionDraft.value.situation !== expression.value.situation || expressionDraft.value.style !== expression.value.style || expressionDraft.value.status !== expression.value.status))
 const dirty = computed(() => Boolean(settingsDirty.value || expressionDirty.value || jargonDirty.value || stickersDirty.value))
-const busy = computed(() => settingsSaving.value || expressionSaving.value || deleting.value || Boolean(requesting.value) || jargonBusy.value || stickersBusy.value)
+const busy = computed(() => settingsSaving.value || expressionSaving.value || deleting.value || Boolean(requesting.value) || jargonBusy.value || stickersBusy.value || replyEffectsBusy.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(to => {
   if (to.query.scene === route.query.scene) return true
@@ -50,7 +52,7 @@ const beginExpressionSave = useRequestGuard(() => selectedScene.value)
 const beginAction = useRequestGuard(() => selectedScene.value)
 function endpoint(suffix = '') { return `/api/host/scenes/${encodeURIComponent(selectedScene.value)}/learning${suffix}` }
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
-function defaults() { return { extract:true, jargon_extract:false, collect_stickers:false, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
+function defaults() { return { extract:true, jargon_extract:false, collect_stickers:false, reply_effects:false, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
 function numeric(value) { return value === '' ? '' : Number(value) }
 function localTime(value) {
   if (value === null || value === undefined || !host.value?.timezone) return '—'
@@ -255,8 +257,9 @@ function refreshRecords() { readOverview(); readSettings(false); readBatches(); 
 function refreshAll() {
   if (dirty.value && !window.confirm('放弃未保存的学习设置或候选草稿，重新读取当前场景？')) return
   expression.value = null; expressionDraft.value = null; batch.value = null; embeddingCall.value = null
-  ++jargonRefreshKey
-  ++stickersRefreshKey
+  jargonRefreshKey.value++
+  stickersRefreshKey.value++
+  replyEffectsRefreshKey.value++
   refreshRecords()
 }
 watch(selectedScene, () => { resetScene(); if (host.value && selectedScene.value) refreshRecords() })
@@ -304,6 +307,8 @@ onMounted(readHost)
               <p class="muted">表达与黑话后台开关相互独立，共用下方批次与时机设置；任一开启须在模型页明确绑定 learner。两者都关仍保留已采用表达和黑话解释，整个学习配置设为 null 才停止引用。</p>
               <v-switch v-model="settingsDraft.collect_stickers" label="收集并使用本群表情" :disabled="settingsSaving || settingsLoading" hide-details />
               <p class="muted">本群图像收集独立于 learner；启用须在模型页显式绑定 vision。关闭后保留原图、候选及人工决定，但 react 仅使用角色自带素材；保存根配置不立即改变当前运行。</p>
+              <v-switch v-model="settingsDraft.reply_effects" label="记录并判断群友对 Bot 发言的反应" :disabled="settingsSaving || settingsLoading" hide-details />
+              <p class="muted">只记录开启后真实确认发出的表达，观察之后 5 条群友消息或 3 分钟；由 learner 批量判断，须在模型页明确绑定 learner。最长积累秒数同时决定待判断样本最迟多久成批。不自动调整人格或主动行为。</p>
               <div class="form-grid">
               <v-text-field :model-value="settingsDraft.min_messages" type="number" step="1" label="触发所需有效群友文字数" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.min_messages=numeric(value)" />
               <v-text-field :model-value="settingsDraft.batch_size" type="number" step="1" label="每批最多扫描原始消息数（含排除项）" hide-details="auto" :disabled="settingsSaving || settingsLoading" @update:model-value="value=>settingsDraft.batch_size=numeric(value)" />
@@ -329,6 +334,8 @@ onMounted(readHost)
         @dirty="jargonDirty=$event" @busy="jargonBusy=$event" />
       <HostStickersPanel :key="`${selectedScene}:${stickersRefreshKey}`" :scene="selectedScene" :timezone="host.timezone"
         @dirty="stickersDirty=$event" @busy="stickersBusy=$event" />
+      <HostReplyEffectsPanel :key="`${selectedScene}:${replyEffectsRefreshKey}`" :scene="selectedScene" :timezone="host.timezone"
+        @busy="replyEffectsBusy=$event" />
       <section class="surface"><div class="section-heading"><h2>实际学习批次</h2><span class="muted">列表不预载原始模型请求与响应</span></div>
         <v-alert v-if="batchError" type="error" variant="tonal" role="alert">{{ batchError }}</v-alert>
         <p v-if="batchLoading && !batches" role="status">正在读取批次…</p>
