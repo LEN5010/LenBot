@@ -91,6 +91,7 @@ class WorkTasks:
             image=settings.image, workspace_root=settings.workspace_root,
             runtime_root=settings.runtime_root, uid=settings.uid, gid=settings.gid,
             cpus=settings.cpus, memory=settings.memory, pids_limit=settings.pids_limit,
+            tmpfs_size=settings.tmpfs_size,
             command_timeout_seconds=settings.command_timeout_seconds,
         ))
         self.running: dict[int, RunningTask] = {}
@@ -386,6 +387,7 @@ class WorkTasks:
                     skills=current.skills,
                     data_tools=self.data_tools[item.scene],
                     task_timeout_seconds=self.settings.active_timeout_seconds,
+                    public_browser=self.settings.public_browser,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
                     context_window_tokens=binding.context_window_tokens, price=price,
                     limits=self._limits(item), model_reasoning=self.settings.model_reasoning,
@@ -466,6 +468,12 @@ class WorkTasks:
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
                 "data_tools": [tool["name"] for tool in self.data_tools[item.scene]],
+                "public_browser": None if session.browser_cli_version is None else {
+                    "command": "lenbot-browser", "cli_version": session.browser_cli_version,
+                    "session": "public", "profile": "in-memory",
+                    "output_directory": "/workspace/out/browser",
+                    "startup_check": "CLI and executable only; browser opens on demand",
+                },
                 "skills": [{"name": skill.name, "source": skill.source,
                             "path": skill.container_path + "/SKILL.md"}
                            for skill in current.skills if not skill.disable_model_invocation],

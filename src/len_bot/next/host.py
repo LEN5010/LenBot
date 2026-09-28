@@ -71,7 +71,8 @@ async def run() -> None:
     scenes = [(config.scene_config(scene), personas[settings.persona])
               for scene, settings in config.scenes.items()]
     skills = {settings.scene: (
-        select_skills(load_catalog(config.worker.skills_directory, settings.scene), persona.skills)
+        select_skills(load_catalog(config.worker.skills_directory, settings.scene,
+                                   public_browser=config.worker.public_browser), persona.skills)
         if config.worker is not None and config.worker.skills_directory is not None else ()
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)

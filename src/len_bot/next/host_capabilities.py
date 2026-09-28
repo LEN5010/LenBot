@@ -113,6 +113,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "worker": chat.tasks is not None,
                          "skills": (chat.tasks is not None
                                     and chat.tasks.settings.skills_directory is not None),
+                         "public_browser": (chat.tasks is not None
+                                            and chat.tasks.settings.public_browser),
                          "public_network": chat.tasks is not None and chat.tasks.settings.egress.enabled,
                          "file_upload": (chat.config.delivery == "onebot" and chat.tasks is not None
                                          and chat.config.onebot.upload_visible_root is not None),
@@ -128,7 +130,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         path = saved.scenes[scene].persona
         persona = load_persona(path)
         directory = None if saved.worker is None else saved.worker.skills_directory
-        catalog = load_catalog(directory, scene)
+        catalog = load_catalog(directory, scene, public_browser=(saved.worker is not None
+                                                                  and saved.worker.public_browser))
         selected = () if directory is None else select_skills(catalog, persona.skills)
         running_directory = None if chat.tasks is None else chat.tasks.settings.skills_directory
         return {
@@ -170,7 +173,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
         for key in affected:
             build_tools(saved.scene_config(key), persona, platform=saved.delivery == "onebot")
             if saved.worker is not None and saved.worker.skills_directory is not None:
-                select_skills(load_catalog(saved.worker.skills_directory, key), persona.skills)
+                select_skills(load_catalog(saved.worker.skills_directory, key,
+                                           public_browser=saved.worker.public_browser), persona.skills)
         metadata = persona.model_dump(exclude={"voice", "boundaries", "examples", "knowledge"})
         descriptor, name = tempfile.mkstemp(prefix=".persona-", suffix=".yaml", dir=path)
         temporary = Path(name)

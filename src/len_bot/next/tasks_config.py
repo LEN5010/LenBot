@@ -42,6 +42,7 @@ class WorkerSettings(BaseModel):
     gid: int = Field(gt=0, strict=True)
     cpus: float = Field(default=2.0, gt=0, allow_inf_nan=False)
     memory: str = Field(default="2g", pattern=r"^[1-9][0-9]*[kmgKMG]$")
+    tmpfs_size: str = Field(default="256m", pattern=r"^[1-9][0-9]*[kmgKMG]$")
     pids_limit: int = Field(default=512, gt=0, strict=True)
     command_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     max_running: int = Field(default=4, gt=0, strict=True)
@@ -59,6 +60,13 @@ class WorkerSettings(BaseModel):
     input_support: Literal["text", "text-image"] = "text"
     model_reasoning: bool
     egress: EgressSettings = Field(default_factory=EgressSettings)
+    public_browser: bool = False
+
+    @model_validator(mode="after")
+    def browser_requires_proxy(self) -> WorkerSettings:
+        if self.public_browser and not self.egress.enabled:
+            raise ValueError("worker.public_browser requires worker.egress.enabled")
+        return self
 
     @field_validator("docker_binary", "workspace_root", "runtime_root", "delivery_root")
     @classmethod

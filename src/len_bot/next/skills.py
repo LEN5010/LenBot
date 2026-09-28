@@ -82,7 +82,8 @@ def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task"]
 
 
 def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task"],
-               container_root: str, *, missing_ok: bool) -> tuple[Skill, ...]:
+               container_root: str, *, missing_ok: bool,
+               public_browser: bool = False) -> tuple[Skill, ...]:
     if root.resolve(strict=False) != root:
         raise ValueError(f"{root}: skill directory must not traverse a symbolic link")
     try:
@@ -93,6 +94,8 @@ def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task"]
         raise
     skills = []
     for child in children:
+        if source == "builtin" and child.name == "public-browser" and not public_browser:
+            continue
         if child.is_symlink():
             raise ValueError(f"{child}: skill directory must not be a symbolic link")
         if child.is_dir():
@@ -109,11 +112,12 @@ def _unique(skills: tuple[Skill, ...]) -> None:
         names[skill.name] = skill.host_path
 
 
-def load_catalog(directory: Path | None, scene: str) -> tuple[Skill, ...]:
+def load_catalog(directory: Path | None, scene: str, *, public_browser: bool = False) -> tuple[Skill, ...]:
     if directory is None:
         return ()
     catalog = (
-        *_directory(BUILTIN_DIRECTORY, "builtin", "/shared/skills/builtin", missing_ok=False),
+        *_directory(BUILTIN_DIRECTORY, "builtin", "/shared/skills/builtin",
+                    missing_ok=False, public_browser=public_browser),
         *_directory(directory / "shared", "shared", "/shared/skills/approved", missing_ok=True),
         *_directory(directory / "scenes" / scene, "scene", "/group/skills", missing_ok=True),
     )

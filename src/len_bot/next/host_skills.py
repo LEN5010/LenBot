@@ -181,7 +181,9 @@ def register_host_skills(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                     target = replace(original, source=body.target, host_path=destination,
                                      container_path=target_container)
                     for key in scenes:
-                        catalog = tuple(skill for skill in load_catalog(skill_directory(config), key)
+                        catalog = tuple(skill for skill in load_catalog(
+                            skill_directory(config), key,
+                            public_browser=config.worker.public_browser)
                                         if skill.host_path != source)
                         if any(skill.name == target.name for skill in catalog):
                             raise ValueError(f'{key} 已存在同名技能 {target.name!r}，没有覆盖或移动')
