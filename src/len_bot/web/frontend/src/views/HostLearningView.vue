@@ -25,13 +25,14 @@ const readError = ref(''), overviewError = ref(''), settingsError = ref(''), bat
 const expressionError = ref(''), expressionDetailError = ref(''), settingsSaveError = ref(''), candidateSaveError = ref(''), actionError = ref('')
 const embeddingError = ref(''), embeddingDetailError = ref('')
 const settingsNotice = ref(''), candidateNotice = ref(''), actionNotice = ref('')
+const exampleDraft = ref(null), exampleSaving = ref(false), exampleError = ref(''), exampleNotice = ref('')
 const selectedScene = computed(() => typeof route.query.scene === 'string' ? route.query.scene : '')
 const options = computed(() => host.value?.scenes.map(item => ({ title:`${sceneName(item.scene)} · ${item.persona.name}`, value:item.scene })) || [])
 const settingsDirty = computed(() => settings.value && JSON.stringify(settingsDraft.value) !== JSON.stringify(settings.value.saved))
 const expressionDirty = computed(() => expression.value && expressionDraft.value &&
   (expressionDraft.value.situation !== expression.value.situation || expressionDraft.value.style !== expression.value.style || expressionDraft.value.status !== expression.value.status))
 const dirty = computed(() => Boolean(settingsDirty.value || expressionDirty.value || jargonDirty.value || stickersDirty.value))
-const busy = computed(() => settingsSaving.value || expressionSaving.value || deleting.value || Boolean(requesting.value) || jargonBusy.value || stickersBusy.value || replyEffectsBusy.value)
+const busy = computed(() => settingsSaving.value || expressionSaving.value || exampleSaving.value || deleting.value || Boolean(requesting.value) || jargonBusy.value || stickersBusy.value || replyEffectsBusy.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(to => {
   if (to.query.scene === route.query.scene) return true
@@ -50,6 +51,7 @@ const beginExpression = useRequestGuard(() => selectedScene.value)
 const beginSettingsSave = useRequestGuard(() => selectedScene.value)
 const beginExpressionSave = useRequestGuard(() => selectedScene.value)
 const beginAction = useRequestGuard(() => selectedScene.value)
+const beginExample = useRequestGuard(() => selectedScene.value)
 function endpoint(suffix = '') { return `/api/host/scenes/${encodeURIComponent(selectedScene.value)}/learning${suffix}` }
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
 function defaults() { return { extract:true, jargon_extract:false, collect_stickers:false, reply_effects:false, min_messages:20, batch_size:50, idle_seconds:300, max_age_seconds:1800, auto_adopt:false, embedding:null } }
@@ -172,6 +174,7 @@ async function openExpression(id) {
     if (!fresh()) return
     expression.value = value
     expressionDraft.value = { situation:value.situation, style:value.style, status:value.status }
+    resetExample(value)
     expressionDetailError.value = ''; candidateSaveError.value = ''; candidateNotice.value = ''
   } catch (error) { if (fresh()) expressionDetailError.value = error.message }
   finally { if (fresh()) expressionDetailLoading.value = false }
@@ -220,6 +223,7 @@ async function saveExpression() {
     if (!fresh() || expression.value?.id !== id) return
     expression.value = { ...value, source_messages:expression.value.source_messages }
     expressionDraft.value = { situation:value.situation, style:value.style, status:value.status }
+    resetExample(value)
     candidateNotice.value = value.status === 'adopted' && value.indexed && overview.value?.selection_enabled && overview.value.voice_mode === 'voice'
       ? '候选已采用且向量已建；下次 voice 可参与检索，不保证实际引用。'
       : '候选决定已保存；是否可被 voice 选用还取决于运行绑定、场景表达方式及向量状态。'
@@ -228,6 +232,25 @@ async function saveExpression() {
   finally {
     if (fresh()) { expressionSaving.value = false; refreshEmbeddingList() }
   }
+}
+function resetExample(value) {
+  exampleDraft.value = { context:value.situation, line:value.style, tags:[] }
+  exampleError.value = ''; exampleNotice.value = ''
+}
+async function saveExample() {
+  if (!expression.value || expressionDirty.value || exampleSaving.value) return
+  const fresh = beginExample(), id = expression.value.id
+  exampleSaving.value = true; exampleError.value = ''; exampleNotice.value = ''
+  try {
+    const value = await api(`/api/host/scenes/${encodeURIComponent(selectedScene.value)}/persona-examples`, {
+      method:'POST', body:JSON.stringify({ expression_id:id, context:exampleDraft.value.context, line:exampleDraft.value.line,
+        tags:exampleDraft.value.tags.map(row => row.value) }),
+    })
+    if (!fresh() || expression.value?.id !== id) return
+    const shared = value.affected_scenes.length > 1 ? `该角色包同时用于 ${value.affected_scenes.map(sceneName).join('、')}。` : ''
+    exampleNotice.value = `已追加到角色包 examples.yaml。${shared}${value.restart_required ? '运行中的角色不变，重启宿主后生效。' : ''}是否进入常用样例取决于角色的 example_tags 与前 8 条规则。`
+  } catch (error) { if (fresh()) exampleError.value = mutationError(error, '转成角色样例') }
+  finally { if (fresh()) exampleSaving.value = false }
 }
 async function deleteExpression() {
   if (!expression.value || deleting.value || !window.confirm(`删除这条表达候选及其审核状态？原聊天消息不删除。\n${expression.value.situation}\n${expression.value.style}`)) return
@@ -391,6 +414,18 @@ onMounted(readHost)
           <p v-if="candidateNotice" class="success-note" role="status">{{ candidateNotice }}</p>
           <div class="actions"><v-btn type="submit" color="primary" :loading="expressionSaving" :disabled="!expressionDirty || busy">保存候选</v-btn>
             <v-btn variant="outlined" color="error" :loading="deleting" :disabled="busy" @click="deleteExpression">删除候选</v-btn></div>
+          <section v-if="expression.status==='adopted' && exampleDraft" class="example-editor" aria-labelledby="example-title">
+            <h4 id="example-title">转成角色样例</h4>
+            <p class="muted">把这条已采用的表达追加到当前场景角色包的 examples.yaml 末尾，不改动已有样例和注释；可先改写场景和台词。候选本身保持不变。</p>
+            <v-textarea v-model="exampleDraft.context" label="样例场景（context）" rows="2" auto-grow hide-details="auto" :disabled="exampleSaving || expressionDirty" />
+            <v-textarea v-model="exampleDraft.line" label="样例台词（line）" rows="2" auto-grow hide-details="auto" :disabled="exampleSaving || expressionDirty" />
+            <div v-for="(row,index) in exampleDraft.tags" :key="index" class="actions"><v-text-field v-model="row.value" :label="`标签 ${index+1}`" hide-details="auto" :disabled="exampleSaving" /><v-btn variant="outlined" :disabled="exampleSaving" @click="exampleDraft.tags.splice(index,1)">删除</v-btn></div>
+            <v-btn variant="text" :disabled="exampleSaving || expressionDirty" @click="exampleDraft.tags.push({value:''})">添加标签</v-btn>
+            <p v-if="expressionDirty" class="muted">候选有未保存修改；先保存或放弃再转成样例。</p>
+            <v-alert v-if="exampleError" type="error" variant="tonal" role="alert">{{ exampleError }}</v-alert>
+            <p v-if="exampleNotice" class="success-note" role="status">{{ exampleNotice }}</p>
+            <v-btn variant="outlined" color="primary" :loading="exampleSaving" :disabled="busy || expressionDirty" @click="saveExample">追加到角色样例</v-btn>
+          </section>
           <h4>真实来源原话</h4><p class="muted">显示本场景的来源原话；删除候选会保留原聊天。</p>
           <ol class="source-list"><li v-for="source in expression.source_messages" :key="source.record">
             <p v-if="source.available" class="original-text">{{ source.rendered }}</p><p v-else>原记录不可用（位置 {{ source.record }}）。</p>
@@ -405,6 +440,7 @@ onMounted(readHost)
 
 <style scoped>
 .host-learning{max-width:1200px;margin-inline:auto;overflow-wrap:anywhere}
+.example-editor{display:grid;gap:10px;border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
 .page-intro,.section-heading,.record-head,.actions{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .page-intro>div{min-width:0;flex:1 1 500px}.page-intro h1{margin:0 0 10px}.eyebrow{font-size:12px;letter-spacing:.08em;color:var(--primary);font-weight:700;margin:0 0 5px}
 .surface{min-width:0}.surface h2{font-size:18px;margin:0 0 12px}.surface h3{font-size:16px}.section-heading{align-items:center}.section-heading>a{overflow-wrap:anywhere}
