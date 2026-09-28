@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib.util
@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
 from .external_tools import ExternalTool
 from .messages import ChatMessage
-from .plugin import INTERFACE, MARK, Invocation, Notice, Plugin, PluginContext, Sent
+from .plugin import INTERFACE, MARK, Content, Text, Invocation, Notice, Plugin, PluginContext, Sent
 from .store import encode
 
 if TYPE_CHECKING:
@@ -288,10 +288,12 @@ class PluginHost:
         return self.config.scene_timezone(scene)
 
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent:
+        return await self.send_parts(plugin, scene, [Text(text)], reply_to)
+
+    async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent:
         if self.runtime is None:
             raise RuntimeError("插件宿主尚未接入运行中的场景")
-        report, status = await self.runtime.chats[scene].send_plugin_text(plugin, text, reply_to=reply_to)
-        return Sent(status, report)
+        return await self.runtime.chats[scene].send_plugin_content(plugin, parts, reply_to=reply_to)
 
     def emit_event(self, plugin: str, scene: str, text: str) -> None:
         if self.runtime is None:

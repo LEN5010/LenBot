@@ -21,7 +21,7 @@ from .messages import plain_text
 from .model import ChatModel, ModelProtocolError, ModelReply
 from .model_slots import ModelSlots
 from .pricing import estimate_cost
-from .sticker_assets import MAX_STICKER_BYTES, inspect_sticker
+from .image_assets import MAX_IMAGE_BYTES, inspect_image
 from .sticker_store import StickerStore
 from .store import Store, encode
 
@@ -176,9 +176,9 @@ class StickerCollector:
                         url = image_url(pictures[image_index - 1].data)
                         _, _, data = await fetch_public(
                             url, self.config.images.timeout_seconds,
-                            lambda _type, _prefix: MAX_STICKER_BYTES,
+                            lambda _type, _prefix: MAX_IMAGE_BYTES,
                         )
-                        mime_type, width, height, animated = await asyncio.to_thread(inspect_sticker, data)
+                        mime_type, width, height, animated = await asyncio.to_thread(inspect_image, data)
                         self.records.save_original(scene, id, data=data, mime_type=mime_type,
                                                    width=width, height=height, animated=animated)
                     else:

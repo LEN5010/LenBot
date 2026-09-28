@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import regex
 
-from .messages import ChatMessage, Segment
+from .messages import ChatMessage, Segment, render_body
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
 
@@ -47,12 +47,9 @@ def report_parts(parts: list[ChatMessage], errors: list[str | None],
     lines = [render(part) + ("" if error is None else "\n" + error)
              for part, error in zip(parts, errors)]
     if len(errors) < len(parts):
-        remaining = "".join(segment.data["text"] for part in parts[len(errors):]
-                            for segment in part.segments if segment.type == "text")
-        images = [f"[图片：{segment.data['summary']}]" for part in parts[len(errors):]
-                  for segment in part.segments if segment.type == "image"]
-        if images:
-            remaining = "\n".join(([remaining] if remaining else []) + images)
+        remaining = "\n".join(
+            ("" if part.reply_to is None else f"（回复平台消息 {part.reply_to}）") + render_body(part.segments)
+            for part in parts[len(errors):])
         lines.append("尚未发送的内容（中断后不自动续发）：\n" + remaining)
     if any(part.send_status == "unconfirmed" for part in parts[:len(errors)]):
         lines.append("尚未记录可靠平台回执；不能据此判断是否已发出。若执行中断，不重放本次发送。")

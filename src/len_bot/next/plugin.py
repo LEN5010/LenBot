@@ -7,7 +7,7 @@ and calls the marked methods at the plugin's own error boundary.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -66,6 +66,26 @@ class Sent:
     """Actual outcome of a plugin send; ``simulated`` never reached QQ."""
     status: Literal["sent", "failed", "unconfirmed", "simulated", "partial"]
     report: str
+    message_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Text:
+    text: str
+
+
+@dataclass(frozen=True)
+class Image:
+    data: bytes = field(repr=False)
+    description: str
+
+
+@dataclass(frozen=True)
+class Mention:
+    qq: str
+
+
+Content = Text | Image | Mention
 
 
 @dataclass(frozen=True)
@@ -84,6 +104,7 @@ class HostPort(Protocol):
     def scene_timezone(self, scene: str) -> str: ...
     def now(self) -> float: ...
     async def send_text(self, plugin: str, scene: str, text: str, reply_to: str | None) -> Sent: ...
+    async def send_parts(self, plugin: str, scene: str, parts: Sequence[Content], reply_to: str | None) -> Sent: ...
     def emit_event(self, plugin: str, scene: str, text: str) -> None: ...
     def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]: ...
 
@@ -112,6 +133,12 @@ class PluginContext:
         if not text.strip():
             raise ValueError("插件发送的文字不能为空")
         return await self.host.send_text(self.name, self._scene(scene), text, reply_to)
+
+    async def send_parts(self, scene: str, parts: Sequence[Content], *, reply_to: str | None = None) -> Sent:
+        return await self.host.send_parts(self.name, self._scene(scene), parts, reply_to)
+
+    async def send_image(self, scene: str, data: bytes, description: str, *, reply_to: str | None = None) -> Sent:
+        return await self.send_parts(scene, [Image(data, description)], reply_to=reply_to)
 
     async def emit_event(self, scene: str, text: str) -> None:
         if not text.strip():
@@ -149,6 +176,13 @@ class Invocation:
         """Send in this scene; a command reply quotes the command message."""
         reply_to = None if self.message is None else self.message.platform_message_id
         return await self.plugin.send(self.scene, text, reply_to=reply_to)
+
+    async def reply_parts(self, parts: Sequence[Content]) -> Sent:
+        reply_to = None if self.message is None else self.message.platform_message_id
+        return await self.plugin.send_parts(self.scene, parts, reply_to=reply_to)
+
+    async def reply_image(self, data: bytes, description: str) -> Sent:
+        return await self.reply_parts([Image(data, description)])
 
     async def emit_event(self, text: str) -> None:
         await self.plugin.emit_event(self.scene, text)
