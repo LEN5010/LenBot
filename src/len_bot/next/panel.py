@@ -25,6 +25,7 @@ from .memory_ingest import MemoryIngestor, open_memory_ingestor
 from .panel_auth import changes_socket, install_panel_auth
 from .persona import Persona, load_persona, select_examples
 from .model_slots import ModelSlots
+from .limits import ModelBudget
 from .store import Store
 
 
@@ -53,6 +54,9 @@ class PanelSession:
                  ingestor: MemoryIngestor | None = None, persona: Persona | None = None,
                  slots: ModelSlots | None = None):
         self.config, self.store = config, store
+        if slots is None:
+            slots = ModelSlots(config.max_model_requests)
+            slots.admit = ModelBudget(config, store, memory).check
         self.listeners: set[asyncio.Event] = set()
         self.closing = False
         self.chat = Chat(config, load_persona(config.persona) if persona is None else persona, store, mind, voice, vision=vision,
@@ -125,15 +129,19 @@ def create_app(config: LabConfig, *, root: Path) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         with Store(config.database) as store:
+            slots = ModelSlots(config.max_model_requests)
+            budget = ModelBudget(config, store, None)
+            slots.admit = budget.check
             async with (
                 ChatModel(config.model_settings("mind")) as mind,
                 ChatModel(config.model_settings("voice")) as voice,
                 (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
                  else nullcontext(None)) as vision,
-                open_memory(config, store) as memory,
-                open_memory_ingestor(config, store, memory, [config.scene]) as ingestor,
+                open_memory(config, store, slots=slots) as memory,
+                open_memory_ingestor(config, store, memory, [config.scene], slots=slots) as ingestor,
             ):
-                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor)
+                budget.memory = memory
+                session = PanelSession(config, store, mind, voice, vision=vision, memory=memory, ingestor=ingestor, slots=slots)
                 app.state.session = session
                 try:
                     yield

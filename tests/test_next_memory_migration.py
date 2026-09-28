@@ -51,7 +51,9 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
         migrate_memory_jobs(path)
         path.with_name(path.name + ".v1.bak").unlink()
         path.with_name(path.name + ".v2.bak").unlink()
+        path.with_name(path.name + ".v3.bak").unlink()
         with sqlite3.connect(path) as db:
+            db.execute("DROP TABLE memory_embedding_calls")
             db.execute("DROP TABLE memory_summary_runs")
             db.execute("PRAGMA user_version=2")
             db.execute("INSERT INTO memory_exclusions VALUES('group:80001', 7)")
@@ -85,6 +87,7 @@ def test_memory_processing_collision_rolls_back_and_backup_is_not_overwritten(tm
     with pytest.raises(FileExistsError, match="v2.bak"):
         migrate_memory_jobs(path)
     path.with_name(path.name + ".v2.bak").unlink()
+    path.with_name(path.name + ".v3.bak").unlink()
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
         migrate_memory_jobs(path)
     with sqlite3.connect(path) as db:

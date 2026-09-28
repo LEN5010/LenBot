@@ -69,6 +69,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
     def role_state(scene: str) -> dict:
         chat = chat_for(scene)
         saved = load_host_config(root)
+        if scene not in saved.scenes:
+            raise ValueError("此场景已从保存配置移除，不能读取或编辑保存的角色许可")
         path = saved.scenes[scene].persona
         persona = load_persona(path)
         return {
@@ -136,6 +138,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
     def skills_state(scene: str) -> dict:
         chat = chat_for(scene)
         saved = load_host_config(root)
+        if scene not in saved.scenes:
+            raise ValueError("此场景已从保存配置移除，不能读取或编辑保存的角色许可")
         path = saved.scenes[scene].persona
         persona = load_persona(path)
         directory = None if saved.worker is None else saved.worker.skills_directory
@@ -176,6 +180,8 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
 
     def save_role(scene: str, field: Literal["tools", "skills"], value: str | list[str]) -> dict:
         saved = load_host_config(root)
+        if scene not in saved.scenes:
+            raise ValueError("此场景已从保存配置移除，不能读取或编辑保存的角色许可")
         path = saved.scenes[scene].persona
         persona = load_persona(path).model_copy(update={field: value})
         affected = [key for key, value in saved.scenes.items() if value.persona == path]

@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, Valid
 
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
 from .external_tools import ExternalTool
-from .messages import ChatMessage
+from .messages import parse_notice, ChatMessage
 from .plugin import INTERFACE, MARK, Content, Text, Invocation, Notice, Plugin, PluginContext, Sent
 from .store import encode
 
@@ -131,28 +131,6 @@ def discover(paths: list[Path]) -> tuple[dict[str, list[Path]], list[str]]:
     return found, errors
 
 
-def parse_notice(raw: dict) -> Notice | None:
-    """Parse the fields every routed notice needs; ``None`` when it names no scene."""
-    kind, sub_type = raw.get("notice_type"), raw.get("sub_type")
-    if not isinstance(kind, str) or not kind or (sub_type is not None and not isinstance(sub_type, str)):
-        raise ValueError(f"OneBot notice lacks a text notice_type/sub_type: {encode(raw)[:300]}")
-    moment = raw.get("time")
-    if isinstance(moment, bool) or not isinstance(moment, int | float):
-        raise ValueError(f"OneBot notice lacks numeric time: {encode(raw)[:300]}")
-    ids = {}
-    # Implementations report operator_id 0 when there is no separate operator; keep it as sent.
-    for name, pattern in (("group_id", r"[1-9][0-9]*"), ("user_id", r"[1-9][0-9]*"), ("operator_id", r"[0-9]+")):
-        value = raw.get(name)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int | str)
-                                  or re.fullmatch(pattern, str(value)) is None):
-            raise ValueError(f"OneBot notice {name} is not a QQ number: {encode(raw)[:300]}")
-        ids[name] = None if value is None else str(value)
-    scene = (f"group:{ids['group_id']}" if ids["group_id"] is not None
-             else f"private:{ids['user_id']}" if ids["user_id"] is not None else None)
-    if scene is None:
-        return None
-    return Notice(scene=scene, notice_type=kind, sub_type=sub_type, user_id=ids["user_id"],
-                  operator_id=ids["operator_id"], time=float(moment), raw=raw)
 
 
 @dataclass
@@ -441,10 +419,7 @@ class PluginHost:
             await method(*arguments)
         self._spawn(record, where, invoke())
 
-    def handle_notice(self, raw: dict) -> int:
-        notice = parse_notice(raw)
-        if notice is None:
-            return 0
+    def handle_notice(self, notice: Notice) -> int:
         keys = {notice.notice_type} | ({f"{notice.notice_type}.{notice.sub_type}"} if notice.sub_type else set())
         count = 0
         for record in self.plugins.values():

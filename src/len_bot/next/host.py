@@ -9,10 +9,12 @@ import signal
 import uvicorn
 
 from .config import load_host_config
+from .operations import host_logging, credentials
 from .chat import PROMPTS, build_tools, tool_catalog
 from .host_panel import create_app
 from .model import ChatModel
 from .model_slots import ModelSlots
+from .limits import ModelBudget
 from .memory import open_memory
 from .memory_ingest import open_memory_ingestor
 from .learning import ExpressionLearner
@@ -89,7 +91,10 @@ async def run() -> None:
         if config.worker is not None and config.worker.skills_directory is not None else ()
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
-    with Store(config.database) as store:
+    with host_logging(config.logging, credentials(config)), Store(config.database) as store:
+        budget = ModelBudget(config, store, None)
+        budget.trials_root = root / ".runtime" / "chat-tests"
+        slots.admit = budget.check
         sticker_records = StickerStore(store)
         for scene, settings in config.scenes.items():
             if settings.learning is None or not settings.learning.collect_stickers:
@@ -112,6 +117,7 @@ async def run() -> None:
             open_memory(config, store, slots=slots) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
+            budget.memory = memory
             if expression_service is not None:
                 for scene in expression_service.scenes:
                     expression_service.validate(scene)
@@ -161,7 +167,7 @@ async def run() -> None:
             try:
                 await mcp.start()
                 runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
-                                         memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
+                                         memory=memory, ingestor=ingestor, tasks=tasks, budget=budget, learning=learning, jargon=jargon,
                                          expression_service=expression_service, sticker_collection=sticker_collection,
                                          reply_effects=reply_effects, plugins=plugins, mcp=mcp)
                 if config.panel is None:

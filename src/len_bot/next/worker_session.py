@@ -182,7 +182,7 @@ async def worker_session(
     token = secrets.token_urlsafe(32)
     proxy = WorkerModelProxy(
         settings, provider, context_window_tokens, price, token, limits,
-        slots=slots, start_call=start_call, finish_call=finish_call,
+        slots=slots, scene=scene, start_call=start_call, finish_call=finish_call,
     )
     handle: SandboxHandle | None = None
     bridge: WorkerTransport | None = None

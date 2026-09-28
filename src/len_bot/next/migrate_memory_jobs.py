@@ -46,6 +46,12 @@ def _step(db: sqlite3.Connection, path: Path, version: int) -> Path:
                 "request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT)"
             )
             db.execute("CREATE INDEX memory_summary_runs_path ON memory_summary_runs(scope,path,id)")
+        elif version == 3:
+            db.execute("ALTER TABLE memory_summary_runs ADD COLUMN model_started REAL")
+            db.execute("CREATE TABLE memory_embedding_calls ("
+                       "id INTEGER PRIMARY KEY,scene TEXT NOT NULL,purpose TEXT NOT NULL,"
+                       "started REAL NOT NULL,ended REAL,request TEXT NOT NULL,response TEXT,usage TEXT,cost TEXT,error TEXT)")
+            db.execute("CREATE INDEX memory_embedding_usage ON memory_embedding_calls(started,scene)")
         db.execute(f"PRAGMA user_version={version + 1}")
         db.commit()
     except BaseException:

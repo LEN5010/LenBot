@@ -556,9 +556,16 @@ class ReplayClockSettings(BaseModel):
     monotonic_origin: _FiniteSeconds
 
 
+from .operations import LoggingSettings
+from .limits import ResourceLimits
+
+
 class SharedConfig(BaseModel):
     model_config = STRICT
 
+    logging: LoggingSettings | None = None
+    limits: ResourceLimits = Field(default_factory=ResourceLimits)
+    max_model_requests: int = Field(default=4, gt=0, strict=True)
     bot_qq: str
     owner_qq: str | None = None
     permissions: IdentitySettings = Field(default_factory=IdentitySettings)
@@ -579,6 +586,23 @@ class SharedConfig(BaseModel):
     history_import: HistoryImportSettings | None = None
     history_export: HistoryExportSettings | None = None
     models: Models
+
+    @model_validator(mode="after")
+    def budget_prices(self):
+        if self.limits.daily_model_cost is None and not self.limits.scene_daily_model_cost:
+            return self
+        if self.models.roles.asr is not None:
+            raise ValueError("日金额预算目前不接受ASR绑定：转写没有配置计价口径；先配置可计费语音接口后再开放组合")
+        bindings = [getattr(self.models.roles, role) for role in ("mind","voice","vision","memory","worker","learner")]
+        if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
+            bindings.append(self.memory.local.embedding)
+        for binding in bindings:
+            if binding is None:
+                continue
+            price = self.models.prices.get(binding.provider, {}).get(binding.model)
+            if price is None or price.currency != self.limits.currency:
+                raise ValueError(f"日金额预算要求 {binding.provider}/{binding.model} 的 {self.limits.currency} 显式价格")
+        return self
 
     @model_validator(mode="after")
     def memory_provider_exists(self) -> SharedConfig:
@@ -852,7 +876,6 @@ class HostConfig(SharedConfig):
     onebot: OneBotSettings
     panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)
-    max_model_requests: int = Field(default=4, gt=0, strict=True)
     plugins: PluginSettings | None = None
     mcp: dict[str, MCPService] = Field(default_factory=dict)
 
@@ -902,6 +925,12 @@ class HostConfig(SharedConfig):
                     raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
                 if settings.learning.collect_stickers and self.models.roles.vision is None:
                     raise ValueError(f"scenes.{scene}.learning.collect_stickers requires explicit models.roles.vision")
+                if settings.learning.embedding is not None and (
+                        self.limits.daily_model_cost is not None or self.limits.scene_daily_model_cost):
+                    binding = settings.learning.embedding
+                    price = self.models.prices.get(binding.provider, {}).get(binding.model)
+                    if price is None or price.currency != self.limits.currency:
+                        raise ValueError(f"场景表达向量日预算要求 {binding.provider}/{binding.model} 的同币种价格")
                 if (settings.learning.embedding is not None
                         and settings.learning.embedding.provider not in self.models.providers):
                     raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "
@@ -1043,6 +1072,9 @@ def _load_lab_source(path: Path, source: dict) -> LabConfig:
                 sets[name] = _resolved_path(
                     root, location, within_root=False, field=f"evaluation.sets.{name}",
                 )
+    if isinstance(source.get("logging"), dict):
+        source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
+                                                       within_root=True, field="logging.directory")
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
@@ -1068,6 +1100,9 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
                     root, settings.get("persona"), within_root=False,
                     field=f"scenes.{scene}.persona",
                 )
+    if isinstance(source.get("logging"), dict):
+        source["logging"]["directory"] = _resolved_path(root, source["logging"].get("directory"),
+                                                       within_root=True, field="logging.directory")
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)

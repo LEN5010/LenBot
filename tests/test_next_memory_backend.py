@@ -33,3 +33,34 @@ def test_pending_material_cannot_enter_directory_summaries(tmp_path):
         inputs = await backend.summary_inputs(scene, '')
         assert not inputs['directories'] and not inputs['files']
     asyncio.run(run())
+
+
+def test_changed_profile_is_not_current_and_empty_summary_can_be_removed(tmp_path):
+    from len_bot.next.memory_local import scene_overview
+    async def run():
+        backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
+        scene = 'group:80001'
+        await backend.write(scene, 'profile.md', '活动固定在周五。', '已确认安排')
+        await backend.write_summary(scene, '', '活动时间', '活动固定在周五。')
+        assert scene_overview(backend.root, scene) == '活动固定在周五。'
+        await backend.write(scene, 'profile.md', '改到周六，周五取消。', '明确更正')
+        old = await backend.summary(scene)
+        assert old.changed_after is not None and old.overview == '活动固定在周五。'
+        assert backend.summary_text_sync(scene) is None
+        await backend.delete(scene, 'profile.md', '删除唯一正文')
+        assert not (await backend.summary_inputs(scene, ''))['files']
+        await backend.clear_summary(scene, '')
+        assert (await backend.summary(scene)).overview is None
+        assert scene_overview(backend.root, scene) is None
+    asyncio.run(run())
+
+
+def test_stale_child_summary_is_not_an_input_fact(tmp_path):
+    async def run():
+        backend = LocalMemory(LocalMemorySettings(directory=tmp_path / 'memory'))
+        await backend.write('group:80001', 'events/a.md', '周五', '初始')
+        await backend.write_summary('group:80001', 'events', '周五', '周五')
+        await backend.write('group:80001', 'events/a.md', '改为周六', '更正')
+        inputs = await backend.summary_inputs('group:80001', '')
+        assert inputs['directories'] == [{'name': 'events', 'abstract': None}]
+    asyncio.run(run())

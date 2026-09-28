@@ -77,6 +77,7 @@ class WorkerModelProxy:
         limits: Limits,
         *,
         slots: ModelSlots | None = None,
+        scene: str | None = None,
         start_call: Callable[[dict[str, Any]], int],
         finish_call: Callable[[int, dict[str, Any]], None],
     ):
@@ -92,6 +93,7 @@ class WorkerModelProxy:
         self.price = price
         self.limits = limits
         self.slots = slots
+        self.scene = scene
         self.start_call = start_call
         self.finish_call = finish_call
         self._token = token
@@ -131,7 +133,7 @@ class WorkerModelProxy:
         if self.slots is None:
             yield
         else:
-            async with self.slots.slot():
+            async with self.slots.slot(scene=self.scene):
                 yield
 
     def _add_cost(self, cost: dict[str, str] | None) -> None:

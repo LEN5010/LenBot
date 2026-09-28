@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Mapping
+import re
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,53 @@ class ChatMessage:
     mentions_bot: bool
     is_self: bool
     send_status: SendStatus
+    recalled: bool = False
+
+
+@dataclass(frozen=True)
+class Notice:
+    """One OneBot notice routed to a configured scene; ``raw`` keeps every original field."""
+    scene: str
+    notice_type: str
+    sub_type: str | None
+    user_id: str | None
+    operator_id: str | None
+    time: float
+    raw: Mapping[str, object]
+
+
+def parse_notice(raw: dict) -> Notice | None:
+    """Parse the fields every routed notice needs; ``None`` when it names no scene."""
+    kind, sub_type = raw.get("notice_type"), raw.get("sub_type")
+    if not isinstance(kind, str) or not kind or (sub_type is not None and not isinstance(sub_type, str)):
+        raise ValueError(f"OneBot notice lacks a text notice_type/sub_type: {repr(raw)[:300]}")
+    moment = raw.get("time")
+    if isinstance(moment, bool) or not isinstance(moment, int | float):
+        raise ValueError(f"OneBot notice lacks numeric time: {repr(raw)[:300]}")
+    try:
+        datetime.fromtimestamp(moment, timezone.utc)
+    except (ValueError, OverflowError, OSError) as error:
+        raise ValueError(f"OneBot notice invalid time: {error}; raw={repr(raw)[:300]}") from error
+    if kind in {"group_recall", "friend_recall"}:
+        _id(raw.get("message_id"), "message_id")
+    ids = {}
+    # Implementations report operator_id 0 when there is no separate operator; keep it as sent.
+    for name, pattern in (("group_id", r"[1-9][0-9]*"), ("user_id", r"[1-9][0-9]*"), ("operator_id", r"[0-9]+")):
+        value = raw.get(name)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int | str)
+                                  or re.fullmatch(pattern, str(value)) is None):
+            raise ValueError(f"OneBot notice {name} is not a QQ number: {repr(raw)[:300]}")
+        ids[name] = None if value is None else str(value)
+    if kind.startswith("group_") and ids["group_id"] is None:
+        raise ValueError(f"OneBot {kind} requires group_id; raw={repr(raw)[:300]}")
+    if kind == "friend_recall" and (ids["user_id"] is None or ids["group_id"] is not None):
+        raise ValueError(f"OneBot friend_recall requires private user_id without group_id; raw={repr(raw)[:300]}")
+    scene = (f"group:{ids['group_id']}" if ids["group_id"] is not None
+             else f"private:{ids['user_id']}" if ids["user_id"] is not None else None)
+    if scene is None:
+        return None
+    return Notice(scene=scene, notice_type=kind, sub_type=sub_type, user_id=ids["user_id"],
+                  operator_id=ids["operator_id"], time=float(moment), raw=raw)
 
 
 @dataclass(slots=True)
@@ -203,8 +251,8 @@ def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | 
         if reply is None:
             quote = f"（回复消息 {message.reply_to}）"
         else:
-            quote = f"（回复 {_speaker(reply)}：{_body(reply.segments)[:40]}）"
-    return f"[{clock}] {_speaker(message)}：{quote}{_body(message.segments, audio)}"
+            quote = f"（回复 {'已撤回 · ' if reply.recalled else ''}{_speaker(reply)}：{_body(reply.segments)[:40]}）"
+    return f"[{clock}] {'（已撤回）' if message.recalled else ''}{_speaker(message)}：{quote}{_body(message.segments, audio)}"
 
 
 def parse_send_result(raw: dict) -> SendResult:

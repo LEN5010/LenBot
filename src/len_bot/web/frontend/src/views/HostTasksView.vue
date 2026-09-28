@@ -37,7 +37,7 @@ const sessionHref = computed(() => `/api/host/tasks/${encodeURIComponent(selecte
 const acceptingScene = computed(() => state.value?.configured && state.value.accepting && sceneSettings.value?.enabled)
 const canAppend = computed(() => state.value?.accepting && ['running','waiting_input'].includes(task.value?.status))
 const canContinue = computed(() => !task.value?.account_browser && acceptingScene.value && ['done','failed','cancelled'].includes(task.value?.status))
-const canAnswer = computed(() => state.value?.accepting && task.value?.status === 'waiting_input' && task.value.question)
+const canAnswer = computed(() => task.value?.question?.method !== 'request_help' && state.value?.accepting && task.value?.status === 'waiting_input' && task.value.question)
 const canCancel = computed(() => state.value?.configured && ['queued','running','waiting_input'].includes(task.value?.status)
   && (state.value.accepting || task.value.status === 'queued'))
 const dirty = computed(() => Object.values(createForm.value).some(value => value !== '' && value !== false) || operator.value !== ''
@@ -289,15 +289,21 @@ function connectLive() {
 function reconnectLive() { closeLive(); connectLive() }
 function eventContent(record) {
   const body = record.body
+  const fields = ['text', 'title', 'message', 'value', 'note']
+  const plain = fields.filter(key => typeof body[key] === 'string').map(key => body[key])
+  if (Array.isArray(body.options)) plain.push(`可选项：${body.options.join('、')}`)
+  if (typeof body.confirmed === 'boolean') plain.push(body.confirmed ? '已确认' : '已拒绝')
+  if (body.cancelled === true) plain.push('已取消回答')
+  if (typeof body.outcome === 'string') plain.push(`浏览器接手结果：${body.outcome}`)
   const content = body.type === 'tool_execution_end' ? body.result?.content
     : body.type === 'message_end' ? body.message?.content : null
-  return Array.isArray(content) ? content.filter(part => part.type === 'text'
-    || (part.type === 'image' && ['image/png','image/jpeg','image/webp'].includes(part.mimeType))) : []
+  return [...plain.map(text => ({ type: 'text', text })), ...(Array.isArray(content) ? content.filter(part => part.type === 'text'
+    || (part.type === 'image' && ['image/png','image/jpeg','image/webp'].includes(part.mimeType))) : [])]
 }
 function eventLabel(event) {
   const labels = {tool_execution_start:'开始工具操作', tool_execution_end:'工具操作结果',
     message_start:'开始生成', message_end:'生成结束', agent_start:'开始执行', agent_end:'本次执行结束',
-    extension_ui_request:'等待补充或确认', finished:'任务结束', input:'新增要求',
+    extension_ui_request:'等待补充或确认', finished:'任务结束', progress:'任务进度', answer_timeout:'等待回答超时', input:'新增要求',
     question:'向请求人提问', answer:'收到回答', browser_started:'专用浏览器会话已建立',
     browser_stopped:'专用浏览器会话已关闭', browser_released:'残留会话已清理'}
   return labels[event.event_type] || '任务记录'
@@ -501,6 +507,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
             <v-btn type="submit" variant="outlined" :loading="acting==='append'" :disabled="!operator || !appendText.trim() || Boolean(acting)">追加要求</v-btn></form>
           <form v-if="canContinue && !detailStale" @submit.prevent="submitAction('continue')"><v-textarea v-model="continueText" label="续接已结束任务的新要求" rows="2" auto-grow hide-details="auto" />
             <v-btn type="submit" variant="outlined" :loading="acting==='continue'" :disabled="!operator || !continueText.trim() || Boolean(acting)">续接任务</v-btn></form>
+          <p v-if="task.question?.method==='request_help'" role="status">请在专用浏览器完成人工接手。等待不计活动执行时长，仍可取消任务。</p>
           <div v-if="canAnswer && !detailStale" class="answer"><template v-if="task.question.method==='confirm'"><p class="muted">这是操作授权，不接受文字替代。请核对上方问题原文。</p>
               <v-btn color="primary" :loading="acting==='answer'" :disabled="questionChanged || !operator || Boolean(acting)" @click="submitAction('answer',true)">明确同意</v-btn>
               <v-btn variant="outlined" :disabled="questionChanged || !operator || Boolean(acting)" @click="submitAction('answer',false)">明确拒绝</v-btn></template>
@@ -539,7 +546,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
               </template>
               <p v-if="fullEvents[event.id].record.body.summary">{{ fullEvents[event.id].record.body.summary }}</p>
               <pre v-if="fullEvents[event.id].record.body.error">{{ fullEvents[event.id].record.body.error }}</pre>
-              <p v-if="!developerDetails && !eventContent(fullEvents[event.id].record).length" class="muted">此记录没有文字或图像结果；原生结构在设置中的开发者模式查看。</p>
+              <p v-if="!developerDetails && !eventContent(fullEvents[event.id].record).length && !fullEvents[event.id].record.body.summary && !fullEvents[event.id].record.body.error" class="muted">此记录没有文字或图像结果；原生结构在设置中的开发者模式查看。</p>
             </div>
             <details v-if="developerDetails && fullEvents[event.id]"><summary>查看此条完整记录 · {{ localTime(fullEvents[event.id].readAt) }} 快照</summary>
               <p class="muted">模型调用的 response 等字段可能随后补写；此处只反映上次读取，必要时点“重读此条原文”。</p>
@@ -550,6 +557,7 @@ onBeforeUnmount(() => { active = false; liveMounted = false; socket?.close(); cl
           :status="task.status" :container="task.container" :configured="Boolean(state?.configured)" />
       </template>
     </section>
+    <a v-if="task && !detailStale" :href="`/api/host/tasks/${task.id}/export?scene=${encodeURIComponent(task.scene)}`">下载当前任务脱敏诊断包（不含文件原件）</a>
   </div>
 </template>
 

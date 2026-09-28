@@ -22,7 +22,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from .cases import CaseFile, ReplayCase, load_cases
-from ..next.chat import PROMPTS
+from ..next.chat import PROMPTS, build_tools
 from ..next.config import LabConfig, load_config
 from ..next.persona import Persona, load_persona
 from ..next.pricing import cost_summary
@@ -30,7 +30,7 @@ from ..next.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
-               "persona_knowledge", "tool_search"}
+               "persona_knowledge", "tool_search", "react"}
 
 
 class Annotation(BaseModel):
@@ -69,7 +69,7 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
         scenes = {row[0] for row in db.execute(" UNION ".join(
             f"SELECT scene FROM {table}" for table in (
                 "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents",
-                "image_cache", "tasks", "task_events", "task_files", "learning_state",
+                "notices", "image_cache", "audio_cache", "audio_calls", "tasks", "task_events", "task_files", "learning_state",
                 "learning_batches", "expressions", "expression_embedding_calls",
                 "jargon_state", "jargon", "jargon_calls", "sticker_candidates", "sticker_calls",
                 "reply_effects", "reply_effect_calls", "proactive_wakes", "plugin_events",
@@ -112,6 +112,9 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
     persona = load_persona(config.persona)
     if persona.tools != "all" and (unsupported := set(persona.tools) - LOCAL_TOOLS):
         raise ValueError(f"Development replay does not implement these declared tools: {sorted(unsupported)}")
+    unsupported = {tool["function"]["name"] for tool in build_tools(config, persona, platform=False)} - LOCAL_TOOLS
+    if unsupported:
+        raise ValueError(f"Development replay does not implement these effective tools: {sorted(unsupported)}")
     cases = load_cases(config.evaluation.sets[set_name], set_name=set_name,
                        scene=config.scene, bot_qq=config.bot_qq)
     for case in cases.cases:
@@ -162,6 +165,16 @@ def snapshot_persona(persona: Persona, destination: Path) -> None:
     write_json(destination / "examples.yaml", [example.model_dump() for example in persona.examples])
     (destination / "voice.md").write_text(persona.voice, encoding="utf-8", newline="")
     (destination / "boundaries.md").write_text(persona.boundaries, encoding="utf-8", newline="")
+    if persona.stickers:
+        directory = destination / "stickers"
+        directory.mkdir()
+        write_json(directory / "index.yaml", [
+            {"file": item.file, "description": item.description, "emotions": list(item.emotions),
+             "tags": list(item.tags)} for item in persona.stickers.values()])
+        for item in persona.stickers.values():
+            path = directory / item.file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(item.data)
     for filename, document in persona.knowledge.items():
         path = destination / "knowledge" / filename
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -55,7 +55,7 @@ class WorkerSettings(BaseModel):
     compaction_reserve_tokens: int = Field(default=16384, gt=0, strict=True)
     compaction_keep_recent_tokens: int = Field(default=20000, gt=0, strict=True)
     active_timeout_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
-    input_timeout_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
+    input_timeout_seconds: float = Field(default=1800.0, ge=0.001, le=4294967.295, allow_inf_nan=False)
     max_file_bytes: int = Field(default=25 * 1024 * 1024, gt=0, strict=True)
     input_support: Literal["text", "text-image"] = "text"
     model_reasoning: bool

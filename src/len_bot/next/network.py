@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import logging
 import sqlite3
 from collections.abc import Callable
 from collections import deque
@@ -12,9 +13,11 @@ from .attention import SceneRunner
 from .audio import AudioService
 from .chat import Chat
 from .config import LabConfig, OneBotForward, SharedConfig
-from .messages import parse_message
+from .operations import credentials, redact, redact_record
+from .messages import parse_message, parse_notice
 from .model import ChatModel
 from .model_slots import ModelSlots
+from .limits import ModelBudget
 from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
@@ -35,6 +38,7 @@ class NetworkRuntime:
                  store: Store, mind: ChatModel, voice: ChatModel, *,
                  vision: ChatModel | None = None, slots: ModelSlots | None = None,
                  memory: MemoryService | None = None,
+                 budget: ModelBudget | None = None,
                  ingestor: MemoryIngestor | None = None,
                  tasks: WorkTasks | None = None,
                  learning: ExpressionLearner | None = None,
@@ -48,8 +52,14 @@ class NetworkRuntime:
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
         self.config, self.store = config, store
+        self.log_secrets = credentials(config)
         self.logs: deque[dict] = deque(maxlen=500)
         self.memory = memory
+        self.budget = ModelBudget(config, store, memory) if budget is None else budget
+        if slots is None and (config.limits.daily_model_cost is not None or config.limits.scene_daily_model_cost):
+            raise ValueError("配置模型金额预算时必须装配共享ModelSlots")
+        if slots is not None:
+            slots.admit = self.budget.check
         self.ingestor = ingestor
         self.learning = learning
         self.jargon = jargon
@@ -158,8 +168,21 @@ class NetworkRuntime:
             self.notify()
 
     def _emit(self, result: dict) -> None:
-        self.logs.append({"time": self.store.now(), "record": result})
-        print(encode(result), flush=True)
+        def clean_value(text):
+            if self.plugins is not None:
+                for name in self.plugins.plugins:
+                    text = self.plugins.redact(name, text)
+            return redact(text, self.log_secrets)
+        clean = redact_record(result, clean_value)
+        text = encode(clean)
+        self.logs.append({"time": self.store.now(), "record": clean})
+        summary = {key: clean[key] for key in (
+            "type", "status", "scene", "turn_id", "error", "reason", "post_type", "notice_type",
+            "plugin_handlers", "platform_message_id", "delivery", "quiet_until", "pending_wake",
+        ) if key in clean}
+        logging.getLogger(__name__).log(logging.ERROR if result.get("error") else logging.INFO,
+                                       "%s", encode(summary))
+        print(text, flush=True)
         self.notify()
 
     def _platform_error(self, error: str) -> None:
@@ -181,9 +204,18 @@ class NetworkRuntime:
         if post_type != "message":
             if not self.accepting:
                 self._emit({"type": "receipt", "status": "not_accepted", "reason": "stopping"})
-            elif post_type == "notice" and self.plugins is not None:
+            elif post_type == "notice":
                 try:
-                    handled = self.plugins.handle_notice(raw)
+                    notice = parse_notice(raw)
+                    if notice is None or notice.scene not in self.runners:
+                        self._emit({"type": "platform_event", "status": "ignored", "post_type": post_type})
+                        return
+                    self.store.save_notice(notice)
+                    handled = 0 if self.plugins is None else self.plugins.handle_notice(notice)
+                except sqlite3.Error as error:
+                    self.storage_error = error
+                    self.stop()
+                    raise
                 except ValueError as error:
                     self._platform_error(f"{type(error).__name__}: {error}")
                     return
@@ -374,7 +406,7 @@ async def run_network(config: SharedConfig, scene_configs: list[tuple[LabConfig,
                       store: Store, mind: ChatModel, voice: ChatModel, *,
                       vision: ChatModel | None = None, slots: ModelSlots | None = None,
                       memory: MemoryService | None = None, ingestor: MemoryIngestor | None = None,
-                      expression_service: ExpressionService | None = None) -> None:
+                      expression_service: ExpressionService | None = None, budget: ModelBudget | None = None) -> None:
     runtime = NetworkRuntime(config, scene_configs, store, mind, voice, vision=vision, slots=slots,
-                             memory=memory, ingestor=ingestor, expression_service=expression_service)
+                             memory=memory, ingestor=ingestor, expression_service=expression_service, budget=budget)
     await runtime.run()

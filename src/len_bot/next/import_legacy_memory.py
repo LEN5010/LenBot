@@ -15,8 +15,10 @@ import time
 from zoneinfo import ZoneInfo
 
 from .config import HostConfig, LabConfig, load_instance_config
-from .memory import LEGACY_IMPORT, LocalMemoryConfig, open_memory_backend
+from .memory import LEGACY_IMPORT, LocalMemoryConfig, open_memory
 from .store import Store, encode
+from .model_slots import ModelSlots
+from .limits import ModelBudget
 
 
 COLUMNS = ("id", "scope", "subject", "kind", "statement", "basis", "evidence", "status",
@@ -153,11 +155,16 @@ async def import_legacy_memory(config: LabConfig | HostConfig) -> dict:
         raise FileExistsError(f"{LEGACY_IMPORT}/ already exists in memory partitions {existing}; nothing was written")
     written: list[dict] = []
     try:
-        async with open_memory_backend(config) as backend:
-            for scene, paths in files.items():
-                for path, content in sorted(paths.items()):
-                    change = await backend.write(scene, path, content, REASON)
-                    written.append({"scene": scene, "path": path, "chars": len(change.after)})
+        with Store(config.database) as store:
+            slots = ModelSlots(config.max_model_requests)
+            budget = ModelBudget(config, store, None)
+            slots.admit = budget.check
+            async with open_memory(config, store, slots=slots) as memory:
+                budget.memory = memory
+                for scene, paths in files.items():
+                    for path, content in sorted(paths.items()):
+                        change = await memory.backend.write(scene, path, content, REASON)
+                        written.append({"scene": scene, "path": path, "chars": len(change.after)})
     except BaseException as error:
         report["error"] = f"{type(error).__name__}: {error}"
         raise

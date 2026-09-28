@@ -148,6 +148,13 @@ async function readHistory() {
   } catch (error) { if (fresh() && path === selected.value) historyError.value = error.message }
   finally { if (fresh() && path === selected.value) historyLoading.value = false }
 }
+async function readSnapshot(item){
+  const fresh=beginHistory(),path=selected.value,target=scene.value
+  historyLoading.value=true;historyError.value=''
+  try{const args={scene:target,path,target:item.oid};if(item.parents.length)args.previous=item.parents[0]
+    const value=await api(query('/api/host/memory/history-diff',args));if(fresh()&&selected.value===path)item.diff=value.diff_text
+  }catch(e){if(fresh())historyError.value=e.message}finally{if(fresh())historyLoading.value=false}
+}
 function errorMessage(error, action) {
   return error.status >= 400 && error.status < 500
     ? `${action}未被接受：${error.message}`
@@ -282,12 +289,14 @@ watch(editPath, value => {
         <div v-if="selected && scope==='scene'" class="file-actions"><v-btn v-if="can('history')" variant="outlined" :loading="historyLoading" @click="readHistory">查看修改历史</v-btn>
           <v-btn v-if="deletable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(false)">普通删除</v-btn>
           <v-btn v-if="forgettable" variant="outlined" color="error" :loading="deleting" :disabled="!reason.trim()" @click="deleteFile(true)">定向遗忘 · 已选 {{ sourceSelections.length }} 条原消息</v-btn></div>
-        <p v-if="deletable && can('history')" class="muted">普通删除保留本地可访问历史且不影响原消息；定向遗忘只针对目标文件、其可访问记忆历史版本及本次选中的原消息后台抽取。</p>
+        <p v-if="deletable && can('forget')" class="muted">普通删除保留本地可访问历史且不影响原消息；定向遗忘只针对目标文件、其可访问记忆历史版本及本次选中的原消息后台抽取。</p>
         <v-alert v-if="deleteError" type="error" variant="tonal" role="alert">{{ deleteError }}</v-alert>
         <v-alert v-if="historyError" type="error" variant="tonal" role="alert">历史读取失败：{{ historyError }}</v-alert>
+        <p v-if="state?.backend==='openviking'" class="muted">远端只展示当前文件最近100条原生快照，不代表每次修改均有历史；未创建快照的旧修改无法补查。删除当前正文不清除快照、归档或备份。</p>
         <div v-if="history.length" class="history"><h3>实际修改历史</h3><ul><li v-for="(item,index) in history" :key="`${item.changed_at}:${index}`">
-          <strong>{{ item.action }} · {{ displayTime(item.changed_at) }}</strong><p class="original-text">{{ item.reason }}</p>
-          <details><summary>查看改动前后原文</summary><h4>改动前</h4><pre>{{ item.before===null?'无':item.before }}</pre><h4>改动后</h4><pre>{{ item.after===null?'无':item.after }}</pre></details></li></ul></div>
+          <template v-if="item.source==='snapshot'"><strong>{{item.message}}</strong><p>原生快照 {{item.oid}}</p><v-btn :disabled="historyLoading" @click="readSnapshot(item)">读取此快照差异</v-btn><pre v-if="item.diff!==undefined">{{item.diff||'文件无文本差异'}}</pre></template>
+          <template v-else><strong>{{ item.action }} · {{ displayTime(item.changed_at) }}</strong><p class="original-text">{{ item.reason }}</p>
+          <details><summary>查看改动前后原文</summary><h4>改动前</h4><pre>{{ item.before===null?'无':item.before }}</pre><h4>改动后</h4><pre>{{ item.after===null?'无':item.after }}</pre></details></template></li></ul></div>
       </section>
       <section v-if="lastResult" class="surface"><h2>后端实际操作结果</h2><p class="muted">{{ lastResult.scope==='public'?'公共':'场景' }} · {{ lastResult.path }} · {{ lastResult.kind }}。下方状态逐字段保留；返回写入不代表所有索引阶段都已成功。</p>
         <p v-if="lastResult.kind==='forget' && lastResult.value.excluded_records" class="muted">本次明确选择并保存排除 {{ lastResult.value.excluded_records.length }} 条原消息，其中新增加 {{ lastResult.value.new_exclusions }} 条；不等于聊天、模型请求或备份已删除。</p>

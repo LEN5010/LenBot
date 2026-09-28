@@ -30,6 +30,7 @@ function content(value) {
 function raw(entry) { return JSON.stringify(entry.message, null, 2) }
 function resetSelection() {
   ++selectionEpoch
+  actionNotice.value = ''
   snapshot.value = null
   entries.value = []
   nextBefore.value = null
@@ -95,6 +96,16 @@ async function readHost() {
   } catch (error) { if (fresh()) readError.value = error.message }
   finally { if (fresh()) hostLoading.value = false }
 }
+const acting=ref(false), actionNotice=ref('')
+async function operate(action){
+  if(acting.value||loading.value||!scene.value)return
+  const text=action==='compact'?'调用当前大脑模型压缩完整旧对话（产生费用），不发送QQ？':'开启新上下文？原消息、记忆、安排和任务均保留，未读输入继续处理。'
+  if(!window.confirm(text))return
+  const target=scene.value;acting.value=true;actionNotice.value=''
+  try{const result=await api(`/api/host/scenes/${encodeURIComponent(target)}/history/${action}?confirmed=true`,{method:'POST'});if(scene.value===target){actionNotice.value=result.message||'已完成一次手动压缩';await loadFirst()}}
+  catch(e){if(scene.value===target)readError.value=`操作失败或结果未确认：${e.message}；请重读核对，不自动重试。`}
+  finally{acting.value=false}
+}
 onMounted(readHost)
 watch(() => route.query.scene, value => {
   if (typeof value === 'string' && host.value && value !== scene.value) selectScene(value, true)
@@ -103,14 +114,15 @@ watch(() => route.query.scene, value => {
 
 <template>
   <div class="page-stack host-history">
+    <div class="surface"><v-btn :disabled="acting||loading||!scene" @click="operate('compact')">手动压缩（调用模型）</v-btn> <v-btn :disabled="acting||loading||!scene" @click="operate('new-context')">开启新上下文</v-btn><p v-if="actionNotice">{{actionNotice}}</p></div>
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>大脑会话</h1>
-      <p class="muted">读取本场景已保存的原生大脑上下文与回想，不触发模型。这是当前会话记录，不是长期记忆；没有压缩、清空或重放操作。</p></div>
+      <p class="muted">读取本场景已保存的原生大脑上下文与回想，不触发模型。这是当前会话记录，不是长期记忆；手动压缩调用当前模型；新上下文保留原记录，不重放旧输入。</p></div>
       <v-btn variant="outlined" :loading="loading || hostLoading" :disabled="!scene" @click="loadFirst">重读最新页</v-btn></header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert" :title="snapshot?'读取失败 · 保留上次结果':'读取大脑会话失败'">{{ readError }}</v-alert>
     <section class="surface"><h2>读取范围</h2>
-      <v-select :model-value="scene" :items="options" label="场景" hide-details="auto" :disabled="!host" @update:model-value="selectScene" />
+      <v-select :model-value="scene" :items="options" label="场景" hide-details="auto" :disabled="!host||acting" @update:model-value="selectScene" />
       <v-switch :model-value="activeOnly" label="仅本轮会话上下文" hide-details :disabled="!scene" @update:model-value="selectScope" />
-      <p class="muted">{{ activeOnly?'仅显示压缩位置之后的大脑条目；上方回想仍单列。':'包含已经压缩进回想的旧条目；旧记录不会因此重新进入当前大脑上下文。' }}</p>
+      <p class="muted">{{ activeOnly?'仅显示压缩位置之后的大脑条目；上方回想仍单列。':'包含压缩或开启新上下文前的旧条目；旧记录不会因此重新进入当前大脑上下文。' }}</p>
       <p v-if="(loading || hostLoading) && !snapshot" role="status" class="muted">正在读取实际会话条目…</p>
     </section>
     <HostAudioPanel v-if="scene" :key="scene" :scene="scene" />
@@ -123,7 +135,7 @@ watch(() => route.query.scene, value => {
       <section class="surface"><div class="section-heading"><h2>原生条目</h2><span class="muted">页面顺序：较早 → 较新</span></div>
         <p v-if="!entries.length" class="muted">此范围暂无已保存条目。</p>
         <ol v-else class="entry-list"><li v-for="entry in entries" :key="entry.seq" class="entry-card">
-          <div class="entry-heading"><strong>{{ roleLabel(entry.message.role) }}</strong><span class="muted">{{ timestamp(entry.created) }} · {{ entry.active?'当前上下文':'已压缩旧记录' }}</span></div>
+          <div class="entry-heading"><strong>{{ roleLabel(entry.message.role) }}</strong><span class="muted">{{ timestamp(entry.created) }} · {{ entry.active?'当前上下文':'非当前上下文' }}</span></div>
           <p v-if="entry.message.content!==undefined && entry.message.content!==null" class="original-text">{{ content(entry.message.content) }}</p>
           <p v-else class="muted">无正文。</p>
           <template v-if="entry.message.tool_calls?.length"><div v-for="call in entry.message.tool_calls" :key="call.id" class="tool-call">

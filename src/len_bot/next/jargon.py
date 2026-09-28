@@ -271,14 +271,14 @@ class JargonLearner:
                  "context_window_tokens": binding.context_window_tokens,
                  "price": None if price is None else price.model_dump(mode="json")}, estimated)
 
-    async def _model_call(self, call_id: int, messages: list[dict], estimated: int) -> ModelReply:
+    async def _model_call(self, scene: str, call_id: int, messages: list[dict], estimated: int) -> ModelReply:
         binding = self.config.models.roles.learner
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
         if estimated > binding.context_window_tokens:
             raise ContextBudgetError(
                 f"jargon request estimated {estimated} tokens, exceeding configured window "
                 f"{binding.context_window_tokens}; model was not called")
-        async with (self.slots.slot(direct=False) if self.slots is not None else nullcontext()):
+        async with (self.slots.slot(direct=False, scene=scene) if self.slots is not None else nullcontext()):
             self.records.mark_model_started(call_id)
             try:
                 reply = await self.model.complete(messages, [])
@@ -301,7 +301,7 @@ class JargonLearner:
         try:
             if self.on_update is not None:
                 self.on_update()
-            reply = await self._model_call(call_id, messages, estimated)
+            reply = await self._model_call(scene, call_id, messages, estimated)
             proposals = _discovery(reply, {seq: plain_text(message) for seq, message, _ in rows})
             self.records.complete_discovery(call_id, proposals, exclude_uids=self._exclude_uids(scene))
         except asyncio.CancelledError as error:
@@ -321,7 +321,7 @@ class JargonLearner:
         try:
             if self.on_update is not None:
                 self.on_update()
-            reply = await self._model_call(call_id, messages, estimated)
+            reply = await self._model_call(scene, call_id, messages, estimated)
             meaning, confidence = _meaning(reply)
             self.records.complete_meaning(call_id, meaning, confidence)
         except asyncio.CancelledError as error:

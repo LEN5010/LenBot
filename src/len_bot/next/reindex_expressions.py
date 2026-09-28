@@ -7,12 +7,16 @@ import sys
 from .config import load_instance_config
 from .expression_selection import open_expression_service
 from .store import Store, encode
+from .model_slots import ModelSlots
+from .limits import ModelBudget
 
 
 async def rebuild() -> None:
     config = load_instance_config(Path.cwd())
     with Store(config.database) as store:
-        async with open_expression_service(config, store) as service:
+        slots = ModelSlots(config.max_model_requests)
+        slots.admit = ModelBudget(config, store, None).check
+        async with open_expression_service(config, store, slots=slots) as service:
             if service is None:
                 raise ValueError("No configured expression embedding backend to rebuild")
             for scene in service.scenes:

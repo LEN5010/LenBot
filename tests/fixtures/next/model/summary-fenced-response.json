@@ -1,0 +1,8 @@
+{
+  "message": {
+    "role": "assistant",
+    "content": "```json\n{\n  \"abstract\": \"本目录记录了合成群的固定活动时间及相关识别标记信息。\",\n  \"overview\": \"### 群内习惯与活动\\n- **活动时间**：合成群活动固定在周五。\\n- **识别标记**：活动识别标记为ORIGINAL-FRIDAY。\"\n}\n```",
+    "tool_calls": null
+  },
+  "finish_reason": "stop"
+}

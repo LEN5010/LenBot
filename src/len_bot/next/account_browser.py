@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AccountBrowserSettings(BaseModel):
@@ -49,6 +49,23 @@ class BrowserAction(BaseModel):
         return value
 
 
+    @model_validator(mode='after')
+    def native_arguments(self):
+        if self.method == 'select':
+            values = self.params.get('values')
+            if 'value' in self.params or not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                raise ValueError(f'select requires values: string[]; raw={self.params!r}')
+        if self.method == 'request_help':
+            prompt = self.params.get('prompt')
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise ValueError(f'request_help requires nonblank prompt; raw={self.params!r}')
+            if 'timeout_ms' in self.params:
+                timeout = self.params['timeout_ms']
+                if type(timeout) is not int or not 1 <= timeout <= 4294967295:
+                    raise ValueError(f'request_help timeout_ms must be positive u32; raw={self.params!r}')
+        return self
+
+
 BROWSER_TOOL = {'name': 'account_browser',
     'description': '在此主人授权的独立账号任务中操作专用浏览器。方法与参数使用原生浏览器协议；'
                    '先observe取得实际ref再操作。session和browser由宿主绑定。远程上传下载不支持。'
@@ -65,12 +82,13 @@ class AccountBrowser:
         self.settings = settings
         self.lock = asyncio.Lock()
 
-    async def rpc(self, method: str, params: dict) -> dict:
+    async def rpc(self, method: str, params: dict, *, response_timeout_seconds: float | None = None) -> dict:
         call_id = str(uuid4())
         reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(
             self.settings.socket, limit=self.settings.max_response_bytes), self.settings.timeout_seconds)
         try:
-            async with asyncio.timeout(self.settings.timeout_seconds):
+            async with asyncio.timeout(self.settings.timeout_seconds if response_timeout_seconds is None
+                                       else response_timeout_seconds):
                 writer.write((json.dumps({'id': call_id, 'method': method, 'params': params}) + '\n').encode())
                 await writer.drain()
                 raw = await reader.readline()
@@ -126,7 +144,10 @@ class AccountBrowser:
 
     async def execute(self, session: str, action: BrowserAction) -> dict:
         async with self.lock:
-            result = await self.rpc('tool.' + action.method, {**action.params, 'session_id': session})
+            timeout = ((action.params.get('timeout_ms', 300000) / 1000 + 15)
+                       if action.method == 'request_help' else None)
+            result = await self.rpc('tool.' + action.method, {**action.params, 'session_id': session},
+                                    response_timeout_seconds=timeout)
             if action.method == 'screenshot':
                 try:
                     data = base64.b64decode(result['image_base64'], validate=True)

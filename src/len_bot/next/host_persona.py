@@ -89,6 +89,8 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
 
     def files_state(scene: str, edit: tuple[str, str] | None = None) -> dict:
         config = load_host_config(root)
+        if scene not in config.scenes:
+            raise ValueError("此场景已从保存配置移除；当前运行角色保留到重启，不再编辑其文件")
         path = config.scenes[scene].persona
         files = read_persona_files(path)
         if edit is not None:
@@ -113,7 +115,8 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
         running = running_persona.model_dump()
         stickers_restart_required = candidate.stickers != running_persona.stickers
         return {"saved": files, "running": running,
-                "restart_required": candidate.model_dump() != running or stickers_restart_required,
+                "restart_required": candidate.model_dump() != running or stickers_restart_required
+                                    or candidate.knowledge != running_persona.knowledge,
                 "stickers_restart_required": stickers_restart_required,
                 "affected_scenes": affected}
 
@@ -128,7 +131,10 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
         example = {"context": item.context, "line": item.line, **({"tags": item.tags} if item.tags else {})}
 
         def write() -> dict:
-            path = load_host_config(root).scenes[scene].persona
+            saved = load_host_config(root)
+            if scene not in saved.scenes:
+                raise ValueError("此场景已从保存配置移除，不能追加角色样例")
+            path = saved.scenes[scene].persona
             content = append_example(read_persona_files(path)["examples.yaml"], example)
             return {**files_state(scene, ("examples.yaml", content)), "appended": example}
 

@@ -1,7 +1,7 @@
 """OpenViking native memory view, partitioned by the existing QQ scene identity.
 
 This is an HTTP boundary, not the complete M11 MemoryBackend: it does not
-provide change history, public writes, or irreversible forgetting.
+provide per-write history, public writes, or irreversible forgetting; snapshot history is native.
 """
 
 from __future__ import annotations
@@ -233,6 +233,22 @@ def _as(model: type[BaseModel], value: object, raw: str) -> Any:
         raise ValueError(f"OpenViking invalid {model.__name__} response: {error}; raw={raw[:500]!r}") from error
 
 
+class _SnapshotEntry(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+    oid: str = Field(min_length=1)
+    message: str
+    parents: list[str]
+
+
+class _SnapshotDiff(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+    path: str
+    from_commit: str
+    to_commit: str
+    change_type: str
+    diff_text: str
+
+
 class OpenVikingMemory:
     def __init__(self, settings: OpenVikingSettings):
         self.settings = settings
@@ -389,6 +405,28 @@ class OpenVikingMemory:
         if not isinstance(result, str):
             raise ValueError(f"OpenViking read expected text; raw={raw[:500]!r}")
         return MemoryDocument(path=path, content=result)
+
+    async def history(self, scene: str, path: str) -> list[dict]:
+        identity = await self._identity(scene)
+        uri = self._uri(identity, path, "scene", file=True)
+        payload, raw = await self._request(identity, "GET", "/api/v1/snapshot/log",
+                                            params={"paths": uri, "limit": 100})
+        if not isinstance(payload["result"], list):
+            raise ValueError(f"OpenViking snapshot log expected list; raw={raw[:500]!r}")
+        return [{"source": "snapshot", "path": path, **_as(_SnapshotEntry, entry, raw).model_dump()}
+                for entry in payload["result"]]
+
+    async def history_diff(self, scene: str, path: str, target: str, previous: str | None) -> dict:
+        identity = await self._identity(scene)
+        uri = self._uri(identity, path, "scene", file=True)
+        params = {"path": uri, "to": target, "raw": "true"}
+        if previous is not None:
+            params["from"] = previous
+        payload, raw = await self._request(identity, "GET", "/api/v1/snapshot/diff", params=params)
+        diff = _as(_SnapshotDiff, payload["result"], raw)
+        if diff.path != uri:
+            raise ValueError(f"OpenViking snapshot diff returned another path; raw={raw[:500]!r}")
+        return {**diff.model_dump(), "path": path}
 
     async def write(self, scene: str, path: str, content: str) -> MemoryWrite:
         identity = await self._identity(scene)

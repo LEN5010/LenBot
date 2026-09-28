@@ -128,7 +128,7 @@ async def process_audio(store, config, arguments, *, turn_id, platform, slots, d
     if not reused:
         binding = config.models.roles.asr
         provider = config.models.providers[binding.provider]
-        async with (slots.slot(direct=direct) if slots is not None else nullcontext()):
+        async with (slots.slot(direct=direct, scene=scene) if slots is not None else nullcontext()):
             request = {
                 "settings": binding.model_dump(mode="json"), "base_url": provider.base_url,
                 "file": {"scene": scene, "platform_message_id": arguments.message, "audio": arguments.audio,

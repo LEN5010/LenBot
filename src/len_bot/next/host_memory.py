@@ -106,6 +106,14 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
         async with operation(scene) as memory:
             return {"changes": await memory.history(scene, path)}
 
+    @app.get("/api/host/memory/history-diff")
+    async def history_diff(scene: str, path: str, target: str, previous: str | None = None,
+                           _: str = Depends(user)):
+        async with operation(scene) as memory:
+            if isinstance(memory.backend, LocalMemory):
+                raise ValueError("本地历史直接提供修改前后正文，不使用远端快照引用")
+            return await memory.backend.history_diff(scene, path, target, previous)
+
     @app.post("/api/host/memory/search")
     async def search(body: SearchRequest, _: str = Depends(user)):
         async with operation(body.scene) as memory:
