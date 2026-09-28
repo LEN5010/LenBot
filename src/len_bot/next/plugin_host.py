@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib.util
@@ -193,7 +193,8 @@ class PluginHost:
         self.discovery_errors: list[str] = []
         self.commands: dict[str, str] = {}
         self.tool_owner: dict[str, str] = {}
-        self.tasks: set[asyncio.Task] = set()
+        self.tasks: dict[asyncio.Task, str] = {}
+        self.closing = False
         found, self.discovery_errors = discover([] if settings is None else settings.paths)
         for name, directories in found.items():
             entries = []
@@ -284,6 +285,19 @@ class PluginHost:
 
     # Host capabilities used through PluginContext.
 
+    @property
+    def bot_qq(self) -> str:
+        return self.config.bot_qq
+
+    def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task:
+        if self.closing or self.plugins[plugin].status not in {'loaded','running'}:
+            coroutine.close()
+            raise RuntimeError("插件未处于可运行状态，不创建后台任务")
+        return self._spawn(self.plugins[plugin], name, coroutine)
+
+    def report_error(self, plugin: str, where: str, error: Exception) -> str:
+        return self._record(self.plugins[plugin], where, error)
+
     def scene_timezone(self, scene: str) -> str:
         return self.config.scene_timezone(scene)
 
@@ -334,10 +348,14 @@ class PluginHost:
         except Exception as error:
             self._record(record, where, error)
 
-    def _spawn(self, record: Loaded, where: str, call: Awaitable[object]) -> None:
-        task = asyncio.get_running_loop().create_task(self._guard(record, where, call))
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+    def _spawn(self, record: Loaded, where: str, call: Coroutine) -> asyncio.Task:
+        task = asyncio.get_running_loop().create_task(self._guard(record, where, call), name=f"{record.name}:{where}")
+        self.tasks[task] = record.name
+        def finished(task):
+            self.tasks.pop(task, None)
+            call.close()
+        task.add_done_callback(finished)
+        return task
 
     def tools_for(self, scene: str, *, preparing: bool = False) -> list[ExternalTool]:
         tools = []
@@ -432,22 +450,31 @@ class PluginHost:
             except Exception as error:
                 record.status, record.error = "failed", self._record(record, "启动", error)
                 self._remove_entries(record)
+                owned = [task for task, owner in self.tasks.items() if owner == record.name]
+                for task in owned:
+                    task.cancel()
+                await asyncio.gather(*owned, return_exceptions=True)
+                try:
+                    await record.instance.stop()
+                except Exception as cleanup:
+                    self._record(record, "启动失败后清理", cleanup)
                 record.ready.set()
                 continue
             record.status = "running"
             record.ready.set()
             for item in record.backgrounds:
                 task = asyncio.get_running_loop().create_task(self._background(record, item))
-                self.tasks.add(task)
-                task.add_done_callback(self.tasks.discard)
+                self.tasks[task] = record.name
+                task.add_done_callback(lambda task: self.tasks.pop(task, None))
         self._notify()
 
     async def close(self) -> None:
+        self.closing = True
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         for record in self.plugins.values():
-            if record.status == "running":
+            if record.status in {"loaded", "running"}:
                 try:
                     await record.instance.stop()
                 except Exception as error:
