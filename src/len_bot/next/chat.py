@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +30,8 @@ from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
 from .audio import TRANSCRIBE_TOOL, TranscribeArguments, AudioService
 from .audio_store import AudioStore
+from .plugin import Content, Sent
+from .plugin_delivery import prepare_parts
 from .jargon_store import JargonStore
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
@@ -671,14 +673,13 @@ class Chat:
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
         return content, status
 
-    async def send_plugin_text(self, plugin: str, text: str, *, reply_to: str | None) -> tuple[str, str]:
-        """Send host plugin text through this scene's outlet and queue a note for the mind."""
+    async def send_plugin_content(self, plugin: str, content: Sequence[Content], *, reply_to: str | None) -> Sent:
+        """Send ordered plugin content through one scene outlet and retain actual results."""
         if reply_to is not None and self.store.find_message(self.config.scene, reply_to) is None:
             raise ValueError(f"当前场景没有平台消息 {reply_to}")
-        segments = ([] if reply_to is None else [Segment("reply", {"id": reply_to})]) + [
-            Segment("text", {"text": text})]
-        parts = split_expression(self.simulated_message(segments, reply_to=reply_to),
-                                 self.config.text_delivery.max_chars)
+        prepared = await prepare_parts(plugin, content, self.config.text_delivery.max_chars, reply_to)
+        parts = [self.simulated_message(part.segments, reply_to=reply_to if index == 0 else None)
+                 for index, part in enumerate(prepared)]
         settings = self.config.text_delivery
         errors: list[str | None] = []
         interruption: str | None = None
@@ -691,11 +692,13 @@ class Chat:
                     part.time = self.now()
                     part.send_status = "simulated" if self.send_message is None else "unconfirmed"
                     errors.append(None)
-                    seq = self.store.start_outgoing(part)
+                    image = prepared[index].image
+                    seq = self.store.start_outgoing(part, image=(None if image is None else
+                                                    (image, prepared[index].description)))
                     self.notify()
                     if self.send_message is None:
                         continue
-                    result = await self.send_message(part)
+                    result = await self.send_message(part, image_bytes=None if image is None else image.data)
                     part.send_status, part.platform_message_id = result.status, result.platform_message_id
                     errors[-1] = result.error
                     self.store.finish_expression((seq, None), part, "")
@@ -718,7 +721,8 @@ class Chat:
                     self.notify()
         states = {part.send_status for part in parts[:len(errors)]}
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
-        return report, status
+        return Sent(status, report, tuple(part.platform_message_id for part in parts[:len(errors)]
+                                         if part.send_status == "sent"))
 
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(

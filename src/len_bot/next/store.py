@@ -15,6 +15,7 @@ from uuid import uuid4
 from .messages import ChatMessage, Segment, Sender, plain_text
 from .persona_stickers import PersonaSticker
 from .sticker_assets import CollectedSticker
+from .image_assets import OriginalImage
 from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
@@ -828,6 +829,8 @@ class Store:
                                 (encode(asdict(replace(received, send_status="sent"))), echo[0]))
                 self.db.execute("UPDATE message_media SET message_seq=? WHERE message_seq=?",
                                 (echo[0], message_seq))
+                self.db.execute("UPDATE media SET source_message_seq=? WHERE source_message_seq=?",
+                                (echo[0], message_seq))
                 self.db.execute("DELETE FROM message_search WHERE rowid=?", (message_seq,))
                 self.db.execute("DELETE FROM messages WHERE seq=?", (message_seq,))
                 kept = echo[0]
@@ -1302,10 +1305,19 @@ class Store:
             "SELECT id,plugin,kind,content,created,delivered_at FROM plugin_events "
             "WHERE scene=? ORDER BY id DESC LIMIT ?", (scene, limit))]
 
-    def start_outgoing(self, message: ChatMessage) -> int:
+    def start_outgoing(self, message: ChatMessage, *, image: tuple[OriginalImage, str] | None = None) -> int:
         """Save a host-originated part (not a mind expression) before sending it."""
         with self.db:
-            return self._save_message(message, None)
+            seq = self._save_message(message, None)
+            if image is not None:
+                original, description = image
+                media_id = self.db.execute(
+                    "INSERT INTO media(source_message_seq,source_image_index,mime_type,width,height,animated,data) "
+                    "VALUES (?,1,?,?,?,?,?)", (seq, original.mime_type, original.width, original.height,
+                                              int(original.animated), original.data)).lastrowid
+                self.db.execute("INSERT INTO message_media(message_seq,image_index,media_id,description,emotions,tags) "
+                                "VALUES (?,1,?,?,'[]','[]')", (seq, media_id, description))
+            return seq
 
     def end_turn(self, turn_id: str, status: str, error: str | None = None,
                  *, attention_state: dict | None = None) -> bool:

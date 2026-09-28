@@ -9,7 +9,7 @@ import stat
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 import yaml
 
-from .sticker_assets import MAX_STICKER_BYTES, inspect_sticker
+from .image_assets import MAX_IMAGE_BYTES, inspect_image
 
 
 
@@ -63,8 +63,8 @@ def _image(path: Path, entry: _StickerEntry) -> PersonaSticker:
         if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
             raise ValueError("sticker asset must be a regular file")
         with path.open("rb") as stream:
-            data = stream.read(MAX_STICKER_BYTES + 1)
-        mime_type, width, height, animated = inspect_sticker(data)
+            data = stream.read(MAX_IMAGE_BYTES + 1)
+        mime_type, width, height, animated = inspect_image(data)
     except (OSError, ValueError) as error:
         raise ValueError(f"{path}: invalid sticker asset: {error}") from error
     return PersonaSticker(entry.file, entry.description, tuple(entry.emotions),
