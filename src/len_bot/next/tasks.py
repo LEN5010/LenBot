@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
@@ -23,6 +23,7 @@ from .model_slots import ModelSlots
 from .pricing import cost_summary
 from .sandbox import DockerSandbox, DockerSettings
 from .store import Store
+from .task_live import TaskLiveText
 from .tasks_store import Task, TaskFile, TaskStore
 from .worker_model import Limits
 from .worker_session import WorkerSession, worker_session
@@ -56,6 +57,7 @@ class RunningTask:
     cancelled: bool = False
     last_progress: str | None = None
     next_progress: float = 300
+    live_text: TaskLiveText = field(default_factory=TaskLiveText)
 
 
 def file_info(file: TaskFile, records: TaskStore) -> dict:
@@ -81,6 +83,7 @@ class WorkTasks:
             command_timeout_seconds=settings.command_timeout_seconds,
         ))
         self.running: dict[int, RunningTask] = {}
+        self.live_listeners: dict[int, set[asyncio.Event]] = {}
         self.changed = asyncio.Event()
         self.accepting = False
         self._pump: asyncio.Task | None = None
@@ -128,6 +131,16 @@ class WorkTasks:
                 "model_calls": len(costs), "cost": cost_summary(costs),
                 "network": self.egress.status(scene, id),
                 "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。出网配置不等于目标连通。"}
+
+    def live_snapshot(self, scene: str, id: int) -> dict:
+        item = self.records.get(scene, id)
+        current = self.running.get(id)
+        return {"task_id": item.id, "scene": item.scene, "status": item.status,
+                "preview": None if current is None else current.live_text.snapshot()}
+
+    def _notify_live(self, id: int) -> None:
+        for listener in self.live_listeners.get(id, ()):
+            listener.set()
 
     def list(self, scene: str, *, status: str = "active", offset: int = 0, limit: int = 20) -> dict:
         items = self.records.list(scene, status=status, offset=offset, limit=limit + 1)
@@ -283,6 +296,7 @@ class WorkTasks:
                     self._finish(current.item, "cancelled" if current.cancelled else "failed",
                                  None, "任务在开始执行前被中断")
                     self.running.pop(current.item.id)
+                    self._notify_live(current.item.id)
             elif (error := job.exception()) is not None:
                 self._fail(error)
         except Exception as error:
@@ -324,6 +338,7 @@ class WorkTasks:
                     if self._room(item.scene, new_container=True):
                         current = RunningTask(self.records.start(item.scene, item.id))
                         self.running[item.id] = current
+                        self._notify_live(item.id)
                         current.job = asyncio.create_task(self._run(current))
                         current.job.add_done_callback(lambda job, current=current: self._job_done(current, job))
                         self.on_update(item.scene)
@@ -419,6 +434,7 @@ class WorkTasks:
                 self.egress.release_task(item.scene, item.id)
             finally:
                 self.running.pop(item.id)
+                self._notify_live(item.id)
 
     async def _consume(self, current: RunningTask) -> str:
         item, session = current.item, current.session
@@ -445,11 +461,20 @@ class WorkTasks:
             except TimeoutError:
                 continue
             body = record.body
-            if record.type in {"message_update", "tool_execution_update", "bash_execution_update"}:
+            if record.type == "message_update":
+                if current.live_text.update(body["assistantMessageEvent"]):
+                    self._notify_live(item.id)
+                continue
+            if record.type in {"tool_execution_update", "bash_execution_update"}:
                 continue
             self.records.add_event(item.scene, item.id, "native", body)
             self.on_update(item.scene)
-            if record.type == "message_end" and body["message"]["role"] == "assistant":
+            if record.type == "message_start":
+                if current.live_text.start(body["message"]):
+                    self._notify_live(item.id)
+            elif record.type == "message_end" and body["message"]["role"] == "assistant":
+                if current.live_text.finish(body["message"]):
+                    self._notify_live(item.id)
                 final = body["message"]
             elif record.type == "entry_appended":
                 entry = body["entry"]
