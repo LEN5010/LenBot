@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from .host_persona import register_host_persona
 from .host_plugins import register_host_plugins
 from .host_mcp import register_host_mcp
 from .host_audio import register_host_audio
+from .host_trials import HostTrials, register_host_trials
 from .host_settings import register_host_settings
 from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
@@ -34,7 +36,17 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     if config.panel is None:
         raise ValueError("Multi-scene host panel requires panel configuration in lenbot.config.json")
 
-    app = FastAPI(title="LenBot 运行管理")
+    trials = HostTrials(config, runtime, root)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            await trials.close()
+
+    app = FastAPI(title="LenBot 运行管理", lifespan=lifespan)
+    app.state.trials = trials
     listeners: set[asyncio.Event] = set()
 
     def notify() -> None:
@@ -42,7 +54,12 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             changed.set()
 
     runtime.on_update = notify
-    user = install_panel_auth(app, config.panel, on_logout=notify)
+    def logged_out() -> None:
+        notify()
+        trials.notify()
+
+    user = install_panel_auth(app, config.panel, on_logout=logged_out)
+    register_host_trials(app, trials, user)
     write_lock = asyncio.Lock()
     register_host_capabilities(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_settings(app, root=root, running=config, user=user,
@@ -158,5 +175,5 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     async def events(websocket: WebSocket):
         await changes_socket(websocket, listeners)
 
-    mount_panel(app, mode="isolated-multi", home="/host", assets_dir=config.panel.assets_dir)
+    mount_panel(app, mode="isolated-multi", home="/host/overview", assets_dir=config.panel.assets_dir)
     return app

@@ -26,7 +26,7 @@ export async function refreshAuth() {
     if (!state.panelContext) {
       const context = await api('/api/panel-context')
       if (own !== authRequest) return
-      const homes = { legacy: '/overview', isolated: '/chat-test', 'isolated-multi': '/host' }
+      const homes = { legacy: '/overview', isolated: '/chat-test', 'isolated-multi': '/host/overview' }
       if (!Object.hasOwn(homes, context.mode) || context.home !== homes[context.mode]) {
         throw new Error('面板环境响应无效：缺少明确的 mode 或 home')
       }

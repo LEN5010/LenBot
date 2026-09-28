@@ -80,11 +80,15 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                 transport = httpx.ASGITransport(app=app)
                 async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                     assert (await client.get("/api/panel-context")).json() == {
-                        "mode": "isolated-multi", "home": "/host",
+                        "mode": "isolated-multi", "home": "/host/overview",
                     }
                     for path in ("/api/auth/me", "/api/host/state", "/api/host/scenes/group:80001",
                                  f"/api/host/scenes/group:80001/turns/{configured_turn}"):
                         assert (await client.get(path)).status_code == 401
+
+                    assert (await client.post("/api/host/trials", json={
+                        "scene": "group:80001", "acknowledge_model_cost": True,
+                    })).status_code == 401
 
                     login = await client.post("/api/auth/login", json={
                         "username": "host-operator", "password": "synthetic-password",
@@ -109,7 +113,33 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                                          ("PUT", "/api/host/scenes/group:80001"),
                                          ("DELETE", "/api/host/scenes/group:80001")):
                         assert (await client.request(method, path)).status_code in {404, 405}
-                    assert (await client.post("/api/auth/logout")).status_code == 200
+                    assert (await client.post("/api/host/trials", json={
+                        "scene": "group:89999", "acknowledge_model_cost": True,
+                    })).status_code == 404
+                    assert (await client.post("/api/host/trials", json={
+                        "scene": "group:80001", "acknowledge_model_cost": False,
+                    })).status_code == 422
+                    trial = await client.post("/api/host/trials", json={
+                        "scene": "group:80001", "acknowledge_model_cost": True,
+                    })
+                    assert trial.status_code == 200
+                    prefix = f"/api/host/trials/{trial.json()['id']}"
+                    try:
+                        assert (await client.get(f"{prefix}/turns/{configured_turn}")).status_code == 404
+                        assert (await client.post(f"{prefix}/messages", json={
+                            "uid": "90001", "nickname": "虚拟", "text": "合成消息",
+                        })).status_code == 422
+                        assert (await client.post(f"{prefix}/messages", json={
+                            "uid": "70001", "nickname": "虚拟", "text": "合成消息",
+                            "reply_to": "10001",
+                        })).status_code == 422
+                        assert (await client.post("/api/auth/logout")).status_code == 200
+                        for method, path in (("GET", prefix + "/state"),
+                                             ("POST", prefix + "/stop"),
+                                             ("GET", "/api/host/trials")):
+                            assert (await client.request(method, path)).status_code == 401
+                    finally:
+                        await app.state.trials.close()
                     assert (await client.get("/api/host/state")).status_code == 401
                 await runtime.platform.close()
 

@@ -66,7 +66,7 @@ function mutationError(error, verb) {
     ? `${verb}未被接受：${error.message}`
     : `${verb}结果未确认：${error.message} 草稿保留；请手动重读核对，不会自动重试。`
 }
-function selectScene(value) { if (value && value !== selectedScene.value) router.push({ name:'host-learning', query:{ scene:value } }) }
+function selectScene(value) { if (value && value !== selectedScene.value) router.push({ name:route.name, query:{ scene:value } }) }
 function resetScene() {
   overview.value = null; settings.value = null; settingsDraft.value = null
   disabledSettingsDraft.value = null; disabledEmbeddingDraft.value = null
@@ -88,7 +88,7 @@ async function readHost() {
     if (!fresh()) return
     host.value = value; readError.value = ''
     if (!value.scenes.some(item => item.scene === selectedScene.value) && value.scenes.length) {
-      await router.replace({ name:'host-learning', query:{ scene:value.scenes[0].scene } })
+      await router.replace({ name:route.name, query:{ scene:value.scenes[0].scene } })
     } else if (selectedScene.value) refreshRecords()
   } catch (error) { if (fresh()) readError.value = error.message }
   finally { if (fresh()) loading.value = false }

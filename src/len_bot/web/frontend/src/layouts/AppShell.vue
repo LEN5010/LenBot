@@ -9,6 +9,7 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { fmtTime } from '../api.js'
 import markUrl from '../assets/lenbot-mark.svg'
 import { returnTarget, sourcePath } from '../router/navigation.js'
+import { hostAreas, hostTarget } from '../router/hostNavigation.js'
 const route=useRoute(),router=useRouter(),app=useAppState(),{mobile}=useDisplay()
 const drawer=ref(!mobile.value),busy=ref(false),error=ref('')
 const logoutGuard=useRequestGuard()
@@ -36,23 +37,14 @@ const legacySections=[
 const sections=computed(()=>isolated.value?[
   {id:'chat-test',label:'对话测试',icon:mdiForumOutline,to:{name:'chat-test'},items:[]},
   {id:'chat-test-settings',label:'场景与角色',icon:mdiAccountOutline,to:{name:'chat-test-settings'},items:[]}
-]:multi.value?[
-  {id:'host-overview',label:'今日概览',icon:mdiViewDashboardOutline,to:{name:'host-overview'},items:[]},
-  {id:'host',label:'多场景观察',icon:mdiForumOutline,to:{name:'host'},items:[]},
-  {id:'host-capabilities',label:'工具能力',icon:mdiAccountOutline,to:{name:'host-capabilities'},items:[]},
-  {id:'host-models',label:'模型配置',icon:mdiViewDashboardOutline,to:{name:'host-models'},items:[]},
-  {id:'host-settings',label:'群聊设置与角色',icon:mdiCogOutline,to:{name:'host-settings'},items:[]},
-  {id:'host-persona',label:'角色文件',icon:mdiBookOpenPageVariantOutline,to:{name:'host-persona'},items:[]},
-  {id:'host-history',label:'大脑会话',icon:mdiForumOutline,to:{name:'host-history'},items:[]},
-  {id:'host-memory',label:'认识与记忆',icon:mdiBookOpenPageVariantOutline,to:{name:'host-memory'},items:[]},
-  {id:'host-learning',label:'表达学习',icon:mdiBookOpenPageVariantOutline,to:{name:'host-learning'},items:[]},
-  {id:'host-schedules',label:'场景安排',icon:mdiCalendarClockOutline,to:{name:'host-schedules'},items:[]},
-  {id:'host-tasks',label:'独立任务',icon:mdiBriefcaseSearchOutline,to:{name:'host-tasks'},items:[]},
-  {id:'host-system',label:'连接与运行设置',icon:mdiCogOutline,to:{name:'host-system'},items:[]}
-]:legacySections)
+ ]:multi.value?hostAreas.map((area, index)=>({
+  id:area.id, label:area.title, icon:[mdiViewDashboardOutline,mdiForumOutline,mdiForumOutline,mdiAccountOutline,
+    mdiBookOpenPageVariantOutline,mdiBriefcaseSearchOutline,mdiCogOutline,mdiViewDashboardOutline,mdiCalendarClockOutline,mdiCogOutline][index],
+  to:hostTarget(area.name,route), items:area.pages.length>1?area.pages.map(([label,name])=>[label,hostTarget(name,route)]):[],
+})):legacySections)
 const activeSection=computed(()=>{
   if(isolated.value)return route.name==='chat-test-settings'?'chat-test-settings':'chat-test'
-  if(multi.value)return ['host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-learning','host-tasks','host-schedules'].includes(route.name)?route.name:'host'
+  if(multi.value)return hostAreas.find(area=>area.pages.some(([,name])=>name===route.name))?.id || 'home'
   if(route.name==='overview')return 'overview'
   if(['scenes','scene','groups','group'].includes(route.name))return 'scenes'
   if(['jobs','job','tasks'].includes(route.name))return 'work'
@@ -112,7 +104,7 @@ async function exit(){
   >
     <div class="app-brand">
       <img class="app-mark" :src="markUrl" alt="LenBot" />
-      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':multi?'独立多场景宿主':'运行管理中心' }}</span></div>
+      <div><strong>LenBot</strong><span>{{ isolated?'隔离对话测试':multi?'运行管理':'运行管理中心' }}</span></div>
       <v-btn
         v-if="mobile"
         :icon="mdiClose"
@@ -176,7 +168,7 @@ async function exit(){
     <v-chip v-if="isolated" size="small" variant="tonal" color="secondary" class="isolated-chip">
       隔离 · 模拟发送
     </v-chip>
-    <v-chip v-if="multi" size="small" variant="tonal" color="secondary" class="isolated-chip">独立多场景宿主</v-chip>
+    <v-chip v-if="multi" size="small" variant="tonal" color="secondary" class="isolated-chip">运行管理</v-chip>
     <v-divider v-if="legacy" vertical class="toolbar-divider" />
     <v-chip
       v-if="legacy && app.status"

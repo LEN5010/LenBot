@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import TurnRecordDetail from '../components/TurnRecordDetail.vue'
 
+const props = defineProps({ apiBase: { type: String, default: '/api/chat-test' } })
 const state = ref(null)
 const loading = ref(false)
 const stateError = ref('')
@@ -77,7 +78,7 @@ async function refreshState() {
   const request = ++stateRequest
   loading.value = true
   try {
-    const result = await api('/api/chat-test/state')
+    const result = await api(`${props.apiBase}/state`)
     if (!active || request !== stateRequest) return
     state.value = result
     stateError.value = ''
@@ -95,7 +96,7 @@ async function refreshDetail(focus = false) {
   const request = ++detailRequest
   detailLoading.value = true
   try {
-    const result = await api(`/api/chat-test/turns/${encodeURIComponent(id)}`)
+    const result = await api(`${props.apiBase}/turns/${encodeURIComponent(id)}`)
     if (!active || request !== detailRequest || id !== selectedTurnId.value) return
     detail.value = result
     detailError.value = ''
@@ -119,7 +120,7 @@ function connect() {
   socketError.value = ''
   socketState.value = 'connecting'
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const connection = new WebSocket(`${protocol}//${location.host}/api/chat-test/events`)
+  const connection = new WebSocket(`${protocol}//${location.host}${props.apiBase}/events`)
   socket = connection
   connection.onopen = () => {
     if (!active || socket !== connection) return
@@ -157,7 +158,7 @@ async function submit() {
   submitError.value = ''
   receipt.value = null
   try {
-    const result = await api('/api/chat-test/messages', {
+    const result = await api(`${props.apiBase}/messages`, {
       method: 'POST',
       body: JSON.stringify({
         uid: form.value.uid, nickname: form.value.nickname, text: form.value.text,
