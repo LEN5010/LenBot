@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib.util
@@ -17,6 +17,7 @@ import sys
 import time
 import tomllib
 from typing import TYPE_CHECKING, Literal, get_type_hints
+from urllib.parse import quote, quote_plus
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError, create_model, field_validator
@@ -80,6 +81,21 @@ class Manifest(BaseModel):
             default = item.default if "default" in item.model_fields_set else ...
             fields[key] = (FIELD_TYPES[item.type], Field(default, description=item.description))
         return create_model(f"PluginConfig_{self.name}", __config__=STRICT, **fields)
+
+
+def redact_values(text: str, manifest: Manifest | None, values: Mapping[str, object]) -> str:
+    if manifest is None:
+        return text
+    secrets = set()
+    for key, item in manifest.config.items():
+        if item.type != "secret":
+            continue
+        value = values.get(key, item.default)
+        if isinstance(value, str) and value:
+            secrets.update((value, encode(value)[1:-1], repr(value)[1:-1], quote(value, safe=""), quote_plus(value)))
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, "[redacted]")
+    return text
 
 
 def read_manifest(directory: Path) -> Manifest:
@@ -214,7 +230,7 @@ class PluginHost:
             try:
                 self._load(record, found.get(name, []), values, settings.data_directory / name, core_tools)
             except Exception as error:
-                record.status, record.error = "failed", f"{type(error).__name__}: {error}"
+                record.status, record.error = "failed", self.redact(name, f"{type(error).__name__}: {error}")
                 self._remove_entries(record)
                 logger.error("插件 %s 加载失败：%s", name, record.error)
 
@@ -298,6 +314,16 @@ class PluginHost:
     def report_error(self, plugin: str, where: str, error: Exception) -> str:
         return self._record(self.plugins[plugin], where, error)
 
+    def require_owner(self, scene: str, requester_qq: str) -> None:
+        if scene not in self.config.scenes:
+            raise PermissionError(f"未配置场景 {scene}")
+        if self.config.owner_qq is None or requester_qq != self.config.owner_qq:
+            raise PermissionError(f"QQ {requester_qq} 没有主人账号权限（按根配置 owner_qq 判断）")
+
+    def redact(self, plugin: str, text: str) -> str:
+        record = self.plugins[plugin]
+        return redact_values(text, record.manifest, self.config.plugins.configured[plugin])
+
     def scene_timezone(self, scene: str) -> str:
         return self.config.scene_timezone(scene)
 
@@ -334,7 +360,8 @@ class PluginHost:
             self.on_update()
 
     def _record(self, record: Loaded, where: str, error: BaseException) -> str:
-        text = f"{type(error).__name__}: {error}"
+        text = self.redact(record.name, f"{type(error).__name__}: {error}")
+        where = self.redact(record.name, where)
         record.errors.append({"at": self.now(), "where": where, "error": text})
         logger.error("插件 %s %s 出错：%s", record.name, where, text)
         self._notify()
@@ -380,9 +407,11 @@ class PluginHost:
                 if not isinstance(result, str):
                     raise TypeError(f"插件工具必须返回文本，实际 {type(result).__name__}")
             except Exception as error:
-                self._record(record, f"工具 {name}", error)
+                safe = self._record(record, f"工具 {name}", error)
+                if safe != f"{type(error).__name__}: {error}":
+                    raise RuntimeError(safe) from None
                 raise
-            return result
+            return self.redact(record.name, result)
         return call
 
     def match_command(self, message: ChatMessage, other_bots: tuple[str, ...]) -> tuple[Loaded, str, str] | None:

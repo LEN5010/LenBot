@@ -112,6 +112,8 @@ class HostPort(Protocol):
     def recent_messages(self, scene: str, limit: int) -> list[ChatMessage]: ...
     def start_task(self, plugin: str, name: str, coroutine: Coroutine) -> asyncio.Task: ...
     def report_error(self, plugin: str, where: str, error: Exception) -> str: ...
+    def require_owner(self, scene: str, requester_qq: str) -> None: ...
+    def redact(self, plugin: str, text: str) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,12 @@ class PluginContext:
 
     def report_error(self, where: str, error: Exception) -> str:
         return self.host.report_error(self.name, where, error)
+
+    def require_owner(self, scene: str, requester_qq: str) -> None:
+        self.host.require_owner(self._scene(scene), requester_qq)
+
+    def redact(self, text: str) -> str:
+        return self.host.redact(self.name, text)
 
     def _scene(self, scene: str) -> str:
         if scene not in self.scenes:
