@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from .network import NetworkRuntime
+from .proactive import ProactiveStore
 from .schedule import ScheduleArguments, cancel_arrangement, create_arrangement
 
 
@@ -34,9 +35,29 @@ def register_host_schedules(app: FastAPI, *, runtime: NetworkRuntime,
     @app.get("/api/host/schedules/state")
     async def state(_: str = Depends(user)):
         return {"timezone": runtime.config.timezone,
-                "scenes": [{"scene": scene, **chat.config.schedules.model_dump(mode="json"),
+                "scenes": [{"scene": scene, "timezone": chat.config.timezone,
+                            **chat.config.schedules.model_dump(mode="json"),
                             "tool_allowed": "schedule" in chat.allowed_tool_names}
                            for scene, chat in runtime.chats.items()]}
+
+    @app.get("/api/host/schedules/proactive")
+    async def proactive(scene: str, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20),
+                        _: str = Depends(user)):
+        chat = chat_for(scene)
+        settings = chat.config.proactive
+        records = ProactiveStore(runtime.store)
+        now = runtime.store.now()
+        exclude = tuple(chat.config.attention.other_bot_qqs)
+        pause = records.pause(scene)
+        items = records.page(scene, limit=limit + 1, offset=offset)
+        next_at, next_reason = (None, None) if settings is None else records.next_at(
+            scene, settings, chat.config.timezone, chat.config.attention.quiet_hours, now, exclude)
+        return {"scene": scene, "timezone": chat.config.timezone, "now": now,
+                "settings": None if settings is None else settings.model_dump(mode="json"),
+                "idle_since": records.last_activity(scene, exclude),
+                "pause": pause if pause is not None and pause["until"] > now else None,
+                "next_at": next_at, "next_reason": next_reason,
+                "items": items[:limit], "next_offset": offset + limit if len(items) > limit else None}
 
     @app.get("/api/host/schedules")
     async def listing(scene: str,

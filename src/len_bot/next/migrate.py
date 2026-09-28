@@ -335,6 +335,37 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "response TEXT, usage TEXT, cost TEXT, error TEXT)"
             )
             db.execute("CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id)")
+        elif version == 23:
+            db.execute(
+                "CREATE TABLE schedules_next ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL,"
+                "created REAL NOT NULL, due_at REAL NOT NULL,"
+                "timezone TEXT NOT NULL, note TEXT NOT NULL,"
+                "target TEXT NOT NULL, requester TEXT,"
+                "status TEXT NOT NULL, delivered_at REAL, reason TEXT,"
+                "interval_seconds INTEGER CHECK(interval_seconds BETWEEN 60 AND 31536000),"
+                "cron TEXT CHECK(cron IS NULL OR interval_seconds IS NULL))"
+            )
+            db.execute(
+                "INSERT INTO schedules_next(id,scene,created,due_at,timezone,note,target,requester,"
+                "status,delivered_at,reason,interval_seconds,cron) "
+                "SELECT id,scene,created,due_at,timezone,note,target,requester,"
+                "status,delivered_at,reason,interval_seconds,"
+                "CASE WHEN cron_minute_of_day IS NULL THEN NULL ELSE "
+                "'cron:' || (cron_minute_of_day % 60) || ' ' || (cron_minute_of_day / 60) || ' * * *' END "
+                "FROM schedules"
+            )
+            db.execute("DROP TABLE schedules")
+            db.execute("ALTER TABLE schedules_next RENAME TO schedules")
+            db.execute("CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id)")
+            db.execute(
+                "CREATE TABLE proactive_wakes ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "turn_id TEXT NOT NULL UNIQUE, woke_at REAL NOT NULL,"
+                "local_date TEXT NOT NULL, idle_since REAL NOT NULL,"
+                "outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),"
+                "closed_at REAL, UNIQUE(scene,local_date))"
+            )
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

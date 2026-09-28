@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from string import Template
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,7 @@ from .chat import Chat
 from .config import Attention
 from .delivery import report_parts, split_expression
 from .messages import ChatMessage, Segment, parse_message, plain_text
+from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
 from .schedule import check_creation, platform_role, wake_text
 
@@ -102,8 +104,10 @@ def participation_score(pending: list[tuple[ChatMessage, float]],
 
 class SceneRunner:
     def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool,
-                 ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None):
+                 ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None,
+                 connected_since: Callable[[], float | None] = lambda: None):
         self.chat = chat
+        self.connected_since = connected_since
         self.now = chat.now
         self.store, self.config = chat.store, chat.config
         self.settings = self.config.attention
@@ -113,6 +117,7 @@ class SceneRunner:
         self.resume = resume
         self.ready_for_turn = ready_for_turn
         self.own_ids = self.store.own_ids(self.config.scene)
+        self.proactive = None if self.config.proactive is None else ProactiveStore(self.store)
         self.keywords = tuple(dict.fromkeys(word.strip().casefold() for word in
             [chat.persona.name, *chat.persona.aliases, *self.config.persona_aliases, *self.settings.keywords]))
         saved = self.store.load_attention(self.config.scene)
@@ -486,6 +491,56 @@ class SceneRunner:
                    "delivery": delivery, "expressions": expressions,
                    "quiet_until": datetime.fromtimestamp(until, ZoneInfo(self.config.timezone)).isoformat()})
 
+    async def turn(self, channel: str, **turn) -> None:
+        state = self.consumed_state()
+        contact_before = state.last_contact_at
+        self.state, self.resume = state, False
+        result = await self.chat.run_turn(append_new=self.append_during_turn,
+                                          wait_for_messages=self.wait_for_messages,
+                                          attention_state=asdict(state), **turn)
+        state = copy.deepcopy(self.state)
+        own_at = self.store.last_self_time(self.config.scene)
+        if own_at is not None:
+            state.contact(own_at, self.settings.focus_seconds)
+        if result["expressions"]:
+            state.silence_level = 0
+        elif (channel in {"named", "focus", "ambient"} and result["status"] == "settled"
+              and result["failed_tools"] == 0 and state.last_contact_at == contact_before):
+            cap = math.ceil(math.log2(self.settings.ambient_max_interval_seconds)
+                            - math.log2(self.settings.ambient_min_interval_seconds))
+            state.silence_level = min(state.silence_level + 1, cap)
+        # Preserve restart eligibility without treating a timeout as new input.
+        pending_wake = self.store.end_turn(result["turn_id"], result["status"], result["error"],
+                                           attention_state=asdict(state))
+        self.state = state
+        result["pending_wake"] = pending_wake
+        self.emit(result)
+
+    def proactive_times(self) -> tuple[float | None, float | None]:
+        """Close finished observations; return the next allowed wake and the next observation end."""
+        now = self.now()
+        exclude = tuple(self.settings.other_bot_qqs)
+        observe_until = self.proactive.settle(self.config.scene, now, connected_since=self.connected_since(),
+                                              exclude_uids=exclude)
+        wake_at, _ = self.proactive.next_at(self.config.scene, self.config.proactive, self.config.timezone,
+                                            self.settings.quiet_hours, now, exclude)
+        return wake_at, observe_until
+
+    async def proactive_turn(self) -> None:
+        now = self.now()
+        idle_since = self.proactive.last_activity(self.config.scene, tuple(self.settings.other_bot_qqs))
+        zone = ZoneInfo(self.config.timezone)
+        local = datetime.fromtimestamp(now, zone)
+        text = Template(PROACTIVE_PROMPT.read_text(encoding="utf-8")).substitute(
+            idle=idle_text(now - idle_since), timezone=self.config.timezone,
+            since=datetime.fromtimestamp(idle_since, zone).isoformat(timespec="minutes"),
+            now=local.isoformat(timespec="minutes"),
+        ).strip()
+        pending = self.store.pending_messages(self.config.scene)
+        batch = self.batch(pending, "[安静前未触发唤醒的消息]") if pending else None
+        await self.turn("proactive", batch=batch, channels={"proactive"},
+                        proactive=(text, local.date().isoformat(), idle_since))
+
     async def run(self) -> None:
         while True:
             if self.ready_for_turn is not None and not await self.ready_for_turn(True):
@@ -513,36 +568,23 @@ class SceneRunner:
                 direct = self.state.pending is not None and self.state.pending.channel == "direct"
                 wake_received_at = (self.state.pending.first_at
                                     if not scheduled and self.state.pending is not None else None)
-                state = self.consumed_state()
-                contact_before = state.last_contact_at
-                self.state, self.resume = state, False
-                result = await self.chat.run_turn(batch=batch, append_new=self.append_during_turn,
-                                                  wait_for_messages=self.wait_for_messages,
-                                                  attention_state=asdict(state), scheduled=scheduled,
-                                                  task_notices=notices,
-                                                  direct=direct, wake_received_at=wake_received_at,
-                                                  channels=channels)
-                state = copy.deepcopy(self.state)
-                own_at = self.store.last_self_time(self.config.scene)
-                if own_at is not None:
-                    state.contact(own_at, self.settings.focus_seconds)
-                if result["expressions"]:
-                    state.silence_level = 0
-                elif (channel in {"named", "focus", "ambient"} and result["status"] == "settled"
-                      and result["failed_tools"] == 0 and state.last_contact_at == contact_before):
-                    cap = math.ceil(math.log2(self.settings.ambient_max_interval_seconds)
-                                    - math.log2(self.settings.ambient_min_interval_seconds))
-                    state.silence_level = min(state.silence_level + 1, cap)
-                # Preserve restart eligibility without treating a timeout as new input.
-                pending_wake = self.store.end_turn(result["turn_id"], result["status"], result["error"],
-                                                   attention_state=asdict(state))
-                self.state = state
-                result["pending_wake"] = pending_wake
-                self.emit(result)
+                await self.turn(channel, batch=batch, scheduled=scheduled, task_notices=notices,
+                                direct=direct, wake_received_at=wake_received_at, channels=channels)
                 continue
             if self.closing:
                 return
             deadline = self.schedule_deadline(self.now())
+            if self.proactive is not None:
+                wake_at, observe_until = self.proactive_times()
+                if wake_at is not None and wake_at <= self.now():
+                    # Re-enter admission if the platform dropped while idle.
+                    if self.ready_for_turn is not None and not await self.ready_for_turn(False):
+                        continue
+                    await self.proactive_turn()
+                    continue
+                for at in (wake_at, observe_until):
+                    if at is not None:
+                        deadline = at if deadline is None else min(deadline, at)
             if deadline is None:
                 await self.changed.wait()
             else:

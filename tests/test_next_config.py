@@ -2167,3 +2167,52 @@ def test_persona_yaml_cannot_inject_knowledge_snapshot(tmp_path):
 
     with pytest.raises(ValueError, match="knowledge"):
         load_persona(path)
+
+
+def test_scene_timezone_override_is_explicit_and_scene_local(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["timezone"] = "Asia/Shanghai"
+    source["scenes"]["group:80001"]["timezone"] = "Europe/Berlin"
+    _write_config(root, source)
+    loaded = load_host_config(root)
+    assert loaded.scene_config("group:80001").timezone == "Europe/Berlin"
+    assert loaded.scene_timezone("group:80001") == "Europe/Berlin"
+    other = [scene for scene in loaded.scenes if scene != "group:80001"]
+    for scene in other:
+        assert loaded.scene_config(scene).timezone == "Asia/Shanghai"
+    assert loaded.timezone == "Asia/Shanghai"
+    source["scenes"]["group:80001"]["timezone"] = "Mars/Olympus"
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown timezone"):
+        load_host_config(root)
+
+
+def test_proactive_is_host_group_only_with_local_active_hours(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["proactive"] = {"idle_seconds": 3600.0, "start": "20:00", "end": "02:00"}
+    _write_config(root, source)
+    proactive = load_host_config(root).scene_config("group:80001").proactive
+    assert (proactive.idle_seconds, proactive.start.isoformat(), proactive.end.isoformat()) == (
+        3600.0, "20:00:00", "02:00:00")
+    for invalid, message in (({"start": "10:00", "end": "10:00"}, "start and end must differ"),
+                             ({"idle_seconds": 60.0}, "greater than or equal to 600"),
+                             ({"start": "9:00"}, "local HH:MM"),
+                             ({"idle_seconds": "3600"}, "valid number")):
+        source["scenes"]["group:80001"]["proactive"] = invalid
+        (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            load_host_config(root)
+    source["scenes"]["group:80001"]["proactive"] = None
+    source["scenes"]["private:70001"] = {**source["scenes"]["group:80001"], "proactive": {}}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="proactive is only supported for group scenes"):
+        load_host_config(root)
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["proactive"] = {}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="proactive requires the isolated-multi host"):
+        load_config(lab_root)

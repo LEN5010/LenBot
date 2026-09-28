@@ -130,7 +130,7 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
             excluded = set(memory.jobs.excluded_records(scene))
             return {"snapshot": boundary, "offset": arguments.offset,
                     "next_offset": arguments.offset + 10 if len(rows) > 10 else None,
-                    "previews": [{**message_page(seq, message, runtime.config.timezone, offset=0, size=500),
+                    "previews": [{**message_page(seq, message, runtime.config.scene_timezone(scene), offset=0, size=500),
                                   "excluded": seq in excluded} for seq, message in rows[:10]]}
 
     @app.get("/api/host/memory/ingest")

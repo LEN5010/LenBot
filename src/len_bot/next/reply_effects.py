@@ -210,7 +210,7 @@ class ReplyEffectTracker:
         return True
 
     def _line(self, scene: str, seq: int, message: ChatMessage, received_at: float | None) -> dict:
-        timezone = self.config.timezone
+        timezone = self.config.scene_timezone(scene)
         quote = None if message.reply_to is None else self.store.find_message(scene, message.reply_to)
         return {"record": seq, "qq": message.sender.uid,
                 "display_name": message.sender.card or message.sender.nickname,

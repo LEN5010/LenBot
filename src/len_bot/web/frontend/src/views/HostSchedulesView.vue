@@ -4,6 +4,7 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, queryString, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
+import HostProactivePanel from '../components/HostProactivePanel.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), items = ref([]), nextOffset = ref(null)
@@ -40,19 +41,10 @@ function time(value, zone) {
   })
 }
 function recurring(item) {
-  return item.interval_seconds !== null || item.cron_minute_of_day !== null
-}
-function cronExpression(item) {
-  const hour = Math.floor(item.cron_minute_of_day / 60)
-  const minute = item.cron_minute_of_day % 60
-  return `cron:${minute} ${hour} * * *`
+  return item.interval_seconds !== null || item.cron !== null
 }
 function cadence(item) {
-  if (item.cron_minute_of_day !== null) {
-    const hour = String(Math.floor(item.cron_minute_of_day / 60)).padStart(2, '0')
-    const minute = String(item.cron_minute_of_day % 60).padStart(2, '0')
-    return `每日 ${hour}:${minute} · ${item.timezone}`
-  }
+  if (item.cron !== null) return `按 cron · ${item.timezone} 本地钟点`
   const value = item.interval_seconds
   if (value === null) return '一次性'
   if (value % 86400 === 0) return `每 ${value / 86400} 天 · 固定 UTC 秒`
@@ -178,7 +170,7 @@ onMounted(readState)
 <template>
   <div class="page-stack host-schedules">
     <header class="page-intro"><div><p class="eyebrow">独立多场景宿主</p><h1>场景安排</h1>
-      <p class="muted">查看真实已保存的一次性提醒、固定秒数间隔与每日本地钟点安排。创建和取消都需要填写实际操作者 QQ；面板账户不代替聊天身份。</p></div>
+      <p class="muted">查看真实已保存的一次性提醒、固定秒数间隔与 cron 本地钟点安排，以及主动开话题记录。创建和取消都需要填写实际操作者 QQ；面板账户不代替聊天身份。</p></div>
       <v-btn variant="outlined" :loading="stateLoading || listLoading" :disabled="stateLoading || listLoading || creating || cancelling!==null" @click="readState">手动刷新</v-btn></header>
     <v-alert v-if="stateError" type="error" variant="tonal" role="alert" :title="state?'场景状态读取失败 · 保留上次快照':'场景状态读取失败'">{{ stateError }}</v-alert>
     <p v-if="stateLoading && !state" role="status">正在读取场景安排状态…</p>
@@ -188,16 +180,17 @@ onMounted(readState)
         <v-select :model-value="selectedScene" :items="state.scenes.map(item=>({title:sceneName(item.scene),value:item.scene}))" label="场景" hide-details="auto" :disabled="creating || cancelling!==null" @update:model-value="chooseScene" />
         <v-select :model-value="status" :items="statuses" label="列表筛选" hide-details="auto" :disabled="creating || cancelling!==null" @update:model-value="chooseStatus" />
       </div>
-      <template v-if="selectedSettings"><p class="muted">{{ sceneName(selectedScene) }} · {{ state.timezone }} · 最多 {{ selectedSettings.max_pending }} 条待处理安排。{{ selectedSettings.enabled?'当前场景允许创建':'当前场景已关闭创建与到期执行' }}；{{ selectedSettings.tool_allowed?'角色已允许安排工具':'角色未开放安排工具' }}。这些是最近读取的运行配置。</p>
+      <template v-if="selectedSettings"><p class="muted">{{ sceneName(selectedScene) }} · {{ selectedSettings.timezone }} · 最多 {{ selectedSettings.max_pending }} 条待处理安排。{{ selectedSettings.enabled?'当前场景允许创建':'当前场景已关闭创建与到期执行' }}；{{ selectedSettings.tool_allowed?'角色已允许安排工具':'角色未开放安排工具' }}。这些是最近读取的运行配置。</p>
         <p class="muted">本人、他人及管理权限按实际 QQ 和场景身份判断；不会自动填入配置中的主人 QQ。</p></template>
       </section>
+      <HostProactivePanel v-if="selectedSettings && selectedScene.startsWith('group:')" :scene="selectedScene" />
       <section v-if="selectedSettings" class="surface" aria-labelledby="create-title"><h2 id="create-title">创建安排</h2>
-        <p class="muted">一次性时间须带 UTC 偏移，如 2026-10-01T09:00:00+08:00。固定秒数周期写 <code>every 30m</code>、<code>every 2h</code> 或 <code>every 1d</code>（1 分钟至 365 天，d=24 小时）；每日本地钟点写 <code>cron:0 20 * * *</code>（当前场景 {{ state.timezone }} 的 20:00）。cron 仅支持固定分钟与小时、每天执行，不支持列表、范围、星期或每月。</p>
-        <p class="muted">遇夏令时跳过或重复的本地钟点不会猜测偏移：创建时明确拒绝，后续推进冲突会受阻并保留原因。需要特定真实时刻时可使用带偏移的一次性时间；不会把每日钟点自动改成 24 小时间隔。</p>
+        <p class="muted">一次性时间须带 UTC 偏移，如 2026-10-01T09:00:00+08:00。固定秒数周期写 <code>every 30m</code>、<code>every 2h</code> 或 <code>every 1d</code>（1 分钟至 365 天，d=24 小时）；本地钟点写 <code>cron:分 时 日 月 星期</code>，如 <code>cron:0 20 * * *</code>（当前场景 {{ selectedSettings.timezone }} 每天 20:00）或 <code>cron:30 9 * * 1-5</code>（工作日 9:30）。每个字段可写 <code>*</code>、数字、<code>a-b</code>、逗号列表、<code>*/n</code> 或 <code>a-b/n</code>；星期 0–6，0 为周日；日与星期不能同时限定，也不支持英文名。</p>
+        <p class="muted">遇夏令时跳过或重复的本地钟点不会猜测偏移：创建时明确拒绝，后续推进冲突会受阻并保留原因。需要特定真实时刻时可使用带偏移的一次性时间；不会把 cron 钟点自动改成 24 小时间隔。</p>
         <form @submit.prevent="create"><div class="form-grid">
           <v-text-field v-model="form.requester" label="实际请求人 QQ" inputmode="numeric" required hide-details="auto" :disabled="creating" />
           <v-text-field v-model="form.for" label="对象：self 或实际 QQ" required hide-details="auto" :disabled="creating" />
-          <v-text-field v-model="form.when" label="何时执行（带偏移 ISO、every 或每日 cron）" required hide-details="auto" :disabled="creating" />
+          <v-text-field v-model="form.when" label="何时执行（带偏移 ISO、every 或 cron）" required hide-details="auto" :disabled="creating" />
         </div><v-textarea v-model="form.note" label="安排原文" rows="3" auto-grow required hide-details="auto" :disabled="creating" />
           <v-alert v-if="createError" type="error" variant="tonal" role="alert">{{ createError }}</v-alert>
           <p v-if="createNotice" class="success-note" role="status">{{ createNotice }}</p>
@@ -214,7 +207,7 @@ onMounted(readState)
         <template v-if="items.length"><div class="cancel-operator"><v-text-field v-model="cancelRequester" label="取消时的实际操作者 QQ" inputmode="numeric" hide-details="auto" :disabled="cancelling!==null" /><span class="muted">本人或有管理权限的 QQ 可取消；不以面板登录账户代填。</span></div>
           <ul class="schedule-list"><li v-for="item in items" :key="item.id" class="schedule-card">
             <div class="card-heading"><strong>{{ statusLabel(item.status) }}</strong><span>{{ cadence(item) }}</span></div>
-            <p v-if="item.cron_minute_of_day!==null" class="muted">每日钟点表达式：<code>{{ cronExpression(item) }}</code></p>
+            <p v-if="item.cron!==null" class="muted">表达式（分 时 日 月 星期，星期 0 为周日）：<code>{{ item.cron }}</code></p>
             <p class="original-text">{{ item.note }}</p>
             <dl><div><dt>{{ dueLabel(item) }}</dt><dd>{{ time(item.due_at,item.timezone) }}（{{ item.timezone }}）</dd></div>
               <div><dt>对象 / 请求人</dt><dd>{{ item.target==='self'?'self':`QQ ${item.target}` }} / {{ item.requester===null?'Bot 自主':`QQ ${item.requester}` }}</dd></div>

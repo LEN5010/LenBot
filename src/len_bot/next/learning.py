@@ -220,7 +220,7 @@ class ExpressionLearner:
         settings = self.config.scenes[scene].learning
         binding = self.config.models.roles.learner
         price = self.config.models.prices.get(binding.provider, {}).get(binding.model)
-        timezone = ZoneInfo(self.config.timezone)
+        timezone = ZoneInfo(self.config.scene_timezone(scene))
         source = [{"record": seq, "qq": message.sender.uid,
                    "display_name": message.sender.card or message.sender.nickname,
                    "platform_message_id": message.platform_message_id,
