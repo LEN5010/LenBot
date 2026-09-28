@@ -483,6 +483,7 @@ async def test_export_rejects_unsafe_offline_files_without_changing_data(tmp_pat
 @pytest.mark.asyncio
 async def test_export_requires_current_format_without_modifying_legacy_target(tmp_path: Path) -> None:
     from len_bot.next.export_history import export_history
+    from len_bot.next.store import FORMAT_VERSION
 
     _, _, old_path, new_path, _ = await _prepared(tmp_path)
     shutil.copyfile(
@@ -493,7 +494,7 @@ async def test_export_requires_current_format_without_modifying_legacy_target(tm
     with closing(sqlite3.connect(new_path)) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 12
 
-    with pytest.raises(ValueError, match="requires current next-core database format 14"):
+    with pytest.raises(ValueError, match=f"requires current next-core database format {FORMAT_VERSION}"):
         export_history(load_instance_config(tmp_path))
 
     assert new_path.read_bytes() == source_before

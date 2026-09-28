@@ -18,6 +18,7 @@ from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
 from .jargon import JargonLearner
 from .sticker_collection import StickerCollector
+from .reply_effects import ReplyEffectTracker
 from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
@@ -35,6 +36,7 @@ class NetworkRuntime:
                  learning: ExpressionLearner | None = None,
                  jargon: JargonLearner | None = None,
                  sticker_collection: StickerCollector | None = None,
+                 reply_effects: ReplyEffectTracker | None = None,
                  expression_service: ExpressionService | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
@@ -47,6 +49,12 @@ class NetworkRuntime:
         self.sticker_collection = sticker_collection
         if sticker_collection is not None:
             sticker_collection.on_update = self.notify
+        self.reply_effects = reply_effects
+        # Host time when the current OneBot connection began; None while disconnected.
+        self.connected_since: float | None = None
+        if reply_effects is not None:
+            reply_effects.on_update = self.notify
+            reply_effects.connected_since = lambda: self.connected_since
         if jargon is not None:
             jargon.on_update = self.notify
         self.expression_service = expression_service
@@ -62,7 +70,7 @@ class NetworkRuntime:
         self.accepting = True
         self.storage_error: sqlite3.Error | None = None
         self.platform = OneBot(config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
-                               on_error=self._platform_error, on_connection_change=self.notify)
+                               on_error=self._platform_error, on_connection_change=self._connection_changed)
         self.chats: dict[str, Chat] = {}
         for scene_config, persona in scene_configs:
             scene = scene_config.scene
@@ -72,6 +80,8 @@ class NetworkRuntime:
                 scene_config, persona, store, mind, voice, vision=vision, slots=slots, memory=memory,
                 tasks=tasks, expression_service=expression_service,
                 on_compaction=lambda scene=scene: self.compacted(scene),
+                on_reply_sample=(None if reply_effects is None else
+                                 lambda scene=scene: reply_effects.wake(scene)),
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 on_update=self.notify,
@@ -102,6 +112,10 @@ class NetworkRuntime:
     def notify(self) -> None:
         if self.on_update is not None:
             self.on_update()
+
+    def _connection_changed(self) -> None:
+        self.connected_since = self.store.now() if self.platform.connected else None
+        self.notify()
 
     def _status(self, status: str) -> None:
         if self.status != status:
@@ -150,6 +164,8 @@ class NetworkRuntime:
             self.storage_error = error
             self.stop()
             raise
+        if (self.reply_effects is not None and receipt["status"] != "duplicate" and not message.is_self):
+            self.reply_effects.wake(message.scene)
         if (self.sticker_collection is not None and message.scene in self.sticker_collection.scenes
                 and message.scene not in self.sticker_collection.errors
                 and receipt["status"] != "duplicate" and not message.is_self
@@ -222,6 +238,8 @@ class NetworkRuntime:
                         self.jargon.start()
                     if self.sticker_collection is not None:
                         self.sticker_collection.start()
+                    if self.reply_effects is not None:
+                        self.reply_effects.start()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -235,6 +253,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.reply_effects is not None:
+                        await self.reply_effects.close()
                     if self.sticker_collection is not None:
                         await self.sticker_collection.close()
                     if self.jargon is not None:
@@ -268,7 +288,11 @@ class NetworkRuntime:
                                 if self.sticker_collection is not None:
                                     await self.sticker_collection.close()
                             finally:
-                                await self.platform.close()
+                                try:
+                                    if self.reply_effects is not None:
+                                        await self.reply_effects.close()
+                                finally:
+                                    await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:

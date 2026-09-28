@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 22."""
+"""Explicit offline upgrade of an isolated next-core database to the current format."""
 
 from __future__ import annotations
 
@@ -312,6 +312,29 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT)"
             )
             db.execute("CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id)")
+        elif version == 22:
+            db.execute(
+                "CREATE TABLE reply_effects ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "entry_seq INTEGER NOT NULL UNIQUE, turn_id TEXT, channels TEXT NOT NULL,"
+                "message_seqs TEXT NOT NULL, planned_parts INTEGER NOT NULL,"
+                "first_sent_at REAL NOT NULL, last_sent_at REAL NOT NULL, deadline REAL NOT NULL,"
+                "observed_seqs TEXT, closed_at REAL, input_gap INTEGER, call_id INTEGER,"
+                "reaction TEXT CHECK(reaction IS NULL OR reaction IN "
+                "('agree','continue','correct','negative','unrelated','uncertain')),"
+                "reason TEXT)"
+            )
+            db.execute("CREATE INDEX reply_effects_scene ON reply_effects(scene,id)")
+            db.execute("CREATE INDEX reply_effects_open ON reply_effects(scene,id) WHERE closed_at IS NULL")
+            db.execute(
+                "CREATE TABLE reply_effect_calls ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "effect_ids TEXT NOT NULL, started REAL NOT NULL, ended REAL,"
+                "status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),"
+                "model_started REAL, request TEXT NOT NULL,"
+                "response TEXT, usage TEXT, cost TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

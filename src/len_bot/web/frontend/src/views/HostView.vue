@@ -133,7 +133,16 @@ watch(selectedScene, () => {
   sceneLoading.value = false
   detailLoading.value = false
   refreshScene()
+  openRequestedTurn()
 })
+// Other pages link to one actual turn, which may be older than the recent list.
+function openRequestedTurn() {
+  const id = route.query.turn
+  if (typeof id !== 'string' || !id || selectedTurn.value === id) return
+  selectedTurn.value = id
+  refreshDetail(true)
+}
+watch(() => route.query.turn, openRequestedTurn)
 
 function connect() {
   if (socket && socket.readyState <= WebSocket.OPEN) return
@@ -168,7 +177,7 @@ function reconnect() {
   socket = null
   connect()
 }
-onMounted(() => { refresh(); connect() })
+onMounted(() => { refresh(); connect(); openRequestedTurn() })
 onBeforeUnmount(() => {
   active = false
   ++sceneRequest

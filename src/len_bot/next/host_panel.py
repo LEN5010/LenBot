@@ -22,6 +22,7 @@ from .host_schedules import register_host_schedules
 from .host_learning import register_host_learning
 from .host_jargon import register_host_jargon
 from .host_stickers import register_host_stickers
+from .host_reply_effects import register_host_reply_effects
 from .network import NetworkRuntime
 from .panel_auth import changes_socket, install_panel_auth
 
@@ -51,6 +52,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     register_host_learning(app, runtime=runtime, user=user)
     register_host_jargon(app, runtime=runtime, user=user)
     register_host_stickers(app, runtime=runtime, user=user)
+    register_host_reply_effects(app, runtime=runtime, user=user)
 
     def configured_scene(scene: str) -> None:
         if scene not in config.scenes:

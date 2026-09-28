@@ -19,7 +19,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 22
+FORMAT_VERSION = 23
 
 
 def encode(value: object) -> str:
@@ -267,6 +267,26 @@ class Store:
                         model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT
                     );
                     CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id);
+                    CREATE TABLE reply_effects (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        entry_seq INTEGER NOT NULL UNIQUE, turn_id TEXT, channels TEXT NOT NULL,
+                        message_seqs TEXT NOT NULL, planned_parts INTEGER NOT NULL,
+                        first_sent_at REAL NOT NULL, last_sent_at REAL NOT NULL, deadline REAL NOT NULL,
+                        observed_seqs TEXT, closed_at REAL, input_gap INTEGER, call_id INTEGER,
+                        reaction TEXT CHECK(reaction IS NULL OR reaction IN
+                            ('agree','continue','correct','negative','unrelated','uncertain')),
+                        reason TEXT
+                    );
+                    CREATE INDEX reply_effects_scene ON reply_effects(scene,id);
+                    CREATE INDEX reply_effects_open ON reply_effects(scene,id) WHERE closed_at IS NULL;
+                    CREATE TABLE reply_effect_calls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        effect_ids TEXT NOT NULL, started REAL NOT NULL, ended REAL,
+                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+                        model_started REAL, request TEXT NOT NULL,
+                        response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX reply_effect_calls_scene ON reply_effect_calls(scene,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -509,6 +529,16 @@ class Store:
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
+        calls.extend(self.db.execute(
+            "SELECT ended,cost FROM reply_effect_calls "
+            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
+            (*scenes, since, until),
+        ).fetchall())
+        reactions = dict(self.db.execute(
+            "SELECT COALESCE(reaction,CASE WHEN observed_seqs='[]' THEN 'no_messages' ELSE 'waiting' END),"
+            f"COUNT(*) FROM reply_effects WHERE scene IN ({placeholders}) AND closed_at IS NOT NULL "
+            "AND first_sent_at>=? AND first_sent_at<? GROUP BY 1", (*scenes, since, until),
+        ))
         costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])
         unfinished = sum(ended is None for ended, _ in calls)
         pending = self.db.execute(
@@ -521,7 +551,8 @@ class Store:
         return {"messages": messages, "turns": turns, "model_calls": len(calls),
                 "unfinished_calls": unfinished, "unknown_cost_calls": costs["unknown_calls"],
                 "estimated_costs": costs["known_amounts"],
-                "pending_schedules": pending, "recent_errors": errors}
+                "pending_schedules": pending, "recent_errors": errors,
+                "reply_effects": reactions}
 
     def _append(self, scene: str, message: dict) -> int:
         cursor = self.db.execute(
@@ -730,9 +761,10 @@ class Store:
         return content
 
     def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str,
-                          *, turn_id: str | None = None) -> None:
-        """Finish this live call before projecting another request in the scene."""
+                          *, turn_id: str | None = None) -> int:
+        """Finish this live call; return the message position kept after an early echo merge."""
         message_seq, entry_seq = positions
+        kept = message_seq
         with self.db:
             echo = (None if expression.platform_message_id is None else self.db.execute(
                 "SELECT seq,body FROM messages WHERE scene=? AND platform_id=?",
@@ -749,6 +781,7 @@ class Store:
                                 (echo[0], message_seq))
                 self.db.execute("DELETE FROM message_search WHERE rowid=?", (message_seq,))
                 self.db.execute("DELETE FROM messages WHERE seq=?", (message_seq,))
+                kept = echo[0]
             else:
                 self.db.execute("UPDATE messages SET platform_id=?,body=? WHERE seq=?",
                                 (expression.platform_message_id, encode(asdict(expression)), message_seq))
@@ -758,6 +791,7 @@ class Store:
             )
             if turn_id is not None and expression.send_status == "sent":
                 self._first_expression(turn_id, "sent")
+        return kept
 
     def attach_echo(self, message: ChatMessage, raw: dict, received_at: float) -> None:
         """Attach a later platform event to an already confirmed own expression."""
