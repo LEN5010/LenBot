@@ -218,7 +218,10 @@ class Pipe:
                     if self.on_open is None or connection <= self._last_id:
                         raise PipeError(f'unexpected egress OPEN {connection}: {body[:500]!r}')
                     self._last_id = connection
-                    metadata = json.loads(body)
+                    try:
+                        metadata = json.loads(body)
+                    except ValueError as error:
+                        raise PipeError(f'invalid egress OPEN JSON: {body[:500]!r}; {error}') from error
                     if not isinstance(metadata, dict):
                         raise PipeError(f'egress OPEN must be an object: {body[:500]!r}')
                     if len(self._handlers) >= self.max_connections:

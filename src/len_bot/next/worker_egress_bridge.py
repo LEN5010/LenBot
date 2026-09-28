@@ -31,20 +31,20 @@ class RequestError(ValueError):
 
 def _authority(raw: bytes, *, require_port: bool) -> tuple[str, int]:
     if not raw or any(byte <= 32 or byte >= 127 for byte in raw) or b'\\' in raw:
-        raise RequestError(400, 'invalid request authority')
+        raise RequestError(400, f'invalid request authority: {raw[:200]!r}')
     try:
         value = urlsplit('//' + raw.decode('ascii'))
         host, port = value.hostname, value.port
     except ValueError as error:
-        raise RequestError(400, f'invalid request authority: {error}') from error
+        raise RequestError(400, f'invalid request authority: {raw[:200]!r}; {error}') from error
     if (not host or value.username is not None or value.password is not None
             or value.path or value.query or value.fragment or b'?' in raw or b'#' in raw
             or (require_port and port is None)):
-        raise RequestError(400, 'request authority needs a host and explicit port without credentials or path')
+        raise RequestError(400, f'authority needs a host and explicit port without credentials or path: {raw[:200]!r}')
     if port is None:
         port = 80
     if not 1 <= port <= 65535:
-        raise RequestError(400, 'request authority port must be 1..65535')
+        raise RequestError(400, f'request authority port must be 1..65535: {raw[:200]!r}')
     return host, port
 
 
@@ -53,7 +53,7 @@ def _request(raw: bytes) -> tuple[str, str, int, bytes | None, tuple[str, int]]:
     first = lines.pop(0).split(b' ')
     if (len(first) != 3 or not _TOKEN.fullmatch(first[0])
             or first[2] not in {b'HTTP/1.0', b'HTTP/1.1'}):
-        raise RequestError(400, 'expected an HTTP/1.0 or HTTP/1.1 request line')
+        raise RequestError(400, f'expected HTTP/1.0 or HTTP/1.1 request line: {raw.splitlines()[0][:200]!r}')
     method, target, version = first
     headers: list[tuple[bytes, bytes, bytes]] = []
     for line in lines:
@@ -73,7 +73,7 @@ def _request(raw: bytes) -> tuple[str, str, int, bytes | None, tuple[str, int]]:
     lengths = [value for lower, _, value in headers if lower == b'content-length']
     transfers = [value for lower, _, value in headers if lower == b'transfer-encoding']
     if len(lengths) > 1 or (lengths and transfers):
-        raise RequestError(400, 'conflicting Content-Length / Transfer-Encoding framing')
+        raise RequestError(400, f'conflicting Content-Length / Transfer-Encoding framing: {lengths!r}, {transfers!r}')
     if lengths:
         if not lengths[0].isascii() or not lengths[0].isdigit():
             raise RequestError(400, f'invalid Content-Length: {lengths[0][:200]!r}')
