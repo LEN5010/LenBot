@@ -8,6 +8,7 @@ const snapshot = ref(null), loading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), localError = ref(''), savedNotice = ref('')
 const providers = ref([]), roles = ref(null), prices = ref([])
 const visionEnabled = ref(false), memoryEnabled = ref(false), workerEnabled = ref(false), learnerEnabled = ref(false)
+const asrEnabled = ref(false)
 const roleNames = ['mind', 'voice', 'vision', 'memory', 'learner', 'worker']
 const roleLabels = { mind: '大脑', voice: '表达器', vision: '视觉', memory: '记忆抽取',
   learner: '群聊表达学习', worker: '任务执行' }
@@ -29,7 +30,9 @@ function adopt(result) {
     vision: models.roles.vision === null ? null : binding(models.roles.vision),
     memory: models.roles.memory === null ? null : binding(models.roles.memory),
     worker: models.roles.worker === null ? null : binding(models.roles.worker),
-    learner: models.roles.learner === null ? null : binding(models.roles.learner) }
+    learner: models.roles.learner === null ? null : binding(models.roles.learner),
+    asr: copy(models.roles.asr) }
+  asrEnabled.value = models.roles.asr !== null
   visionEnabled.value = models.roles.vision !== null
   memoryEnabled.value = models.roles.memory !== null
   learnerEnabled.value = models.roles.learner !== null
@@ -45,6 +48,7 @@ function roleBody() {
     if (output[name] === null) continue
     output[name].reasoning_effort = output[name].reasoning_effort === '' ? null : output[name].reasoning_effort
   }
+  if (output.asr !== null && output.asr.language === '') output.asr.language = null
   return output
 }
 function body() {
@@ -125,6 +129,10 @@ function enableLearner(value) {
     max_output_tokens: '', timeout_seconds: 60, reasoning_effort: '',
   } : null
 }
+function enableAsr(value) {
+  asrEnabled.value = value
+  roles.value.asr = value ? { api: 'openai-audio', provider: '', model: '', timeout_seconds: 60, language: null } : null
+}
 function draftProblem() {
   const aliases = providers.value.map(row => row.alias)
   if (aliases.length !== new Set(aliases).size) return '提供方别名重复；保存前请明确保留哪一项。'
@@ -138,6 +146,8 @@ function draftProblem() {
   if (learnerEnabled.value && (!roles.value.learner.provider || !roles.value.learner.model ||
       !roles.value.learner.context_window_tokens || !roles.value.learner.max_output_tokens))
     return '学习模型须显式填写提供方、精确模型名、上下文窗口和输出上限；不会继承大脑或记忆模型。'
+  if (asrEnabled.value && (!roles.value.asr.provider || !roles.value.asr.model))
+    return '语音转写须显式填写提供方和精确模型名；不会继承对话模型。'
   return ''
 }
 async function save() {
@@ -187,6 +197,7 @@ onMounted(() => read(false))
         <dl class="facts">
           <div v-for="name in roleNames" :key="name"><dt>{{ roleLabels[name] }}</dt>
             <dd>{{ snapshot.running.models.roles[name] === null ? '未配置' : `${snapshot.running.models.roles[name].provider} / ${snapshot.running.models.roles[name].model}` }}</dd></div>
+          <div><dt>语音转写</dt><dd>{{ snapshot.running.models.roles.asr === null ? '未配置' : `${snapshot.running.models.roles.asr.provider} / ${snapshot.running.models.roles.asr.model}` }}</dd></div>
         </dl>
         <p class="muted">运行中提供方：{{ Object.keys(snapshot.running.models.providers).join('、') }}。密钥只显示是否已填写，不回显原值。</p>
         <details class="runtime-detail"><summary>查看运行中的提供方、完整绑定与配置价格</summary>
@@ -195,6 +206,7 @@ onMounted(() => read(false))
           <h3>用途绑定</h3><dl class="facts"><div v-for="name in roleNames" :key="name"><dt>{{ name }}</dt>
             <dd v-if="snapshot.running.models.roles[name]">{{ snapshot.running.models.roles[name].provider }} / {{ snapshot.running.models.roles[name].model }} · 窗口 {{ snapshot.running.models.roles[name].context_window_tokens }} · 输出 {{ snapshot.running.models.roles[name].max_output_tokens }} · 温度 {{ snapshot.running.models.roles[name].temperature }} · 超时 {{ snapshot.running.models.roles[name].timeout_seconds }} 秒 · 思考强度 {{ snapshot.running.models.roles[name].reasoning_effort ?? '未设置' }}</dd>
             <dd v-else>未配置</dd></div></dl>
+          <p v-if="snapshot.running.models.roles.asr" class="muted">ASR：{{ snapshot.running.models.roles.asr.api }} · 超时 {{ snapshot.running.models.roles.asr.timeout_seconds }} 秒 · 语言 {{ snapshot.running.models.roles.asr.language ?? '未指定' }}。</p>
           <h3>配置价格</h3><dl class="facts"><template v-for="(entries,provider) in snapshot.running.models.prices" :key="provider">
             <div v-for="(price,model) in entries" :key="model"><dt>{{ provider }} / {{ model }} · {{ price.currency }}</dt>
               <dd>每百万 token：输入 {{ price.input }} · 缓存读取 {{ price.cache_read }} · 输出 {{ price.output }}</dd></div></template></dl>
@@ -247,6 +259,21 @@ onMounted(() => read(false))
             </div>
             <p v-else class="muted">{{ name==='vision'?'未配置视觉模型；看图工具不会注册。':name==='memory'?'未配置记忆抽取模型；本地自动抽取不能运行。':name==='learner'?'未配置学习模型；群聊学习不能启用。':'未配置任务执行模型；任务不能启动。' }}</p>
           </div>
+        </fieldset>
+
+        <fieldset :disabled="saving || loading" class="surface editor-section">
+          <legend>语音转写绑定</legend>
+          <v-switch :model-value="asrEnabled" label="配置独立 ASR 模型" hide-details
+            :disabled="saving || loading" @update:model-value="enableAsr" />
+          <p class="muted">使用 audio/transcriptions 文件转写接口，不调用大脑代替。仅配置不会批量转写历史语音；当前由 transcribe 工具按需执行。用量保留原值，费用未知，不套文字 token 价格。</p>
+          <div v-if="roles.asr !== null" class="form-grid">
+            <v-select v-model="roles.asr.provider" label="提供方" :items="providerOptions" :disabled="saving || loading" hide-details="auto" />
+            <v-text-field v-model="roles.asr.model" label="精确 ASR 模型名" hide-details="auto" />
+            <v-text-field :model-value="roles.asr.timeout_seconds" type="number" label="请求超时（秒）"
+              hide-details="auto" @update:model-value="value=>roles.asr.timeout_seconds=numberValue(value)" />
+            <v-text-field v-model="roles.asr.language" label="音频语言（如 zh，留空不指定）" hide-details="auto" />
+          </div>
+          <p v-else class="muted">未配置；语音转写工具不会注册。</p>
         </fieldset>
 
         <fieldset :disabled="saving || loading" class="surface editor-section">

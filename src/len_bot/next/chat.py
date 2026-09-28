@@ -28,6 +28,7 @@ from .expression_selection import ExpressionService
 from .external_tools import ExternalTool
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
+from .audio import TRANSCRIBE_TOOL, TranscribeArguments, execute_transcribe
 from .jargon_store import JargonStore
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
@@ -115,7 +116,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, TOOL_SEARCH]
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -133,6 +134,8 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
         reasons.append("尚未配置长期记忆后端")
     if name == "look" and config.models.roles.vision is None:
         reasons.append("尚未配置视觉模型")
+    if name == "transcribe" and config.models.roles.asr is None:
+        reasons.append("尚未配置语音转写模型")
     if name == "schedule" and not config.schedules.enabled:
         reasons.append("当前场景未开启安排")
     if name in {"delegate", "task"} and config.worker is None:
@@ -148,7 +151,7 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
             reasons.append("当前为模拟出口，不执行或伪造文件上传")
     if name == "persona_knowledge" and not persona.knowledge:
         reasons.append("角色包没有 knowledge/ 资料")
-    if name in {"open_forward", "member_info"} and config.delivery != "onebot":
+    if name in {"open_forward", "member_info", "transcribe"} and config.delivery != "onebot":
         reasons.append("当前为模拟出口，没有可实时查询的平台")
     if name == "member_info" and not config.scene.startswith("group:"):
         reasons.append("只在群场景可用")
@@ -777,6 +780,12 @@ class Chat:
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
                 model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
+            ), None, None
+        if call.name == "transcribe":
+            return await execute_transcribe(
+                self.store, self.config, TranscribeArguments.model_validate(call.arguments),
+                turn_id=turn_id, platform=self.platform_call, slots=self.slots,
+                direct=self.direct_request, notify=self.notify,
             ), None, None
         arguments = WaitArguments.model_validate(call.arguments)
         return await wait_for_messages(arguments.seconds), None, None

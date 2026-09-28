@@ -378,6 +378,12 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("ALTER TABLE proactive_wakes ADD COLUMN assessment TEXT NOT NULL DEFAULT 'arrival_count' "
                        "CHECK(assessment IN ('arrival_count','reply_effects'))")
             db.execute("CREATE INDEX reply_effects_turn ON reply_effects(scene,turn_id)")
+        elif version == 26:
+            db.execute("CREATE TABLE audio_cache ("
+                       "scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,"
+                       "wav BLOB NOT NULL, duration REAL NOT NULL, fetched_at REAL NOT NULL,"
+                       "transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,"
+                       "PRIMARY KEY(scene,platform_id,audio_index))")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
