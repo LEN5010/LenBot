@@ -10,10 +10,12 @@ import tempfile
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+import yaml
 
 from .chat import build_tools
 from .config import STRICT, load_host_config
+from .learning_store import LearningStore
 from .network import NetworkRuntime
 from .skills import load_catalog, select_skills
 from .persona import parse_persona_files, read_persona_files
@@ -25,6 +27,53 @@ PersonaFilename = Literal["persona.yaml", "voice.md", "boundaries.md", "examples
 class PersonaFileChange(BaseModel):
     model_config = STRICT
     content: str
+
+
+class ExpressionExample(BaseModel):
+    """An operator-confirmed example taken from one adopted expression; text may be edited first."""
+
+    model_config = STRICT
+    expression_id: int
+    context: str = Field(min_length=1)
+    line: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("context", "line")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("样例的场景和台词不能只包含空白")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def nonblank_tags(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values) or len(values) != len(set(values)):
+            raise ValueError("标签不能为空白或重复")
+        return values
+
+
+def append_example(content: str, example: dict) -> str:
+    """Append one block item and keep the operator's existing text, comments and order."""
+    try:
+        current = yaml.safe_load(content)
+    except yaml.YAMLError as error:
+        raise ValueError(f"examples.yaml 不是合法 YAML：{error}") from error
+    if not isinstance(current, list):
+        raise ValueError("examples.yaml 不是 YAML 列表")
+    if any(isinstance(item, dict) and item.get("context") == example["context"] and item.get("line") == example["line"]
+           for item in current):
+        raise ValueError("examples.yaml 已有相同场景和台词的样例")
+    block = yaml.safe_dump([example], allow_unicode=True, sort_keys=False)
+    updated = block if not current else content + ("" if content.endswith("\n") else "\n") + block
+    not_block = "examples.yaml 不是可在末尾追加的块状列表；请在角色文件编辑器里手动添加"
+    try:
+        appended = yaml.safe_load(updated)
+    except yaml.YAMLError as error:
+        raise ValueError(not_block) from error
+    if appended != [*current, example]:
+        raise ValueError(not_block)
+    return updated
 
 
 def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
@@ -62,6 +111,28 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
                 "restart_required": candidate.model_dump() != running or stickers_restart_required,
                 "stickers_restart_required": stickers_restart_required,
                 "affected_scenes": affected}
+
+    @app.post("/api/host/scenes/{scene}/persona-examples")
+    async def add_example(scene: str, item: ExpressionExample, _: str = Depends(user)):
+        require_scene(scene)
+        expression = LearningStore(runtime.store).expression(scene, item.expression_id)
+        if expression is None:
+            raise HTTPException(404, "当前场景没有这条表达候选")
+        if expression["status"] != "adopted":
+            raise HTTPException(409, "只有已采用的表达可以转成角色样例")
+        example = {"context": item.context, "line": item.line, **({"tags": item.tags} if item.tags else {})}
+
+        def write() -> dict:
+            path = load_host_config(root).scenes[scene].persona
+            content = append_example(read_persona_files(path)["examples.yaml"], example)
+            return {**files_state(scene, ("examples.yaml", content)), "appended": example}
+
+        try:
+            async with write_lock:
+                return await asyncio.to_thread(write)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f"{type(error).__name__}: {error}") from error
 
     @app.get("/api/host/scenes/{scene}/persona-stickers")
     async def stickers(scene: str, response: Response, _: str = Depends(user)):
