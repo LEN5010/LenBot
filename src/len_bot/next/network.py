@@ -17,6 +17,7 @@ from .memory import MemoryService
 from .memory_ingest import MemoryIngestor
 from .learning import ExpressionLearner
 from .jargon import JargonLearner
+from .sticker_collection import StickerCollector
 from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
@@ -33,6 +34,7 @@ class NetworkRuntime:
                  tasks: WorkTasks | None = None,
                  learning: ExpressionLearner | None = None,
                  jargon: JargonLearner | None = None,
+                 sticker_collection: StickerCollector | None = None,
                  expression_service: ExpressionService | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
@@ -42,6 +44,9 @@ class NetworkRuntime:
         self.ingestor = ingestor
         self.learning = learning
         self.jargon = jargon
+        self.sticker_collection = sticker_collection
+        if sticker_collection is not None:
+            sticker_collection.on_update = self.notify
         if jargon is not None:
             jargon.on_update = self.notify
         self.expression_service = expression_service
@@ -145,6 +150,11 @@ class NetworkRuntime:
             self.storage_error = error
             self.stop()
             raise
+        if (self.sticker_collection is not None and message.scene in self.sticker_collection.scenes
+                and message.scene not in self.sticker_collection.errors
+                and receipt["status"] != "duplicate" and not message.is_self
+                and any(segment.type == "image" for segment in message.segments)):
+            self.sticker_collection.request(message.scene)
         self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
     async def _ready(self, wait: bool) -> bool:
@@ -210,6 +220,8 @@ class NetworkRuntime:
                         self.learning.start()
                     if self.jargon is not None:
                         self.jargon.start()
+                    if self.sticker_collection is not None:
+                        self.sticker_collection.start()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -223,6 +235,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.sticker_collection is not None:
+                        await self.sticker_collection.close()
                     if self.jargon is not None:
                         await self.jargon.close()
                     if self.learning is not None:
@@ -250,7 +264,11 @@ class NetworkRuntime:
                             if self.jargon is not None:
                                 await self.jargon.close()
                         finally:
-                            await self.platform.close()
+                            try:
+                                if self.sticker_collection is not None:
+                                    await self.sticker_collection.close()
+                            finally:
+                                await self.platform.close()
                     self._status("stopped")
                     self._emit({"type": "runtime", "status": "stopped"})
             finally:

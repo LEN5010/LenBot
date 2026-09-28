@@ -14,11 +14,12 @@ from uuid import uuid4
 
 from .messages import ChatMessage, Segment, Sender, plain_text
 from .persona_stickers import PersonaSticker
+from .sticker_assets import CollectedSticker
 from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_daily_cron
 
 
-FORMAT_VERSION = 21
+FORMAT_VERSION = 22
 
 
 def encode(value: object) -> str:
@@ -179,9 +180,15 @@ class Store:
                         PRIMARY KEY(scene, platform_id, image_index)
                     );
                     CREATE TABLE media (
-                        id INTEGER PRIMARY KEY, persona_id TEXT NOT NULL, file TEXT NOT NULL,
+                        id INTEGER PRIMARY KEY, persona_id TEXT, file TEXT,
+                        source_message_seq INTEGER, source_image_index INTEGER,
                         mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
-                        animated INTEGER NOT NULL, data BLOB NOT NULL
+                        animated INTEGER NOT NULL, data BLOB NOT NULL,
+                        CHECK ((persona_id IS NOT NULL AND file IS NOT NULL AND
+                                source_message_seq IS NULL AND source_image_index IS NULL) OR
+                               (persona_id IS NULL AND file IS NULL AND
+                                source_message_seq IS NOT NULL AND source_image_index IS NOT NULL)),
+                        UNIQUE(source_message_seq,source_image_index)
                     );
                     CREATE INDEX media_persona_file ON media(persona_id,file,id);
                     CREATE TABLE message_media (
@@ -190,6 +197,7 @@ class Store:
                         emotions TEXT NOT NULL, tags TEXT NOT NULL,
                         PRIMARY KEY(message_seq,image_index)
                     );
+                    CREATE INDEX message_media_media ON message_media(media_id,message_seq);
                     CREATE TABLE learning_state (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL
                     );
@@ -238,6 +246,27 @@ class Store:
                         response TEXT, usage TEXT, cost TEXT, error TEXT
                     );
                     CREATE INDEX jargon_calls_scene ON jargon_calls(scene,id);
+                    CREATE TABLE sticker_candidates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        source_message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,
+                        media_id INTEGER, status TEXT NOT NULL CHECK(status IN
+                            ('queued','running','complete','failed','interrupted')),
+                        review TEXT NOT NULL CHECK(review IN ('pending','adopted','rejected')),
+                        description TEXT, text TEXT, emotions TEXT NOT NULL DEFAULT '[]',
+                        tags TEXT NOT NULL DEFAULT '[]', is_sticker INTEGER,
+                        created REAL NOT NULL, updated REAL NOT NULL, error TEXT,
+                        UNIQUE(scene,source_message_seq,image_index)
+                    );
+                    CREATE INDEX sticker_candidates_status ON sticker_candidates(scene,status,review,id);
+                    CREATE INDEX sticker_candidates_review ON sticker_candidates(scene,review,id);
+                    CREATE TABLE sticker_calls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                        candidate_id INTEGER NOT NULL, source_message_seq INTEGER NOT NULL,
+                        image_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
+                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+                        model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -266,7 +295,8 @@ class Store:
 
     def message_media(self, scene: str, message_seq: int) -> list[dict]:
         rows = self.db.execute(
-            "SELECT mm.image_index,m.file,mm.description,m.mime_type,m.width,m.height,"
+            "SELECT mm.image_index,m.file,m.source_message_seq,m.source_image_index,"
+            "mm.description,m.mime_type,m.width,m.height,"
             "m.animated,length(m.data) AS bytes FROM message_media mm "
             "JOIN messages msg ON msg.seq=mm.message_seq JOIN media m ON m.id=mm.media_id "
             "WHERE msg.scene=? AND msg.seq=? ORDER BY mm.image_index", (scene, message_seq),
@@ -313,6 +343,14 @@ class Store:
             "INSERT INTO message_media(message_seq,image_index,media_id,description,emotions,tags) "
             "VALUES (?,1,?,?,?,?)",
             (message_seq, media_id, sticker.description, encode(sticker.emotions), encode(sticker.tags)),
+        )
+
+    def _save_collected_sticker(self, message_seq: int, sticker: CollectedSticker) -> None:
+        self.db.execute(
+            "INSERT INTO message_media(message_seq,image_index,media_id,description,emotions,tags) "
+            "VALUES (?,1,?,?,?,?)",
+            (message_seq, sticker.media_id, sticker.description,
+             encode(sticker.emotions), encode(sticker.tags)),
         )
 
     def image(self, scene: str, platform_id: str, image_index: int) -> ImageAsset | None:
@@ -466,6 +504,11 @@ class Store:
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
         ).fetchall())
+        calls.extend(self.db.execute(
+            "SELECT ended,cost FROM sticker_calls "
+            f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
+            (*scenes, since, until),
+        ).fetchall())
         costs = cost_summary([None if raw is None else json.loads(raw) for _, raw in calls])
         unfinished = sum(ended is None for ended, _ in calls)
         pending = self.db.execute(
@@ -537,10 +580,21 @@ class Store:
             )
 
     def enqueue(self, message: ChatMessage, raw: dict, received_at: float,
-                *, attention_state: dict | None = None) -> int:
+                *, attention_state: dict | None = None,
+                collect_stickers: bool = False) -> int:
         """Store one received platform message without adding it to the mind yet."""
         with self.db:
             seq = self._save_message(message, raw, received_at)
+            if collect_stickers:
+                image_index = 0
+                for segment in message.segments:
+                    if segment.type == "image":
+                        image_index += 1
+                        self.db.execute(
+                            "INSERT INTO sticker_candidates(scene,source_message_seq,image_index,"
+                            "status,review,created,updated) VALUES (?,?,?,'queued','pending',?,?)",
+                            (message.scene, seq, image_index, received_at, received_at),
+                        )
             if attention_state is not None:
                 self._save_attention(message.scene, attention_state)
             return seq
@@ -643,12 +697,15 @@ class Store:
 
     def start_expression_part(self, entry_seq: int, expression: ChatMessage, content: str,
                               *, turn_id: str | None = None,
-                              sticker: tuple[str, PersonaSticker] | None = None) -> int:
+                              sticker: tuple[str, PersonaSticker] | CollectedSticker | None = None) -> int:
         """Only attempted parts become chat messages; the remainder stays in the result."""
         with self.db:
             message_seq = self._save_message(expression, None)
             if sticker is not None:
-                self._save_sticker(message_seq, *sticker)
+                if isinstance(sticker, CollectedSticker):
+                    self._save_collected_sticker(message_seq, sticker)
+                else:
+                    self._save_sticker(message_seq, *sticker)
             self.db.execute("UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
                             (content, entry_seq))
             if turn_id is not None and expression.send_status == "simulated":

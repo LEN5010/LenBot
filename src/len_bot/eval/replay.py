@@ -71,7 +71,7 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
                 "messages", "mind_entries", "mind_sessions", "turns", "schedules", "web_documents",
                 "image_cache", "tasks", "task_events", "task_files", "learning_state",
                 "learning_batches", "expressions", "expression_embedding_calls",
-                "jargon_state", "jargon", "jargon_calls",
+                "jargon_state", "jargon", "jargon_calls", "sticker_candidates", "sticker_calls",
             )
         ))}
         if scenes - {config.scene}:

@@ -34,6 +34,8 @@ from .model_slots import ModelSlots
 from .memory import MEMORY_TOOL, MemoryService
 from .persona import Persona, select_examples, select_style
 from .persona_stickers import PersonaSticker
+from .sticker_assets import CollectedSticker
+from .sticker_store import StickerStore
 from .persona_knowledge import PERSONA_KNOWLEDGE_TOOL, PersonaKnowledgeArguments, persona_knowledge
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
@@ -92,8 +94,8 @@ SAY_TOOL = {"type": "function", "function": {
     "parameters": SayArguments.model_json_schema(),
 }}
 REACT_TOOL = {"type": "function", "function": {
-    "name": "react", "description": "在当前场景发送一张角色表情；emotion 精确匹配情绪标签，"
-        "或 query 按描述、标签字面检索，二选一；结果返回素材原文件与实际发送状态。",
+    "name": "react", "description": "在当前场景发送一张表情，角色匹配优先，其次是启用的本群已采用表情；"
+        "emotion 精确匹配情绪标签，或 query 按描述、标签字面检索，二选一；结果返回实际来源与发送状态。",
     "parameters": ReactArguments.model_json_schema(),
 }}
 WAIT_TOOL = {"type": "function", "function": {
@@ -116,8 +118,9 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
     reasons = []
     if persona.tools != "all" and name not in persona.tools:
         reasons.append("当前角色未允许此工具")
-    if name == "react" and not persona.stickers:
-        reasons.append("角色包没有 stickers/ 素材")
+    if (name == "react" and not persona.stickers
+            and not (config.learning is not None and config.learning.collect_stickers)):
+        reasons.append("角色包没有 stickers/ 素材，且未启用本群收集表情")
     if name == "web_read" and config.web_read is None:
         reasons.append("尚未配置网页读取")
     if name == "web_search" and config.web_search is None:
@@ -517,15 +520,28 @@ class Chat:
             matches = [sticker for sticker in self.persona.stickers.values()
                        if any(query in value.casefold() for value in
                               (sticker.description, *sticker.emotions, *sticker.tags))]
-        if not matches:
+        if matches:
+            usage = self.store.sticker_usage(self.config.scene, self.persona.id)
+            least = min(usage.get(sticker.file, 0) for sticker in matches)
+            sticker = choice([sticker for sticker in matches if usage.get(sticker.file, 0) == least])
+            summary = f"角色表情 {sticker.file}：{sticker.description}"
+        elif self.config.learning is not None and self.config.learning.collect_stickers:
+            records = StickerStore(self.store)
+            collected = records.matches(self.config.scene, emotion=arguments.emotion, query=arguments.query)
+            if not collected:
+                raise ValueError(f"角色及本群已采用表情无匹配：{encode(arguments.model_dump(exclude_none=True))}")
+            least = min(item["uses"] for item in collected)
+            selected = choice([item for item in collected if item["uses"] == least])
+            sticker = records.asset(self.config.scene, selected["id"])
+            source = self.store.read_message(self.config.scene, sticker.source_message_seq)
+            summary = (f"本群表情，来源平台消息 {source.platform_message_id} 第{sticker.source_image_index}张："
+                       f"{sticker.description}")
+        else:
             raise ValueError(f"角色表情无匹配：{encode(arguments.model_dump(exclude_none=True))}")
-        usage = self.store.sticker_usage(self.config.scene, self.persona.id)
-        least = min(usage.get(sticker.file, 0) for sticker in matches)
-        sticker = choice([sticker for sticker in matches if usage.get(sticker.file, 0) == least])
         segments = []
         if arguments.reply_to is not None:
             segments.append(Segment("reply", {"id": arguments.reply_to}))
-        segments.append(Segment("image", {"summary": f"角色表情 {sticker.file}：{sticker.description}"}))
+        segments.append(Segment("image", {"summary": summary}))
         return Expression(self.simulated_message(segments, reply_to=arguments.reply_to), sticker)
 
     async def deliver_expression(self, call_id: str, expression: Expression, *,
@@ -541,7 +557,7 @@ class Chat:
 
     async def send_prepared_expression(self, entry_seq: int, parts: list[ChatMessage],
                                        *, prefix: str = "", turn_id: str | None = None,
-                                       sticker: PersonaSticker | None = None) -> tuple[str, str]:
+                                       sticker: PersonaSticker | CollectedSticker | None = None) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         for index, part in enumerate(parts):
@@ -555,7 +571,9 @@ class Chat:
             content = report_parts(parts, errors, self.render)
             message_seq = self.store.start_expression_part(entry_seq, part, prefix + content,
                                                           turn_id=turn_id,
-                                                          sticker=None if sticker is None else (self.persona.id, sticker))
+                                                          sticker=(sticker if isinstance(sticker, CollectedSticker)
+                                                                   else None if sticker is None
+                                                                   else (self.persona.id, sticker)))
             self.notify()
             if self.send_message is not None:
                 result = await self.send_message(part, image_bytes=None if sticker is None else sticker.data)

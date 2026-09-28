@@ -47,3 +47,9 @@ it copies this synthetic format-19 database and applies the committed format-20
 jargon DDL as its old-schema setup. It then gives a deleted high expression ID
 one synthetic saved voice-call reference, to verify that the new allocation
 sequence also stays above IDs no longer present in the expression table.
+The format-21 media migration test likewise keeps no new binary fixture. It
+builds a synthetic format-21 source from the format-19 fixture with the actual
+older jargon and expression-table shapes, then adds a generated 2x2 PNG role
+media row and an original message-media link. The offline upgrade checks that
+their IDs, exact bytes, links, FTS text, and unrelated task/learning rows remain
+unchanged while the collected-sticker tables start empty.

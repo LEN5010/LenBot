@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 21."""
+"""Explicit offline upgrade of an isolated next-core database to format 22."""
 
 from __future__ import annotations
 
@@ -268,6 +268,50 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
             db.execute("DELETE FROM sqlite_sequence WHERE name='expressions'")
             db.execute("INSERT INTO sqlite_sequence(name,seq) VALUES ('expressions',?)",
                        (max(current_max, referenced_max),))
+        elif version == 21:
+            db.execute(
+                "CREATE TABLE media_next ("
+                "id INTEGER PRIMARY KEY, persona_id TEXT, file TEXT,"
+                "source_message_seq INTEGER, source_image_index INTEGER,"
+                "mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,"
+                "animated INTEGER NOT NULL, data BLOB NOT NULL,"
+                "CHECK ((persona_id IS NOT NULL AND file IS NOT NULL AND "
+                "source_message_seq IS NULL AND source_image_index IS NULL) OR "
+                "(persona_id IS NULL AND file IS NULL AND "
+                "source_message_seq IS NOT NULL AND source_image_index IS NOT NULL)),"
+                "UNIQUE(source_message_seq,source_image_index))"
+            )
+            db.execute(
+                "INSERT INTO media_next(id,persona_id,file,mime_type,width,height,animated,data) "
+                "SELECT id,persona_id,file,mime_type,width,height,animated,data FROM media"
+            )
+            db.execute("DROP TABLE media")
+            db.execute("ALTER TABLE media_next RENAME TO media")
+            db.execute("CREATE INDEX media_persona_file ON media(persona_id,file,id)")
+            db.execute("CREATE INDEX message_media_media ON message_media(media_id,message_seq)")
+            db.execute(
+                "CREATE TABLE sticker_candidates ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "source_message_seq INTEGER NOT NULL, image_index INTEGER NOT NULL,"
+                "media_id INTEGER, status TEXT NOT NULL CHECK(status IN "
+                "('queued','running','complete','failed','interrupted')),"
+                "review TEXT NOT NULL CHECK(review IN ('pending','adopted','rejected')),"
+                "description TEXT, text TEXT, emotions TEXT NOT NULL DEFAULT '[]',"
+                "tags TEXT NOT NULL DEFAULT '[]', is_sticker INTEGER,"
+                "created REAL NOT NULL, updated REAL NOT NULL, error TEXT,"
+                "UNIQUE(scene,source_message_seq,image_index))"
+            )
+            db.execute("CREATE INDEX sticker_candidates_status ON sticker_candidates(scene,status,review,id)")
+            db.execute("CREATE INDEX sticker_candidates_review ON sticker_candidates(scene,review,id)")
+            db.execute(
+                "CREATE TABLE sticker_calls ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,"
+                "candidate_id INTEGER NOT NULL, source_message_seq INTEGER NOT NULL,"
+                "image_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,"
+                "status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),"
+                "model_started REAL, request TEXT, response TEXT, usage TEXT, cost TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX sticker_calls_scene ON sticker_calls(scene,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

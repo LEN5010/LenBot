@@ -8,12 +8,13 @@ import regex
 
 from .messages import ChatMessage, Segment
 from .persona_stickers import PersonaSticker
+from .sticker_assets import CollectedSticker
 
 
 @dataclass(frozen=True)
 class Expression:
     message: ChatMessage
-    sticker: PersonaSticker | None = None
+    sticker: PersonaSticker | CollectedSticker | None = None
 
 
 def split_expression(expression: ChatMessage, max_chars: int) -> list[ChatMessage]:

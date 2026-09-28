@@ -400,6 +400,7 @@ class LearningSettings(BaseModel):
 
     extract: bool = True
     jargon_extract: bool = False
+    collect_stickers: bool = False
     min_messages: int = Field(default=20, ge=1, le=100, strict=True)
     batch_size: int = Field(default=50, ge=1, le=100, strict=True)
     idle_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
@@ -675,7 +676,7 @@ class LabConfig(SharedConfig, SceneSettings):
         if self.learning is not None:
             if not self.scene.startswith("group:"):
                 raise ValueError("learning is only supported for group scenes")
-            if self.learning.extract or self.learning.jargon_extract:
+            if self.learning.extract or self.learning.jargon_extract or self.learning.collect_stickers:
                 raise ValueError(
                     "learning requires the isolated-multi host for extraction, "
                     "not the single-scene lab or replay"
@@ -746,6 +747,8 @@ class HostConfig(SharedConfig):
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
                 if (settings.learning.extract or settings.learning.jargon_extract) and self.models.roles.learner is None:
                     raise ValueError(f"scenes.{scene}.learning requires explicit models.roles.learner")
+                if settings.learning.collect_stickers and self.models.roles.vision is None:
+                    raise ValueError(f"scenes.{scene}.learning.collect_stickers requires explicit models.roles.vision")
                 if (settings.learning.embedding is not None
                         and settings.learning.embedding.provider not in self.models.providers):
                     raise ValueError(f"scenes.{scene}.learning.embedding.provider references unknown provider "

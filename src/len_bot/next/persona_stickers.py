@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 import stat
 
-from PIL import Image
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 import yaml
 
+from .sticker_assets import MAX_STICKER_BYTES, inspect_sticker
 
-MAX_STICKER_BYTES = 10_000_000
-MAX_STICKER_PIXELS = 25_000_000
-_MIME_TYPES = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp"}
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,18 +64,8 @@ def _image(path: Path, entry: _StickerEntry) -> PersonaSticker:
             raise ValueError("sticker asset must be a regular file")
         with path.open("rb") as stream:
             data = stream.read(MAX_STICKER_BYTES + 1)
-        if not data or len(data) > MAX_STICKER_BYTES:
-            raise ValueError(f"sticker asset must contain 1..{MAX_STICKER_BYTES} bytes")
-        with Image.open(BytesIO(data)) as image:
-            if image.format not in _MIME_TYPES:
-                raise ValueError(f"unsupported sticker image format: {image.format!r}")
-            width, height = image.size
-            if width * height > MAX_STICKER_PIXELS:
-                raise ValueError(f"sticker canvas exceeds {MAX_STICKER_PIXELS} pixels")
-            mime_type = _MIME_TYPES[image.format]
-            animated = getattr(image, "n_frames", 1) > 1
-            image.verify()
-    except (OSError, ValueError, EOFError, SyntaxError, Image.DecompressionBombError) as error:
+        mime_type, width, height, animated = inspect_sticker(data)
+    except (OSError, ValueError) as error:
         raise ValueError(f"{path}: invalid sticker asset: {error}") from error
     return PersonaSticker(entry.file, entry.description, tuple(entry.emotions),
                           tuple(entry.tags), mime_type, width, height, animated, data)

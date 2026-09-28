@@ -1,5 +1,6 @@
 """Offline format upgrades using committed DDL with synthetic, content-replaced rows."""
 
+from dataclasses import asdict
 import json
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,7 @@ from PIL import Image
 
 from len_bot.next.migrate import migrate_database
 from len_bot.next.learning_store import LearningStore
-from len_bot.next.messages import parse_message
+from len_bot.next.messages import parse_message, plain_text
 from len_bot.next.store import Store
 from len_bot.next.tasks_store import TaskStore
 
@@ -29,6 +30,9 @@ SCHEDULE_COLUMNS = (
 SCHEDULE_V15_COLUMNS = (*SCHEDULE_COLUMNS, "interval_seconds")
 FIRST_EXPRESSION_COLUMNS = (
     "wake_received_at", "first_expression_at", "first_expression_delivery",
+)
+OLD_MEDIA_COLUMNS = (
+    "id", "persona_id", "file", "mime_type", "width", "height", "animated", "data",
 )
 V4_ATTENTION = {
     "focus_started_at": 1789000010.0,
@@ -86,9 +90,9 @@ def test_old_format_upgrades_without_changing_original_records(tmp_path: Path, f
 
     original_backup = migrate_database(path)
     assert original_backup == tmp_path / f"isolated.sqlite3.v{format_number}.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(original_backup) == (0x4C424E31, format_number)
-    for intermediate_format in range(format_number + 1, 21):
+    for intermediate_format in range(format_number + 1, 22):
         assert _version(tmp_path / f"isolated.sqlite3.v{intermediate_format}.bak") == (
             0x4C424E31, intermediate_format
         )
@@ -259,7 +263,7 @@ def test_v7_discovery_upgrade_preserves_actual_records_and_starts_empty(tmp_path
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v7.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 7)
     assert _version(tmp_path / "isolated.sqlite3.v8.bak") == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
@@ -316,7 +320,7 @@ def test_v8_web_documents_upgrade_preserves_all_existing_records(tmp_path: Path)
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v8.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 8)
     assert _version(tmp_path / "isolated.sqlite3.v9.bak") == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
@@ -354,7 +358,7 @@ def test_v9_image_cache_upgrade_preserves_synthetic_web_and_chat_records(tmp_pat
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v9.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 9)
     assert _version(tmp_path / "isolated.sqlite3.v10.bak") == (0x4C424E31, 10)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -420,7 +424,7 @@ def test_v10_call_position_upgrade_keeps_synthetic_native_groups_unpaired(tmp_pa
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v10.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 10)
     assert _rows(path) == before == _rows(backup)
     assert _version(tmp_path / "isolated.sqlite3.v11.bak") == (0x4C424E31, 11)
@@ -478,7 +482,7 @@ def test_v11_first_expression_upgrade_preserves_synthetic_records_and_rowids(tmp
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v11.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 11)
     assert _rows(path) == before == _rows(backup)
     assert _version(tmp_path / "isolated.sqlite3.v12.bak") == (0x4C424E31, 12)
@@ -522,7 +526,7 @@ def test_v12_cost_upgrade_keeps_existing_latency_and_call_facts(tmp_path: Path) 
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v12.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 12)
     assert _rows(path) == before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -646,7 +650,7 @@ def test_work_task_upgrade_preserves_format_13_rows(tmp_path: Path) -> None:
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v13.bak"
     assert _version(backup) == (0x4C424E31, 13)
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _rows(path) == before == _rows(backup)
     with Store(path) as store:
         assert [tuple(row) for row in store.db.execute(
@@ -694,7 +698,7 @@ def test_v14_interval_upgrade_preserves_one_time_schedules_chat_and_tasks(tmp_pa
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v14.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 14)
     assert _rows(path) == chat_before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -761,7 +765,7 @@ def test_v15_daily_cron_upgrade_preserves_interval_schedules_chat_and_tasks(tmp_
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v15.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 15)
     assert _rows(path) == chat_before == _rows(backup)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
@@ -834,18 +838,20 @@ def test_v16_media_upgrade_preserves_existing_chat_identity_tasks_and_schedules(
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v16.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 16)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
+            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
         for source in (db, old):
             assert source.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
             ).fetchall() == search_before
         assert [row[1] for row in db.execute("PRAGMA table_info(media)")] == [
-            "id", "persona_id", "file", "mime_type", "width", "height", "animated", "data",
+            "id", "persona_id", "file", "source_message_seq", "source_image_index",
+            "mime_type", "width", "height", "animated", "data",
         ]
         assert [row[1] for row in db.execute("PRAGMA table_info(message_media)")] == [
             "message_seq", "image_index", "media_id", "description", "emotions", "tags",
@@ -915,12 +921,16 @@ def test_v17_learning_upgrade_preserves_original_media_chat_and_task_records(tmp
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v17.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 17)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
-            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            columns = "rowid," + ",".join(OLD_MEDIA_COLUMNS) if table == "media" else "rowid,*"
+            assert db.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+        assert all(row == (None, None) for row in db.execute(
+            "SELECT source_message_seq,source_image_index FROM media ORDER BY id"
+        ))
         for source in (db, old):
             assert source.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1041,7 +1051,7 @@ def test_v18_expression_vector_upgrade_keeps_learning_and_other_synthetic_record
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v18.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 18)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
@@ -1050,9 +1060,16 @@ def test_v18_expression_vector_upgrade_keeps_learning_and_other_synthetic_record
                     "SELECT rowid,id,scene,situation,style,sources,status,updated "
                     "FROM expressions ORDER BY rowid"
                 ).fetchall() == rows
+            elif table == "media":
+                assert db.execute(
+                    "SELECT rowid," + ",".join(OLD_MEDIA_COLUMNS) + " FROM media ORDER BY rowid"
+                ).fetchall() == rows
             else:
                 assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
             assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+        assert all(row == (None, None) for row in db.execute(
+            "SELECT source_message_seq,source_image_index FROM media ORDER BY id"
+        ))
         for source_db in (db, old):
             assert source_db.execute(
                 "SELECT rowid,search_text FROM message_search ORDER BY rowid"
@@ -1079,15 +1096,15 @@ def test_migration_rejects_current_and_wrong_database(tmp_path: Path) -> None:
     path = tmp_path / "isolated.sqlite3"
     shutil.copyfile(FIXTURES / "v2-synthetic.sqlite3", path)
     migrate_database(path)
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 20 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 21 database"):
         migrate_database(path)
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
 
     unrelated = tmp_path / "unrelated.sqlite3"
     with sqlite3.connect(unrelated) as db:
         db.execute("CREATE TABLE other (value TEXT)")
         db.execute("INSERT INTO other VALUES ('untouched')")
-    with pytest.raises(ValueError, match="Expected a next-core format 1 through 20 database"):
+    with pytest.raises(ValueError, match="Expected a next-core format 1 through 21 database"):
         migrate_database(unrelated)
     assert not unrelated.with_name(unrelated.name + ".v1.bak").exists()
     with sqlite3.connect(unrelated) as db:
@@ -1115,7 +1132,7 @@ def test_format19_jargon_migration_preserves_existing_rows(tmp_path: Path) -> No
         Store(path)
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v19.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 19)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
@@ -1236,7 +1253,7 @@ def test_format20_expression_ids_do_not_reuse_deleted_voice_references(tmp_path:
 
     backup = migrate_database(path)
     assert backup == tmp_path / "isolated.sqlite3.v20.bak"
-    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path) == (0x4C424E31, 22)
     assert _version(backup) == (0x4C424E31, 20)
     with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
         for table, rows in before.items():
@@ -1287,6 +1304,132 @@ def test_format20_expression_rebuild_failure_rolls_back(tmp_path: Path) -> None:
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM expressions ORDER BY id").fetchall() == before
         assert db.execute("SELECT name FROM sqlite_master WHERE name='expressions_scene_status'").fetchone()
+
+
+def _format21_source(path: Path) -> None:
+    """Keep the committed format-21 media shape as the offline source."""
+    _format20_source(path)
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            BEGIN;
+            CREATE TABLE expressions_next (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL,
+                situation TEXT NOT NULL, style TEXT NOT NULL, sources TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),
+                updated REAL NOT NULL, vector BLOB, vector_binding TEXT,
+                vector_dimensions INTEGER, UNIQUE(scene,situation,style)
+            );
+            INSERT INTO expressions_next(id,scene,situation,style,sources,status,updated,
+                vector,vector_binding,vector_dimensions)
+                SELECT id,scene,situation,style,sources,status,updated,
+                    vector,vector_binding,vector_dimensions FROM expressions;
+            DROP TABLE expressions;
+            ALTER TABLE expressions_next RENAME TO expressions;
+            CREATE INDEX expressions_scene_status ON expressions(scene,status,id);
+            INSERT INTO expressions(id,scene,situation,style,sources,status,updated)
+                VALUES (100,'group:80001','已删历史编号','合成说法','[1]','pending',1790000000.0);
+            DELETE FROM expressions WHERE id=100;
+            PRAGMA user_version = 21;
+            COMMIT;
+        """)
+        raw = {"post_type": "message", "message_type": "group", "self_id": "90001",
+               "group_id": "80001", "user_id": "70001", "message_id": "synthetic-image-source",
+               "time": 1790000002, "sender": {"nickname": "合成甲", "role": "member"},
+               "message": [{"type": "image", "data": {"url": "https://example.com/synthetic.png"}}]}
+        message = parse_message(raw, own_message_ids=set())
+        db.execute(
+            "INSERT INTO messages(seq,scene,platform_id,body,raw,received_at) VALUES (?,?,?,?,?,?)",
+            (2, message.scene, message.platform_message_id,
+             json.dumps(asdict(message), ensure_ascii=False), json.dumps(raw, ensure_ascii=False),
+             1790000002.0),
+        )
+        db.execute("INSERT INTO message_search(rowid,search_text) VALUES (?,?)",
+                   (2, plain_text(message).casefold()))
+        image = BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
+        db.execute(
+            "INSERT INTO media(id,persona_id,file,mime_type,width,height,animated,data) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (90, "role-fixture", "stickers/synthetic.png", "image/png", 2, 2, 0, image.getvalue()),
+        )
+        db.execute(
+            "INSERT INTO message_media(message_seq,image_index,media_id,description,emotions,tags) "
+            "VALUES (?,?,?,?,?,?)",
+            (2, 1, 90, "合成角色表情", '["开心"]', '["蓝色"]'),
+        )
+
+
+def test_format21_media_migration_preserves_originals_and_other_rows(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format21_source(path)
+    old_tables = (
+        "messages", "mind_entries", "mind_sessions", "turns", "model_calls", "schedules",
+        "tasks", "task_events", "task_files", "web_documents", "image_cache", "message_media",
+        "learning_state", "learning_batches", "expressions", "expression_embedding_calls",
+        "jargon_state", "jargon", "jargon_calls",
+    )
+    with sqlite3.connect(path) as db:
+        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                  for table in old_tables}
+        old_media = db.execute(
+            "SELECT id,persona_id,file,mime_type,width,height,animated,data FROM media ORDER BY id"
+        ).fetchall()
+        search_before = db.execute("SELECT rowid,search_text FROM message_search ORDER BY rowid").fetchall()
+        assert before["jargon"] and before["expressions"] and before["model_calls"]
+        assert old_media and before["message_media"]
+    with pytest.raises(ValueError, match="format 21 requires offline migration"):
+        Store(path)
+
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v21.bak"
+    assert _version(path) == (0x4C424E31, 22)
+    assert _version(backup) == (0x4C424E31, 21)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        for table, rows in before.items():
+            assert db.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+        for connection in (db, old):
+            assert connection.execute(
+                "SELECT rowid,search_text FROM message_search ORDER BY rowid"
+            ).fetchall() == search_before
+            assert connection.execute(
+                "SELECT id,persona_id,file,mime_type,width,height,animated,data FROM media ORDER BY id"
+            ).fetchall() == old_media
+        assert db.execute(
+            "SELECT source_message_seq,source_image_index FROM media WHERE id=90"
+        ).fetchone() == (None, None)
+        assert {"source_message_seq", "source_image_index"}.issubset(
+            row[1] for row in db.execute("PRAGMA table_info(media)")
+        )
+        assert not {"source_message_seq", "source_image_index"}.intersection(
+            row[1] for row in old.execute("PRAGMA table_info(media)")
+        )
+        assert all(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
+                   for table in ("sticker_candidates", "sticker_calls"))
+        assert [row[2] for row in db.execute("PRAGMA index_info(message_media_media)")] == [
+            "media_id", "message_seq",
+        ]
+    with Store(path) as store:
+        assert store.original_image("group:80001", 2, 1) == ("image/png", old_media[0][-1])
+        assert store.message_media("group:80001", 2)[0]["file"] == "stickers/synthetic.png"
+
+
+def test_format21_media_rebuild_collision_rolls_back(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format21_source(path)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE sticker_candidates (collision TEXT)")
+        before_media = db.execute("SELECT * FROM media ORDER BY id").fetchall()
+        before_links = db.execute("SELECT * FROM message_media ORDER BY message_seq,image_index").fetchall()
+    with pytest.raises(sqlite3.OperationalError, match="already exists"):
+        migrate_database(path)
+    assert _version(path) == (0x4C424E31, 21)
+    assert _version(path.with_name(path.name + ".v21.bak")) == (0x4C424E31, 21)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM media ORDER BY id").fetchall() == before_media
+        assert db.execute("SELECT * FROM message_media ORDER BY message_seq,image_index").fetchall() == before_links
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='media_next'").fetchone() is None
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='message_media_media'").fetchone() is None
 
 
 @pytest.mark.parametrize("format_number", [1, 2, 3, 4, 6, 7, 8, 9, 10])
