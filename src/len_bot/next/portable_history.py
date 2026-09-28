@@ -14,6 +14,8 @@ from .chat import PROMPTS, build_system, build_tools
 from .config import HostConfig, load_host_config
 from .context import complete_boundaries, estimate_request, project_history, recap_source
 from .discovery import DEFERRED_NAMES
+from .memory import LocalMemoryConfig
+from .memory_local import scene_overview
 from .persona import Persona, load_persona
 from .schedule import describe
 from .store import FORMAT_VERSION, Store, encode
@@ -66,7 +68,9 @@ def _check_budget(store: Store, config: HostConfig, scene: str, persona: Persona
                   recap: str | None, entries: list[tuple[int, dict]]) -> int:
     local = config.scene_config(scene)
     allowed = build_tools(local, persona, platform=config.delivery == "onebot")
-    system = build_system(local, persona, allowed, platform=config.delivery == "onebot")
+    profile = (scene_overview(config.memory.local.directory, scene)
+               if isinstance(config.memory, LocalMemoryConfig) and config.memory.summaries else None)
+    system = build_system(local, persona, allowed, platform=config.delivery == "onebot", group_profile=profile)
     tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
     binding = config.models.roles.mind
     trigger = int(binding.context_window_tokens * config.compaction.trigger_ratio)

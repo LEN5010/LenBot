@@ -2216,3 +2216,20 @@ def test_proactive_is_host_group_only_with_local_active_hours(tmp_path):
     _write_config(lab_root, lab)
     with pytest.raises(ValueError, match="proactive requires the isolated-multi host"):
         load_config(lab_root)
+
+
+def test_local_memory_summaries_require_explicit_memory_model(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["memory"] = {"backend": "local", "local": {"directory": "memory"}, "summaries": True}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="summaries require explicit models.roles.memory"):
+        load_host_config(root)
+    source["models"]["roles"]["memory"] = {"provider": "sample", "model": "sample-memory",
+                                           "context_window_tokens": 8192}
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    assert load_host_config(root).memory.summaries is True
+    source["memory"]["summaries"] = "yes"
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="summaries"):
+        load_host_config(root)

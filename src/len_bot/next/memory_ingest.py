@@ -289,8 +289,14 @@ class MemoryIngestor:
         job["details"]["result"] = asdict(result)
         if result.failed_tools:
             self.jobs.status(job, "failed", f"{result.failed_tools} memory tool call(s) failed")
-        else:
-            self.jobs.status(job, "complete")
+            return
+        self.jobs.status(job, "complete")
+        written = [item["path"] for item in job["details"]["writes"]]
+        if self.memory.summarizer is not None and written:
+            # A separate unit: summary failures are recorded without reopening the batch.
+            async with self.memory.write_lock(scene):
+                job["details"]["summaries"] = await self.memory.summarizer.refresh_after_writes(scene, written)
+            self.jobs.details(job)
 
     async def _submit_native(self, scene: str, job: dict) -> None:
         try:

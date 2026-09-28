@@ -553,6 +553,9 @@ class SharedConfig(BaseModel):
         if (isinstance(self.memory, LocalMemoryConfig) and self.memory.ingest is not None
                 and self.models.roles.memory is None):
             raise ValueError("local memory ingest requires explicit models.roles.memory")
+        if (isinstance(self.memory, LocalMemoryConfig) and self.memory.summaries
+                and self.models.roles.memory is None):
+            raise ValueError("local memory summaries require explicit models.roles.memory")
         if self.worker is not None:
             binding = self.models.roles.worker
             if binding is None:

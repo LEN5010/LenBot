@@ -35,6 +35,13 @@ class WriteRequest(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class SummaryRequest(BaseModel):
+    model_config = STRICT
+    scene: str
+    path: str
+    scope: Literal["scene", "public"]
+
+
 class DeleteRequest(BaseModel):
     model_config = STRICT
     scene: str
@@ -77,6 +84,7 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
                                 or memory.settings.openviking.public_root is not None),
             "auto_recall": memory is not None and memory.settings.auto_recall,
             "recall_budget_chars": None if memory is None else memory.settings.recall_budget_chars,
+            "summaries": memory is not None and memory.summarizer is not None,
             "scenes": [{"scene": scene, "persona": {"id": chat.persona.id, "name": chat.persona.name}}
                        for scene, chat in runtime.chats.items()],
         }
@@ -113,6 +121,32 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
         async with operation(body.scene) as memory:
             return await memory.delete(body.scene, body.path, body.reason, forget=body.forget,
                                        exclude_records=body.exclude_records)
+
+    @app.get("/api/host/memory/summary")
+    async def summary(scene: str, path: str = "", scope: Literal["scene", "public"] = "scene",
+                      _: str = Depends(user)):
+        async with operation(scene) as memory:
+            if not isinstance(memory.backend, LocalMemory):
+                raise ValueError("目录摘要只在本地后端实现")
+            current = await memory.backend.summary(scene, path, scope=scope)
+            return {"enabled": memory.summarizer is not None, "summary": asdict(current),
+                    "runs": memory.jobs.summary_runs("public" if scope == "public" else scene, path)}
+
+    @app.post("/api/host/memory/summary")
+    async def summarize(body: SummaryRequest, _: str = Depends(user)):
+        async with operation(body.scene) as memory:
+            if memory.summarizer is None:
+                raise ValueError("当前运行配置未开启目录摘要")
+            async with memory.write_lock("public" if body.scope == "public" else body.scene):
+                return await memory.summarizer.summarize(body.scene, body.path, scope=body.scope)
+
+    @app.get("/api/host/memory/summary-runs/{id}")
+    async def summary_run(id: int, scene: str, _: str = Depends(user)):
+        async with operation(scene) as memory:
+            run = memory.jobs.summary_run(id)
+            if run is None or run["scene"] != scene:
+                raise FileNotFoundError(f"当前场景没有目录摘要记录 {id}")
+            return run
 
     @app.get("/api/host/memory/sources")
     async def sources(scene: str, query: str | None = None, who: str | None = None,

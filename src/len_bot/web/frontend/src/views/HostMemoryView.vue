@@ -7,6 +7,7 @@ import { useRequestGuard } from '../composables/useRequestGuard.js'
 import HostMemorySettings from '../components/HostMemorySettings.vue'
 import HostMemoryIngest from '../components/HostMemoryIngest.vue'
 import HostMemorySources from '../components/HostMemorySources.vue'
+import HostMemorySummary from '../components/HostMemorySummary.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), scene = ref(''), scope = ref('scene'), directory = ref('')
@@ -252,6 +253,7 @@ watch(editPath, value => {
         <ul v-if="nodes.length" class="node-list"><li v-for="node in nodes" :key="node.path"><v-btn variant="text" @click="node.is_dir?openDirectory(node.path):readFile(node.path)">{{ node.is_dir?'目录':'文件' }} · {{ node.name }}</v-btn>
           <span v-if="node.access" class="muted">{{ node.access }}</span></li></ul>
         <v-btn v-if="hasMore" variant="outlined" :loading="browsing" @click="browse(true)">读取下一页（最多 50 项）</v-btn>
+        <HostMemorySummary v-if="state.backend==='local' && scene" :key="`${scene}|${scope}|${directory}`" :scene="scene" :scope="scope" :path="directory" />
       </section>
       <section v-if="tab==='search' && can('search')" class="surface"><h2>检索记忆</h2>
         <p class="muted">搜索当前场景及实际可读的公共记忆；上方范围选择只控制目录和文件操作，命中会标明自己的范围。</p>

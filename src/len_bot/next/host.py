@@ -100,7 +100,7 @@ async def run() -> None:
                     for settings in config.scenes.values())
              else nullcontext(None)) as learner_model,
             open_expression_service(config, store, slots=slots) as expression_service,
-            open_memory(config, store) as memory,
+            open_memory(config, store, slots=slots) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
             if expression_service is not None:
