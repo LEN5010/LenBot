@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 14."""
+"""Explicit offline upgrade of an isolated next-core database to format 15."""
 
 from __future__ import annotations
 
@@ -160,6 +160,11 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "note TEXT, created REAL NOT NULL)"
             )
             db.execute("CREATE INDEX task_files_task ON task_files(scene,task_id,id)")
+        elif version == 14:
+            db.execute(
+                "ALTER TABLE schedules ADD COLUMN interval_seconds INTEGER "
+                "CHECK(interval_seconds BETWEEN 60 AND 31536000)"
+            )
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
@@ -168,13 +173,13 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
 
 
 def migrate_database(path: Path) -> Path:
-    """Upgrade format 1 through 13 while retaining a copy of each step."""
+    """Upgrade earlier formats while retaining a copy of each step."""
     path = Path(path).resolve()
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)) as db:
         application_id, version = _format(db)
         if application_id != APPLICATION_ID or version not in range(1, FORMAT_VERSION):
             raise ValueError(
-                f"Expected a next-core format 1 through 13 database: {path}; "
+                f"Expected a next-core format 1 through {FORMAT_VERSION - 1} database: {path}; "
                 f"found app={application_id}, version={version}"
             )
         for step in range(version, FORMAT_VERSION):

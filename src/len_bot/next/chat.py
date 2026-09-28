@@ -97,7 +97,7 @@ def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> 
     if name == "look" and config.models.roles.vision is None:
         reasons.append("尚未配置视觉模型")
     if name == "schedule" and not config.schedules.enabled:
-        reasons.append("当前场景未开启一次性安排")
+        reasons.append("当前场景未开启安排")
     if name in {"delegate", "task"} and config.worker is None:
         reasons.append("尚未配置任务容器与 worker 模型")
     if name == "delegate" and not config.tasks.enabled:

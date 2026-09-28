@@ -1,10 +1,11 @@
-"""One-time scene arrangements, their concrete permissions and model tools."""
+"""Scene arrangements, their concrete permissions and model tools."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
 from datetime import datetime
+import re
 from typing import Literal, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -16,22 +17,39 @@ if TYPE_CHECKING:
     from .store import Schedule, Store
 
 
+_INTERVAL = re.compile(r"every ([1-9][0-9]*)([mhd])\Z")
+_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+_MAX_INTERVAL_SECONDS = 365 * 86400
+
+
 class ScheduleArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    when: datetime
+    when: datetime | int
     note: str = Field(min_length=1)
     target: str = Field(alias="for", pattern=r"^(self|[1-9][0-9]*)$")
     requester: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
 
-    @field_validator("when", mode="before")
+    @field_validator("when", mode="before", json_schema_input_type=str)
     @classmethod
-    def absolute_time(cls, value: object) -> datetime:
+    def supported_time(cls, value: object) -> datetime | int:
         if not isinstance(value, str):
-            raise ValueError("when must be an ISO datetime with a UTC offset")
-        parsed = datetime.fromisoformat(value)
+            raise ValueError("when must be an ISO datetime with a UTC offset or 'every <positive integer>m|h|d'")
+        interval = _INTERVAL.fullmatch(value)
+        if interval is not None:
+            number, unit = interval.groups()
+            seconds = int(number) * _UNIT_SECONDS[unit]
+            if seconds > _MAX_INTERVAL_SECONDS:
+                raise ValueError("interval must be at most 365 days")
+            return seconds
+        if value.startswith("every ") or value.startswith("cron:"):
+            raise ValueError("when supports only 'every <positive integer>m|h|d'; cron is not supported")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(f"when must be an ISO datetime with a UTC offset or fixed interval: {error}") from error
         if parsed.utcoffset() is None:
-            raise ValueError("when must include a UTC offset; relative/recurring times are not supported")
+            raise ValueError("when must include a UTC offset; local/relative times are not supported")
         return parsed
 
     @field_validator("note")
@@ -59,19 +77,21 @@ class ScheduleCancelArguments(BaseModel):
 
 SCHEDULE_TOOLS = [
     {"type": "function", "function": {
-        "name": "schedule", "description": "为当前场景创建一次性安排。when 含 UTC 偏移且在未来；"
+        "name": "schedule", "description": "为当前场景创建一次性或固定间隔安排。when 为未来且含 UTC 偏移的 ISO 时间，"
+        "或严格 every <正整数>m|h|d（1分钟至365天，固定UTC秒；d=24小时，不是本地每日钟点）；cron 未开放。"
         "for=self 是未来自己要做的事，for=QQ 是提醒对象；requester 是实际请求人 QQ，Bot 自主安排用 null。"
         "相对时间请结合原话和当前时刻理解；返回已保存不等于提醒已发。",
         "parameters": ScheduleArguments.model_json_schema(),
     }},
     {"type": "function", "function": {
         "name": "schedule_list", "description": "查看当前场景的安排，含完整说明、实际请求人及交付状态；"
-        "默认列未完成，分页按原定时间及安排 ID 排序，offset 为记录位置。",
+        "默认列未完成，分页按当前待办时间及安排 ID 排序，offset 为记录位置。",
         "parameters": ScheduleListArguments.model_json_schema(),
     }},
     {"type": "function", "function": {
-        "name": "schedule_cancel", "description": "取消当前场景尚未交付的安排；requester 为实际操作者 QQ，"
-        "本人可取消自己创建的，管理者可取消他人的；Bot 自主取消用 null，只能取消自主安排。",
+        "name": "schedule_cancel", "description": "取消当前场景未完成的一次性或周期安排；requester 为实际操作者 QQ，"
+        "本人可取消自己创建的，管理者可取消他人的；Bot 自主取消用 null，只能取消自主安排。"
+        "取消周期安排停止后续唤醒，不撤回已交给会话的过去次数。",
         "parameters": ScheduleCancelArguments.model_json_schema(),
     }},
 ]
@@ -128,15 +148,30 @@ def display_time(at: float, timezone: str) -> str:
     return datetime.fromtimestamp(at, ZoneInfo(timezone)).isoformat()
 
 
+def _interval_label(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}天"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}小时"
+    return f"{seconds // 60}分钟"
+
+
 def describe(item: Schedule, *, preview: bool = False) -> str:
     note = item.note
     if preview and len(note) > 160:
         note = note[:160] + "…（说明预览；用 schedule_list 查看全文）"
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
-    result = (f"#{item.id}；{item.status}；原定 {display_time(item.due_at, item.timezone)} ({item.timezone})；"
+    if item.interval_seconds is None:
+        timing = f"原定 {display_time(item.due_at, item.timezone)} ({item.timezone})"
+    else:
+        label = "下次" if item.status == "pending" else "受阻原定" if item.status == "blocked" else "取消前原定"
+        timing = (f"每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）；"
+                  f"{label} {display_time(item.due_at, item.timezone)} ({item.timezone})")
+    result = (f"#{item.id}；{item.status}；{timing}；"
               f"创建者：{creator}；对象：{item.target}\n{note}")
     if item.delivered_at is not None:
-        result += f"\n已交付会话：{display_time(item.delivered_at, item.timezone)}（不代表已发送提醒）"
+        prior = "上次已交付会话" if item.interval_seconds is not None else "已交付会话"
+        result += f"\n{prior}：{display_time(item.delivered_at, item.timezone)}（不代表已发送提醒）"
     if item.reason is not None:
         result += "\n阻止原因：" + item.reason
     return result
@@ -144,31 +179,53 @@ def describe(item: Schedule, *, preview: bool = False) -> str:
 
 def wake_text(item: Schedule, now: float) -> str:
     creator = "Bot 自主" if item.requester is None else f"QQ {item.requester}"
+    timing = ""
+    if item.interval_seconds is not None:
+        timing = (f"周期每隔 {_interval_label(item.interval_seconds)}（固定UTC秒）；"
+                  "离线错过多次也只补交一次；本次交付后用 schedule_list 查看持久化的下一时刻。\n")
+        if item.delivered_at is not None:
+            timing += (f"上次已交付会话：{display_time(item.delivered_at, item.timezone)}"
+                       "（不代表已发送提醒）。\n")
+    due_label = "本期原定" if item.interval_seconds is not None else "原定"
     return (f"[定时唤醒] #{item.id}；已交付当前会话，尚未发送提醒\n"
             f"创建者：{creator}；对象：{item.target}；创建于 {display_time(item.created, item.timezone)}\n"
-            f"原定 {display_time(item.due_at, item.timezone)} ({item.timezone})；"
+            f"{timing}{due_label} {display_time(item.due_at, item.timezone)} ({item.timezone})；"
             f"实际唤醒 {display_time(now, item.timezone)}；延迟 {now - item.due_at:.3f} 秒\n{item.note}")
+
+
+def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments, *,
+                       now: Callable[[], float] = time.time) -> Schedule:
+    started = now()
+    interval_seconds = args.when if isinstance(args.when, int) else None
+    when = started + interval_seconds if interval_seconds is not None else args.when.timestamp()
+    if when <= started:
+        raise ValueError("when 必须晚于当前执行时刻；未创建过去的安排")
+    check_creation(config.schedules, requester=args.requester, target=args.target,
+                   bot_qq=config.bot_qq, group_role=platform_role(store, config, args.requester))
+    return store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
+                                 note=args.note, target=args.target, requester=args.requester,
+                                 limit=config.schedules.max_pending, interval_seconds=interval_seconds)
+
+
+def cancel_arrangement(store: Store, config: LabConfig, *, id: int,
+                       requester: str | None) -> Schedule:
+    item = store.get_schedule(config.scene, id)
+    check_cancellation(config.schedules, requester=requester, creator=item.requester,
+                       bot_qq=config.bot_qq, group_role=platform_role(store, config, requester))
+    return store.cancel_schedule(config.scene, item.id)
 
 
 def execute_schedule(store: Store, config: LabConfig, name: Literal["schedule", "schedule_list", "schedule_cancel"],
                      arguments: dict, *, now: Callable[[], float] = time.time) -> str:
     if name == "schedule":
         args = ScheduleArguments.model_validate(arguments)
-        when = args.when.timestamp()
-        if when <= now():
-            raise ValueError("when 必须晚于当前执行时刻；未创建过去的安排")
-        check_creation(config.schedules, requester=args.requester, target=args.target,
-                       bot_qq=config.bot_qq, group_role=platform_role(store, config, args.requester))
-        item = store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
-                                     note=args.note, target=args.target, requester=args.requester,
-                                     limit=config.schedules.max_pending)
+        item = create_arrangement(store, config, args, now=now)
         return "已保存安排；尚未唤醒或发送：\n" + describe(item)
     if name == "schedule_cancel":
         cancel = ScheduleCancelArguments.model_validate(arguments)
-        item = store.get_schedule(config.scene, cancel.id)
-        check_cancellation(config.schedules, requester=cancel.requester, creator=item.requester,
-                           bot_qq=config.bot_qq, group_role=platform_role(store, config, cancel.requester))
-        return "已取消安排：\n" + describe(store.cancel_schedule(config.scene, item.id))
+        return "已取消安排：\n" + describe(cancel_arrangement(
+            store, config, id=cancel.id, requester=cancel.requester,
+        ))
     page = ScheduleListArguments.model_validate(arguments)
     items = store.list_schedules(config.scene, status=page.status, offset=page.offset, limit=page.limit + 1)
     more = len(items) > page.limit
