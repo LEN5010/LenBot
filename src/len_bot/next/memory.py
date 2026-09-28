@@ -13,7 +13,10 @@ from .memory_embeddings import EmbeddingClient, EmbeddingSettings
 from .memory_local import LocalMemory, LocalMemorySettings
 from .memory_jobs import MemoryJobs
 from .memory_openviking import OpenVikingMemory, OpenVikingSettings
+from .memory_summary import MemorySummarizer
 from .messages import ChatMessage, plain_text
+from .model import ChatModel
+from .model_slots import ModelSlots
 from .store import Store, encode
 
 if TYPE_CHECKING:
@@ -22,6 +25,8 @@ if TYPE_CHECKING:
 
 STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 Scope = Literal["scene", "public"]
+# Offline-imported legacy memories awaiting operator confirmation (M11 migration).
+LEGACY_IMPORT = "legacy-import"
 
 
 class IngestSettings(BaseModel):
@@ -45,6 +50,8 @@ class RecallSettings(BaseModel):
 class LocalMemoryConfig(RecallSettings):
     backend: Literal["local"]
     local: LocalMemorySettings
+    # Derived directory abstracts/overviews generated with models.roles.memory.
+    summaries: bool = False
 
 
 class OpenVikingMemoryConfig(RecallSettings):
@@ -146,6 +153,7 @@ class MemoryService:
                  backend: LocalMemory | OpenVikingMemory, *, jobs: MemoryJobs, store: Store):
         self.settings, self.backend = settings, backend
         self.jobs, self.store = jobs, store
+        self.summarizer: MemorySummarizer | None = None
         # A complete read/generate/write extraction shares this queue with edits.
         self.write_locks: dict[str, asyncio.Lock] = {}
         self.pending_native_tasks: dict[str, str] = {}
@@ -159,6 +167,12 @@ class MemoryService:
                     self.pending_native_tasks[scene] = task_id
                 elif latest["details"].get("native_phase") == "submitting" and task_id is None:
                     self.pending_native_tasks[scene] = "submission outcome unknown"
+
+    def group_profile(self, scene: str) -> str | None:
+        """Scene root overview for the system text; only local summaries provide one."""
+        if self.summarizer is None:
+            return None
+        return self.backend.summary_text_sync(scene)
 
     def write_lock(self, scene: str) -> asyncio.Lock:
         return self.write_locks.setdefault(scene, asyncio.Lock())
@@ -280,6 +294,8 @@ class MemoryService:
         query = queries[-1][-1200:] if queries else ""
         if query and budget > 0:
             for hit in await self.search(scene, query, self.settings.recall_limit):
+                if hit["path"].startswith(LEGACY_IMPORT + "/"):
+                    continue  # Unconfirmed legacy material stays out of automatic recall.
                 append(hit["scope"], hit["path"], hit["preview"], budget,
                        kind="abstract" if hit["total_chars"] is None else "excerpt",
                        source_chars=hit["total_chars"])
@@ -310,10 +326,16 @@ async def open_memory_backend(config: SharedConfig):
 
 
 @asynccontextmanager
-async def open_memory(config: SharedConfig, store: Store):
+async def open_memory(config: SharedConfig, store: Store, *, slots: ModelSlots | None = None):
     async with open_memory_backend(config) as backend:
         if backend is None:
             yield None
-        else:
-            with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
-                yield MemoryService(config.memory, backend, jobs=jobs, store=store)
+            return
+        with MemoryJobs(config.database.with_name(config.database.name + ".memory.sqlite3")) as jobs:
+            service = MemoryService(config.memory, backend, jobs=jobs, store=store)
+            if not (isinstance(config.memory, LocalMemoryConfig) and config.memory.summaries):
+                yield service
+                return
+            async with ChatModel(config.model_settings("memory")) as model:
+                service.summarizer = MemorySummarizer(config, backend, jobs, model, slots=slots)
+                yield service

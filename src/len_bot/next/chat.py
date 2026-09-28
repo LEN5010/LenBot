@@ -186,7 +186,7 @@ def voice_prompt(persona: Persona) -> str:
 
 
 def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
-                 skills: tuple[Skill, ...] = ()) -> str:
+                 skills: tuple[Skill, ...] = (), group_profile: str | None = None) -> str:
     """Render the actual stable mind system text for this scene and outlet."""
     names = {tool["function"]["name"] for tool in allowed}
     deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -213,6 +213,9 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
         system += "\n" + Template((PROMPTS / "next_scene_persona.md").read_text()).substitute(
             details=encode(scene_details),
         )
+    if group_profile is not None:
+        system += "\n" + Template((PROMPTS / "next_group_profile.md").read_text()).substitute(
+            profile=group_profile.strip())
     if "react" in names:
         system += "\n" + (PROMPTS / "next_react.md").read_text()
     if "schedule" in names:
@@ -303,7 +306,8 @@ class Chat:
         self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
         self.skills = () if tasks is None else tasks.skills[config.scene]
         self.system = build_system(config, persona, allowed, platform=send_message is not None,
-                                   skills=self.skills)
+                                   skills=self.skills,
+                                   group_profile=None if memory is None else memory.group_profile(config.scene))
 
     @property
     def tools(self) -> list[dict]:
@@ -325,7 +329,7 @@ class Chat:
             self.store.save_discovered_tools(self.config.scene, sorted(self.discovered_tools))
         if previous is not None and previous["messages"][0]["content"] != self.system:
             self.store.append(self.config.scene, {"role": "user", "content":
-                "本次启动已更新角色或表达模式；当前系统设定生效，已有聊天原文保留。"})
+                "本次启动已更新角色、表达模式或本群记忆概览；当前系统设定生效，已有聊天原文保留。"})
         history = self.store.recent(self.config.scene, 1)
         if history:
             last = datetime.fromtimestamp(history[-1].time, ZoneInfo(self.config.timezone)).isoformat()

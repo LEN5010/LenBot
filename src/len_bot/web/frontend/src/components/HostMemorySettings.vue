@@ -21,7 +21,7 @@ function normalizedMemory(value) {
   const common = { backend: value.backend, auto_recall: value.auto_recall,
     recall_budget_chars: value.recall_budget_chars, recall_limit: value.recall_limit,
     ingest: copy(value.ingest) }
-  if (value.backend === 'local') return { ...common, local: copy(value.local) }
+  if (value.backend === 'local') return { ...common, local: copy(value.local), summaries: value.summaries }
   return { ...common, openviking: {
     base_url: value.openviking.base_url, account_id: value.openviking.account_id,
     timeout_seconds: value.openviking.timeout_seconds, public_root: value.openviking.public_root,
@@ -34,7 +34,7 @@ function body() {
   const common = { backend: draft.value.backend, auto_recall: draft.value.auto_recall,
     recall_budget_chars: draft.value.recall_budget_chars, recall_limit: draft.value.recall_limit,
     ingest: copy(draft.value.ingest) }
-  if (draft.value.backend === 'local') return { memory: { ...common, local: copy(draft.value.local) } }
+  if (draft.value.backend === 'local') return { memory: { ...common, local: copy(draft.value.local), summaries: draft.value.summaries } }
   return { memory: { ...common, openviking: {
     base_url: draft.value.openviking.base_url, account_id: draft.value.openviking.account_id,
     timeout_seconds: draft.value.openviking.timeout_seconds,
@@ -74,7 +74,7 @@ function chooseBackend(value) {
   if (value === 'none') { draft.value = null; identities.value = [] }
   else if (value === 'local') {
     draft.value = { backend: 'local', auto_recall: true, recall_budget_chars: 1500, recall_limit: 5, ingest: null,
-      local: { directory: '', embedding: null } }
+      local: { directory: '', embedding: null }, summaries: false }
     identities.value = []
   } else {
     draft.value = { backend: 'openviking', auto_recall: true, recall_budget_chars: 1500, recall_limit: 5, ingest: null,
@@ -126,7 +126,7 @@ onMounted(() => read(false))
         <v-chip variant="tonal" :color="snapshot.restart_required.memory?'warning':'info'">{{ snapshot.restart_required.memory?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
       <details v-if="snapshot.running.memory"><summary>查看当前运行后端的实际设置</summary>
         <p>自动回想：{{ snapshot.running.memory.auto_recall?'启用':'关闭' }} · 字符预算 {{ snapshot.running.memory.recall_budget_chars }} · 返回上限 {{ snapshot.running.memory.recall_limit }}；自动抽取：{{ snapshot.running.memory.ingest===null?'关闭':'已配置' }}</p>
-        <template v-if="snapshot.running.memory.backend==='local'"><p>本地目录：{{ snapshot.running.memory.local.directory }}</p>
+        <template v-if="snapshot.running.memory.backend==='local'"><p>本地目录：{{ snapshot.running.memory.local.directory }} · 目录摘要{{ snapshot.running.memory.summaries?'已开启':'关闭' }}</p>
           <p>检索：{{ snapshot.running.memory.local.embedding===null?'明确使用 FTS 文本检索（未配置向量）':`${snapshot.running.memory.local.embedding.provider} / ${snapshot.running.memory.local.embedding.model} · 维数 ${snapshot.running.memory.local.embedding.dimensions ?? '未指定'}` }}</p></template>
         <template v-else><p>服务：{{ snapshot.running.memory.openviking.base_url }} · 账户 {{ snapshot.running.memory.openviking.account_id }} · 公共根 {{ snapshot.running.memory.openviking.public_root ?? '未配置' }}</p>
           <ul><li v-for="(item,name) in snapshot.running.memory.openviking.scenes" :key="name">{{ sceneName(name) }} · 用户 {{ item.user_id }} · 密钥{{ item.api_key_configured?'已配置':'未配置' }}</li></ul></template>
@@ -158,6 +158,9 @@ onMounted(() => read(false))
             <div v-if="draft.local.embedding" class="form-grid"><v-select v-model="draft.local.embedding.provider" :items="providers" label="Embedding 提供方" hide-details="auto" />
               <v-text-field v-model="draft.local.embedding.model" label="Embedding 精确模型名" hide-details="auto" />
               <v-text-field :model-value="draft.local.embedding.dimensions ?? ''" type="number" step="1" label="维数（可不指定）" hide-details="auto" @update:model-value="value=>draft.local.embedding.dimensions=value===''?null:numeric(value)" /></div>
+            <v-switch v-model="draft.summaries" label="生成目录摘要与本群画像" hide-details />
+            <p class="muted">每个目录生成一句话摘要和概览；分区根目录的概览就是本群画像，下次启动时进入大脑设定。抽取批次有写入后自动更新相关目录，也可在记忆页对某个目录手动生成。使用 memory 用途的模型，会产生真实请求。</p>
+            <v-alert v-if="draft.summaries && snapshot.saved.models.roles.memory===null" type="warning" variant="tonal">最近读取的根配置尚无 memory 用途绑定；后端会拒绝开启目录摘要。</v-alert>
           </template>
           <template v-else><h3>OpenViking 后端</h3><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
             <div class="form-grid"><v-text-field v-model="draft.openviking.base_url" label="服务 HTTP 地址" hide-details="auto" />

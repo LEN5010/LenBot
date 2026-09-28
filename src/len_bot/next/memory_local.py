@@ -26,6 +26,10 @@ from .memory_types import MemoryDocument, MemoryNode, MemoryPage
 
 _SCENE = re.compile(r"(group|private):([1-9][0-9]*)\Z")
 _INDEX_NAME = ".memory-index.sqlite3"
+# Derived directory summaries: L0 abstract and L1 overview, never indexed content.
+SUMMARY_FILES = (".abstract.md", ".overview.md")
+ABSTRACT_CHARS = 256
+OVERVIEW_CHARS = 4000
 _APPLICATION_ID = 0x4C424D31
 _Result = TypeVar("_Result")
 
@@ -83,6 +87,17 @@ class LocalMemoryForget:
     path: str
     removed_current: bool
     removed_history_versions: int
+    removed_summaries: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LocalMemorySummary:
+    path: str
+    abstract: str | None
+    overview: str | None
+    generated_at: float | None
+    # Latest recorded change below this directory after the summary (or with none).
+    changed_after: float | None
 
 
 def _scene_scope(scene: str) -> str:
@@ -100,7 +115,7 @@ def _parts(path: str, *, file: bool) -> tuple[str, ...]:
     if path.startswith("/") or path.endswith("/"):
         raise ValueError(f"memory path must be relative: {path!r}")
     parts = tuple(path.split("/"))
-    if any(not part or part in {".", ".."} or part in {".overview.md", ".abstract.md"}
+    if any(not part or part in {".", ".."} or part in SUMMARY_FILES
            or any(ord(character) < 32 for character in part)
            or any(character in part for character in "\\?#%") for part in parts):
         raise ValueError(f"memory path has an unsupported segment: {path!r}")
@@ -130,6 +145,22 @@ def _atomic_replace(path: Path, content: str) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def scene_overview(root: Path, scene: str) -> str | None:
+    """Read a scene partition's root overview without opening the index (also used offline)."""
+    category, qq = _SCENE.fullmatch(_scene_scope(scene)).groups()
+    base = root.expanduser().resolve() / ("groups" if category == "group" else "private") / qq
+    files = [base / name for name in SUMMARY_FILES]
+    for path in (base, *files):
+        if path.is_symlink():
+            raise ValueError(f"memory summary path is a symlink: {path}")
+    present = [file.exists() for file in files]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError(f"incomplete memory summary files in {base}: {dict(zip(SUMMARY_FILES, present))}")
+    return _source_text(files[1])
 
 
 class LocalMemory:
@@ -268,6 +299,8 @@ class LocalMemory:
             if directory.is_symlink():
                 raise ValueError(f"memory source root is a symlink: {directory}")
             for path in directory.rglob("*.md"):
+                if path.name in SUMMARY_FILES:
+                    continue
                 if category == "public":
                     scope, relative = "public", path.relative_to(directory).as_posix()
                 else:
@@ -415,7 +448,7 @@ class LocalMemory:
         if not directory.is_dir():
             raise NotADirectoryError(directory)
         entries = sorted((entry for entry in directory.iterdir()
-                          if entry.is_dir() or entry.suffix == ".md"),
+                          if entry.is_dir() or (entry.suffix == ".md" and entry.name not in SUMMARY_FILES)),
                          key=lambda entry: (not entry.is_dir(), entry.name))
         shown = entries[offset:offset + limit]
         nodes = tuple(MemoryNode(path=f"{path}/{entry.name}" if path else entry.name,
@@ -642,6 +675,8 @@ class LocalMemory:
     def _forget_sync(self, scope: str, path: str) -> LocalMemoryForget:
         target = self._target(scope, path, file=True)
         before = _source_text(target) if target.exists() else None
+        # Any ancestor summary may repeat the forgotten text; remove it before the file.
+        removed_summaries = self._drop_summaries(scope, path)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._mutation_preflight(db)
@@ -654,10 +689,97 @@ class LocalMemory:
             cursor = db.execute("DELETE FROM memory_changes WHERE scope=? AND path=?", (scope, path))
             removed_history = cursor.rowcount
         return LocalMemoryForget(path=path, removed_current=before is not None,
-                                 removed_history_versions=removed_history)
+                                 removed_history_versions=removed_history,
+                                 removed_summaries=removed_summaries)
 
     async def forget(self, scene: str, path: str) -> LocalMemoryForget:
         """Remove current file, index and accessible local versions; not chat logs/backups."""
         source = _scene_scope(scene)
         async with self._lock(source):
             return await _finish_write_thread(self._forget_sync, source, path)
+
+    def _summary_directory(self, scope: str, path: str) -> Path:
+        directory = self._target(scope, path, file=False)
+        if not directory.exists():
+            raise FileNotFoundError(f"memory directory does not exist: {scope} {path!r}")
+        if not directory.is_dir():
+            raise NotADirectoryError(f"memory path is not a directory: {scope} {path!r}")
+        return directory
+
+    def _summary_sync(self, scope: str, path: str) -> LocalMemorySummary:
+        directory = self._target(scope, path, file=False)
+        files = [directory / name for name in SUMMARY_FILES]
+        present = [file.exists() for file in files]
+        if all(present):
+            abstract, overview = (_source_text(file) for file in files)
+            generated_at = min(file.stat().st_mtime for file in files)
+        elif not any(present):
+            abstract = overview = generated_at = None
+        else:
+            raise ValueError(f"incomplete memory summary files in {directory}: {dict(zip(SUMMARY_FILES, present))}")
+        prefix = f"{path}/" if path else ""
+        with self._db() as db:
+            latest = db.execute("SELECT MAX(changed_at) FROM memory_changes WHERE scope=? AND substr(path,1,?)=?",
+                                (scope, len(prefix), prefix)).fetchone()[0]
+        changed_after = latest if latest is not None and (generated_at is None or latest > generated_at) else None
+        return LocalMemorySummary(path, abstract, overview, generated_at, changed_after)
+
+    async def summary(self, scene: str, path: str = "", *,
+                      scope: Literal["scene", "public"] = "scene") -> LocalMemorySummary:
+        source = self._source(scene, scope)
+        async with self._lock(source):
+            return await asyncio.to_thread(self._summary_sync, source, path)
+
+    def summary_text_sync(self, scene: str) -> str | None:
+        """The current scene root overview, read once when a host builds its system text."""
+        return scene_overview(self.root, scene)
+
+    def _summary_inputs_sync(self, scope: str, path: str) -> dict:
+        directory = self._summary_directory(scope, path)
+        files, directories = [], []
+        for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+            relative = f"{path}/{entry.name}" if path else entry.name
+            if entry.is_dir():
+                self._target(scope, relative, file=False)
+                abstract = entry / ".abstract.md"
+                directories.append({"name": entry.name,
+                                    "abstract": _source_text(abstract) if abstract.exists() else None})
+            elif entry.suffix == ".md" and entry.name not in SUMMARY_FILES:
+                files.append({"name": entry.name, "content": _source_text(self._target(scope, relative, file=True))})
+        return {"path": path, "files": files, "directories": directories}
+
+    async def summary_inputs(self, scene: str, path: str, *,
+                             scope: Literal["scene", "public"] = "scene") -> dict:
+        source = self._source(scene, scope)
+        async with self._lock(source):
+            return await asyncio.to_thread(self._summary_inputs_sync, source, path)
+
+    def _write_summary_sync(self, scope: str, path: str, abstract: str, overview: str) -> LocalMemorySummary:
+        directory = self._summary_directory(scope, path)
+        _atomic_replace(directory / ".abstract.md", abstract)
+        _atomic_replace(directory / ".overview.md", overview)
+        return self._summary_sync(scope, path)
+
+    async def write_summary(self, scene: str, path: str, abstract: str, overview: str, *,
+                            scope: Literal["scene", "public"] = "scene") -> LocalMemorySummary:
+        if not abstract.strip() or not overview.strip():
+            raise ValueError("memory summary abstract and overview must not be blank")
+        if len(abstract) > ABSTRACT_CHARS or len(overview) > OVERVIEW_CHARS:
+            raise ValueError(f"memory summary exceeds {ABSTRACT_CHARS}/{OVERVIEW_CHARS} characters: "
+                             f"{len(abstract)}/{len(overview)}")
+        source = self._source(scene, scope)
+        async with self._lock(source):
+            return await _finish_write_thread(self._write_summary_sync, source, path, abstract, overview)
+
+    def _drop_summaries(self, scope: str, path: str) -> tuple[str, ...]:
+        parts = _parts(path, file=True)[:-1]
+        removed = []
+        for depth in range(len(parts), -1, -1):
+            relative = "/".join(parts[:depth])
+            directory = self._target(scope, relative, file=False)
+            files = [directory / name for name in SUMMARY_FILES if (directory / name).exists()]
+            for file in files:
+                file.unlink()
+            if files:
+                removed.append(relative)
+        return tuple(removed)

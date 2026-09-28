@@ -14,6 +14,9 @@ import time
 from .store import encode
 
 
+FORMAT_VERSION = 3
+
+
 class MemoryJobs:
     def __init__(self, path: Path):
         self.db = sqlite3.connect(path)
@@ -23,17 +26,17 @@ class MemoryJobs:
             if tables:
                 application_id = self.db.execute("PRAGMA application_id").fetchone()[0]
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if application_id == 0x4C424D4A and version == 1:
+                if application_id == 0x4C424D4A and version in {1, 2}:
                     raise ValueError(
-                        f"Memory processing database format 1 requires offline migration while stopped: {path}; "
-                        "run python -m len_bot.next.migrate_memory_jobs from the instance directory")
-                if application_id != 0x4C424D4A or version != 2:
+                        f"Memory processing database format {version} requires offline migration while stopped: "
+                        f"{path}; run python -m len_bot.next.migrate_memory_jobs from the instance directory")
+                if application_id != 0x4C424D4A or version != FORMAT_VERSION:
                     raise ValueError(f"unsupported memory processing database: {path}")
             else:
                 self.db.executescript("""
                     BEGIN;
                     PRAGMA application_id=1279413578;
-                    PRAGMA user_version=2;
+                    PRAGMA user_version=3;
                     CREATE TABLE memory_cursors (
                         scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL,
                         enabled_at REAL NOT NULL
@@ -49,6 +52,13 @@ class MemoryJobs:
                         scene TEXT NOT NULL, message_seq INTEGER NOT NULL,
                         PRIMARY KEY(scene,message_seq)
                     );
+                    CREATE TABLE memory_summary_runs (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, scope TEXT NOT NULL, path TEXT NOT NULL,
+                        started REAL NOT NULL, ended REAL,
+                        status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),
+                        request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT
+                    );
+                    CREATE INDEX memory_summary_runs_path ON memory_summary_runs(scope,path,id);
                     COMMIT;
                 """)
         except BaseException:
@@ -134,3 +144,46 @@ class MemoryJobs:
         cursor = self.db.execute("SELECT after_seq,enabled_at FROM memory_cursors WHERE scene=?", (scene,)).fetchone()
         return {"scene": scene, "after_seq": cursor["after_seq"], "enabled_at": cursor["enabled_at"],
                 "latest": job}
+
+    def recover_summaries(self) -> None:
+        with self.db:
+            self.db.execute("UPDATE memory_summary_runs SET status='interrupted',ended=?,error=? "
+                            "WHERE status='running'",
+                            (time.time(), "Process stopped before this summary completed"))
+
+    def begin_summary(self, scene: str, scope: str, path: str, request: dict) -> int:
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO memory_summary_runs(scene,scope,path,started,status,request) VALUES(?,?,?,?,'running',?)",
+                (scene, scope, path, time.time(), encode(request)),
+            ).lastrowid
+
+    def summary_response(self, id: int, response: object, usage: object, cost: object) -> None:
+        with self.db:
+            self.db.execute("UPDATE memory_summary_runs SET response=?,usage=?,cost=? WHERE id=?",
+                            (encode(response), None if usage is None else encode(usage),
+                             None if cost is None else encode(cost), id))
+
+    def finish_summary(self, id: int, status: str, error: str | None = None) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE memory_summary_runs SET status=?,ended=?,error=? WHERE id=? AND status='running'",
+                (status, time.time(), error, id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"Memory summary run {id} is not running")
+
+    def summary_runs(self, scope: str, path: str, *, limit: int = 5) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT id,scene,scope,path,started,ended,status,usage,cost,error FROM memory_summary_runs "
+            "WHERE scope=? AND path=? ORDER BY id DESC LIMIT ?", (scope, path, limit),
+        ).fetchall()
+        return [{**dict(row), "usage": None if row["usage"] is None else json.loads(row["usage"]),
+                 "cost": None if row["cost"] is None else json.loads(row["cost"])} for row in rows]
+
+    def summary_run(self, id: int) -> dict | None:
+        row = self.db.execute("SELECT * FROM memory_summary_runs WHERE id=?", (id,)).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), **{key: None if row[key] is None else json.loads(row[key])
+                                for key in ("request", "response", "usage", "cost")}}

@@ -74,6 +74,7 @@ class LocalMemoryChangeSettings(BaseModel):
 class LocalMemoryChange(RecallSettings):
     backend: Literal["local"]
     local: LocalMemoryChangeSettings
+    summaries: bool
 
 
 class MemorySceneIdentityChange(BaseModel):
