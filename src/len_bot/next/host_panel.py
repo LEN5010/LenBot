@@ -19,6 +19,7 @@ from .host_memory import register_host_memory
 from .host_tasks import register_host_tasks
 from .host_skills import register_host_skills
 from .host_schedules import register_host_schedules
+from .host_learning import register_host_learning
 from .network import NetworkRuntime
 from .panel_auth import changes_socket, install_panel_auth
 
@@ -45,6 +46,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
     register_host_tasks(app, runtime=runtime, user=user, host_changes=listeners)
     register_host_skills(app, root=root, runtime=runtime, user=user, write_lock=write_lock)
     register_host_schedules(app, runtime=runtime, user=user)
+    register_host_learning(app, runtime=runtime, user=user)
 
     def configured_scene(scene: str) -> None:
         if scene not in config.scenes:

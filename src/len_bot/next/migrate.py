@@ -1,4 +1,4 @@
-"""Explicit offline upgrade of an isolated next-core database to format 17."""
+"""Explicit offline upgrade of an isolated next-core database to format 18."""
 
 from __future__ import annotations
 
@@ -186,6 +186,24 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 "emotions TEXT NOT NULL, tags TEXT NOT NULL,"
                 "PRIMARY KEY(message_seq,image_index))"
             )
+        elif version == 17:
+            db.execute("CREATE TABLE learning_state (scene TEXT PRIMARY KEY, after_seq INTEGER NOT NULL)")
+            db.execute(
+                "CREATE TABLE learning_batches ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, after_seq INTEGER NOT NULL,"
+                "through_seq INTEGER NOT NULL, started REAL NOT NULL, ended REAL, model_started REAL,"
+                "status TEXT NOT NULL CHECK(status IN ('running','complete','failed','interrupted')),"
+                "request TEXT NOT NULL, response TEXT, usage TEXT, cost TEXT, error TEXT)"
+            )
+            db.execute("CREATE INDEX learning_batches_scene ON learning_batches(scene,id)")
+            db.execute(
+                "CREATE TABLE expressions ("
+                "id INTEGER PRIMARY KEY, scene TEXT NOT NULL, situation TEXT NOT NULL,"
+                "style TEXT NOT NULL, sources TEXT NOT NULL,"
+                "status TEXT NOT NULL CHECK(status IN ('pending','adopted','rejected')),"
+                "updated REAL NOT NULL, UNIQUE(scene,situation,style))"
+            )
+            db.execute("CREATE INDEX expressions_scene_status ON expressions(scene,status,id)")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:

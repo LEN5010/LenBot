@@ -15,6 +15,7 @@ from .model import ChatModel
 from .model_slots import ModelSlots
 from .memory import open_memory
 from .memory_ingest import open_memory_ingestor
+from .learning import ExpressionLearner
 from .network import NetworkRuntime
 from .persona import load_persona
 from .store import Store
@@ -84,6 +85,9 @@ async def run() -> None:
             ChatModel(config.model_settings("voice")) as voice,
             (ChatModel(config.model_settings("vision")) if config.models.roles.vision is not None
              else nullcontext(None)) as vision,
+            (ChatModel(config.model_settings("learner"))
+             if any(settings.learning is not None for settings in config.scenes.values())
+             else nullcontext(None)) as learner_model,
             open_memory(config, store) as memory,
             open_memory_ingestor(config, store, memory, list(config.scenes), slots=slots) as ingestor,
         ):
@@ -110,8 +114,10 @@ async def run() -> None:
                               skill_permissions={settings.scene: persona.skills
                                                  for settings, persona in scenes})
                      if config.worker is not None else None)
+            learning = (None if learner_model is None else
+                        ExpressionLearner(config, store, learner_model, slots=slots))
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
-                                     memory=memory, ingestor=ingestor, tasks=tasks)
+                                     memory=memory, ingestor=ingestor, tasks=tasks, learning=learning)
             if config.panel is None:
                 await runtime.run()
             else:
