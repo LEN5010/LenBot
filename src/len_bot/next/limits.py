@@ -78,6 +78,15 @@ class ModelBudget:
         paths = [self.config.database.with_name(self.config.database.name + '.memory.sqlite3')]
         if self.trials_root is not None:
             paths.extend(self.trials_root.glob('*/state.db.memory.sqlite3'))
+        from .store import FORMAT_VERSION as BUSINESS_FORMAT
+        if self.trials_root is not None:
+            for path in self.trials_root.glob('*/state.db'):
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+                    app = db.execute('PRAGMA application_id').fetchone()[0]
+                    version = db.execute('PRAGMA user_version').fetchone()[0]
+                    if app != 0x4C424E31 or version != BUSINESS_FORMAT:
+                        raise ValueError(f'试聊计量源需要停机离线迁移：{path} (application={app}, format={version})；'
+                                         '运行 python -m len_bot.next.migrate')
         outdated = []
         for path in paths:
             if path.exists():

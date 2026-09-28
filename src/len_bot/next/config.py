@@ -597,8 +597,9 @@ class SharedConfig(BaseModel):
     def budget_prices(self):
         if self.limits.daily_model_cost is None and not self.limits.scene_daily_model_cost:
             return self
-        if self.models.roles.asr is not None:
-            raise ValueError("日金额预算目前不接受ASR绑定：转写没有配置计价口径；先配置可计费语音接口后再开放组合")
+        asr = self.models.roles.asr
+        if asr is not None and (asr.price is None or asr.price.currency != self.limits.currency):
+            raise ValueError("日金额预算要求 ASR 显式配置同币种 price")
         bindings = [getattr(self.models.roles, role) for role in ("mind","voice","vision","memory","worker","learner")]
         if isinstance(self.memory, LocalMemoryConfig) and self.memory.local.embedding is not None:
             bindings.append(self.memory.local.embedding)

@@ -21,7 +21,7 @@ def usage(store, scenes: list[str] | None, since: float, until: float, *, memory
         "SELECT t.scene,c.role,c.ended,c.cost FROM model_calls c JOIN turns t ON t.id=c.turn_id "
         f"WHERE {condition if scenes is None else 't.'+condition} AND c.started>=? AND c.started<?", params))
     for table, role, start, cost in (
-        ('audio_calls', 'asr', 'started', 'NULL'),
+        ('audio_calls', 'asr', 'started', 'cost'),
         ('learning_batches', 'learning', 'model_started', 'cost'),
         ('expression_embedding_calls', 'expression_embedding', 'started', 'cost'),
         ('jargon_calls', 'jargon', 'model_started', 'cost'),

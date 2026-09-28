@@ -79,8 +79,12 @@ onMounted(() => read())
       </article>
       <v-btn v-if="view.next_offset !== null" variant="outlined" :disabled="loading || busy" @click="read(true)">读取更早的语音</v-btn>
       <details v-if="callsFor" open><summary>{{ callsFor }} 的最近调用</summary>
-        <p class="muted">off_turn 为后台/面板调用，in_turn 为真实对话轮次内调用；每类最多20条，费用未知。</p>
-        <pre v-if="calls !== null">{{ JSON.stringify(calls, null, 2) }}</pre><p v-else>正在读取…</p>
+        <p class="muted">off_turn 为后台/面板调用，in_turn 为真实对话轮次内调用；每类最多20条；费用按调用时的 ASR 价格与服务计量估算，缺少必要用量则未知。</p>
+        <template v-if="calls !== null"><section v-for="(items,kind) in calls" :key="kind"><h3>{{ kind==='in_turn'?'轮次内调用':'轮次外调用' }}</h3>
+          <article v-for="item in items" :key="item.id"><p>{{ clock(item.started) }} · {{ item.ended===null?'未结束':item.error?'失败':'已结束' }} · {{ item.cost ? `${item.cost.amount} ${item.cost.currency}（估算）` : '费用未知' }}</p>
+            <p v-if="item.request.snapshot_expired_at" class="muted">输入与响应快照已过保留期，计量和结果状态保留。</p>
+            <details><summary>本次调用原文</summary><pre>{{ JSON.stringify(item,null,2) }}</pre></details></article>
+        </section></template><p v-else>正在读取…</p>
       </details>
     </template>
   </section>

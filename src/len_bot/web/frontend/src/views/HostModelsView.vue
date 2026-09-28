@@ -132,7 +132,12 @@ function enableLearner(value) {
 }
 function enableAsr(value) {
   asrEnabled.value = value
-  roles.value.asr = value ? { api: 'openai-audio', provider: '', model: '', timeout_seconds: 60, language: null } : null
+  roles.value.asr = value ? { api: 'openai-audio', provider: '', model: '', timeout_seconds: 60, language: null, price: null } : null
+}
+function asrPrice(type) {
+  roles.value.asr.price = type === 'unknown' ? null : type === 'duration'
+    ? {type:'duration',currency:'USD',per_second:''}
+    : {type:'tokens',currency:'USD',input_audio:'',input_text:'',output:''}
 }
 function draftProblem() {
   const aliases = providers.value.map(row => row.alias)
@@ -208,6 +213,7 @@ onMounted(() => read(false))
             <dd v-if="snapshot.running.models.roles[name]">{{ snapshot.running.models.roles[name].provider }} / {{ snapshot.running.models.roles[name].model }} · 窗口 {{ snapshot.running.models.roles[name].context_window_tokens }} · 输出 {{ snapshot.running.models.roles[name].max_output_tokens }} · 温度 {{ snapshot.running.models.roles[name].temperature }} · 超时 {{ snapshot.running.models.roles[name].timeout_seconds }} 秒 · 思考强度 {{ snapshot.running.models.roles[name].reasoning_effort ?? '未设置' }}</dd>
             <dd v-else>未配置</dd></div></dl>
           <p v-if="snapshot.running.models.roles.asr" class="muted">ASR：{{ snapshot.running.models.roles.asr.api }} · 超时 {{ snapshot.running.models.roles.asr.timeout_seconds }} 秒 · 语言 {{ snapshot.running.models.roles.asr.language ?? '未指定' }}。</p>
+          <p v-if="snapshot.running.models.roles.asr" class="muted">运行中的 ASR 价格：{{ snapshot.running.models.roles.asr.price === null ? '未配置，费用未知' : JSON.stringify(snapshot.running.models.roles.asr.price) }}。按调用时配置估算，非供应商账单。</p>
           <h3>配置价格</h3><dl class="facts"><template v-for="(entries,provider) in snapshot.running.models.prices" :key="provider">
             <div v-for="(price,model) in entries" :key="model"><dt>{{ provider }} / {{ model }} · {{ price.currency }}</dt>
               <dd>每百万 token：输入 {{ price.input }} · 缓存读取 {{ price.cache_read }} · 输出 {{ price.output }}</dd></div></template></dl>
@@ -266,13 +272,23 @@ onMounted(() => read(false))
           <legend>语音转写绑定</legend>
           <v-switch :model-value="asrEnabled" label="配置独立 ASR 模型" hide-details
             :disabled="saving || loading" @update:model-value="enableAsr" />
-          <p class="muted">使用 audio/transcriptions 文件转写接口，不调用大脑代替。仅配置不会批量转写历史语音；当前由 transcribe 工具按需执行。用量保留原值，费用未知，不套文字 token 价格。</p>
+          <p class="muted">使用 audio/transcriptions 文件转写接口，不调用大脑代替。仅配置不会批量转写历史语音；当前由 transcribe 工具按需执行。用量保留原值，价格单独显式配置，不套文字 token 价格。缺服务计量或口径不匹配仍为未知，不拿 WAV 时长猜测。</p>
           <div v-if="roles.asr !== null" class="form-grid">
             <v-select v-model="roles.asr.provider" label="提供方" :items="providerOptions" :disabled="saving || loading" hide-details="auto" />
             <v-text-field v-model="roles.asr.model" label="精确 ASR 模型名" hide-details="auto" />
             <v-text-field :model-value="roles.asr.timeout_seconds" type="number" label="请求超时（秒）"
               hide-details="auto" @update:model-value="value=>roles.asr.timeout_seconds=numberValue(value)" />
             <v-text-field v-model="roles.asr.language" label="音频语言（如 zh，留空不指定）" hide-details="auto" />
+            <v-select :model-value="roles.asr.price?.type ?? 'unknown'" label="ASR 计价口径"
+              :items="[{title:'未配置（费用未知）',value:'unknown'},{title:'服务返回的秒数',value:'duration'},{title:'服务返回的音频/文字 token',value:'tokens'}]"
+              @update:model-value="asrPrice" />
+            <template v-if="roles.asr.price">
+              <v-text-field v-model="roles.asr.price.currency" label="ASR 计价币种" />
+              <v-text-field v-if="roles.asr.price.type==='duration'" v-model="roles.asr.price.per_second" label="ASR 每秒金额" />
+              <template v-else><v-text-field v-model="roles.asr.price.input_audio" label="ASR 每百万输入音频 token" />
+                <v-text-field v-model="roles.asr.price.input_text" label="ASR 每百万输入文字 token" />
+                <v-text-field v-model="roles.asr.price.output" label="ASR 每百万输出 token" /></template>
+            </template>
           </div>
           <p v-else class="muted">未配置；语音转写工具不会注册。</p>
         </fieldset>
