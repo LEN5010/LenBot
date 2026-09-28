@@ -5,12 +5,41 @@ from pathlib import Path
 import shutil
 
 import pytest
+from pydantic import ValidationError
 
 from len_bot.next.config import load_host_config
 from len_bot.next.plugin_host import BUILTIN, PluginHost, parse_notice, read_manifest
 
 
 CORE = {"say", "wait", "tool_search"}
+
+
+def test_object_list_config_keeps_structured_records(tmp_path):
+    directory = tmp_path / "roomwatch"
+    directory.mkdir()
+    (directory / "plugin.toml").write_text('''name = "roomwatch"
+version = "1.0.0"
+interface = 1
+authors = ["LEN5010"]
+license = "AGPL-3.0-or-later"
+description = "Room subscriptions"
+[config.rooms]
+type = "object_list"
+description = "Room UID, room number, name and scenes"
+default = [{uid = 100001, room_id = 123, name = "示例", scenes = ["group:80001"]}]
+''', encoding="utf-8")
+    manifest = read_manifest(directory)
+    model = manifest.values_model()
+    values = model.model_validate({}).model_dump()
+    assert values["rooms"] == [{"uid": 100001, "room_id": 123, "name": "示例", "scenes": ["group:80001"]}]
+    assert model.model_validate({"rooms": []}).model_dump() == {"rooms": []}
+    for malformed in ("[]", ["room:123"], [[123]], [None], {"uid": 100001}):
+        with pytest.raises(ValidationError):
+            model.model_validate({"rooms": malformed})
+    source = (directory / "plugin.toml").read_text(encoding="utf-8")
+    (directory / "plugin.toml").write_text(source.replace('type = "object_list"', 'type = "string_list"'), encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_manifest(directory)
 
 
 def _root(tmp_path: Path, plugins: dict | None, scene_plugins: list[str] | None = None) -> Path:

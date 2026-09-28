@@ -19,7 +19,7 @@ import tomllib
 from typing import TYPE_CHECKING, Literal, get_type_hints
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError, create_model, field_validator
 
 from .config import PLUGIN_NAME, PLUGIN_RESERVED, HostConfig
 from .external_tools import ExternalTool
@@ -36,15 +36,15 @@ BUILTIN = Path(__file__).with_name("builtin_plugins")
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 STRICT = ConfigDict(extra="forbid", strict=True)
 FIELD_TYPES = {"string": str, "secret": str, "integer": int, "number": float, "boolean": bool,
-               "string_list": list[str]}
+               "string_list": list[str], "object_list": list[dict[str, JsonValue]]}
 ERROR_LIMIT = 20
 
 
 class ConfigField(BaseModel):
     model_config = STRICT
-    type: Literal["string", "secret", "integer", "number", "boolean", "string_list"]
+    type: Literal["string", "secret", "integer", "number", "boolean", "string_list", "object_list"]
     description: str = Field(min_length=1)
-    default: str | int | float | bool | list[str] | None = None
+    default: str | int | float | bool | list[str] | list[dict[str, JsonValue]] | None = None
 
 
 class Manifest(BaseModel):

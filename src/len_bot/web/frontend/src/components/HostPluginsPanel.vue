@@ -7,6 +7,7 @@ const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty', 'busy'])
 const snapshot = ref(null), loading = ref(false), saving = ref('')
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
+const fieldErrors = ref({})
 const drafts = ref({}), sceneDraft = ref([]), pathsDraft = ref(''), dataDraft = ref('')
 const beginRead = useRequestGuard()
 const beginSave = useRequestGuard()
@@ -31,11 +32,15 @@ function initial(name) {
   for (const field of manifest(name)?.fields || []) {
     const item = saved?.[field.key]
     values[field.key] = field.type === 'secret' ? ''
-      : item && 'value' in item ? (field.type === 'string_list' ? item.value.join('\n') : item.value)
+      : item && 'value' in item ? displayField(field, item.value)
       : field.default == null ? (field.type === 'boolean' ? false : '')
-      : (field.type === 'string_list' ? field.default.join('\n') : field.default)
+      : displayField(field, field.default)
   }
   return { enabled: Boolean(saved), values }
+}
+function displayField(field, value) {
+  if (field.type === 'object_list') return JSON.stringify(value, null, 2)
+  return field.type === 'string_list' ? value.join('\n') : value
 }
 function adopt(value, savedPart = null) {
   const retained = savedPart === null ? {} : Object.fromEntries(names.value
@@ -67,7 +72,7 @@ async function read(confirmDiscard = true) {
   try {
     const value = await api('/api/host/plugins')
     if (!fresh()) return
-    adopt(value); readError.value = ''; saveError.value = ''
+    adopt(value); readError.value = ''; saveError.value = ''; fieldErrors.value = {}
   } catch (error) { if (fresh()) readError.value = error.message }
   finally { if (fresh()) loading.value = false }
 }
@@ -80,7 +85,21 @@ function configBody(name) {
       else if (snapshot.value.saved.plugins[name]?.[field.key]?.configured) config[field.key] = null
       continue
     }
-    if (field.type === 'string_list') {
+    if (field.type === 'object_list') {
+      const key = `${name}.${field.key}`
+      delete fieldErrors.value[key]
+      try {
+        const items = JSON.parse(value)
+        if (!Array.isArray(items) || items.some(item => item === null || typeof item !== 'object' || Array.isArray(item))) {
+          throw new Error('必须是 JSON 对象列表，例如 [{"room_id": 123, "scenes": ["group:10001"]}]')
+        }
+        config[field.key] = items
+      } catch (error) {
+        fieldErrors.value[key] = error.message
+        document.getElementById(`plugin-${name}-${field.key}`)?.focus()
+        throw new Error(`${key}：${error.message}`)
+      }
+    } else if (field.type === 'string_list') {
       const items = value.split('\n').map(item => item.trim()).filter(Boolean)
       config[field.key] = items
     } else if (field.type === 'integer' || field.type === 'number') {
@@ -109,7 +128,9 @@ async function send(label, path, body, notice, part = { kind: 'plugin', name: la
 }
 function savePlugin(name) {
   const draft = drafts.value[name]
-  const body = draft.enabled ? { enabled: true, config: configBody(name) } : { enabled: false }
+  let body
+  try { body = draft.enabled ? { enabled: true, config: configBody(name) } : { enabled: false } }
+  catch (error) { saveError.value = `配置未提交：${error.message} 草稿已保留。`; savedNotice.value = ''; return }
   send(name, `/api/host/plugins/${encodeURIComponent(name)}`, body,
     draft.enabled ? `插件 ${name} 的配置已保存到根配置；` : `插件 ${name} 已从根配置移除；`)
 }
@@ -210,6 +231,11 @@ onMounted(() => read(false))
                   :label="field.key" :hint="field.description" persistent-hint :disabled="Boolean(saving)" />
                 <v-textarea v-else-if="field.type === 'string_list'" v-model="drafts[name].values[field.key]" rows="2" auto-grow
                   :label="field.key + (field.required ? '（必填）' : '')" :hint="field.description + ' 每行一项。'" persistent-hint :disabled="Boolean(saving)" />
+                <v-textarea v-else-if="field.type === 'object_list'" v-model="drafts[name].values[field.key]" rows="6" auto-grow class="structured"
+                  :id="`plugin-${name}-${field.key}`" :label="field.key + '（JSON 对象列表）'"
+                  :hint="field.description + ' 不填写密钥；没有项目时写 []。'" persistent-hint :disabled="Boolean(saving)"
+                  :error-messages="fieldErrors[`${name}.${field.key}`] || []"
+                  @update:model-value="delete fieldErrors[`${name}.${field.key}`]" />
                 <v-text-field v-else v-model="drafts[name].values[field.key]"
                   :type="field.type === 'secret' ? 'password' : field.type === 'integer' || field.type === 'number' ? 'number' : 'text'"
                   :label="field.key + (field.required ? '（必填）' : '')" :disabled="Boolean(saving)" persistent-hint
@@ -259,4 +285,5 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0;font-size:13px}
 .config{display:grid;gap:10px;margin-top:10px}
 .form-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .plugins :deep(.v-btn){min-height:44px}
+.structured :deep(textarea){font-family:monospace;overflow-wrap:anywhere}
 </style>
