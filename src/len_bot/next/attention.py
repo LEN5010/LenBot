@@ -245,6 +245,8 @@ class SceneRunner:
             collect_stickers=(self.config.learning is not None and self.config.learning.collect_stickers
                               and not message.is_self and message.sender.uid != self.config.bot_qq
                               and message.sender.uid not in self.settings.other_bot_qqs),
+            transcribe_audio=(self.config.transcribe_audio and not message.is_self
+                              and message.sender.uid not in self.settings.other_bot_qqs),
         )
         self.state = state
         if message.is_self:
@@ -275,6 +277,9 @@ class SceneRunner:
                              and self.state.pending.channel == "direct")
             if available:
                 reason = "收到新消息"
+                break
+            if period is None and self.audio_ready():
+                reason = "此前语音的识别结果已就绪，完整工具组结束后处理"
                 break
             due_at = self.store.next_schedule_at(self.config.scene)
             if period is None and due_at is not None and due_at <= now:
@@ -330,12 +335,27 @@ class SceneRunner:
     def schedule_deadline(self, now: float) -> float | None:
         due_at = self.store.next_schedule_at(self.config.scene)
         if ((self.chat.tasks is not None and self.chat.tasks.records.pending_notices(self.config.scene))
-                or self.store.plugin_wake_pending(self.config.scene)):
+                or self.store.plugin_wake_pending(self.config.scene) or self.audio_ready()):
             due_at = now if due_at is None else min(now, due_at)
         if due_at is None:
             return None
         period = quiet_period(self.settings.quiet_hours, self.config.timezone, max(now, due_at))
         return due_at if period is None else period[1]
+
+    def audio_ready(self) -> bool:
+        return self.chat.audio is not None and self.chat.audio.records.results_pending(self.config.scene)
+
+    async def wait_audio(self) -> bool:
+        if self.closing or self.chat.audio is None:
+            return False
+        remaining = self.chat.audio.wait_remaining(self.config.scene, self.now())
+        if remaining <= 0:
+            return False
+        try:
+            await asyncio.wait_for(self.changed.wait(), timeout=remaining)
+        except TimeoutError:
+            pass  # Stop holding the input batch at its configured media deadline.
+        return True
 
     async def ready_messages(self, *, continuing: bool = False, in_turn: bool = False
                              ) -> tuple[list[tuple[int, ChatMessage, float]], float | None,
@@ -351,7 +371,7 @@ class SceneRunner:
             task_notice = (period is None and self.chat.tasks is not None
                            and self.chat.tasks.records.pending_notices(self.config.scene))
             plugin_event = period is None and self.store.plugin_wake_pending(self.config.scene)
-            if scheduled or task_notice or plugin_event:
+            if scheduled or task_notice or plugin_event or (period is None and self.audio_ready()):
                 return self.store.pending_messages(self.config.scene), None, scheduled
             notice_until = None
             resuming = self.resume and not in_turn
@@ -374,6 +394,8 @@ class SceneRunner:
                 else:
                     return None
             if (continuing or resuming) and notice_until is None:
+                if await self.wait_audio():
+                    continue
                 pending = self.store.pending_messages(self.config.scene)
                 return (pending, None, []) if pending or resuming else None
             deadline = self.deadline()
@@ -389,6 +411,8 @@ class SceneRunner:
                 deadline = min(deadline, schedule_at)
             delay = deadline - now
             if delay <= 0:
+                if notice_until is None and await self.wait_audio():
+                    continue
                 return self.store.pending_messages(self.config.scene), notice_until, []
             try:
                 await asyncio.wait_for(self.changed.wait(), timeout=delay)
@@ -459,6 +483,8 @@ class SceneRunner:
                 self.chat.turn_channels.add("task")
                 self.store.append_task_notices(self.config.scene, notices, turn_id=turn_id)
         if quiet_period(self.settings.quiet_hours, self.config.timezone, self.now()) is None:
+            if self.audio_ready():
+                self.chat.turn_channels.add("audio")
             events = self.store.pending_plugin_events(self.config.scene)
             if events:
                 self.chat.turn_channels.add("plugin")
@@ -571,10 +597,11 @@ class SceneRunner:
                 notices = (self.chat.tasks.records.pending_notices(self.config.scene)
                            if self.chat.tasks is not None and not quiet else [])
                 events = [] if quiet else self.store.pending_plugin_events(self.config.scene)
-                channel = ("system" if scheduled or notices or events
+                audio = not quiet and self.audio_ready()
+                channel = ("system" if scheduled or notices or events or audio
                            else self.state.pending.channel if self.state.pending else "resume")
                 channels = {name for name, present in (
-                    ("schedule", scheduled), ("task", notices), ("plugin", events), ("resume", self.resume))
+                    ("schedule", scheduled), ("task", notices), ("plugin", events), ("audio", audio), ("resume", self.resume))
                     if present}
                 if self.state.pending is not None:
                     channels.add(self.state.pending.channel)

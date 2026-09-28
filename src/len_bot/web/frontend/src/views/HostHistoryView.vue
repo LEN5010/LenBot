@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import HostAudioPanel from '../components/HostAudioPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), scene = ref(''), activeOnly = ref(true)
@@ -111,6 +112,7 @@ watch(() => route.query.scene, value => {
       <p class="muted">{{ activeOnly?'仅显示压缩位置之后的大脑条目；上方回想仍单列。':'包含已经压缩进回想的旧条目；旧记录不会因此重新进入当前大脑上下文。' }}</p>
       <p v-if="(loading || hostLoading) && !snapshot" role="status" class="muted">正在读取实际会话条目…</p>
     </section>
+    <HostAudioPanel v-if="scene" :key="scene" :scene="scene" />
     <template v-if="snapshot">
       <section class="surface"><div class="section-heading"><h2>当前回想</h2><span class="muted">按本次读取的压缩位置展示</span></div>
         <p v-if="snapshot.recap!==null" class="original-text">{{ snapshot.recap }}</p>

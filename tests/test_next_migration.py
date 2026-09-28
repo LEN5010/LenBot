@@ -1757,6 +1757,7 @@ def test_format26_audio_cache_preserves_existing_data(tmp_path):
         store.append('group:80001', {'role': 'user', 'content': '迁移前原话'})
     with sqlite3.connect(path) as db:
         db.execute('DROP TABLE audio_cache')
+        db.execute('DROP TABLE audio_calls')
         db.execute('PRAGMA user_version=26')
         tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'message_search%' AND name!='sqlite_sequence'")]
@@ -1780,3 +1781,45 @@ def test_format26_audio_cache_collision_rolls_back(tmp_path):
     with pytest.raises(sqlite3.OperationalError, match='already exists'):
         migrate_database(path)
     assert _version(path) == (0x4C424E31, 26)
+
+
+def _format27_source(path):
+    with Store(path) as store:
+        store.append('group:80001', {'role': 'user', 'content': '真实保存的旧条目'})
+    with sqlite3.connect(path) as db:
+        db.execute('DROP TABLE audio_cache')
+        db.execute('DROP TABLE audio_calls')
+        db.execute('CREATE TABLE audio_cache (scene TEXT NOT NULL,platform_id TEXT NOT NULL,audio_index INTEGER NOT NULL,'
+                   'wav BLOB NOT NULL,duration REAL NOT NULL,fetched_at REAL NOT NULL,'
+                   'transcript TEXT,provider TEXT,model TEXT,transcribed_at REAL,PRIMARY KEY(scene,platform_id,audio_index))')
+        db.executemany('INSERT INTO audio_cache VALUES (?,?,?,?,?,?,?,?,?,?)', [
+            ('group:80001','7001',1,b'synthetic-existing-wav',0.1,100,'旧成功文字','fixture','exact-audio',105),
+            ('group:80001','7002',1,b'synthetic-unfinished-wav',0.2,101,None,None,None,None)])
+        db.execute('PRAGMA user_version=27')
+
+
+def test_format27_audio_processing_preserves_bytes_and_success(tmp_path):
+    path=tmp_path/'state.db';_format27_source(path)
+    backup=migrate_database(path)
+    with sqlite3.connect(backup) as original, Store(path) as store:
+        old=original.execute('SELECT * FROM audio_cache ORDER BY platform_id').fetchall()
+        fields=','.join(row[1] for row in original.execute('PRAGMA table_info(audio_cache)'))
+        assert [tuple(row) for row in store.db.execute(f'SELECT {fields} FROM audio_cache ORDER BY platform_id')]==old
+        assert [tuple(row) for row in store.db.execute('SELECT status,error,announced_at FROM audio_cache ORDER BY platform_id')]==[
+            ('complete',None,105),('idle',None,None)]
+        assert original.execute('PRAGMA user_version').fetchone()[0]==27
+        assert store.db.execute('SELECT count(*) FROM audio_calls').fetchone()[0]==0
+        assert [tuple(row) for row in store.db.execute('SELECT * FROM mind_entries')]==original.execute('SELECT * FROM mind_entries').fetchall()
+
+
+def test_format27_audio_processing_conflict_rolls_back(tmp_path):
+    path=tmp_path/'state.db';_format27_source(path)
+    with sqlite3.connect(path) as db:
+        rows=db.execute('SELECT * FROM audio_cache').fetchall()
+        db.execute('CREATE TABLE audio_calls(collision TEXT)')
+    with pytest.raises(sqlite3.OperationalError,match='already exists'):
+        migrate_database(path)
+    with sqlite3.connect(path) as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0]==27
+        assert db.execute('SELECT * FROM audio_cache').fetchall()==rows
+        assert 'status' not in [row[1] for row in db.execute('PRAGMA table_info(audio_cache)')]

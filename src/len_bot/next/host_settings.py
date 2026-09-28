@@ -51,6 +51,7 @@ class SceneChange(ScenePersona):
     attention: Attention
     schedules: ScheduleSettings
     proactive: Proactive | None
+    transcribe_audio: bool
 
 
 class WebReadChange(BaseModel):
@@ -218,6 +219,7 @@ def _project(config: HostConfig) -> dict:
                 "attention": settings.attention.model_dump(mode="json"),
                 "schedules": settings.schedules.model_dump(mode="json"),
                 "proactive": None if settings.proactive is None else settings.proactive.model_dump(mode="json"),
+                "transcribe_audio": settings.transcribe_audio,
                 "tasks": settings.tasks.model_dump(mode="json"),
                 "learning": None if settings.learning is None else settings.learning.model_dump(mode="json"),
                 "scene_persona": {

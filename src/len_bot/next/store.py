@@ -19,7 +19,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 27
+FORMAT_VERSION = 28
 
 
 def encode(value: object) -> str:
@@ -180,10 +180,21 @@ class Store:
                     );
                     CREATE TABLE audio_cache (
                         scene TEXT NOT NULL, platform_id TEXT NOT NULL, audio_index INTEGER NOT NULL,
-                        wav BLOB NOT NULL, duration REAL NOT NULL, fetched_at REAL NOT NULL,
+                        wav BLOB, duration REAL, fetched_at REAL,
                         transcript TEXT, provider TEXT, model TEXT, transcribed_at REAL,
+                        status TEXT NOT NULL CHECK(status IN ('idle','queued','running','complete','failed','interrupted')),
+                        created REAL NOT NULL, updated REAL NOT NULL, error TEXT, announced_at REAL,
                         PRIMARY KEY(scene, platform_id, audio_index)
                     );
+                    CREATE INDEX audio_queued ON audio_cache(scene,created) WHERE status='queued';
+                    CREATE INDEX audio_results ON audio_cache(scene,transcribed_at)
+                        WHERE announced_at IS NULL AND transcript IS NOT NULL;
+                    CREATE TABLE audio_calls (
+                        id INTEGER PRIMARY KEY, scene TEXT NOT NULL, platform_id TEXT NOT NULL,
+                        audio_index INTEGER NOT NULL, started REAL NOT NULL, ended REAL,
+                        request TEXT NOT NULL, response TEXT, usage TEXT, error TEXT
+                    );
+                    CREATE INDEX audio_calls_source ON audio_calls(scene,platform_id,audio_index,id);
                     CREATE TABLE media (
                         id INTEGER PRIMARY KEY, persona_id TEXT, file TEXT,
                         source_message_seq INTEGER, source_image_index INTEGER,
@@ -531,6 +542,11 @@ class Store:
             (*scenes, since, until),
         ).fetchall()
         calls.extend(self.db.execute(
+            "SELECT ended,NULL FROM audio_calls "
+            f"WHERE scene IN ({placeholders}) AND started>=? AND started<?",
+            (*scenes, since, until),
+        ).fetchall())
+        calls.extend(self.db.execute(
             "SELECT ended,cost FROM learning_batches "
             f"WHERE scene IN ({placeholders}) AND model_started>=? AND model_started<?",
             (*scenes, since, until),
@@ -633,10 +649,15 @@ class Store:
 
     def enqueue(self, message: ChatMessage, raw: dict, received_at: float,
                 *, attention_state: dict | None = None,
-                collect_stickers: bool = False) -> int:
+                collect_stickers: bool = False, transcribe_audio: bool = False) -> int:
         """Store one received platform message without adding it to the mind yet."""
         with self.db:
             seq = self._save_message(message, raw, received_at)
+            if transcribe_audio:
+                for index, _ in enumerate((part for part in message.segments if part.type == "record"), 1):
+                    self.db.execute("INSERT INTO audio_cache(scene,platform_id,audio_index,status,created,updated) "
+                                    "VALUES (?,?,?,'queued',?,?)",
+                                    (message.scene, message.platform_message_id, index, received_at, received_at))
             if collect_stickers:
                 image_index = 0
                 for segment in message.segments:
@@ -698,6 +719,10 @@ class Store:
     def _append_batch(self, scene: str, through: int, contents: list[str]) -> None:
         for content in contents:
             self._append(scene, {"role": "user", "content": content})
+        self.db.execute("UPDATE audio_cache SET announced_at=? WHERE scene=? AND transcript IS NOT NULL "
+            "AND platform_id IN (SELECT platform_id FROM messages WHERE scene=? AND seq<=? "
+            "AND seq>COALESCE((SELECT last_message_seq FROM mind_sessions WHERE scene=?),0))",
+            (self.now(), scene, scene, through, scene))
         self.db.execute(
             "INSERT INTO mind_sessions(scene,last_message_seq) VALUES (?,?) "
             "ON CONFLICT(scene) DO UPDATE SET last_message_seq=excluded.last_message_seq",

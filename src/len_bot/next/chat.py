@@ -28,7 +28,8 @@ from .expression_selection import ExpressionService
 from .external_tools import ExternalTool
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
-from .audio import TRANSCRIBE_TOOL, TranscribeArguments, execute_transcribe
+from .audio import TRANSCRIBE_TOOL, TranscribeArguments, AudioService
+from .audio_store import AudioStore
 from .jargon_store import JargonStore
 from .messages import ChatMessage, Segment, Sender, SendResult, UploadResult, plain_text, render_message
 from .model import ChatModel, ModelProtocolError, ModelReply, ToolCall
@@ -266,6 +267,7 @@ class Chat:
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
                  platform_call: PlatformCall | None = None,
                  external_tools: list[ExternalTool] = (),
+                 audio_service: AudioService | None = None,
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
                  on_reply_sample: Callable[[], None] | None = None,
@@ -273,6 +275,7 @@ class Chat:
         self.config, self.persona, self.store = config, persona, store
         self.now = now
         self.mind, self.voice, self.vision = mind, voice, vision
+        self.audio = audio_service
         if (config.memory is None) != (memory is None):
             raise ValueError("memory 服务必须与根配置的记忆后端一起提供")
         self.memory = memory
@@ -324,6 +327,8 @@ class Chat:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
         if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
             raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
+        if "transcribe" in self.allowed_tool_names and self.audio is None:
+            raise ValueError("语音工具已启用但未接入实际语音处理服务")
         self.deferred_names = DEFERRED_NAMES | set(self.external)
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
         self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
@@ -372,7 +377,8 @@ class Chat:
     def render(self, message: ChatMessage) -> str:
         quote = (None if message.reply_to is None else
                  self.store.find_message(message.scene, message.reply_to))
-        return render_message(message, timezone=self.config.timezone, reply=quote)
+        return render_message(message, timezone=self.config.timezone, reply=quote,
+                              audio=AudioStore(self.store).captions(message.scene, message.platform_message_id))
 
     async def request(self, turn_id: str, role: Literal["mind", "voice", "recap", "vision"],
                       messages: list[dict], tools: list[dict], *,
@@ -475,6 +481,7 @@ class Chat:
         binding = self.config.models.roles.mind
         trigger = int(binding.context_window_tokens * self.config.compaction.trigger_ratio)
         while True:
+            AudioStore(self.store).append_late(self.config.scene)
             recap, entries = self.store.active_history(self.config.scene)
             # Refresh only between model requests, never midway through a tool group.
             self.discovered_tools = set(self.store.load_discovered_tools(self.config.scene))
@@ -782,10 +789,9 @@ class Chat:
                 model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
             ), None, None
         if call.name == "transcribe":
-            return await execute_transcribe(
-                self.store, self.config, TranscribeArguments.model_validate(call.arguments),
-                turn_id=turn_id, platform=self.platform_call, slots=self.slots,
-                direct=self.direct_request, notify=self.notify,
+            return await self.audio.transcribe(
+                self.config.scene, TranscribeArguments.model_validate(call.arguments),
+                turn_id=turn_id, direct=self.direct_request,
             ), None, None
         arguments = WaitArguments.model_validate(call.arguments)
         return await wait_for_messages(arguments.seconds), None, None
