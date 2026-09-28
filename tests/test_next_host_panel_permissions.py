@@ -113,6 +113,29 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                                          ("PUT", "/api/host/scenes/group:80001"),
                                          ("DELETE", "/api/host/scenes/group:80001")):
                         assert (await client.request(method, path)).status_code in {404, 405}
+                    browser_settings = {'socket':str(root/'browser.sock'), 'browser_instance_id':None,
+                                        'binary':str(root/'bsk'), 'home':str(root/'browser-home'),
+                                        'timeout_seconds':65, 'max_response_bytes':16000000}
+                    browser_saved = await client.put('/api/host/browser', json={'settings':browser_settings})
+                    assert browser_saved.status_code == 200, browser_saved.text
+                    assert browser_saved.json()['running'] is None and browser_saved.json()['restart_required']
+                    assert browser_saved.json()['saved'] == browser_settings
+                    invalid_browser = {**browser_settings, 'socket':'relative.sock'}
+                    assert (await client.put('/api/host/browser', json={'settings':invalid_browser})).status_code == 422
+
+                    permissions = (await client.get('/api/host/permissions?scene=group:80001')).json()
+                    change = permissions['saved']
+                    change['global_identities']['admins'] = ['70003']
+                    change['scene_identities'] = {'admins':[], 'whitelist':['70004'], 'blacklist':['70005']}
+                    saved = await client.put('/api/host/permissions?scene=group:80001', json=change)
+                    assert saved.status_code == 200, saved.text
+                    assert saved.json()['restart_required'] is True
+                    assert saved.json()['running']['global_identities']['admins'] == []
+                    assert load_host_config(root).scene_config('group:80001').permissions.admins == ['70003']
+                    assert load_host_config(root).scene_config('group:80002').permissions.whitelist == []
+                    invalid_change = {**change, 'global_identities': {'admins':['70003','70003'], 'whitelist':[], 'blacklist':[]}}
+                    assert (await client.put('/api/host/permissions?scene=group:80001', json=invalid_change)).status_code == 422
+
                     assert (await client.post("/api/host/trials", json={
                         "scene": "group:89999", "acknowledge_model_cost": True,
                     })).status_code == 404
@@ -138,7 +161,7 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                         assert (await client.post("/api/auth/logout")).status_code == 200
                         for method, path in (("GET", prefix + "/state"),
                                              ("POST", prefix + "/stop"),
-                                             ("GET", "/api/host/trials")):
+                                             ("GET", "/api/host/trials"), ("GET", "/api/host/permissions?scene=group:80001")):
                             assert (await client.request(method, path)).status_code == 401
                     finally:
                         await app.state.trials.close()

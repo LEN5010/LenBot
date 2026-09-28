@@ -13,13 +13,14 @@ from len_bot.next.tasks import WorkTasks
 def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
     source = {
         'mode':'isolated-multi','bot_qq':'90001','owner_qq':'70001','timezone':'UTC',
+        'permissions':{'admins':['70003'],'blacklist':['70004']},
         'database':str(tmp_path/'state.db'),'onebot':{'mode':'forward_ws','ws_url':'ws://127.0.0.1:9'},
         'models':{'providers':{'fixture':{'api':'openai-chat','base_url':'http://127.0.0.1:9/v1','api_key':'fixture'}},
                   'roles':{role:{'provider':'fixture','model':'fixture','context_window_tokens':65536} for role in ['mind','voice','worker']}},
-        'scenes':{'group:80001':{'persona':str(tmp_path/'persona'),'tasks':{'enabled':True,'owner':'70002'}}},
+        'scenes':{'group:80001':{'persona':str(tmp_path/'persona'),'permissions':{'whitelist':['70005']},'tasks':{'enabled':True,'owner':'70002'}}},
         'worker':{'docker_binary':'/usr/bin/false','docker_host':'unix:///private/tmp/unused.sock','image':'fixture',
                   'workspace_root':str(tmp_path/'work'),'runtime_root':str(tmp_path/'run'),'delivery_root':str(tmp_path/'out'),
-                  'uid':10000,'gid':10000,'model_reasoning':False},
+                  'active_timeout_seconds':3600,'uid':10000,'gid':10000,'model_reasoning':False},
         'account_browser':{'socket':'/private/tmp/unused-browser.sock','browser_instance_id':'fixture',
                            'binary':'/usr/bin/false','home':str(tmp_path/'browser')},
     }
@@ -34,6 +35,17 @@ def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
                 await service.delegate('group:80001',requester='70002',**kwargs)
             task = await service.delegate('group:80001',requester='70001',**kwargs)
             assert task['account_browser'] and not task['browser_active']
+            assert task['active_timeout_seconds'] == 3600
+            ordinary = {**kwargs, 'account_browser':False}
+            admin = await service.delegate('group:80001',requester='70003',**ordinary)
+            assert admin['active_timeout_seconds'] == 1800
+            white = await service.delegate('group:80001',requester='70005',**ordinary)
+            assert white['active_timeout_seconds'] == 3600
+            with pytest.raises(PermissionError, match='黑名单'):
+                await service.delegate('group:80001',requester='70004',**ordinary)
+            previous = service.records.create('group:80001','70004','以前的任务','原交付','','原输入')
+            assert (await service.cancel('group:80001',previous.id,requester='70004'))['status'] == 'cancelled'
+
             service.records.finish('group:80001',task['id'],'failed',None,'fixture stop')
             with pytest.raises(ValueError,match='不续接旧工作区'):
                 await service.resume('group:80001',task['id'],requester='70001',text='继续')

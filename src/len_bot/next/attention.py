@@ -18,7 +18,7 @@ from .delivery import report_parts, split_expression
 from .messages import ChatMessage, Segment, parse_message, plain_text
 from .proactive import PROMPT as PROACTIVE_PROMPT, ProactiveStore, idle_text
 from .quiet import next_quiet_start, quiet_period
-from .schedule import check_creation, platform_role, wake_text
+from .schedule import effective_settings, check_creation, platform_role, wake_text
 
 
 Channel = Literal["direct", "named", "focus", "ambient"]
@@ -224,6 +224,8 @@ class SceneRunner:
             if existing.is_self and existing.send_status == "sent":
                 self.store.attach_echo(message, raw, self.now())
             return {"status": "duplicate", "platform_message_id": message.platform_message_id}
+        blocked = message.sender.uid in self.config.permissions.blacklist
+        wake = wake and not blocked
         now = self.now()
         state = copy.deepcopy(self.state)
         period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
@@ -242,10 +244,10 @@ class SceneRunner:
         snapshot = asdict(state) if state != self.state else None
         self.store.enqueue(
             message, raw, now, attention_state=snapshot,
-            collect_stickers=(self.config.learning is not None and self.config.learning.collect_stickers
+            collect_stickers=(not blocked and self.config.learning is not None and self.config.learning.collect_stickers
                               and not message.is_self and message.sender.uid != self.config.bot_qq
                               and message.sender.uid not in self.settings.other_bot_qqs),
-            transcribe_audio=(self.config.transcribe_audio and not message.is_self
+            transcribe_audio=(not blocked and self.config.transcribe_audio and not message.is_self
                               and message.sender.uid not in self.settings.other_bot_qqs),
         )
         self.state = state
@@ -255,6 +257,8 @@ class SceneRunner:
         receipt = {"status": "queued" if state.pending else "stored",
                    "platform_message_id": message.platform_message_id,
                    "wake_channel": state.pending.channel if state.pending else None}
+        if blocked:
+            receipt['reason'] = 'blacklisted: saved without wake or automatic media processing'
         if period is not None:
             receipt["quiet_until"] = datetime.fromtimestamp(period[1], ZoneInfo(self.config.timezone)).isoformat()
         return receipt
@@ -321,7 +325,9 @@ class SceneRunner:
             try:
                 if "schedule" not in self.chat.allowed_tool_names:
                     raise PermissionError("当前角色或场景未开放 schedule，安排未交付")
-                check_creation(self.config.schedules, requester=item.requester, target=item.target,
+                if item.requester in self.config.permissions.blacklist:
+                    raise PermissionError('安排请求人已在黑名单中')
+                check_creation(effective_settings(self.config), requester=item.requester, target=item.target,
                                bot_qq=self.config.bot_qq, root_owner=self.config.owner_qq,
                                group_role=platform_role(self.store, self.config, item.requester))
             except PermissionError as error:

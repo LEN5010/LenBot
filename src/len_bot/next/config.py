@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .account_browser import AccountBrowserSettings
+from .identity import IdentitySettings, combine_identities
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
@@ -560,6 +561,7 @@ class SharedConfig(BaseModel):
 
     bot_qq: str
     owner_qq: str | None = None
+    permissions: IdentitySettings = Field(default_factory=IdentitySettings)
     timezone: str
     database: Path
     onebot: OneBotSettings | None = None
@@ -716,6 +718,7 @@ class ScenePersona(BaseModel):
 
 
 class SceneSettings(ScenePersona):
+    permissions: IdentitySettings | None = None
     # Explicit IANA override for this scene; None uses the root timezone.
     timezone: str | None = None
     persona_aliases: list[str] = Field(default_factory=list)
@@ -926,6 +929,7 @@ class HostConfig(SharedConfig):
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         shared["timezone"] = self.scene_timezone(scene)
         del local["timezone"]
+        shared["permissions"] = combine_identities(self.permissions, local.pop("permissions"))
         return LabConfig.model_construct(**shared, **local, mode="isolated", scene=scene)
 
     def scene_timezone(self, scene: str) -> str:
@@ -1067,6 +1071,12 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
+    browser = source.get("account_browser")
+    if isinstance(browser, dict):
+        for field in ("socket", "binary", "home"):
+            if isinstance(browser.get(field), str):
+                # Keep relative paths relative so the explicit-absolute validator can reject them.
+                browser[field] = Path(browser[field])
     plugins = source.get("plugins")
     if isinstance(plugins, dict):
         paths = plugins.get("paths", [])

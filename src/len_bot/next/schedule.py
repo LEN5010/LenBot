@@ -105,6 +105,12 @@ SCHEDULE_TOOLS = [
 ]
 
 
+def effective_settings(config: LabConfig) -> ScheduleSettings:
+    return config.schedules.model_copy(update={
+        'admins': list(dict.fromkeys([*config.permissions.admins, *config.schedules.admins])),
+        'whitelist': list(dict.fromkeys([*config.permissions.whitelist, *config.schedules.whitelist]))})
+
+
 def identity_roles(settings: ScheduleSettings, requester: str, group_role: str | None,
                    root_owner: str | None = None) -> set[str]:
     return roles_for(requester, owner=root_owner, scoped_owner=settings.owner,
@@ -214,7 +220,9 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
         when = args.when.timestamp()
     if when <= started:
         raise ValueError("when 必须晚于当前执行时刻；未创建过去的安排")
-    check_creation(config.schedules, requester=args.requester, target=args.target,
+    if args.requester in config.permissions.blacklist:
+        raise PermissionError('当前黑名单账号不能创建安排')
+    check_creation(effective_settings(config), requester=args.requester, target=args.target,
                    bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, args.requester))
     return store.create_schedule(config.scene, due_at=when, timezone=config.timezone,
                                  note=args.note, target=args.target, requester=args.requester,
@@ -225,7 +233,9 @@ def create_arrangement(store: Store, config: LabConfig, args: ScheduleArguments,
 def cancel_arrangement(store: Store, config: LabConfig, *, id: int,
                        requester: str | None) -> Schedule:
     item = store.get_schedule(config.scene, id)
-    check_cancellation(config.schedules, requester=requester, creator=item.requester,
+    if requester != item.requester and requester in config.permissions.blacklist:
+        raise PermissionError('黑名单账号只能取消本人的安排')
+    check_cancellation(effective_settings(config), requester=requester, creator=item.requester,
                        bot_qq=config.bot_qq, root_owner=config.owner_qq, group_role=platform_role(store, config, requester))
     return store.cancel_schedule(config.scene, item.id)
 

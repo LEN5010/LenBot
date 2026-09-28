@@ -16,6 +16,7 @@ from .chat import tool_catalog, tool_unavailable_reasons
 from .config import HostConfig, LabConfig
 from .memory import LocalMemoryConfig, open_memory
 from .model import ChatModel
+from .identity import IdentitySettings
 from .network import NetworkRuntime
 from .panel import PanelSession, TestMessage
 from .panel_auth import changes_socket, cookie_name
@@ -141,7 +142,7 @@ class HostTrials:
                     'ingest': None, 'summaries': False})
             candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
                 'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owner_qq':None,
-                'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
+                'permissions': IdentitySettings(), 'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
                 'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
                 'web_read':None, 'web_search':None})
             config = LabConfig.model_validate_json(candidate.model_dump_json())

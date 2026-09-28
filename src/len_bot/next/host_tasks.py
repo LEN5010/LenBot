@@ -86,7 +86,7 @@ def register_host_tasks(app: FastAPI, *, runtime: NetworkRuntime,
         try:
             item = records.get(scene, id)
             events = records.event_previews(scene, id, after=after, limit=limit)
-            return {"task": asdict(item), "events": events,
+            return {"task": {**asdict(item), "active_timeout_seconds": None if runtime.tasks is None else runtime.tasks.active_timeout(item)}, "events": events,
                     "network": None if runtime.tasks is None else runtime.tasks.egress.status(scene, id),
                     "next_after": events[-1]["id"] if events else after,
                     "files": [file_info(file, records) for file in records.list_files(scene, id)]}

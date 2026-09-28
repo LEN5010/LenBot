@@ -8,7 +8,7 @@ const blank=()=>({socket:'',browser_instance_id:null,binary:'',home:'',timeout_s
 const dirty=computed(()=>snapshot.value!==null && JSON.stringify(enabled.value?draft.value:null)!==JSON.stringify(snapshot.value.saved))
 watch(dirty,value=>emit('dirty',value))
 async function action(fn){if(busy.value)return;busy.value=true;error.value='';notice.value='';try{await fn()}catch(e){error.value=e.message}finally{busy.value=false}}
-async function read(){if(dirty.value&&!window.confirm('放弃账号浏览器草稿并重读？'))return;await action(async()=>{snapshot.value=await api('/api/host/browser');enabled.value=snapshot.value.saved!==null;draft.value=structuredClone(snapshot.value.saved??blank())})}
+async function read(){if(dirty.value&&!window.confirm('放弃账号浏览器草稿并重读？'))return;await action(async()=>{snapshot.value=await api('/api/host/browser');enabled.value=snapshot.value.saved!==null;draft.value=JSON.parse(JSON.stringify(snapshot.value.saved??blank()))})}
 async function save(){await action(async()=>{snapshot.value=await api('/api/host/browser',{method:'PUT',body:JSON.stringify({settings:enabled.value?{...draft.value,browser_instance_id:draft.value.browser_instance_id||null}:null})});notice.value='已保存根配置；当前进程绑定不变，需要自行重启。'})}
 async function status(){await action(async()=>{live.value=await api('/api/host/browser/status');devices.value=(await api('/api/host/browser/devices')).devices})}
 async function pairing(){await action(async()=>{pair.value=(await api('/api/host/browser/pair',{method:'POST'})).pairing_link})}

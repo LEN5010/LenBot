@@ -65,6 +65,7 @@ node_modules/
 /.runtime/
 /lenbot.config.json
 /.lenbot-config-*.json
+/.lenbot-setup-*.json
 /gateway.config.json
 
 # 设计文档与工作记录只留在本机
