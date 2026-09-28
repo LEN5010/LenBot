@@ -44,7 +44,8 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
         for key in affected:
             build_tools(config.scene_config(key), candidate, platform=config.delivery == "onebot")
             if config.worker is not None and config.worker.skills_directory is not None:
-                select_skills(load_catalog(config.worker.skills_directory, key), candidate.skills)
+                select_skills(load_catalog(config.worker.skills_directory, key,
+                                           public_browser=config.worker.public_browser), candidate.skills)
         if edit is not None:
             descriptor, name = tempfile.mkstemp(prefix=".persona-", dir=path)
             temporary = Path(name)

@@ -19,7 +19,7 @@ const roles = [
   { title: '成员', value: 'member' },
 ]
 const workerFields = {
-  resources: [['cpus', 'CPU 数'], ['memory', '内存限制'], ['pids_limit', '进程上限'],
+  resources: [['cpus', 'CPU 数'], ['memory', '内存限制'], ['tmpfs_size', '容器临时文件上限'], ['pids_limit', '进程上限'],
     ['command_timeout_seconds', '容器命令超时（秒）'], ['max_running', '全局同时运行任务'],
     ['max_containers', '全局任务容器上限'], ['max_scene_containers', '每场景容器上限']],
   calls: [['max_calls', '每任务最多模型请求'], ['max_request_bytes', '单次请求字节上限'],
@@ -42,14 +42,14 @@ function numeric(value) { return value === '' ? '' : Number(value) }
 function freshWorker() {
   return {
     docker_binary: '', docker_host: '', image: '', workspace_root: '', runtime_root: '',
-    delivery_root: '', uid: '', gid: '', cpus: 2, memory: '2g', pids_limit: 512,
+    delivery_root: '', uid: '', gid: '', cpus: 2, memory: '2g', tmpfs_size: '256m', pids_limit: 512,
     command_timeout_seconds: 30, max_running: 4, max_containers: 8,
     max_scene_containers: 4, max_calls: 40, max_request_bytes: 8 * 1024 * 1024,
     max_response_bytes: 64 * 1024 * 1024, max_cost: null,
     compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
     active_timeout_seconds: 1800, input_timeout_seconds: 1800,
     max_file_bytes: 25 * 1024 * 1024, input_support: 'text', model_reasoning: null,
-    skills_directory: null,
+    skills_directory: null, public_browser: false,
     egress: { enabled: true, max_task_bytes: 524288000, max_scene_daily_bytes: 2147483648,
       max_connections: 16, bytes_per_second: 8388608,
       connect_timeout_seconds: 30, header_timeout_seconds: 30 },
@@ -182,6 +182,7 @@ onMounted(() => read(false))
         <div class="status-row"><strong>当前运行：{{ snapshot.running.worker===null?'未配置任务执行器':snapshot.running.worker.image }}</strong>
           <v-chip variant="tonal" :color="snapshot.restart_required.worker?'warning':'info'">{{ snapshot.restart_required.worker?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
         <p class="muted">公共联网代理：运行值 {{ snapshot.running.worker?.egress.enabled?'配置启用':'未启用' }}；保存值 {{ snapshot.saved.worker?.egress.enabled?'计划启用':'未启用' }}。这里不表示域名已实际联网。</p>
+        <p class="muted">公共浏览：运行值 {{ snapshot.running.worker?.public_browser?'已配置':'未配置' }}；保存值 {{ snapshot.saved.worker?.public_browser?'计划启用':'未启用' }}。配置不代表浏览器已启动或浏览成功。</p>
         <p class="muted">技能目录：运行值 {{ snapshot.running.worker?.skills_directory ?? '未设置' }}；保存值 {{ snapshot.saved.worker?.skills_directory ?? '未设置' }}。目录保存不表示角色已选择技能或任务实际执行过技能。</p>
         <p class="muted">保存值中的任务模型：{{ snapshot.saved.models.roles.worker===null?'未绑定':`${snapshot.saved.models.roles.worker.provider} / ${snapshot.saved.models.roles.worker.model}` }}。配置费用上限时，须在模型页为此提供方与精确模型设置价格。</p>
         <form @submit.prevent="saveWorker"><fieldset :disabled="loading || Boolean(saving)">
@@ -203,8 +204,10 @@ onMounted(() => read(false))
               <v-select v-model="workerDraft.model_reasoning" label="所选任务模型实际支持推理吗？" :items="[{title:'不支持',value:false},{title:'支持',value:true}]" :disabled="loading || Boolean(saving)" hint="必须人工选择；不从模型名推断，实际请求参数仍以根绑定为准" persistent-hint />
               <v-select v-model="workerDraft.input_support" label="所选任务模型输入能力" :items="[{title:'仅文本',value:'text'},{title:'文本与图片',value:'text-image'}]" :disabled="loading || Boolean(saving)" hide-details="auto" />
             </div>
-            <details><summary>执行资源与并发上限</summary><div class="form-grid">
-              <v-text-field v-for="[key,label] in workerFields.resources" :key="key" :model-value="workerDraft[key]" :type="key==='memory'?'text':'number'" :step="key==='cpus'||key==='command_timeout_seconds'?'any':'1'" :label="label" hide-details="auto" @update:model-value="value=>workerDraft[key]=key==='memory'?value:numeric(value)" />
+            <details><summary>执行资源与并发上限</summary>
+              <p class="muted">临时文件与匿名浏览状态使用容器临时空间，容器销毁时清理。上限按正数字加 k/m/g 填写；设置上限不预分配内存，也不保证任意站点可用，实际使用仍受容器总内存限制。</p>
+              <div class="form-grid">
+              <v-text-field v-for="[key,label] in workerFields.resources" :key="key" :model-value="workerDraft[key]" :type="['memory','tmpfs_size'].includes(key)?'text':'number'" :step="key==='cpus'||key==='command_timeout_seconds'?'any':'1'" :label="label" hide-details="auto" @update:model-value="value=>workerDraft[key]=['memory','tmpfs_size'].includes(key)?value:numeric(value)" />
             </div></details>
             <details><summary>公共联网回环代理与限额</summary>
               <p class="muted">任务容器保持 network-none，经宿主回环代理才可出网。启用配置不代表任何域名已实际连通；DNS 若解析到保留地址会保留原错拒绝，不自动换 DNS、地址或参数。保存不立即生效，也不会自动构建镜像。</p>
@@ -213,6 +216,12 @@ onMounted(() => read(false))
                 :model-value="workerDraft.egress[key]" type="number"
                 :step="key.endsWith('_seconds')?'any':'1'" :label="label" hide-details="auto"
                 @update:model-value="value=>workerDraft.egress[key]=numeric(value)" /></div>
+            </details>
+            <details><summary>任务内公共浏览</summary>
+              <p class="muted">固定使用任务镜像内的 Playwright CLI 1.62.0，不另选浏览后端。启用须同时启用公共联网回环代理；本页不会自动打开联网。保存配置不代表浏览器已启动、已连接或浏览成功，也不会为每个任务预占 Chromium。</p>
+              <v-switch v-model="workerDraft.public_browser" label="允许任务按需使用公共浏览" :disabled="loading || Boolean(saving)" hide-details />
+              <p v-if="workerDraft.public_browser && !workerDraft.egress.enabled" class="muted">公共浏览需要上方公共联网代理；请明确启用后一起保存，不能只开启浏览。</p>
+              <p class="muted">真实任务中核对 CLI 后按需通过 <code>lenbot-browser</code> 打开；仅供任务容器，不会给群聊大脑直接注册 browser 工具。匿名 Cookie 只保留在该任务会话，任务容器清理后不跨任务沿用。</p>
             </details>
             <details><summary>模型请求、字节与金额上限</summary><div class="form-grid">
               <v-text-field v-for="[key,label] in workerFields.calls" :key="key" :model-value="workerDraft[key]" type="number" step="1" :label="label" hide-details="auto" @update:model-value="value=>workerDraft[key]=numeric(value)" />

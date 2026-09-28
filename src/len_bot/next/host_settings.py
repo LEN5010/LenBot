@@ -261,7 +261,8 @@ def _prepare(root: Path, edit: Callable[[dict, HostConfig], None]
         build_tools(candidate.scene_config(scene), personas[settings.persona],
                     platform=candidate.delivery == "onebot")
         if candidate.worker is not None and candidate.worker.skills_directory is not None:
-            select_skills(load_catalog(candidate.worker.skills_directory, scene),
+            select_skills(load_catalog(candidate.worker.skills_directory, scene,
+                                       public_browser=candidate.worker.public_browser),
                           personas[settings.persona].skills)
 
     descriptor, name = tempfile.mkstemp(prefix=".lenbot-config-", suffix=".json", dir=path.parent)

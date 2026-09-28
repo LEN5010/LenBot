@@ -35,6 +35,7 @@ class WorkerSession:
     bridge: WorkerTransport
     proxy: WorkerModelProxy
     egress: EgressTransport | None
+    browser_cli_version: str | None = None
 
     async def wait_failure(self) -> None:
         """Either host pipe dying ends this task, without hiding the first error."""
@@ -156,6 +157,7 @@ async def worker_session(
     skills: tuple[Skill, ...],
     data_tools: list[dict],
     task_timeout_seconds: float,
+    public_browser: bool,
     egress_settings: EgressSettings,
     egress_bytes_per_second: int,
     before_bytes: Callable[[int, str, int], None],
@@ -207,6 +209,27 @@ async def worker_session(
                 on_bytes=on_bytes,
                 stderr_path=handle.workspace / "egress-bridge.stderr",
             )
+        browser_version = None
+        browser_config = handle.control / "browser.json"
+        if public_browser:
+            _write_json(browser_config, {
+                "browser": {
+                    "browserName": "chromium", "isolated": True,
+                    "launchOptions": {
+                        "executablePath": "/usr/local/bin/lenbot-chromium",
+                        "channel": "chromium", "headless": True,
+                        "proxy": {"server": f"http://127.0.0.1:{egress.port}"},
+                        "timeout": sandbox.settings.command_timeout_seconds * 1000,
+                    },
+                    "contextOptions": {"acceptDownloads": True},
+                },
+                "outputDir": "/workspace/out/browser", "outputMode": "file",
+                "timeouts": {"action": sandbox.settings.command_timeout_seconds * 1000,
+                             "navigation": sandbox.settings.command_timeout_seconds * 1000},
+            })
+            browser_version = await sandbox.browser_cli_version(handle)
+        else:
+            browser_config.unlink(missing_ok=True)
         _configure_pi(
             handle, token=token, port=bridge.port, settings=settings,
             context_window_tokens=context_window_tokens,
@@ -220,7 +243,7 @@ async def worker_session(
             proxy_port=None if egress is None else egress.port,
             skills=skills,
         )
-        yield WorkerSession(handle, pi, bridge, proxy, egress)
+        yield WorkerSession(handle, pi, bridge, proxy, egress, browser_version)
     except BaseException as error:
         original = error
         raise

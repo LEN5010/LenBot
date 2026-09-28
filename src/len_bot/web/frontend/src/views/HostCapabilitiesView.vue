@@ -89,6 +89,7 @@ function toggleName(name, enabled) {
 function serviceLabel(name, enabled) {
   return name === 'schedules' ? (enabled ? '当前已启用' : '当前未启用')
     : name === 'skills' ? (enabled ? '当前配置了技能目录' : '当前未配置技能目录')
+    : name === 'public_browser' ? (enabled ? '公共浏览已配置' : '公共浏览未配置')
     : (enabled ? '当前已配置' : '当前未配置')
 }
 async function save() {
@@ -197,6 +198,7 @@ onMounted(readHost)
           <div v-for="[name,enabled] in Object.entries(snapshot.services)" :key="name"><dt>{{ name }}</dt><dd>{{ serviceLabel(name,enabled) }}</dd></div>
         </dl>
         <p class="muted mt-4">技能的角色许可、保存目录与运行装配由下方独立读取；本服务列表不代表技能已执行。</p>
+        <p class="muted">公共浏览只表示任务执行环境已配置，不表示浏览器已连接或浏览成功；实际由任务容器内 <code>lenbot-browser</code> 按需运行，不是群聊大脑的直接 browser 工具。匿名 Cookie 不跨任务保留。</p>
         <div v-if="snapshot.not_implemented.length" class="not-implemented">
           <h3>尚未接入执行</h3>
           <p v-for="item in snapshot.not_implemented" :key="item.name"><strong>{{ item.name }}</strong> · {{ item.description }}</p>

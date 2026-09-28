@@ -58,6 +58,7 @@ class DockerSettings:
     gid: int
     cpus: float = 2.0
     memory: str = "2g"
+    tmpfs_size: str = "256m"
     pids_limit: int = 512
     command_timeout_seconds: float = 30.0
 
@@ -240,7 +241,7 @@ class DockerSandbox:
             "--ipc", "private", "--init", "--user", f"{self.settings.uid}:{self.settings.gid}",
             "--pids-limit", str(self.settings.pids_limit),
             "--memory", self.settings.memory, "--cpus", str(self.settings.cpus),
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", f"/tmp:rw,noexec,nosuid,size={self.settings.tmpfs_size}",
             "--env", "HOME=/home/agent", "--env", "PI_CODING_AGENT_DIR=/home/agent/.pi/agent",
             "--workdir", "/workspace", *mounts, self.settings.image, "sleep", "infinity",
         ]
@@ -265,6 +266,19 @@ class DockerSandbox:
                 error.add_note(f"Container cleanup also failed: {cleanup_error}")
             raise
         return SandboxHandle(scene, task_id, container_id, workspace, home, control)
+
+    async def browser_cli_version(self, sandbox: SandboxHandle) -> str:
+        """Check the installed command/binary, without opening a browser or URL."""
+        raw = await self._docker("exec", "--workdir", "/workspace", sandbox.container_id,
+                                 "lenbot-browser", "--version")
+        try:
+            result = json.loads(raw)
+        except ValueError as error:
+            raise SandboxError(f"Invalid browser CLI response: {error}; raw={raw[:500]!r}") from error
+        if (not isinstance(result, dict) or result.get("isError") is True
+                or result.get("version") != "1.62.0"):
+            raise SandboxError(f"Task image requires browser CLI 1.62.0; raw={raw[:500]!r}")
+        return result["version"]
 
     async def spawn_model_bridge(self, sandbox: SandboxHandle, *, proxy: WorkerModelProxy,
                                  stderr_path: Path,
