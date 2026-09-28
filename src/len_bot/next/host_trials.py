@@ -1,0 +1,227 @@
+"""Host-owned isolated chat sessions, never a switch on the production outlet."""
+from __future__ import annotations
+
+import asyncio
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
+from pathlib import Path
+import time
+import yaml
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from pydantic import BaseModel, ConfigDict
+
+from .chat import tool_catalog, tool_unavailable_reasons
+from .config import HostConfig, LabConfig
+from .memory import LocalMemoryConfig, open_memory
+from .model import ChatModel
+from .network import NetworkRuntime
+from .panel import PanelSession, TestMessage
+from .panel_auth import changes_socket, cookie_name
+from .store import Store
+from len_bot.web.auth import session_user
+
+
+class TrialStart(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    scene: str
+    acknowledge_model_cost: bool
+
+
+@dataclass
+class Trial:
+    id: str
+    scene: str
+    root: Path
+    created: float
+    config: LabConfig
+    session: PanelSession
+    resources: AsyncExitStack
+    excluded: list[str]
+    stopped: float | None = None
+    final_state: dict | None = None
+
+    def info(self) -> dict:
+        return {'id': self.id, 'scene': self.scene, 'created': self.created, 'stopped': self.stopped,
+                'active': self.stopped is None, 'root': str(self.root), 'excluded_tools': self.excluded,
+                'memory': '独立空白本地记忆' if self.config.memory is not None else '本次不装配记忆',
+                'persona': self.session.chat.persona.name,
+                'models': {'mind': self.config.models.roles.mind.model, 'voice': self.config.models.roles.voice.model}}
+
+    def snapshot(self) -> dict:
+        return self.session.snapshot() if self.final_state is None else self.final_state
+
+    async def stop(self) -> None:
+        if self.stopped is not None:
+            return
+        self.session.closing = True
+        self.session.task.cancel()
+        await asyncio.gather(self.session.task, return_exceptions=True)
+        self.final_state = self.session.snapshot()
+        # An explicit stop is not a scene-runner failure; interrupted calls remain in the timeline.
+        if self.session.task.cancelled():
+            self.final_state['error'] = None
+        self.stopped = time.time()
+        self.session.notify()
+        try:
+            await self.resources.aclose()
+        except Exception as error:
+            self.final_state['error'] = f'试聊轮次已停止，但资源释放失败：{type(error).__name__}: {error}'
+            self.session.notify()
+            raise
+
+
+def write_trial_files(config, persona) -> None:
+    root = config.database.parent
+    # Derived runtime parameters still live in this test root's sole config file, not env/CLI.
+    config_path = root / 'lenbot.config.json'
+    with config_path.open('x', encoding='utf-8') as stream:
+        config_path.chmod(0o600)
+        stream.write(config.model_dump_json(indent=2))
+    # The active session uses this in-memory snapshot; no editor receives the production role path.
+    snapshot_dir = config.persona
+    snapshot_dir.mkdir(mode=0o700)
+    metadata = persona.model_dump(exclude={'voice','boundaries','examples'})
+    (snapshot_dir / 'persona.yaml').write_text(yaml.safe_dump(metadata, allow_unicode=True), encoding='utf-8')
+    (snapshot_dir / 'voice.md').write_text(persona.voice, encoding='utf-8')
+    (snapshot_dir / 'boundaries.md').write_text(persona.boundaries, encoding='utf-8')
+    (snapshot_dir / 'examples.yaml').write_text(yaml.safe_dump([example.model_dump() for example in persona.examples], allow_unicode=True), encoding='utf-8')
+    for filename, document in persona.knowledge.items():
+        path = snapshot_dir / 'knowledge' / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document.content, encoding='utf-8')
+    if persona.stickers:
+        entries = []
+        for sticker in persona.stickers.values():
+            path = snapshot_dir / 'stickers' / sticker.file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(sticker.data)
+            entries.append({'file':sticker.file, 'description':sticker.description,
+                            'emotions':list(sticker.emotions), 'tags':list(sticker.tags)})
+        (snapshot_dir / 'stickers' / 'index.yaml').write_text(yaml.safe_dump(entries, allow_unicode=True), encoding='utf-8')
+
+
+class HostTrials:
+    def __init__(self, config: HostConfig, runtime: NetworkRuntime, root: Path):
+        self.config, self.runtime, self.root = config, runtime, root
+        self.records: dict[str, Trial] = {}
+        self.lock = asyncio.Lock()
+        self.closing = False
+
+    def notify(self):
+        for trial in self.records.values():
+            trial.session.notify()
+
+    def get(self, trial_id: str) -> Trial:
+        if trial_id not in self.records:
+            raise HTTPException(404, '本次宿主启动中没有这个试聊；不会自动恢复旧试聊')
+        return self.records[trial_id]
+
+    async def start(self, scene: str) -> Trial:
+        async with self.lock:
+            if self.closing:
+                raise HTTPException(503, '宿主正在停止，不再新建试聊')
+            if scene not in self.config.scenes:
+                raise HTTPException(404, '未配置此场景')
+            if any(trial.stopped is None for trial in self.records.values()):
+                raise HTTPException(409, '已有活动试聊，请先停止；切换页面不会自动停止或重开')
+            root = self.root / '.runtime' / 'chat-tests' / str(uuid4())
+            root.mkdir(parents=True, mode=0o700)
+            source = self.config.scene_config(scene)
+            memory = None
+            if isinstance(source.memory, LocalMemoryConfig):
+                memory = source.memory.model_copy(update={
+                    'local': source.memory.local.model_copy(update={'directory': root / 'memory'}),
+                    'ingest': None, 'summaries': False})
+            candidate = source.model_copy(update={'mode':'isolated', 'onebot':None, 'delivery':'simulated',
+                'database':root / 'state.db', 'persona':root / 'persona-snapshot', 'owner_qq':None,
+                'panel':None, 'plugins':[], 'worker':None, 'tasks':source.tasks.model_copy(update={'enabled':False}),
+                'learning':None, 'proactive':None, 'transcribe_audio':False, 'memory':memory,
+                'web_read':None, 'web_search':None})
+            config = LabConfig.model_validate_json(candidate.model_dump_json())
+            persona = self.runtime.chats[scene].persona.model_copy(deep=True)
+            original = self.runtime.chats[scene].allowed_tool_names
+            allowed = [item['function']['name'] for item in tool_catalog(platform=False)
+                       if item['function']['name'] in original
+                       and not tool_unavailable_reasons(config, persona, item['function']['name'])]
+            excluded = sorted(original - set(allowed))
+            persona = persona.model_copy(update={'tools':allowed, 'skills':[]})
+            await asyncio.to_thread(write_trial_files, config, persona)
+            stack = AsyncExitStack()
+            try:
+                store = stack.enter_context(Store(config.database))
+                mind = await stack.enter_async_context(ChatModel(config.model_settings('mind')))
+                voice = await stack.enter_async_context(ChatModel(config.model_settings('voice')))
+                vision = (None if config.models.roles.vision is None else
+                          await stack.enter_async_context(ChatModel(config.model_settings('vision'))))
+                local_memory = await stack.enter_async_context(open_memory(config, store))
+                session = PanelSession(config, store, mind, voice, vision=vision, memory=local_memory,
+                                       persona=persona, slots=self.runtime.chats[scene].slots)
+                trial = Trial(root.name, scene, root, time.time(), config, session, stack, excluded)
+                self.records[trial.id] = trial
+                return trial
+            except BaseException:
+                await stack.aclose()
+                raise
+
+    async def close(self):
+        async with self.lock:
+            self.closing = True
+            for trial in self.records.values():
+                await trial.stop()
+
+
+def register_host_trials(app: FastAPI, trials: HostTrials, user):
+    @app.get('/api/host/trials')
+    async def listing(_: str = Depends(user)):
+        return {'items':[trial.info() for trial in trials.records.values()]}
+
+    @app.post('/api/host/trials')
+    async def start(item: TrialStart, _: str = Depends(user)):
+        if not item.acknowledge_model_cost:
+            raise HTTPException(422, '开始前需明确知道模型请求仍会计费；平台发送始终模拟')
+        try:
+            return (await trials.start(item.scene)).info()
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.post('/api/host/trials/{trial_id}/stop')
+    async def stop(trial_id: str, _: str = Depends(user)):
+        async with trials.lock:
+            trial = trials.get(trial_id)
+            await trial.stop()
+            return trial.info()
+
+    @app.get('/api/host/trials/{trial_id}/state')
+    async def state(trial_id: str, _: str = Depends(user)):
+        return trials.get(trial_id).snapshot()
+
+    @app.post('/api/host/trials/{trial_id}/messages')
+    async def message(trial_id: str, item: TestMessage, _: str = Depends(user)):
+        trial = trials.get(trial_id)
+        if trial.stopped is not None:
+            raise HTTPException(409, '这个试聊已经停止，不接收消息')
+        return trial.session.receive(item)
+
+    @app.get('/api/host/trials/{trial_id}/turns/{turn_id}')
+    async def turn(trial_id: str, turn_id: str, _: str = Depends(user)):
+        trial = trials.get(trial_id)
+        if trial.stopped is None:
+            result = trial.session.store.turn_detail(trial.scene, turn_id)
+        else:
+            with Store(trial.config.database) as store:
+                result = store.turn_detail(trial.scene, turn_id)
+        if result is None:
+            raise HTTPException(404, '这一轮不属于当前试聊')
+        return result
+
+    @app.websocket('/api/host/trials/{trial_id}/events')
+    async def events(websocket: WebSocket, trial_id: str):
+        try:
+            session_user(websocket.cookies.get(cookie_name(websocket)))
+            trial = trials.get(trial_id)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+        await changes_socket(websocket, trial.session.listeners)

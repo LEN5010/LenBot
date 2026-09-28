@@ -3,14 +3,15 @@ import { ensureAuth, useAuth, clearAuth } from '../composables/useAuth.js'
 import { setUnauthorizedHandler } from '../api.js'
 import { internalPath } from './navigation.js'
 import { sceneVisit } from '../composables/sceneVisits.js'
+import { hostPageNames, hostPaths } from './hostNavigation.js'
 
 export function returnPath(value) {
   const context = useAuth().panelContext
   if (context?.mode === 'isolated') return internalPath(value)==='/chat-test/settings' ? '/chat-test/settings' : '/chat-test'
   if (context?.mode === 'isolated-multi') {
     const path = internalPath(value)
-    return path && ['/host', '/host/overview', '/host/capabilities', '/host/models', '/host/settings', '/host/persona', '/host/system', '/host/history', '/host/memory', '/host/learning', '/host/tasks', '/host/schedules']
-      .includes(path.split(/[?#]/, 1)[0]) ? path : '/host'
+    return path && hostPaths
+      .includes(path.split(/[?#]/, 1)[0]) ? path : '/host/overview'
   }
   return internalPath(value) || context?.home || '/overview'
 }
@@ -18,6 +19,9 @@ const router = createRouter({
   history:createWebHashHistory(),
   routes:[
     {path:'/',redirect:{name:'overview'}},
+    { path:'/host/chat-test', name:'host-trials', component:()=>import('../views/HostTrialsView.vue'), meta:{title:'对话测试'} },
+    { path:'/host/logs', name:'host-logs', component:()=>import('../views/HostView.vue'), meta:{title:'日志'} },
+    { path:'/host/scenes/learning', name:'host-scene-learning', component:()=>import('../views/HostLearningView.vue'), meta:{title:'群聊 · 学习'} },
     {
       path:'/host/tasks',
       name:'host-tasks',
@@ -46,49 +50,49 @@ const router = createRouter({
       path:'/host/overview',
       name:'host-overview',
       component:()=>import('../views/HostOverviewView.vue'),
-      meta:{title:'宿主今日概览'}
+      meta:{title:'首页'}
     },
     {
       path:'/host/capabilities',
       name:'host-capabilities',
       component:()=>import('../views/HostCapabilitiesView.vue'),
-      meta:{title:'宿主工具能力'}
+      meta:{title:'能力'}
     },
     {
       path:'/host/models',
       name:'host-models',
       component:()=>import('../views/HostModelsView.vue'),
-      meta:{title:'宿主模型配置'}
+      meta:{title:'模型'}
     },
     {
       path:'/host/history',
       name:'host-history',
       component:()=>import('../views/HostHistoryView.vue'),
-      meta:{title:'大脑会话'}
+      meta:{title:'群聊 · 大脑'}
     },
     {
       path:'/host/system',
       name:'host-system',
       component:()=>import('../views/HostSystemView.vue'),
-      meta:{title:'宿主连接与运行设置'}
+      meta:{title:'设置'}
     },
     {
       path:'/host/persona',
       name:'host-persona',
       component:()=>import('../views/HostPersonaView.vue'),
-      meta:{title:'宿主角色文件'}
+      meta:{title:'角色'}
     },
     {
       path:'/host/settings',
       name:'host-settings',
       component:()=>import('../views/HostSettingsView.vue'),
-      meta:{title:'群聊设置与角色'}
+      meta:{title:'群聊 · 设置'}
     },
     {
       path:'/host',
       name:'host',
       component:()=>import('../views/HostView.vue'),
-      meta:{title:'多场景观察'}
+      meta:{title:'群聊 · 消息'}
     },
     {
       path:'/login',
@@ -240,10 +244,10 @@ router.beforeEach(async to=>{
   const auth=useAuth()
   if(auth.status==='error')return true
   if(auth.panelContext?.mode==='isolated-multi'){
-    const hostPages=['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-learning','host-tasks','host-schedules']
-    if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:hostPages.includes(to.name)?to.fullPath:'/host'}}
+    const hostPages=hostPageNames
+    if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:hostPages.includes(to.name)?to.fullPath:'/host/overview'}}
     if(to.name==='login' && auth.status==='authenticated')return returnPath(to.query.redirect)
-    if(to.name!=='login' && !hostPages.includes(to.name))return {name:'host'}
+    if(to.name!=='login' && !hostPages.includes(to.name))return {name:'host-overview'}
     return true
   }
   if(auth.panelContext?.mode==='isolated'){
@@ -252,7 +256,7 @@ router.beforeEach(async to=>{
     if(to.name!=='login' && to.name!=='chat-test' && to.name!=='chat-test-settings')return {name:'chat-test'}
     return true
   }
-  if(['host','host-overview','host-capabilities','host-models','host-settings','host-persona','host-system','host-history','host-memory','host-learning','host-tasks','host-schedules','chat-test','chat-test-settings'].includes(to.name))return {name:'overview'}
+  if([...hostPageNames,'chat-test','chat-test-settings'].includes(to.name))return {name:'overview'}
   if(to.name==='settings'&&['persona','attention','time'].includes(to.query.tab))return {name:'agent-settings',query:to.query}
   if(!to.meta.public && auth.status!=='authenticated')return {name:'login',query:{redirect:to.fullPath}}
   if(to.name==='login' && auth.status==='authenticated')return returnPath(to.query.redirect)

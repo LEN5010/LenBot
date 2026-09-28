@@ -97,7 +97,7 @@ async function refresh() {
         state.value = result
         stateError.value = ''
         if (selectedScene.value == null) {
-          await router.replace({ name: 'host', query: { scene: result.scenes[0].scene } })
+          await router.replace({ name: route.name, query: { scene: result.scenes[0].scene } })
         } else {
           await refreshScene()
         }
@@ -111,7 +111,7 @@ async function refresh() {
 }
 
 function selectScene(value) {
-  router.push({ name: 'host', query: { scene: value } })
+  router.push({ name: route.name, query: { scene: value } })
 }
 function selectTurn(turn) {
   ++detailRequest
@@ -189,7 +189,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-stack host-view">
     <header class="page-intro">
-      <div><p class="eyebrow">LenBot 运行管理</p><h1>群聊与运行记录</h1>
+      <div><p class="eyebrow">LenBot 运行管理</p><h1>{{ route.name === "host-logs" ? "日志" : "群聊" }}</h1><p v-if="route.name === 'host-logs'" class="muted">当前提供消息与轮次时间线；系统日志尚未接入本页。</p>
         <p class="muted">查看当前连接、聊天原话与实际调用。本页只读；工具范围、模型与场景设置从下方入口管理。</p>
         <div class="management-links">
           <v-btn variant="text" :to="{name:'host-capabilities',query:route.query}">工具能力</v-btn>

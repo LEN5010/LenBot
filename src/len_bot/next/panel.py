@@ -23,7 +23,8 @@ from .model import ChatModel
 from .memory import MemoryService, open_memory
 from .memory_ingest import MemoryIngestor, open_memory_ingestor
 from .panel_auth import changes_socket, install_panel_auth
-from .persona import load_persona, select_examples
+from .persona import Persona, load_persona, select_examples
+from .model_slots import ModelSlots
 from .store import Store
 
 
@@ -49,12 +50,13 @@ class TestMessage(BaseModel):
 class PanelSession:
     def __init__(self, config: LabConfig, store: Store, mind: ChatModel, voice: ChatModel,
                  *, vision: ChatModel | None = None, memory: MemoryService | None = None,
-                 ingestor: MemoryIngestor | None = None):
+                 ingestor: MemoryIngestor | None = None, persona: Persona | None = None,
+                 slots: ModelSlots | None = None):
         self.config, self.store = config, store
         self.listeners: set[asyncio.Event] = set()
         self.closing = False
-        self.chat = Chat(config, load_persona(config.persona), store, mind, voice, vision=vision,
-                         memory=memory, on_update=self.notify,
+        self.chat = Chat(config, load_persona(config.persona) if persona is None else persona, store, mind, voice, vision=vision,
+                         memory=memory, slots=slots, on_update=self.notify,
                          on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
         self.runner = SceneRunner(self.chat, lambda _: self.notify(), resume=self.chat.restore())
         self.task = asyncio.create_task(self.runner.run())
