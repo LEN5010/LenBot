@@ -17,6 +17,8 @@ from .memory import open_memory
 from .memory_ingest import open_memory_ingestor
 from .learning import ExpressionLearner
 from .jargon import JargonLearner
+from .sticker_collection import StickerCollector
+from .sticker_store import StickerStore
 from .expression_selection import open_expression_service
 from .network import NetworkRuntime
 from .persona import load_persona
@@ -80,6 +82,10 @@ async def run() -> None:
     ) for settings, persona in scenes}
     slots = ModelSlots(config.max_model_requests)
     with Store(config.database) as store:
+        sticker_records = StickerStore(store)
+        for scene, settings in config.scenes.items():
+            if settings.learning is None or not settings.learning.collect_stickers:
+                sticker_records.recover(scene)
         if config.worker is None and TaskStore(store).containers():
             raise ValueError("仍有未清理的任务容器；保留原 worker 配置完成清理后再停用任务执行器")
         async with (
@@ -129,9 +135,13 @@ async def run() -> None:
             jargon = (None if not any(settings.learning is not None and settings.learning.jargon_extract
                                       for settings in config.scenes.values()) else
                       JargonLearner(config, store, learner_model, slots=slots))
+            sticker_collection = (None if not any(
+                settings.learning is not None and settings.learning.collect_stickers
+                for settings in config.scenes.values()) else
+                StickerCollector(config, store, vision, slots=slots))
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
                                      memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
-                                     expression_service=expression_service)
+                                     expression_service=expression_service, sticker_collection=sticker_collection)
             if config.panel is None:
                 await runtime.run()
             else:

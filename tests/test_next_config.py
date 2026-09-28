@@ -504,6 +504,7 @@ def test_learning_read_only_embedding_is_explicit_in_host_and_replay_lab(tmp_pat
 @pytest.mark.parametrize("changes", [
     {"extract": "false"}, {"extract": 0},
     {"jargon_extract": "false"}, {"jargon_extract": 1},
+    {"collect_stickers": "true"}, {"collect_stickers": 1},
     {"min_messages": 0}, {"min_messages": 101}, {"min_messages": True},
     {"batch_size": 0}, {"batch_size": 101}, {"batch_size": 19},
     {"idle_seconds": 0}, {"idle_seconds": -1}, {"idle_seconds": "30"},
@@ -542,6 +543,30 @@ def test_jargon_extraction_has_an_independent_explicit_binding(tmp_path):
     lab["learning"]["jargon_extract"] = False
     (lab_root / "lenbot.config.json").write_text(json.dumps(lab), encoding="utf-8")
     assert load_config(lab_root).learning.jargon_extract is False
+
+
+def test_sticker_collection_requires_vision_not_learner(tmp_path):
+    root = tmp_path / "host"
+    source = _host_config()
+    source["scenes"]["group:80001"]["learning"] = {"extract": False, "collect_stickers": True}
+    _write_config(root, source)
+    with pytest.raises(ValueError, match="collect_stickers requires explicit models.roles.vision"):
+        load_host_config(root)
+    source["models"]["roles"]["vision"] = {
+        "provider": "sample", "model": "sample-vision", "context_window_tokens": 8192,
+    }
+    (root / "lenbot.config.json").write_text(json.dumps(source), encoding="utf-8")
+    loaded = load_host_config(root)
+    assert loaded.scenes["group:80001"].learning.collect_stickers is True
+    assert loaded.models.roles.learner is None
+    assert LearningSettings().collect_stickers is False
+
+    lab_root = tmp_path / "lab"
+    lab = _config("personas/example")
+    lab["learning"] = {"extract": False, "collect_stickers": True}
+    _write_config(lab_root, lab)
+    with pytest.raises(ValueError, match="learning requires the isolated-multi host"):
+        load_config(lab_root)
 
 
 @pytest.mark.parametrize("field", ["idle_seconds", "max_age_seconds"])

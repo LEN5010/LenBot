@@ -39,14 +39,14 @@ LOOK_TOOL = {"type": "function", "function": {
 }}
 
 
-def _image_url(data: dict[str, object]) -> str:
+def image_url(data: dict[str, object]) -> str:
     url = data.get("url")
     if not isinstance(url, str) or not url.strip():
-        raise ValueError(f"look image has no readable HTTP(S) url; original data={repr(data)[:300]}")
+        raise ValueError(f"image has no readable HTTP(S) url; original data={repr(data)[:300]}")
     return url
 
 
-async def _prepare(data: bytes, settings: ImageSettings) -> tuple[bytes, bool, int, int]:
+async def prepare_pixels(data: bytes, settings: ImageSettings) -> tuple[bytes, bool, int, int]:
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", __name__, "prepare",
         str(settings.max_bytes), str(settings.max_pixels), str(settings.max_dimension),
@@ -61,7 +61,7 @@ async def _prepare(data: bytes, settings: ImageSettings) -> tuple[bytes, bool, i
         await process.wait()
         raise
     if process.returncode:
-        raise ValueError(f"look image preparation failed: {stderr.decode(errors='replace')[-500:]}")
+        raise ValueError(f"image preparation failed: {stderr.decode(errors='replace')[-500:]}")
     header, jpeg = stdout.split(b"\n", 1)
     metadata = json.loads(header)
     return jpeg, metadata["animated"], metadata["width"], metadata["height"]
@@ -103,11 +103,11 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
                 if original is not None:
                     body = original[1]
                 else:
-                    url = _image_url(pictures[arguments.image - 1].data)
+                    url = image_url(pictures[arguments.image - 1].data)
                     _, _, body = await fetch_public(
                         url, settings.timeout_seconds, lambda _type, _prefix: settings.max_bytes,
                     )
-                jpeg, animated, width, height = await _prepare(body, settings)
+                jpeg, animated, width, height = await prepare_pixels(body, settings)
                 asset = ImageAsset(jpeg=jpeg, width=width, height=height, animated=animated,
                                    fetched_at=time.time())
                 store.save_image(scene, arguments.message, arguments.image, asset)

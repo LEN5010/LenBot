@@ -229,7 +229,12 @@ class SceneRunner:
                                                exclude_uids=self.settings.other_bot_qqs) + [(message, now)]
         self.offer_message(state, message, now, pending, recent)
         snapshot = asdict(state) if state != self.state else None
-        self.store.enqueue(message, raw, now, attention_state=snapshot)
+        self.store.enqueue(
+            message, raw, now, attention_state=snapshot,
+            collect_stickers=(self.config.learning is not None and self.config.learning.collect_stickers
+                              and not message.is_self and message.sender.uid != self.config.bot_qq
+                              and message.sender.uid not in self.settings.other_bot_qqs),
+        )
         self.state = state
         if message.is_self:
             self.own_ids.add(message.platform_message_id)
