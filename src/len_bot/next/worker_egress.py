@@ -11,7 +11,7 @@ import socket
 import time
 from typing import Mapping
 
-from len_bot.services.worker_gateway.egress_policy import blocked_address_reason
+from len_bot.services.worker_gateway.egress_policy import EgressBlocked, blocked_address_reason
 
 from .egress_wire import CHUNK_BYTES, Channel, Pipe, read_frame
 
@@ -23,12 +23,16 @@ class EgressTransportError(RuntimeError):
 class EgressTransport:
     def __init__(self, process: asyncio.subprocess.Process, *, stderr_file, port: int,
                  connect_timeout_seconds: float,
+                 bytes_per_second: int,
+                 before_bytes: Callable[[int, str, int], None],
                  on_connection: Callable[[dict], None],
                  on_bytes: Callable[[int, str, int], None]):
         self.process = process
         self.stderr_file = stderr_file
         self.port = port
         self.connect_timeout_seconds = connect_timeout_seconds
+        self.bytes_per_second = bytes_per_second
+        self.before_bytes = before_bytes
         self.on_connection = on_connection
         self.on_bytes = on_bytes
         self.pipe: Pipe | None = None
@@ -41,6 +45,8 @@ class EgressTransport:
     async def spawn(cls, argv: list[str], *, cwd: Path, env: Mapping[str, str],
                     stderr_path: Path, max_connections: int,
                     connect_timeout_seconds: float,
+                    bytes_per_second: int,
+                    before_bytes: Callable[[int, str, int], None],
                     on_connection: Callable[[dict], None],
                     on_bytes: Callable[[int, str, int], None]) -> EgressTransport:
         stderr_file = os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
@@ -55,6 +61,7 @@ class EgressTransport:
             raise
         transport = cls(process, stderr_file=stderr_file, port=0,
                         connect_timeout_seconds=connect_timeout_seconds,
+                        bytes_per_second=bytes_per_second, before_bytes=before_bytes,
                         on_connection=on_connection, on_bytes=on_bytes)
         try:
             async with asyncio.timeout(connect_timeout_seconds):
@@ -146,6 +153,15 @@ class EgressTransport:
                 raise
         return ip, reader, writer
 
+    def _permit(self, channel_id: int, side: str, amount: int) -> None:
+        try:
+            self.before_bytes(channel_id, side, amount)
+        except EgressBlocked:
+            raise
+        except Exception as error:
+            self._fail(error)
+            raise
+
     def _count(self, channel_id: int, side: str, amount: int, facts: dict) -> None:
         facts[side] += amount
         try:
@@ -156,10 +172,23 @@ class EgressTransport:
 
     async def _forward(self, channel: Channel, origin_reader: asyncio.StreamReader,
                        origin_writer: asyncio.StreamWriter, facts: dict) -> None:
+        next_chunk_at = 0.0
+
+        async def pace() -> None:
+            await asyncio.sleep(max(0, next_chunk_at - asyncio.get_running_loop().time()))
+
+        def wrote(side: str, amount: int) -> None:
+            nonlocal next_chunk_at
+            now = asyncio.get_running_loop().time()
+            next_chunk_at = max(now, next_chunk_at) + amount / self.bytes_per_second
+            self._count(channel.id, side, amount, facts)
+
         async def upstream() -> None:
             while data := await channel.read():
+                await pace()
+                self._permit(channel.id, "up", len(data))
                 origin_writer.write(data)
-                self._count(channel.id, "up", len(data), facts)
+                wrote("up", len(data))
                 await origin_writer.drain()
             if origin_writer.can_write_eof():
                 origin_writer.write_eof()
@@ -167,8 +196,12 @@ class EgressTransport:
 
         async def downstream() -> None:
             while data := await origin_reader.read(CHUNK_BYTES):
-                await channel.write(data)
-                self._count(channel.id, "down", len(data), facts)
+                await pace()
+                await channel.write(
+                    data,
+                    before_write=lambda: self._permit(channel.id, "down", len(data)),
+                    on_write=lambda: wrote("down", len(data)),
+                )
             await channel.write_eof()
 
         tasks = (asyncio.create_task(upstream()), asyncio.create_task(downstream()))
@@ -184,6 +217,7 @@ class EgressTransport:
     async def _on_open(self, channel: Channel, metadata: dict) -> None:
         origin_writer: asyncio.StreamWriter | None = None
         facts: dict | None = None
+        record_started = False
         abnormal = False
         try:
             host, port, method = self._target(metadata)
@@ -192,11 +226,20 @@ class EgressTransport:
                      "started": time.time(), "ended": None, "error": None}
             try:
                 self.on_connection(dict(facts))
+                record_started = True
+            except EgressBlocked:
+                raise
             except Exception as error:
                 self._fail(error)
                 raise
             ip, origin_reader, origin_writer = await self._dial_public(host, port)
             facts["ip"] = ip
+            facts["phase"] = "connected"
+            try:
+                self.on_connection(dict(facts))
+            except Exception as error:
+                self._fail(error)
+                raise
             await channel.accept()
             await self._forward(channel, origin_reader, origin_writer, facts)
         except asyncio.CancelledError:
@@ -215,7 +258,7 @@ class EgressTransport:
                     origin_writer.transport.abort()
                 else:
                     origin_writer.close()
-            if facts is not None:
+            if record_started:
                 facts["phase"] = "end"
                 facts["ended"] = time.time()
                 try:

@@ -85,7 +85,8 @@ class Channel:
             raise PipeError(self._error)
         return b''
 
-    async def write(self, data: bytes) -> None:
+    async def write(self, data: bytes, *, before_write: Callable[[], None] | None = None,
+                    on_write: Callable[[], None] | None = None) -> None:
         if not data or len(data) > CHUNK_BYTES:
             raise ValueError(f'egress write must contain 1..{CHUNK_BYTES} bytes')
         await self._credit.wait()
@@ -93,7 +94,7 @@ class Channel:
         if not self._accepted or self._write_eof:
             raise PipeError('egress write before acceptance or after EOF')
         self._credit.clear()
-        await self.pipe._send(b'D', self.id, data)
+        await self.pipe._send(b'D', self.id, data, before_write=before_write, on_write=on_write)
 
     async def write_eof(self) -> None:
         await self._credit.wait()
@@ -157,17 +158,31 @@ class Pipe:
             if task is not asyncio.current_task():
                 task.cancel()
 
-    async def _send(self, kind: bytes, connection: int, body: bytes = b'') -> None:
-        try:
-            async with self._write_lock:
-                if self.closed:
-                    raise PipeError('egress pipe is closed')
-                if kind == b'O':
-                    self.channels[connection]._announced = True
-                await write_frame(self.writer, kind, connection, body)
-        except Exception as error:
-            self._fail(error)
-            raise
+    async def _send(self, kind: bytes, connection: int, body: bytes = b'', *,
+                    before_write: Callable[[], None] | None = None,
+                    on_write: Callable[[], None] | None = None) -> None:
+        async with self._write_lock:
+            if self.closed:
+                raise PipeError('egress pipe is closed')
+            if kind == b'O':
+                self.channels[connection]._announced = True
+            # Admission, actual buffer write and byte accounting are adjacent:
+            # another connection cannot consume the scene's remaining bytes
+            # between the limit check and this write. No future bytes are reserved.
+            if before_write is not None:
+                before_write()
+            try:
+                self.writer.write(HEADER.pack(kind, connection, len(body)) + body)
+            except Exception as error:
+                self._fail(error)
+                raise
+            if on_write is not None:
+                on_write()
+            try:
+                await self.writer.drain()
+            except Exception as error:
+                self._fail(error)
+                raise
 
     async def open(self, metadata: dict) -> Channel:
         if self.on_open is not None:

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
+from functools import partial
 import json
 from pathlib import Path
 from string import Template
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import HostConfig
+from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
 from .pricing import cost_summary
 from .sandbox import DockerSandbox, DockerSettings
@@ -69,6 +71,7 @@ class WorkTasks:
         self.settings = config.worker
         self.records = TaskStore(store)
         self.on_update = on_update
+        self.egress = EgressUsage(config, self.records, on_update)
         settings = self.settings
         self.sandbox = DockerSandbox(DockerSettings(
             docker_binary=settings.docker_binary, docker_host=settings.docker_host,
@@ -123,7 +126,8 @@ class WorkTasks:
         costs = self.records.call_costs(scene, id)
         return {**asdict(item), "files": [file_info(file, self.records) for file in self.records.list_files(scene, id)],
                 "model_calls": len(costs), "cost": cost_summary(costs),
-                "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。公共联网尚未接入。"}
+                "network": self.egress.status(scene, id),
+                "notice": "done 只表示执行正常结束；文件登记不表示已上传 QQ。出网配置不等于目标连通。"}
 
     def list(self, scene: str, *, status: str = "active", offset: int = 0, limit: int = 20) -> dict:
         items = self.records.list(scene, status=status, offset=offset, limit=limit + 1)
@@ -238,6 +242,7 @@ class WorkTasks:
             self.records.set_container(item.scene, item.id, None)
         for item in self.records.active():
             self._finish(item, "failed", item.summary, "宿主中断；保留会话与未答问题，须显式继续")
+        self.egress.recover()
 
     async def start(self) -> None:
         self.accepting = True
@@ -352,6 +357,15 @@ class WorkTasks:
                     input_support=self.settings.input_support, slots=self.slots,
                     compaction_reserve_tokens=self.settings.compaction_reserve_tokens,
                     compaction_keep_recent_tokens=self.settings.compaction_keep_recent_tokens,
+                    egress_settings=self.settings.egress,
+                    egress_bytes_per_second=(
+                        self.settings.egress.bytes_per_second
+                        if self.config.scenes[item.scene].tasks.egress_bytes_per_second is None
+                        else self.config.scenes[item.scene].tasks.egress_bytes_per_second
+                    ),
+                    before_bytes=partial(self.egress.before_bytes, item.scene, item.id),
+                    on_bytes=partial(self.egress.on_bytes, item.scene, item.id),
+                    on_connection=partial(self.egress.on_connection, item.scene, item.id),
                     start_call=lambda facts: self.records.start_call(item.scene, item.id, facts),
                     finish_call=self.records.finish_call,
                     on_container=lambda container: self.records.set_container(item.scene, item.id, container),
@@ -359,7 +373,7 @@ class WorkTasks:
                 ) as session:
                     current.session = session
                     consuming = asyncio.create_task(self._consume(current))
-                    failed = asyncio.create_task(session.bridge.wait_failure())
+                    failed = asyncio.create_task(session.wait_failure())
                     try:
                         done, _ = await asyncio.wait({consuming, failed}, return_when=asyncio.FIRST_COMPLETED)
                         if failed in done:
@@ -401,12 +415,23 @@ class WorkTasks:
                     error_text = f"{error_text or ''}\n容器清理失败：{type(error).__name__}: {error}"
             self._finish(item, status, summary, error_text)
         finally:
-            self.running.pop(item.id)
+            try:
+                self.egress.release_task(item.scene, item.id)
+            finally:
+                self.running.pop(item.id)
 
     async def _consume(self, current: RunningTask) -> str:
         item, session = current.item, current.session
         # PiRpc's reader already drains stdout while prompt is being accepted.
-        if await session.pi.prompt(item.input) == "handled":
+        environment = Template((PROMPTS / "next_worker_environment.md").read_text()).substitute(
+            facts=json.dumps({
+                "public_network": session.egress is not None,
+                "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
+                "task_traffic": self.egress.status(item.scene, item.id),
+                "scene_today_traffic": self.egress.status(item.scene),
+            }, ensure_ascii=False, allow_nan=False),
+        )
+        if await session.pi.prompt(item.input + "\n\n" + environment) == "handled":
             raise RuntimeError("Pi 处理了输入但未开始执行任务")
         final: dict | None = None
         while True:
@@ -481,6 +506,15 @@ class WorkTasks:
         self._notify(item.scene)
 
     async def _request(self, current: RunningTask, path: str, raw: bytes) -> dict:
+        if path == "/task/network":
+            try:
+                request = json.loads(raw)
+            except ValueError as error:
+                raise ValueError(f"Invalid task network request: {raw[:500]!r}; {error}") from error
+            if request != {}:
+                raise ValueError(f"Task network status expects an empty object: {raw[:500]!r}")
+            return {"task": self.egress.status(current.item.scene, current.item.id),
+                    "scene_today": self.egress.status(current.item.scene)}
         arguments = DeliverFile.model_validate_json(raw)
         item = current.item
         destination = self.settings.delivery_root / item.scene / str(item.id)

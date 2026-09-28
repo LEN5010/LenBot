@@ -18,6 +18,8 @@ from .model_slots import ModelSlots
 from .pi_rpc import PiRpc
 from .pricing import ModelPrice
 from .sandbox import DockerSandbox, SandboxHandle
+from .tasks_config import EgressSettings
+from .worker_egress import EgressTransport
 from .worker_model import Limits, WorkerModelProxy
 from .worker_transport import WorkerTransport
 
@@ -31,6 +33,20 @@ class WorkerSession:
     pi: PiRpc
     bridge: WorkerTransport
     proxy: WorkerModelProxy
+    egress: EgressTransport | None
+
+    async def wait_failure(self) -> None:
+        """Either host pipe dying ends this task, without hiding the first error."""
+        waiting = [asyncio.create_task(self.bridge.wait_failure())]
+        if self.egress is not None:
+            waiting.append(asyncio.create_task(self.egress.wait_failure()))
+        try:
+            done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+            await next(iter(done))
+        finally:
+            for task in waiting:
+                task.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
 
 
 def _write_json(path: Path, body: dict[str, Any]) -> None:
@@ -97,10 +113,11 @@ def _configure_pi(handle: SandboxHandle, *, token: str, port: int,
 
 async def _cleanup(sandbox: DockerSandbox, handle: SandboxHandle | None,
                    pi: PiRpc | None, bridge: WorkerTransport | None,
-                   proxy: WorkerModelProxy) -> None:
+                   proxy: WorkerModelProxy, egress: EgressTransport | None) -> None:
     failures: list[tuple[str, BaseException]] = []
     for name, action in (
         ("model proxy", proxy.close),
+        ("public egress", None if egress is None else egress.close),
         ("Pi RPC", None if pi is None else pi.close),
         ("model bridge", None if bridge is None else bridge.close),
         ("task container", None if handle is None else lambda: sandbox.stop(handle)),
@@ -135,6 +152,11 @@ async def worker_session(
     context_window_tokens: int,
     price: ModelPrice | None,
     limits: Limits,
+    egress_settings: EgressSettings,
+    egress_bytes_per_second: int,
+    before_bytes: Callable[[int, str, int], None],
+    on_connection: Callable[[dict], None],
+    on_bytes: Callable[[int, str, int], None],
     model_reasoning: bool,
     compaction_reserve_tokens: int,
     compaction_keep_recent_tokens: int,
@@ -147,9 +169,9 @@ async def worker_session(
 ) -> AsyncIterator[WorkerSession]:
     """Start one network-isolated task with host-mediated model access.
 
-    The caller consumes Pi events and bridge failures concurrently. A yielded
-    session is not a task-success decision and never starts public egress.
-    Closing retains task files while stopping every live part.
+    The caller consumes Pi events and both pipe failures concurrently. A yielded
+    session is not a task-success decision. Closing retains task files while
+    stopping every live part.
     """
     token = secrets.token_urlsafe(32)
     proxy = WorkerModelProxy(
@@ -158,6 +180,7 @@ async def worker_session(
     )
     handle: SandboxHandle | None = None
     bridge: WorkerTransport | None = None
+    egress: EgressTransport | None = None
     pi: PiRpc | None = None
     original: BaseException | None = None
     try:
@@ -171,6 +194,14 @@ async def worker_session(
             handle, proxy=proxy, stderr_path=handle.workspace / "model-bridge.stderr",
             task_request=task_request,
         )
+        if egress_settings.enabled:
+            egress = await sandbox.spawn_egress_bridge(
+                handle, settings=egress_settings,
+                bytes_per_second=egress_bytes_per_second,
+                before_bytes=before_bytes, on_connection=on_connection,
+                on_bytes=on_bytes,
+                stderr_path=handle.workspace / "egress-bridge.stderr",
+            )
         _configure_pi(
             handle, token=token, port=bridge.port, settings=settings,
             context_window_tokens=context_window_tokens,
@@ -181,13 +212,14 @@ async def worker_session(
         pi = await sandbox.spawn_pi(
             handle, provider=_PI_PROVIDER, model=settings.model,
             stderr_path=handle.workspace / "pi.stderr",
+            proxy_port=None if egress is None else egress.port,
         )
-        yield WorkerSession(handle, pi, bridge, proxy)
+        yield WorkerSession(handle, pi, bridge, proxy, egress)
     except BaseException as error:
         original = error
         raise
     finally:
-        cleaning = asyncio.create_task(_cleanup(sandbox, handle, pi, bridge, proxy))
+        cleaning = asyncio.create_task(_cleanup(sandbox, handle, pi, bridge, proxy, egress))
         interruption: asyncio.CancelledError | None = None
         while not cleaning.done():
             try:

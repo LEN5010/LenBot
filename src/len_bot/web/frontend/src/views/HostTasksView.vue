@@ -58,6 +58,7 @@ function localTime(value) {
   })
 }
 function statusLabel(value) { return ({ queued:'排队中', running:'运行中', waiting_input:'等待输入', done:'正常结束', failed:'失败', cancelled:'已取消' })[value] || value }
+function byteCount(value) { return value === null ? '未设置' : `${Number(value).toLocaleString('zh-CN')} 字节` }
 function uploadLabel(value) {
   return ({ uploaded:'平台 API 已确认上传；不代表客户端已收到', failed:'最近一次上传失败', unconfirmed:'最近一次上传结果未确认' })[value]
 }
@@ -132,7 +133,7 @@ async function readDetail(more = false) {
   try {
     const result = await api(`/api/host/tasks/${encodeURIComponent(id)}?${new URLSearchParams({scene:name,after:String(after),limit:'20'})}`)
     if (!fresh()) return
-    detail.value = { task: result.task, files: result.files }
+    detail.value = { task: result.task, files: result.files, network: result.network }
     events.value = more ? [...events.value, ...result.events] : result.events
     if (!more) fullEvents.value = {}
     nextAfter.value = result.next_after
@@ -162,7 +163,7 @@ async function readSnapshotPages(name, filter, id) {
     after = page.next_after
   } while (page.events.length === 20 && after !== null && previews.length < wantedEvents)
   return { list, listNext, detail: {
-    task: page.task, files: page.files, events: previews, nextAfter: after,
+    task: page.task, files: page.files, network: page.network, events: previews, nextAfter: after,
     moreEvents: page.events.length === 20 && after !== null,
   } }
 }
@@ -190,7 +191,7 @@ async function drainRefresh(manual = false) {
           if (pages.detail) {
             if (manual && (answerText.value !== '' || selectedAnswer.value !== null)
                 && task.value?.question?.id !== pages.detail.task.question?.id) questionChanged.value = true
-            detail.value = { task:pages.detail.task, files:pages.detail.files }
+            detail.value = { task:pages.detail.task, files:pages.detail.files, network:pages.detail.network }
             events.value = pages.detail.events; nextAfter.value = pages.detail.nextAfter
             moreEvents.value = pages.detail.moreEvents; detailError.value = ''; detailStale.value = false
           }
@@ -349,11 +350,17 @@ onBeforeUnmount(() => { active = false; socket?.close() })
     <v-alert v-if="stateError" type="error" variant="tonal" role="alert" :title="state?'状态读取失败 · 保留上次结果':'状态读取失败'">{{ stateError }}</v-alert>
     <div v-if="stateLoading && !state" class="surface empty-state" role="status">正在读取任务服务与已配置场景…</div>
     <section v-if="state" class="surface"><div class="section-heading"><h2>服务现场 · 最近读取</h2><v-chip variant="tonal" :color="socketState==='connected' && !newData && state.accepting?'success':'warning'">{{ !state.configured?'未配置':state.accepting?'最近读取：接受任务':'最近读取：不接受新操作' }}</v-chip></div>
-      <p class="muted">{{ state.notice }}；公共联网：{{ state.public_network?'已配置':'未接入' }}；时间按 {{ state.timezone }} 显示。</p>
+      <p class="muted">{{ state.notice }}；公共联网代理：{{ state.public_network?'配置已启用，未据此验证域名连通':'配置未启用' }}；时间按 {{ state.timezone }} 显示。</p>
       <p class="muted">任务文件上传出口：{{ state.file_upload?'当前已配置；挂载是否可读及每份文件上传仍须实际回执确认':'当前未配置' }}。</p>
       <v-alert v-if="state.error" type="error" variant="tonal" role="alert">执行器错误原文：{{ state.error }}</v-alert>
       <div v-if="sceneSettings" class="scene-facts"><strong>{{ sceneName(sceneSettings.scene) }}</strong><span>此场景任务：{{ sceneSettings.enabled?'开放':'未开放' }}</span>
         <span>并行上限 {{ sceneSettings.max_running }} · 每人每日上限 {{ sceneSettings.max_daily_tasks }}</span></div>
+      <div v-if="sceneSettings?.network_today" class="network-facts">
+        <strong>本场景当日代理计量 · {{ sceneSettings.network_today.date }}</strong>
+        <span>{{ sceneSettings.network_today.enabled?'配置启用':'配置未启用' }} · 上行 {{ byteCount(sceneSettings.network_today.up) }} · 下行 {{ byteCount(sceneSettings.network_today.down) }}</span>
+        <span>限额 {{ byteCount(sceneSettings.network_today.limit) }} · 本场景历史中断连接 {{ sceneSettings.network_today.incomplete_connections }}</span>
+        <p v-if="sceneSettings.network_today.last_error" class="original-text">最近保存的连接错误（{{ localTime(sceneSettings.network_today.last_error.at) }}）：{{ sceneSettings.network_today.last_error.message }}</p>
+      </div>
       <p v-if="!state.configured" class="muted">尚未配置任务执行器。可只读查看已有任务记录；不能在这里假启动容器。</p>
     </section>
     <section v-if="state" class="surface"><h2>选择场景与列表范围</h2><div class="form-grid">
@@ -393,6 +400,12 @@ onBeforeUnmount(() => { active = false; socket?.close() })
           <div><dt>期望交付物</dt><dd class="original-text">{{ task.deliverable }}</dd></div>
           <div><dt>补充上下文</dt><dd class="original-text">{{ task.context || '未填写' }}</dd></div>
           <div v-if="task.summary!==null"><dt>执行总结</dt><dd class="original-text">{{ task.summary }}</dd></div></dl>
+        <section v-if="detail.network" class="network-facts"><h3>本任务代理计量</h3>
+          <p>{{ detail.network.enabled?'配置启用':'配置未启用' }} · 上行 {{ byteCount(detail.network.up) }} · 下行 {{ byteCount(detail.network.down) }}</p>
+          <p>限额 {{ byteCount(detail.network.limit) }} · 中断连接 {{ detail.network.incomplete_connections }}</p>
+          <p v-if="detail.network.last_error" class="original-text">最近保存的连接错误（{{ localTime(detail.network.last_error.at) }}）：{{ detail.network.last_error.message }}</p>
+        </section>
+        <p v-if="sceneSettings?.network_today || detail.network" class="muted">这些是代理进程内实时计量、按连接合并保存的已知字节；异常退出可能丢失未存尾部，不是跨断电精确硬封顶，也不表示远端已收到。</p>
         <v-alert v-if="task.error" type="error" variant="tonal" role="alert">任务错误原文：<pre>{{ task.error }}</pre></v-alert>
         <details><summary>查看原始任务输入</summary><pre>{{ task.input }}</pre></details>
         <section v-if="task.question" class="question"><h3>当前等待的问题</h3><p class="original-text">{{ task.question.title }}</p>
@@ -453,7 +466,7 @@ onBeforeUnmount(() => { active = false; socket?.close() })
 .host-tasks{max-width:1280px;margin-inline:auto}.page-intro,.section-heading,.task-header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap}
 .page-intro>div{min-width:0;flex:1 1 450px}.page-intro h1{margin:0 0 10px}.eyebrow{font-size:12px;letter-spacing:.08em;color:var(--primary);font-weight:700;margin:0 0 5px}
 .surface{min-width:0;overflow-wrap:anywhere}.surface h2{font-size:18px;margin:0 0 14px}.surface h3{font-size:16px;margin:20px 0 8px}.form-grid,.editor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px}.editor-grid{border:0;padding:0;min-width:0}
-.form-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0}.scene-facts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.scene-facts>*{overflow-wrap:anywhere}.task-list,.files ul,.events ol{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+.form-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0}.scene-facts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.scene-facts>*{overflow-wrap:anywhere}.network-facts{border-left:3px solid var(--line);padding-left:12px;margin:14px 0;overflow-wrap:anywhere}.network-facts>*{display:block;margin:4px 0}.task-list,.files ul,.events ol{list-style:none;padding:0;margin:0;display:grid;gap:10px}
 .task-list li,.files li,.events li,.question,.task-actions,.action-result{border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0;overflow-wrap:anywhere}.task-list li.selected{border-color:var(--primary);background:var(--selected-bg)}.task-list :deep(.v-btn){height:auto;min-height:44px;white-space:normal;text-align:left;max-width:100%}.task-list p{margin:6px 0}
 .original-text,.host-tasks pre{white-space:pre-wrap;overflow-wrap:anywhere}.task-header strong{font-size:18px}.task-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:12px}.task-facts dt{font-size:12px;color:var(--muted)}.task-facts dd{margin:4px 0 0}.task-actions>form,.task-actions>.answer{display:grid;gap:10px;margin:14px 0}.answer{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}.answer>p,.answer>.v-input{grid-column:1/-1}
 .events li>div:first-child{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.host-tasks details{margin-top:10px}.host-tasks summary{cursor:pointer;min-height:44px}.host-tasks pre{font-size:13px}.host-tasks :deep(.v-btn){min-height:44px}.host-tasks :deep(.v-alert),.host-tasks .muted{overflow-wrap:anywhere}

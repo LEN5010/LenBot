@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from .pi_rpc import PiRpc
+from .tasks_config import EgressSettings
+from .worker_egress import EgressTransport
 from .worker_model import WorkerModelProxy
 from .worker_transport import WorkerTransport
 
@@ -42,10 +44,6 @@ os.listdir('/run/lenbot')
 
 class SandboxError(RuntimeError):
     """A task container or file boundary did not complete."""
-
-
-class SandboxDependencyError(SandboxError):
-    """The requested online task needs the missing proxy/network boundary."""
 
 
 @dataclass(frozen=True)
@@ -210,14 +208,8 @@ class DockerSandbox:
     async def ensure(self, scene: str, task_id: str, *,
                      shared_skills: Path | None = None,
                      group_dir: Path | None = None,
-                     require_network: bool = False,
                      on_container: Callable[[str], None] | None = None) -> SandboxHandle:
         """Create a fresh container; never infer a usable network from Docker defaults."""
-        if require_network:
-            raise SandboxDependencyError(
-                "Public network access requires the task egress proxy; "
-                "this backend supports only --network none with a model-only pipe bridge"
-            )
         if _SCENE.fullmatch(scene) is None or _TASK.fullmatch(task_id) is None:
             raise ValueError("scene or task_id is not a valid task workspace identity")
         workspace_root = self.settings.workspace_root.resolve()
@@ -297,14 +289,47 @@ class DockerSandbox:
             task_request=task_request,
         )
 
+    async def spawn_egress_bridge(
+        self, sandbox: SandboxHandle, *, settings: EgressSettings,
+        bytes_per_second: int,
+        before_bytes: Callable[[int, str, int], None],
+        on_connection: Callable[[dict], None],
+        on_bytes: Callable[[int, str, int], None],
+        stderr_path: Path,
+    ) -> EgressTransport:
+        """Use a separate exec pipe for public TCP, never a Docker network."""
+        command = [
+            str(self.settings.docker_binary), "--host", self.settings.docker_host,
+            "exec", "-i", sandbox.container_id,
+            "python3", "/opt/lenbot/worker_egress_bridge.py",
+            "--port", "18182",
+            "--max-connections", str(settings.max_connections),
+            "--header-timeout-seconds", str(settings.header_timeout_seconds),
+        ]
+        return await EgressTransport.spawn(
+            command, cwd=sandbox.workspace, env=_docker_environment(),
+            stderr_path=stderr_path, max_connections=settings.max_connections,
+            connect_timeout_seconds=settings.connect_timeout_seconds,
+            bytes_per_second=bytes_per_second, before_bytes=before_bytes,
+            on_connection=on_connection, on_bytes=on_bytes,
+        )
+
     async def spawn_pi(self, sandbox: SandboxHandle, *, provider: str, model: str,
-                       stderr_path: Path) -> PiRpc:
+                       stderr_path: Path, proxy_port: int | None = None) -> PiRpc:
         """Start exactly one configured Pi RPC session, not an arbitrary argv."""
         if not provider.strip() or not model.strip():
             raise ValueError("Pi provider and model must be explicitly configured")
+        proxy_environment: list[str] = []
+        if proxy_port is not None:
+            proxy = f"http://127.0.0.1:{proxy_port}"
+            for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+                proxy_environment.extend(("--env", f"{name}={proxy}"))
+            for name in ("NO_PROXY", "no_proxy"):
+                proxy_environment.extend(("--env", f"{name}=127.0.0.1,localhost"))
         command = [
             str(self.settings.docker_binary), "--host", self.settings.docker_host,
-            "exec", "-i", "--workdir", "/workspace", sandbox.container_id,
+            "exec", "-i", "--workdir", "/workspace", *proxy_environment,
+            sandbox.container_id,
             "pi", "--mode", "rpc", "--session", "/workspace/session.jsonl",
             "--session-dir", "/workspace/.pi-sessions",
             "--provider", provider, "--model", model,

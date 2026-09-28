@@ -318,3 +318,72 @@ class TaskStore:
             (file.scene, file.task_id, file.id),
         ).fetchone()
         return None if row is None else {"created": row["created"], **json.loads(row["body"])}
+
+    def start_egress_connection(self, scene: str, task_id: int, body: dict) -> int:
+        return self.add_event(scene, task_id, "egress_connection", body)
+
+    def update_egress_connection(self, scene: str, task_id: int, event_id: int,
+                                 body: dict) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE task_events SET body=? WHERE scene=? AND task_id=? AND id=? "
+                "AND kind='egress_connection' "
+                "AND json_extract(body,'$.status') IN ('opening','connected')",
+                (encode(body), scene, task_id, event_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"Scene {scene} task {task_id} has no active egress event {event_id}")
+
+    def recover_egress(self) -> int:
+        """Mark only old unfinished connection rows; retain their last saved bytes."""
+        with self.db:
+            rows = self.db.execute(
+                "SELECT id,body FROM task_events WHERE kind='egress_connection' "
+                "AND json_extract(body,'$.status') IN ('opening','connected') ORDER BY id"
+            ).fetchall()
+            for row in rows:
+                body = json.loads(row["body"])
+                body["status"] = "interrupted"
+                body["recovered_at"] = self.now()
+                self.db.execute("UPDATE task_events SET body=? WHERE id=?", (encode(body), row["id"]))
+        return len(rows)
+
+    def egress_task_totals(self, scene: str, task_id: int) -> tuple[int, int]:
+        self.get(scene, task_id)
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(json_extract(body,'$.up')),0), "
+            "COALESCE(SUM(json_extract(body,'$.down')),0) "
+            "FROM task_events WHERE scene=? AND task_id=? AND kind='egress_connection'",
+            (scene, task_id),
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def egress_scene_day_totals(self, scene: str, day: str) -> tuple[int, int]:
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(json_extract(day.value,'$.up')),0), "
+            "COALESCE(SUM(json_extract(day.value,'$.down')),0) "
+            "FROM task_events AS event, json_each(event.body,'$.days') AS day "
+            "WHERE event.scene=? AND event.kind='egress_connection' AND day.key=?",
+            (scene, day),
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def egress_incomplete_count(self, scene: str, task_id: int | None = None) -> int:
+        if task_id is not None:
+            self.get(scene, task_id)
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM task_events WHERE scene=? AND kind='egress_connection' "
+            "AND (? IS NULL OR task_id=?) "
+            "AND json_extract(body,'$.status')='interrupted'",
+            (scene, task_id, task_id),
+        ).fetchone()
+        return int(row[0])
+
+    def egress_last_error(self, scene: str, task_id: int | None = None) -> dict | None:
+        row = self.db.execute(
+            "SELECT json_extract(body,'$.ended'),json_extract(body,'$.error') "
+            "FROM task_events WHERE scene=? AND kind='egress_connection' "
+            "AND (? IS NULL OR task_id=?) AND json_extract(body,'$.error') IS NOT NULL "
+            "ORDER BY json_extract(body,'$.ended') DESC,id DESC LIMIT 1", (scene, task_id, task_id),
+        ).fetchone()
+        return None if row is None else {"at": row[0], "message": row[1]}
