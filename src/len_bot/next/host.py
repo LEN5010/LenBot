@@ -24,6 +24,7 @@ from .expression_selection import open_expression_service
 from .network import NetworkRuntime
 from .persona import load_persona
 from .plugin_host import PluginHost
+from .mcp_host import MCPHost
 from .store import Store
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
@@ -148,18 +149,25 @@ async def run() -> None:
                 ReplyEffectTracker(config, store, learner_model, slots=slots))
             plugins = (None if config.plugins is None else PluginHost(
                 config, core_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}))
-            runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
-                                     memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
-                                     expression_service=expression_service, sticker_collection=sticker_collection,
-                                     reply_effects=reply_effects, plugins=plugins)
-            if config.panel is None:
-                await runtime.run()
-            else:
-                app = create_app(config, runtime, root=Path.cwd())
-                server = HostPanelServer(uvicorn.Config(
-                    app, host=config.panel.host, port=config.panel.port,
-                ))
-                await run_with_panel(runtime, server)
+            mcp = MCPHost(config.mcp, reserved_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}
+                          | (set() if plugins is None else set(plugins.tool_owner)))
+            try:
+                await mcp.start()
+                runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
+                                         memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
+                                         expression_service=expression_service, sticker_collection=sticker_collection,
+                                         reply_effects=reply_effects, plugins=plugins, mcp=mcp)
+                if config.panel is None:
+                    await runtime.run()
+                else:
+                    app = create_app(config, runtime, root=Path.cwd())
+                    server = HostPanelServer(uvicorn.Config(
+                        app, host=config.panel.host, port=config.panel.port,
+                    ))
+                    await run_with_panel(runtime, server)
+            finally:
+                await mcp.close()
+
 
 
 def main() -> None:

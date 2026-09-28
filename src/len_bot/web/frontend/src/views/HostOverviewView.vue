@@ -13,7 +13,10 @@ const messages = computed(() => Object.entries(overview.value?.messages || {}))
 const turns = computed(() => Object.entries(overview.value?.turns || {}))
 const costs = computed(() => Object.entries(overview.value?.estimated_costs || {}))
 const messageTotal = computed(() => messages.value.reduce((sum, [, count]) => sum + count, 0))
-const pluginIssues = computed(() => (host.value?.plugins || []).filter(item => item.status === 'failed' || item.error_count))
+const pluginIssues = computed(() => [
+  ...(host.value?.plugins || []).map(item => ({ ...item, kind: '插件' })),
+  ...(host.value?.mcp || []).map(item => ({ ...item, kind: 'MCP' })),
+].filter(item => item.status === 'failed' || item.error_count))
 const turnTotal = computed(() => turns.value.reduce((sum, [, count]) => sum + count, 0))
 function time(value, timezone) {
   return new Date(value * 1000).toLocaleString('zh-CN', { timeZone: timezone, hour12: false, timeZoneName: 'short' })
@@ -54,10 +57,10 @@ onMounted(refresh)
         <strong>{{ sceneName(item.scene) }}</strong><span>{{ item.persona.name }} · 查看观察记录</span></RouterLink></div>
     </section>
     <section v-if="pluginIssues.length" class="surface" aria-labelledby="attention-title">
-      <div class="section-heading"><h2 id="attention-title">需要处理的事</h2><span class="muted">本次启动内的插件错误 · 宿主不重试、不自动停用</span></div>
-      <ul class="error-list"><li v-for="item in pluginIssues" :key="item.name">
-        <div class="error-heading"><strong>插件 {{ item.name }}</strong>
-          <span v-if="item.status === 'failed'">加载或启动失败</span>
+      <div class="section-heading"><h2 id="attention-title">需要处理的事</h2><span class="muted">本次启动内的插件／MCP 错误 · 不自动重做调用</span></div>
+      <ul class="error-list"><li v-for="item in pluginIssues" :key="`${item.kind}:${item.name}`">
+        <div class="error-heading"><strong>{{ item.kind }} {{ item.name }}</strong>
+          <span v-if="item.status === 'failed'">加载、启动或连接失败</span>
           <span v-else>{{ fmtAgo(item.latest_error.at) }}报错：{{ item.latest_error.where }}（最近 {{ item.error_count }} 条）</span></div>
         <details><summary>查看错误原文</summary><pre>{{ item.status === 'failed' ? item.error : item.latest_error.error }}</pre></details>
         <RouterLink :to="{name:'host-capabilities'}">到能力页查看</RouterLink>

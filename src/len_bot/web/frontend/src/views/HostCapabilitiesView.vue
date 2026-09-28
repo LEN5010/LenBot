@@ -6,12 +6,14 @@ import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 import HostSkillSettings from '../components/HostSkillSettings.vue'
 import HostPluginsPanel from '../components/HostPluginsPanel.vue'
+import HostMcpPanel from '../components/HostMcpPanel.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), snapshot = ref(null)
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
 const skillDirty = ref(false), pluginDirty = ref(false), pluginBusy = ref(false)
+const mcpDirty = ref(false), mcpBusy = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -25,9 +27,9 @@ const toolDirty = computed(() => {
   if (draftMode.value === 'all') return saved !== 'all'
   return saved === 'all' || JSON.stringify([...draftNames.value].sort()) !== JSON.stringify([...saved].sort())
 })
-const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value)
+const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value || mcpDirty.value)
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !pluginBusy.value && (!dirty.value || window.confirm('有尚未保存的工具、技能或插件草稿。放弃并切换场景？')))
+onBeforeRouteUpdate(() => !pluginBusy.value && !mcpBusy.value && (!dirty.value || window.confirm('有尚未保存的能力配置草稿。放弃并切换场景？')))
 
 let request = 0
 const beginRead = useRequestGuard(() => scene.value)
@@ -208,6 +210,7 @@ onMounted(readHost)
       </section>
       <HostSkillSettings :key="scene" :scene="scene" @dirty="skillDirty=$event" />
       <HostPluginsPanel :key="scene" :scene="scene" @dirty="pluginDirty=$event" @busy="pluginBusy=$event" />
+      <HostMcpPanel :key="`mcp-${scene}`" :scene="scene" @dirty="mcpDirty=$event" @busy="mcpBusy=$event" />
     </template>
   </div>
 </template>
