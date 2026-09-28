@@ -178,7 +178,13 @@ def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, pl
     elif config.memory is not None and config.memory.auto_recall:
         system += "\n" + (PROMPTS / "next_memory_recall.md").read_text()
     if "task" in names:
-        system += "\n" + (PROMPTS / "next_tasks.md").read_text()
+        system += "\n" + Template((PROMPTS / "next_tasks.md").read_text()).substitute(
+            network=encode({"enabled": config.worker.egress.enabled,
+                           "max_task_bytes": (config.worker.egress.max_task_bytes
+                               if config.tasks.egress_max_task_bytes is None else config.tasks.egress_max_task_bytes),
+                           "max_daily_bytes": (config.worker.egress.max_scene_daily_bytes
+                               if config.tasks.egress_max_daily_bytes is None else config.tasks.egress_max_daily_bytes)}),
+        )
     if "send_file" in names:
         system += "\n" + (PROMPTS / "next_files.md").read_text()
     if "tool_search" in names:

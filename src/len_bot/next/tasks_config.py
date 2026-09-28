@@ -16,6 +16,18 @@ STRICT = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 TaskRole = Literal["owner", "admin", "group_manager", "whitelist", "member"]
 
 
+class EgressSettings(BaseModel):
+    model_config = STRICT
+
+    enabled: bool = True
+    max_task_bytes: int = Field(default=500 * 1024 * 1024, gt=0, strict=True)
+    max_scene_daily_bytes: int = Field(default=2 * 1024 * 1024 * 1024, gt=0, strict=True)
+    max_connections: int = Field(default=16, gt=0, strict=True)
+    bytes_per_second: int = Field(default=8 * 1024 * 1024, gt=0, strict=True)
+    connect_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    header_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+
+
 class WorkerSettings(BaseModel):
     model_config = STRICT
 
@@ -45,6 +57,7 @@ class WorkerSettings(BaseModel):
     max_file_bytes: int = Field(default=25 * 1024 * 1024, gt=0, strict=True)
     input_support: Literal["text", "text-image"] = "text"
     model_reasoning: bool
+    egress: EgressSettings = Field(default_factory=EgressSettings)
 
     @field_validator("docker_binary", "workspace_root", "runtime_root", "delivery_root")
     @classmethod
@@ -94,6 +107,9 @@ class TaskSettings(BaseModel):
     manage_roles: list[TaskRole] = Field(default_factory=lambda: ["owner", "admin"])
     max_running: int = Field(default=2, gt=0, strict=True)
     max_daily_tasks: int = Field(default=5, gt=0, strict=True)
+    egress_max_task_bytes: int | None = Field(default=None, gt=0, strict=True)
+    egress_max_daily_bytes: int | None = Field(default=None, gt=0, strict=True)
+    egress_bytes_per_second: int | None = Field(default=None, gt=0, strict=True)
 
     @field_validator("owner")
     @classmethod

@@ -24,6 +24,32 @@ async function taskApi() {
   return { token: settings.token, timeoutMs: settings.timeout_seconds * 1000 };
 }
 
+async function taskPost(
+  route: "/task/deliver-file" | "/task/network",
+  operation: "deliver_file" | "network_status",
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+) {
+  const { token, timeoutMs } = await taskApi();
+  const timeout = AbortSignal.timeout(Math.ceil(timeoutMs));
+  const response = await fetch(`${TASK_API_BASE}${route}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    redirect: "error",
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`${operation} HTTP ${response.status}: ${raw}`);
+  let payload: unknown;
+  try { payload = JSON.parse(raw); }
+  catch (error) { throw new Error(`${operation} invalid JSON: ${String(error)}; raw=${raw}`); }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error(`${operation} expected JSON object; raw=${raw}`);
+  }
+  return { raw, payload };
+}
+
 export default function lenbotExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "report_progress",
@@ -76,24 +102,20 @@ export default function lenbotExtension(pi: ExtensionAPI) {
       note: Type.String({ description: "Delivery note" }),
     }),
     async execute(_id, { path, name, note }, signal) {
-      const { token, timeoutMs } = await taskApi();
-      const timeout = AbortSignal.timeout(Math.ceil(timeoutMs));
-      const response = await fetch(`${TASK_API_BASE}/task/deliver-file`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ path, name, note }),
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-        redirect: "error",
-      });
-      const raw = await response.text();
-      if (!response.ok) throw new Error(`deliver_file HTTP ${response.status}: ${raw}`);
-      let payload: unknown;
-      try { payload = JSON.parse(raw); }
-      catch (error) { throw new Error(`deliver_file invalid JSON: ${String(error)}; raw=${raw}`); }
-      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-        throw new Error(`deliver_file expected JSON object; raw=${raw}`);
-      }
+      const { raw, payload } = await taskPost("/task/deliver-file", "deliver_file", { path, name, note }, signal);
       return result(`宿主原始结果：${raw}\n文件复制登记与 QQ 上传是不同状态；以宿主实际返回字段为准。`, payload);
+    },
+  });
+
+  pi.registerTool({
+    name: "network_status",
+    executionMode: "sequential",
+    label: "Network status",
+    description: "Read the host's known task and scene-today egress usage, limits, and last recorded network error. This does not probe connectivity or change limits; enabled does not mean connected.",
+    parameters: Type.Object({}),
+    async execute(_id, _args, signal) {
+      const { raw, payload } = await taskPost("/task/network", "network_status", {}, signal);
+      return result(raw, payload);
     },
   });
 

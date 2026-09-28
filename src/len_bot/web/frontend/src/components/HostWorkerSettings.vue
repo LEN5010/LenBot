@@ -29,6 +29,12 @@ const workerFields = {
   files: [['max_file_bytes', '单个交付文件字节上限']],
   compaction: [['compaction_reserve_tokens', '压缩预留 token'],
     ['compaction_keep_recent_tokens', '压缩保留近期 token']],
+  egress: [['max_task_bytes', '每任务累计代理传输字节上限'],
+    ['max_scene_daily_bytes', '每场景每日累计代理传输字节上限'],
+    ['max_connections', '每任务最多并发连接'],
+    ['bytes_per_second', '代理传输字节/秒上限'],
+    ['connect_timeout_seconds', '连接超时（秒）'],
+    ['header_timeout_seconds', '请求头超时（秒）']],
 }
 
 function copy(value) { return JSON.parse(JSON.stringify(value)) }
@@ -43,6 +49,9 @@ function freshWorker() {
     compaction_reserve_tokens: 16384, compaction_keep_recent_tokens: 20000,
     active_timeout_seconds: 1800, input_timeout_seconds: 1800,
     max_file_bytes: 25 * 1024 * 1024, input_support: 'text', model_reasoning: null,
+    egress: { enabled: true, max_task_bytes: 524288000, max_scene_daily_bytes: 2147483648,
+      max_connections: 16, bytes_per_second: 8388608,
+      connect_timeout_seconds: 30, header_timeout_seconds: 30 },
   }
 }
 function taskBody() {
@@ -170,6 +179,7 @@ onMounted(() => read(false))
       <template v-if="snapshot">
         <div class="status-row"><strong>当前运行：{{ snapshot.running.worker===null?'未配置任务执行器':snapshot.running.worker.image }}</strong>
           <v-chip variant="tonal" :color="snapshot.restart_required.worker?'warning':'info'">{{ snapshot.restart_required.worker?'保存值待重启':'保存值与运行值一致' }}</v-chip></div>
+        <p class="muted">公共联网代理：运行值 {{ snapshot.running.worker?.egress.enabled?'配置启用':'未启用' }}；保存值 {{ snapshot.saved.worker?.egress.enabled?'计划启用':'未启用' }}。这里不表示域名已实际联网。</p>
         <p class="muted">保存值中的任务模型：{{ snapshot.saved.models.roles.worker===null?'未绑定':`${snapshot.saved.models.roles.worker.provider} / ${snapshot.saved.models.roles.worker.model}` }}。配置费用上限时，须在模型页为此提供方与精确模型设置价格。</p>
         <form @submit.prevent="saveWorker"><fieldset :disabled="loading || Boolean(saving)">
           <v-switch :model-value="workerDraft!==null" label="在根配置中启用任务执行环境" :disabled="loading || Boolean(saving)" hide-details @update:model-value="toggleWorker" />
@@ -191,6 +201,14 @@ onMounted(() => read(false))
             <details><summary>执行资源与并发上限</summary><div class="form-grid">
               <v-text-field v-for="[key,label] in workerFields.resources" :key="key" :model-value="workerDraft[key]" :type="key==='memory'?'text':'number'" :step="key==='cpus'||key==='command_timeout_seconds'?'any':'1'" :label="label" hide-details="auto" @update:model-value="value=>workerDraft[key]=key==='memory'?value:numeric(value)" />
             </div></details>
+            <details><summary>公共联网回环代理与限额</summary>
+              <p class="muted">任务容器保持 network-none，经宿主回环代理才可出网。启用配置不代表任何域名已实际连通；DNS 若解析到保留地址会保留原错拒绝，不自动换 DNS、地址或参数。保存不立即生效，也不会自动构建镜像。</p>
+              <v-switch v-model="workerDraft.egress.enabled" label="允许任务使用公共联网回环代理" :disabled="loading || Boolean(saving)" hide-details />
+              <div class="form-grid"><v-text-field v-for="[key,label] in workerFields.egress" :key="key"
+                :model-value="workerDraft.egress[key]" type="number"
+                :step="key.endsWith('_seconds')?'any':'1'" :label="label" hide-details="auto"
+                @update:model-value="value=>workerDraft.egress[key]=numeric(value)" /></div>
+            </details>
             <details><summary>模型请求、字节与金额上限</summary><div class="form-grid">
               <v-text-field v-for="[key,label] in workerFields.calls" :key="key" :model-value="workerDraft[key]" type="number" step="1" :label="label" hide-details="auto" @update:model-value="value=>workerDraft[key]=numeric(value)" />
               <v-text-field :model-value="workerDraft.max_cost ?? ''" label="每任务费用上限（可留空）" inputmode="decimal" hint="按精确模型价目与已上报用量估算；未知费用不按零计算" persistent-hint @update:model-value="value=>workerDraft.max_cost=value===''?null:value" />
@@ -226,6 +244,13 @@ onMounted(() => read(false))
         <div class="list-block"><h3>白名单 QQ</h3><div v-for="(row,index) in whitelist" :key="index" class="list-row"><v-text-field v-model="row.value" :label="`白名单 QQ ${index+1}`" inputmode="numeric" hide-details="auto" /><v-btn variant="outlined" :aria-label="`删除白名单 QQ ${index+1}`" @click="whitelist.splice(index,1)">删除</v-btn></div><v-btn variant="outlined" @click="whitelist.push({value:''})">添加白名单</v-btn></div>
         <div class="form-grid"><v-select v-model="taskDraft.delegate_roles" label="允许委托任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" />
           <v-select v-model="taskDraft.manage_roles" label="允许管理他人任务的身份" :items="roles" :disabled="loading || Boolean(saving)" multiple chips closable-chips hide-details="auto" /></div>
+        <h3>此场景公共联网限额覆盖</h3>
+        <p class="muted">三项留空表示沿用上方全局限额，不表示 0；不会自动增减或重试限制。</p>
+        <div class="form-grid">
+          <v-text-field v-for="[key,label] in [['egress_max_task_bytes','每任务字节上限覆盖'],['egress_max_daily_bytes','本场景每日字节上限覆盖'],['egress_bytes_per_second','每秒字节限速覆盖']]"
+            :key="key" :model-value="taskDraft[key] ?? ''" type="number" step="1" :label="label" hide-details="auto"
+            @update:model-value="value=>taskDraft[key]=value===''||value===null?null:numeric(value)" />
+        </div>
       </fieldset>
         <p v-if="taskDirty" class="dirty-note" role="status">此场景任务权限草稿尚未保存。</p>
         <div class="form-actions"><v-btn type="submit" color="primary" :loading="saving==='tasks'" :disabled="!taskDirty || loading || Boolean(saving)">保存此场景任务权限</v-btn>

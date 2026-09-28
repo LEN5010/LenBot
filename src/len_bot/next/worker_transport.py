@@ -113,7 +113,7 @@ class WorkerTransport:
                         or set(request) != {"token", "path", "body_bytes"}
                         or not isinstance(request["token"], str)
                         or not isinstance(request["path"], str)
-                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file"}
+                        or request["path"] not in {"/v1/chat/completions", "/task/deliver-file", "/task/network"}
                         or type(request["body_bytes"]) is not int
                         or not 0 < request["body_bytes"] <= self.proxy.limits.max_request_bytes):
                     raise WorkerTransportError(f"invalid worker request frame {kind!r}: {data[:500]!r}")
@@ -121,10 +121,10 @@ class WorkerTransport:
                 if kind != b"B" or len(body) != request["body_bytes"]:
                     raise WorkerTransportError(f"invalid worker body frame {kind!r}: {body[:500]!r}")
                 try:
-                    if request["path"] == "/task/deliver-file":
+                    if request["path"] in {"/task/deliver-file", "/task/network"}:
                         self.proxy.authorize(request["token"])
                         if self.task_request is None:
-                            raise WorkerTransportError("Task file delivery is not configured")
+                            raise WorkerTransportError("Task API is not configured")
                         result = await self.task_request(request["path"], body)
                         content = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
                         await self._write_frame(b"H", json.dumps({
