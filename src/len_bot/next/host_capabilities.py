@@ -99,6 +99,14 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                 "deferred": name in DEFERRED_NAMES,
                 "reasons": tool_unavailable_reasons(chat.config, chat.persona, name),
             })
+        for tool in ([] if runtime.plugins is None else runtime.plugins.tools_for(scene)):
+            allowed = chat.persona.tools == "all" or tool.name in chat.persona.tools
+            tools.append({
+                "name": tool.name, "description": tool.description, "source": tool.source,
+                "allowed": allowed, "registered": tool.name in chat.allowed_tool_names,
+                "discovered": tool.name in chat.discovered_tools, "deferred": True,
+                "reasons": [] if allowed else ["当前角色未允许此工具"],
+            })
         return {
             "scene": scene,
             "scenes": [{"scene": key, "persona": {"id": value.persona.id, "name": value.persona.name}}
@@ -120,7 +128,7 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                                          and chat.config.onebot.upload_visible_root is not None),
                          "schedules": chat.config.schedules.enabled},
             "not_implemented": [
-                {"name": "plugins / MCP", "description": "当前宿主尚未装载插件和 MCP 服务。"},
+                {"name": "MCP", "description": "当前宿主尚未接入 MCP 服务。"},
             ],
         }
 

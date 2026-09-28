@@ -1650,3 +1650,59 @@ def test_format23_proactive_collision_rolls_back_schedule_rebuild(tmp_path: Path
         assert db.execute("SELECT * FROM schedules ORDER BY id").fetchall() == schedules
         assert "cron_minute_of_day" in [row[1] for row in db.execute("PRAGMA table_info(schedules)")]
         assert db.execute("SELECT name FROM sqlite_master WHERE name='schedules_next'").fetchone() is None
+
+
+def _format24_source(path: Path) -> None:
+    """Upgrade the format-23 synthetic source with the committed step and add a proactive wake."""
+    _format23_source(path)
+    from len_bot.next import migrate as migration
+    with sqlite3.connect(path, isolation_level=None) as db:
+        migration._upgrade_one_step(db, path, 23)
+    path.with_name(path.name + ".v23.bak").unlink()
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO proactive_wakes(scene,turn_id,woke_at,local_date,idle_since,outcome,closed_at) "
+                   "VALUES ('group:80001','turn-proactive',1790100000.0,'2026-09-20',1790080000.0,'silent',1790102000.0)")
+
+
+def test_format24_plugin_events_table_keeps_all_rows(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format24_source(path)
+    with sqlite3.connect(path) as db:
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'message_search%' "
+            "AND name!='sqlite_sequence' ORDER BY name")]
+        before = {table: db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() for table in tables}
+        assert before["messages"] and before["proactive_wakes"] and before["schedules"]
+    with pytest.raises(ValueError, match="format 24 requires offline migration"):
+        Store(path)
+
+    backup = migrate_database(path)
+    assert backup == tmp_path / "isolated.sqlite3.v24.bak"
+    assert _version(path) == (0x4C424E31, FORMAT_VERSION)
+    assert _version(backup) == (0x4C424E31, 24)
+    with sqlite3.connect(path) as db, sqlite3.connect(backup) as old:
+        for table, rows in before.items():
+            assert db.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+            assert old.execute(f"SELECT rowid,* FROM {table} ORDER BY rowid").fetchall() == rows
+        assert db.execute("SELECT COUNT(*) FROM plugin_events").fetchone() == (0,)
+        assert old.execute("SELECT name FROM sqlite_master WHERE name='plugin_events'").fetchone() is None
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO plugin_events(scene,plugin,kind,content,created) "
+                       "VALUES ('group:80001','clock','other','x',1.0)")
+    with Store(path) as store:
+        event = store.add_plugin_event("group:80001", "clock", "event", "合成事件")
+        store.add_plugin_event("group:80001", "clock", "reply", "合成回复")
+        assert store.plugin_wake_pending("group:80001")
+        assert store.pending_plugin_events("group:80001") == [(event, "合成事件"), (event + 1, "合成回复")]
+
+
+def test_format24_plugin_events_collision_rolls_back(tmp_path: Path) -> None:
+    path = tmp_path / "isolated.sqlite3"
+    _format24_source(path)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE plugin_events (collision TEXT)")
+    with pytest.raises(sqlite3.OperationalError, match="already exists"):
+        migrate_database(path)
+    assert _version(path) == (0x4C424E31, 24)
+    with sqlite3.connect(path) as db:
+        assert [row[1] for row in db.execute("PRAGMA table_info(plugin_events)")] == ["collision"]

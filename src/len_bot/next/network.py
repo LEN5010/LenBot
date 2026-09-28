@@ -22,6 +22,7 @@ from .reply_effects import ReplyEffectTracker
 from .expression_selection import ExpressionService
 from .onebot import OneBot
 from .persona import Persona
+from .plugin_host import PluginHost
 from .store import Store, encode
 from .tasks import WorkTasks
 
@@ -38,6 +39,7 @@ class NetworkRuntime:
                  sticker_collection: StickerCollector | None = None,
                  reply_effects: ReplyEffectTracker | None = None,
                  expression_service: ExpressionService | None = None,
+                 plugins: PluginHost | None = None,
                  on_update: Callable[[], None] | None = None):
         if config.onebot is None:
             raise ValueError("Network input requires OneBot configuration")
@@ -63,6 +65,9 @@ class NetworkRuntime:
         if learning is not None:
             learning.on_update = self.notify
         self.tasks = tasks
+        self.plugins = plugins
+        if plugins is not None:
+            plugins.on_update = self.notify
         self.on_update = on_update
         self.status = "created"
         self.last_platform_error: str | None = None
@@ -85,6 +90,7 @@ class NetworkRuntime:
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
                 platform_call=self.platform.call if config.delivery == "onebot" else None,
+                external_tools=[] if plugins is None else plugins.tools_for(scene),
                 on_update=self.notify,
             )
         self.runners: dict[str, SceneRunner] = {}
@@ -94,6 +100,8 @@ class NetworkRuntime:
                 resume=chat.restore(), ready_for_turn=self._ready,
                 connected_since=lambda: self.connected_since,
             )
+        if plugins is not None:
+            plugins.bind(self)
 
     def compacted(self, scene: str) -> None:
         if self.ingestor is not None:
@@ -147,6 +155,14 @@ class NetworkRuntime:
         if post_type != "message":
             if not self.accepting:
                 self._emit({"type": "receipt", "status": "not_accepted", "reason": "stopping"})
+            elif post_type == "notice" and self.plugins is not None:
+                try:
+                    handled = self.plugins.handle_notice(raw)
+                except ValueError as error:
+                    self._platform_error(f"{type(error).__name__}: {error}")
+                    return
+                self._emit({"type": "platform_event", "post_type": post_type,
+                            "notice_type": raw["notice_type"], "plugin_handlers": handled})
             else:
                 self._emit({"type": "platform_event", "status": "unsupported", "post_type": post_type})
             return
@@ -160,8 +176,10 @@ class NetworkRuntime:
             self._emit({"type": "receipt", "scene": message.scene, "status": "ignored",
                         "platform_message_id": message.platform_message_id})
             return
+        command = (None if self.plugins is None else
+                   self.plugins.match_command(message, tuple(runner.settings.other_bot_qqs)))
         try:
-            receipt = runner.receive_message(message, raw)
+            receipt = runner.receive_message(message, raw, wake=command is None)
         except sqlite3.Error as error:
             self.storage_error = error
             self.stop()
@@ -173,6 +191,9 @@ class NetworkRuntime:
                 and receipt["status"] != "duplicate" and not message.is_self
                 and any(segment.type == "image" for segment in message.segments)):
             self.sticker_collection.request(message.scene)
+        if command is not None and receipt["status"] != "duplicate":
+            self.plugins.dispatch_command(message, command)
+            receipt["plugin_command"] = f"{command[0].name} /{command[1]}"
         self._emit({"type": "receipt", **receipt, "scene": message.scene})
 
     async def _ready(self, wait: bool) -> bool:
@@ -242,6 +263,8 @@ class NetworkRuntime:
                         self.sticker_collection.start()
                     if self.reply_effects is not None:
                         self.reply_effects.start()
+                    if self.plugins is not None:
+                        await self.plugins.start()
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})
@@ -255,6 +278,8 @@ class NetworkRuntime:
                     self._status("stopping")
                     self._emit({"type": "runtime", "status": "stopping", "reason": reason})
                     self.stopped.set()
+                    if self.plugins is not None:
+                        await self.plugins.close()
                     if self.reply_effects is not None:
                         await self.reply_effects.close()
                     if self.sticker_collection is not None:
@@ -275,6 +300,8 @@ class NetworkRuntime:
         finally:
             try:
                 try:
+                    if self.plugins is not None:
+                        await self.plugins.close()
                     if self.tasks is not None:
                         await self.tasks.close()
                 finally:

@@ -25,6 +25,7 @@ from .context import (
 from .discovery import DEFERRED_NAMES, TOOL_SEARCH, ToolSearchArguments, search_tools
 from .delivery import Expression, part_length, report_parts, split_expression
 from .expression_selection import ExpressionService
+from .external_tools import ExternalTool
 from .file_delivery import SEND_FILE_TOOL, SendFileArguments, execute_send_file
 from .images import LOOK_TOOL, LookArguments, execute_look
 from .jargon_store import JargonStore
@@ -186,10 +187,11 @@ def voice_prompt(persona: Persona) -> str:
 
 
 def build_system(config: LabConfig, persona: Persona, allowed: list[dict], *, platform: bool,
-                 skills: tuple[Skill, ...] = (), group_profile: str | None = None) -> str:
+                 skills: tuple[Skill, ...] = (), group_profile: str | None = None,
+                 external: list[dict] = ()) -> str:
     """Render the actual stable mind system text for this scene and outlet."""
     names = {tool["function"]["name"] for tool in allowed}
-    deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+    deferred = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES] + list(external)
     mode = "next_direct.md" if config.voice_mode == "direct" else "next_intent.md"
     expression_mode = Template((PROMPTS / mode).read_text()).substitute(
         voice=persona.voice,
@@ -260,6 +262,7 @@ class Chat:
                  send_message: MessageSender | None = None,
                  upload_file: Callable[[str, str, str], Awaitable[UploadResult]] | None = None,
                  platform_call: PlatformCall | None = None,
+                 external_tools: list[ExternalTool] = (),
                  on_update: Callable[[], None] | None = None,
                  on_compaction: Callable[[], None] | None = None,
                  on_reply_sample: Callable[[], None] | None = None,
@@ -295,19 +298,32 @@ class Chat:
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
         allowed = build_tools(config, persona, platform=send_message is not None)
-        self.allowed_tool_names = {tool["function"]["name"] for tool in allowed}
+        # Plugin and MCP tools are always low-frequency and still need the role's permission.
+        self.external = {tool.name: tool for tool in external_tools
+                         if persona.tools == "all" or tool.name in persona.tools}
+        clashes = sorted({tool["function"]["name"] for tool in tool_catalog(platform=True)} & set(self.external))
+        if clashes:
+            raise ValueError(f"插件或 MCP 工具与核心工具重名：{clashes}")
+        if self.external and "tool_search" not in {tool["function"]["name"] for tool in allowed}:
+            raise ValueError("角色开放插件或 MCP 工具时必须同时开放 tool_search")
+        self.allowed_tool_names = {tool["function"]["name"] for tool in allowed} | set(self.external)
         if "send_file" in self.allowed_tool_names and upload_file is None:
             raise ValueError("send_file 配置已启用但未接入实际文件上传出口")
         if self.allowed_tool_names & {"open_forward", "member_info"} and platform_call is None:
             raise ValueError("平台查询工具已启用但未接入实际 OneBot 调用")
+        self.deferred_names = DEFERRED_NAMES | set(self.external)
         self.core_tools = [tool for tool in allowed if tool["function"]["name"] not in DEFERRED_NAMES]
-        self.deferred_tools = [tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+        self.deferred_tools = ([tool for tool in allowed if tool["function"]["name"] in DEFERRED_NAMES]
+                               + [tool.definition for tool in self.external.values()])
         saved = self.store.load_discovered_tools(config.scene)
-        self.discovered_tools = set(saved) & self.allowed_tool_names & DEFERRED_NAMES
+        self.discovered_tools = set(saved) & self.allowed_tool_names & self.deferred_names
         self.skills = () if tasks is None else tasks.skills[config.scene]
         self.system = build_system(config, persona, allowed, platform=send_message is not None,
                                    skills=self.skills,
-                                   group_profile=None if memory is None else memory.group_profile(config.scene))
+                                   group_profile=None if memory is None else memory.group_profile(config.scene),
+                                   external=[tool.definition for tool in self.external.values()])
+        # One outlet per scene: plugin sends never interleave with a multi-part expression.
+        self.outlet = asyncio.Lock()
 
     @property
     def tools(self) -> list[dict]:
@@ -578,6 +594,13 @@ class Chat:
                                        *, prefix: str = "", turn_id: str | None = None,
                                        sticker: PersonaSticker | CollectedSticker | None = None,
                                        channels: set[str] | None = None) -> tuple[str, str]:
+        async with self.outlet:
+            return await self._send_prepared(entry_seq, parts, prefix=prefix, turn_id=turn_id,
+                                             sticker=sticker, channels=channels)
+
+    async def _send_prepared(self, entry_seq: int, parts: list[ChatMessage], *, prefix: str,
+                             turn_id: str | None, sticker: PersonaSticker | CollectedSticker | None,
+                             channels: set[str] | None) -> tuple[str, str]:
         errors: list[str | None] = []
         settings = self.config.text_delivery
         # Snapshot now: a later append in this turn does not change why this was said.
@@ -623,6 +646,46 @@ class Chat:
         status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
         return content, status
 
+    async def send_plugin_text(self, plugin: str, text: str, *, reply_to: str | None) -> tuple[str, str]:
+        """Send host plugin text through this scene's outlet and queue a note for the mind."""
+        if reply_to is not None and self.store.find_message(self.config.scene, reply_to) is None:
+            raise ValueError(f"当前场景没有平台消息 {reply_to}")
+        segments = ([] if reply_to is None else [Segment("reply", {"id": reply_to})]) + [
+            Segment("text", {"text": text})]
+        parts = split_expression(self.simulated_message(segments, reply_to=reply_to),
+                                 self.config.text_delivery.max_chars)
+        settings = self.config.text_delivery
+        errors: list[str | None] = []
+        async with self.outlet:
+            for index, part in enumerate(parts):
+                if index:
+                    await asyncio.sleep(min(settings.max_interval_seconds, max(
+                        settings.min_interval_seconds, part_length(part) / settings.chars_per_second)))
+                part.time = self.now()
+                part.send_status = "simulated" if self.send_message is None else "unconfirmed"
+                errors.append(None)
+                seq = self.store.start_outgoing(part)
+                self.notify()
+                if self.send_message is None:
+                    continue
+                result = await self.send_message(part)
+                part.send_status, part.platform_message_id = result.status, result.platform_message_id
+                errors[-1] = result.error
+                self.store.finish_expression((seq, None), part, "")
+                self.notify()
+                if result.status != "sent":
+                    break
+        report = report_parts(parts, errors, self.render)
+        states = {part.send_status for part in parts[:len(errors)]}
+        status = "partial" if len(states) > 1 else parts[len(errors) - 1].send_status
+        moment = datetime.fromtimestamp(self.now(), ZoneInfo(self.config.timezone)).isoformat(timespec="seconds")
+        self.store.add_plugin_event(self.config.scene, plugin, "reply", Template(
+            (PROMPTS / "next_plugin_reply.md").read_text()).substitute(
+            plugin=plugin, time=moment,
+            report=("模拟表达（未发送到 QQ）：" if self.send_message is None else "") + report).strip())
+        self.notify()
+        return report, status
+
     def simulated_message(self, segments: list[Segment], *, reply_to: str | None = None) -> ChatMessage:
         return ChatMessage(
             id=str(uuid4()), platform="qq", scene=self.config.scene, platform_message_id=None,
@@ -644,6 +707,9 @@ class Chat:
             discovered = sorted(set(self.store.load_discovered_tools(self.config.scene)) | set(names))
             return encode({"query": arguments.query, "matched_names": names,
                            "available_from": "next_model_request", "tools": matched}), None, discovered
+        if call.name in self.external:
+            tool = self.external[call.name]
+            return await tool.call(self.config.scene, call.arguments), None, None
         if call.name == "say":
             expression = await self.express(turn_id, SayArguments.model_validate(call.arguments),
                                            expression_style=expression_style)
@@ -696,6 +762,7 @@ class Chat:
                        wait_for_messages: Callable[[float], Awaitable[str]],
                        attention_state: dict, scheduled: list[tuple[int, str]] | None = None,
                        task_notices: list[tuple[int, str]] | None = None,
+                       plugin_events: list[tuple[int, str]] | None = None,
                        direct: bool = False, wake_received_at: float | None = None,
                        channels: set[str] | None = None,
                        proactive: tuple[str, str, float] | None = None) -> dict:
@@ -704,6 +771,7 @@ class Chat:
         scene = self.config.scene
         turn_id = self.store.start_turn(scene, batch=batch, attention_state=attention_state,
                                        scheduled=scheduled, task_notices=task_notices,
+                                       plugin_events=plugin_events,
                                        wake_received_at=wake_received_at, proactive=proactive)
         self.notify()
         expressions: list[str] = []

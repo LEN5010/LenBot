@@ -9,7 +9,7 @@ import signal
 import uvicorn
 
 from .config import load_host_config
-from .chat import PROMPTS, build_tools
+from .chat import PROMPTS, build_tools, tool_catalog
 from .host_panel import create_app
 from .model import ChatModel
 from .model_slots import ModelSlots
@@ -23,6 +23,7 @@ from .sticker_store import StickerStore
 from .expression_selection import open_expression_service
 from .network import NetworkRuntime
 from .persona import load_persona
+from .plugin_host import PluginHost
 from .store import Store
 from .tasks import WorkTasks
 from .tasks_store import TaskStore
@@ -145,10 +146,12 @@ async def run() -> None:
                 settings.learning is not None and settings.learning.reply_effects
                 for settings in config.scenes.values()) else
                 ReplyEffectTracker(config, store, learner_model, slots=slots))
+            plugins = (None if config.plugins is None else PluginHost(
+                config, core_tools={tool["function"]["name"] for tool in tool_catalog(platform=True)}))
             runtime = NetworkRuntime(config, scenes, store, mind, voice, vision=vision, slots=slots,
                                      memory=memory, ingestor=ingestor, tasks=tasks, learning=learning, jargon=jargon,
                                      expression_service=expression_service, sticker_collection=sticker_collection,
-                                     reply_effects=reply_effects)
+                                     reply_effects=reply_effects, plugins=plugins)
             if config.panel is None:
                 await runtime.run()
             else:

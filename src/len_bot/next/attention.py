@@ -196,8 +196,13 @@ class SceneRunner:
         message = parse_message(raw, own_message_ids=set())
         return self.receive_message(message, raw, ignore_other_scenes=ignore_other_scenes)
 
-    def receive_message(self, message: ChatMessage, raw: dict, *, ignore_other_scenes: bool = False) -> dict:
-        """Accept an already parsed message; own replies remain scoped to this scene."""
+    def receive_message(self, message: ChatMessage, raw: dict, *, ignore_other_scenes: bool = False,
+                        wake: bool = True) -> dict:
+        """Accept an already parsed message; own replies remain scoped to this scene.
+
+        ``wake=False`` stores a plugin command without offering a wake; it still
+        reaches the mind with the next batch.
+        """
         if str(raw["self_id"]) != self.config.bot_qq:
             raise ValueError("输入场景或 Bot QQ 与隔离实例配置不同")
         if message.scene != self.config.scene:
@@ -225,14 +230,15 @@ class SceneRunner:
         self.clear_quiet_wake(state, now, period)
         # Batch statistics are only needed for a new, non-direct ambient opportunity.
         pending, recent = [], []
-        if (not is_direct(message) and not message.is_self and not self.settings.only_direct
+        if (wake and not is_direct(message) and not message.is_self and not self.settings.only_direct
                 and message.sender.uid not in self.settings.other_bot_qqs and state.pending is None
                 and self.settings.activity > 0 and period is None):
             pending = self.store.pending_attention_sample(self.config.scene, self.settings.other_bot_qqs, limit=19)
             pending.append((message, now))
             recent = self.store.attention_sample(self.config.scene, limit=19,
                                                exclude_uids=self.settings.other_bot_qqs) + [(message, now)]
-        self.offer_message(state, message, now, pending, recent)
+        if wake:
+            self.offer_message(state, message, now, pending, recent)
         snapshot = asdict(state) if state != self.state else None
         self.store.enqueue(
             message, raw, now, attention_state=snapshot,
@@ -323,7 +329,8 @@ class SceneRunner:
 
     def schedule_deadline(self, now: float) -> float | None:
         due_at = self.store.next_schedule_at(self.config.scene)
-        if self.chat.tasks is not None and self.chat.tasks.records.pending_notices(self.config.scene):
+        if ((self.chat.tasks is not None and self.chat.tasks.records.pending_notices(self.config.scene))
+                or self.store.plugin_wake_pending(self.config.scene)):
             due_at = now if due_at is None else min(now, due_at)
         if due_at is None:
             return None
@@ -343,7 +350,8 @@ class SceneRunner:
             scheduled = self.due_schedules(now) if period is None else []
             task_notice = (period is None and self.chat.tasks is not None
                            and self.chat.tasks.records.pending_notices(self.config.scene))
-            if scheduled or task_notice:
+            plugin_event = period is None and self.store.plugin_wake_pending(self.config.scene)
+            if scheduled or task_notice or plugin_event:
                 return self.store.pending_messages(self.config.scene), None, scheduled
             notice_until = None
             resuming = self.resume and not in_turn
@@ -450,6 +458,11 @@ class SceneRunner:
             if notices:
                 self.chat.turn_channels.add("task")
                 self.store.append_task_notices(self.config.scene, notices, turn_id=turn_id)
+        if quiet_period(self.settings.quiet_hours, self.config.timezone, self.now()) is None:
+            events = self.store.pending_plugin_events(self.config.scene)
+            if events:
+                self.chat.turn_channels.add("plugin")
+                self.store.append_plugin_events(self.config.scene, events, turn_id=turn_id)
         self.state = state
         return True
 
@@ -555,20 +568,26 @@ class SceneRunner:
                 if notice_until is not None:
                     await self.quiet_notice(pending, notice_until)
                     continue
+                quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, self.now()) is not None
                 notices = (self.chat.tasks.records.pending_notices(self.config.scene)
-                           if self.chat.tasks is not None and quiet_period(
-                               self.settings.quiet_hours, self.config.timezone, self.now()) is None else [])
-                channel = "system" if scheduled or notices else self.state.pending.channel if self.state.pending else "resume"
+                           if self.chat.tasks is not None and not quiet else [])
+                events = [] if quiet else self.store.pending_plugin_events(self.config.scene)
+                channel = ("system" if scheduled or notices or events
+                           else self.state.pending.channel if self.state.pending else "resume")
                 channels = {name for name, present in (
-                    ("schedule", scheduled), ("task", notices), ("resume", self.resume)) if present}
+                    ("schedule", scheduled), ("task", notices), ("plugin", events), ("resume", self.resume))
+                    if present}
                 if self.state.pending is not None:
                     channels.add(self.state.pending.channel)
-                reason = "[恢复未结束的对话]" if self.resume else self.wake_reason()
+                reason = ("[恢复未结束的对话]" if self.resume
+                          else "[此前未触发唤醒的消息]" if channel == "system" and self.state.pending is None
+                          else self.wake_reason())
                 batch = self.batch(pending, reason) if pending else None
                 direct = self.state.pending is not None and self.state.pending.channel == "direct"
                 wake_received_at = (self.state.pending.first_at
                                     if not scheduled and self.state.pending is not None else None)
                 await self.turn(channel, batch=batch, scheduled=scheduled, task_notices=notices,
+                                plugin_events=events or None,
                                 direct=direct, wake_received_at=wake_received_at, channels=channels)
                 continue
             if self.closing:

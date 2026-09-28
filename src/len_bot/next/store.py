@@ -19,7 +19,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 24
+FORMAT_VERSION = 25
 
 
 def encode(value: object) -> str:
@@ -293,6 +293,12 @@ class Store:
                         outcome TEXT CHECK(outcome IS NULL OR outcome IN ('silent','answered','ignored','unobserved')),
                         closed_at REAL, UNIQUE(scene,local_date)
                     );
+                    CREATE TABLE plugin_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, scene TEXT NOT NULL, plugin TEXT NOT NULL,
+                        kind TEXT NOT NULL CHECK(kind IN ('event','reply')),
+                        content TEXT NOT NULL, created REAL NOT NULL, delivered_at REAL
+                    );
+                    CREATE INDEX plugin_events_pending ON plugin_events(scene,id) WHERE delivered_at IS NULL;
                     COMMIT;
                 """)
         except BaseException:
@@ -766,9 +772,12 @@ class Store:
                                       (entry_seq,)).fetchone()[0]
         return content
 
-    def finish_expression(self, positions: tuple[int, int], expression: ChatMessage, content: str,
+    def finish_expression(self, positions: tuple[int, int | None], expression: ChatMessage, content: str,
                           *, turn_id: str | None = None) -> int:
-        """Finish this live call; return the message position kept after an early echo merge."""
+        """Finish this live call; return the message position kept after an early echo merge.
+
+        ``positions`` is (message, mind entry); a host-originated part has no mind entry.
+        """
         message_seq, entry_seq = positions
         kept = message_seq
         with self.db:
@@ -791,10 +800,11 @@ class Store:
             else:
                 self.db.execute("UPDATE messages SET platform_id=?,body=? WHERE seq=?",
                                 (expression.platform_message_id, encode(asdict(expression)), message_seq))
-            self.db.execute(
-                "UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
-                (content, entry_seq),
-            )
+            if entry_seq is not None:
+                self.db.execute(
+                    "UPDATE mind_entries SET message=json_set(message,'$.content',?) WHERE seq=?",
+                    (content, entry_seq),
+                )
             if turn_id is not None and expression.send_status == "sent":
                 self._first_expression(turn_id, "sent")
         return kept
@@ -1124,6 +1134,7 @@ class Store:
                    attention_state: dict | None = None,
                    scheduled: list[tuple[int, str]] | None = None,
                    task_notices: list[tuple[int, str]] | None = None,
+                   plugin_events: list[tuple[int, str]] | None = None,
                    wake_received_at: float | None = None,
                    proactive: tuple[str, str, float] | None = None) -> str:
         """Start a turn; ``proactive`` is (wake text, scene-local date, idle since)."""
@@ -1142,6 +1153,8 @@ class Store:
                 self._append_schedules(scene, scheduled)
             if task_notices is not None:
                 self._append_task_notices(scene, task_notices)
+            if plugin_events is not None:
+                self._append_plugin_events(scene, plugin_events)
             if proactive is not None:
                 content, local_date, idle_since = proactive
                 self._append(scene, {"role": "user", "content": content})
@@ -1211,6 +1224,53 @@ class Store:
             if updated.rowcount != 1:
                 raise ValueError(f"No active turn {turn_id} in scene {scene}")
             self._append_task_notices(scene, notices)
+
+    def add_plugin_event(self, scene: str, plugin: str, kind: Literal["event", "reply"], content: str) -> int:
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO plugin_events(scene,plugin,kind,content,created) VALUES (?,?,?,?,?)",
+                (scene, plugin, kind, content, self.now()),
+            ).lastrowid
+
+    def pending_plugin_events(self, scene: str) -> list[tuple[int, str]]:
+        return [(row[0], row[1]) for row in self.db.execute(
+            "SELECT id,content FROM plugin_events WHERE scene=? AND delivered_at IS NULL ORDER BY id", (scene,))]
+
+    def plugin_wake_pending(self, scene: str) -> bool:
+        """Only ``event`` rows wake the mind; ``reply`` rows wait for the next turn."""
+        return self.db.execute(
+            "SELECT 1 FROM plugin_events WHERE scene=? AND delivered_at IS NULL AND kind='event' LIMIT 1",
+            (scene,)).fetchone() is not None
+
+    def _append_plugin_events(self, scene: str, events: list[tuple[int, str]]) -> None:
+        for event_id, content in events:
+            self._append(scene, {"role": "user", "content": content})
+            updated = self.db.execute(
+                "UPDATE plugin_events SET delivered_at=? WHERE scene=? AND id=? AND delivered_at IS NULL",
+                (self.now(), scene, event_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"Scene {scene} plugin event {event_id} is not pending")
+
+    def append_plugin_events(self, scene: str, events: list[tuple[int, str]], *, turn_id: str) -> None:
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE turns SET status='queued' WHERE id=? AND scene=? AND ended IS NULL",
+                (turn_id, scene),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"No active turn {turn_id} in scene {scene}")
+            self._append_plugin_events(scene, events)
+
+    def plugin_events(self, scene: str, *, limit: int = 20) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT id,plugin,kind,content,created,delivered_at FROM plugin_events "
+            "WHERE scene=? ORDER BY id DESC LIMIT ?", (scene, limit))]
+
+    def start_outgoing(self, message: ChatMessage) -> int:
+        """Save a host-originated part (not a mind expression) before sending it."""
+        with self.db:
+            return self._save_message(message, None)
 
     def end_turn(self, turn_id: str, status: str, error: str | None = None,
                  *, attention_state: dict | None = None) -> bool:

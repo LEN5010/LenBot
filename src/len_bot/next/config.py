@@ -451,6 +451,33 @@ class LearningSettings(BaseModel):
         return self
 
 
+PLUGIN_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}")
+PLUGIN_RESERVED = frozenset({"paths", "data_directory"})
+
+
+class PluginSettings(BaseModel):
+    """``paths`` and ``data_directory`` are settings; every other key is one loaded plugin's values."""
+    model_config = ConfigDict(extra="allow", strict=True, hide_input_in_errors=True)
+
+    paths: list[Path] = Field(default_factory=list)
+    data_directory: Path
+
+    @model_validator(mode="after")
+    def plugin_entries(self) -> PluginSettings:
+        if len(set(self.paths)) != len(self.paths):
+            raise ValueError("plugins.paths must not repeat a directory")
+        for name, values in (self.model_extra or {}).items():
+            if PLUGIN_NAME.fullmatch(name) is None:
+                raise ValueError(f"plugins.{name}: plugin names use lowercase letters, digits and underscores")
+            if not isinstance(values, dict) or not all(isinstance(key, str) for key in values):
+                raise ValueError(f"plugins.{name} must be an object of configuration values")
+        return self
+
+    @property
+    def configured(self) -> dict[str, dict]:
+        return dict(self.model_extra or {})
+
+
 def _valid_scene(value: str) -> str:
     if re.fullmatch(r"(?:group|private):[1-9][0-9]*", value) is None:
         raise ValueError("must be group:<QQ> or private:<QQ>")
@@ -681,11 +708,20 @@ class SceneSettings(ScenePersona):
     tasks: TaskSettings = Field(default_factory=TaskSettings)
     learning: LearningSettings | None = None
     proactive: Proactive | None = None
+    # Plugins enabled in this scene; each must be loaded by root ``plugins``.
+    plugins: list[str] = Field(default_factory=list)
 
     @field_validator("timezone")
     @classmethod
     def valid_scene_timezone(cls, value: str | None) -> str | None:
         return None if value is None else _valid_timezone(value)
+
+    @field_validator("plugins")
+    @classmethod
+    def distinct_plugins(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("plugins must not repeat a name")
+        return value
 
 
 def _check_schedule_identity(bot_qq: str, schedules: ScheduleSettings) -> None:
@@ -729,6 +765,8 @@ class LabConfig(SharedConfig, SceneSettings):
                                  f"{self.learning.embedding.provider!r}")
         if self.proactive is not None:
             raise ValueError("proactive requires the isolated-multi host, not the single-scene lab or replay")
+        if self.plugins:
+            raise ValueError("plugins require the isolated-multi host, not the single-scene lab or replay")
         if isinstance(self.memory, OpenVikingMemoryConfig) and set(self.memory.openviking.scenes) != {self.scene}:
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
@@ -769,6 +807,7 @@ class HostConfig(SharedConfig):
     panel: PanelSettings | None = None
     scenes: dict[str, SceneSettings] = Field(min_length=1)
     max_model_requests: int = Field(default=4, gt=0, strict=True)
+    plugins: PluginSettings | None = None
 
     @field_validator("scenes")
     @classmethod
@@ -793,6 +832,10 @@ class HostConfig(SharedConfig):
                 raise ValueError(f"scenes.{scene}.tasks.enabled requires global worker settings")
             if settings.proactive is not None and not scene.startswith("group:"):
                 raise ValueError(f"scenes.{scene}.proactive is only supported for group scenes")
+            loaded = {} if self.plugins is None else self.plugins.configured
+            unknown = [name for name in settings.plugins if name not in loaded]
+            if unknown:
+                raise ValueError(f"scenes.{scene}.plugins are not configured under root plugins: {unknown!r}")
             if settings.learning is not None:
                 if not scene.startswith("group:"):
                     raise ValueError(f"scenes.{scene}.learning is only supported for group scenes")
@@ -959,6 +1002,16 @@ def _load_host_source(path: Path, source: dict) -> HostConfig:
     _resolve_history_paths(root, source)
     _resolve_memory_path(root, source)
     _resolve_worker_paths(root, source)
+    plugins = source.get("plugins")
+    if isinstance(plugins, dict):
+        paths = plugins.get("paths", [])
+        if not isinstance(paths, list):
+            raise ValueError("plugins.paths must be a list of directory path strings")
+        plugins["paths"] = [_resolved_path(root, value, within_root=False, field=f"plugins.paths[{index}]")
+                            for index, value in enumerate(paths)]
+        plugins["data_directory"] = _resolved_path(
+            root, plugins.get("data_directory", "plugin-data"), within_root=True, field="plugins.data_directory",
+        )
     try:
         return HostConfig.model_validate(source)
     except ValidationError as error:
