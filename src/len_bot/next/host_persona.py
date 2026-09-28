@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from .chat import build_tools
 from .config import STRICT, load_host_config
 from .network import NetworkRuntime
+from .skills import load_catalog, select_skills
 from .persona import parse_persona_files, read_persona_files
 
 
@@ -42,6 +43,8 @@ def register_host_persona(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
         affected = [key for key, value in config.scenes.items() if value.persona == path]
         for key in affected:
             build_tools(config.scene_config(key), candidate, platform=config.delivery == "onebot")
+            if config.worker is not None and config.worker.skills_directory is not None:
+                select_skills(load_catalog(config.worker.skills_directory, key), candidate.skills)
         if edit is not None:
             descriptor, name = tempfile.mkstemp(prefix=".persona-", dir=path)
             temporary = Path(name)

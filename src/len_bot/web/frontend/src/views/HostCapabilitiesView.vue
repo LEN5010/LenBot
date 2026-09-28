@@ -4,11 +4,13 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../api.js'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import HostSkillSettings from '../components/HostSkillSettings.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), snapshot = ref(null)
 const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
+const skillDirty = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -16,14 +18,15 @@ const options = computed(() => host.value?.scenes.map(item => ({
 })) || [])
 const knownNames = computed(() => snapshot.value?.tools.map(tool => tool.name) || [])
 const otherNames = computed(() => draftNames.value.filter(name => !knownNames.value.includes(name)))
-const dirty = computed(() => {
+const toolDirty = computed(() => {
   if (!snapshot.value) return false
   const saved = snapshot.value.role_tools.saved
   if (draftMode.value === 'all') return saved !== 'all'
   return saved === 'all' || JSON.stringify([...draftNames.value].sort()) !== JSON.stringify([...saved].sort())
 })
+const dirty = computed(() => toolDirty.value || skillDirty.value)
 useUnsavedChanges(dirty)
-onBeforeRouteUpdate(() => !dirty.value || window.confirm('有尚未保存的工具许可草稿。放弃并切换场景？'))
+onBeforeRouteUpdate(() => !dirty.value || window.confirm('有尚未保存的工具或技能许可草稿。放弃并切换场景？'))
 
 let request = 0
 const beginRead = useRequestGuard(() => scene.value)
@@ -36,7 +39,7 @@ function adopt(value) {
   savedNotice.value = ''
 }
 async function readScene(confirmDiscard = true) {
-  if (confirmDiscard && dirty.value && !window.confirm('放弃未保存草稿，重新读取当前场景的保存值与运行状态？')) return
+  if (confirmDiscard && toolDirty.value && !window.confirm('放弃未保存的工具许可草稿，重读工具保存值与运行状态？')) return
   const own = ++request
   const fresh = beginRead()
   if (typeof scene.value !== 'string') {
@@ -85,10 +88,11 @@ function toggleName(name, enabled) {
 }
 function serviceLabel(name, enabled) {
   return name === 'schedules' ? (enabled ? '当前已启用' : '当前未启用')
+    : name === 'skills' ? (enabled ? '当前配置了技能目录' : '当前未配置技能目录')
     : (enabled ? '当前已配置' : '当前未配置')
 }
 async function save() {
-  if (!snapshot.value || !dirty.value || saving.value) return
+  if (!snapshot.value || !toolDirty.value || saving.value) return
   const target = scene.value
   const fresh = beginSave()
   const tools = draftMode.value === 'all' ? 'all' : [...draftNames.value]
@@ -116,6 +120,7 @@ async function save() {
 }
 watch(scene, () => {
   ++request
+  skillDirty.value = false
   saving.value = false
   loading.value = false
   snapshot.value = null
@@ -132,12 +137,12 @@ onMounted(readHost)
     <header class="page-intro">
       <div><p class="eyebrow">独立多场景宿主</p><h1>工具能力</h1>
         <p class="muted">角色许可、当前注册和按需发现是不同事实；保存许可不会改变正在运行的工具。</p></div>
-      <v-btn variant="outlined" :loading="loading || hostLoading" :disabled="saving" @click="readScene()">重读本场景</v-btn>
+      <v-btn variant="outlined" :loading="loading || hostLoading" :disabled="saving" @click="readScene()">重读工具事实</v-btn>
     </header>
     <v-alert v-if="readError" type="error" variant="tonal" role="alert"
       :title="snapshot ? '读取失败 · 保留上次快照' : '读取能力失败'">{{ readError }}</v-alert>
     <v-alert v-if="saveError" type="error" variant="tonal" role="alert">{{ saveError }}</v-alert>
-    <v-alert v-if="savedNotice && !dirty" type="success" variant="tonal" role="status">{{ savedNotice }}</v-alert>
+    <v-alert v-if="savedNotice && !toolDirty" type="success" variant="tonal" role="status">{{ savedNotice }}</v-alert>
     <section class="surface" aria-labelledby="cap-scene-title">
       <h2 id="cap-scene-title">选择配置场景</h2>
       <v-select :model-value="scene" :items="options" label="场景" hide-details
@@ -154,7 +159,7 @@ onMounted(readHost)
         <p>运行中许可：<strong>{{ snapshot.role_tools.running === 'all' ? '不逐项限制工具' : snapshot.role_tools.running.join('、') || '无' }}</strong></p>
         <p>角色包保存值：<strong>{{ snapshot.role_tools.saved === 'all' ? '不逐项限制工具' : snapshot.role_tools.saved.join('、') || '无' }}</strong></p>
         <p class="muted">此角色包还被这些配置场景使用：{{ snapshot.role_tools.affected_scenes.map(sceneName).join('、') }}。保存会影响它们下次启动的许可，不会立即注册新工具。</p>
-        <p v-if="dirty" class="dirty-note" role="status">工具许可草稿尚未保存。</p>
+        <p v-if="toolDirty" class="dirty-note" role="status">工具许可草稿尚未保存。</p>
         <form @submit.prevent="save">
           <v-radio-group v-model="draftMode" label="保存的工具许可范围" :disabled="saving || loading" hide-details>
             <v-radio label="不逐项限制工具（也允许后续已装配工具）" value="all" />
@@ -167,7 +172,7 @@ onMounted(readHost)
             <p v-if="otherNames.length" class="muted">草稿中还有未列为当前实现的原声明：{{ otherNames.join('、') }}；不会静默删除。</p>
           </div>
           <div class="form-actions">
-            <v-btn type="submit" color="primary" :loading="saving" :disabled="!dirty || loading">保存角色工具许可</v-btn>
+            <v-btn type="submit" color="primary" :loading="saving" :disabled="!toolDirty || loading">保存角色工具许可</v-btn>
             <span class="muted">写入角色包；当前运行值保持不变。</span>
           </div>
         </form>
@@ -191,12 +196,13 @@ onMounted(readHost)
         <dl class="service-list">
           <div v-for="[name,enabled] in Object.entries(snapshot.services)" :key="name"><dt>{{ name }}</dt><dd>{{ serviceLabel(name,enabled) }}</dd></div>
         </dl>
-        <p class="muted mt-4">角色技能声明：{{ snapshot.persona.skills === 'all' ? 'all' : snapshot.persona.skills.join('、') || '无' }}；当前未接入技能执行环境。</p>
+        <p class="muted mt-4">技能的角色许可、保存目录与运行装配由下方独立读取；本服务列表不代表技能已执行。</p>
         <div v-if="snapshot.not_implemented.length" class="not-implemented">
           <h3>尚未接入执行</h3>
           <p v-for="item in snapshot.not_implemented" :key="item.name"><strong>{{ item.name }}</strong> · {{ item.description }}</p>
         </div>
       </section>
+      <HostSkillSettings :key="scene" :scene="scene" @dirty="skillDirty=$event" />
     </template>
   </div>
 </template>

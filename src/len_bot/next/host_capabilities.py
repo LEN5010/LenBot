@@ -19,6 +19,7 @@ from .config import STRICT, load_host_config
 from .discovery import DEFERRED_NAMES
 from .network import NetworkRuntime
 from .persona import load_persona, select_examples
+from .skills import Skill, load_catalog, select_skills
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,25 @@ class RoleTools(BaseModel):
             if len(value) != len(set(value)):
                 raise ValueError("工具名称不能重复")
         return value
+
+
+class RoleSkills(BaseModel):
+    model_config = STRICT
+    skills: Literal["all"] | list[str]
+
+    @field_validator("skills")
+    @classmethod
+    def distinct_names(cls, value: str | list[str]) -> str | list[str]:
+        if isinstance(value, list) and (any(not name.strip() for name in value)
+                                      or len(value) != len(set(value))):
+            raise ValueError("技能名称不能为空或重复")
+        return value
+
+
+def skill_info(skill: Skill) -> dict:
+    return {"name": skill.name, "description": skill.description, "source": skill.source,
+            "path": skill.container_path + "/SKILL.md",
+            "model_invocation": not skill.disable_model_invocation}
 
 
 def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRuntime,
@@ -91,15 +111,46 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                          "memory": chat.memory is not None,
                          "vision": chat.config.models.roles.vision is not None,
                          "worker": chat.tasks is not None,
+                         "skills": (chat.tasks is not None
+                                    and chat.tasks.settings.skills_directory is not None),
                          "public_network": chat.tasks is not None and chat.tasks.settings.egress.enabled,
                          "file_upload": (chat.config.delivery == "onebot" and chat.tasks is not None
                                          and chat.config.onebot.upload_visible_root is not None),
                          "schedules": chat.config.schedules.enabled},
             "not_implemented": [
-                {"name": "skills", "description": "角色技能声明尚未接入执行环境。"},
                 {"name": "plugins / MCP", "description": "当前宿主尚未装载插件和 MCP 服务。"},
             ],
         }
+
+    def skills_state(scene: str) -> dict:
+        chat = chat_for(scene)
+        saved = load_host_config(root)
+        path = saved.scenes[scene].persona
+        persona = load_persona(path)
+        directory = None if saved.worker is None else saved.worker.skills_directory
+        catalog = load_catalog(directory, scene)
+        selected = () if directory is None else select_skills(catalog, persona.skills)
+        running_directory = None if chat.tasks is None else chat.tasks.settings.skills_directory
+        return {
+            "scene": scene, "directory": None if directory is None else str(directory),
+            "running_directory": None if running_directory is None else str(running_directory),
+            "role_skills": {"saved": persona.skills, "running": chat.persona.skills,
+                            "restart_required": persona.skills != chat.persona.skills,
+                            "affected_scenes": [key for key, value in saved.scenes.items()
+                                                if value.persona == path]},
+            "catalog": [{**skill_info(skill), "selected": skill in selected} for skill in catalog],
+            "running": [skill_info(skill) for skill in chat.skills],
+        }
+
+    @app.get("/api/host/skills")
+    async def skills(scene: str, _: str = Depends(user)):
+        chat_for(scene)
+        try:
+            async with write_lock:
+                return await asyncio.to_thread(skills_state, scene)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f"{type(error).__name__}: {error}") from error
 
     @app.get("/api/host/scenes/{scene}/persona")
     async def persona(scene: str, _: str = Depends(user)):
@@ -111,13 +162,15 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
                           for name, item in sorted(loaded.knowledge.items())],
         }
 
-    def save_role(scene: str, changes: RoleTools) -> dict:
+    def save_role(scene: str, field: Literal["tools", "skills"], value: str | list[str]) -> dict:
         saved = load_host_config(root)
         path = saved.scenes[scene].persona
-        persona = load_persona(path).model_copy(update={"tools": changes.tools})
+        persona = load_persona(path).model_copy(update={field: value})
         affected = [key for key, value in saved.scenes.items() if value.persona == path]
         for key in affected:
             build_tools(saved.scene_config(key), persona, platform=saved.delivery == "onebot")
+            if saved.worker is not None and saved.worker.skills_directory is not None:
+                select_skills(load_catalog(saved.worker.skills_directory, key), persona.skills)
         metadata = persona.model_dump(exclude={"voice", "boundaries", "examples", "knowledge"})
         descriptor, name = tempfile.mkstemp(prefix=".persona-", suffix=".yaml", dir=path)
         temporary = Path(name)
@@ -127,17 +180,27 @@ def register_host_capabilities(app: FastAPI, *, root: Path, runtime: NetworkRunt
             temporary.replace(path / "persona.yaml")
         finally:
             temporary.unlink(missing_ok=True)
-        current = chat_for(scene).persona.tools
-        return {"saved": changes.tools, "running": current,
-                "restart_required": changes.tools != current, "affected_scenes": affected}
+        current = getattr(chat_for(scene).persona, field)
+        return {"saved": value, "running": current,
+                "restart_required": value != current, "affected_scenes": affected}
 
     @app.put("/api/host/scenes/{scene}/role-tools")
     async def save(scene: str, changes: RoleTools, _: str = Depends(user)):
         chat_for(scene)
         try:
             async with write_lock:
-                return await asyncio.to_thread(save_role, scene, changes)
+                return await asyncio.to_thread(save_role, scene, "tools", changes.tools)
         except (ValueError, OSError) as error:
             logger.exception("保存角色工具设置失败：%s", error)
+            raise HTTPException(422 if isinstance(error, ValueError) else 500,
+                                f"{type(error).__name__}: {error}") from error
+
+    @app.put("/api/host/scenes/{scene}/role-skills")
+    async def save_skills(scene: str, changes: RoleSkills, _: str = Depends(user)):
+        chat_for(scene)
+        try:
+            async with write_lock:
+                return await asyncio.to_thread(save_role, scene, "skills", changes.skills)
+        except (ValueError, OSError) as error:
             raise HTTPException(422 if isinstance(error, ValueError) else 500,
                                 f"{type(error).__name__}: {error}") from error

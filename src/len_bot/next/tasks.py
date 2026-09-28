@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from string import Template
 import traceback
+from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,7 @@ from .egress_usage import EgressUsage
 from .model_slots import ModelSlots
 from .pricing import cost_summary
 from .sandbox import DockerSandbox, DockerSettings
+from .skills import Skill, load_task_skills, merge_task_skills
 from .store import Store
 from .task_live import TaskLiveText
 from .tasks_store import Task, TaskFile, TaskStore
@@ -58,6 +60,7 @@ class RunningTask:
     last_progress: str | None = None
     next_progress: float = 300
     live_text: TaskLiveText = field(default_factory=TaskLiveText)
+    skills: tuple[Skill, ...] = ()
 
 
 def file_info(file: TaskFile, records: TaskStore) -> dict:
@@ -68,11 +71,14 @@ def file_info(file: TaskFile, records: TaskStore) -> dict:
 
 class WorkTasks:
     def __init__(self, config: HostConfig, store: Store, slots: ModelSlots | None,
-                 on_update: Callable[[str], None]):
+                 on_update: Callable[[str], None], *, skills: dict[str, tuple[Skill, ...]],
+                 skill_permissions: dict[str, Literal["all"] | list[str]]):
         self.config, self.store, self.slots = config, store, slots
         self.settings = config.worker
         self.records = TaskStore(store)
         self.on_update = on_update
+        self.skills = skills
+        self.skill_permissions = skill_permissions
         self.egress = EgressUsage(config, self.records, on_update)
         settings = self.settings
         self.sandbox = DockerSandbox(DockerSettings(
@@ -364,8 +370,15 @@ class WorkTasks:
         try:
             async with asyncio.timeout(self.settings.active_timeout_seconds) as timer:
                 current.timer = timer
+                current.skills = self.skills[item.scene]
+                if (self.settings.skills_directory is not None
+                        and self.skill_permissions[item.scene] == "all"):
+                    workspace = self.settings.workspace_root / item.scene / "tasks" / str(item.id)
+                    authored = await asyncio.to_thread(load_task_skills, workspace)
+                    current.skills = merge_task_skills(current.skills, authored)
                 async with worker_session(
                     self.sandbox, scene=item.scene, task_id=str(item.id),
+                    skills=current.skills,
                     settings=self.config.model_settings("worker"), provider=binding.provider,
                     context_window_tokens=binding.context_window_tokens, price=price,
                     limits=self._limits(item), model_reasoning=self.settings.model_reasoning,
@@ -445,6 +458,9 @@ class WorkTasks:
                 "proxy": None if session.egress is None else f"http://127.0.0.1:{session.egress.port}",
                 "task_traffic": self.egress.status(item.scene, item.id),
                 "scene_today_traffic": self.egress.status(item.scene),
+                "skills": [{"name": skill.name, "source": skill.source,
+                            "path": skill.container_path + "/SKILL.md"}
+                           for skill in current.skills if not skill.disable_model_invocation],
             }, ensure_ascii=False, allow_nan=False),
         )
         if await session.pi.prompt(item.input + "\n\n" + environment) == "handled":
