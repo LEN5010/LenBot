@@ -84,6 +84,7 @@ class NetworkRuntime:
                                  lambda scene=scene: reply_effects.wake(scene)),
                 send_message=self.platform.send_message if config.delivery == "onebot" else None,
                 upload_file=self.platform.upload_file if config.delivery == "onebot" else None,
+                platform_call=self.platform.call if config.delivery == "onebot" else None,
                 on_update=self.notify,
             )
         self.runners: dict[str, SceneRunner] = {}

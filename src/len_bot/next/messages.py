@@ -183,6 +183,11 @@ def _body(segments: list[Segment]) -> str:
     return "".join(parts)
 
 
+def render_body(segments: list[Segment]) -> str:
+    """Segment text and placeholders exactly as in rendered chat lines."""
+    return _body(segments)
+
+
 def render_message(message: ChatMessage, *, timezone: str, reply: ChatMessage | None = None) -> str:
     """Render a single message with its actual sender, words, and known reply."""
     clock = datetime.fromtimestamp(message.time, ZoneInfo(timezone)).isoformat(sep=" ", timespec="seconds")
