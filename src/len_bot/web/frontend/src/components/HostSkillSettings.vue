@@ -2,16 +2,20 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, sceneName } from '../api.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
+import SkillInspector from './SkillInspector.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
 const emit = defineEmits(['dirty'])
 const snapshot = ref(null), loading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
+const inspected = ref(null), catalogStale = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const beginRead = useRequestGuard(() => props.scene)
 const beginSave = useRequestGuard(() => props.scene)
 const knownNames = computed(() => snapshot.value?.catalog.map(item => item.name) || [])
 const otherNames = computed(() => draftNames.value.filter(name => !knownNames.value.includes(name)))
+const inspectorOpen = computed({ get: () => inspected.value !== null,
+  set: value => { if (!value) inspected.value = null } })
 const dirty = computed(() => {
   if (!snapshot.value) return false
   const saved = snapshot.value.role_skills.saved
@@ -23,6 +27,7 @@ onBeforeUnmount(() => emit('dirty', false))
 
 function adopt(value) {
   snapshot.value = value
+  catalogStale.value = false
   draftMode.value = value.role_skills.saved === 'all' ? 'all' : 'selected'
   draftNames.value = value.role_skills.saved === 'all'
     ? value.catalog.map(item => item.name) : [...value.role_skills.saved]
@@ -36,6 +41,7 @@ function toggleName(name, enabled) {
     ? draftNames.value.includes(name) ? draftNames.value : [...draftNames.value, name]
     : draftNames.value.filter(item => item !== name)
 }
+function catalogChanged() { catalogStale.value = true }
 async function read(confirmDiscard = true) {
   if (confirmDiscard && dirty.value && !window.confirm('放弃当前技能许可草稿，重读保存值与运行技能？')) return
   const target = props.scene, fresh = beginRead()
@@ -82,6 +88,7 @@ onMounted(() => read(false))
     <v-alert v-if="readError" type="error" variant="tonal" role="alert" :title="snapshot?'读取失败 · 保留上次快照':'读取技能失败'">{{ readError }}</v-alert>
     <v-alert v-if="saveError" type="error" variant="tonal" role="alert">{{ saveError }}</v-alert>
     <v-alert v-if="savedNotice && !dirty" type="success" variant="tonal" role="status">{{ savedNotice }}</v-alert>
+    <v-alert v-if="catalogStale" type="warning" variant="tonal" role="status">技能目录已变化；下方名单是旧快照。许可草稿保持原样，可手动重读后再决定是否保存。</v-alert>
     <p v-if="loading && !snapshot" class="muted" role="status">正在读取本场景技能目录与许可…</p>
     <template v-if="snapshot">
       <div class="directories"><p>根配置保存目录：<strong>{{ snapshot.directory ?? '未设置；不装载技能' }}</strong></p>
@@ -109,18 +116,24 @@ onMounted(() => read(false))
           <span class="muted">写入共享角色包；不覆盖上方工具许可草稿。</span></div>
       </form>
       <h3>根配置目录中的技能</h3>
-      <p class="muted">保存选择仅表示下次启动的允许范围；名称白名单与空列表不会自动扩大到任务自写技能。标成“仅显式调用”的技能不会自动被模型发现，也不表示已经使用。</p>
+      <p class="muted">保存选择仅表示下次启动的允许范围；名称白名单与空列表不会自动扩大到任务自写技能。目录候选的发现方式来自 SKILL.md 声明，不表示已经装载或使用；运行名单另列。</p>
       <ul v-if="snapshot.catalog.length" class="skill-list"><li v-for="item in snapshot.catalog" :key="item.name">
-        <strong>{{ item.name }}</strong> · {{ sourceLabel(item.source) }} · {{ item.selected?'保存值已选':'保存值未选' }} · {{ item.model_invocation?'可按描述自动发现':'仅显式调用' }}
-        <p class="muted">{{ item.description }}</p><p class="path">容器文件：{{ item.path }}</p></li></ul>
+        <strong>{{ item.name }}</strong> · {{ sourceLabel(item.source) }} · {{ item.selected?'保存值已选':'保存值未选' }} · {{ item.model_invocation?'声明可自动发现':'声明仅显式调用' }}
+        <p class="muted">{{ item.description }}</p><p class="path">容器文件：{{ item.path }}</p>
+        <v-btn variant="outlined" :disabled="catalogStale" @click="inspected=item">查看文件与目录操作</v-btn></li></ul>
       <p v-else class="muted">{{ snapshot.directory===null?'未设置技能目录；当前不装载内置、共享或场景技能。':'所选目录没有可用技能。' }}</p>
       <h3>当前运行已装配</h3>
       <ul v-if="snapshot.running.length" class="skill-list"><li v-for="item in snapshot.running" :key="item.name">
-        <strong>{{ item.name }}</strong> · {{ sourceLabel(item.source) }} · {{ item.model_invocation?'可按描述自动发现':'仅显式调用' }}
+        <strong>{{ item.name }}</strong> · {{ sourceLabel(item.source) }} · {{ item.model_invocation?'声明可自动发现':'声明仅显式调用' }}
         <p class="muted">{{ item.description }}</p><p class="path">容器文件：{{ item.path }}</p></li></ul>
       <p v-else class="muted">当前运行没有已装配的根／场景技能；本任务自己写的技能不在这份全局名单中。</p>
       <p class="muted">以上是装配与许可快照，不是技能已经被调用或任务完成的证明。</p>
     </template>
+    <v-dialog v-model="inspectorOpen" max-width="900" scrollable><v-card v-if="inspected" class="inspector-dialog">
+      <v-card-title>技能目录 · {{ inspected.name }}</v-card-title>
+      <v-card-text><SkillInspector :key="`${inspected.source}:${inspected.name}`" :scene="scene" :source="inspected.source" :name="inspected.name" @changed="catalogChanged" /></v-card-text>
+      <v-card-actions><v-spacer /><v-btn variant="outlined" @click="inspected=null">关闭</v-btn></v-card-actions>
+    </v-card></v-dialog>
   </section>
 </template>
 
@@ -129,5 +142,6 @@ onMounted(() => read(false))
 .skill-settings h2{font-size:18px;margin:0 0 8px}.skill-settings h3{font-size:15px;margin:20px 0 8px}.section-heading h3{margin-top:0}
 .directories{border-left:3px solid var(--line);padding-left:12px;margin:12px 0}.directories p{margin:4px 0}.skill-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.skill-list li{border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0;overflow-wrap:anywhere}.skill-list p{margin:6px 0}.path{font-size:13px;overflow-wrap:anywhere}
 .skill-choice{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:2px 12px}.skill-choice p{grid-column:1/-1}.form-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:14px 0}.dirty-note{border-left:3px solid var(--primary);background:var(--selected-bg);padding:8px 12px}.skill-settings :deep(.v-btn){min-height:44px}
+.inspector-dialog{max-height:90vh}
 @media(max-width:600px){.section-heading>.v-btn{width:100%}}
 </style>

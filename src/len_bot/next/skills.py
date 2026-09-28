@@ -40,8 +40,8 @@ class Skill:
     disable_model_invocation: bool
 
 
-def _skill(path: Path, source: Literal["builtin", "shared", "scene", "task"],
-           container_path: str) -> Skill:
+def load_skill(path: Path, source: Literal["builtin", "shared", "scene", "task"],
+               container_path: str) -> Skill:
     file = path / "SKILL.md"
     if file.is_symlink() or not stat.S_ISREG(file.stat().st_mode):
         raise ValueError(f"{file}: SKILL.md must be a regular file, not a symbolic link")
@@ -83,8 +83,8 @@ def _skill(path: Path, source: Literal["builtin", "shared", "scene", "task"],
 
 def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task"],
                container_root: str, *, missing_ok: bool) -> tuple[Skill, ...]:
-    if root.is_symlink():
-        raise ValueError(f"{root}: skill directory must not be a symbolic link")
+    if root.resolve(strict=False) != root:
+        raise ValueError(f"{root}: skill directory must not traverse a symbolic link")
     try:
         children = sorted(root.iterdir(), key=lambda child: child.name)
     except FileNotFoundError:
@@ -96,7 +96,7 @@ def _directory(root: Path, source: Literal["builtin", "shared", "scene", "task"]
         if child.is_symlink():
             raise ValueError(f"{child}: skill directory must not be a symbolic link")
         if child.is_dir():
-            skills.append(_skill(child, source, f"{container_root}/{child.name}"))
+            skills.append(load_skill(child, source, f"{container_root}/{child.name}"))
     return tuple(skills)
 
 
