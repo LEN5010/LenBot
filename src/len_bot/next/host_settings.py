@@ -123,6 +123,7 @@ class OpenVikingChangeSettings(BaseModel):
 class OpenVikingMemoryChange(RecallSettings):
     backend: Literal["openviking"]
     openviking: OpenVikingChangeSettings
+    summaries: bool = False
 
 
 class MemoryChange(BaseModel):

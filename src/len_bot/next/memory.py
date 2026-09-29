@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
+from pathlib import Path
+from string import Template
 from typing import Annotated, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
@@ -58,6 +60,7 @@ class LocalMemoryConfig(RecallSettings):
 class OpenVikingMemoryConfig(RecallSettings):
     backend: Literal["openviking"]
     openviking: OpenVikingSettings
+    summaries: bool = False
 
 
 MemorySettings = Annotated[LocalMemoryConfig | OpenVikingMemoryConfig, Field(discriminator="backend")]
@@ -177,6 +180,21 @@ class MemoryService:
 
     async def read_group_profile(self, scene: str) -> str | None:
         """Read the current derived profile under the backend's existing write/read lock."""
+        if isinstance(self.backend, OpenVikingMemory):
+            if not self.settings.summaries:
+                return None
+            async with self.write_lock(scene):
+                if scene in self.pending_native_tasks:
+                    return None
+                current = await self.backend.overview(scene)
+            freshness = current.freshness
+            if (freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
+                    or freshness.missing_summary_entries):
+                return None
+            prompt = Path(__file__).resolve().parents[1] / "prompts" / "next_native_memory_overview.md"
+            return Template(prompt.read_text()).substitute(
+                missing="未报告" if freshness.missing_summary_entries is None else freshness.missing_summary_entries,
+                overview=current.content)
         if self.summarizer is None:
             return None
         summary = await self.backend.summary(scene)
