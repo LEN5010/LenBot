@@ -21,7 +21,7 @@ async function read() {
   const fresh = begin()
   loading.value = true; error.value = ''
   try {
-    const value = await api('/api/host/memory/summary' + queryString({ scene:props.scene, path:props.path, scope:props.scope }))
+    const value = await api('/api/host/memory/summary?' + queryString({ scene:props.scene, path:props.path, scope:props.scope }))
     if (fresh()) data.value = value
   } catch (caught) { if (fresh()) error.value = caught.message }
   finally { if (fresh()) loading.value = false }

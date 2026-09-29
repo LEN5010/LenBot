@@ -35,7 +35,7 @@ async function read(more = false) {
   loading.value = true; error.value = ''
   try {
     const offset = more ? data.value.next_offset : 0
-    const value = await api('/api/host/schedules/proactive' + queryString({ scene:props.scene, offset }))
+    const value = await api('/api/host/schedules/proactive?' + queryString({ scene:props.scene, offset }))
     if (!fresh()) return
     data.value = more ? { ...value, items:[...data.value.items, ...value.items] } : value
   } catch (caught) {

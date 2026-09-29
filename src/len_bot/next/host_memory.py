@@ -42,6 +42,12 @@ class SummaryRequest(BaseModel):
     scope: Literal["scene", "public"]
 
 
+class NativeOverviewRequest(BaseModel):
+    model_config = STRICT
+    scene: str
+    path: str = "memories"
+
+
 class DeleteRequest(BaseModel):
     model_config = STRICT
     scene: str
@@ -129,6 +135,27 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
         async with operation(body.scene) as memory:
             return await memory.delete(body.scene, body.path, body.reason, forget=body.forget,
                                        exclude_records=body.exclude_records)
+
+    @app.get("/api/host/memory/native-overview")
+    async def native_overview(scene: str, path: str = "memories", _: str = Depends(user)):
+        async with operation(scene) as memory:
+            if isinstance(memory.backend, LocalMemory):
+                raise ValueError("原生概览仅适用于 OpenViking 后端")
+            async with memory.write_lock(scene):
+                return (await memory.backend.overview(scene, path)).as_dict()
+
+    @app.post("/api/host/memory/native-overview")
+    async def refresh_native_overview(body: NativeOverviewRequest, _: str = Depends(user)):
+        async with operation(body.scene) as memory:
+            if isinstance(memory.backend, LocalMemory):
+                raise ValueError("原生概览仅适用于 OpenViking 后端")
+            async with memory.write_lock(body.scene):
+                if body.scene in memory.pending_native_tasks:
+                    raise ValueError(f"OpenViking 抽取仍在处理：{memory.pending_native_tasks[body.scene]}")
+                result = await memory.backend.refresh_overview(body.scene, body.path)
+                return {"result": result.model_dump(),
+                        "complete": result.failed_records == 0 and result.unsupported_records == 0,
+                        "scope": "原生目录及其子目录，不包含同级 peers，也不刷新上级目录"}
 
     @app.get("/api/host/memory/summary")
     async def summary(scene: str, path: str = "", scope: Literal["scene", "public"] = "scene",
