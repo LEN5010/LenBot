@@ -7,11 +7,18 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from .operations import diagnostic_zip
 from .tasks_store import TaskStore
 from .usage import usage
 from .limits import LimitReached
+
+
+class QuietChange(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    seconds: int = Field(ge=1, le=604800)
+    direct: Literal['allow', 'defer'] = 'allow'
 
 
 def register_host_operations(app, *, runtime, user):
@@ -51,6 +58,29 @@ def register_host_operations(app, *, runtime, user):
                 return await runner.chat.compact_now()
             except (ValueError, TimeoutError) as error:
                 raise HTTPException(422, f'{type(error).__name__}: {error}') from error
+
+    @app.get('/api/host/scenes/{scene}/control')
+    async def scene_control(scene: str, _: str = Depends(user)):
+        scene_exists(scene)
+        return runtime.runners[scene].control_state()
+
+    @app.post('/api/host/scenes/{scene}/control/quiet')
+    async def scene_quiet(scene: str, change: QuietChange, _: str = Depends(user)):
+        scene_exists(scene)
+        runner = runtime.runners[scene]
+        if runner.execution.locked() or not runtime.accepting:
+            raise HTTPException(409, '场景正在执行或宿主正在停止，临时状态未改变')
+        async with runner.execution:
+            return runner.set_temporary_quiet(change.seconds, change.direct, None)
+
+    @app.post('/api/host/scenes/{scene}/control/resume')
+    async def scene_resume(scene: str, _: str = Depends(user)):
+        scene_exists(scene)
+        runner = runtime.runners[scene]
+        if runner.execution.locked() or not runtime.accepting:
+            raise HTTPException(409, '场景正在执行或宿主正在停止，临时状态未改变')
+        async with runner.execution:
+            return runner.set_temporary_quiet(None, 'allow', None)
 
     @app.get('/api/host/scenes/{scene}/notices')
     async def notices(scene: str, before: int | None = Query(None, ge=1),

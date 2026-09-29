@@ -20,6 +20,7 @@ class CapabilityMatrix(BaseModel):
     own_reminder: list[TaskRole]
     other_reminder: list[TaskRole]
     reminder_manage: list[TaskRole]
+    chat_control: list[TaskRole]
 
     @field_validator('*')
     @classmethod
@@ -40,7 +41,8 @@ def matrix(config, scene: str) -> dict:
     item = config.scenes[scene]
     return {'delegate': item.tasks.delegate_roles, 'task_manage': item.tasks.manage_roles,
             'long_running': item.tasks.long_running_roles, 'own_reminder': item.schedules.own,
-            'other_reminder': item.schedules.others, 'reminder_manage': item.schedules.manage}
+            'other_reminder': item.schedules.others, 'reminder_manage': item.schedules.manage,
+            'chat_control': item.chat_control_roles}
 
 
 def register_host_permissions(app: FastAPI, *, root: Path, runtime, user, write_lock):
@@ -77,6 +79,7 @@ def register_host_permissions(app: FastAPI, *, root: Path, runtime, user, write_
                 raise ValueError('保存配置中没有该场景')
             source['permissions'] = change.global_identities.model_dump()
             local = source['scenes'][scene]
+            local['chat_control_roles'] = change.matrix.chat_control
             local['permissions'] = None if change.scene_identities is None else change.scene_identities.model_dump()
             local.setdefault('tasks', {}).update(delegate_roles=change.matrix.delegate,
                 manage_roles=change.matrix.task_manage, long_running_roles=change.matrix.long_running)

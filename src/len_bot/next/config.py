@@ -749,6 +749,15 @@ class ScenePersona(BaseModel):
 
 
 class SceneSettings(ScenePersona):
+    chat_control_roles: list[ScheduleRole] = Field(default_factory=lambda: ["owner", "admin", "group_manager"])
+
+    @field_validator("chat_control_roles")
+    @classmethod
+    def distinct_control_roles(cls, values):
+        if len(values) != len(set(values)):
+            raise ValueError("chat_control_roles must not repeat")
+        return values
+
     permissions: IdentitySettings | None = None
     # Explicit IANA override for this scene; None uses the root timezone.
     timezone: str | None = None

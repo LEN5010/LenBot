@@ -88,8 +88,7 @@ async def run() -> None:
             chat = Chat(config, persona, store, mind, voice, vision=vision, memory=memory, now=now, slots=slots,
                         expression_service=expression_service,
                         on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
-            resume = chat.restore()
-            runner = SceneRunner(chat, lambda result: print(encode({"type": "turn", **result}), flush=True), resume=resume)
+            runner = SceneRunner(chat, lambda result: print(encode({"type": "turn", **result}), flush=True))
             async with asyncio.TaskGroup() as tasks:
                 tasks.create_task(runner.run())
                 async for line in input_lines():

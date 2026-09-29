@@ -30,7 +30,7 @@ from ..next.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
-               "persona_knowledge", "tool_search", "react"}
+               "persona_knowledge", "tool_search", "react", "scene_control"}
 
 
 class Annotation(BaseModel):
