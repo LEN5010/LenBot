@@ -62,7 +62,7 @@ class PanelSession:
         self.chat = Chat(config, load_persona(config.persona) if persona is None else persona, store, mind, voice, vision=vision,
                          memory=memory, slots=slots, on_update=self.notify,
                          on_compaction=None if ingestor is None else lambda: ingestor.request(config.scene))
-        self.runner = SceneRunner(self.chat, lambda _: self.notify(), resume=self.chat.restore())
+        self.runner = SceneRunner(self.chat, lambda _: self.notify())
         self.task = asyncio.create_task(self.runner.run())
         self.task.add_done_callback(lambda _: self.notify())
 

@@ -122,7 +122,7 @@ class NetworkRuntime:
         for scene, chat in self.chats.items():
             self.runners[scene] = SceneRunner(
                 chat, lambda result, scene=scene: self._emit({"type": "turn", **result, "scene": scene}),
-                resume=chat.restore(), ready_for_turn=self._ready,
+                ready_for_turn=self._ready,
                 connected_since=lambda: self.connected_since,
             )
         if plugins is not None:

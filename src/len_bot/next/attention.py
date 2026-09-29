@@ -9,10 +9,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from string import Template
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from .chat import Chat
+from .scene_control import SceneControlArguments, TemporaryQuiet, require_control
 from .limits import LimitReached
 from .config import Attention
 from .delivery import report_parts, split_expression
@@ -46,6 +48,7 @@ class AttentionState:
     pending: PendingWake | None = None
     quiet_notice_until: float | None = None
     limit_notice_until: float | None = None
+    temporary_quiet: TemporaryQuiet | None = None
 
     def contact(self, at: float, duration: float) -> None:
         if self.last_contact_at is None or at > self.last_contact_at:
@@ -105,7 +108,7 @@ def participation_score(pending: list[tuple[ChatMessage, float]],
 
 
 class SceneRunner:
-    def __init__(self, chat: Chat, emit: Callable[[dict], None], *, resume: bool,
+    def __init__(self, chat: Chat, emit: Callable[[dict], None], *,
                  ready_for_turn: Callable[[bool], Awaitable[bool]] | None = None,
                  connected_since: Callable[[], float | None] = lambda: None):
         self.execution = asyncio.Lock()
@@ -117,7 +120,6 @@ class SceneRunner:
         self.emit = emit
         self.changed = asyncio.Event()
         self.closing = False
-        self.resume = resume
         self.ready_for_turn = ready_for_turn
         self.own_ids = self.store.own_ids(self.config.scene)
         self.proactive = None if self.config.proactive is None else ProactiveStore(self.store)
@@ -129,6 +131,8 @@ class SceneRunner:
         else:
             if saved["pending"] is not None:
                 saved["pending"] = PendingWake(**saved["pending"])
+            if saved.get("temporary_quiet") is not None:
+                saved["temporary_quiet"] = TemporaryQuiet(**saved["temporary_quiet"])
             self.state = AttentionState(**saved)
         restored = copy.deepcopy(self.state)
         if restored.pending is not None:
@@ -155,6 +159,55 @@ class SceneRunner:
         else:
             self.save_state(restored)
 
+        self.chat.scene_control = self.control
+        self.chat.set_external_tools(list(self.chat.external.values()))
+        self.resume = self.chat.restore()
+
+    def quiet_period(self, now: float) -> tuple[float, float] | None:
+        configured = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+        temporary = self.state.temporary_quiet
+        if temporary is None or not temporary.started <= now < temporary.until:
+            return configured
+        if configured is None:
+            return temporary.started, temporary.until
+        return min(configured[0], temporary.started), min(configured[1], temporary.until)
+
+    def quiet_direct(self, now: float) -> str:
+        configured = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+        mode = 'allow' if configured is None else self.settings.quiet_hours.direct
+        temporary = self.state.temporary_quiet
+        if temporary is not None and temporary.started <= now < temporary.until and temporary.direct == 'defer':
+            return 'defer'
+        return mode
+
+    def control_state(self) -> dict:
+        now = self.now()
+        period = self.quiet_period(now)
+        return {'scene': self.config.scene, 'timezone': self.config.timezone,
+                'attention': self.settings.model_dump(mode='json'),
+                'temporary_quiet': None if self.state.temporary_quiet is None else asdict(self.state.temporary_quiet),
+                'quiet_until': None if period is None else period[1],
+                'direct': self.quiet_direct(now),
+                'scope': Template((Path(__file__).resolve().parents[1] / 'prompts' / 'next_scene_control.md').read_text()).substitute(scene=self.config.scene).strip()}
+
+    def set_temporary_quiet(self, seconds: int | None, direct: Literal["allow", "defer"], requester: str | None) -> dict:
+        now = self.now()
+        state = copy.deepcopy(self.state)
+        state.temporary_quiet = (None if seconds is None else
+                                 TemporaryQuiet(now, now + seconds, direct, requester))
+        self.clear_quiet_wake(state, now, None if seconds is None else (now, now + seconds))
+        self.save_state(state)
+        self.changed.set()
+        self.chat.notify()
+        return self.control_state()
+
+    def control(self, args: SceneControlArguments) -> dict:
+        if args.action == 'status':
+            return self.control_state()
+        require_control(self.store, self.config, args.requester)
+        return self.set_temporary_quiet(args.seconds if args.action == 'quiet' else None,
+                                        'allow' if args.direct is None else args.direct, args.requester)
+
     def save_state(self, state: AttentionState) -> None:
         if state != self.state:
             self.store.save_attention(self.config.scene, asdict(state))
@@ -180,7 +233,7 @@ class SceneRunner:
             return
         if self.settings.only_direct or message.sender.uid in self.settings.other_bot_qqs:
             return
-        if quiet_period(self.settings.quiet_hours, self.config.timezone, at) is not None:
+        if self.quiet_period(at) is not None:
             return
         text = plain_text(message).casefold()
         words = [word for word in self.keywords if word in text and
@@ -231,7 +284,7 @@ class SceneRunner:
         wake = wake and not blocked
         now = self.now()
         state = copy.deepcopy(self.state)
-        period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+        period = self.quiet_period(now)
         self.clear_quiet_wake(state, now, period)
         # Batch statistics are only needed for a new, non-direct ambient opportunity.
         pending, recent = [], []
@@ -276,11 +329,11 @@ class SceneRunner:
         while True:
             self.changed.clear()
             now = self.now()
-            period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+            period = self.quiet_period(now)
             if period is None:
                 available = self.store.last_pending_arrival(self.config.scene, self.settings.other_bot_qqs) is not None
             else:
-                available = (self.settings.quiet_hours.direct == "allow" and self.state.pending is not None
+                available = (self.quiet_direct(now) == "allow" and self.state.pending is not None
                              and self.state.pending.channel == "direct")
             if available:
                 reason = "收到新消息"
@@ -348,7 +401,7 @@ class SceneRunner:
             due_at = now if due_at is None else min(now, due_at)
         if due_at is None:
             return None
-        period = quiet_period(self.settings.quiet_hours, self.config.timezone, max(now, due_at))
+        period = self.quiet_period(max(now, due_at))
         return due_at if period is None else period[1]
 
     def audio_ready(self) -> bool:
@@ -377,9 +430,9 @@ class SceneRunner:
             except LimitReached as error:
                 if in_turn or self.closing:
                     return None
-                quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+                quiet = self.quiet_period(now)
                 if (self.state.pending is not None and self.state.pending.channel == "direct"
-                        and (quiet is None or self.settings.quiet_hours.direct != "defer")):
+                        and (quiet is None or self.quiet_direct(now) != "defer")):
                     async with self.execution:
                         await self.limit_notice(error)
                 try:
@@ -387,7 +440,7 @@ class SceneRunner:
                 except TimeoutError:
                     pass  # The configured allowance window ended; no failed request is retried.
                 continue
-            period = quiet_period(self.settings.quiet_hours, self.config.timezone, now)
+            period = self.quiet_period(now)
             state = copy.deepcopy(self.state)
             self.clear_quiet_wake(state, now, period)
             self.save_state(state)
@@ -401,7 +454,7 @@ class SceneRunner:
             resuming = self.resume and not in_turn
             if period is not None:
                 direct = self.state.pending is not None
-                mode = self.settings.quiet_hours.direct
+                mode = self.quiet_direct(now)
                 if direct and mode in {"allow", "notice"}:
                     if mode == "notice":
                         if in_turn:
@@ -500,13 +553,12 @@ class SceneRunner:
         if scheduled:
             self.chat.turn_channels.add("schedule")
             self.store.append_schedules(self.config.scene, scheduled, turn_id=turn_id)
-        if self.chat.tasks is not None and quiet_period(
-                self.settings.quiet_hours, self.config.timezone, self.now()) is None:
+        if self.chat.tasks is not None and self.quiet_period(self.now()) is None:
             notices = self.chat.tasks.records.pending_notices(self.config.scene)
             if notices:
                 self.chat.turn_channels.add("task")
                 self.store.append_task_notices(self.config.scene, notices, turn_id=turn_id)
-        if quiet_period(self.settings.quiet_hours, self.config.timezone, self.now()) is None:
+        if self.quiet_period(self.now()) is None:
             if self.audio_ready():
                 self.chat.turn_channels.add("audio")
             events = self.store.pending_plugin_events(self.config.scene)
@@ -518,8 +570,8 @@ class SceneRunner:
 
     async def limit_notice(self, error: LimitReached) -> None:
         """At most one host explanation per blocked window, persisted before delivery."""
-        quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, self.now())
-        if quiet is not None and self.settings.quiet_hours.direct == "defer":
+        quiet = self.quiet_period(self.now())
+        if quiet is not None and self.quiet_direct(self.now()) == "defer":
             return
         if self.state.limit_notice_until is not None and self.state.limit_notice_until >= error.until:
             return
@@ -619,6 +671,9 @@ class SceneRunner:
         observe_until = self.proactive.settle(self.config.scene, now)
         wake_at, _ = self.proactive.next_at(self.config.scene, self.config.proactive, self.config.timezone,
                                             self.settings.quiet_hours, now, exclude)
+        temporary = self.state.temporary_quiet
+        if wake_at is not None and temporary is not None and now < temporary.until:
+            wake_at = max(wake_at, temporary.until)
         return wake_at, observe_until
 
     async def proactive_turn(self) -> None:
@@ -650,7 +705,7 @@ class SceneRunner:
                 if notice_until is not None:
                     await self.quiet_notice(pending, notice_until)
                     continue
-                quiet = quiet_period(self.settings.quiet_hours, self.config.timezone, self.now()) is not None
+                quiet = self.quiet_period(self.now()) is not None
                 notices = (self.chat.tasks.records.pending_notices(self.config.scene)
                            if self.chat.tasks is not None and not quiet else [])
                 events = [] if quiet else self.store.pending_plugin_events(self.config.scene)

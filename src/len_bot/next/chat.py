@@ -48,6 +48,7 @@ from .platform_tools import (MEMBER_INFO_TOOL, OPEN_FORWARD_TOOL, MemberInfoArgu
 from .pricing import estimate_cost
 from .recall import RECALL_TOOL, RecallArguments, recall_chat
 from .reply_effect_store import ReplyEffectStore
+from .scene_control import SCENE_CONTROL_TOOL, SceneControlArguments
 from .schedule import SCHEDULE_TOOLS, describe, execute_schedule
 from .skills import Skill
 from .store import ImageAsset, Store, encode
@@ -120,7 +121,7 @@ def tool_catalog(*, platform: bool) -> list[dict]:
     }}
     return [say, REACT_TOOL, WAIT_TOOL, RECALL_TOOL, WEB_SEARCH_TOOL, WEB_READ_TOOL, LOOK_TOOL,
             *SCHEDULE_TOOLS, PERSONA_KNOWLEDGE_TOOL, MEMORY_TOOL, DELEGATE_TOOL, TASK_TOOL,
-            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, TOOL_SEARCH]
+            SEND_FILE_TOOL, OPEN_FORWARD_TOOL, MEMBER_INFO_TOOL, TRANSCRIBE_TOOL, SCENE_CONTROL_TOOL, TOOL_SEARCH]
 
 
 def tool_unavailable_reasons(config: LabConfig, persona: Persona, name: str) -> list[str]:
@@ -307,6 +308,7 @@ class Chat:
                                      "请停机执行显式可移植历史转换")
         if (config.models.roles.vision is None) != (vision is None):
             raise ValueError("vision 客户端必须与根配置的视觉模型绑定一起提供")
+        self.scene_control: Callable[[SceneControlArguments], dict] | None = None
         self.skills = () if tasks is None else tasks.skills[config.scene]
         self.set_external_tools(external_tools)
         self.system = self.profile_system(None if memory is None else memory.group_profile(config.scene))
@@ -318,6 +320,8 @@ class Chat:
         config, persona = self.config, self.persona
         send_message, upload_file, platform_call = self.send_message, self.upload_file, self.platform_call
         allowed = build_tools(config, persona, platform=send_message is not None)
+        if self.scene_control is None:
+            allowed = [tool for tool in allowed if tool["function"]["name"] != "scene_control"]
         # Plugin and MCP tools are always low-frequency and still need the role's permission.
         self.external = {tool.name: tool for tool in external_tools
                          if persona.tools == "all" or tool.name in persona.tools}
@@ -342,7 +346,7 @@ class Chat:
         self._base_system = build_system(config, persona, allowed, platform=send_message is not None,
                                    skills=self.skills,
                                    external=[tool.definition for tool in self.external.values()])
-        self.system = self._base_system
+        self.system = self.profile_system(None if self.memory is None else self.memory.group_profile(config.scene))
 
     def profile_system(self, profile: str | None) -> str:
         if profile is None:
@@ -808,6 +812,8 @@ class Chat:
         if call.name == "react":
             expression = self.react(ReactArguments.model_validate(call.arguments))
             return self.render(expression.message), expression, None
+        if call.name == "scene_control":
+            return encode(self.scene_control(SceneControlArguments.model_validate(call.arguments))), None, None
         if call.name == "recall_chat":
             return recall_chat(self.store, self.config.scene, self.config.timezone,
                                RecallArguments.model_validate(call.arguments)), None, None
