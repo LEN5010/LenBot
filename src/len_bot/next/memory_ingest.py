@@ -348,6 +348,8 @@ class MemoryIngestor:
             self.jobs.status(job, "complete")
             self._refresh.discard(scene)
             self.memory.pending_native_tasks.pop(scene, None)
+            if self.memory.settings.summaries and task.memories_extracted != 0:
+                await self._refresh_native_overview(scene, job)
         elif task.status in {"failed", "cancelled"}:
             job["details"]["native_phase"] = task.status
             self.jobs.status(job, "failed", task.error or f"OpenViking task {task.status}")
@@ -355,6 +357,27 @@ class MemoryIngestor:
             self.memory.pending_native_tasks.pop(scene, None)
         else:
             self.jobs.status(job, "submitted")
+
+    async def _refresh_native_overview(self, scene: str, job: dict) -> None:
+        """A derived-content operation; its failure never reopens successful extraction."""
+        refresh = {"path": "memories", "mode": "semantic_and_vectors", "recursive": True,
+                   "wait": True, "started": self.store.now()}
+        job["details"]["overview_refresh"] = refresh
+        self.jobs.details(job)
+        try:
+            async with self.memory.write_lock(scene):
+                result = await self.memory.backend.refresh_overview(scene)
+            refresh["result"] = result.model_dump()
+            refresh["complete"] = result.failed_records == 0 and result.unsupported_records == 0
+        except asyncio.CancelledError:
+            refresh["error"] = "Process stopped while native overview outcome was unknown"
+            raise
+        except Exception as error:
+            refresh["error"] = _error_text(error)
+            LOG.exception("Native memory overview refresh failed for %s", scene)
+        finally:
+            refresh["ended"] = self.store.now()
+            self.jobs.details(job)
 
 
 @asynccontextmanager

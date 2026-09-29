@@ -22,7 +22,7 @@ function normalizedMemory(value) {
     recall_budget_chars: value.recall_budget_chars, recall_limit: value.recall_limit,
     ingest: copy(value.ingest) }
   if (value.backend === 'local') return { ...common, local: copy(value.local), summaries: value.summaries }
-  return { ...common, openviking: {
+  return { ...common, summaries: value.summaries, openviking: {
     base_url: value.openviking.base_url, account_id: value.openviking.account_id,
     timeout_seconds: value.openviking.timeout_seconds, public_root: value.openviking.public_root,
     scenes: Object.fromEntries(Object.entries(value.openviking.scenes).sort(([left], [right]) => left.localeCompare(right)).map(([scene, item]) =>
@@ -35,7 +35,7 @@ function body() {
     recall_budget_chars: draft.value.recall_budget_chars, recall_limit: draft.value.recall_limit,
     ingest: copy(draft.value.ingest) }
   if (draft.value.backend === 'local') return { memory: { ...common, local: copy(draft.value.local), summaries: draft.value.summaries } }
-  return { memory: { ...common, openviking: {
+  return { memory: { ...common, summaries: draft.value.summaries, openviking: {
     base_url: draft.value.openviking.base_url, account_id: draft.value.openviking.account_id,
     timeout_seconds: draft.value.openviking.timeout_seconds,
     public_root: draft.value.openviking.public_root,
@@ -77,7 +77,7 @@ function chooseBackend(value) {
       local: { directory: '', embedding: null }, summaries: false }
     identities.value = []
   } else {
-    draft.value = { backend: 'openviking', auto_recall: true, recall_budget_chars: 1500, recall_limit: 5, ingest: null,
+    draft.value = { backend: 'openviking', summaries: false, auto_recall: true, recall_budget_chars: 1500, recall_limit: 5, ingest: null,
       openviking: { base_url: '', account_id: '', timeout_seconds: 20, public_root: null } }
     identities.value = identityRows(null, configuredScenes.value)
   }
@@ -159,10 +159,12 @@ onMounted(() => read(false))
               <v-text-field v-model="draft.local.embedding.model" label="Embedding 精确模型名" hide-details="auto" />
               <v-text-field :model-value="draft.local.embedding.dimensions ?? ''" type="number" step="1" label="维数（可不指定）" hide-details="auto" @update:model-value="value=>draft.local.embedding.dimensions=value===''?null:numeric(value)" /></div>
             <v-switch v-model="draft.summaries" label="生成目录摘要与本群画像" hide-details />
-            <p class="muted">每个目录生成一句话摘要和概览；分区根目录的概览就是本群画像，下次启动时进入大脑设定。抽取批次有写入后自动更新相关目录，也可在记忆页对某个目录手动生成。使用 memory 用途的模型，会产生真实请求。</p>
+            <p class="muted">每个目录生成一句话摘要和概览；分区根目录的概览作为本群画像，在大脑每次请求前读取当前有效版本。抽取批次有写入后自动更新相关目录，也可在记忆页对某个目录手动生成。使用 memory 用途的模型，会产生真实请求。</p>
             <v-alert v-if="draft.summaries && snapshot.saved.models.roles.memory===null" type="warning" variant="tonal">最近读取的根配置尚无 memory 用途绑定；后端会拒绝开启目录摘要。</v-alert>
           </template>
-          <template v-else><h3>OpenViking 后端</h3><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
+          <template v-else><h3>OpenViking 后端</h3>
+            <v-switch v-model="draft.summaries" label="使用原生场景概览并在抽取完成后刷新" hide-details />
+            <p class="muted">开启后每次大脑请求读取原生 memories 概览；过期、未采样或明确缺失子项时不注入，不包含同级 peers 人物资料。后台抽取完成后另行刷新概览与向量，使用远端自身服务，可能计费。请先在 memories 目录生成概览；读取失败会结束当前轮次，不自动降级或重试。保存后重启生效。</p><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
             <div class="form-grid"><v-text-field v-model="draft.openviking.base_url" label="服务 HTTP 地址" hide-details="auto" />
               <v-text-field v-model="draft.openviking.account_id" label="账户 ID" hide-details="auto" />
               <v-text-field :model-value="draft.openviking.timeout_seconds" type="number" label="请求超时（秒）" hide-details="auto" @update:model-value="value=>draft.openviking.timeout_seconds=numeric(value)" />

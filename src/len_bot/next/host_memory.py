@@ -90,7 +90,7 @@ def register_host_memory(app: FastAPI, *, runtime: NetworkRuntime, user) -> None
                                 or memory.settings.openviking.public_root is not None),
             "auto_recall": memory is not None and memory.settings.auto_recall,
             "recall_budget_chars": None if memory is None else memory.settings.recall_budget_chars,
-            "summaries": memory is not None and memory.summarizer is not None,
+            "summaries": memory is not None and memory.settings.summaries,
             "scenes": [{"scene": scene, "persona": {"id": chat.persona.id, "name": chat.persona.name}}
                        for scene, chat in runtime.chats.items()],
         }
