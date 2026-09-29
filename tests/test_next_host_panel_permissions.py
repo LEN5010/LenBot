@@ -90,6 +90,9 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                         "scene": "group:80001", "acknowledge_model_cost": True,
                     })).status_code == 401
 
+                    assert (await client.get("/api/host/memory/native-overview", params={"scene":"group:80001"})).status_code == 401
+                    assert (await client.post("/api/host/memory/native-overview", json={"scene":"group:80001"})).status_code == 401
+
                     login = await client.post("/api/auth/login", json={
                         "username": "host-operator", "password": "synthetic-password",
                     })

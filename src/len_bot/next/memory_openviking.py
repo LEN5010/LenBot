@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .messages import ChatMessage, render_message
 from .memory_types import MemoryDocument, MemoryNode, MemoryPage
+from .memory_overview import NativeOverview, OverviewRefresh, parse_overview, parse_refresh
 
 
 _SCENE = re.compile(r"(?:group|private):[1-9][0-9]*\Z")
@@ -405,6 +406,32 @@ class OpenVikingMemory:
         if not isinstance(result, str):
             raise ValueError(f"OpenViking read expected text; raw={raw[:500]!r}")
         return MemoryDocument(path=path, content=result)
+
+    def _overview_uri(self, identity: SceneIdentity, path: str) -> str:
+        uri = self._uri(identity, path, "scene")
+        parts = path.split("/")
+        if parts[0] == "peers" and (len(parts) < 3 or parts[2] != "memories"):
+            raise ValueError("overview requires memories or peers/<QQ>/memories directory")
+        if path.endswith(".md"):
+            raise ValueError("overview requires a directory, not a memory file")
+        return uri
+
+    async def overview(self, scene: str, path: str = "memories") -> NativeOverview:
+        identity = await self._identity(scene)
+        uri = self._overview_uri(identity, path)
+        payload, raw = await self._request(identity, "GET", "/api/v1/content/read",
+                                           params={"uri": uri + "/.overview.md", "raw": "true"})
+        if not isinstance(payload["result"], str):
+            raise ValueError(f"OpenViking overview expected text; raw={raw[:1000]!r}")
+        return parse_overview(payload["result"], uri=uri, path=path)
+
+    async def refresh_overview(self, scene: str, path: str = "memories") -> OverviewRefresh:
+        identity = await self._identity(scene)
+        uri = self._overview_uri(identity, path)
+        payload, raw = await self._request(identity, "POST", "/api/v1/content/reindex",
+                                           body={"uri": uri, "mode": "semantic_and_vectors",
+                                                 "recursive": True, "wait": True})
+        return parse_refresh(payload["result"], uri=uri, raw=raw)
 
     async def history(self, scene: str, path: str) -> list[dict]:
         identity = await self._identity(scene)

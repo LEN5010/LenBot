@@ -8,6 +8,7 @@ import HostMemorySettings from '../components/HostMemorySettings.vue'
 import HostMemoryIngest from '../components/HostMemoryIngest.vue'
 import HostMemorySources from '../components/HostMemorySources.vue'
 import HostMemorySummary from '../components/HostMemorySummary.vue'
+import HostNativeOverview from '../components/HostNativeOverview.vue'
 
 const route = useRoute(), router = useRouter()
 const state = ref(null), scene = ref(''), scope = ref('scene'), directory = ref('')
@@ -260,6 +261,7 @@ watch(editPath, value => {
         <ul v-if="nodes.length" class="node-list"><li v-for="node in nodes" :key="node.path"><v-btn variant="text" @click="node.is_dir?openDirectory(node.path):readFile(node.path)">{{ node.is_dir?'目录':'文件' }} · {{ node.name }}</v-btn>
           <span v-if="node.access" class="muted">{{ node.access }}</span></li></ul>
         <v-btn v-if="hasMore" variant="outlined" :loading="browsing" @click="browse(true)">读取下一页（最多 50 项）</v-btn>
+        <HostNativeOverview v-if="state.backend==='openviking' && scene && scope==='scene' && (directory==='memories' || directory.startsWith('memories/') || /^peers\/[1-9][0-9]*\/memories(?:\/|$)/.test(directory))" :key="`native|${scene}|${directory}`" :scene="scene" :path="directory" />
         <HostMemorySummary v-if="state.backend==='local' && scene" :key="`${scene}|${scope}|${directory}`" :scene="scene" :scope="scope" :path="directory" />
       </section>
       <section v-if="tab==='search' && can('search')" class="surface"><h2>检索记忆</h2>
