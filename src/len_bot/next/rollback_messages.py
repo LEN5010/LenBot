@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 
-from len_bot.events.models import Event, EventType
+from .legacy_archive import ArchivedEvent, ArchivedEventType
 
 from .messages import ChatMessage, Segment
 
@@ -83,7 +83,7 @@ def _outgoing_segments(message: ChatMessage) -> list[dict]:
 
 
 def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
-                         reply_is_self: bool) -> Event:
+                         reply_is_self: bool) -> ArchivedEvent:
     """Convert one saved message; the caller owns source rows and destination transactions."""
     try:
         if not isinstance(message.id, str) or not message.id:
@@ -112,10 +112,10 @@ def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
             segments = [{"type": item.type, "data": dict(item.data)} for item in message.segments]
             at_bot = any(item.type == "at" and str(item.data["qq"]) == bot_qq
                          for item in message.segments)
-            return Event(
+            return ArchivedEvent(
                 id=message.id,
-                event_type=(EventType.GROUP_MESSAGE_RECEIVED if scene_kind == "group"
-                            else EventType.PRIVATE_MESSAGE_RECEIVED),
+                event_type=(ArchivedEventType.GROUP_MESSAGE_RECEIVED if scene_kind == "group"
+                            else ArchivedEventType.PRIVATE_MESSAGE_RECEIVED),
                 scene_id=message.scene, actor_id=actor, timestamp=message.time,
                 payload={"message_id": platform_id, "reply_to_message_id": reply_to,
                          "raw_text": raw_text, "at_bot": at_bot,
@@ -134,8 +134,8 @@ def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
         segments = _outgoing_segments(message)
         if message.send_status in {"received", "sent", "simulated"}:
             simulated = message.send_status == "simulated"
-            return Event(
-                id=message.id, event_type=EventType.MESSAGE_SENT,
+            return ArchivedEvent(
+                id=message.id, event_type=ArchivedEventType.MESSAGE_SENT,
                 scene_id=message.scene, actor_id=actor, timestamp=message.time,
                 payload={"message_id": platform_id, "reply_to": reply_to,
                          "raw_text": raw_text, "content": raw_text, "segments": segments,
@@ -145,8 +145,8 @@ def convert_next_message(message: ChatMessage, raw: dict | None, *, bot_qq: str,
             )
 
         unknown = message.send_status == "unconfirmed"
-        return Event(
-            id=message.id, event_type=EventType.MESSAGE_SEND_FAILED,
+        return ArchivedEvent(
+            id=message.id, event_type=ArchivedEventType.MESSAGE_SEND_FAILED,
             scene_id=message.scene, actor_id=actor, timestamp=message.time,
             payload={"message_id": platform_id, "reply_to": reply_to,
                      "raw_text": raw_text, "attempted_text": raw_text, "segments": segments,
