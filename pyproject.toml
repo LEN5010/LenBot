@@ -3,6 +3,8 @@ name = "len-bot"
 version = "0.1.0"
 description = "QQ group-chat bot with tool calls, background work, and an operator dashboard"
 readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 authors = [
     { name = "LEN5010", email = "1649211052@qq.com" }
 ]
@@ -48,7 +50,8 @@ build-backend = "uv_build"
 # toolchain. The source distribution keeps the frontend sources and lockfile
 # so the panel can be rebuilt, while omitting local installed dependencies.
 [tool.uv.build-backend]
-source-exclude = ["src/len_bot/web/frontend/node_modules"]
+source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "deploy/**"]
+source-exclude = ["src/len_bot/web/frontend/node_modules", "scripts/__pycache__"]
 wheel-exclude = ["web/frontend"]
 
 [dependency-groups]

@@ -62,3 +62,7 @@ uv run --no-sync python -m len_bot.next.migrate
 ## 参与开发
 
 工程规则见 [AGENTS.md](AGENTS.md)，开发流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题报告见 [SECURITY.md](SECURITY.md)。
+
+## 许可证
+
+项目原创代码采用 [AGPL-3.0-only](LICENSE)，版权说明见 [NOTICE](NOTICE)。第三方依赖、独立服务和个人角色内容不自动改用本许可证，说明见 [第三方材料](THIRD_PARTY_NOTICES.md)。Linux 宿主镜像附构建时实际依赖的元数据和可取得许可证文件，位于 `/usr/share/lenbot/licenses`；缺项仍须发布前核对。当前开发版尚未完成完整发布验收。

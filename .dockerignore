@@ -4,6 +4,12 @@
 !pyproject.toml
 !uv.lock
 !README.md
+!LICENSE
+!NOTICE
+!THIRD_PARTY_NOTICES.md
+!scripts/
+!scripts/collect_python_licenses.py
+!scripts/collect_frontend_licenses.cjs
 !src/
 !src/len_bot/
 !src/len_bot/**
