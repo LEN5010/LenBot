@@ -27,13 +27,14 @@ from ..next.chat import PROMPTS, build_tools
 from ..next.config import LabConfig, load_config
 from ..next.memory import LocalMemoryConfig
 from ..next.replay_web import RecordedWeb
+from ..next.replay_images import RecordedImages
 from ..next.persona import Persona, load_persona
 from ..next.pricing import cost_summary
 from ..next.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
-               "persona_knowledge", "tool_search", "react", "scene_control", "memory", "web_read", "web_search"}
+               "persona_knowledge", "tool_search", "react", "scene_control", "memory", "web_read", "web_search", "look"}
 
 
 class Annotation(BaseModel):
@@ -101,16 +102,14 @@ def check_initial_database(path: Path, config: LabConfig) -> None:
 
 def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona, CaseFile, dict]:
     config = load_config(root)
-    if config.replay_clock is not None or config.replay_web is not None:
-        raise ValueError("Evaluation template root must not contain replay_clock/replay_web; each repeat creates its own archive")
+    if config.replay_clock is not None or config.replay_web is not None or config.replay_images is not None:
+        raise ValueError("Evaluation template root must not contain replay runtime anchors; each repeat creates its own archive")
     if config.evaluation is None:
         raise ValueError("Root configuration has no evaluation settings")
     if set_name not in config.evaluation.sets or profile not in config.evaluation.profiles:
         raise ValueError(f"Unknown configured evaluation set/profile: {set_name!r}/{profile!r}")
     if config.onebot is not None or config.delivery != "simulated" or config.panel is not None:
         raise ValueError("Development replay requires onebot=null, delivery=simulated and panel=null")
-    if config.models.roles.vision is not None:
-        raise ValueError("Development replay does not yet provide isolated fixed vision material")
     if config.memory is not None and not isinstance(config.memory, LocalMemoryConfig):
         raise ValueError("Development replay requires isolated local memory; remote memory snapshots are not implemented")
     persona = load_persona(config.persona)
@@ -122,6 +121,10 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
     cases = load_cases(config.evaluation.sets[set_name], set_name=set_name,
                        scene=config.scene, bot_qq=config.bot_qq)
     for case in cases.cases:
+        if config.models.roles.vision is not None and case.image_materials is None:
+            raise ValueError(f"Case {case.id}: vision requires explicit image_materials; live image downloads are not used")
+        if case.image_materials is not None:
+            RecordedImages(case.image_materials, max_bytes=config.images.max_bytes)
         if (config.web_read is not None or config.web_search is not None) and case.web_materials is None:
             raise ValueError(f"Case {case.id}: web tools require explicit web_materials; live network is not used")
         if case.web_materials is not None:
@@ -137,9 +140,10 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         "set": set_name, "profile": profile,
         "voice_mode": config.evaluation.profiles[profile].voice_mode,
         "scene": config.scene, "persona": persona.id,
+        "images": config.images.model_dump(mode='json'),
         "jargon_references_enabled": config.learning is not None,
         "models": {role: config.model_settings(role).model_dump(exclude={"api_key"})
-                   for role in ("mind", "voice")},
+                   for role in ("mind", "voice", *(("vision",) if config.models.roles.vision is not None else ()))},
         "expression_embedding": None if embedding is None else {
             "provider": embedding.provider,
             "base_url": config.models.providers[embedding.provider].base_url,
@@ -156,6 +160,8 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
                                 case.initial_memory.model_dump(mode="json") for case in cases.cases},
         "case_web_materials": {case.id: None if case.web_materials is None else str(case.web_materials)
                                for case in cases.cases},
+        "case_image_materials": {case.id: None if case.image_materials is None else str(case.image_materials)
+                                 for case in cases.cases},
         "memory": None if config.memory is None else {
             **config.memory.model_dump(mode="json", exclude={"local": {"directory"}}),
             "initial_state": "per-case explicit seed or empty; template directory is never used"},
@@ -273,7 +279,7 @@ def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call
 async def run_case(directory: Path, config: LabConfig, persona: Persona,
                    case: ReplayCase, voice_mode: str, timeout: float,
                    initial_database: Path | None = None, initial_memory: Path | None = None,
-                   web_materials: Path | None = None) -> dict:
+                   web_materials: Path | None = None, image_materials: Path | None = None) -> dict:
     directory.mkdir(parents=True, mode=0o700)
     effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
@@ -360,6 +366,9 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
         if web_materials is not None:
             shutil.copytree(web_materials.parent, directory / "web-materials")
             effective['replay_web'] = 'web-materials/manifest.json'
+        if image_materials is not None:
+            shutil.copytree(image_materials.parent, directory / 'image-materials')
+            effective['replay_images'] = 'image-materials/manifest.json'
         # The same per-repeat anchor stays in this child config across normal restarts.
         effective["replay_clock"] = (None if case.start_time is None else {
             "epoch": case.start_time, "monotonic_origin": time.monotonic(),
@@ -414,6 +423,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
               "initial_database": None if initial_database is None else "../initial.sqlite3",
               "initial_memory": None if initial_memory is None else "../initial-memory",
               "web_materials": None if web_materials is None else "../web-materials/manifest.json",
+              "image_materials": None if image_materials is None else "../image-materials/manifest.json",
               "clock": {"mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
                         "start_time": case.start_time},
               "time_axes": {
@@ -459,6 +469,7 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
             initial_database = None
             initial_memory = None
             web_materials = None
+            image_materials = None
             if case.initial_database is not None:
                 initial_database = destination / case.id / "initial.sqlite3"
                 check_initial_database(case.initial_database, config)
@@ -471,10 +482,13 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
                                            jobs=str(initial_memory / "jobs.sqlite3")), config, initial_database)
             if case.web_materials is not None:
                 web_materials = RecordedWeb(case.web_materials).freeze(destination / case.id / 'web-materials')
+            if case.image_materials is not None:
+                image_materials = RecordedImages(case.image_materials, max_bytes=config.images.max_bytes).freeze(
+                    destination / case.id / 'image-materials')
             for repeat in range(1, settings.repetitions + 1):
                 result = await run_case(destination / case.id / str(repeat), config, persona, case,
                                         plan["voice_mode"], settings.case_timeout_seconds,
-                                        initial_database, initial_memory, web_materials)
+                                        initial_database, initial_memory, web_materials, image_materials)
                 failed |= (not result["script_completed"] or result["failed_tools"] > 0 or bool(result["notice_errors"])
                            or (result["turns"] is not None and any(turn["error"] is not None for turn in result["turns"]))
                            or (result["usage"] is not None and any(call["error"] is not None for call in result["usage"])))
@@ -595,14 +609,35 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
     initial_histories = {}
     initial_memories = {}
     web_materials = {}
+    image_materials = {}
     for name in definitions[0]:
         a, b = definitions[0][name], definitions[1][name]
-        if a.model_dump(exclude={"initial_database", "initial_memory", "web_materials"}) != b.model_dump(exclude={"initial_database", "initial_memory", "web_materials"}):
+        if a.model_dump(exclude={"initial_database", "initial_memory", "web_materials", "image_materials"}) != b.model_dump(exclude={"initial_database", "initial_memory", "web_materials", "image_materials"}):
             raise ValueError(f"Replay case definition differs: {name}; not pairing different inputs or expectations")
         if (a.initial_database is None) != (b.initial_database is None):
             raise ValueError(f"Archived initial database differs: {name}; not pairing different starting histories")
         if (a.initial_memory is None) != (b.initial_memory is None):
             raise ValueError(f"Initial memory presence differs: {name}; not pairing different starting memories")
+        if (a.image_materials is None) != (b.image_materials is None):
+            raise ValueError(f'Image material presence differs: {name}; not pairing different originals')
+        if a.image_materials is None:
+            image_materials[name] = 'both-absent'
+        else:
+            available = []
+            for directory, summary in ((left, baseline), (right, candidate)):
+                manifest = directory / name / 'image-materials/manifest.json'
+                if not manifest.is_file() and any(item['case_id'] == name and item['result'] is not None
+                                                 for item in summary['results']):
+                    raise ValueError(f'Executed case is missing its image archive: {manifest}')
+                available.append(manifest.is_file())
+                if manifest.is_file():
+                    RecordedImages(manifest, max_bytes=summary['run']['plan']['images']['max_bytes'])
+            if all(available):
+                if changed_files(left / name / 'image-materials', right / name / 'image-materials'):
+                    raise ValueError(f'Archived image originals differ: {name}; not pairing different pixels')
+                image_materials[name] = 'same-archived-bytes'
+            else:
+                image_materials[name] = None
         if (a.web_materials is None) != (b.web_materials is None):
             raise ValueError(f"Web material presence differs: {name}; not pairing different fixed responses")
         if a.web_materials is None:
@@ -707,6 +742,7 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
                                    (transitions["fail_to_pass"] - transitions["pass_to_fail"]) / paired_scored),
         "pairs": pairs, "initial_histories": initial_histories, "initial_memories": initial_memories,
         "web_materials": web_materials,
+        "image_materials": image_materials,
         "source_changed_files": changed_files(left / "source", right / "source"),
         "notice": "同输入的配对人工判定观察，不是架构或模型优势结论。未完成脚本的人工fail仍保留；"
                   "未评、uncertain和未配对不混入分母。配置和源码差异须结合原档案解释；"
