@@ -59,6 +59,8 @@ uv run --no-sync python -m len_bot.next.migrate
 
 本地定向遗忘可排除明确选中的旧消息；OpenViking 的完整遗忘、历史和跨后端完整等价语义仍未完成。旧核心源码保留用于迁移与评测参照，正常启动不再进入旧核心；项目尚未完成开源发布验收。
 
+旧一次性提醒可在停机备份后，用根配置 `reminder_import` 显式给出 `source`、`backup`、`scenes`、`timezone`，执行 `uv run --no-sync python -m len_bot.next.import_reminders`。只移交未到期、未领取、无条件触发的真人提醒；其他项报告原状态，不复活已结束事项，也不自动停旧后台。当前业务库格式为 33，旧格式仍按现有离线迁移入口升级后使用。
+
 ## 参与开发
 
 工程规则见 [AGENTS.md](AGENTS.md)，开发流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题报告见 [SECURITY.md](SECURITY.md)。

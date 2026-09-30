@@ -50,7 +50,7 @@ build-backend = "uv_build"
 # toolchain. The source distribution keeps the frontend sources and lockfile
 # so the panel can be rebuilt, while omitting local installed dependencies.
 [tool.uv.build-backend]
-source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "deploy/**"]
+source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "docker/**", "deploy/**"]
 source-exclude = ["src/len_bot/web/frontend/node_modules", "scripts/__pycache__"]
 wheel-exclude = ["web/frontend"]
 

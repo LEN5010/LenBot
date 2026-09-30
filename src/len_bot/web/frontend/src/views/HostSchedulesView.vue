@@ -209,6 +209,8 @@ onMounted(readState)
             <div class="card-heading"><strong>{{ statusLabel(item.status) }}</strong><span>{{ cadence(item) }}</span></div>
             <p v-if="item.cron!==null" class="muted">表达式（分 时 日 月 星期，星期 0 为周日）：<code>{{ item.cron }}</code></p>
             <p class="original-text">{{ item.note }}</p>
+            <details v-if="item.legacy_source"><summary>旧提醒移交原记录（到期时刻未改写）</summary>
+              <pre class="original-text">{{ JSON.stringify(item.legacy_source,null,2) }}</pre></details>
             <dl><div><dt>{{ dueLabel(item) }}</dt><dd>{{ time(item.due_at,item.timezone) }}（{{ item.timezone }}）</dd></div>
               <div><dt>对象 / 请求人</dt><dd>{{ item.target==='self'?'self':`QQ ${item.target}` }} / {{ item.requester===null?'Bot 自主':`QQ ${item.requester}` }}</dd></div>
               <div><dt>创建</dt><dd>{{ time(item.created,item.timezone) }}</dd></div>
