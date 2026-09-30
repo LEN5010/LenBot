@@ -13,7 +13,7 @@ from string import Template
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from len_bot.tools.pdf_reader import read_pdf
+from .pdf_read import read_pdf
 
 from .config import WebReadSettings
 from .http_read import fetch_public

@@ -214,16 +214,25 @@ def snapshot_code(destination: Path) -> dict:
     checkout = Path(subprocess.run(["git", "-C", str(package), "rev-parse", "--show-toplevel"],
                                    check=True, text=True, capture_output=True).stdout.strip())
     destination.mkdir()
+    shutil.copyfile(package / '__init__.py', destination / '__init__.py')
     for module in ("next", "eval"):
         (destination / module).mkdir()
-        for path in sorted((package / module).glob("*.py")):
-            shutil.copyfile(path, destination / module / path.name)
+        for path in sorted((package / module).rglob("*.py")):
+            target = destination / module / path.relative_to(package / module)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+    common = ('media/__init__.py', 'media/images.py', 'web/auth.py', 'web/shell.py')
+    for name in common:
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(package / name, target)
     (destination / "prompts").mkdir()
     for path in sorted(PROMPTS.glob("next_*.md")):
         shutil.copyfile(path, destination / "prompts" / path.name)
     for name in ("pyproject.toml", "uv.lock"):
         shutil.copyfile(checkout / name, destination / name)
-    paths = ["src/len_bot/next", "src/len_bot/eval", "src/len_bot/prompts", "pyproject.toml", "uv.lock"]
+    paths = ["src/len_bot/next", "src/len_bot/eval", "src/len_bot/prompts", "pyproject.toml", "uv.lock",
+             'src/len_bot/__init__.py', *(f'src/len_bot/{name}' for name in common)]
     status = subprocess.run(["git", "-C", str(checkout), "status", "--short", "--", *paths],
                             check=True, text=True, capture_output=True).stdout
     (destination / "working-tree.txt").write_text(status, encoding="utf-8")

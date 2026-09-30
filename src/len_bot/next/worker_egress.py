@@ -11,7 +11,7 @@ import socket
 import time
 from typing import Mapping
 
-from len_bot.services.worker_gateway.egress_policy import EgressBlocked, blocked_address_reason
+from .egress_policy import EgressBlocked, blocked_address_reason
 
 from .egress_wire import CHUNK_BYTES, Channel, Pipe, read_frame
 
