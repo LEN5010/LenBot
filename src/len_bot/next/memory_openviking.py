@@ -381,13 +381,13 @@ class OpenVikingMemory:
                                re.fullmatch(r"peers/[1-9][0-9]*", path) is not None else None)
         for entry in result:
             row = _as(_Node, entry, raw)
+            prefix = uri.rstrip("/") + "/"
+            if not row.uri.startswith(prefix):
+                raise ValueError(f"OpenViking ls returned URI outside requested directory; raw={raw[:500]!r}")
+            child = row.uri[len(prefix):].rstrip("/")
+            if not child or "/" in child or child != row.name:
+                raise ValueError(f"OpenViking ls returned invalid direct child; raw={raw[:500]!r}")
             if restricted_children is not None:
-                prefix = uri.rstrip("/") + "/"
-                if not row.uri.startswith(prefix):
-                    raise ValueError(f"OpenViking ls returned URI outside requested directory; raw={raw[:500]!r}")
-                child = row.uri[len(prefix):].rstrip("/")
-                if not child or "/" in child or child != row.name:
-                    raise ValueError(f"OpenViking ls returned invalid direct child; raw={raw[:500]!r}")
                 if child not in restricted_children:
                     continue
                 if not row.isDir:
@@ -395,6 +395,30 @@ class OpenVikingMemory:
             nodes.append(MemoryNode(path=self._path_from_uri(identity, row.uri, scope),
                                     name=row.name, is_dir=row.isDir, access=row.access))
         return MemoryPage(nodes=tuple(nodes), has_more=payload["has_more"])
+
+    async def memory_directories(self, scene: str) -> tuple[str, ...]:
+        """Discover existing scene and peer memory roots, including every listing page."""
+        async def children(path: str) -> list[MemoryNode]:
+            nodes: list[MemoryNode] = []
+            offset = 0
+            while True:
+                page = await self.browse(scene, path, offset=offset, limit=100)
+                nodes.extend(page.nodes)
+                if not page.has_more:
+                    return nodes
+                # browse filters unrelated entries; advance by the server page size.
+                offset += 100
+
+        directories: list[str] = []
+        for node in await children(""):
+            if node.path == "memories":
+                directories.append(node.path)
+            elif node.path == "peers":
+                for peer in await children("peers"):
+                    if not peer.is_dir:
+                        raise ValueError(f"OpenViking peer is not a directory: {peer.path!r}")
+                    directories.extend(child.path for child in await children(peer.path))
+        return tuple(directories)
 
     async def read(self, scene: str, path: str, *,
                    scope: Literal["scene", "public"] = "scene") -> MemoryDocument:

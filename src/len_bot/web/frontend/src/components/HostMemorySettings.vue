@@ -164,7 +164,7 @@ onMounted(() => read(false))
           </template>
           <template v-else><h3>OpenViking 后端</h3>
             <v-switch v-model="draft.summaries" label="使用原生场景概览并在抽取完成后刷新" hide-details />
-            <p class="muted">开启后每次大脑请求读取原生 memories 概览；过期、未采样或明确缺失子项时不注入，不包含同级 peers 人物资料。后台抽取完成后另行刷新概览与向量，使用远端自身服务，可能计费。请先在 memories 目录生成概览；读取失败会结束当前轮次，不自动降级或重试。保存后重启生效。</p><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
+            <p class="muted">开启后每次大脑请求分页发现并读取实际存在的 memories 与 peers 人物记忆概览，按真实目录区分归属；新鲜度未知、过期、未采样或明确缺失子项的目录不注入正文。后台抽取完成后逐个刷新这些目录的概览与向量，使用远端自身服务，可能计费；失败或不完整时停止后续刷新。请先为各记忆根生成概览；读取失败会结束当前轮次，不自动降级或重试。概览不保证覆盖所有历史和全部深层正文。保存后重启生效。</p><p class="muted">地址、账户和每个场景身份都须显式填写；配置中的场景必须逐一覆盖且用户 ID 不重复。旧密钥仅在同地址、账户、用户身份不变时可用空输入保留。</p>
             <div class="form-grid"><v-text-field v-model="draft.openviking.base_url" label="服务 HTTP 地址" hide-details="auto" />
               <v-text-field v-model="draft.openviking.account_id" label="账户 ID" hide-details="auto" />
               <v-text-field :model-value="draft.openviking.timeout_seconds" type="number" label="请求超时（秒）" hide-details="auto" @update:model-value="value=>draft.openviking.timeout_seconds=numeric(value)" />
