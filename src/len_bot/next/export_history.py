@@ -10,9 +10,7 @@ import sqlite3
 import sys
 import time
 
-from len_bot.events.models import Event
-from len_bot.scenes.models import SceneSession
-from len_bot.scenes.reducer import SceneReducer
+from .legacy_archive import ArchivedEvent, ArchivedSession, new_session, project_message_facts
 
 from .config import HostConfig, LabConfig, load_instance_config
 from .messages import ChatMessage, Segment, Sender
@@ -55,7 +53,7 @@ def _event(row: sqlite3.Row) -> dict:
     return value
 
 
-def _sessions(db: sqlite3.Connection, scenes: list[str], bot_qq: str) -> dict[str, SceneSession]:
+def _sessions(db: sqlite3.Connection, scenes: list[str], bot_qq: str) -> dict[str, ArchivedSession]:
     sessions = {}
     for scene in scenes:
         if db.execute("SELECT 1 FROM pending_runtime_events WHERE scene_id=? LIMIT 1", (scene,)).fetchone():
@@ -63,15 +61,15 @@ def _sessions(db: sqlite3.Connection, scenes: list[str], bot_qq: str) -> dict[st
         saved = db.execute("SELECT * FROM scene_sessions WHERE scene_id=?", (scene,)).fetchone()
         through = db.execute("SELECT COALESCE(MAX(rowid),0) FROM events WHERE scene_id=?", (scene,)).fetchone()[0]
         if saved is None:
-            session = SceneSession(scene_id=scene)
+            session = new_session(scene)
             # An archive without a session still has actual participant/send
             # facts. Rebuild only that pure projection, never old attention.
             for row in db.execute("SELECT * FROM events WHERE scene_id=? ORDER BY rowid", (scene,)):
-                session = SceneReducer.reduce(session, Event(**_event(row)), f"user:{bot_qq}")
+                session = project_message_facts(session, ArchivedEvent(**_event(row)), f"user:{bot_qq}")
             session.last_observed_event_rowid = session.attention_scanned_event_rowid = through
         else:
             try:
-                session = SceneSession.model_validate_json(saved["state_json"])
+                session = ArchivedSession.model_validate_json(saved["state_json"])
             except ValueError as error:
                 raise ValueError(f"Invalid legacy session {scene}: {error}; raw={saved['state_json'][:500]}") from error
             if session.pending_wakes:
@@ -108,7 +106,7 @@ def _originals_present(db: sqlite3.Connection, packet: dict) -> bool:
     return True
 
 
-def _append_event(db: sqlite3.Connection, event: Event) -> int | None:
+def _append_event(db: sqlite3.Connection, event: ArchivedEvent) -> int | None:
     record = event.model_dump(mode="json")
     previous = db.execute("SELECT * FROM events WHERE id=?", (event.id,)).fetchone()
     if previous is not None:
@@ -187,7 +185,7 @@ def export_history(config: LabConfig | HostConfig) -> dict:
                             continue
                         report["messages"] += 1
                         report["send_states"][message.send_status] += 1
-                        session = SceneReducer.reduce(sessions[message.scene], event, f"user:{config.bot_qq}")
+                        session = project_message_facts(sessions[message.scene], event, f"user:{config.bot_qq}")
                         session.last_observed_event_rowid = session.attention_scanned_event_rowid = rowid
                         sessions[message.scene] = session
                     except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
