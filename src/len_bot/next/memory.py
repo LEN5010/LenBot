@@ -186,15 +186,26 @@ class MemoryService:
             async with self.write_lock(scene):
                 if scene in self.pending_native_tasks:
                     return None
-                current = await self.backend.overview(scene)
-            freshness = current.freshness
-            if (freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
-                    or freshness.missing_summary_entries):
+                overviews = [await self.backend.overview(scene, path)
+                             for path in await self.backend.memory_directories(scene)]
+            prompt_root = Path(__file__).resolve().parents[1] / "prompts"
+            section = Template((prompt_root / "next_native_memory_section.md").read_text())
+            included: list[str] = []
+            omitted: list[str] = []
+            for current in overviews:
+                freshness = current.freshness
+                if (freshness is None or freshness.pending_child_changes or freshness.unsampled_entries
+                        or freshness.missing_summary_entries):
+                    omitted.append(encode({"path": current.path, "freshness":
+                                          None if freshness is None else freshness.model_dump()}))
+                    continue
+                included.append(section.substitute(path=current.path, overview=current.content,
+                    missing="未报告" if freshness.missing_summary_entries is None
+                    else freshness.missing_summary_entries))
+            if not included:
                 return None
-            prompt = Path(__file__).resolve().parents[1] / "prompts" / "next_native_memory_overview.md"
-            return Template(prompt.read_text()).substitute(
-                missing="未报告" if freshness.missing_summary_entries is None else freshness.missing_summary_entries,
-                overview=current.content)
+            return Template((prompt_root / "next_native_memory_overview.md").read_text()).substitute(
+                included="\n\n".join(included), omitted="\n".join(omitted) if omitted else "无")
         if self.summarizer is None:
             return None
         summary = await self.backend.summary(scene)

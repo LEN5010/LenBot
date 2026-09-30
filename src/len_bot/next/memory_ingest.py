@@ -360,15 +360,38 @@ class MemoryIngestor:
 
     async def _refresh_native_overview(self, scene: str, job: dict) -> None:
         """A derived-content operation; its failure never reopens successful extraction."""
-        refresh = {"path": "memories", "mode": "semantic_and_vectors", "recursive": True,
-                   "wait": True, "started": self.store.now()}
+        refresh = {"mode": "semantic_and_vectors", "recursive": True,
+                   "wait": True, "started": self.store.now(), "directories": [], "requests": [],
+                   "complete": False}
         job["details"]["overview_refresh"] = refresh
         self.jobs.details(job)
         try:
             async with self.memory.write_lock(scene):
-                result = await self.memory.backend.refresh_overview(scene)
-            refresh["result"] = result.model_dump()
-            refresh["complete"] = result.failed_records == 0 and result.unsupported_records == 0
+                directories = await self.memory.backend.memory_directories(scene)
+                refresh["directories"] = list(directories)
+                self.jobs.details(job)
+                for path in directories:
+                    request = {"path": path, "started": self.store.now()}
+                    refresh["requests"].append(request)
+                    self.jobs.details(job)
+                    try:
+                        result = await self.memory.backend.refresh_overview(scene, path)
+                        request["result"] = result.model_dump()
+                        request["complete"] = result.failed_records == 0 and result.unsupported_records == 0
+                    except asyncio.CancelledError:
+                        request["error"] = "Process stopped while native overview outcome was unknown"
+                        raise
+                    except Exception as error:
+                        request["error"] = _error_text(error)
+                        raise
+                    finally:
+                        request["ended"] = self.store.now()
+                        self.jobs.details(job)
+                    if not request["complete"]:
+                        refresh["complete"] = False
+                        break
+                else:
+                    refresh["complete"] = True
         except asyncio.CancelledError:
             refresh["error"] = "Process stopped while native overview outcome was unknown"
             raise
