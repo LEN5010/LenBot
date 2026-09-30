@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from len_bot.services.worker_gateway.egress_policy import blocked_address_reason
+from .egress_policy import blocked_address_reason
 
 
 MAX_REDIRECTS = 5

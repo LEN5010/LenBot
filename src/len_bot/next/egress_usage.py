@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from len_bot.services.worker_gateway.egress_policy import EgressBlocked
+from .egress_policy import EgressBlocked
 
 from .config import HostConfig
 from .tasks_store import TaskStore
