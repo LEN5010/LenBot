@@ -7,6 +7,8 @@ WORKDIR /build/src/len_bot/web/frontend
 COPY src/len_bot/web/frontend/package.json src/len_bot/web/frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY src/len_bot/web/frontend/ ./
+COPY scripts/collect_frontend_licenses.cjs /build/collect_frontend_licenses.cjs
+RUN node /build/collect_frontend_licenses.cjs /build/src/len_bot/web/frontend/node_modules /build/licenses/frontend
 # vite.config.js writes to ../static/dist, so this lands at
 # /build/src/len_bot/web/static/dist and keeps the repository layout.
 RUN npm run build
@@ -14,12 +16,16 @@ RUN npm run build
 FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS build
 RUN python -m pip install --no-cache-dir uv==0.12.13
 WORKDIR /opt/lenbot
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+COPY scripts/collect_python_licenses.py /build/collect_python_licenses.py
 COPY src ./src
 # The panel must exist before the wheel is built; uv_build packages it as
 # module data.  Frontend sources are excluded from the wheel in pyproject.toml.
 COPY --from=frontend /build/src/len_bot/web/static/dist ./src/len_bot/web/static/dist
 RUN uv sync --locked --no-dev --no-editable
+RUN .venv/bin/python /build/collect_python_licenses.py /build/licenses/python
+COPY --from=frontend /build/licenses/frontend /build/licenses/frontend
+RUN mkdir /build/licenses/project && cp LICENSE NOTICE THIRD_PARTY_NOTICES.md /build/licenses/project/
 
 FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
@@ -28,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd --uid 10000 --gid 10000 --no-create-home --shell /usr/sbin/nologin lenbot \
     && mkdir -p /srv/lenbot /var/lib/lenbot
 COPY --from=build /opt/lenbot/.venv /opt/lenbot/.venv
+COPY --from=build /build/licenses /usr/share/lenbot/licenses
 # This is the deployed project root. ConfigStore reads and atomically saves
 # lenbot.config.json here; its whole parent directory is mounted read/write.
 WORKDIR /srv/lenbot

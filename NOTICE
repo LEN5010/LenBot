@@ -1,0 +1,10 @@
+LenBot
+Copyright (C) 2026 LEN5010
+
+LenBot's original code is distributed under GNU AGPL version 3 only.
+See LICENSE for the complete license text.
+
+Dependencies and separately installed services retain their own licenses.
+Their inclusion or use does not replace their existing copyright notices.
+See THIRD_PARTY_NOTICES.md and the dependency-license files accompanying
+built distributions for the actual component metadata and notices.
