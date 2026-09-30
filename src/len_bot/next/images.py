@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
@@ -14,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .config import ImageSettings
 from .http_read import fetch_public
 from .store import ImageAsset, Store
+from .replay_images import RecordedImages
 
 
 class LookArguments(BaseModel):
@@ -68,7 +68,7 @@ async def prepare_pixels(data: bytes, settings: ImageSettings) -> tuple[bytes, b
 
 
 def _display(scene: str, arguments: LookArguments, asset: ImageAsset, *,
-             pixels_reused: bool, description_reused: bool) -> str:
+             pixels_reused: bool, description_reused: bool, pixels_source: str) -> str:
     result = {
         "scene": scene, "platform_message_id": arguments.message, "image": arguments.image,
         "jpeg_bytes": len(asset.jpeg), "width": asset.width, "height": asset.height,
@@ -78,13 +78,15 @@ def _display(scene: str, arguments: LookArguments, asset: ImageAsset, *,
         "described_at": (None if asset.described_at is None else
                          datetime.fromtimestamp(asset.described_at, timezone.utc).isoformat()),
         "pixels_reused": pixels_reused, "description_reused": description_reused,
+        "pixels_source": pixels_source,
     }
     return json.dumps(result, ensure_ascii=False) + "\n描述来自准备后的 JPEG；动图只分析第一帧。"
 
 
 async def execute_look(store: Store, scene: str, arguments: LookArguments,
                        settings: ImageSettings, *, model_name: str,
-                       describe: Callable[[ImageAsset], Awaitable[str]]) -> str:
+                       describe: Callable[[ImageAsset], Awaitable[str]],
+                       recording: RecordedImages | None = None) -> str:
     message = store.find_message(scene, arguments.message)
     if message is None:
         raise ValueError(f"当前场景没有平台消息 {arguments.message}")
@@ -93,6 +95,7 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
         raise ValueError(f"消息 {arguments.message} 只有 {len(pictures)} 张图片，不能读取第 {arguments.image} 张")
     asset = store.image(scene, arguments.message, arguments.image)
     pixels_reused = asset is not None
+    pixels_source = 'cache'
     if asset is None:
         if arguments.refresh:
             raise ValueError("该图片尚未保存像素；先用 refresh=false 读取，再重新描述")
@@ -102,14 +105,21 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
             async with deadline:
                 if original is not None:
                     body = original[1]
+                    fetched_at = store.now()
+                    pixels_source = 'saved_platform_original'
+                elif recording is not None:
+                    body, fetched_at = recording.image(arguments.message, arguments.image)
+                    pixels_source = 'frozen_original'
                 else:
                     url = image_url(pictures[arguments.image - 1].data)
                     _, _, body = await fetch_public(
                         url, settings.timeout_seconds, lambda _type, _prefix: settings.max_bytes,
                     )
+                    fetched_at = store.now()
+                    pixels_source = 'http_response'
                 jpeg, animated, width, height = await prepare_pixels(body, settings)
                 asset = ImageAsset(jpeg=jpeg, width=width, height=height, animated=animated,
-                                   fetched_at=time.time())
+                                   fetched_at=fetched_at)
                 store.save_image(scene, arguments.message, arguments.image, asset)
         except TimeoutError as error:
             if deadline.expired():
@@ -118,12 +128,12 @@ async def execute_look(store: Store, scene: str, arguments: LookArguments,
     description_reused = asset.description is not None and not arguments.refresh
     if not description_reused:
         description = await describe(asset)
-        described_at = time.time()
+        described_at = store.now()
         store.save_image_description(scene, arguments.message, arguments.image,
                                      description, model_name, described_at)
         asset = store.image(scene, arguments.message, arguments.image)
     return _display(scene, arguments, asset, pixels_reused=pixels_reused,
-                    description_reused=description_reused)
+                    description_reused=description_reused, pixels_source=pixels_source)
 
 
 def _worker() -> None:

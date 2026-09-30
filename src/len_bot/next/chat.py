@@ -58,6 +58,7 @@ from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
 from .replay_web import RecordedWeb
+from .replay_images import RecordedImages
 
 
 class SayArguments(BaseModel):
@@ -280,6 +281,8 @@ class Chat:
                  now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
         self.replay_web = None if config.replay_web is None else RecordedWeb(config.replay_web)
+        self.replay_images = (None if config.replay_images is None else
+                              RecordedImages(config.replay_images, max_bytes=config.images.max_bytes))
         self.now = now
         self.mind, self.voice, self.vision = mind, voice, vision
         self.audio = audio_service
@@ -852,6 +855,7 @@ class Chat:
             return await execute_look(
                 self.store, self.config.scene, LookArguments.model_validate(call.arguments), self.config.images,
                 model_name=self.vision.settings.model, describe=lambda asset: self.describe_image(turn_id, asset),
+                recording=self.replay_images,
             ), None, None
         if call.name == "transcribe":
             return await self.audio.transcribe(

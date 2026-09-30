@@ -820,6 +820,7 @@ class LabConfig(SharedConfig, SceneSettings):
     evaluation: EvaluationSettings | None = None
     replay_clock: ReplayClockSettings | None = None
     replay_web: Path | None = None
+    replay_images: Path | None = None
 
     @field_validator("scene")
     @classmethod
@@ -828,9 +829,9 @@ class LabConfig(SharedConfig, SceneSettings):
 
     @model_validator(mode="after")
     def bot_is_not_schedule_requester(self) -> LabConfig:
-        if self.replay_web is not None and (
+        if (self.replay_web is not None or self.replay_images is not None) and (
                 self.onebot is not None or self.panel is not None or self.delivery != 'simulated'):
-            raise ValueError('replay_web requires isolated stdin, simulated delivery and no panel')
+            raise ValueError('replay materials require isolated stdin, simulated delivery and no panel')
         _check_schedule_identity(self.bot_qq, self.schedules)
         if (self.tasks.owner == self.bot_qq or self.bot_qq in self.tasks.admins
                 or self.bot_qq in self.tasks.whitelist):
@@ -870,7 +871,7 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("web_read", self.web_read is not None and self.replay_web is None),
                     ("web_search", self.web_search is not None and self.replay_web is None),
                     ("memory", self.memory is not None),
-                    ("models.roles.vision", self.models.roles.vision is not None),
+                    ("models.roles.vision", self.models.roles.vision is not None and self.replay_images is None),
                     ("history_import", self.history_import is not None),
                     ("history_export", self.history_export is not None),
                     ("worker", self.worker is not None),
@@ -1075,8 +1076,9 @@ def _resolve_worker_paths(root: Path, source: dict) -> None:
 
 def _load_lab_source(path: Path, source: dict) -> LabConfig:
     root = path.parent
-    if source.get('replay_web') is not None:
-        source['replay_web'] = _resolved_path(root, source['replay_web'], within_root=True, field='replay_web')
+    for name in ('replay_web', 'replay_images'):
+        if source.get(name) is not None:
+            source[name] = _resolved_path(root, source[name], within_root=True, field=name)
     source["database"] = _resolved_path(root, source.get("database"), within_root=True, field="database")
     source["persona"] = _resolved_path(root, source.get("persona"), within_root=False, field="persona")
     panel = source.get("panel")
