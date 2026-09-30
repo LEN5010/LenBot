@@ -69,6 +69,7 @@ class ReplayCase(BaseModel):
     start_time: EpochSeconds | None = None
     initial_database: Path | None = None
     initial_memory: InitialMemory | None = None
+    web_materials: Path | None = None
     expect: list[str] = Field(min_length=1)
     steps: list[ReplayStep] = Field(min_length=1)
 
@@ -92,13 +93,13 @@ class ReplayCase(BaseModel):
             raise ValueError("expect must contain nonblank original descriptions")
         return values
 
-    @field_validator("initial_database", mode="before")
+    @field_validator("initial_database", "web_materials", mode="before")
     @classmethod
     def database_path_text(cls, value: object) -> Path | None:
         if value is None:
             return None
         if not isinstance(value, str) or not value.strip():
-            raise ValueError("initial_database must be a nonblank path string")
+            raise ValueError("initial_database/web_materials must be a nonblank path string")
         return Path(value)
 
 
@@ -200,6 +201,9 @@ def load_cases(path: Path, *, set_name: str, scene: str, bot_qq: str) -> CaseFil
                 candidate = getattr(case.initial_memory, name)
                 setattr(case.initial_memory, name,
                         (candidate if candidate.is_absolute() else path.parent / candidate).resolve())
+        if case.web_materials is not None:
+            candidate = case.web_materials
+            case.web_materials = (candidate if candidate.is_absolute() else path.parent / candidate).resolve()
         for position, step in enumerate(case.steps):
             if not isinstance(step, MessageStep):
                 continue

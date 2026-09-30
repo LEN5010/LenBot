@@ -18,6 +18,7 @@ from len_bot.tools.pdf_reader import read_pdf
 from .config import WebReadSettings
 from .http_read import fetch_public
 from .store import Store, WebPage
+from .replay_web import RecordedWeb
 
 
 PAGE_CHARS = 4000
@@ -137,7 +138,7 @@ def _reject_json_constant(value: str) -> None:
 
 
 async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
-                           arguments: WebReadArguments) -> str:
+                           arguments: WebReadArguments, *, recording: RecordedWeb | None = None) -> str:
     if arguments.document is not None:
         page = store.web_page(scene, arguments.document)
         if page is None:
@@ -146,9 +147,21 @@ async def execute_web_read(store: Store, scene: str, settings: WebReadSettings,
     deadline = asyncio.timeout(settings.timeout_seconds)
     try:
         async with deadline:
-            final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit)
+            if recording is None:
+                final_url, content_type, body = await fetch_public(arguments.url, settings.timeout_seconds, _web_limit)
+                fetched_at = time.time()
+            else:
+                item, body = recording.document(arguments.url)
+                if not 200 <= item.status_code < 300:
+                    raise ValueError(f'HTTP read status {item.status_code}: {body[:2048].decode("utf-8", errors="replace")}')
+                final_url, content_type, fetched_at = item.final_url, item.content_type, item.fetched_at
+                media_type = content_type.split(';', 1)[0].strip().lower()
+                if len(body) > _web_limit(media_type, body[:8]):
+                    raise ValueError(f'Frozen web_read response exceeds the normal {media_type} byte limit')
             media_type, content, notice = await _extract(final_url, content_type, body)
-            page = WebPage(url=arguments.url, final_url=final_url, fetched_at=time.time(),
+            if recording is not None:
+                notice += " 本次读取的是冻结响应，不是实时联网查询；抓取时间来自原始资料清单。"
+            page = WebPage(url=arguments.url, final_url=final_url, fetched_at=fetched_at,
                            media_type=media_type, content=content, notice=notice)
             document = store.save_web_page(scene, page)
     except TimeoutError as error:

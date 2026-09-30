@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 from html import unescape
 from html.parser import HTMLParser
+from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
 from typing import Literal
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from .replay_web import RecordedWeb
 
 SEARCH_URL = "https://www.bing.com/search"
 MAX_RESPONSE_BYTES = 1_000_000
@@ -91,10 +93,23 @@ def _parse_rss(raw: bytes, max_results: int) -> list[dict[str, str | None]]:
     return [_item(item, index, raw) for index, item in enumerate(channel.findall("item")[:max_results], 1)]
 
 
-async def execute_web_search(settings: WebSearchSettings, arguments: WebSearchArguments) -> str:
+async def execute_web_search(settings: WebSearchSettings, arguments: WebSearchArguments, *,
+                             recording: RecordedWeb | None = None) -> str:
     count = arguments.count if arguments.count is not None else settings.max_results
     if count > settings.max_results:
         raise ValueError(f"web_search count {count} exceeds configured max_results {settings.max_results}")
+    if recording is not None:
+        item, body = recording.search(arguments.query)
+        if item.status_code != 200:
+            raise ValueError(f'web_search Bing RSS HTTP {item.status_code}: {body[:ERROR_BYTES].decode("utf-8", errors="replace")}')
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise ValueError(f'Frozen RSS exceeds {MAX_RESPONSE_BYTES} decoded bytes')
+        result = {'provider': settings.provider, 'query': arguments.query, 'results': _parse_rss(body, count),
+                  'recording': {'source': recording.data.source,
+                                'fetched_at': datetime.fromtimestamp(item.fetched_at, timezone.utc).isoformat(),
+                                'live_request': False}}
+        return Template((PROMPT.parent / 'next_replay_web_search.md').read_text()).substitute(
+            result=json.dumps(result, ensure_ascii=False))
     deadline = asyncio.timeout(settings.timeout_seconds)
     try:
         async with deadline:
