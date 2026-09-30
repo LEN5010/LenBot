@@ -281,7 +281,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
                    initial_database: Path | None = None, initial_memory: Path | None = None,
                    web_materials: Path | None = None, image_materials: Path | None = None) -> dict:
     directory.mkdir(parents=True, mode=0o700)
-    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "replay_clock"})
+    effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "reminder_import", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
     if config.memory is not None:
         effective["memory"]["local"]["directory"] = "memory"

@@ -20,7 +20,7 @@ from .pricing import cost_summary
 from .schedule_time import CronTimeError, next_cron, parse_cron
 
 
-FORMAT_VERSION = 32
+FORMAT_VERSION = 33
 
 
 def encode(value: object) -> str:
@@ -50,6 +50,7 @@ class Schedule:
     reason: str | None
     interval_seconds: int | None = None
     cron: str | None = None
+    legacy_source: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -145,9 +146,12 @@ class Store:
                         target TEXT NOT NULL, requester TEXT,
                         status TEXT NOT NULL, delivered_at REAL, reason TEXT,
                         interval_seconds INTEGER CHECK(interval_seconds BETWEEN 60 AND 31536000),
-                        cron TEXT CHECK(cron IS NULL OR interval_seconds IS NULL)
+                        cron TEXT CHECK(cron IS NULL OR interval_seconds IS NULL),
+                        legacy_source TEXT
                     );
                     CREATE INDEX schedules_status_due ON schedules(scene,status,due_at,id);
+                    CREATE UNIQUE INDEX schedules_legacy_identity ON schedules(scene,json_extract(legacy_source,'$.task.id'))
+                        WHERE legacy_source IS NOT NULL;
                     CREATE TABLE tasks (
                         id INTEGER PRIMARY KEY, scene TEXT NOT NULL, requester TEXT NOT NULL,
                         goal TEXT NOT NULL, deliverable TEXT NOT NULL, context TEXT NOT NULL,
@@ -1164,7 +1168,14 @@ class Store:
 
     @staticmethod
     def _schedule(row: sqlite3.Row) -> Schedule:
-        return Schedule(**dict(row))
+        values = dict(row)
+        if values['legacy_source'] is not None:
+            raw = values['legacy_source']
+            try:
+                values['legacy_source'] = json.loads(raw)
+            except ValueError as error:
+                raise ValueError(f'Invalid original reminder source: {error}; raw={raw[:500]!r}') from error
+        return Schedule(**values)
 
     def create_schedule(self, scene: str, *, due_at: float, timezone: str,
                         note: str, target: str, requester: str | None,

@@ -512,6 +512,25 @@ class HistoryImportSettings(BaseModel):
         return _history_scenes(scenes, "history_import")
 
 
+class ReminderImportSettings(BaseModel):
+    model_config = STRICT
+
+    source: Path
+    backup: Path
+    scenes: list[str] = Field(min_length=1)
+    timezone: str
+
+    @field_validator('scenes')
+    @classmethod
+    def valid_scenes(cls, value: list[str]) -> list[str]:
+        return _history_scenes(value, 'reminder_import')
+
+    @field_validator('timezone')
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        return _valid_timezone(value)
+
+
 class HistoryExportSettings(BaseModel):
     model_config = STRICT
 
@@ -590,6 +609,7 @@ class SharedConfig(BaseModel):
     images: ImageSettings = Field(default_factory=ImageSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
     history_import: HistoryImportSettings | None = None
+    reminder_import: ReminderImportSettings | None = None
     history_export: HistoryExportSettings | None = None
     models: Models
 
@@ -863,6 +883,8 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("history_import.scenes must contain only the configured scene")
         if self.history_export is not None and self.history_export.scenes != [self.scene]:
             raise ValueError("history_export.scenes must contain only the configured scene")
+        if self.reminder_import is not None and self.reminder_import.scenes != [self.scene]:
+            raise ValueError('reminder_import.scenes must contain only the configured scene')
         if self.replay_clock is not None:
             incompatible = [
                 field for field, enabled in (
@@ -874,6 +896,7 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("models.roles.vision", self.models.roles.vision is not None and self.replay_images is None),
                     ("history_import", self.history_import is not None),
                     ("history_export", self.history_export is not None),
+                    ('reminder_import', self.reminder_import is not None),
                     ("worker", self.worker is not None),
                     ("delivery", self.delivery != "simulated"),
                 ) if enabled
@@ -964,6 +987,10 @@ class HostConfig(SharedConfig):
             unknown = [scene for scene in self.history_export.scenes if scene not in self.scenes]
             if unknown:
                 raise ValueError(f"history_export.scenes are not configured: {unknown!r}")
+        if self.reminder_import is not None:
+            unknown = [scene for scene in self.reminder_import.scenes if scene not in self.scenes]
+            if unknown:
+                raise ValueError(f'reminder_import.scenes are not configured: {unknown!r}')
         return self
 
     def scene_config(self, scene: str) -> LabConfig:
@@ -972,10 +999,11 @@ class HostConfig(SharedConfig):
         # Both typed parts were validated at the single root boundary. Keep
         # parsed local clocks and paths as typed values rather than roundtripping.
         shared = {name: getattr(self, name) for name in SharedConfig.model_fields}
-        # Both offline settings belong to the original root object and their
+        # Offline settings belong to the original root object and their
         # commands, not to this derived runtime scene view or a saved root file.
         shared["history_import"] = None
         shared["history_export"] = None
+        shared['reminder_import'] = None
         local = {name: getattr(self.scenes[scene], name) for name in SceneSettings.model_fields}
         shared["timezone"] = self.scene_timezone(scene)
         del local["timezone"]
@@ -1030,6 +1058,10 @@ def _validation_error(path: Path, error: ValidationError, kind: str) -> ValueErr
 
 
 def _resolve_history_paths(root: Path, source: dict) -> None:
+    reminders = source.get('reminder_import')
+    if isinstance(reminders, dict):
+        reminders['source'] = _resolved_path(root, reminders.get('source'), within_root=False, field='reminder_import.source')
+        reminders['backup'] = _resolved_path(root, reminders.get('backup'), within_root=True, field='reminder_import.backup')
     importing = source.get("history_import")
     if isinstance(importing, dict):
         importing["source"] = _resolved_path(

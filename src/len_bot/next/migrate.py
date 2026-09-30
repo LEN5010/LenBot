@@ -430,6 +430,10 @@ def _upgrade_one_step(db: sqlite3.Connection, path: Path, version: int) -> None:
                 db.execute(f"CREATE INDEX {table}_usage ON {table}({start},scene)")
         elif version == 31:
             db.execute("ALTER TABLE audio_calls ADD COLUMN cost TEXT")
+        elif version == 32:
+            db.execute('ALTER TABLE schedules ADD COLUMN legacy_source TEXT')
+            db.execute("CREATE UNIQUE INDEX schedules_legacy_identity ON schedules(scene,json_extract(legacy_source,'$.task.id')) "
+                       "WHERE legacy_source IS NOT NULL")
         db.execute(f"PRAGMA user_version = {version + 1}")
         db.commit()
     except BaseException:
