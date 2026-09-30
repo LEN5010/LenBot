@@ -57,6 +57,7 @@ from .tasks_store import TaskStore
 from .tasks_tools import DELEGATE_TOOL, TASK_TOOL, execute_tasks
 from .web_read import WEB_READ_TOOL, WebReadArguments, execute_web_read
 from .web_search import WEB_SEARCH_TOOL, WebSearchArguments, execute_web_search
+from .replay_web import RecordedWeb
 
 
 class SayArguments(BaseModel):
@@ -278,6 +279,7 @@ class Chat:
                  on_reply_sample: Callable[[], None] | None = None,
                  now: Callable[[], float] = time.time):
         self.config, self.persona, self.store = config, persona, store
+        self.replay_web = None if config.replay_web is None else RecordedWeb(config.replay_web)
         self.now = now
         self.mind, self.voice, self.vision = mind, voice, vision
         self.audio = audio_service
@@ -823,10 +825,10 @@ class Chat:
                                      arguments), None, None
         if call.name == "web_read":
             return await execute_web_read(self.store, self.config.scene, self.config.web_read,
-                                          WebReadArguments.model_validate(call.arguments)), None, None
+                                          WebReadArguments.model_validate(call.arguments), recording=self.replay_web), None, None
         if call.name == "web_search":
             return await execute_web_search(self.config.web_search,
-                                            WebSearchArguments.model_validate(call.arguments)), None, None
+                                            WebSearchArguments.model_validate(call.arguments), recording=self.replay_web), None, None
         if call.name == "memory":
             return await self.memory.execute(self.config.scene, call.arguments), None, None
         if call.name in {"delegate", "task"}:
