@@ -21,16 +21,18 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
-from .cases import CaseFile, ReplayCase, load_cases
+from .cases import CaseFile, InitialMemory, ReplayCase, load_cases
+from .memory_snapshot import MemoryBaseline, check_memory, freeze_memory, install_memory, observed_memory, same_memory
 from ..next.chat import PROMPTS, build_tools
 from ..next.config import LabConfig, load_config
+from ..next.memory import LocalMemoryConfig
 from ..next.persona import Persona, load_persona
 from ..next.pricing import cost_summary
 from ..next.store import FORMAT_VERSION, encode, turn_record
 
 
 LOCAL_TOOLS = {"say", "wait", "recall_chat", "schedule", "schedule_list", "schedule_cancel",
-               "persona_knowledge", "tool_search", "react", "scene_control"}
+               "persona_knowledge", "tool_search", "react", "scene_control", "memory"}
 
 
 class Annotation(BaseModel):
@@ -106,9 +108,11 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
         raise ValueError(f"Unknown configured evaluation set/profile: {set_name!r}/{profile!r}")
     if config.onebot is not None or config.delivery != "simulated" or config.panel is not None:
         raise ValueError("Development replay requires onebot=null, delivery=simulated and panel=null")
-    if (config.web_read is not None or config.web_search is not None or config.memory is not None
+    if (config.web_read is not None or config.web_search is not None
             or config.models.roles.vision is not None):
-        raise ValueError("Development replay does not yet provide isolated fixed web/vision/memory material")
+        raise ValueError("Development replay does not yet provide isolated fixed web/vision material")
+    if config.memory is not None and not isinstance(config.memory, LocalMemoryConfig):
+        raise ValueError("Development replay requires isolated local memory; remote memory snapshots are not implemented")
     persona = load_persona(config.persona)
     if persona.tools != "all" and (unsupported := set(persona.tools) - LOCAL_TOOLS):
         raise ValueError(f"Development replay does not implement these declared tools: {sorted(unsupported)}")
@@ -118,8 +122,12 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
     cases = load_cases(config.evaluation.sets[set_name], set_name=set_name,
                        scene=config.scene, bot_qq=config.bot_qq)
     for case in cases.cases:
+        if config.memory is not None and case.start_time is not None:
+            raise ValueError(f"Case {case.id}: local memory mtime and processing timers require real host time; omit start_time")
         if case.initial_database is not None:
             check_initial_database(case.initial_database, config)
+        if case.initial_memory is not None:
+            check_memory(case.initial_memory, config, case.initial_database)
     embedding = None if config.learning is None else config.learning.embedding
     plan = {
         "set": set_name, "profile": profile,
@@ -140,6 +148,11 @@ def prepare(root: Path, set_name: str, profile: str) -> tuple[LabConfig, Persona
             case.id: None if case.initial_database is None else str(case.initial_database)
             for case in cases.cases
         },
+        "case_initial_memory": {case.id: None if case.initial_memory is None else
+                                case.initial_memory.model_dump(mode="json") for case in cases.cases},
+        "memory": None if config.memory is None else {
+            **config.memory.model_dump(mode="json", exclude={"local": {"directory"}}),
+            "initial_state": "per-case explicit seed or empty; template directory is never used"},
         "case_clocks": [
             {"case_id": case.id,
              "mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
@@ -207,11 +220,11 @@ def snapshot_code(destination: Path) -> dict:
 
 
 def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call: int = 0,
-                      after_embedding_call: int = 0) -> dict:
+                      after_embedding_call: int = 0, memory_baseline: MemoryBaseline | None = None) -> dict:
     if not path.exists():
         return {"database": None, "turns": None, "model_calls": None,
                 "chat_model_calls": None, "embedding_model_calls": None,
-                "usage": None, "cost": None}
+                "memory_model_calls": None, "memory_errors": None, "usage": None, "cost": None}
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         turns = [turn_record(row) for row in db.execute(
@@ -229,24 +242,36 @@ def observed_database(path: Path, *, scene: str, after_turn: int = 0, after_call
             call["source"] = "chat"
         for call in embedding_calls:
             call["source"] = "expression_embedding"
-        calls = sorted([*chat_calls, *embedding_calls],
-                       key=lambda call: (call["started"], call["source"], call["id"]))
-        for call in calls:
+        for call in [*chat_calls, *embedding_calls]:
             call["usage"] = None if call["usage"] is None else json.loads(call["usage"])
             call["cost"] = None if call["cost"] is None else json.loads(call["cost"])
+        memory_calls, memory_errors = [], []
+        memory_count = 0
+        if memory_baseline is not None:
+            memory_path = path.with_name(path.name + ".memory.sqlite3")
+            if memory_path.exists():
+                memory_calls, memory_errors = observed_memory(memory_path, memory_baseline)
+                memory_count = len(memory_calls)
+            else:
+                memory_count, memory_errors = None, None
+        calls = sorted([*chat_calls, *embedding_calls, *memory_calls],
+                       key=lambda call: (call["started"], call["source"]))
         return {"database": path.name, "turns": turns, "model_calls": len(calls),
                 "chat_model_calls": len(chat_calls), "embedding_model_calls": len(embedding_calls),
+                "memory_model_calls": memory_count, "memory_errors": memory_errors,
                 "usage": calls, "cost": cost_summary([call["cost"] for call in calls]),
-                "note": "仅统计本次新增轮次、聊天模型及表达embedding调用；用量按source保留各提供方原对象，"
+                "note": "仅统计本次新增聊天、表达embedding和本地记忆调用；用量按source保留各提供方原对象，"
                         "缺失不计为零。初始历史及完整原文在数据库中。"}
 
 
 async def run_case(directory: Path, config: LabConfig, persona: Persona,
                    case: ReplayCase, voice_mode: str, timeout: float,
-                   initial_database: Path | None = None) -> dict:
+                   initial_database: Path | None = None, initial_memory: Path | None = None) -> dict:
     directory.mkdir(parents=True, mode=0o700)
     effective = config.model_dump(mode="json", exclude={"evaluation", "panel", "history_import", "history_export", "replay_clock"})
     effective.update(database="chat.sqlite3", persona="persona", voice_mode=voice_mode)
+    if config.memory is not None:
+        effective["memory"]["local"]["directory"] = "memory"
     config_path = directory / "lenbot.config.json"
     started = time.time()
     error = None
@@ -261,6 +286,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
     processes = []
     inputs = []
     after_turn = after_call = after_embedding_call = 0
+    memory_baseline = None if config.memory is None else MemoryBaseline()
 
     async def consume(child, stream) -> None:
         nonlocal completed_turns, failed_tools, output_closed
@@ -322,6 +348,8 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
                     "SELECT COALESCE(MAX(id),0) FROM expression_embedding_calls"
                 ).fetchone()[0]
             shutil.copyfile(initial_database, directory / "chat.sqlite3")
+        if initial_memory is not None:
+            memory_baseline = install_memory(initial_memory, directory)
         # The same per-repeat anchor stays in this child config across normal restarts.
         effective["replay_clock"] = (None if case.start_time is None else {
             "epoch": case.start_time, "monotonic_origin": time.monotonic(),
@@ -374,6 +402,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
             config_path.unlink(missing_ok=True)
     result = {"case_id": case.id, "script_completed": error is None, "error": error,
               "initial_database": None if initial_database is None else "../initial.sqlite3",
+              "initial_memory": None if initial_memory is None else "../initial-memory",
               "clock": {"mode": "fixed-start-real-speed" if case.start_time is not None else "real-host-clock",
                         "start_time": case.start_time},
               "time_axes": {
@@ -390,7 +419,7 @@ async def run_case(directory: Path, config: LabConfig, persona: Persona,
               "notice_errors": notice_errors,
               **observed_database(directory / "chat.sqlite3", scene=config.scene,
                                   after_turn=after_turn, after_call=after_call,
-                                  after_embedding_call=after_embedding_call)}
+                                  after_embedding_call=after_embedding_call, memory_baseline=memory_baseline)}
     write_json(directory / "result.json", result)
     if interruption is not None:
         raise interruption
@@ -416,17 +445,25 @@ async def run(config: LabConfig, persona: Persona, cases: CaseFile, plan: dict) 
     try:
         for case in cases.cases:
             initial_database = None
+            initial_memory = None
             if case.initial_database is not None:
                 initial_database = destination / case.id / "initial.sqlite3"
                 initial_database.parent.mkdir()
                 check_initial_database(case.initial_database, config)
                 shutil.copyfile(case.initial_database, initial_database)
+            if case.initial_memory is not None:
+                check_memory(case.initial_memory, config, case.initial_database)
+                initial_memory = destination / case.id / "initial-memory"
+                freeze_memory(case.initial_memory, initial_memory)
+                check_memory(InitialMemory(directory=str(initial_memory / "memory"),
+                                           jobs=str(initial_memory / "jobs.sqlite3")), config, initial_database)
             for repeat in range(1, settings.repetitions + 1):
                 result = await run_case(destination / case.id / str(repeat), config, persona, case,
-                                        plan["voice_mode"], settings.case_timeout_seconds, initial_database)
+                                        plan["voice_mode"], settings.case_timeout_seconds, initial_database, initial_memory)
                 failed |= (not result["script_completed"] or result["failed_tools"] > 0 or bool(result["notice_errors"])
                            or (result["turns"] is not None and any(turn["error"] is not None for turn in result["turns"]))
                            or (result["usage"] is not None and any(call["error"] is not None for call in result["usage"])))
+                failed |= bool(result["memory_errors"])
                 print(encode({"run": run_id, "case": case.id, "repeat": repeat,
                               "script_completed": result["script_completed"], "error": result["error"]}), flush=True)
         metadata["completed"] = True
@@ -520,8 +557,10 @@ def comparison_side(item: dict) -> dict:
                 turn["error"] for turn in result["turns"] if turn["error"] is not None],
             "model_errors": None if result["usage"] is None else [
                 call["error"] for call in result["usage"] if call["error"] is not None],
+            "memory_errors": result.get("memory_errors"),
         },
         "model_calls": None if result is None else result["model_calls"],
+        "memory_model_calls": None if result is None else result.get("memory_model_calls"),
         "turns": None if result is None else result["turns"],
         "script_seconds": None if result is None else result["ended"] - result["started"],
         "cost": None if result is None else result["cost"],
@@ -539,12 +578,31 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
             or definitions[0].keys() != definitions[1].keys()):
         raise ValueError("Comparison requires the same evaluation set and case ids")
     initial_histories = {}
+    initial_memories = {}
     for name in definitions[0]:
         a, b = definitions[0][name], definitions[1][name]
-        if a.model_dump(exclude={"initial_database"}) != b.model_dump(exclude={"initial_database"}):
+        if a.model_dump(exclude={"initial_database", "initial_memory"}) != b.model_dump(exclude={"initial_database", "initial_memory"}):
             raise ValueError(f"Replay case definition differs: {name}; not pairing different inputs or expectations")
         if (a.initial_database is None) != (b.initial_database is None):
             raise ValueError(f"Archived initial database differs: {name}; not pairing different starting histories")
+        if (a.initial_memory is None) != (b.initial_memory is None):
+            raise ValueError(f"Initial memory presence differs: {name}; not pairing different starting memories")
+        if a.initial_memory is None:
+            initial_memories[name] = "both-empty"
+        else:
+            available = []
+            for directory, summary in ((left, baseline), (right, candidate)):
+                path = directory / name / "initial-memory"
+                if not path.is_dir() and any(item["case_id"] == name and item["result"] is not None
+                                             for item in summary["results"]):
+                    raise ValueError(f"Executed case is missing its memory archive: {path}")
+                available.append(path.is_dir())
+            if all(available):
+                if not same_memory(left / name / "initial-memory", right / name / "initial-memory"):
+                    raise ValueError(f"Archived initial memory differs: {name}; not pairing different starting memories")
+                initial_memories[name] = "same-archived-bytes-and-markdown-times"
+            else:
+                initial_memories[name] = None
         if a.initial_database is None:
             initial_histories[name] = "both-empty"
         else:
@@ -611,7 +669,7 @@ def compare(root: Path, baseline_id: str, candidate_id: str) -> dict:
         "paired_scored": paired_scored, "annotation_transitions": transitions, "unpaired": unpaired,
         "paired_pass_rate_delta": (None if paired_scored == 0 else
                                    (transitions["fail_to_pass"] - transitions["pass_to_fail"]) / paired_scored),
-        "pairs": pairs, "initial_histories": initial_histories,
+        "pairs": pairs, "initial_histories": initial_histories, "initial_memories": initial_memories,
         "source_changed_files": changed_files(left / "source", right / "source"),
         "notice": "同输入的配对人工判定观察，不是架构或模型优势结论。未完成脚本的人工fail仍保留；"
                   "未评、uncertain和未配对不混入分母。配置和源码差异须结合原档案解释；"

@@ -47,6 +47,20 @@ class RestartStep(BaseModel):
 ReplayStep = Annotated[MessageStep | ObserveStep | AwaitTurnStep | RestartStep, Field(discriminator="type")]
 
 
+class InitialMemory(BaseModel):
+    model_config = STRICT
+
+    directory: Path
+    jobs: Path
+
+    @field_validator("directory", "jobs", mode="before")
+    @classmethod
+    def source_path(cls, value: object) -> Path:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("memory snapshot source must be a nonblank path string")
+        return Path(value)
+
+
 class ReplayCase(BaseModel):
     model_config = STRICT
 
@@ -54,8 +68,15 @@ class ReplayCase(BaseModel):
     set: str
     start_time: EpochSeconds | None = None
     initial_database: Path | None = None
+    initial_memory: InitialMemory | None = None
     expect: list[str] = Field(min_length=1)
     steps: list[ReplayStep] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def memory_has_history(self):
+        if self.initial_memory is not None and self.initial_database is None:
+            raise ValueError("initial_memory requires its matching initial_database")
+        return self
 
     @field_validator("id")
     @classmethod
@@ -174,6 +195,11 @@ def load_cases(path: Path, *, set_name: str, scene: str, bot_qq: str) -> CaseFil
                     f"{path}: cases[{index}] id={case.id!r} invalid initial_database: {error}; "
                     f"raw={_fragment(source['cases'][index])}"
                 ) from error
+        if case.initial_memory is not None:
+            for name in ("directory", "jobs"):
+                candidate = getattr(case.initial_memory, name)
+                setattr(case.initial_memory, name,
+                        (candidate if candidate.is_absolute() else path.parent / candidate).resolve())
         for position, step in enumerate(case.steps):
             if not isinstance(step, MessageStep):
                 continue
