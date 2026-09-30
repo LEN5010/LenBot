@@ -346,7 +346,9 @@ async def open_memory_backend(config: SharedConfig):
     if settings is None:
         yield None
     elif isinstance(settings, OpenVikingMemoryConfig):
-        async with OpenVikingMemory(settings.openviking) as backend:
+        from .config import LabConfig
+        recordings = config.replay_memory if isinstance(config, LabConfig) else None
+        async with OpenVikingMemory(settings.openviking, recordings=recordings) as backend:
             yield backend
     else:
         binding = settings.local.embedding

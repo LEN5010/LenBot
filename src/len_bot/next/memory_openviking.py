@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .messages import ChatMessage, render_message
 from .memory_types import MemoryDocument, MemoryNode, MemoryPage
 from .memory_overview import NativeOverview, OverviewRefresh, parse_overview, parse_refresh
+from .replay_memory import RecordedMemory, RecordedMemoryClient
 
 
 _SCENE = re.compile(r"(?:group|private):[1-9][0-9]*\Z")
@@ -251,11 +253,14 @@ class _SnapshotDiff(BaseModel):
 
 
 class OpenVikingMemory:
-    def __init__(self, settings: OpenVikingSettings):
+    def __init__(self, settings: OpenVikingSettings, *, recordings: Path | None = None):
         self.settings = settings
-        self._client = httpx.AsyncClient(
-            timeout=settings.timeout_seconds, trust_env=False, follow_redirects=False,
-            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
+        self._client = (
+            RecordedMemoryClient(RecordedMemory(recordings), settings)
+            if recordings is not None else httpx.AsyncClient(
+                timeout=settings.timeout_seconds, trust_env=False, follow_redirects=False,
+                transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
+            )
         )
         self._verified_scenes: set[str] = set()
         self._identity_locks = {scene: asyncio.Lock() for scene in settings.scenes}
