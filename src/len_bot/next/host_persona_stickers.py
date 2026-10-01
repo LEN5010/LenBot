@@ -18,7 +18,8 @@ from .host_persona import PersonaFileChange, finish_role_write, validate_depende
 from .image_assets import MAX_IMAGE_BYTES, inspect_image
 from .network import NetworkRuntime
 from .persona import PersonaTarget, parse_persona_files, read_persona_files, require_persona_target
-from .persona_stickers import parse_sticker_index, sticker_entries
+from .persona_stickers import StickerEntry, parse_sticker_index, sticker_entries
+import yaml
 
 
 class StickerAssetName(PersonaTarget):
@@ -33,6 +34,12 @@ class StickerAssetName(PersonaTarget):
                        for part in value.split('/'))):
             raise ValueError(f'表情原件须为stickers内的相对文件，不能是index.yaml：{value!r}')
         return value
+
+
+class StickerEntries(PersonaTarget):
+    """The sticker index as the panel form edits it; saved as stickers/index.yaml."""
+    model_config = STRICT
+    entries: list[StickerEntry]
 
 
 def asset_target(persona: Path, name: str) -> Path:
@@ -118,6 +125,8 @@ def register_host_persona_stickers(app: FastAPI, *, root: Path, runtime: Network
         running = runtime.chats[scene]
         return {'scene': scene, 'saved_path': str(persona), 'running_path': str(running.config.persona),
                 'index_content': index, 'files': sorted(files, key=lambda item: item['file']),
+                'entries': None if index is None else [entry.model_dump() for entry in
+                                                       sticker_entries(directory / 'index.yaml', index)],
                 'affected_scenes': [key for key, value in config.scenes.items() if value.persona == persona],
                 'running_entries': [{'file': item.file, 'description': item.description,
                                      'emotions': item.emotions, 'tags': item.tags}
@@ -184,6 +193,11 @@ def register_host_persona_stickers(app: FastAPI, *, root: Path, runtime: Network
     @app.put('/api/host/scenes/{scene}/persona-sticker-files/index')
     async def index_write(scene: str, item: PersonaFileChange, _: str = Depends(user)):
         return await operation(save_index, scene, item.directory, item.content, writing=True)
+
+    @app.put('/api/host/scenes/{scene}/persona-sticker-files/entries')
+    async def entries_write(scene: str, item: StickerEntries, _: str = Depends(user)):
+        content = yaml.safe_dump([entry.model_dump() for entry in item.entries], allow_unicode=True, sort_keys=False)
+        return await operation(save_index, scene, item.directory, content, writing=True)
 
     @app.post('/api/host/scenes/{scene}/persona-sticker-files/image')
     async def image_upload(scene: str, file: UploadFile, name: str = Form(), directory: str = Form(min_length=1), _: str = Depends(user)):

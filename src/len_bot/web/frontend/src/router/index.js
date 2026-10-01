@@ -19,7 +19,7 @@ const router = createRouter({
   history:createWebHashHistory(),
   routes:[
     {path:'/',redirect:{name:'overview'}},
-    { path:'/host/chat-test', name:'host-trials', component:()=>import('../views/HostTrialsView.vue'), meta:{title:'对话测试'} },
+    { path:'/host/chat-test', name:'host-trials', component:()=>import('../host/pages/trial/TrialPage.vue'), meta:{title:'对话测试'} },
     { path:'/host/logs/system', name:'host-system-logs', redirect:to=>({name:'host-logs',query:{...to.query,tab:'system'}}) },
     { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志'} },
     { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊'} },
@@ -66,7 +66,7 @@ const router = createRouter({
     {
       path:'/host/persona',
       name:'host-persona',
-      component:()=>import('../views/HostPersonaView.vue'),
+      component:()=>import('../host/pages/persona/PersonaPage.vue'),
       meta:{title:'角色'}
     },
     { path:'/host/settings', name:'host-settings', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'settings'}}) },
