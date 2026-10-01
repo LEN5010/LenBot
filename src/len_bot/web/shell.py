@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 
-def mount_panel(app: FastAPI, *, mode: Literal["legacy", "isolated", "isolated-multi"],
+def mount_panel(app: FastAPI, *, mode: Literal["isolated", "isolated-multi"],
                 home: str, assets_dir: Path | None = None) -> None:
     @app.get("/api/panel-context")
     async def panel_context():

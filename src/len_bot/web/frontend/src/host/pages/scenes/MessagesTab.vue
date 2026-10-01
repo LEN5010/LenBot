@@ -80,7 +80,7 @@ const imageUrl = (message, image) => `${path}/messages/${message.seq}/images/${i
 .mine .meta{justify-content:flex-end}
 .meta strong{color:var(--ink);font-size:13px}
 .flag{border-radius:4px;padding:0 6px;background:var(--chip-bg)}
-.flag.failed{background:var(--error-bg, #fde8e7);color:var(--error-text)}
+.flag.failed{background:var(--error-bg);color:var(--error-text)}
 .flag.unconfirmed{background:var(--warning-bg);color:var(--warning-text)}
 .bubble{display:inline-block;text-align:left;margin-top:4px;padding:8px 12px;border-radius:12px;background:var(--message-avatar-bg);white-space:pre-wrap;overflow-wrap:anywhere}
 .mine .bubble{background:var(--bot-avatar-bg)}

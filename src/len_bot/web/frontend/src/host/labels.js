@@ -10,7 +10,7 @@ const turns = {
 }
 const runtime = {
   created: '准备中', starting: '启动中', waiting_connection: '等待 QQ 连接',
-  running: '运行中', stopping: '正在停止', stopped: '已停止',
+  running: '运行中', connection_failed: 'QQ 连接失败', failed: '业务运行失败', stopping: '正在停止', stopped: '已停止',
 }
 export const roleOptions = [
   { title: '主人', value: 'owner' }, { title: '管理员', value: 'admin' },

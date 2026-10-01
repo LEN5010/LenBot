@@ -23,7 +23,7 @@ wheels/
 # The built control plane stays out of Git.  Vite content-hashes every asset,
 # so committing it turned each frontend change into a delete+add churn of ~40
 # files that buried the real diff.  It is produced by `npm run build` for local
-# runs and by the Node stage in deploy/linux/Dockerfile for deploys; the bare
+# runs and by the Node stage in deploy/current/Dockerfile for deploys; the bare
 # `dist/` rule above already covers it, and this anchored rule records intent.
 /src/len_bot/web/static/dist/
 
@@ -81,3 +81,6 @@ node_modules/
 *.sqlite3-shm
 *.sqlite3-journal
 *.sqlite3.v*.bak
+
+# Local task deliveries shared read-only with OneBot
+/file_assets/

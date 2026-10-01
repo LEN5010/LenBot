@@ -1,8 +1,9 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, reactive, ref } from 'vue'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { api, sceneName } from '../../../api.js'
 import { useAction } from '../../../composables/useResource.js'
+import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
 import { host, notify, readPendingRestart } from '../../store.js'
 import HostPage from '../../components/HostPage.vue'
 import ErrorNote from '../../components/ErrorNote.vue'
@@ -18,6 +19,15 @@ const tab = computed(() => tabs.some(([key]) => key === route.query.tab) ? route
 const current = computed(() => host.state?.scenes.find(item => item.scene === scene.value))
 const options = computed(() => (host.state?.scenes || []).map(item => ({ title: sceneName(item.scene), value: item.scene })))
 const tabTarget = key => ({ name: 'host-scenes', query: { scene: scene.value, tab: key } })
+const dirty = reactive({ settings: false, learning: false })
+const { confirmLeave } = useUnsavedChanges(computed(() => Object.values(dirty).some(Boolean)))
+onBeforeRouteUpdate((to, from) => {
+  if (to.query.scene === from.query.scene && to.query.tab === from.query.tab) return true
+  if (!confirmLeave()) return false
+  dirty.settings = false
+  dirty.learning = false
+  return true
+})
 
 const adding = ref(false), kind = ref('group'), qq = ref(''), persona = ref(''), memoryUser = ref(''), memoryKey = ref('')
 const create = useAction()
@@ -78,9 +88,9 @@ async function addScene() {
     <p v-if="host.state && !current" class="surface">当前运行的配置里没有这个群。</p>
     <template v-else>
       <MessagesTab v-if="tab === 'messages'" :key="`m${scene}`" :scene="scene" />
-      <SettingsTab v-else-if="tab === 'settings'" :key="`s${scene}`" :scene="scene" />
+      <SettingsTab v-else-if="tab === 'settings'" :key="`s${scene}`" :scene="scene" @dirty="value => dirty.settings = value" />
       <BrainTab v-else-if="tab === 'brain'" :key="`b${scene}`" :scene="scene" />
-      <LearningTab v-else-if="tab === 'learning'" :key="`l${scene}`" :scene="scene" />
+      <LearningTab v-else-if="tab === 'learning'" :key="`l${scene}`" :scene="scene" @dirty="value => dirty.learning = value" />
     </template>
   </HostPage>
 </template>

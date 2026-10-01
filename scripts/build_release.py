@@ -18,21 +18,14 @@ REQUIRED_SOURCE = (
     'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'uv.lock', '.dockerignore',
     'scripts/install.sh', 'scripts/build_release.py', 'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
-    'deploy/current/lenbot.service', 'deploy/current/memory-templates.md',
+    'deploy/current/lenbot.service', 'deploy/current/Dockerfile', 'deploy/current/memory-templates.md',
+    'deploy/current/services.compose.yaml', 'deploy/current/Dockerfile.openviking',
+    'deploy/current/start-asr.sh', 'deploy/current/asr.md',
     'deploy/README.md', 'deploy/current/operations.md', 'CONTRIBUTING.md',
     'docker/next-worker/Dockerfile', 'docker/next-worker/lenbot-extension.ts',
-    'docker/next-worker/lenbot-browser.cjs',
-    'licenses/sarasa-gothic-1.0.39/OFL.txt', 'licenses/sarasa-gothic-1.0.39/SOURCE.md',
+    'docker/next-worker/lenbot-browser.cjs', 'docker/next-worker/Dockerfile.dockerignore',
 )
-FORBIDDEN_SOURCE = ('docs/', 'runtime/', '.runtime/', '.backups/', '.venv/', 'state/', 'personas/')
-
-
-def current_resource(name: str) -> bool:
-    return name in {'len_bot/__init__.py', 'len_bot/media/__init__.py', 'len_bot/media/images.py',
-                    'len_bot/web/auth.py', 'len_bot/web/shell.py'} or name.startswith((
-        'len_bot/next/', 'len_bot/eval/', 'len_bot/prompts/', 'len_bot/builtin_skills/',
-        'len_bot/web/static/dist/',
-    ))
+FORBIDDEN_SOURCE = ('docs/', 'runtime/', '.runtime/', '.backups/', '.venv/', 'state/', 'personas/', 'file_assets/')
 
 
 def check_local_imports(package: dict[str, bytes]) -> int:
@@ -134,15 +127,14 @@ def inspect_packages(artifacts: Path, stage: Path) -> dict:
         if installed != built:
             raise ValueError('Wheel panel bytes differ from this staged build')
         expected_package = {name.removeprefix('src/'): data for name, data in files.items()
-                            if name.startswith('src/len_bot/') and current_resource(name.removeprefix('src/'))}
+                            if name.startswith('src/len_bot/') and not name.startswith('src/len_bot/web/frontend/')}
         installed_package = {entry.filename: archive.read(entry) for entry in members
                              if entry.filename.startswith('len_bot/')}
         if installed_package != expected_package:
-            raise ValueError('Wheel contains frozen legacy code or lacks exact current-core source/resource bytes')
+            raise ValueError('Wheel differs from current runtime source/resource bytes')
         literal_imports = check_local_imports(installed_package)
         notices = [name for name in names if '.dist-info/licenses/' in name]
-        for expected in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md',
-                         'licenses/sarasa-gothic-1.0.39/OFL.txt', 'licenses/sarasa-gothic-1.0.39/SOURCE.md'):
+        for expected in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'):
             paths = [name for name in notices if name.endswith('/' + expected)]
             if len(paths) != 1 or archive.read(paths[0]) != files[expected]:
                 raise ValueError(f'Wheel must retain the exact source {expected}')

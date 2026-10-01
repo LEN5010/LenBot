@@ -26,7 +26,7 @@ from .jargon import JargonLearner
 from .sticker_collection import StickerCollector
 from .reply_effects import ReplyEffectTracker
 from .expression_selection import ExpressionService
-from .onebot import OneBot
+from .onebot import OneBot, OneBotCallError
 from .persona import Persona
 from .plugin_host import PluginHost
 from .mcp_host import MCPHost
@@ -86,9 +86,11 @@ class NetworkRuntime:
         self.on_update = on_update
         self.status = "created"
         self.last_platform_error: str | None = None
+        self.last_runtime_error: str | None = None
         self.stopped = asyncio.Event()
+        self.connection_requested = asyncio.Event()
         self.retention = Retention(self)
-        self.accepting = True
+        self.accepting = config.onebot is None
         self.storage_error: sqlite3.Error | None = None
         self.platform = (None if config.onebot is None else OneBot(
             config.onebot, bot_qq=config.bot_qq, on_event=self._receive,
@@ -161,6 +163,7 @@ class NetworkRuntime:
 
     def _connection_changed(self) -> None:
         self.connected_since = self.store.now() if self.platform.connected else None
+        self.accepting = self.status == "running" and self.platform.connected
         self.notify()
 
     def _status(self, status: str) -> None:
@@ -206,7 +209,7 @@ class NetworkRuntime:
             return
         if post_type != "message":
             if not self.accepting:
-                self._emit({"type": "receipt", "status": "not_accepted", "reason": "stopping"})
+                self._emit({"type": "receipt", "status": "not_accepted", "reason": self.status})
             elif post_type == "notice":
                 try:
                     notice = parse_notice(raw)
@@ -230,7 +233,7 @@ class NetworkRuntime:
         message = parse_message(raw, own_message_ids=set())
         if not self.accepting:
             self._emit({"type": "receipt", "scene": message.scene,
-                        "status": "not_accepted", "reason": "stopping"})
+                        "status": "not_accepted", "reason": self.status})
             return
         runner = self.runners.get(message.scene)
         if runner is None:
@@ -279,7 +282,57 @@ class NetworkRuntime:
                 stopping.cancel()
         return self.platform.connected
 
-    async def run(self, *, manage_signals: bool = True) -> None:
+    @property
+    def can_connect(self) -> bool:
+        return self.status == "connection_failed" and not self.stopped.is_set()
+
+    def request_connection(self) -> None:
+        if not self.can_connect:
+            raise RuntimeError("只有首次连接失败且业务尚未启动时可以手动连接；其他停止状态请重启宿主")
+        self._status("starting")
+        self.connection_requested.set()
+
+    async def _start_platform(self, *, manual_connection: bool) -> bool:
+        """Before starting business services, permit only explicit connection attempts."""
+        while not self.stopped.is_set():
+            self._status("starting")
+            starting = asyncio.create_task(self.platform.start())
+            stopping = asyncio.create_task(self.stopped.wait())
+            requested: asyncio.Task | None = None
+            observed = False
+            try:
+                done, _ = await asyncio.wait({starting, stopping}, return_when=asyncio.FIRST_COMPLETED)
+                if stopping in done:
+                    return False
+                try:
+                    observed = True
+                    await starting
+                except OneBotCallError as error:
+                    self._platform_error(f"{type(error).__name__}: {error}")
+                    if not manual_connection:
+                        raise
+                    self._status("connection_failed")
+                    requested = asyncio.create_task(self.connection_requested.wait())
+                    await asyncio.wait({requested, stopping}, return_when=asyncio.FIRST_COMPLETED)
+                    self.connection_requested.clear()
+                else:
+                    self.last_platform_error = None
+                    self.notify()
+                    return True
+            finally:
+                waiting = [starting, stopping] + ([] if requested is None else [requested])
+                for task in waiting:
+                    task.cancel()
+                results = await asyncio.gather(*waiting, return_exceptions=True)
+                # Cancellation can itself fail while OneBot releases a partial
+                # connection. Do not turn that unobserved cleanup failure into
+                # a clean stop or a reconnectable transport.
+                if (not observed and isinstance(results[0], BaseException)
+                        and not isinstance(results[0], asyncio.CancelledError)):
+                    raise results[0]
+        return False
+
+    async def run(self, *, manage_signals: bool = True, manual_connection: bool = False) -> None:
         if self.platform is None:
             from .stdin_host import run_stdin
             await run_stdin(self, manage_signals=manage_signals)
@@ -297,21 +350,13 @@ class NetworkRuntime:
                     installed.append(sig)
             if self.tasks is not None:
                 await self.tasks.recover()
+            if not await self._start_platform(manual_connection=manual_connection):
+                return
             async with asyncio.TaskGroup() as group:
                 pending: list[asyncio.Task] = []
                 try:
                     stopping = group.create_task(self.stopped.wait())
-                    starting = group.create_task(self.platform.start())
-                    pending.extend([stopping, starting])
-                    done, _ = await asyncio.wait({starting, stopping}, return_when=asyncio.FIRST_COMPLETED)
-                    if stopping in done:
-                        return
-                    try:
-                        await starting
-                    except Exception as error:
-                        self.last_platform_error = f"{type(error).__name__}: {error}"
-                        self.notify()
-                        raise
+                    pending.append(stopping)
                     self._status("waiting_connection")
                     self._emit({"type": "runtime", "status": "started", "input": "onebot",
                                 "delivery": self.config.delivery, "addresses": self.platform.addresses})
@@ -337,6 +382,7 @@ class NetworkRuntime:
                     if self.plugins is not None:
                         await self.plugins.start()
                     self.refresh_external_tools()
+                    self.accepting = self.platform.connected
                     self._status("running")
                     self._emit({"type": "runtime", "status": "ready", "input": "onebot",
                                 "delivery": self.config.delivery})

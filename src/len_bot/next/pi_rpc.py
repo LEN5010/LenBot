@@ -11,7 +11,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 
 DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024
@@ -280,19 +280,6 @@ class PiRpc:
                 future.exception()
             raise
         return await future
-
-    async def prompt(self, message: str) -> Literal["started", "queued", "handled"]:
-        """Accept a prompt; this does not wait for or judge the run's result."""
-        record = await self.command("prompt", message=message)
-        data = record.body.get("data")
-        disposition = data.get("disposition") if isinstance(data, dict) else None
-        if disposition not in {"started", "queued", "handled"}:
-            error = PiProtocolError(
-                f"Invalid Pi RPC prompt disposition; frame: {_fragment(record.raw)}", raw=record.raw
-            )
-            self._fail(error)
-            raise error
-        return disposition
 
     async def next_event(self) -> PiRecord:
         """Read the next native session event or extension UI request."""

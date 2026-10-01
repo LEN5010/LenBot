@@ -28,7 +28,8 @@ def test_account_task_requires_root_owner_and_new_workspace(tmp_path: Path):
     async def exercise():
         with Store(cfg.database) as store:
             service = WorkTasks(cfg,store,None,lambda scene:None,skills={'group:80001':()},
-                                memory=None,data_tools={'group:80001':[]},skill_permissions={'group:80001':[]})
+                                memory=None,data_tools={'group:80001':[]},skill_permissions={'group:80001':[]},
+                                tool_permissions={'group:80001':[]})
             service.accepting = True  # Admission only, no task pump or container is started.
             kwargs = {'goal':'合成网页任务','deliverable':'原文','context':'主人明确要求独立账号任务','account_browser':True}
             with pytest.raises(PermissionError,match='根配置的主人'):

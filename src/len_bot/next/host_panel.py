@@ -105,7 +105,9 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
                 "connected": runtime.platform.connected,
                 "status": runtime.status,
                 "addresses": runtime.platform.addresses,
-                "last_error": runtime.last_platform_error,
+                "last_error": runtime.last_runtime_error or runtime.last_platform_error,
+                "can_connect": runtime.can_connect,
+                "accepting": runtime.accepting,
             },
             "scenes": [
                 {"scene": scene, "persona": {"id": runtime.chats[scene].persona.id,
@@ -128,6 +130,14 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
                  "latest_error": item["errors"][0] if item["errors"] else None} for item in runtime.mcp.state()
             ],
         }
+
+    @app.post("/api/host/connection/connect", status_code=202)
+    async def connect(_: str = Depends(user)):
+        try:
+            runtime.request_connection()
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"status": runtime.status}
 
     @app.get("/api/host/logs")
     async def logs(_: str = Depends(user)):

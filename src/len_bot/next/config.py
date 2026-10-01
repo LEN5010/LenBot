@@ -136,7 +136,7 @@ ONEBOT_SETTINGS = TypeAdapter(OneBotSettings, config=ConfigDict(hide_input_in_er
 class Provider(BaseModel):
     model_config = STRICT
 
-    api: Literal["openai-chat"]
+    api: Literal["openai-chat", "openai-audio", "openai-embeddings"]
     base_url: str
     api_key: str = Field(repr=False)
 
@@ -218,6 +218,10 @@ class Models(BaseModel):
             provider_name = binding.provider
             if provider_name not in self.providers:
                 raise ValueError(f"models.roles.{role}.provider references unknown provider {provider_name!r}")
+            if role != "asr" and self.providers[provider_name].api != "openai-chat":
+                raise ValueError(f"models.roles.{role} requires an openai-chat provider")
+            if role == "asr" and self.providers[provider_name].api == "openai-embeddings":
+                raise ValueError("models.roles.asr cannot use an embeddings-only provider")
         for provider_name, model_prices in self.prices.items():
             if not provider_name.strip():
                 raise ValueError("models.prices provider name must not be blank")
@@ -585,19 +589,6 @@ class ReminderImportSettings(BaseModel):
         return _valid_timezone(value)
 
 
-class ReminderExportSettings(BaseModel):
-    model_config = STRICT
-    target: Path
-    backup: Path
-    scenes: list[str] = Field(min_length=1)
-    pending: Literal['restore', 'hold']
-
-    @field_validator('scenes')
-    @classmethod
-    def valid_scenes(cls, value: list[str]) -> list[str]:
-        return _history_scenes(value, 'reminder_export')
-
-
 class PersonaMemoryTemplate(BaseModel):
     model_config = STRICT
     persona: Path
@@ -639,20 +630,6 @@ class MemoryTransferSettings(BaseModel):
         if isinstance(self.source, OpenVikingMemoryConfig) and set(self.source.openviking.scenes) != set(self.scenes):
             raise ValueError('memory_transfer.source must have exactly the selected native scene identities')
         return self
-
-
-class HistoryExportSettings(BaseModel):
-    model_config = STRICT
-
-    target: Path
-    backup: Path
-    scenes: list[str] = Field(min_length=1)
-    media_directory: Path | None = None
-
-    @field_validator("scenes")
-    @classmethod
-    def valid_scenes(cls, scenes: list[str]) -> list[str]:
-        return _history_scenes(scenes, "history_export")
 
 
 class EvaluationProfile(BaseModel):
@@ -724,11 +701,9 @@ class SharedConfig(BaseModel):
     audio: AudioSettings = Field(default_factory=AudioSettings)
     history_import: HistoryImportSettings | None = None
     reminder_import: ReminderImportSettings | None = None
-    reminder_export: ReminderExportSettings | None = None
     media_import: MediaImportSettings | None = None
     media_archive: MediaArchiveSettings | None = None
     task_archive: TaskArchiveSettings | None = None
-    history_export: HistoryExportSettings | None = None
     models: Models
 
     @model_validator(mode='after')
@@ -851,11 +826,6 @@ class SharedConfig(BaseModel):
             paths = [self.database.resolve(), importing.source.resolve(), importing.backup.resolve()]
             if len(set(paths)) != len(paths):
                 raise ValueError("history_import.source, history_import.backup and database must differ")
-        for field, exporting in (('history_export', self.history_export), ('reminder_export', self.reminder_export)):
-            if exporting is not None:
-                paths = [self.database.resolve(), exporting.target.resolve(), exporting.backup.resolve()]
-                if len(set(paths)) != len(paths):
-                    raise ValueError(f'{field}.target, {field}.backup and database must differ')
         return self
 
     def model_settings(self, role: Literal["mind", "voice", "vision", "memory", "worker", "learner"]) -> ModelSettings:
@@ -1020,12 +990,8 @@ class LabConfig(SharedConfig, SceneSettings):
             raise ValueError("memory.openviking.scenes must contain only the configured scene")
         if self.history_import is not None and self.history_import.scenes != [self.scene]:
             raise ValueError("history_import.scenes must contain only the configured scene")
-        if self.history_export is not None and self.history_export.scenes != [self.scene]:
-            raise ValueError("history_export.scenes must contain only the configured scene")
         if self.reminder_import is not None and self.reminder_import.scenes != [self.scene]:
             raise ValueError('reminder_import.scenes must contain only the configured scene')
-        if self.reminder_export is not None and self.reminder_export.scenes != [self.scene]:
-            raise ValueError('reminder_export.scenes must contain only the configured scene')
         if self.media_import is not None and self.media_import.scenes != [self.scene]:
             raise ValueError('media_import.scenes must contain only the configured scene')
         if self.media_archive is not None and self.media_archive.scenes != [self.scene]:
@@ -1044,9 +1010,7 @@ class LabConfig(SharedConfig, SceneSettings):
                     ("memory", self.memory is not None and self.replay_memory is None),
                     ("models.roles.vision", self.models.roles.vision is not None and self.replay_images is None),
                     ("history_import", self.history_import is not None),
-                    ("history_export", self.history_export is not None),
                     ('reminder_import', self.reminder_import is not None),
-                    ('reminder_export', self.reminder_export is not None),
                     ('media_import', self.media_import is not None),
                     ('media_archive', self.media_archive is not None),
                     ('task_archive', self.task_archive is not None),
@@ -1156,18 +1120,10 @@ class HostConfig(SharedConfig):
             unknown = [scene for scene in self.history_import.scenes if scene not in self.scenes]
             if unknown:
                 raise ValueError(f"history_import.scenes are not configured: {unknown!r}")
-        if self.history_export is not None:
-            unknown = [scene for scene in self.history_export.scenes if scene not in self.scenes]
-            if unknown:
-                raise ValueError(f"history_export.scenes are not configured: {unknown!r}")
         if self.reminder_import is not None:
             unknown = [scene for scene in self.reminder_import.scenes if scene not in self.scenes]
             if unknown:
                 raise ValueError(f'reminder_import.scenes are not configured: {unknown!r}')
-        if self.reminder_export is not None:
-            unknown = set(self.reminder_export.scenes) - self.scenes.keys()
-            if unknown:
-                raise ValueError(f'reminder_export.scenes are not configured: {sorted(unknown)!r}')
         if self.media_import is not None:
             unknown = set(self.media_import.scenes) - self.scenes.keys()
             if unknown:
@@ -1195,9 +1151,7 @@ class HostConfig(SharedConfig):
         # Offline settings belong to the original root object and their
         # commands, not to this derived runtime scene view or a saved root file.
         shared["history_import"] = None
-        shared["history_export"] = None
         shared['reminder_import'] = None
-        shared['reminder_export'] = None
         shared['media_import'] = None
         shared['media_archive'] = None
         shared['task_archive'] = None
@@ -1281,11 +1235,6 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
     if isinstance(reminders, dict):
         reminders['source'] = _resolved_path(root, reminders.get('source'), within_root=False, field='reminder_import.source')
         reminders['backup'] = _resolved_path(root, reminders.get('backup'), within_root=True, field='reminder_import.backup')
-    reminder_export = source.get('reminder_export')
-    if isinstance(reminder_export, dict):
-        for field in ('target', 'backup'):
-            reminder_export[field] = _resolved_path(root, reminder_export.get(field), within_root=True,
-                                                     field=f'reminder_export.{field}')
     importing = source.get("history_import")
     if isinstance(importing, dict):
         importing["source"] = _resolved_path(
@@ -1294,18 +1243,6 @@ def _resolve_history_paths(root: Path, source: dict) -> None:
         importing["backup"] = _resolved_path(
             root, importing.get("backup"), within_root=True, field="history_import.backup"
         )
-    exporting = source.get("history_export")
-    if isinstance(exporting, dict):
-        exporting["target"] = _resolved_path(
-            root, exporting.get("target"), within_root=True, field="history_export.target"
-        )
-        exporting["backup"] = _resolved_path(
-            root, exporting.get("backup"), within_root=True, field="history_export.backup"
-        )
-        if exporting.get('media_directory') is not None:
-            exporting['media_directory'] = _resolved_path(
-                root, exporting['media_directory'], within_root=True, field='history_export.media_directory'
-            )
 
 
 def _resolve_memory_path(root: Path, source: dict) -> None:

@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from len_bot.next.config import (
-    ONEBOT_SETTINGS, HistoryExportSettings, HistoryImportSettings, HostConfig, LabConfig, LearningSettings,
+    ONEBOT_SETTINGS, HistoryImportSettings, HostConfig, LabConfig, LearningSettings,
     OneBotForward, OneBotReverse,
     PanelSettings, QuietHours, ScenePersona, load_config, load_host_config, load_instance_config,
     read_scene_persona, save_scene_persona,
@@ -278,7 +278,6 @@ def test_isolated_config_resolves_paths_and_explicit_model_bindings(tmp_path):
     assert config.images.max_dimension == 1280
     assert config.images.timeout_seconds == 20
     assert config.history_import is None
-    assert config.history_export is None
     assert config.evaluation is None
     assert config.persona_aliases == []
     assert config.relationships == {}
@@ -388,7 +387,6 @@ def test_explicit_multiscene_host_roundtrips_and_derives_existing_scene_contract
     assert host.delivery == "simulated"
     assert host.panel is None
     assert host.history_import is None
-    assert host.history_export is None
     assert isinstance(host.onebot, OneBotReverse)
     assert list(host.scenes) == ["group:80001", "private:80002"]
     assert host.scenes["group:80001"].persona == root / "personas/group"
@@ -1019,9 +1017,6 @@ def test_replay_clock_rejects_invalid_values(tmp_path, clock, field):
     (lambda source: source.update(history_import={
         "source": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"],
     }), "history_import"),
-    (lambda source: source.update(history_export={
-        "target": "old.sqlite3", "backup": "backup.sqlite3", "scenes": ["group:80001"],
-    }), "history_export"),
 ])
 def test_replay_clock_rejects_entries_without_shared_time_source(tmp_path, change, field):
     root = tmp_path / "isolated"
@@ -1092,7 +1087,7 @@ def test_scene_persona_save_rejects_malformed_root_without_writing(tmp_path):
     ("change", "field"),
     [
         (lambda source: source.pop("onebot"), "onebot"),
-        (lambda source: source.update(onebot=None), "onebot"),
+        (lambda source: source.update(onebot=None, delivery="onebot"), "onebot"),
         (lambda source: source.update(scenes={}), "scenes"),
         (lambda source: source["scenes"].update({"group:0": {"persona": "personas/invalid"}}), "group:<QQ>"),
         (lambda source: source.update(scene="group:80001"), "scene"),
@@ -1192,113 +1187,6 @@ def test_history_import_paths_and_explicit_scene_scope_roundtrip(tmp_path):
     assert host.history_import.scenes == ["private:80002"]
 
 
-def test_history_export_paths_and_scope_roundtrip_without_running_either_offline_action(tmp_path):
-    single_root = tmp_path / "single"
-    single_source = _config("personas/example")
-    single_source["history_export"] = {
-        "target": "data/legacy.sqlite3", "backup": "data/legacy-before-export.sqlite3",
-        "scenes": ["group:80001"],
-    }
-    _write_config(single_root, single_source)
-
-    single = load_instance_config(single_root)
-
-    assert isinstance(single, LabConfig)
-    assert isinstance(single.history_export, HistoryExportSettings)
-    assert single.history_export.target == single_root / "data/legacy.sqlite3"
-    assert single.history_export.backup == single_root / "data/legacy-before-export.sqlite3"
-    assert single.history_export.scenes == [single.scene]
-    assert single.history_import is None
-    assert LabConfig.model_validate_json(single.model_dump_json()) == single
-    assert not single.history_export.target.exists()
-    assert not single.history_export.backup.exists()
-
-    host_root = tmp_path / "multi"
-    host_source = _host_config()
-    host_source["history_import"] = {
-        "source": "../offline-old.sqlite3", "backup": "data/pre-import.sqlite3",
-        "scenes": ["private:80002"],
-    }
-    host_source["history_export"] = {
-        "target": "data/legacy.sqlite3", "backup": "data/legacy-before-export.sqlite3",
-        "scenes": ["group:80001"],
-    }
-    _write_config(host_root, host_source)
-
-    host = load_instance_config(host_root)
-
-    assert isinstance(host, HostConfig)
-    assert host.history_import.scenes == ["private:80002"]
-    assert host.history_export.target == host_root / "data/legacy.sqlite3"
-    assert host.history_export.backup == host_root / "data/legacy-before-export.sqlite3"
-    assert host.history_export.scenes == ["group:80001"]
-    assert HostConfig.model_validate_json(host.model_dump_json()) == host
-    for scene in host.scenes:
-        derived = host.scene_config(scene)
-        assert derived.history_import is None and derived.history_export is None
-        assert LabConfig.model_validate_json(derived.model_dump_json()) == derived
-    assert host.history_import.scenes == ["private:80002"]
-    assert host.history_export.scenes == ["group:80001"]
-    assert not host.history_export.target.exists()
-    assert not host.history_export.backup.exists()
-
-
-@pytest.mark.parametrize(
-    ("mode", "scenes", "field"),
-    [
-        ("isolated", [], "scenes"),
-        ("isolated", ["group:80001", "group:80001"], "repeat"),
-        ("isolated", ["private:0"], "group:<QQ>"),
-        ("isolated", ["private:80002"], "only the configured scene"),
-        ("isolated-multi", ["group:80001", "group:80001"], "repeat"),
-        ("isolated-multi", ["group:99999"], "not configured"),
-    ],
-)
-def test_history_export_rejects_invalid_scene_selection(tmp_path, mode, scenes, field):
-    root = tmp_path / "lab"
-    source = _config("personas/example") if mode == "isolated" else _host_config()
-    source["history_export"] = {
-        "target": "data/legacy.sqlite3", "backup": "data/legacy-before-export.sqlite3",
-        "scenes": scenes,
-    }
-    _write_config(root, source)
-
-    with pytest.raises(ValueError) as failure:
-        load_instance_config(root)
-    assert field in str(failure.value)
-    assert "synthetic-secret-marker" not in str(failure.value)
-
-
-@pytest.mark.parametrize(
-    ("change", "field"),
-    [
-        (lambda item: item.pop("target"), "history_export.target"),
-        (lambda item: item.pop("backup"), "history_export.backup"),
-        (lambda item: item.update(target="../outside.sqlite3"), "history_export.target"),
-        (lambda item: item.update(backup="../outside.sqlite3"), "history_export.backup"),
-        (lambda item: item.update(target="data/isolated-chat.db"), "database must differ"),
-        (lambda item: item.update(backup="data/isolated-chat.db"), "database must differ"),
-        (lambda item: item.update(backup="data/legacy.sqlite3"), "database must differ"),
-        (lambda item: item.update(backup="data/../data/legacy.sqlite3"), "database must differ"),
-        (lambda item: item.update(unexpected=True), "unexpected"),
-    ],
-)
-def test_history_export_rejects_invalid_paths_and_extra_fields(tmp_path, change, field):
-    root = tmp_path / "lab"
-    source = _config("personas/example")
-    source["history_export"] = {
-        "target": "data/legacy.sqlite3", "backup": "data/legacy-before-export.sqlite3",
-        "scenes": ["group:80001"],
-    }
-    change(source["history_export"])
-    _write_config(root, source)
-
-    with pytest.raises(ValueError) as failure:
-        load_config(root)
-    assert field in str(failure.value)
-    assert "synthetic-secret-marker" not in str(failure.value)
-
-
 @pytest.mark.parametrize(
     ("mode", "scenes", "field"),
     [
@@ -1370,6 +1258,22 @@ def test_instance_config_rejects_missing_or_unknown_mode(tmp_path, mode):
 
     with pytest.raises(ValueError, match="mode must explicitly be isolated or isolated-multi"):
         load_instance_config(root)
+
+
+@pytest.mark.parametrize("mode", ["isolated", "isolated-multi"])
+@pytest.mark.parametrize("field", ["history_export", "reminder_export"])
+def test_instance_config_rejects_retired_rollback_settings(tmp_path, mode, field):
+    root = tmp_path / "lab"
+    source = _config("personas/example") if mode == "isolated" else _host_config()
+    source[field] = {"target": "old.sqlite3", "backup": "old-before.sqlite3",
+                     "scenes": ["group:80001"]}
+    _write_config(root, source)
+
+    with pytest.raises(ValueError) as failure:
+        load_instance_config(root)
+    assert field in str(failure.value)
+    assert "Extra inputs are not permitted" in str(failure.value)
+    assert "synthetic-secret-marker" not in str(failure.value)
 
 
 def test_offline_version_upgrade_cli_selects_explicit_multiscene_root(tmp_path):

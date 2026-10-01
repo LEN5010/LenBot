@@ -49,7 +49,7 @@ class ProcessingChange(BaseModel):
 class ProviderChange(BaseModel):
     model_config = STRICT
 
-    api: Literal["openai-chat"]
+    api: Literal["openai-chat", "openai-audio", "openai-embeddings"]
     base_url: str
     api_key: str | None = Field(default=None, repr=False)
 

@@ -1,7 +1,7 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth, refreshAuth } from './composables/useAuth.js'
-import LegacyShell from './layouts/LegacyShell.vue'
+import TrialShell from './layouts/TrialShell.vue'
 import HostShell from './layouts/HostShell.vue'
 const auth=useAuth(),route=useRoute(),router=useRouter()
 async function retry() {
@@ -22,7 +22,7 @@ async function retry() {
     <router-view v-else-if="route.name==='login'" />
     <template v-else-if="auth.status==='authenticated'">
       <HostShell v-if="auth.panelContext.mode==='isolated-multi'"><router-view /></HostShell>
-      <LegacyShell v-else><router-view /></LegacyShell>
+      <TrialShell v-else-if="auth.panelContext.mode==='isolated'"><router-view /></TrialShell>
     </template>
   </v-app>
 </template>

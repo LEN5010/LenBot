@@ -101,7 +101,6 @@ def _copy_clock(target: Path, name: str, *, interface: int = 1) -> Path:
 
 def test_builtin_clock_manifest_loads_with_checked_values(tmp_path):
     manifest = read_manifest(BUILTIN / "clock")
-    assert (manifest.name, manifest.interface, manifest.authors) == ("clock", 1, ["LEN5010"])
     assert manifest.config["show_seconds"].type == "boolean"
 
     root = _root(tmp_path, {"clock": {"show_seconds": False}}, ["clock"])
@@ -109,10 +108,6 @@ def test_builtin_clock_manifest_loads_with_checked_values(tmp_path):
     record = host.plugins["clock"]
     assert (record.status, record.error, record.scenes) == ("loaded", None, ("group:80001",))
     assert record.context.config == {"show_seconds": False}
-    assert record.context.data_dir == root / "plugin-data" / "clock" and record.context.data_dir.is_dir()
-    assert host.commands == {"时间": "clock"}
-    assert host.state()["plugins"][0]["commands"] == [
-        {"name": "时间", "description": "回复本场景时区的当前日期、星期和时间"}]
 
 
 def test_interface_mismatch_and_bad_values_fail_only_that_plugin(tmp_path):

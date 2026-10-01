@@ -1,1 +1,1 @@
-"""Independent next-generation runtime; the legacy entry point stays unchanged."""
+"""LenBot runtime and explicit offline data maintenance."""

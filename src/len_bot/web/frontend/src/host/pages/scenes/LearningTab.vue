@@ -10,6 +10,7 @@ import AdvancedFields from '../../components/AdvancedFields.vue'
 import DevOnly from '../../components/DevOnly.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
+const emit = defineEmits(['dirty'])
 const root = `/api/host/scenes/${encodeURIComponent(props.scene)}`
 
 // Learning switches (saved to the root config, restart to apply).
@@ -40,9 +41,11 @@ const kinds = {
 }
 const lists = {}
 for (const [kind, item] of Object.entries(kinds)) {
-  lists[kind] = useResource(() => api(`${item.path}?${new URLSearchParams({ [item.key]: filter.value, ...(kind === 'stickers' && filter.value === 'pending' ? { status: 'complete' } : {}) })}`))
+  lists[kind] = useResource(async (offset = 0, discardEdits = false) => ({
+    ...(await api(`${item.path}?${new URLSearchParams({ [item.key]: filter.value, offset, limit: 20,
+      ...(kind === 'stickers' && filter.value === 'pending' ? { status: 'complete' } : {}) })}`)), discardEdits,
+  }))
 }
-watch(filter, () => Object.values(lists).forEach(list => list.reload()))
 const edits = reactive({})
 const review = useAction()
 const fresh = (kind, item) => kind === 'expressions' ? { situation: item.situation, style: item.style }
@@ -50,21 +53,40 @@ const fresh = (kind, item) => kind === 'expressions' ? { situation: item.situati
   : { description: item.description ?? '', text: item.text ?? '', emotions: [...item.emotions], tags: [...item.tags] }
 for (const kind of Object.keys(kinds)) {
   watch(lists[kind].data, value => {
-    for (const item of value?.items || []) edits[`${kind}:${item.id}`] ??= fresh(kind, item)
+    for (const item of value?.items || []) {
+      const key = `${kind}:${item.id}`
+      if (value.discardEdits || !Object.hasOwn(edits, key)) edits[key] = fresh(kind, item)
+    }
   })
 }
 const editOf = (kind, item) => edits[`${kind}:${item.id}`]
+const reviewDirty = kind => (lists[kind].data.value?.items || []).some(item => !same(editOf(kind, item), fresh(kind, item)))
+function changeFilter(value) {
+  if (value === filter.value) return
+  if (Object.keys(kinds).some(reviewDirty) && !window.confirm('放弃候选内容中没保存的修改？')) return
+  filter.value = value
+  Object.values(lists).forEach(list => list.reload(0, true))
+}
+function changePage(kind, offset) {
+  if (reviewDirty(kind) && !window.confirm('放弃这一页没保存的修改？')) return
+  lists[kind].reload(offset, true)
+}
 async function decide(kind, item, decision) {
   const edit = editOf(kind, item)
   const body = kind === 'expressions' ? { ...edit, status: decision }
     : kind === 'jargon' ? { meaning: edit.meaning || null, status: decision }
     : { description: edit.description || null, text: edit.text || null, emotions: edit.emotions, tags: edit.tags, review: decision }
   const done = await review.run(() => api(`${kinds[kind].path}/${item.id}`, { method: 'PUT', body: JSON.stringify(body) }))
-  if (done) lists[kind].reload()
+  if (done) {
+    edits[`${kind}:${item.id}`] = fresh(kind, done)
+    lists[kind].reload(lists[kind].data.value.offset)
+  }
 }
 
 // Turning an adopted expression into a persona example.
 const example = ref(null)
+watch(() => configDirty.value || Object.keys(kinds).some(reviewDirty) || example.value !== null,
+  value => emit('dirty', value), { immediate: true })
 const addExample = useAction()
 function openExample(item) {
   example.value = { expression_id: item.id, context: item.situation, line: item.style, tags: [] }
@@ -117,7 +139,7 @@ async function learnNow() {
     <section class="surface">
       <div class="review-head">
         <h2>学到的内容</h2>
-        <v-btn-toggle v-model="filter" mandatory density="compact" color="primary">
+        <v-btn-toggle :model-value="filter" @update:model-value="changeFilter" mandatory density="compact" color="primary">
           <v-btn value="pending">待审核</v-btn><v-btn value="adopted">已采用</v-btn><v-btn value="rejected">不要的</v-btn></v-btn-toggle>
         <v-btn v-if="learner.data.value?.enabled" variant="text" :loading="run.busy.value" @click="learnNow">现在学一次</v-btn>
       </div>
@@ -157,6 +179,13 @@ async function learnNow() {
           </div>
           <DevOnly label="原始数据"><pre>{{ JSON.stringify(entry, null, 2) }}</pre></DevOnly>
         </article>
+        <div v-if="lists[kind].data.value && (lists[kind].data.value.offset > 0 || lists[kind].data.value.total > lists[kind].data.value.limit)" class="review-actions">
+          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || lists[kind].data.value.offset === 0"
+            @click="changePage(kind, lists[kind].data.value.offset - lists[kind].data.value.limit)">上一页</v-btn>
+          <span>第 {{ Math.floor(lists[kind].data.value.offset / lists[kind].data.value.limit) + 1 }} 页 · 共 {{ lists[kind].data.value.total }} 条</span>
+          <v-btn size="small" variant="text" :disabled="lists[kind].loading.value || review.busy.value || lists[kind].data.value.offset + lists[kind].data.value.limit >= lists[kind].data.value.total"
+            @click="changePage(kind, lists[kind].data.value.offset + lists[kind].data.value.limit)">下一页</v-btn>
+        </div>
       </div>
     </section>
 

@@ -742,8 +742,9 @@ class WorkTasks:
             request += '\n\n' + Template((PROMPTS / 'next_worker_materials.md').read_text()).substitute(
                 materials=json.dumps([{'name': name, 'path': f'/inputs/{name}'} for name in item.materials],
                                      ensure_ascii=False, allow_nan=False))
-        if await session.pi.prompt(request) == "handled":
-            raise RuntimeError("Pi 处理了输入但未开始执行任务")
+        # Pi 0.87.1 acknowledges prompt preflight with success:true and no data.
+        # Completion is reported by the event stream, not by this response.
+        await session.pi.command("prompt", message=request)
         final: dict | None = None
         while True:
             deadline = current.timer.when()
