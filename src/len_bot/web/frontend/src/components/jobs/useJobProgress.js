@@ -85,7 +85,7 @@ export function useJobProgress({job, jobId, route, scalar, sameJob}) {
       }))
       if (request !== fileRequest || !sameJob(current)) return
       if (value.execution_id !== executionId) {
-        workspaceFileError.value = '产物快照已变化，本次内容未合并。请刷新工作目录后重新选择文件。'
+        workspaceFileError.value = '文件已经变了，请刷新工作目录后重新选择。'
         return
       }
       workspaceFile.value = offset && executionId ? { ...value, content: previous.content + value.content } : value

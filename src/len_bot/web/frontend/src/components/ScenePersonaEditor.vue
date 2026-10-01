@@ -90,12 +90,12 @@ async function save() {
     if (!fresh()) return
     adopt(result)
     saveNotice.value = result.restart_required
-      ? '已保存到根配置。这三项与当前运行快照不同，停机并重启本实例后生效。'
-      : '已保存到根配置。这三项与当前运行快照一致。'
+      ? '已保存，重启后生效。'
+      : '已保存。'
   } catch (problem) {
     if (fresh()) saveError.value = problem.status >= 400 && problem.status < 500
       ? `未保存：${problem.message}`
-      : `保存结果未确认：${problem.message} 草稿已保留，请重读根配置核对；不会自动重试。`
+      : `不确定有没有保存成功：${problem.message} 你的修改还在，刷新看看。`
   } finally {
     if (fresh()) saving.value = false
   }
@@ -109,7 +109,7 @@ onMounted(() => readSaved(false))
     <div class="section-heading">
       <div>
         <h2 id="scene-editor-title">编辑本场景补充</h2>
-        <p class="muted">仅修改补充称呼、关系说明和行为风格补充；角色包、样例、模型及发送出口仍为只读。</p>
+        <p class="muted">这里只改这个场景的称呼、关系和行为补充。</p>
       </div>
       <v-btn variant="outlined" :loading="reading" :disabled="saving" @click="readSaved(true)">重读根配置保存值</v-btn>
     </div>
@@ -121,16 +121,16 @@ onMounted(() => readSaved(false))
 
     <template v-if="saved">
       <v-alert :type="restartRequired ? 'warning' : 'info'" variant="tonal" class="status-note">
-        <strong>{{ restartRequired ? '根配置保存值与当前运行快照不同' : '这三项与当前运行快照一致' }}</strong>。
-        <span v-if="restartRequired"> 已保存的场景补充需停机并重启本实例才会生效；运行快照不会因保存而改变。</span>
-        <span v-else> 此状态只比较这三个场景补充字段，不代表其他配置是否需要重启。</span>
+        <strong>{{ restartRequired ? '有修改等待重启' : '已经生效' }}</strong>
+        <span v-if="restartRequired">：重启后生效。</span>
+        <span v-else></span>
       </v-alert>
       <p v-if="dirty" class="dirty-note" role="status">草稿有未保存的修改；离开本页会提示确认。</p>
 
       <form @submit.prevent="save" novalidate>
         <fieldset :disabled="saving || reading" class="editor-group">
           <legend>补充称呼</legend>
-          <p class="muted">每项是一个完整称呼；可以包含换行。要清空名单，请逐项删除，不会按行切分或改写原文。</p>
+          <p class="muted">每项是一个称呼。</p>
           <div v-for="(alias, index) in draft.persona_aliases" :key="index" class="editor-row">
             <v-textarea v-model="draft.persona_aliases[index]" :label="`补充称呼 ${index + 1}`" rows="2" auto-grow hide-details="auto" />
             <v-btn variant="outlined" :aria-label="`删除补充称呼 ${index + 1}`" @click="draft.persona_aliases.splice(index, 1)">删除</v-btn>
@@ -153,7 +153,7 @@ onMounted(() => readSaved(false))
 
         <fieldset :disabled="saving || reading" class="editor-group">
           <legend>行为风格补充</legend>
-          <p class="muted">补充当前场景的参与偏好，不会修改角色包。完整清空输入框时提交 null；非空原文保留换行和空白。</p>
+          <p class="muted">这个场景里的额外行为要求，清空就是不补充。</p>
           <v-textarea v-model="draft.behavior_addendum" label="本场景行为风格补充" rows="5" auto-grow hide-details="auto" />
         </fieldset>
 

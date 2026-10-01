@@ -48,7 +48,7 @@ async function saveDraft(domain,path,values,method,progress) {
   const result=await api(path,{method,body})
   if(!result||result.config_saved!==true||typeof result.message!=='string'||
     (domain==='connection'?(result.success!==true||typeof result.requires_restart!=='boolean'):!Object.hasOwn(result,'settings')))
-    throw new Error('配置响应缺少本次保存所需字段，结果待核对，未采用新基线。')
+    throw new Error('不确定有没有保存成功，请刷新看看。')
   progress.confirmed=true
   return result
 }
@@ -168,13 +168,13 @@ async function saveError(problem, domain, fresh, progress) {
 function adoptSaveOutcome() {
   const domain=tab.value, outcome=currentSaveOutcome.value
   if(busy.value||loading.value||!outcome?.snapshot)return
-  if(!window.confirm('放弃本标签原草稿（包括未确认的令牌替换或新增授予），采用本次读取值继续编辑？这不重发、撤销或追认原请求，也不重试运行应用。'))return
+  if(!window.confirm('放弃这个标签里没保存的修改，用现在保存的值继续？'))return
   try {
     adoptSnapshot(domain,outcome.snapshot)
     delete saveOutcomes.value[domain];
     conflicts.clear(domain);
     error.value=''
-    message.value='已采用当前保存值继续编辑；没有再次保存或重试应用。原操作结果仍按原回执与运行记录核对。'
+    message.value='已换成现在保存的值。'
   }catch(problem){
     error.value=problem.message
   }
@@ -197,7 +197,7 @@ function resolveConflict(keep) {
     if(keep)writeForm(domain,next)
     conflicts.clear(domain);
     error.value=''
-    message.value=keep?'已保留实际改动，其余字段采用现值；请核对后保存本标签配置。':'已采用本次读取的保存值，没有再次保存。'
+    message.value=keep?'已保留你改过的项，其他用现在的值。看一下再保存。':'已换成现在保存的值。'
   }catch(problem){
     error.value=problem.message
   }
@@ -288,12 +288,12 @@ watch(tab,()=>{
     <v-alert v-if="message" type="success" variant="tonal" closable @click:close="message=''">
       {{ message }}
     </v-alert>
-    <p class="muted">切换标签保留本页配置草稿，但不继续跟踪旧操作；服务器可能已保存，请回到原标签刷新核对后再提交。</p>
-    <v-alert v-if="tab==='connection'&&connectionNeedsReadback" type="warning" variant="tonal">连接配置已写入，但保存值尚未读回；请刷新核对后再编辑，不要重复提交令牌。</v-alert>
+    <p class="muted">切换标签不会丢掉没保存的修改。</p>
+    <v-alert v-if="tab==='connection'&&connectionNeedsReadback" type="warning" variant="tonal">连接设置已保存，刷新看看最新状态。</v-alert>
     <v-alert v-if="currentSaveOutcome" type="warning" variant="tonal">
       <p>
-        {{ currentSaveOutcome.confirmed?'已取得写入确认，但后续结果仍需核对。':'本次配置保存结果未知。' }}{{ currentSaveOutcome.message }}不要重复提交原草稿，尤其是令牌替换或新增授予。</p>
-      <p v-if="currentSaveOutcome.snapshot">当前保存值读取于 {{ fmtTime(currentSaveOutcome.readAt) }}；这不是原操作回执。</p>
+        {{ currentSaveOutcome.confirmed?'已保存，刷新看看最新状态。':'不确定有没有保存成功，刷新看看再决定要不要重新保存。' }}{{ currentSaveOutcome.message }}</p>
+      <p v-if="currentSaveOutcome.snapshot">下面是 {{ fmtTime(currentSaveOutcome.readAt) }} 读到的保存值。</p>
       <ResourceViewer
         v-if="currentSaveOutcome.snapshot"
         title="当前读取值（不是原草稿）"
@@ -322,7 +322,7 @@ watch(tab,()=>{
         <ResourceViewer v-else title="本次读取的保存值（不是草稿）" :content="currentConflict?.snapshot?.saved" />
       </template>
     </ConfigConflictBanner>
-    <p v-if="tab==='access'&&currentConflict" class="muted">白名单与授予列表按整组核对。明确保留后，仍使用当前授予 ID 和修订；已经删除的旧 ID 不会被改成新授予重新签发。</p>
+    <p v-if="tab==='access'&&currentConflict" class="muted">白名单和授权按整组保留。</p>
     <v-tabs
       :model-value="tab"
       color="primary"

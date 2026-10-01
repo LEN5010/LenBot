@@ -29,7 +29,7 @@ const steps=computed(()=>runs.value.flatMap((run,index)=>(run.steps || []).map(s
 const candidate=computed(()=>[...steps.value].reverse().find(step=>step.terminal_candidate)?.terminal_candidate || runs.value[0]?.terminal_candidate)
 const messages=computed(()=>props.trace.payload.result?.message_proposals || candidate.value?.messages || [])
 const checkpoints=computed(()=>runs.value.flatMap(run=>run.checkpoints || []))
-const decision=computed(()=>props.trace.payload.gate?.committed===true?'对话事务已提交':props.trace.payload.gate?.accepted===true?'Actor / Gate 已接受':props.trace.payload.gate?.accepted===false?'Actor / Gate 已拒绝':'没有提交回执')
+const decision=computed(()=>props.trace.payload.gate?.committed===true?'对话事务已提交':props.trace.payload.gate?.accepted===true?'Actor / Gate 已接受':props.trace.payload.gate?.accepted===false?'Actor / Gate 已拒绝':'没有提交')
 const publication=computed(()=>props.trace.payload.gate?.publication)
 const publicationState=computed(()=>({
   pending:'等待发布',
@@ -40,7 +40,7 @@ const publicationState=computed(()=>({
 })[publication.value?.status] || publication.value?.status)
 const publicationPhase=computed(()=>({
   not_started:'尚未开始',
-  commit_acknowledgement:'等待提交回执时已取消',
+  commit_acknowledgement:'提交时被取消',
   awaiting_publication:'等待前一轮完成发布',
   action_preparation:'组织待发消息',
   scheduler_schedule:'登记调度任务',
@@ -99,7 +99,7 @@ function messageText(message){
         :scene-id="trace.scene_id"
         label="读取已提交事务"
       />
-      <p>发布阶段：{{ publicationPhase }}。实际送达以行动回执为准。</p>
+      <p>发布阶段：{{ publicationPhase }}。</p>
       <v-alert v-if="publication.error" type="error" variant="tonal">
         {{ publication.error_type }}：{{ publication.error }}
       </v-alert>
@@ -139,7 +139,7 @@ function messageText(message){
       v-for="item in budgets"
       :key="item.index"
       :budget="item.budget"
-      :title="`执行段 ${item.index} 的预算快照`"
+      :title="`执行段 ${item.index} 的预算`"
     />
     <OperationReceipts :items="trace.operation_receipts || []" :scene-id="trace.scene_id" />
     <section v-if="checkpoints.length">
@@ -172,7 +172,7 @@ function messageText(message){
     />
     <section v-if="isConversation">
       <h3>终结候选</h3>
-      <p class="muted">候选表达与真实送达分别记录，下方内容不代表已经发到群聊。</p>
+      <p class="muted">下面是 Bot 准备说的话，是否发出去要看发送记录。</p>
       <article v-for="(message,index) in messages" :key="index" class="candidate-message">
         <span class="muted">第 {{ index+1 }} 条候选</span>
         <p>{{ messageText(message) }}</p>
@@ -245,7 +245,7 @@ function messageText(message){
           label="本次交付成品"
         />
       </div>
-      <p>认领、完成处理与真实送达分别记录；以下提交仍需沿行动回执核对。</p>
+      <p>这一轮提交的内容。</p>
       <article v-for="(commit,index) in pluginCommits" :key="index" class="candidate-message">
         <EntityLink
           v-if="commit.commit_event_id"
@@ -261,7 +261,7 @@ function messageText(message){
     </section>
     <section v-else>
       <h3>{{ trace.kind.startsWith('agent_job')?'工作执行结果':'已保存结果' }}</h3>
-      <p class="muted">执行、提交和送达分别保存，实际发送见关联回执。</p>
+      <p class="muted">是否发出去看发送记录。</p>
       <ResourceViewer v-if="trace.payload.result" title="已记录结果" :content="trace.payload.result" />
       <ResourceViewer v-else-if="candidate" title="终结候选" :content="candidate" />
       <p v-else class="muted">没有保存可读取的结果，具体执行过程见下方记录。</p>
@@ -420,7 +420,7 @@ function messageText(message){
               />
               <ResourceViewer
                 v-if="call.receipt"
-                title="工具暂存回执（不代表操作已提交）"
+                title="工具暂存的结果（还没提交）"
                 :content="call.receipt"
               />
               <details>

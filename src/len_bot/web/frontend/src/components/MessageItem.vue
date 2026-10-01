@@ -115,7 +115,7 @@ const interactionText=computed(()=>props.event.interaction&&props.event.interact
           {{ attentionText }}
         </span>
         <span v-else class="attention-copy">
-          {{ event.display_kind==='system'?'系统资料，不代表群聊发言':'' }}
+          {{ event.display_kind==='system'?'系统资料':'' }}
         </span>
         <v-btn
           size="small"
@@ -141,7 +141,7 @@ const interactionText=computed(()=>props.event.interaction&&props.event.interact
             <MediaPreview :asset="image" :scene-id="event.scene_id" interactive />
           </div>
           <p class="muted">{{ image.description }}</p>
-          <p class="muted">预览不代表模型已看过或听过。音视频不自动播放。</p>
+          <p class="muted">音视频需要手动播放。</p>
           <EntityLink type="media" :id="image.id" :scene-id="event.scene_id" label="媒体来源与详情" />
         </v-card-text>
       </v-card>

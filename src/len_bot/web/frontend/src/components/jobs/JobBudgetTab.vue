@@ -33,11 +33,11 @@ const workBudget = computed(() => job.value?.budget.work_snapshot)
     </div>
     <p>原时间窗口：{{ limitText(workBudget?.max_seconds) }} 秒；绝对期限：{{ workBudget?.deadline_at ? fmtTime(workBudget.deadline_at) : '未记录' }}。</p>
     <p>累计 token 上限：{{ limitText(workBudget?.token_limit) }}。</p>
-    <p class="muted-copy">修订、暂停和恢复不重置累计账。有绝对期限时，等待和停机也计入窗口，不能用累计活动时长推算剩余时间。计次是准入账，不等于成功返回的请求数；实际请求见下方调用账。不设限仅指已明确记录为 null 的次数或 token 维度，不是免费或无限执行。</p>
+    <p class="muted-copy">暂停、恢复不会清零已用额度。有截止时间时，等待和停机的时间也算在内。</p>
     <details class="section-gap">
-      <summary>原预算快照与账户记录</summary>
+      <summary>创建时的预算和账户记录</summary>
       <ResourceViewer
-        title="本工作创建时的预算快照"
+        title="创建时的预算"
         :content="workBudget || job.budget.work_snapshot_note"
       />
       <ResourceViewer title="本工作账户预占与结算" :content="job.reservation || '未记录'" />
@@ -50,7 +50,7 @@ const workBudget = computed(() => job.value?.budget.work_snapshot)
     </v-alert>
     <template v-if="usage">
       <CacheUsageSummary :cache="usage.cache" :phases="usage.request_phases" />
-      <p class="muted-copy">共 {{ usage.total }} 条调用记录 · 读取于 {{ fmtTime(usageReadAt) }}。缓存是输入的子项，推理是输出的子项，不重复相加；未知 usage 不按零消耗或零成本处理。</p>
+      <p class="muted-copy">共 {{ usage.total }} 条调用记录 · 读取于 {{ fmtTime(usageReadAt) }}。</p>
       <article
         v-for="group in usage.totals"
         :key="`${group.purpose}:${group.disposition}`"
@@ -59,7 +59,7 @@ const workBudget = computed(() => job.value?.budget.work_snapshot)
         <strong>
           {{ purposeLabel(group.purpose) }} · {{ group.disposition || '处置未记录' }} · {{ group.calls }} 次</strong>
         <p>已记录输入 {{ group.prompt_tokens.toLocaleString() }}（含已记录缓存 {{ group.cached_tokens.toLocaleString() }}）；已记录输出 {{ group.completion_tokens.toLocaleString() }}（含已记录推理 {{ group.reasoning_tokens.toLocaleString() }}）。</p>
-        <p>usage 未完整记录 {{ group.unknown_usage }} 次；失败 {{ group.failed }}，取消 {{ group.cancelled }}，请求未确认 {{ group.unconfirmed }}。<template v-if="group.audio_seconds">另有转写时长 {{ group.audio_seconds }} 秒。</template>
+        <p>{{ group.unknown_usage }} 次用量未知；失败 {{ group.failed }}，取消 {{ group.cancelled }}，不确定 {{ group.unconfirmed }}。<template v-if="group.audio_seconds">另有转写时长 {{ group.audio_seconds }} 秒。</template>
         </p>
       </article>
       <p v-if="!usage.items.length" class="muted-copy">没有关联到该工作身份的模型调用记录；不能据此推断其他未关联请求没有发生。</p>

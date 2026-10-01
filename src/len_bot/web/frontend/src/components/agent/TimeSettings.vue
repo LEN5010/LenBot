@@ -7,9 +7,9 @@ const { timeDraft, timeConfigured, timeRestart, weekdays, timeDirty, beginTimeCo
 <template>
   <v-card class="pa-5 form-card">
     <h2>业务时间口径</h2>
-    <p class="muted my-3">日程与群总结按照这里填写的时区、自然周和下午范围解释日期，不自动选择时区或补全天段。睡眠窗口成对填写；留空表示不启用睡眠。</p>
+    <p class="muted my-3">日程和群总结按这里的时区、一周的起点和下午的范围理解日期。睡眠时间开始和结束要一起填，留空就是不睡。</p>
     <v-alert v-if="!timeConfigured" type="info" variant="tonal" class="mb-4">尚未保存业务时间；需要时间口径的新插件不能启用。</v-alert>
-    <v-alert v-if="timeRestart" type="info" variant="tonal" class="mb-4">系统另有已保存配置等待手动重启。本页读取业务时间的保存值，当前查询与采集使用的时间口径仍须按对应组件核对。</v-alert>
+    <v-alert v-if="timeRestart" type="info" variant="tonal" class="mb-4">有修改等待重启。</v-alert>
     <v-btn
       v-if="!timeDraft&&!loading"
       variant="tonal"

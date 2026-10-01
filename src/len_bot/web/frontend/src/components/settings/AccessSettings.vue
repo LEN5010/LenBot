@@ -9,10 +9,10 @@ const { accessText, grants, plugins, scopeOptions, policyOptions, referenceError
   <v-card class="pa-5 form-card">
     <v-alert v-if="referenceError" type="error" variant="tonal" class="mb-4">群、成员、插件或额度策略参考读取失败：{{ referenceError }}；已有草稿保留，未自动选择替代项。</v-alert>
     <h2>QQ 回复白名单</h2>
-    <p class="muted my-3">在已启用但关闭普通聊天的群中，白名单成员仍可正常提问和继续互动。白名单不会强制每条消息回复，也不授予管理员、跨群读取或 @全体权限；日程命令及引用评论仍保持安静。</p>
+    <p class="muted my-3">群里关了闲聊时，白名单里的人照样能和 Bot 聊。白名单不带管理员权限。</p>
     <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveAccess">
       <v-alert v-if="accessProblems.length" type="error" variant="tonal" class="mb-4">
-        <p class="mb-2">请先修正以下内容；修正前不会提交保存。</p>
+        <p class="mb-2">请先改好下面这些内容。</p>
         <ul class="error-summary">
           <li v-for="(item,index) in accessProblems" :key="index+item.message">
             {{ item.message }}
@@ -85,7 +85,7 @@ const { accessText, grants, plugins, scopeOptions, policyOptions, referenceError
             label="哪个插件"
             :error="accessProblems.some(item=>item.key===`principal_id:${index}`)"
             :error-messages="accessProblems.filter(item=>item.key===`principal_id:${index}`).map(item=>item.message)"
-            hint="从当前已声明插件中选择。"
+            hint="从已有的插件里选"
             persistent-hint
             required
           />
@@ -177,9 +177,9 @@ const { accessText, grants, plugins, scopeOptions, policyOptions, referenceError
       <div v-if="grantImpact.length" class="impact-summary">
         <p><strong>保存后的影响</strong>：这些主体在各自范围内将获准下列能力，下一次执行按新授予判断。</p>
         <p v-for="line in grantImpact" :key="line" class="muted">{{ line }}</p>
-        <p class="muted">撤销或停用只阻止后续操作；已经发出的消息无法撤回，也不会改动其他未编辑的授予。</p>
+        <p class="muted">撤销后只影响以后，已经发出去的消息撤不回来。</p>
       </div>
-      <p class="muted mb-3">保存把白名单与能力授予一起写入根配置；它不发送消息、不调用模型，也不改动未编辑的授予。</p>
+      <p class="muted mb-3">白名单和授权一起保存。</p>
       <v-btn
         type="submit"
         color="primary"

@@ -11,7 +11,7 @@ const deliveryOptions = [
 </script>
 <template>
   <h3>发送记录</h3>
-  <p class="muted-copy">按原始事件类型读取。模拟与 Shadow 会单独标记，送达状态以保存的回执为准。</p>
+  <p class="muted-copy">这个群的发送记录，模拟和 Shadow 会单独标出来。</p>
   <v-select
     :model-value="deliveryType"
     :items="deliveryOptions"

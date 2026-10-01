@@ -313,7 +313,7 @@ function restoreSectionPosition() {
       top: position.record ? 0 : position.top,
       behavior: 'instant'
     })
-    if (position.record) returnNotice.value = '返回范围已恢复，但未能在当前页面定位原条目；请核对读取错误或列表变化，未按旧位置定位其他条目。'
+    if (position.record) returnNotice.value = '已返回，但没找到原来那一条，列表可能变了。'
   }
 }
 function settingsLoaded(value) {
@@ -656,7 +656,7 @@ watch(() => [
     @pointerdown="cancelSectionRestore"
     @keydown="cancelSectionRestore"
   >
-    <PageHeader title="群聊工作台" description="在同一个群内查看对话、记忆、工作和设置。刷新只读取记录。">
+    <PageHeader title="群聊工作台" description="查看每个群的对话、记忆、工作和设置。">
       <v-btn
         :prepend-icon="mdiRefresh"
         variant="outlined"
@@ -707,7 +707,7 @@ watch(() => [
           <v-expansion-panels class="mt-3">
             <v-expansion-panel title="配置另一个群">
               <v-expansion-panel-text>
-                <p class="muted-copy mb-3">只打开设置草稿，不会加入群或启用能力。</p>
+                <p class="muted-copy mb-3">先填设置，保存后才生效。</p>
                 <v-form @submit.prevent="configureGroup">
                   <v-text-field
                     v-model="groupNumber"
@@ -736,7 +736,7 @@ watch(() => [
               <span class="scene-id">{{ scene.scene_id }}</span>
               <div v-if="scene.scene_type==='group'" class="record-meta">
                 <StatusBadge domain="scene_chat" :status="chatMode(scene)" />
-                <span>{{ scene.joined===true?'已加入':scene.joined===false?'未确认加入':'加入状态未知' }}</span>
+                <span>{{ scene.joined===true?'已加入':scene.joined===false?'可能没加入':'加入状态未知' }}</span>
               </div>
               <time>{{ scene.has_history?'最近活动 '+fmtTime(scene.last_event_at):'尚无原话记录' }}</time>
               <span v-if="workEnabled(scene)" class="scene-id">工作插件已开启 · 执行条件另行核对</span>
@@ -760,7 +760,7 @@ watch(() => [
         <v-icon :icon="mdiMessageOutline" size="40" />
         <h2>选择一个群聊或私聊</h2>
         <p>查看原话与关联记录，或在唯一设置页修改本群规则。</p>
-        <p class="muted-copy">目录显示已保存设置，不代表工具已经执行或文件已经送达。</p>
+        <p class="muted-copy">各群保存的设置。</p>
       </v-card>
       <div v-if="sceneId" v-show="!mobile || !eventId" class="scene-main">
         <v-btn

@@ -13,7 +13,7 @@ const { onebot, platform, connection, connectionNeedsReadback, connectionDirty, 
       </v-chip>
     </div>
     <p class="muted my-3">
-      {{ onebot.connected?'已取得 OneBot 连接。':onebot.active_connection?.connection_mode==='forward_ws'?'当前运行方式为主动连接；尚未连接，请核对最近错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'当前运行方式等待 OneBot 主动接入。':'尚未取得当前运行连接方式；下方仅是已保存配置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span>
+      {{ onebot.connected?'已连上 OneBot。':onebot.active_connection?.connection_mode==='forward_ws'?'正在连 OneBot，还没连上，看看下面的错误。':onebot.active_connection?.connection_mode==='reverse_ws'?'正在等 OneBot 连进来。':'还没开始连接，下面是保存的设置。' }}<span v-if="onebot.self_id"> 已识别账号：{{ onebot.self_id }}</span>
     </p>
     <v-alert v-if="onebot.last_error" type="error" variant="tonal" class="mb-4">
       {{ onebot.last_error }}
@@ -88,16 +88,16 @@ const { onebot, platform, connection, connectionNeedsReadback, connectionDirty, 
           @click="readVersion"
         >读取平台实现与版本</v-btn>
       </div>
-      <p class="muted wide">连接配置保存后需手动重启服务生效。HTTP 检查只读取当前运行连接的状态。版本读取走当前发送传输，只读，不发送任何群消息。</p>
+      <p class="muted wide">连接设置保存后重启生效。</p>
       <div v-if="platform" class="wide">
         <v-alert type="info" variant="tonal">
           <p>当前连接报告：{{ platform.app_name || '未提供实现名' }} · {{ platform.app_version || '未提供版本' }} · 协议 {{ platform.protocol_version ?? '未提供' }}（经 {{ platform.transport === 'http' ? 'HTTP' : 'WebSocket' }}）</p>
-          <p v-if="!platform.configured_upload" class="mt-2">根配置尚未声明 onebot_file_upload；先核对当前实现与所选文件动作，版本仅作可选现场记录。</p>
+          <p v-if="!platform.configured_upload" class="mt-2">还没配置 onebot_file_upload。</p>
           <template v-else>
-            <p class="mt-2">已声明：{{ platform.configured_upload.implementation }} · 现场版本 {{ platform.configured_upload.version || '未记录' }} · 配置标签 {{ platform.configured_upload.protocol }} · 部署核验标记 {{ platform.configured_upload.deployment_verified }}
+            <p class="mt-2">已配置：{{ platform.configured_upload.implementation }} · 现场版本 {{ platform.configured_upload.version || '未记录' }} · 配置标签 {{ platform.configured_upload.protocol }} · 已确认部署 {{ platform.configured_upload.deployment_verified }}
             </p>
             <p v-if="!platform.configured_upload.name_matches" class="mt-2">实现名与现场报告不一致，不要把配置标签改成另一实现。</p>
-            <p v-else class="mt-2">实现名一致；文件动作和资产目录只读挂载仍需在主机侧核对，版本仅供现场记录。</p>
+            <p v-else class="mt-2">实现名一致。</p>
           </template>
           <p class="mt-2">{{ platform.message }}</p>
         </v-alert>

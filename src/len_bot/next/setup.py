@@ -89,7 +89,7 @@ def initialize(root: Path, item: FirstSetup) -> dict:
         temporary.unlink(missing_ok=True)
     return {'saved': True, 'config': str(config_path), 'persona': str(role_path),
             'panel_url': f'http://127.0.0.1:{item.panel_port}', 'delivery': item.delivery,
-            'next': '初始化服务即将退出。重新执行 uv run len-bot，然后登录面板 → 对话测试。'}
+            'next': '现在重新执行 uv run len-bot，然后登录面板，先到对话测试里聊几句。'}
 
 
 def create_setup_app(root: Path, token: str, completed: asyncio.Event) -> FastAPI:

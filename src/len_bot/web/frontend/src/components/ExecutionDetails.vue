@@ -14,14 +14,14 @@ const key = computed(() => JSON.stringify([props.sceneId, props.jobId, props.run
 const stopLabels = {
   confirmed_absent: '已确认容器不存在',
   confirmed_stopped: '已确认停止',
-  unconfirmed: '停止尚未确认'
+  unconfirmed: '不确定有没有停下'
 }
 const sourceLabels = {
   anonymous_public: '匿名公开来源',
   account: '账号态来源',
   scene: '场景来源',
   derived: '派生资料',
-  unknown: '来源属性未确认'
+  unknown: '来源不明'
 }
 let generation = 0
 async function load() {
@@ -68,7 +68,7 @@ onBeforeUnmount(() => {
     </summary>
     <div class="execution-body">
       <div class="execution-toolbar">
-        <p class="muted-copy">只读宿主已保存的执行请求和事件，不查询网关、不启动或重放执行。</p>
+        <p class="muted-copy">执行请求和过程记录。</p>
         <v-btn variant="text" size="small" :loading="loading" @click="load">刷新本地记录</v-btn>
       </div>
       <v-progress-linear v-if="loading" indeterminate aria-label="正在读取原执行记录" />
@@ -94,10 +94,10 @@ onBeforeUnmount(() => {
           <p v-if="data.termination.container_name" class="muted-copy">原容器 {{ data.termination.container_name }}
           </p>
         </section>
-        <p v-else class="muted-copy">未记录停止回执；正常进程退出与发送“停止”请求是不同事实，均不证明业务结果正确或群已收到。</p>
+        <p v-else class="muted-copy">没有停止记录。</p>
         <section class="input-section">
           <h4>宿主提交的输入清单</h4>
-          <p class="muted-copy">清单只说明宿主导出了哪些资料，不证明容器已收到或程序实际读过；不返回脚本、输入正文或媒体字节。</p>
+          <p class="muted-copy">交给执行环境的资料清单。</p>
           <v-alert v-if="data.input_manifest_error" type="warning" variant="tonal">
             {{ data.input_manifest_error }}
           </v-alert>
@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
                   label="回读原工具资料及来源"
                 />
                 <p>
-                  {{ item.source_truncated == null ? '旧清单未记录源端截断' : item.source_truncated ? '源端有未取得内容，导出的正文不是源全文' : '该次清单未标记源端截断，不等于程序已读或资料必然正确' }}
+                  {{ item.source_truncated == null ? '' : item.source_truncated ? '只取到了部分内容' : '' }}
                 </p>
                 <p class="muted-copy">
                   {{ item.provenance ? (sourceLabels[item.provenance.access] || item.provenance.access) : '旧清单未保存来源属性' }}

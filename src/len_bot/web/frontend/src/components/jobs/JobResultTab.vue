@@ -9,15 +9,15 @@ const { job, imageErrors } = props.page
 const preparedImages=computed(()=>(job.value?.result?.delivery?.segments || []).filter(segment=>segment.type==='image'))
 const imageUrl=id=>`/api/media/${encodeURIComponent(id)}/file?scene_id=${encodeURIComponent(job.value.scene_id)}`
 const deliveryExplanation = computed(() => job.value?.delivery_required === false
-  ? '这是已有公共研究来源与系统发起身份的工作，不走群内首次交付。执行完成只表示结果已保存；之后各群是否分享及其真实回执另行记录。'
+  ? '这是系统发起的公共研究，结果保存后由各群决定要不要分享。'
   : ({
-  result_ready: job.value?.result?.delivery ? '当前版本的成品已经保存，待通过工作交付；图片不会交给对话模型重新改写。' : '当前版本的执行结果已经保存，正在等待组织首次回应。',
-  awaiting_delivery: '当前版本的结果已关联表达行动，正在等待真实发送回执。',
-  completed: '已记录此工作的交付完成状态，具体送达以关联回执为准。',
-  delivery_unknown: '发送结果未知，需要核对原发送回执；已有研究结果仍然保留。',
+  result_ready: job.value?.result?.delivery ? '成品已经做好，等待发出去。' : '结果已经出来，等待 Bot 回复。',
+  awaiting_delivery: '正在发送结果。',
+  completed: '已经交付。',
+  delivery_unknown: '不确定结果有没有发出去，研究结果还在。',
   failed: job.value?.result ? '工作保留了执行结果，当前发送没有确认送达。' : '当前工作失败，已保存进度与原因可在本页回查。',
-  review_required: '执行已中断，进度和已用预算保留；恢复前需核对当前版本和中断原因。',
-  shadow_observed: '本次仅保存了 Shadow 表达，没有真实群聊送达回执。',
+  review_required: '执行中断了，进度还在。看看中断原因再决定要不要恢复。',
+  shadow_observed: 'Shadow 模式，没有真的发到群里。',
   cancelled: '工作已停止，已有资料和历史记录保留。',
 }[job.value?.status] || '当前还没有保存首次交付结果。'))
 </script>
@@ -57,13 +57,13 @@ const deliveryExplanation = computed(() => job.value?.delivery_required === fals
           :scene-id="job.scene_id"
           label="读取此工作版本的结果发送回执"
         />
-        <span v-else class="muted-copy">未保存结果回执引用</span>
+        <span v-else class="muted-copy">没有发送记录</span>
       </dd>
     </dl>
     <PluginWorkDetails :job="job" />
     <section v-if="job.result?.delivery">
       <h3>已生成的交付成品</h3>
-      <p class="muted-copy">这里显示保存的成品。发送失败或送达未知时仍可查看，实际交付见上方回执。</p>
+      <p class="muted-copy">保存的成品。</p>
       <EntityLink
         type="result"
         :id="job.result.delivery.result_id"
@@ -71,7 +71,7 @@ const deliveryExplanation = computed(() => job.value?.delivery_required === fals
         label="成品结构化资料与来源"
       />
       <div v-for="segment in preparedImages" :key="segment.asset_id" class="prepared-image">
-        <v-alert v-if="imageErrors.has(segment.asset_id)" type="warning" variant="tonal">此图片目前不可读取，已保存的报告资料仍可回查。</v-alert>
+        <v-alert v-if="imageErrors.has(segment.asset_id)" type="warning" variant="tonal">这张图片打不开。</v-alert>
         <a v-else :href="imageUrl(segment.asset_id)" target="_blank" rel="noopener">
           <img
             :src="imageUrl(segment.asset_id)"

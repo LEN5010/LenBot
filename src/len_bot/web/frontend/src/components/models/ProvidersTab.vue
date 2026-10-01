@@ -8,11 +8,11 @@ const { catalogs, selectedModels, catalogInvalid, orphanCatalogs, inUse, catalog
   cancelCatalog, editProvider, deleteProvider, fetchModels, saveModels } = props.state
 </script>
 <template>
-  <p class="muted">密钥只在后台保存，编辑时明确选择保留、替换或清除。获取接口目录会访问当前运行接口，但不会生成模型回答。</p>
+  <p class="muted">密钥只保存在服务器上。获取模型目录不会产生费用。</p>
   <v-card v-for="id in orphanCatalogs" :key="`missing:${id}`" class="pa-5 provider-card">
     <h2>{{ id }} · 目录草稿失效</h2>
     <p class="my-3">{{ catalogInvalid[id] }}</p>
-    <ResourceViewer :content="selectedModels[id]" title="未保存的目录选择（仅供核对）" />
+    <ResourceViewer :content="selectedModels[id]" title="没保存的模型选择" />
     <v-btn
       class="mt-3"
       variant="outlined"

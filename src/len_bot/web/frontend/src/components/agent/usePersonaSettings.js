@@ -263,7 +263,7 @@ export function usePersonaSettings({
         } catch (e) {
           if(!fresh())return
           presetExampleResults.value[item.id] = {status:'error',message:e.message}
-          presetMessage.value='本条保存未确认，本批不再提交后续样例。请先核对已保存列表，不要直接重复添加。'
+          presetMessage.value='不确定这条有没有保存成功，后面的先不提交了。看看已保存列表再决定，别重复添加。'
           break
         }
       }

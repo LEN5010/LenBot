@@ -23,7 +23,7 @@ const { routesOpen, routingForm, roleEnabled, testConfirm, testResult, routingCo
       <v-card-text>
         <v-alert v-if="saveOutcome" type="warning" variant="tonal" class="mb-4">
           <p>模型配置操作 {{ saveOutcome.kind }}<span v-if="saveOutcome.providerId"> · {{ saveOutcome.providerId }}</span> 结果未知：{{ saveOutcome.message }}不能直接重交原草稿或删除。</p>
-          <p v-if="outcomeReadAt!==null">当前保存与运行值已于 {{ fmtTime(outcomeReadAt) }} 读取；这不是旧操作回执。明确采用后关闭原编辑，重新进入当前对象。</p>
+          <p v-if="outcomeReadAt!==null">下面是 {{ fmtTime(outcomeReadAt) }} 读到的值。</p>
           <ResourceViewer v-if="outcomeReadAt!==null" title="当前保存与运行投影（不是原草稿）" :content="data" />
           <v-btn variant="text" :disabled="!!busy||loading" @click="refresh">读取当前保存值</v-btn>
           <v-btn
@@ -56,7 +56,7 @@ const { routesOpen, routingForm, roleEnabled, testConfirm, testResult, routingCo
             <p v-else>当前没有配置职责路由。</p>
           </template>
         </ConfigConflictBanner>
-        <p class="muted mb-3">切换供应商或模型会清除旧绑定的推理强度和视觉确认。冲突后不会将旧参数拼到他人刚更换的模型；明确改选绑定时，该项按整项保留。</p>
+        <p class="muted mb-3">换了供应商或模型后，推理强度和看图设置要重新选。</p>
         <v-form
           v-if="routingForm"
           :disabled="!!busy||loading||writeHeld"
@@ -93,7 +93,7 @@ const { routesOpen, routingForm, roleEnabled, testConfirm, testResult, routingCo
                 <v-switch
                   v-model="routingForm[role.key].supports_vision"
                   label="已确认此绑定支持图片输入"
-                  hint="视频采样帧只装配给已确认支持视觉的绑定；默认关闭。"
+                  hint="把视频截图交给能看图的模型，默认关闭"
                   persistent-hint
                 />
               </div>
@@ -101,7 +101,7 @@ const { routesOpen, routingForm, roleEnabled, testConfirm, testResult, routingCo
                 v-if="routingForm[role.key].provider_id&&!providerById(routingForm[role.key].provider_id)"
                 class="text-error mb-3"
                 role="alert"
-              >原供应商 {{ routingForm[role.key].provider_id }} 已不在当前保存列表中；请明确选择，不自动迁移到其他接口。</p>
+              >原供应商 {{ routingForm[role.key].provider_id }} 已经删掉了，请重新选一个。</p>
               <v-btn
                 variant="text"
                 color="primary"

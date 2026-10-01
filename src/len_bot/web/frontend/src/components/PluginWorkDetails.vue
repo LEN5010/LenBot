@@ -54,7 +54,7 @@ const display=(value,schema,key)=>schema?.properties?.[key]?.format==='unix-time
     </template>
     <ResourceViewer
       v-if="job.legacy_payload"
-      title="升级前的业务记录（只读）"
+      title="升级前的记录"
       :content="JSON.stringify(job.legacy_payload,null,2)"
     />
   </section>

@@ -175,7 +175,7 @@ async function loadDetail({ reset = false, accept = () => true } = {}) {
     detailReadAt.value = revisions.sampled_at
     if(refuteUncertain.value)uncertainReadAt.value=Date.now()/1000
     if (refuteReadback.value) {
-      if (item.status !== 'refuted') detailError.value = '已取得撤销回执，但重读记录不是已撤销；请核对原修订记录，未再次提交撤销。'
+      if (item.status !== 'refuted') detailError.value = '撤销后再看，这条认识还不是已撤销状态，请刷新看看。'
       else refuteReadback.value = false
     }
   } catch (error) {
@@ -208,13 +208,13 @@ function cancelRefute() {
 }
 function endUncertainRefute() {
   if(saving.value||detailLoading.value||detailError.value||!refuteUncertain.value||uncertainReadAt.value===null)return
-  if(!window.confirm('结束原撤销确认并放弃其依据草稿，按当前认识重新决定？这不重复撤销，也不追认或取消旧请求。'))return
+  if(!window.confirm('放弃刚才的撤销，重新决定？'))return
   refuteUncertain.value=null;
   uncertainReadAt.value=null;
   refuteOpen.value=false;
   reason.value='';
   actionError.value=''
-  feedback.value='已结束原撤销草稿；旧请求结果仍以原管理事件、提交与修订链核对。'
+  feedback.value='已放弃。'
 }
 async function refute() {
   if (saving.value || detailLoading.value || detailError.value || refuteReadback.value || refuteUncertain.value || !reason.value.trim() || !memory.value || memory.value.status !== 'active') return
@@ -234,12 +234,12 @@ async function refute() {
     submitted=true
     const result = await api(`/api/cockpit/memories/${encodeURIComponent(current)}/refute`, { method: 'POST', body })
     if (!fresh()) return
-    if (result.success!==true||result.memory_id !== current || result.scope!==scope || result.control_accepted!==true || result.status !== 'refuted') throw new Error('撤销响应没有确认同一认识已撤销；请重读修订链核对，不直接重复提交。')
+    if (result.success!==true||result.memory_id !== current || result.scope!==scope || result.control_accepted!==true || result.status !== 'refuted') throw new Error('不确定有没有成功，请刷新看看。')
     refuteReceipt.value=result;
     refuteReadback.value = true;
     refuteOpen.value = false;
     reason.value = ''
-    feedback.value = '已收到该认识的撤销回执；原记录、原始证据和撤销依据均保留。'
+    feedback.value = '已撤销。原来的记录都还留着。'
     await loadDetail({ accept:fresh })
   } catch (error) {
     if(!fresh())return
@@ -334,8 +334,8 @@ watch(() => [
           @click="refresh"
         >刷新</v-btn>
       </PageHeader>
-      <p v-if="id" class="auxiliary">切换对象或离页不撤销已经提交的操作；返回原认识后须重新核对修订链，旧操作不会清除后来填写的依据。</p>
-      <v-alert v-if="refuteReadback" type="warning" variant="tonal" class="section-gap">已收到撤销回执，但尚未取得一致的修订链读回；下面仍按各自采样时间展示，不能把旧的“有效”标记当作撤销失败并再次提交。<v-btn variant="text" :disabled="saving" :loading="detailLoading" @click="refresh">重读修订链</v-btn>
+      <p v-if="id" class="auxiliary">已经提交的操作，离开页面也会生效。</p>
+      <v-alert v-if="refuteReadback" type="warning" variant="tonal" class="section-gap">已撤销，刷新看看最新状态。<v-btn variant="text" :disabled="saving" :loading="detailLoading" @click="refresh">重读修订链</v-btn>
       </v-alert>
       <v-alert
         v-if="refuteUncertain"
@@ -344,8 +344,8 @@ watch(() => [
         class="section-gap"
         role="alert"
       >
-        <p>认识 {{ refuteUncertain.id }} 的撤销结果未知，原依据草稿保留。先核对原来源与修订链，不重复提交。</p>
-        <p v-if="uncertainReadAt!==null">当前修订链读取于 {{ fmtTime(uncertainReadAt) }}；当前状态不等于旧请求回执。</p>
+        <p>不确定认识 {{ refuteUncertain.id }} 有没有撤销成功，刷新看看再决定。</p>
+        <p v-if="uncertainReadAt!==null">下面是 {{ fmtTime(uncertainReadAt) }} 读到的修订记录。</p>
         <v-btn variant="text" :disabled="saving||detailLoading" @click="refresh">重读修订链</v-btn>
         <v-btn
           variant="text"
@@ -415,7 +415,7 @@ watch(() => [
           </v-card>
         </div>
         <v-card v-if="listLoaded && !rows.length && !listError" class="empty-state">
-          <v-card-text>没有符合筛选条件的认识；这不表示没有原话或历史版本，可切换有效性筛选继续查看。</v-card-text>
+          <v-card-text>没有符合条件的认识，可以换个筛选试试。</v-card-text>
         </v-card>
         <v-pagination
           v-if="pages > 1"
@@ -444,7 +444,7 @@ watch(() => [
         <v-skeleton-loader v-if="detailLoading && !memory" type="article, list-item-three-line" />
         <v-card v-if="!memory&&refuteOpen" class="section-gap">
           <v-card-text>
-            <p>当前认识详情不可读取，撤销依据草稿仍保留，未改投其他认识。</p>
+            <p>读不到这条认识，你填的撤销理由还在。</p>
             <ResourceViewer title="未保存的撤销依据" :content="reason" />
             <v-btn variant="text" :disabled="saving" @click="cancelRefute">放弃撤销草稿</v-btn>
           </v-card-text>
@@ -533,8 +533,8 @@ watch(() => [
           <v-card class="section-gap">
             <v-card-title>此修订链当前采用什么</v-card-title>
             <v-card-text>
-              <p class="auxiliary">所选记录版本 {{ memory.revision }}；以下依据同一次账本读取的状态与有效期，不证明认识内容本身正确。</p>
-              <v-alert v-if="detailError" type="warning" variant="tonal" class="my-3">刷新失败，以下仍是读取于 {{ fmtTime(detailReadAt) }} 的旧样本。</v-alert>
+              <p class="auxiliary">所选记录版本 {{ memory.revision }}。</p>
+              <v-alert v-if="detailError" type="warning" variant="tonal" class="my-3">刷新失败，下面是 {{ fmtTime(detailReadAt) }} 读到的内容。</v-alert>
               <div v-for="item in currentVersions" :key="item.id" class="current-version">
                 <strong>
                   {{ item.id === memory.id ? '所选记录仍有效' : '当前有效记录' }} · 版本 {{ item.revision }}
@@ -543,7 +543,7 @@ watch(() => [
                   {{ item.statement }}
                 </RouterLink>
               </div>
-              <p v-if="!currentVersions.length" class="auxiliary">此链在读取时没有仍有效且未到期的记录；原话、旧陈述及撤销依据保留，未寻找或推断其他独立认识。</p>
+              <p v-if="!currentVersions.length" class="auxiliary">这条认识现在没有有效的版本了。</p>
               <div class="link-list section-gap">
                 <EntityLink
                   v-if="memory.created_event_id"

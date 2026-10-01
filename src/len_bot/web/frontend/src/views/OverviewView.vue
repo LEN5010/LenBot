@@ -15,7 +15,7 @@ const statsGuard=useRequestGuard(), pluginGuard=useRequestGuard()
 const issueDefinitions=[
   {
     key:'review',
-    title:'待核对工作',
+    title:'需要你看看的工作',
     type:'job',
     path:'/api/cockpit/jobs?status=review_required&page_size=4',
     to:{name:'jobs',query:{status:'review_required'}}
@@ -122,7 +122,7 @@ const readiness=computed(()=>{
       to:{name:'scenes'}})
   }
   if(stats)rows.push({key:'onebot',label:'OneBot 连接',ok:stats.websocket_connected,
-    text:stats.websocket_connected?'连接已建立；每条消息是否送达仍看真实回执':'当前样本没有可确认的连接；输入处理与发送分别核对',
+    text:stats.websocket_connected?'已连接':'没有连上',
     to:{name:'settings',query:{tab:'connection'}}})
   const gaps=pluginGaps.value
   rows.push({key:'plugins',label:'插件参数',ok:!!capabilities.value&&!pluginError.value&&plugins.value.length>0&&!gaps.length,
@@ -130,7 +130,7 @@ const readiness=computed(()=>{
       :!capabilities.value?'正在读取插件状态'
       :!plugins.value.length?'当前能力清单没有已装入的插件'
       :gaps.length?`${gaps.length} 个插件需要处理：${gaps.slice(0,3).map(item=>`${item.name}（${item.reason}）`).join('、')}${gaps.length>3?` 等 ${gaps.length} 项`:''}`
-      :`已保存启用的插件没有上述加载缺项；${plugins.value.filter(item=>!item.enabled).length} 个未启用项保持可选，不代表运行故障`,
+      :`已保存启用的插件没有上述加载缺项；${plugins.value.filter(item=>!item.enabled).length} 个没启用，需要时可以打开`,
     to:{name:'plugins'}})
   return rows
 })
@@ -149,7 +149,7 @@ onMounted(refresh)
         <div class="section-heading">
           <div>
             <h2>当前依赖</h2>
-            <p class="muted">下面每一项都来自已保存的记录，刷新不会去请求外部服务、发送消息或打开任何能力；点击跳到填写位置。</p>
+            <p class="muted">点一项可以跳到对应的设置。</p>
           </div>
           <v-btn
             :prepend-icon="mdiRefresh"
@@ -161,7 +161,7 @@ onMounted(refresh)
         </div>
         <ul class="readiness-list">
           <li v-for="row in readiness" :key="row.key" class="readiness-row">
-            <span class="readiness-mark" :class="{ok:row.ok}">{{ row.ok?'已记录条件':'待核对' }}</span>
+            <span class="readiness-mark" :class="{ok:row.ok}">{{ row.ok?'已就绪':'待处理' }}</span>
             <div class="readiness-body">
               <strong>{{ row.label }}</strong>
               <span class="muted">{{ row.text }}</span>
@@ -187,7 +187,7 @@ onMounted(refresh)
         <div class="section-heading">
           <div>
             <h2>需要留意</h2>
-            <p class="muted">各列表独立读取，每项最多展示四条。未知送达不自动重发；历史请求失败不等于当前仍有故障，普通沉默不计为异常。</p>
+            <p class="muted">每项最多显示四条。</p>
           </div>
           <v-chip v-if="issuesKnown&&!hasIssues" variant="tonal" size="small">本次各列表均无相关记录</v-chip>
         </div>
@@ -247,7 +247,7 @@ onMounted(refresh)
               <span class="connection-dot" :class="{connected:data.stats.websocket_connected}"></span>{{ data.stats.websocket_connected?'已连接':'未连接' }}
             </div>
             <p class="muted">
-              {{ data.stats.websocket_connected?'连接已建立；送达仍以每条回执为准。':'当前没有可确认的 OneBot 连接。' }}
+              {{ data.stats.websocket_connected?'已连接。':'还没连上 OneBot。' }}
             </p>
             <v-btn
               variant="text"

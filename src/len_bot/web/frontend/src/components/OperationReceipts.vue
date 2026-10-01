@@ -13,7 +13,7 @@ const domains = { work: 'job_delivery', reminder: 'task', memory: 'memory' }
 <template>
   <section v-if="items.length" class="operation-receipts" aria-label="已提交操作的真实回执">
     <h3>操作提交回执</h3>
-    <p class="muted">这里记录操作事务的结果；随附确认消息是否送达，仍看行动回执。</p>
+    <p class="muted">操作的结果。</p>
     <article v-for="item in items" :key="`${item.commit_event_id}:${item.proposal_ref}`">
       <div class="receipt-heading">
         <strong>

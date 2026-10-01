@@ -82,19 +82,19 @@ function resolveConflict(keep) {
   if (keep) rows.value = clone(next.character_reference_assets)
   conflicts.clear('references');
   error.value = ''
-  message.value = keep ? '绑定列表按整项保留草稿，请核对现有绑定后另行保存。' : '已采用当前保存值，没有提交修改。'
+  message.value = keep ? '已保留你的绑定列表，看一下再保存。' : '已换成现在保存的值。'
 }
 function adoptUncertain() {
   if (saving.value || loading.value || !uncertain.value?.current) return
-  if (!window.confirm('放弃旧请求的草稿，采用当前保存值重新编辑？这不确认旧请求结果，也不会重新发送旧请求。')) return
+  if (!window.confirm('放弃旧的修改，用现在保存的内容重新编辑？')) return
   adopt(uncertain.value.current);
   uncertain.value = null;
   error.value = ''
-  message.value = '已采用当前保存值；旧请求的结果仍未确认。'
+  message.value = '已换成现在保存的内容。'
 }
 async function save() {
   if (locked.value || error.value || !dirty.value || !valid.value) return
-  if (!window.confirm('保存人物与服装参考绑定？后续新对话按素材原范围、启用状态和图片预算使用。此操作不上传图片、不发送群消息。')) return
+  if (!window.confirm('保存人物和服装参考图？之后的新对话会用上它们。')) return
   const fresh = saveGuard(), body = {baseline:clone(baseline.value), values:values()}
   readGuard();
   loading.value = false;
@@ -157,20 +157,20 @@ defineExpose({addAsset, canAdd})
     <v-alert v-if="error" type="error" variant="tonal" class="mt-3">{{ error }}</v-alert>
     <div v-show="expanded" id="character-reference-form" class="reference-form mt-4">
       <p class="muted">先上传运营图片，设置“人物参考”标签并将固定目录顺序留空。在素材详情选择“加入人物参考草稿”，或在此填写已有资产 ID。此处只保存绑定，素材说明与启用状态在详情编辑。</p>
-      <p class="muted">绑定列表属于全局配置；每张图仍只在原素材范围内可用，global-safe 可用于所有场景。人物键与服装组合、资产 ID 各自唯一，最多 40 项。</p>
+      <p class="muted">所有群共用这份列表，最多 40 项。每张图只在它所属的范围里能用，global-safe 的图所有群都能用。</p>
       <div class="reference-actions">
         <v-btn variant="outlined" :loading="loading" :disabled="saving" @click="load()">读取当前绑定</v-btn>
         <v-btn variant="text" :disabled="!canAdd" @click="addAsset()">添加空白绑定</v-btn>
         <span v-if="readAt" class="muted">读取于 {{ fmtTime(readAt) }}</span>
       </div>
-      <v-alert v-if="snapshot && !snapshot.media_enabled" type="warning" variant="tonal">当前媒体功能关闭。保存绑定不会开启媒体功能，模型暂不获得人物参考目录。</v-alert>
+      <v-alert v-if="snapshot && !snapshot.media_enabled" type="warning" variant="tonal">媒体功能关着，开了以后 Bot 才会用这些参考图。</v-alert>
       <v-alert v-if="message" type="info" variant="tonal">{{ message }}</v-alert>
-      <v-alert v-if="needsReadback" type="warning" variant="tonal">配置保存已确认，当前表单尚未读回新值。请读取当前绑定；读取不会再次保存。</v-alert>
+      <v-alert v-if="needsReadback" type="warning" variant="tonal">已保存，刷新看看最新状态。</v-alert>
       <v-alert v-if="uncertain" type="warning" variant="tonal">
-        <p>本次保存结果未确认，旧草稿不会直接重发。读取当前值只能显示现状，不能确认旧请求成功或失败。</p>
+        <p>不确定刚才有没有保存成功，刷新看看再决定要不要重新保存。</p>
         <ResourceViewer
           :content="{baseline:uncertain.baseline,submitted:uncertain.values}"
-          title="未确认的保存请求"
+          title="不确定有没有保存"
         />
         <template v-if="uncertain.current">
           <ResourceViewer :content="uncertain.current.saved" title="本次读取的当前值" />
@@ -220,7 +220,7 @@ defineExpose({addAsset, canAdd})
               <RouterLink :to="assetLink(assetFor(row))">
                 {{ assetFor(row).description || row.asset_id }} · 查看素材</RouterLink>
               <p class="muted">
-                {{ assetFor(row).scope }} · {{ assetFor(row).enabled ? '已启用' : '已停用' }} · 此处预览不代表模型已读</p>
+                {{ assetFor(row).scope }} · {{ assetFor(row).enabled ? '已启用' : '已停用' }}</p>
             </div>
           </div>
         </v-card>
@@ -239,7 +239,7 @@ defineExpose({addAsset, canAdd})
           :key="item.asset_id"
           class="text-warning"
         >已保存的 {{ item.character_key }} / {{ item.outfit }}：{{ item.issue }}。当前目录不会提供此项。</div>
-        <ResourceViewer :content="snapshot.effective" title="当前运行绑定快照（不证明某轮实际装配或像素已读）" />
+        <ResourceViewer :content="snapshot.effective" title="现在用的设置" />
       </template>
     </div>
   </v-card>

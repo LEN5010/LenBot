@@ -81,7 +81,7 @@ async function loadDetail() {
       || result.scene_id!==scene && result.scope!=='global-safe')throw new Error('读取结果不属于所选方法版本或范围，未采用。')
     if(publishReceipt.value && !sameVersion(result,publishReceipt.value))throw new Error('读回结果与原公开对象不符，未用其他版本代替。')
     if(readbackPending.value){
-      if(result.scope!=='global-safe')throw new Error('本次读回未显示原版本已公开；原公开确认保留，暂不重复提交。')
+      if(result.scope!=='global-safe')throw new Error('还没看到公开成功，刷新看看再决定。')
       readbackPending.value=false
     }
     selected.value = result;
@@ -215,7 +215,7 @@ watch(detailKey, () => {
 </script>
 <template>
   <div class="page-stack">
-    <PageHeader title="方法技能" description="有来源、有版本的工作方法。读取页面不会生成或执行技能。">
+    <PageHeader title="方法技能" description="Bot 学会的工作方法。">
       <v-btn variant="outlined" :loading="loading" @click="refresh">刷新</v-btn>
     </PageHeader>
     <v-alert v-if="error" type="error" variant="tonal">
@@ -233,7 +233,7 @@ watch(detailKey, () => {
       </v-form>
     </v-card>
     <p class="muted">
-      {{ tab === 'saved' ? '自动技能限来源场景使用，只有运营明确公开的版本可跨场景读取。人工内容不会被自动整理覆盖；已保存不等于已在后续工作中正确采用。' : '候选待整理不表示已经学会。重复、没有新增方法价值或来源不足可正常跳过，并保留原因；失败、中断和过期分别记录。' }}
+      {{ tab === 'saved' ? '自动学到的技能只在来源群用，公开后其他群也能用。你手写的内容不会被自动整理改掉。' : '等待整理的候选。重复或没有新方法的会被跳过，并记下原因。' }}
     </p>
     <v-progress-linear v-if="loading" indeterminate />
     <p v-if="loaded" class="muted">共 {{ total }}
@@ -353,9 +353,9 @@ watch(detailKey, () => {
             <p>
               {{ publishReceipt.name }} · {{ publishReceipt.scene_id }} · {{ publishReceipt.id }} · v{{ publishReceipt.version }}
             </p>
-            <p v-if="publishReceipt.status==='confirmed'" class="mt-2">此版本已经取得公开确认，其他版本范围不变；公开不表示已在后续工作中使用，也不会直接向群发送。</p>
-            <p v-else class="mt-2">原公开请求结果未知，当前详情不再次提交。可读取原版本核对当前范围；读到已公开也不能追认为这次请求成功，读到未公开也不证明请求已停止。</p>
-            <p v-if="readbackPending" class="mt-2">公开已经写入，但原版本保存值待读回。下方保留的是旧采样，不据此重复公开。</p>
+            <p v-if="publishReceipt.status==='confirmed'" class="mt-2">这个版本已公开，其他群也能用了。</p>
+            <p v-else class="mt-2">不确定有没有公开成功，刷新看看再决定。</p>
+            <p v-if="readbackPending" class="mt-2">已公开，刷新看看最新状态。</p>
             <v-btn
               class="mt-3"
               variant="outlined"
@@ -364,7 +364,7 @@ watch(detailKey, () => {
               @click="loadDetail"
             >重读原版本</v-btn>
           </v-alert>
-          <p v-if="detailReadAt" class="muted mb-3">以下为 {{ fmtTime(detailReadAt) }} 取得的详情；刷新失败保留原内容，不代表当前最新状态。</p>
+          <p v-if="detailReadAt" class="muted mb-3">{{ fmtTime(detailReadAt) }} 读到的详情。</p>
           <template v-if="selected">
             <h2>{{ selected.name }}</h2>
             <p class="entity-id my-2">{{ selected.id }}</p>
@@ -422,9 +422,9 @@ watch(detailKey, () => {
             </div>
             <template v-if="selected.source.job_id">
               <h4 class="mt-4">保存方法时记录的工作阅读范围</h4>
-              <p class="muted my-2">只表示来源工作实际提供过这些区间，不表示全部引用内容正确或后续已采用方法。</p>
+              <p class="muted my-2">来源工作提供过的内容。</p>
               <p v-if="selected.source.work_observation_reads==null" class="muted">旧方法未保存该范围，不能从资料 ID 推定完整已读。</p>
-              <p v-else-if="!sourceRanges.length" class="muted">没有工具资料范围；请核对上方纠正原话。</p>
+              <p v-else-if="!sourceRanges.length" class="muted">没有工具资料。</p>
               <div v-for="(span,index) in sourceRanges" :key="index" class="source-row my-2">
                 <EntityLink
                   type="result"
@@ -468,7 +468,7 @@ watch(detailKey, () => {
         <v-card-text>
           <p>确认公开「{{ publishTarget.name }}」v{{ publishTarget.version }}？所有场景的工作都可以读取这一版本的正文与来源信息。</p>
           <p class="entity-id mt-3">{{ publishTarget.id }}</p>
-          <p class="muted mt-3">来源范围：{{ publishTarget.scene_id }}。请核对完整正文和来源；此操作只公开这个固定版本，不跟随后来出现的新版本。离开页面不会撤销已经提交的请求。</p>
+          <p class="muted mt-3">来源范围：{{ publishTarget.scene_id }}。公开的是现在这个版本，以后的新版本要另外公开。</p>
         </v-card-text>
         <v-card-actions>
           <v-spacer />

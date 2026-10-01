@@ -90,7 +90,7 @@ const hasPresentedBody = observation => Object.values(observation.provided_range
     </template>
     <p v-else-if="!job.work_progress" class="muted-copy">尚无已保存的进度。</p>
     <h3>实际呈现范围</h3>
-    <p class="muted-copy">这里只展示已写入工作的呈现记录。取得资料、引用资料或打开面板都不等于模型看过正文或图像。</p>
+    <p class="muted-copy">这个工作用到的资料。</p>
     <ResourceViewer title="正文范围与图像呈现事实" :content="job.observation_reads" />
     <h3>已取得的原始工具资料</h3>
     <div class="action-row">
@@ -105,7 +105,7 @@ const hasPresentedBody = observation => Object.values(observation.provided_range
       <p v-if="!job.result_ids.length" class="muted-copy">尚未取得资料。</p>
     </div>
     <h4>此工作实际提供给模型的范围</h4>
-    <p class="muted-copy">范围保留实际坐标单位，可以包含工作既有版本的阅读；正文保存本身不表示模型已读。</p>
+    <p class="muted-copy">看过的范围。</p>
     <article
       v-for="(units,id) in job.observation_reads || {}"
       :key="id"
@@ -151,7 +151,7 @@ const hasPresentedBody = observation => Object.values(observation.provided_range
     </div>
     <section v-if="job.platform_actions?.length" class="workspace-artifacts">
       <h3>平台动作回执</h3>
-      <p class="muted-copy">账号写入与 QQ 消息交付分别记录。未知结果保留额度并阻止同资源再次写入；状态核对只证明当时状态，不证明未知请求的执行过程。</p>
+      <p class="muted-copy">用账号做的操作。结果不确定的操作会先挡住同一个对象的重复操作。</p>
       <div
         v-for="action in job.platform_actions"
         :key="action.action_id"
@@ -192,8 +192,8 @@ const hasPresentedBody = observation => Object.values(observation.provided_range
         {{ workspaceArtifactsError }}
       </v-alert>
       <template v-if="workspaceArtifacts">
-        <p v-if="workspaceArtifacts.execution_id" class="muted-copy">这些文件属于最近一次 Python 执行的已确认快照（{{ workspaceArtifacts.execution_id }}，工作 v{{ workspaceArtifacts.job_revision ?? '未记录' }}），不是浏览器或媒体执行目录。历史读取继续绑定此执行身份；读取不会执行或发送文件。</p>
-        <p v-else class="muted-copy">这是宿主 worker 当前目录，不是按执行保存的不可变快照。后续运行可能改变文件；文本逐页显示、不跨页拼接，不接受 Gateway 历史执行 ID。</p>
+        <p v-if="workspaceArtifacts.execution_id" class="muted-copy">最近一次 Python 执行留下的文件（{{ workspaceArtifacts.execution_id }}，工作 v{{ workspaceArtifacts.job_revision ?? '未记录' }}）。</p>
+        <p v-else class="muted-copy">worker 现在的工作目录，后面运行时文件可能会变。</p>
         <p v-if="workspaceArtifacts.sampled_at" class="muted-copy">目录读取于 {{ fmtTime(workspaceArtifacts.sampled_at) }}
         </p>
         <v-alert
@@ -254,11 +254,11 @@ const hasPresentedBody = observation => Object.values(observation.provided_range
         :disabled="workspaceFileLoading"
         @click="loadWorkspaceArtifact(workspaceFileTarget.path, workspaceFile.next_offset)"
       >
-        {{ workspaceFileTarget.executionId ? '继续读取同一快照' : '读取当前文件下一页' }}
+        {{ workspaceFileTarget.executionId ? '继续读取' : '读取当前文件下一页' }}
       </v-btn>
     </section>
     <h3>固定的方法版本与正文提供记录</h3>
-    <p class="muted-copy">固定版本、取得正文、实际提供是三个不同事实；均不证明已正确使用或学会。范围可来自本工作既有目标版本。</p>
+    <p class="muted-copy">这个工作用到的技能。</p>
     <article
       v-for="method in job.method_reads || []"
       :key="method.skill_id"

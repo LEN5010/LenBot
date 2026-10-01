@@ -14,7 +14,7 @@ const labels={replied:'已组织回应',delegated:'已委托',waiting:'等待外
       <p v-for="(item,index) in source.unfinished || []" :key="index">未完成：{{ item }}</p>
       <p v-if="source.proposal_refs?.length">关联操作：{{ source.proposal_refs.join('、') }}</p>
       <p v-if="source.task_ids?.length">关联工作或提醒：{{ source.task_ids.join('、') }}</p>
-      <p v-if="source.action_ids?.length">关联行动：{{ source.action_ids.join('、') }}。送达以实际回执为准。</p>
+      <p v-if="source.action_ids?.length">关联行动：{{ source.action_ids.join('、') }}。</p>
     </article>
   </div>
 </template>

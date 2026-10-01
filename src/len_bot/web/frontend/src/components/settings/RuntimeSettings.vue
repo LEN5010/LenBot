@@ -14,7 +14,7 @@ const { runtimeText, runtimeRestart, runtimeSavedBudgets, runtimeEffectiveBudget
       <div class="section-header">
         <h3>群文件上传平台<HelpHint :text="UPLOAD_HELP" /></h3>
         <v-chip size="small" :color="fileUpload?.deployment_verified ? 'success' : 'warning'">
-          {{ fileUpload ? (fileUpload.deployment_verified ? '已核对' : '未核对，无法上传') : '未声明' }}
+          {{ fileUpload ? (fileUpload.deployment_verified ? '已确认部署' : '还没确认部署，暂时不能上传') : '未配置' }}
         </v-chip>
       </div>
       <p v-if="!fileUpload" class="muted my-3">
@@ -46,12 +46,12 @@ const { runtimeText, runtimeRestart, runtimeSavedBudgets, runtimeEffectiveBudget
           />
           <v-text-field :model-value="fileUpload.protocol" label="配置／回执标签（由实现决定）" readonly />
           <v-text-field :model-value="fileUpload.export_mount_path" label="只读挂载点" readonly />
-          <p class="muted wide">两种实现均调用 upload_group_file；标签和部署核验标记不等于平台取得文件，成功仍看真实 FILE_UPLOADED 与 file_id。</p>
+          <p class="muted wide">两种方式都用 upload_group_file 上传群文件。</p>
         </div>
         <v-switch
           :model-value="fileUpload.deployment_verified"
           label="已人工核对实现、文件动作与只读挂载"
-          hint="打开后仍需真实授权、资产审查与平台 file_id 回执"
+          hint="打开后还要给具体的人授权"
           persistent-hint
           @update:model-value="value=>setFileUpload({deployment_verified:!!value})"
         />
@@ -82,9 +82,9 @@ const { runtimeText, runtimeRestart, runtimeSavedBudgets, runtimeEffectiveBudget
         </tbody>
       </table>
     </div>
-    <p class="muted my-4">新对话与新建工作采用当前发布预算；已有工作及其恢复保留创建时的上限、期限和累计用量。改变设置不会重开已有结果或失败工作。</p>
+    <p class="muted my-4">改了只影响新的对话和新建的工作。</p>
     <v-alert v-if="runtimeRestart" type="info" variant="tonal" class="mb-4">另有需重建组件的配置等待手动重启；上表分别显示已保存值与本次读取到的运行值，未提供项不能据此判断已生效。</v-alert>
-    <p class="muted my-3">常用执行预算用下面的数字框改；其余字段仍通过完整 JSON。留空表示该维度不设限。改这里会写进同一份草稿。</p>
+    <p class="muted my-3">常用的预算在下面改，其他的在 JSON 里改。留空表示不限。</p>
     <v-form :disabled="!!currentSaveOutcome||!!busy" @submit.prevent="saveRuntime">
       <v-switch
         :model-value="heartbeatDraft.heartbeat_enabled || false"
@@ -96,7 +96,7 @@ const { runtimeText, runtimeRestart, runtimeSavedBudgets, runtimeEffectiveBudget
         :model-value="(heartbeatDraft.heartbeat_topics || []).join('\n')"
         label="公共研究主题（每行一项）"
         rows="3"
-        hint="最多 20 项，每项 200 字；没有主题或有效兴趣时允许零研究。只保存研究结果与兴趣，不发布群消息。保存后需手动重启。"
+        hint="最多 20 项，每项 200 字。保存后重启生效"
         persistent-hint
         @update:model-value="value=>setHeartbeat('heartbeat_topics',value.split('\n').map(item=>item.trim()).filter(Boolean))"
       />

@@ -13,7 +13,7 @@ const progress = computed(() => messageProgress(props.event, props.relations))
 const states = {
   recorded: { text: '已有记录', color: 'info' }, waiting: { text: '等待中', color: 'info' },
   skipped: { text: '正常分支', color: 'default' }, partial: { text: '未完成', color: 'warning' },
-  failed: { text: '有失败', color: 'error' }, unknown: { text: '未确认', color: 'default' },
+  failed: { text: '有失败', color: 'error' }, unknown: { text: '不确定', color: 'default' },
 }
 const phaseLabel = value => ({ pre_commit: '首次提交前', after_checkpoint: '阶段提交之后', post_commit: '事务提交之后' }[value] || value || '阶段未单独记录')
 const failureLabel = value => ({ AgentBudgetExhausted: '预算用尽', CommitConflict: '提交冲突',
@@ -31,7 +31,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
   <section v-if="applicable" class="message-progress" aria-label="消息处理阶段">
     <h3>这条消息到了哪一步</h3>
     <p v-if="loading" class="progress-note" role="status">正在读取关联，以下仅按已经取得的记录显示。</p>
-    <p class="progress-note">按明确来源与行动身份显示；可能含多个处理轮次，不把同轮其他请求混入。没有记录不等于没有执行。</p>
+    <p class="progress-note">这条消息经过的处理，可能跨多轮。</p>
     <EntityLink
       v-if="progress.sourceId && progress.sourceId!==event?.id"
       type="event"
@@ -39,7 +39,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
       :scene-id="event.scene_id"
       label="本条表达的直接来源"
     />
-    <p v-if="progress.limited" class="progress-note">关联已截断；这里只统计本页记录，不代表完整历史。</p>
+    <p v-if="progress.limited" class="progress-note">记录太多，这里只显示一部分。</p>
     <ol class="progress-steps">
       <li v-for="(item,index) in progress.steps" :key="item.name">
         <span class="step-number" aria-hidden="true">{{ index+1 }}</span>
@@ -65,7 +65,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
               :key="unfinishedIndex"
             >未完成：{{ unfinished }}
             </p>
-            <p>这里只展示已提交的来源处理说明，不是模型完整思考过程；已组织回应也不等于实际送达。</p>
+            <p>这里是 Bot 对这条消息的处理说明。</p>
           </template>
           <template v-if="index===3">
             <div v-for="job in progress.jobs" :key="job.id" class="progress-work">
@@ -114,7 +114,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
             </div>
           </details>
           <template v-if="index===5 && progress.deliveryProblems.length">
-            <p>本页保存的未成功或未知记录（不覆盖后续回执）：</p>
+            <p>没成功或结果不确定的记录：</p>
             <article
               v-for="receipt in progress.deliveryProblems"
               :key="receipt.id"
@@ -139,7 +139,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
     </ol>
     <details v-if="progress.batches.length" class="progress-batches">
       <summary>该条来源参与的历史维护批次（{{ progress.batches.length }}）</summary>
-      <p class="progress-note">仅按批次已保存的来源事件身份关联；状态属于整批，不证明本条原话完整覆盖、摘要进入后续请求或原话已读。批次编号可到本群“历史摘要覆盖”核对。</p>
+      <p class="progress-note">这条消息所在的摘要批次，状态是整批的。</p>
       <ul>
         <li v-for="batch in progress.batches" :key="batch.id">
           <StatusBadge domain="summary" :status="batch.status" />
@@ -154,19 +154,19 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
     >本次关联未找到明确以这条原话为来源的历史维护批次；不据此断言全群没有维护记录。</p>
     <section class="progress-calls" aria-label="关联处理与发送耗时">
       <h4>关联处理与发送耗时</h4>
-      <p class="progress-note">处理计时属于关联轮次，同轮可能包含多条来源。等待、并行与嵌套阶段不能相加；没有记录不代表零耗时。</p>
-      <p v-if="!progress.attempts.length" class="progress-note">本页未取得明确关联的处理轨迹，阶段耗时未确认。</p>
+      <p class="progress-note">各阶段用时，同一轮可能同时处理了好几条消息。</p>
+      <p v-if="!progress.attempts.length" class="progress-note">没有找到这条消息的处理记录。</p>
       <details v-for="attempt in progress.attempts" :key="attempt.id">
         <summary>
           {{ fmtTime(attempt.created_at) }} · {{ attempt.kind === 'conversation_wait' ? attempt.summary : attempt.kind === 'conversation_error' ? '有异常的处理轨迹' : '处理轨迹' }}
         </summary>
-        <p v-if="attempt.kind === 'conversation_wait'" class="progress-note">这是关联来源的执行槽位等待，不是模型调用。取得槽位仍须核对来源与预算；等待取消不代表业务沉默或来源已处理。</p>
-        <p v-if="attempt.tool_outcomes" class="progress-note">本轨迹工具记录：返回 {{ attempt.tool_outcomes.returned }}，错误／不支持 {{ attempt.tool_outcomes.errors }}，无结果 {{ attempt.tool_outcomes.no_results }}。这是整轨迹统计，不表示这些工具均用于本条来源；工具失败也不自动等于消息最终失败。</p>
+        <p v-if="attempt.kind === 'conversation_wait'" class="progress-note">这段时间在排队等上一轮处理完。</p>
+        <p v-if="attempt.tool_outcomes" class="progress-note">这一轮的工具调用：有结果 {{ attempt.tool_outcomes.returned }} 次，出错 {{ attempt.tool_outcomes.errors }} 次，没结果 {{ attempt.tool_outcomes.no_results }} 次。</p>
         <TraceTimings :timings="attempt.timings" :scene-id="event.scene_id" />
         <EntityLink type="trace" :id="attempt.id" :scene-id="event.scene_id" label="查看原轨迹与阶段状态" />
       </details>
-      <p class="progress-note">发送排队从本次入队计至开始发送，包含准备、校验与等待发送名额；发送处理计时包含尝试登记和适配器返回。原记录起点可能是该轮最早来源，不是本条消息的独占起点，也不证明成功送达。</p>
-      <p v-if="!progress.deliveryReceipts.length" class="progress-note">本页未取得归属这些行动的发送结果，发送计时未确认。</p>
+      <p class="progress-note">发送前排队和发送本身的用时。</p>
+      <p v-if="!progress.deliveryReceipts.length" class="progress-note">没有找到发送结果。</p>
       <article v-for="receipt in progress.deliveryReceipts" :key="receipt.id" class="progress-call">
         <div class="step-heading">
           <StatusBadge domain="delivery" :status="receipt.delivery_status" />
@@ -213,7 +213,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
         <p v-if="call.error_type" class="call-error">{{ call.error_type }}</p>
         <details>
           <summary>轮次轨迹中的装配摘要</summary>
-          <p class="progress-note">仅展示轨迹中与本次调用编号明确关联的装配清单；位置、图像和工具数量不证明逐项采用，也不能逐字还原请求。提示与工具定义版本尚未完整留存。</p>
+          <p class="progress-note">这次调用带上的内容概况。</p>
           <p v-if="!requests(call).length" class="progress-note">轮次轨迹未提供该调用的装配摘要；不以本轮最后一份清单替代。调用登记时的独立材料请从调用详情查看。</p>
           <div
             v-for="(request,index) in requests(call)"
@@ -243,7 +243,7 @@ const requests = call => progress.value.requestRecords.filter(record => record.c
     </section>
     <details v-if="progress.problems.length" class="progress-problems">
       <summary>本页另有 {{ progress.problems.length }} 份关联处理问题记录</summary>
-      <p class="progress-note">这些记录明确包含本条来源或表达提交；处理错误不等于本条最终失败，也不撤销先前的提交或送达。按原记录逐次核对，不按时间猜因果。</p>
+      <p class="progress-note">处理这条消息时出过的错。</p>
       <article v-for="problem in progress.problems" :key="problem.id">
         <strong>{{ fmtTime(problem.created_at) }} · {{ phaseLabel(problem.error_phase) }}</strong>
         <p v-if="problem.gate_accepted === false">本次 Gate 拒绝：{{ problem.gate_reason || '拒绝原因未记录' }}。不覆盖先前阶段的持久提交。</p>

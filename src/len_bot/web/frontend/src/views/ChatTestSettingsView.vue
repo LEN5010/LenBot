@@ -34,9 +34,9 @@ onMounted(refresh)
   <div class="page-stack settings-snapshot">
     <header class="page-intro">
       <div>
-        <p class="eyebrow">隔离测试 · 运行快照与场景补充编辑</p>
+        <p class="eyebrow">隔离测试</p>
         <h1>场景与角色</h1>
-        <p class="muted">下方运行快照展示当前实例已加载的角色和场景内容；独立编辑区读取根配置中已保存的三项场景补充。保存不会热加载，角色文件、样例和模型仍只读。</p>
+        <p class="muted">查看现在用的角色和场景设置，修改场景补充。保存后重启生效。</p>
       </div>
       <div class="intro-actions">
         <v-btn :to="{name:'chat-test'}" variant="outlined">返回对话测试</v-btn>
@@ -45,7 +45,7 @@ onMounted(refresh)
     </header>
 
     <v-alert v-if="error" type="error" variant="tonal" role="alert" title="读取场景与角色失败">
-      {{ error }}<span v-if="snapshot"> 下方仍是上次成功读取的快照，不代表已重新读取。</span>
+      {{ error }}<span v-if="snapshot"> 下面显示的是上次读到的内容。</span>
     </v-alert>
     <div v-if="loading && !snapshot" class="surface empty-state" role="status">正在读取当前实例已加载的场景与角色…</div>
 
@@ -53,7 +53,7 @@ onMounted(refresh)
 
     <template v-if="snapshot">
       <v-alert type="info" variant="tonal" class="snapshot-note">
-        <strong>{{ error ? '上次成功读取的运行快照' : '当前实例的运行快照' }}</strong> · 只读 · 模拟发送，不会发送到 QQ。刷新只向运行中的实例重新取值，不会热加载配置或角色文件；编辑区保存后这里仍显示旧运行值。
+        <strong>{{ error ? '上次读到的设置' : '现在用的设置' }}</strong> · 模拟发送，不会发到 QQ。
       </v-alert>
 
       <section class="surface" aria-labelledby="scene-title">
@@ -68,7 +68,7 @@ onMounted(refresh)
       </section>
 
       <section class="surface" aria-labelledby="scene-persona-title">
-        <div class="section-heading"><h2 id="scene-persona-title">当前运行的场景补充</h2><span class="muted">运行快照 · 不改写共享角色包</span></div>
+        <div class="section-heading"><h2 id="scene-persona-title">当前运行的场景补充</h2><span class="muted">现在用的</span></div>
         <div class="content-block">
           <h3>补充称呼</h3>
           <ul v-if="snapshot.scene_persona.persona_aliases.length" class="plain-list chip-list">
@@ -91,7 +91,7 @@ onMounted(refresh)
       </section>
 
       <section class="surface" aria-labelledby="persona-title">
-        <div class="section-heading"><h2 id="persona-title">已加载角色</h2><span class="muted">角色文件的本次运行快照</span></div>
+        <div class="section-heading"><h2 id="persona-title">已加载角色</h2><span class="muted">现在用的</span></div>
         <div class="persona-name"><strong>{{ snapshot.persona.name }}</strong><span class="muted">{{ snapshot.persona.id }}</span></div>
         <div class="content-block">
           <h3>身份简述</h3>
@@ -178,8 +178,8 @@ onMounted(refresh)
       </section>
 
       <section class="surface" aria-labelledby="abilities-title">
-        <div class="section-heading"><h2 id="abilities-title">能力与声明</h2><span class="muted">名单不代表已执行</span></div>
-        <p class="muted">下面的工具是本角色获准且本实例已实现的名单；按需工具需在对话中发现后才能使用。显示名单不代表本轮已调用或成功。</p>
+        <div class="section-heading"><h2 id="abilities-title">能力</h2><span class="muted"></span></div>
+        <p class="muted">这个角色能用的工具。按需工具要在对话里先找到才能用。</p>
         <div class="paired-blocks">
           <div class="content-block">
             <h3>常驻工具</h3>
@@ -198,20 +198,20 @@ onMounted(refresh)
         </div>
         <div class="content-block">
           <h3>角色工具许可声明</h3>
-          <p v-if="snapshot.persona.tools === 'all'" class="muted">声明允许全部工具；上方名单才是本实例已实现且获准的实际可用范围。</p>
+          <p v-if="snapshot.persona.tools === 'all'" class="muted">角色允许所有工具，实际能用的见上方名单。</p>
           <ul v-else-if="snapshot.persona.tools.length" class="plain-list chip-list">
             <li v-for="name in snapshot.persona.tools" :key="name"><v-chip size="small" variant="outlined">{{ name }}</v-chip></li>
           </ul>
-          <p v-else class="muted">角色未声明工具。</p>
+          <p v-else class="muted">角色没有设置工具。</p>
         </div>
         <div class="content-block">
           <h3>技能声明</h3>
-          <p class="muted">这是角色文件中的声明；当前隔离对话未接入技能执行，不能视为已注册或已执行。</p>
-          <p v-if="snapshot.persona.skills === 'all'" class="muted">声明：all</p>
+          <p class="muted">角色文件里写的技能。隔离测试里用不了技能。</p>
+          <p v-if="snapshot.persona.skills === 'all'" class="muted">全部技能</p>
           <ul v-else-if="snapshot.persona.skills.length" class="plain-list chip-list">
             <li v-for="name in snapshot.persona.skills" :key="name"><v-chip size="small" variant="outlined">{{ name }}</v-chip></li>
           </ul>
-          <p v-else class="muted">未声明技能。</p>
+          <p v-else class="muted">没有设置技能。</p>
         </div>
       </section>
     </template>

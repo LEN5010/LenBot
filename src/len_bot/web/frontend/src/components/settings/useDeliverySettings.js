@@ -7,7 +7,7 @@ export function useDeliverySettings({busy, error, message, beginOperation}) {
   async function toggleShadow() {
     if(busy.value||!shadow.value)return
     const enabled=!shadow.value.enabled
-    if(!window.confirm(enabled?'开启 Shadow？保留原观察行为，但不再真实发送消息。':'关闭 Shadow？机器人将按各群当前启用、聊天、命令和公告配置实际发送。'))return
+    if(!window.confirm(enabled?'开启 Shadow？Bot 照常想回复，但不会真的发出去。':'关闭 Shadow？Bot 会按各群的设置真的发消息。'))return
     const fresh = beginOperation('shadow')
     try{
       const result=await api('/api/cockpit/shadow/toggle',{method:'POST',body:JSON.stringify({enabled})})

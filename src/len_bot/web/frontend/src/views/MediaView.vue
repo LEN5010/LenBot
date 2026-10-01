@@ -187,7 +187,7 @@ async function loadDetail({accept=()=>true}={}) {
     if (!fresh()) return
     if (!asset || asset.id !== id || ![scene,'global-safe'].includes(asset.scope)) throw new Error('读取结果不属于当前素材与查看范围，未采用。')
     if (saveReview.value) {
-      if(asset.scope!==saveReview.value.scope)throw new Error('读取结果的保存范围与原请求不同，原请求结果仍未确认。')
+      if(asset.scope!==saveReview.value.scope)throw new Error('读到的保存范围和请求时不一样，请刷新后再看。')
       saveReview.value.current=asset;
       saveReview.value.readAt=Date.now()/1000
     }
@@ -252,11 +252,11 @@ function setPaletteOrder(value) {
 function adoptReviewedValues() {
   const current=saveReview.value?.current
   if(saving.value||detailLoading.value||!current)return
-  if(!window.confirm('放弃这次未确认请求的旧草稿，采用本次读取的当前值重新编辑？这不确认旧请求的结果，也不会重新发送旧请求。'))return
+  if(!window.confirm('放弃旧的修改，用现在保存的内容重新编辑？'))return
   setDraft(current);
   saveReview.value=null;
   saveError.value=''
-  detailMessage.value='已采用本次读取的当前值重新编辑；旧请求的结果仍未确认，没有重发旧草稿。'
+  detailMessage.value='已换成现在保存的内容。'
 }
 function resolveConflict(keep) {
   const asset=currentConflict.value?.snapshot
@@ -280,7 +280,7 @@ function resolveConflict(keep) {
   }
   conflicts.clear('media');
   saveError.value='';
-  detailMessage.value=keep?'已保留实际修改，其余采用现值；请核对后另行保存。':'已采用本次读取的保存值，没有提交修改。'
+  detailMessage.value=keep?'已保留你改过的项，其他用现在的值。看一下再保存。':'已换成现在保存的值。'
 }
 async function save() {
   if (saving.value || detailLoading.value || detailError.value || readbackPending.value || saveReview.value || currentConflict.value || !dirty.value || !draft.value || !baseline.value || !selected.value?.curated) return
@@ -305,7 +305,7 @@ async function save() {
   try {
     const result = await api(`/api/media/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(body) })
     if (!fresh()) return
-    if (!result||!sameAssetIdentity(result,body.baseline)) throw new Error('保存响应没有返回同一运营素材及原来源；请重读当前素材核对，不直接重复保存。')
+    if (!result||!sameAssetIdentity(result,body.baseline)) throw new Error('不确定有没有成功，请刷新看看。')
     setDraft(result);
     selectedKey.value = key;
     detailReadAt.value = Date.now()/1000
@@ -342,7 +342,7 @@ function openUpload() {
 }
 function closeUpload() {
   if (uploading.value) return
-  if (uploadDirty.value && !window.confirm(uploadReview.value?'关闭表单不会撤销已发出的请求；请先核对原范围记录，不要直接重复上传。确认关闭？':'放弃尚未上传的素材表单？')) return
+  if (uploadDirty.value && !window.confirm(uploadReview.value?'关闭表单？上传会继续进行，别重复上传。':'放弃还没上传的素材？')) return
   const savedHere=uploadReceipt.value?.scope===listScope.value
   uploadOpen.value=false;
   uploadGuard();
@@ -367,7 +367,7 @@ async function upload() {
     form.append('tags', uploadForm.value.tags)
     const asset = await api('/api/media', { method: 'POST', body: form })
     if (!fresh()) return
-    if(!asset||typeof asset.id!=='string'||!asset.id||asset.scope!==attempt.scope||asset.curated!==true)throw new Error('上传响应没有确认所选范围的运营素材；请核对原范围记录，不直接重复上传。')
+    if(!asset||typeof asset.id!=='string'||!asset.id||asset.scope!==attempt.scope||asset.curated!==true)throw new Error('不确定有没有传上去，先去那个范围里看看，别重复上传。')
     uploadReceipt.value={
       asset_id:asset.id,
       scope:asset.scope,
@@ -406,7 +406,7 @@ function viewUploaded() {
 }
 async function inspectUploadScope() {
   if(!uploadReview.value||uploading.value)return
-  if(!window.confirm('关闭本次结果未确认的表单并查看原范围记录？请求不会因此取消，也不会重新上传。'))return
+  if(!window.confirm('关闭表单，去看这个范围里的记录？'))return
   const scope=uploadReview.value.scope
   const target={name:'media',query:{return_to:route.query.return_to,scene:scope,page:1}}
   const sameLocation=router.resolve(target).fullPath===route.fullPath
@@ -504,7 +504,7 @@ watch(() => route.fullPath, () => {
       <v-expansion-panel title="固定表情目录">
         <v-expansion-panel-text>
           <div class="list-summary mb-3">
-            <p class="muted">当前配置最多 {{ paletteLimit ?? '未读取' }} 项，按运营顺序提供，独立于下方列表筛选。目录不证明某轮实际装配或使用。</p>
+            <p class="muted">当前配置最多 {{ paletteLimit ?? '未读取' }} 项，按你排的顺序给 Bot。</p>
             <v-btn variant="text" size="small" :loading="paletteLoading" @click="loadPalette">刷新目录</v-btn>
           </div>
           <v-progress-linear v-if="paletteLoading" indeterminate aria-label="正在读取固定目录" />
@@ -607,7 +607,7 @@ watch(() => route.fullPath, () => {
           <v-alert v-if="detailMessage" type="info" variant="tonal" class="mb-4">
             {{ detailMessage }}
           </v-alert>
-          <v-alert v-if="readbackPending" type="warning" variant="tonal" class="mb-4">素材已经入库，但当前表单尚未读回新值，暂不再次提交。请重读保存值；重读不重新登记事件。<v-btn
+          <v-alert v-if="readbackPending" type="warning" variant="tonal" class="mb-4">素材已保存，刷新看看最新状态。<v-btn
               variant="text"
               :disabled="saving"
               :loading="detailLoading"
@@ -615,7 +615,7 @@ watch(() => route.fullPath, () => {
             >重读保存值</v-btn>
           </v-alert>
           <v-alert v-if="saveReview" type="warning" variant="tonal" class="mb-4">
-            <p>向 {{ saveReview.scope }} 保存 {{ saveReview.baseline.id }} 的请求结果未确认，当前草稿不再次提交。读到当前值不证明旧请求成功、失败或已停止；相同值也不作为本次保存回执。</p>
+            <p>不确定 {{ saveReview.baseline.id }} 有没有保存到 {{ saveReview.scope }}，刷新看看再决定要不要重新保存。</p>
             <div class="chips mt-3">
               <v-btn
                 variant="outlined"
@@ -637,11 +637,11 @@ watch(() => route.fullPath, () => {
               <p class="mt-3">当前值读取于 {{ fmtTime(saveReview.readAt) }}</p>
               <ResourceViewer
                 :content="assetBaseline(saveReview.current)"
-                title="本次读取的当前值（不是原请求回执）"
+                title="现在保存的值"
               />
             </template>
           </v-alert>
-          <p v-if="savedNotice" class="muted mb-3">原 {{ savedNotice.phase==='event'?'事件登记':'保存值读取' }} 阶段未正常结束；取得保存值不等于该阶段已恢复。<EntityLink
+          <p v-if="savedNotice" class="muted mb-3">上次{{ savedNotice.phase==='event'?'登记':'读取' }}没有正常完成。<EntityLink
               v-if="savedNotice.event_id"
               type="event"
               :id="savedNotice.event_id"
@@ -681,7 +681,7 @@ watch(() => route.fullPath, () => {
               <span>{{ fmtTime(selected.created_at) }}</span>
               <a :href="preview(selected)" target="_blank" rel="noopener">打开原媒体</a>
             </div>
-            <p class="muted mb-4">音视频须手动播放；此处预览不代表模型已看、已听或已转写，也不改变原资料的阅读范围。</p>
+            <p class="muted mb-4">音视频需要手动播放。</p>
             <div v-if="selected.purpose==='character_reference'" class="mb-4">
               <p class="muted mb-2">人物参考用于按需辨认，独立于反应表情。先保存素材标签与状态，再选择人物与服装。</p>
               <v-btn
@@ -691,7 +691,7 @@ watch(() => route.fullPath, () => {
               >加入人物参考草稿</v-btn>
             </div>
             <p v-if="!purposeValid" class="text-error mb-3" role="alert">人物参考请移除“表情包”标签，并将固定目录顺序留空。</p>
-            <p v-if="changedSinceEdit&&!currentConflict" class="muted mb-4">本次读取的保存值已有变化，编辑草稿和原基线仍保留；保存只合并实际编辑的字段，不按刷新后的记录覆盖整份素材。</p>
+            <p v-if="changedSinceEdit&&!currentConflict" class="muted mb-4">这份素材刚被改过。保存时只会写入你改的项。</p>
             <v-form
               v-if="draft"
               :disabled="saving||detailLoading||readbackPending||!!saveReview"
@@ -731,7 +731,7 @@ watch(() => route.fullPath, () => {
               <div class="chips">
                 <v-chip v-for="tag in selected.tags" :key="tag" size="small">{{ tag }}</v-chip>
               </div>
-              <p class="muted my-4">非运营媒体保留其原始登记，在此只读；不能借此改写来源、描述或启用状态。</p>
+              <p class="muted my-4">这份媒体不是你上传的，只能查看。</p>
             </template>
             <v-divider class="my-4" />
             <h3 class="mb-2">来源记录</h3>
@@ -769,7 +769,7 @@ watch(() => route.fullPath, () => {
             <p>
               {{ uploadReceipt.name }} 已登记为 {{ uploadReceipt.asset_id }}，范围 {{ uploadReceipt.scope }}。</p>
             <p class="mt-2">
-              {{ uploadReceipt.phase==='complete'?'这不是向群上传或发送的回执。可进入详情查看原记录并设置固定目录。':'图片已入库，后续阶段尚未正常结束。请核对原素材，不要重新上传同一请求。' }}
+              {{ uploadReceipt.phase==='complete'?'上传好了，可以进详情设置目录。':'图片已保存，但后面的步骤没做完。先看看素材，别重复上传。' }}
             </p>
             <div class="chips mt-3">
               <v-btn variant="outlined" :disabled="uploading" @click="viewUploaded">查看已登记素材</v-btn>
@@ -789,7 +789,7 @@ watch(() => route.fullPath, () => {
             />
           </v-alert>
           <v-alert v-if="uploadReview" type="warning" variant="tonal" class="mb-4">
-            <p>此次 {{ uploadReview.name }}（{{ uploadReview.size }} 字节）向 {{ uploadReview.scope }} 的上传结果未确认，当前表单不再次发送。</p>
+            <p>不确定 {{ uploadReview.name }} 有没有传到 {{ uploadReview.scope }}，先去那里刷新看看，别重复上传。</p>
             <v-btn
               class="mt-3"
               variant="outlined"
@@ -804,7 +804,7 @@ watch(() => route.fullPath, () => {
             @submit.prevent="upload"
           >
             <p class="muted">仅支持 PNG、JPEG、WEBP、GIF；{{ uploadMaxBytes == null ? '大小上限按当前运行配置' : `大小上限 ${uploadMaxBytes.toLocaleString()} 字节` }}。公共素材可在所有场景使用。此处不上传音视频，也不直接向群发送。</p>
-            <p class="muted">请求发出后，离开页面不等于取消服务器处理；结果未确认时请回原范围刷新，不要重复上传。</p>
+            <p class="muted">上传开始后离开页面也会继续传完。</p>
             <ScopeSelect
               v-model="uploadForm.scope"
               :include-global="true"

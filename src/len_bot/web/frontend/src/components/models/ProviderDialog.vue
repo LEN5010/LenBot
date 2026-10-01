@@ -23,7 +23,7 @@ const { providerOpen, editingProvider, providerForm, providerRemoved, providerCo
       <v-card-text>
         <v-alert v-if="saveOutcome" type="warning" variant="tonal" class="mb-4">
           <p>模型配置操作 {{ saveOutcome.kind }}<span v-if="saveOutcome.providerId"> · {{ saveOutcome.providerId }}</span> 结果未知：{{ saveOutcome.message }}不能直接重交原草稿或删除。</p>
-          <p v-if="outcomeReadAt!==null">当前保存与运行值已于 {{ fmtTime(outcomeReadAt) }} 读取；这不是旧操作回执。明确采用后关闭原编辑，重新进入当前对象。</p>
+          <p v-if="outcomeReadAt!==null">下面是 {{ fmtTime(outcomeReadAt) }} 读到的值。</p>
           <ResourceViewer v-if="outcomeReadAt!==null" title="当前保存与运行投影（不是原草稿）" :content="data" />
           <v-btn variant="text" :disabled="!!busy||loading" @click="refresh">读取当前保存值</v-btn>
           <v-btn
@@ -38,7 +38,7 @@ const { providerOpen, editingProvider, providerForm, providerRemoved, providerCo
           type="warning"
           variant="tonal"
           class="mb-4"
-        >原供应商已从保存列表移除，旧草稿不能继续保存。请核对后关闭此编辑；确需新建时明确添加，后来出现的同名供应商也须重新进入编辑。</v-alert>
+        >这个供应商已经被删了，修改保存不了。需要的话重新添加一个。</v-alert>
         <v-alert v-if="readbackPending" type="warning" variant="tonal" class="mb-4">已写入配置，待读回真实值。<v-btn variant="text" :disabled="!!busy" :loading="loading" @click="refresh">重新读取保存值</v-btn>
         </v-alert>
         <ConfigConflictBanner
@@ -63,7 +63,7 @@ const { providerOpen, editingProvider, providerForm, providerRemoved, providerCo
           </template>
         </ConfigConflictBanner>
         <p v-if="providerKeepBlocked" class="muted mb-4">
-          {{ editingProvider ? '原供应商已从保存列表移除，旧编辑不能重建或接到后来出现的同名供应商。请采用现值重新编辑，或关闭后明确添加。' : '此名称已有供应商。请改用新名称，或采用现值进入该供应商编辑；不会用新建草稿直接覆盖已有接口。' }}
+          {{ editingProvider ? '这个供应商已经被删了，请关掉后重新添加。' : '已经有同名的供应商了，换个名字，或者去编辑那个。' }}
         </p>
         <v-form
           v-if="providerForm"

@@ -8,7 +8,7 @@ const { quotaText, quotaDirty, quotaRows, quotaProblems, quotaRaw, rawPolicies,
 <template>
   <v-card class="pa-5 form-card">
     <h2>额度策略</h2>
-    <p class="muted my-3">这里定义命名的额度策略；能力授予的“使用哪项额度策略”填写这里的名称，不在授予里复制额度数值。<strong>token 不是货币</strong>：上限按 token 计，费用另看调用账。未配置策略时各维度不设 token 上限，由期限和消息上限结束；留空表示该维度不设上限，写出的数字才是限制。引用已失效的策略名称会拒绝，不会改用默认值。并发上限在创建准入时生效。修改默认策略不会改动已在执行的工作，它们仍按创建时的快照。</p>
+    <p class="muted my-3">在这里定义额度策略，给能力授权时填策略名称就行。上限按 token 算，留空表示不限。改了以后只影响新建的工作。</p>
     <v-form
       :disabled="!!currentSaveOutcome||!!busy"
       class="form-grid"
@@ -80,7 +80,7 @@ const { quotaText, quotaDirty, quotaRows, quotaProblems, quotaRaw, rawPolicies,
             @click="quotaRows.push({name:'',work:null,user:null,scene:null})"
           >添加一项策略</v-btn>
         </div>
-        <p class="wide muted">这里改的是往后新建工作的上限；已在执行的工作保留创建时的快照。已保存的精确取值在下方 JSON 里逐字对照。</p>
+        <p class="wide muted">只影响以后新建的工作。</p>
         <ul v-if="quotaProblems.length" class="wide error-summary">
           <li v-for="problem in quotaProblems" :key="problem.message">
             <button class="error-link" type="button" @click="focusPolicy(problem.key)">
@@ -96,13 +96,13 @@ const { quotaText, quotaDirty, quotaRows, quotaProblems, quotaRaw, rawPolicies,
           label="策略（JSON）"
           rows="10"
           class="wide runtime-json"
-          hint="已保存取值的只读对照，没有保存入口；改数值请返回表单。切换视图不会丢掉未保存的表单草稿。"
+          hint="只能看，要改请回到表单"
           persistent-hint
         />
-        <p class="wide muted">这是已保存取值的只读视图，没有保存按钮；改数值请返回表单编辑。</p>
+        <p class="wide muted">这里只能看，要改请回到表单。</p>
       </template>
-      <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略的形状不是这三个字段（{{ Object.keys(rawPolicies).join('、') }}），表单原样保留它们，只在保存时一起写回。</p>
-      <ResourceViewer v-if="!quotaRaw" class="wide" title="已保存的精确取值（只读对照）" :content="quotaText" />
+      <p v-if="Object.keys(rawPolicies).length" class="wide muted">有 {{ Object.keys(rawPolicies).length }} 项策略（{{ Object.keys(rawPolicies).join('、') }}）这里改不了，保存时会保持不变。</p>
+      <ResourceViewer v-if="!quotaRaw" class="wide" title="保存的值" :content="quotaText" />
       <v-btn
         v-if="!Object.keys(rawPolicies).length"
         class="wide"

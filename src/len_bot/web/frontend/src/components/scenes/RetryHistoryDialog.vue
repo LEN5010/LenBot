@@ -15,7 +15,7 @@ const { retryConfirmation, retrySaving, retryError, retryHistory } = props.state
         <p>场景 {{ retryConfirmation.scene }}</p>
         <p>原始范围 {{ retryConfirmation.range }}</p>
         <p v-if="retryConfirmation.error">原失败记录：{{ retryConfirmation.error }}</p>
-        <p>通过已有维护入口提交一次重试，失败证据和原文仍可回查。</p>
+        <p>重新试一次，之前的失败记录会保留。</p>
         <v-alert v-if="retryError" type="error" variant="tonal" class="mt-4">
           {{ retryError }}
         </v-alert>

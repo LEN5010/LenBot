@@ -75,7 +75,7 @@ export function useProviderSettings({
       const provider = providerById(id)
       if (!provider) catalogInvalid.value[id] = '该供应商已不在本次保存列表中；目录草稿不能用于重新创建供应商。'
       else if (hasConfigDraftChanges(catalogSource(catalogProviders.value[id]), catalogSource(provider))) {
-        catalogInvalid.value[id] = '供应商接口、启用状态或凭据修订已改变；这份目录不再代表当前接口。请核对并取消旧选择，再明确获取目录。'
+        catalogInvalid.value[id] = '供应商设置变了，请重新获取模型目录。'
       }
     }
   }
@@ -136,7 +136,7 @@ export function useProviderSettings({
   async function deleteProvider(provider) {
     const conflict = conflicts.entries[`delete:${provider.id}`]
     if (busy.value || loading.value || writeHeld.value || (conflict && !conflict.snapshot)
-        || !window.confirm(`删除供应商「${provider.id}」及保存的密钥？${conflict ? '这是重新核对保存值后的新删除操作。' : ''}`)) return
+        || !window.confirm(`删除供应商「${provider.id}」及保存的密钥？`)) return
     const fresh = beginOperation(`delete:${provider.id}`)
     const progress={submitted:false,providerId:provider.id}
     try {
@@ -161,7 +161,7 @@ export function useProviderSettings({
       if (!await load({ accept:fresh }) || !fresh()) return
       const current = providerById(provider.id)
       if (!current || hasConfigDraftChanges(catalogSource(source),catalogSource(current)) || catalogUnavailable(current)) {
-        throw new Error('读取目录期间供应商已删除、接口已改变或尚未应用；未将返回目录设为草稿。请核对当前接口后再明确获取。')
+        throw new Error('获取目录时供应商设置变了，请重新获取。')
       }
       catalogs.value[provider.id] = result.models
       catalogProviders.value[provider.id] = clone(current)

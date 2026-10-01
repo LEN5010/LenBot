@@ -6,7 +6,7 @@ const { sceneId, related, aux, auxError } = props.page
 </script>
 <template>
   <h3>本会话的工作与交付</h3>
-  <p class="muted-copy">执行结果和发送回执分别记录。工作插件已开启不代表具备当前执行或上传资格。</p>
+  <p class="muted-copy">这个群的工作记录。</p>
   <div class="scene-quick-links">
     <v-btn
       size="small"
