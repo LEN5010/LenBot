@@ -1,7 +1,8 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth, refreshAuth } from './composables/useAuth.js'
-import AppShell from './layouts/AppShell.vue'
+import LegacyShell from './layouts/LegacyShell.vue'
+import HostShell from './layouts/HostShell.vue'
 const auth=useAuth(),route=useRoute(),router=useRouter()
 async function retry() {
   await refreshAuth();
@@ -19,7 +20,10 @@ async function retry() {
       <v-btn color="primary" @click="retry">重新读取</v-btn>
     </div>
     <router-view v-else-if="route.name==='login'" />
-    <AppShell v-else-if="auth.status==='authenticated'"><router-view /></AppShell>
+    <template v-else-if="auth.status==='authenticated'">
+      <HostShell v-if="auth.panelContext.mode==='isolated-multi'"><router-view /></HostShell>
+      <LegacyShell v-else><router-view /></LegacyShell>
+    </template>
   </v-app>
 </template>
 <style scoped>

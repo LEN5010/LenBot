@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 import { api, resetApiSession } from '../api.js'
 import { clearSceneVisits } from './sceneVisits.js'
 import { clearAppState } from './useAppState.js'
+import { clearHost } from '../host/store.js'
 
 const state = reactive({ status: 'loading', user: null, error: '', panelContext: null })
 let initialization
@@ -14,6 +15,7 @@ export function clearAuth() {
   resetApiSession();
   clearSceneVisits();
   clearAppState();
+  clearHost();
   state.user = null;
   state.status = 'unauthenticated';
   state.error = ''
@@ -57,6 +59,7 @@ export async function login(username, password) {
   resetApiSession();
   clearSceneVisits();
   clearAppState()
+  clearHost()
   state.user = result;
   state.status = 'authenticated';
   state.error = ''

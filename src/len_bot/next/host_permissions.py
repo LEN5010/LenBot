@@ -30,10 +30,23 @@ class CapabilityMatrix(BaseModel):
         return value
 
 
+class ScopedIdentities(BaseModel):
+    """Extra owner/admin/whitelist lists that only apply to tasks or reminders.
+
+    QQ formats are checked when the candidate root config is loaded.
+    """
+    model_config = ConfigDict(strict=True, extra='forbid')
+    owner: str | None
+    admins: list[str]
+    whitelist: list[str]
+
+
 class PermissionChange(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     global_identities: IdentitySettings
     scene_identities: IdentitySettings | None
+    task_identities: ScopedIdentities
+    schedule_identities: ScopedIdentities
     matrix: CapabilityMatrix
 
 
@@ -47,20 +60,22 @@ def matrix(config, scene: str) -> dict:
 
 def register_host_permissions(app: FastAPI, *, root: Path, runtime, user, write_lock):
     def section(config, scene):
-        local = config.scenes[scene].permissions
+        item = config.scenes[scene]
+        local = item.permissions
         return {'global_identities': config.permissions.model_dump(),
-                'scene_identities': None if local is None else local.model_dump(), 'matrix': matrix(config, scene)}
+                'scene_identities': None if local is None else local.model_dump(),
+                'task_identities': {'owner': item.tasks.owner, 'admins': item.tasks.admins, 'whitelist': item.tasks.whitelist},
+                'schedule_identities': {'owner': item.schedules.owner, 'admins': item.schedules.admins,
+                                        'whitelist': item.schedules.whitelist},
+                'matrix': matrix(config, scene)}
 
     def snapshot(saved, scene):
         if scene not in saved.scenes or scene not in runtime.config.scenes:
             raise HTTPException(404, '请选当前运行与保存配置中都存在的场景')
         current, recorded = section(runtime.config, scene), section(saved, scene)
-        item = runtime.config.scenes[scene]
         return {'running': current, 'saved': recorded, 'restart_required': current != recorded,
                 'owner_qq': runtime.config.owner_qq,
-                'effective_identities': runtime.config.scene_config(scene).permissions.model_dump(),
-                'scoped_identities': {'tasks': {'owner': item.tasks.owner, 'admins': item.tasks.admins, 'whitelist': item.tasks.whitelist},
-                                      'schedules': {'owner': item.schedules.owner, 'admins': item.schedules.admins, 'whitelist': item.schedules.whitelist}}}
+                'effective_identities': runtime.config.scene_config(scene).permissions.model_dump()}
 
     @app.get('/api/host/permissions')
     async def state(scene: str, _: str = Depends(user)):
@@ -82,9 +97,11 @@ def register_host_permissions(app: FastAPI, *, root: Path, runtime, user, write_
             local['chat_control_roles'] = change.matrix.chat_control
             local['permissions'] = None if change.scene_identities is None else change.scene_identities.model_dump()
             local.setdefault('tasks', {}).update(delegate_roles=change.matrix.delegate,
-                manage_roles=change.matrix.task_manage, long_running_roles=change.matrix.long_running)
+                manage_roles=change.matrix.task_manage, long_running_roles=change.matrix.long_running,
+                **change.task_identities.model_dump())
             local.setdefault('schedules', {}).update(own=change.matrix.own_reminder,
-                others=change.matrix.other_reminder, manage=change.matrix.reminder_manage)
+                others=change.matrix.other_reminder, manage=change.matrix.reminder_manage,
+                **change.schedule_identities.model_dump())
         async with write_lock:
             try:
                 path, temporary, candidate = await asyncio.to_thread(_prepare, root, edit)

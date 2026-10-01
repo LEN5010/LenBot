@@ -625,11 +625,29 @@ class Store:
             f"SELECT id,scene,started,status,error FROM turns WHERE scene IN ({placeholders}) "
             "AND error IS NOT NULL ORDER BY started DESC LIMIT 10", scenes,
         )]
+        undelivered = dict(self.db.execute(
+            "SELECT scene,COUNT(*) FROM messages "
+            f"WHERE scene IN ({placeholders}) AND raw IS NULL "
+            "AND json_extract(body,'$.send_status') IN ('failed','unconfirmed') "
+            "AND json_extract(body,'$.time')>=? AND json_extract(body,'$.time')<? GROUP BY scene",
+            (*scenes, since, until),
+        ))
+        reviews = {}
+        for kind, query in (
+            ("expressions", "SELECT scene,COUNT(*) FROM expressions WHERE status='pending'"),
+            ("jargon", "SELECT scene,COUNT(*) FROM jargon WHERE status='pending'"),
+            ("stickers", "SELECT scene,COUNT(*) FROM sticker_candidates "
+                         "WHERE review='pending' AND status='complete'"),
+        ):
+            for scene, count in self.db.execute(
+                f"{query} AND scene IN ({placeholders}) GROUP BY scene", scenes,
+            ):
+                reviews.setdefault(scene, {})[kind] = count
         return {"messages": messages, "turns": turns, "model_calls": len(calls),
                 "unfinished_calls": unfinished, "unknown_cost_calls": costs["unknown_calls"],
                 "estimated_costs": costs["known_amounts"],
                 "pending_schedules": pending, "recent_errors": errors,
-                "reply_effects": reactions}
+                "reply_effects": reactions, "undelivered": undelivered, "pending_reviews": reviews}
 
     def _append(self, scene: str, message: dict) -> int:
         cursor = self.db.execute(

@@ -19,7 +19,6 @@ const router = createRouter({
   history:createWebHashHistory(),
   routes:[
     {path:'/',redirect:{name:'overview'}},
-    { path:'/host/permissions', name:'host-permissions', component:()=>import('../views/HostPermissionsView.vue'), meta:{title:'设置 · 权限'} },
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../views/HostTrialsView.vue'), meta:{title:'对话测试'} },
     { path:'/host/logs/system', name:'host-system-logs', component:()=>import('../views/HostSystemLogsView.vue'), meta:{title:'日志 · 系统'} },
     { path:'/host/logs', name:'host-logs', component:()=>import('../views/HostView.vue'), meta:{title:'日志'} },
@@ -51,7 +50,7 @@ const router = createRouter({
     {
       path:'/host/overview',
       name:'host-overview',
-      component:()=>import('../views/HostOverviewView.vue'),
+      component:()=>import('../host/pages/home/HomePage.vue'),
       meta:{title:'首页'}
     },
     {
@@ -75,7 +74,7 @@ const router = createRouter({
     {
       path:'/host/system',
       name:'host-system',
-      component:()=>import('../views/HostSystemView.vue'),
+      component:()=>import('../host/pages/settings/SettingsPage.vue'),
       meta:{title:'设置'}
     },
     {
