@@ -19,6 +19,7 @@ REQUIRED_SOURCE = (
     'scripts/install.sh', 'scripts/build_release.py', 'scripts/collect_python_licenses.py',
     'scripts/collect_frontend_licenses.cjs', 'deploy/current/README.md',
     'deploy/current/lenbot.service', 'deploy/current/memory-templates.md',
+    'deploy/README.md', 'deploy/current/operations.md', 'CONTRIBUTING.md',
     'docker/next-worker/Dockerfile', 'docker/next-worker/lenbot-extension.ts',
     'docker/next-worker/lenbot-browser.cjs',
     'licenses/sarasa-gothic-1.0.39/OFL.txt', 'licenses/sarasa-gothic-1.0.39/SOURCE.md',
