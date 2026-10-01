@@ -1,4 +1,4 @@
-"""Image validation and pixel preparation shared by both runtime boundaries."""
+"""Image validation and pixel preparation for model input."""
 
 import base64
 import io

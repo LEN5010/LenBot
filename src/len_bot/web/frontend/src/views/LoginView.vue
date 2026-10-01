@@ -6,7 +6,6 @@ import { returnPath } from '../router/index.js'
 import { useRequestGuard } from '../composables/useRequestGuard.js'
 const route=useRoute(),router=useRouter()
 const isolated=computed(()=>useAuth().panelContext?.mode==='isolated')
-const multi=computed(()=>useAuth().panelContext?.mode==='isolated-multi')
 const username=ref(''),password=ref(''),busy=ref(false),error=ref('')
 const guard=useRequestGuard()
 async function submit(){
@@ -33,7 +32,7 @@ async function submit(){
       <v-card-text>
         <span class="login-mark">L</span>
         <h1>登录 LenBot</h1>
-        <p class="muted">{{ isolated?'登录后和 Bot 试聊，回复不会发到 QQ。':multi?'登录后管理你的 Bot。':'查看运行情况，管理工作与资料。' }}</p>
+        <p class="muted">{{ isolated?'登录后和 Bot 试聊，回复不会发到 QQ。':'登录后管理你的 Bot。' }}</p>
         <v-alert v-if="error" type="error" variant="tonal" role="alert">{{ error }}</v-alert>
         <form @submit.prevent="submit">
           <v-text-field
@@ -59,7 +58,7 @@ async function submit(){
             :disabled="!username || !password"
           >登录</v-btn>
         </form>
-        <p class="login-note">{{ isolated?'使用当前测试实例账户，不读取生产面板账户。':multi?'使用当前独立宿主账户，不读取旧面板账户。':'使用现有管理账户登录' }}</p>
+        <p class="login-note">{{ isolated?'使用当前测试实例账户。':'使用当前宿主账户登录。' }}</p>
       </v-card-text>
     </v-card>
   </main>

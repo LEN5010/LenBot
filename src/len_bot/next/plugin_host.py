@@ -499,8 +499,9 @@ class PluginHost:
                 try:
                     await record.instance.stop()
                 except Exception as error:
-                    self._record(record, "停止", error)
-                record.status = "stopped"
+                    record.status, record.error = "failed", self._record(record, "停止", error)
+                else:
+                    record.status = "stopped"
         self._notify()
 
     def state(self) -> dict:

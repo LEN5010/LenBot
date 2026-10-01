@@ -82,7 +82,7 @@ def test_hourly_send_gate_is_scene_local_and_counts_unconfirmed(tmp_path):
         cfg=settings(tmp_path/'state.db',messages_per_hour=1);cfg.scene='group:80001'
         msg=ChatMessage('fixture','qq',cfg.scene,None,Sender('90001','fixture',None,None),at[0],
                         [Segment('text',{'text':'合成未确认原话'})],None,False,True,'unconfirmed')
-        store.start_outgoing(msg)
+        store.start_outgoing(msg, persona_id='synthetic')
         with pytest.raises(LimitReached):check_speech(store,cfg)
         cfg.scene='group:80002';check_speech(store,cfg)
         cfg.scene='group:80001';at[0]+=3600;check_speech(store,cfg)

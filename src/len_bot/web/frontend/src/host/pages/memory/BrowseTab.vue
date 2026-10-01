@@ -41,6 +41,7 @@ function openDirectory(path) {
   directory.value = path
   file.value = null
   creating.value = false
+  fileDirty.value = false
   listing.reload()
 }
 function openFile(path) {
@@ -51,7 +52,11 @@ function openFile(path) {
 function changeScope(value) {
   if (value === scope.value || !leave()) return
   scope.value = value
-  openDirectory('')
+  directory.value = ''
+  file.value = null
+  creating.value = false
+  fileDirty.value = false
+  listing.reload()
 }
 function create() {
   if (!leave()) return

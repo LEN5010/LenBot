@@ -5,12 +5,13 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
 import signal
+import traceback
 
 import uvicorn
 
 from .config import load_host_config
 from .instance_lock import instance_lock
-from .operations import host_logging, credentials
+from .operations import host_logging, credentials, redact
 from .chat import PROMPTS, build_tools, tool_catalog
 from .host_panel import create_app
 from .model import ChatModel
@@ -54,14 +55,25 @@ async def run_with_panel(runtime: NetworkRuntime, server: HostPanelServer) -> No
             # while allowing the peer runtime to finish its shutdown path.
             raise RuntimeError(f"Panel server exited: {error}") from error
 
+    async def run_runtime() -> None:
+        try:
+            await runtime.run(manage_signals=False, manual_connection=True)
+        except Exception as error:
+            # The business lifetime has ended; keep only management available.
+            # Closed runners and services are not restarted by a connect button.
+            runtime.accepting = False
+            runtime.last_runtime_error = redact("".join(traceback.format_exception(error)), runtime.log_secrets)
+            runtime._status("failed")
+            runtime._emit({"type": "runtime", "status": "failed", "error": runtime.last_runtime_error})
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop)
-    tasks = [asyncio.create_task(runtime.run(manage_signals=False)), asyncio.create_task(serve())]
+    tasks = [asyncio.create_task(run_runtime()), asyncio.create_task(serve())]
     errors: list[BaseException] = []
     try:
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            await tasks[1]
         except BaseException as error:
             errors.append(error)
         finally:

@@ -2,10 +2,11 @@
 
 LenBot 正在按[总体规划](docs/roadmap/README.md)重写核心。设计以 `docs/roadmap/` 下的模块文档为准，工程规则的完整说明见 [M20 工程规则](docs/roadmap/20-engineering-rules.md)，阶段状态只在 [M21 迁移与阶段计划](docs/roadmap/21-migration-and-phases.md) 维护。`docs/` 只保存在本机，不进 Git。
 
-## 旧核心
+## 核心与历史数据
 
-- 旧核心冻结：只修阻断运行的缺陷，不加功能、不加规则、不补文档。新需求记下来，在新核心对应阶段实现。
-- 旧核心的起停、配置和备份按 `docs/operations.md`。旧架构文档已退役，Git 历史中的 `docs/` 已清除；需要时从本机备份仓库 `code/research/backup/LenBot.git` 的提交 `a8078e1` 查看，不作为新代码的依据。
+- 旧核心已退役，当前唯一运行入口是 `len_bot.next.host`。不恢复旧 Runtime、EventStore、提案事务、旧插件或旧部署入口。
+- 历史格式只由 `next/` 下明确的离线导入／导出与迁移命令处理；不在运行中增加新旧兼容分支，不依赖旧运行时读写数据。
+- 需要参考旧实现时查看 Git 历史，不把历史源码重新复制回当前项目。
 
 ## 写代码
 

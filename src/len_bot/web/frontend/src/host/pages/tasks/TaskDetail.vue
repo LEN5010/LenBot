@@ -107,7 +107,7 @@ const statusColor = { done: 'success', failed: 'error', waiting_input: 'warning'
       <DevOnly label="原始任务"><pre>{{ JSON.stringify({ ...task, network: detail.data.value.network }, null, 2) }}</pre></DevOnly>
     </section>
 
-    <section v-if="running && (live?.preview || liveError)" class="surface">
+    <section v-if="running && (live?.preview || liveError || liveState === 'closed')" class="surface">
       <h2>正在写</h2>
       <pre v-if="live?.preview" class="preview">{{ live.preview.text }}</pre>
       <ErrorNote v-if="liveError" title="实时预览读不了" :error="liveError" />

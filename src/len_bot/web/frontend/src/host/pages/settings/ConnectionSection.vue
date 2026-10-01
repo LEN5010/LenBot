@@ -52,6 +52,9 @@ async function submit() {
   <SettingSection v-if="draft" title="连接 QQ" description="LenBot 通过 OneBot（例如 NapCat、SnowLuma）收发 QQ 消息。"
     :dirty="dirty" :saving="save.busy.value" :error="save.error.value" @save="submit">
     <p>Bot 的 QQ：<strong>{{ saved.bot_qq }}</strong></p>
+    <v-alert type="info" variant="tonal">
+      这里保存的是下次启动配置。保存后请停止并重新启动 LenBot；首页的手动连接只使用本次启动已加载的配置，不会应用尚未重启的修改。
+    </v-alert>
     <v-select :model-value="draft.onebot.mode" label="连接方式" :items="[
       { title: 'LenBot 去连 OneBot（正向 WebSocket）', value: 'forward_ws' },
       { title: '等 OneBot 来连 LenBot（反向 WebSocket）', value: 'reverse_ws' }]" @update:model-value="changeMode" />

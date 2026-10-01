@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../../api.js'
 import { useAction, useResource } from '../../../composables/useResource.js'
-import { useUnsavedChanges } from '../../../composables/useUnsavedChanges.js'
 import { notify, readHostState, readPendingRestart } from '../../store.js'
 import { clone, numberOrBlank, numberOrNull, same } from '../../forms.js'
 import ErrorNote from '../../components/ErrorNote.vue'
@@ -12,6 +11,7 @@ import QuietControl from './QuietControl.vue'
 import SaveBar from '../../components/SaveBar.vue'
 
 const props = defineProps({ scene: { type: String, required: true } })
+const emit = defineEmits(['dirty'])
 const router = useRouter()
 const settings = useResource(() => api('/api/host/settings'))
 const saved = computed(() => settings.data.value?.saved.scenes[props.scene] || null)
@@ -60,7 +60,8 @@ watch(saved, value => { if (value && !draft.value) adopt() }, { immediate: true 
 const sceneDirty = computed(() => Boolean(draft.value && !same(sceneBody(draft.value, relationships.value), sceneBody(saved.value, savedRows(saved.value)))))
 const tasksDirty = computed(() => Boolean(draft.value && !same(taskBody(draft.value), taskBody(saved.value))))
 const dirty = computed(() => sceneDirty.value || tasksDirty.value)
-useUnsavedChanges(dirty)
+watch(() => dirty.value || Boolean(saved.value && persona.value !== saved.value.persona),
+  value => emit('dirty', value), { immediate: true })
 const personaOptions = computed(() => [...new Set(Object.values(settings.data.value?.saved.scenes || {}).map(item => item.persona))])
 const duplicateQQ = computed(() => new Set(relationships.value.map(row => row.qq)).size !== relationships.value.length)
 

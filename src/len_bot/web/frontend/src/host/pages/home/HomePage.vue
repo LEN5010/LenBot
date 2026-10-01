@@ -1,17 +1,27 @@
 <script setup>
 import { computed } from 'vue'
 import { api, sceneName } from '../../../api.js'
-import { useResource } from '../../../composables/useResource.js'
+import { useAction, useResource } from '../../../composables/useResource.js'
+import { useHostEvents } from '../../events.js'
 import { host, readHostState } from '../../store.js'
 import { runtimeLabel, turnFailed } from '../../labels.js'
 import { formatAgo } from '../../time.js'
 import HostPage from '../../components/HostPage.vue'
 import ErrorNote from '../../components/ErrorNote.vue'
+import LiveStatus from '../../components/LiveStatus.vue'
 import DevOnly from '../../components/DevOnly.vue'
 
 const today = useResource(() => api('/api/host/overview'))
 const day = computed(() => today.data.value)
 const state = computed(() => host.state)
+const connect = useAction()
+const events = useHostEvents(readHostState)
+const online = computed(() => state.value?.connection.connected && state.value.connection.accepting)
+
+async function connectQQ() {
+  await connect.run(() => api('/api/host/connection/connect', { method: 'POST' }))
+  await readHostState()
+}
 
 const effectLabels = { agree: '认同', continue: '接着聊', correct: '纠正', negative: '反感', unrelated: '没接话' }
 const count = values => Object.values(values || {}).reduce((sum, value) => sum + value, 0)
@@ -23,6 +33,10 @@ const effects = computed(() => Object.entries(effectLabels)
 // Only things a person needs to act on, one line and one link each.
 const todo = computed(() => {
   const items = []
+  if (state.value && !online.value) {
+    items.push({ key: 'connection', text: runtimeLabel(state.value.connection.status),
+      to: { name: 'host-system', query: { tab: 'connection' } }, action: '连接设置' })
+  }
   for (const [kind, tab, list] of [['插件', 'plugins', state.value?.plugins || []], ['MCP 服务', 'mcp', state.value?.mcp || []]]) {
     for (const item of list) {
       if (item.status === 'failed') items.push({ key: `${kind}:${item.name}`, text: `${kind} ${item.name} 没有启动成功`,
@@ -66,20 +80,36 @@ function refresh() {
     <ErrorNote v-if="today.error.value" title="读取今日统计失败" :error="today.error.value" />
 
     <section v-if="state" class="surface status-card">
-      <div class="status-main" :class="{ ok: state.connection.connected }">
+      <div class="status-main" :class="{ ok: online }">
         <span class="dot" />
         <div>
-          <strong>{{ state.connection.connected ? 'Bot 在线' : state.connection.status === 'running' ? 'QQ 还没连上' : runtimeLabel(state.connection.status) }}</strong>
+          <strong>{{ online ? 'Bot 在线' : runtimeLabel(state.connection.status) }}</strong>
           <span class="muted">QQ {{ state.bot_qq }} · {{ state.delivery === 'onebot' ? '真实发送到 QQ' : '模拟发送，不会发到 QQ' }}</span>
         </div>
       </div>
-      <ErrorNote v-if="!state.connection.connected && state.connection.last_error" title="最近一次连接出错" :error="state.connection.last_error" />
+      <p v-if="state.connection.status === 'connection_failed'" class="connection-note">
+        本次 QQ 连接失败，未自动重试。面板仍可配置；确认 OneBot 已启动且当前地址、令牌正确后，可手动连接。
+      </p>
+      <p v-else-if="['failed', 'stopped'].includes(state.connection.status)" class="connection-note">
+        业务运行已中止，面板仍可查看和配置。请按错误原文处理原因，再停止并重新启动 LenBot；这里不重新启动业务服务。
+      </p>
+      <p v-else-if="state.connection.status === 'starting'" class="connection-note">正在启动并尝试连接，尚未确认 Bot 在线。</p>
+      <p v-else-if="state.connection.status === 'waiting_connection'" class="connection-note">正在等待 OneBot 连接；监听已开启不代表 QQ 已连接。</p>
+      <ErrorNote v-if="connect.error.value" title="手动连接请求失败" :error="connect.error.value" />
+      <ErrorNote v-if="state.connection.last_error" title="最近一次连接或运行失败" :error="state.connection.last_error" />
+      <div class="connection-actions">
+        <v-btn v-if="state.connection.can_connect || connect.busy.value" color="primary" :loading="connect.busy.value" @click="connectQQ">手动连接 QQ</v-btn>
+        <v-btn :to="{ name: 'host-system', query: { tab: 'connection' } }" variant="outlined">连接设置</v-btn>
+        <LiveStatus :status="events.status.value" @reconnect="events.reconnect" />
+      </div>
+      <p class="connection-note muted">手动连接只使用本次启动的配置。面板保存的配置修改需要重启 LenBot 后生效。</p>
       <DevOnly label="连接详情"><pre>{{ JSON.stringify(state.connection, null, 2) }}</pre></DevOnly>
     </section>
 
     <section class="surface">
       <h2>需要处理的事</h2>
-      <p v-if="!todo.length" class="all-good">一切正常</p>
+      <p v-if="!state || !day" class="muted">尚未取得完整运行状态。</p>
+      <p v-else-if="!todo.length" class="all-good">暂无待处理项</p>
       <ul v-else class="todo-list">
         <li v-for="item in todo" :key="item.key">
           <div><span>{{ item.text }}</span>
@@ -120,6 +150,8 @@ function refresh() {
 .status-main strong{display:block;font-size:20px}
 .status-main .dot{width:12px;height:12px;border-radius:50%;background:var(--status-warning);flex:none}
 .status-main.ok .dot{background:var(--success)}
+.connection-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.connection-note{margin:0;overflow-wrap:anywhere}
 .all-good{margin:8px 0 0;color:var(--success);font-weight:600}
 .todo-list{list-style:none;margin:8px 0 0;padding:0;display:grid}
 .todo-list li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}

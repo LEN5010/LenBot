@@ -20,7 +20,7 @@ function frontendNotices() {
   }
 }
 
-// Build output is served by FastAPI (see web/app.py). Dev mode proxies /api
+// Build output is served by FastAPI (see next/host_panel.py). Dev mode proxies /api
 // (cookies included) to the running len-bot control plane.
 export default defineConfig({
   plugins: [vue(), vuetify({ autoImport: true }), frontendNotices()],
@@ -34,6 +34,7 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:11307',
         changeOrigin: true,
+        ws: true,
       },
     },
   },

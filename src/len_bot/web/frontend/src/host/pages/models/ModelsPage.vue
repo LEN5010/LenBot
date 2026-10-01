@@ -17,9 +17,14 @@ const roles = [
   ['mind', '大脑', '决定说不说、说什么、用哪些工具。运行中不能更换，需要先停止 LenBot', true],
   ['voice', '表达器', '把大脑的意思写成角色口吻的台词', true],
   ['vision', '看图', '看懂群里发的图片', false],
-  ['memory', '记忆整理', '从聊天里整理出长期记忆', false],
+  ['memory', '本地记忆整理', '供本地记忆后端整理与摘要；OpenViking 使用服务自身配置的模型，不使用此绑定', false],
   ['learner', '学习', '学习群里的说话方式、黑话和表情', false],
   ['worker', '任务', '执行群友委托的任务', false],
+]
+const providerApis = [
+  { title: '聊天接口 · openai-chat', value: 'openai-chat' },
+  { title: '语音转写接口 · openai-audio', value: 'openai-audio' },
+  { title: '向量接口 · openai-embeddings', value: 'openai-embeddings' },
 ]
 const settings = useResource(() => api('/api/host/settings'))
 const draft = ref(null)
@@ -88,9 +93,10 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
     <form v-if="draft" class="page-stack" @submit.prevent="submit">
       <section class="surface">
         <h2>服务商</h2>
-        <p class="muted">兼容 OpenAI 接口的模型服务，例如 OpenAI、DeepSeek、硅基流动。</p>
+        <p class="muted">按服务实际提供的接口类型选择：聊天、语音转写或向量。只有语音或向量接口的服务不能承担聊天用途；模型名称仍须填写服务实际支持的名称。</p>
         <div v-for="(row, index) in draft.providers" :key="index" class="provider-row">
           <v-text-field v-model="row.alias" label="名称" :readonly="row.saved" hint="自己起的名字，下面选模型时用" persistent-hint />
+          <v-select v-model="row.api" :items="providerApis" label="接口类型" />
           <v-text-field v-model="row.base_url" label="接口地址" placeholder="https://api.example.com/v1" />
           <v-text-field v-model="row.api_key" type="password" autocomplete="new-password" label="密钥"
             :placeholder="row.saved ? '已设置，留空保持不变' : ''" />
@@ -200,7 +206,7 @@ const amounts = value => Object.entries(value || {}).map(([currency, amount]) =>
 section.surface{display:grid;gap:14px}
 section.surface > h2{margin:0 !important}
 section.surface > .muted{margin:-8px 0 0 !important}
-.provider-row{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,2fr) minmax(0,1.5fr) auto;gap:12px;align-items:start}
+.provider-row{display:grid;grid-template-columns:minmax(100px,150px) minmax(170px,1fr) minmax(0,2fr) minmax(0,1.5fr) auto;gap:12px;align-items:start}
 .price-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr)) auto;gap:10px;align-items:start}
 .role-card{border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;gap:12px}
 .role-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}

@@ -7,8 +7,6 @@
 !LICENSE
 !NOTICE
 !THIRD_PARTY_NOTICES.md
-!licenses/
-!licenses/**
 !scripts/
 !scripts/collect_python_licenses.py
 !scripts/collect_frontend_licenses.cjs
@@ -22,13 +20,9 @@ src/len_bot/**/*.pyc
 # the image installs from package-lock.json and builds fresh.
 src/len_bot/web/frontend/node_modules/
 src/len_bot/web/static/dist/
-!containers/
-!containers/**
 !docker/
 !docker/**
 !deploy/
-!deploy/linux/
-!deploy/linux/Dockerfile
 !deploy/current/
 !deploy/current/**
 **/.lenbot-instance.lock

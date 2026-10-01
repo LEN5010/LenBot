@@ -21,7 +21,7 @@ const area = computed(() => hostAreas.find(item => item.pages.includes(route.nam
 const status = computed(() => {
   const state = host.state
   if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', ok: false }
-  if (state.connection.connected) return { text: '在线', ok: true }
+  if (state.connection.connected && state.connection.accepting) return { text: '在线', ok: true }
   return { text: state.connection.status === 'running' ? 'QQ 未连接' : runtimeLabel(state.connection.status), ok: false }
 })
 const restartItems = computed(() => {

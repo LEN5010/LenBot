@@ -3,7 +3,7 @@ import hmac
 import secrets
 import time
 from typing import Optional
-from fastapi import Request, HTTPException, Depends, status
+from fastapi import HTTPException, status
 
 # In-memory active session tokens: token -> {"username": str, "expires_at": float}
 _ACTIVE_SESSIONS: dict[str, dict] = {}
@@ -88,8 +88,3 @@ def session_user(token: str | None) -> str:
         )
 
     return session["username"]
-
-
-async def get_current_user(request: Request) -> str:
-    """The legacy panel keeps its existing cookie name and session behavior."""
-    return session_user(request.cookies.get("session_token"))

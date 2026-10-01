@@ -4,14 +4,12 @@ version = "0.1.0"
 description = "QQ group-chat bot with tool calls, background work, and an operator dashboard"
 readme = "README.md"
 license = "AGPL-3.0-only"
-license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/**/OFL.txt", "licenses/**/SOURCE.md"]
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 authors = [
     { name = "LEN5010", email = "1649211052@qq.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "aiosqlite>=0.22.1",
-    "openai>=3.7.0",
     "pydantic>=2.13.5",
     "websockets>=17.1",
     "fastapi>=0.115.0",
@@ -21,8 +19,6 @@ dependencies = [
     "trafilatura>=2.2.0",
     "pillow>=11.0",
     "pypdfium2>=5,<6",
-    "jinja2>=3.1.4",
-    "qrcode>=8.2",
     "pyyaml>=6.0.3",
     "regex>=2026.9.3",
     "sqlite-vec>=0.1.9",
@@ -37,62 +33,18 @@ dependencies = [
 len-bot = "len_bot:main"
 lenbot-eval = "len_bot.eval.replay:main"
 
-[project.optional-dependencies]
-browser = [
-    "playwright>=1.62.0",
-]
-
 [build-system]
 requires = ["uv_build==0.12.18"]
 build-backend = "uv_build"
 
-# The installed wheel is the current core plus its actual shared components.
-# The source distribution retains frozen legacy code for explicit migration
-# and later cleanup, and keeps the panel sources/lockfile for rebuilding.
+# The source distribution includes panel sources and deployment recipes;
+# the wheel contains runtime code and the built panel, not its build tools.
 [tool.uv.build-backend]
-source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "containers/**", "docker/**", "deploy/**", "licenses/**"]
+source-include = ["uv.lock", ".dockerignore", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/**", "docker/**", "deploy/**"]
 source-exclude = ["src/len_bot/web/frontend/node_modules", "scripts/__pycache__", "**/.lenbot-instance.lock"]
 wheel-exclude = [
     "**/.lenbot-instance.lock",
-    "/src/len_bot/actions/**",
-    "/src/len_bot/adapters/**",
-    "/src/len_bot/browser/**",
-    "/src/len_bot/cards/**",
-    "/src/len_bot/cognition/**",
-    "/src/len_bot/events/**",
-    "/src/len_bot/execution/**",
-    "/src/len_bot/memory/**",
-    "/src/len_bot/migrations/**",
-    "/src/len_bot/plugins/**",
-    "/src/len_bot/runtime/**",
-    "/src/len_bot/scenes/**",
-    "/src/len_bot/scheduler/**",
-    "/src/len_bot/services/**",
-    "/src/len_bot/skills/**",
-    "/src/len_bot/state/**",
-    "/src/len_bot/testing/**",
-    "/src/len_bot/tools/**",
-    "/src/len_bot/config.py",
-    "/src/len_bot/config_edit.py",
-    "/src/len_bot/config_store.py",
-    "/src/len_bot/main.py",
-    "/src/len_bot/media/bilibili_segment.py",
-    "/src/len_bot/media/file_config.py",
-    "/src/len_bot/media/files.py",
-    "/src/len_bot/media/models.py",
-    "/src/len_bot/media/segment_protocol.py",
-    "/src/len_bot/media/segment_service.py",
-    "/src/len_bot/media/segment_worker.py",
-    "/src/len_bot/media/service.py",
-    "/src/len_bot/media/store.py",
-    "/src/len_bot/media/transcription.py",
     "/src/len_bot/web/frontend/**",
-    "/src/len_bot/web/routes/**",
-    "/src/len_bot/web/app.py",
-    "/src/len_bot/web/capability_status.py",
-    "/src/len_bot/web/group_quick.py",
-    "/src/len_bot/web/log_ring.py",
-    "/src/len_bot/web/query_service.py",
 ]
 
 [dependency-groups]

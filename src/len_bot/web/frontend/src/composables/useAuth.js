@@ -1,7 +1,5 @@
 import { reactive } from 'vue'
 import { api, resetApiSession } from '../api.js'
-import { clearSceneVisits } from './sceneVisits.js'
-import { clearAppState } from './useAppState.js'
 import { clearHost } from '../host/store.js'
 
 const state = reactive({ status: 'loading', user: null, error: '', panelContext: null })
@@ -13,8 +11,6 @@ export function useAuth() {
 export function clearAuth() {
   ++authRequest;
   resetApiSession();
-  clearSceneVisits();
-  clearAppState();
   clearHost();
   state.user = null;
   state.status = 'unauthenticated';
@@ -28,9 +24,9 @@ export async function refreshAuth() {
     if (!state.panelContext) {
       const context = await api('/api/panel-context')
       if (own !== authRequest) return
-      const homes = { legacy: '/overview', isolated: '/chat-test', 'isolated-multi': '/host/overview' }
+      const homes = { isolated: '/chat-test', 'isolated-multi': '/host/overview' }
       if (!Object.hasOwn(homes, context.mode) || context.home !== homes[context.mode]) {
-        throw new Error('面板环境响应无效：缺少明确的 mode 或 home')
+        throw new Error(`面板环境响应无效：mode 或 home 不符合当前面板契约：${JSON.stringify(context)}`)
       }
       state.panelContext = context
     }
@@ -57,8 +53,6 @@ export async function login(username, password) {
   const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
   if (own !== authRequest) return false
   resetApiSession();
-  clearSceneVisits();
-  clearAppState()
   clearHost()
   state.user = result;
   state.status = 'authenticated';

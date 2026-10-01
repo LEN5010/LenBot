@@ -49,12 +49,12 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
     _format1(path)
     if start == 2:
         migrate_memory_jobs(path)
-        path.with_name(path.name + ".v1.bak").unlink()
-        path.with_name(path.name + ".v2.bak").unlink()
-        path.with_name(path.name + ".v3.bak").unlink()
+        for version in range(1, FORMAT_VERSION):
+            path.with_name(path.name + f".v{version}.bak").unlink()
         with sqlite3.connect(path) as db:
             db.execute("DROP TABLE memory_embedding_calls")
             db.execute("DROP TABLE memory_summary_runs")
+            db.execute("DROP TABLE memory_personas")
             db.execute("PRAGMA user_version=2")
             db.execute("INSERT INTO memory_exclusions VALUES('group:80001', 7)")
     before = _rows(path)
@@ -81,13 +81,13 @@ def test_memory_processing_upgrade_keeps_rows_and_adds_summary_runs(tmp_path, st
 def test_memory_processing_collision_rolls_back_and_backup_is_not_overwritten(tmp_path):
     path = tmp_path / "state.db.memory.sqlite3"
     _format1(path)
-    migrate_memory_jobs(path)  # 1 -> 3 leaves v1 and v2 copies
+    migrate_memory_jobs(path)
     with sqlite3.connect(path) as db:
         db.execute("PRAGMA user_version=2")
     with pytest.raises(FileExistsError, match="v2.bak"):
         migrate_memory_jobs(path)
-    path.with_name(path.name + ".v2.bak").unlink()
-    path.with_name(path.name + ".v3.bak").unlink()
+    for version in range(2, FORMAT_VERSION):
+        path.with_name(path.name + f".v{version}.bak").unlink()
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
         migrate_memory_jobs(path)
     with sqlite3.connect(path) as db:
