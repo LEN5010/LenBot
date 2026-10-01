@@ -20,9 +20,10 @@ const router = createRouter({
   routes:[
     {path:'/',redirect:{name:'overview'}},
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../views/HostTrialsView.vue'), meta:{title:'对话测试'} },
-    { path:'/host/logs/system', name:'host-system-logs', component:()=>import('../views/HostSystemLogsView.vue'), meta:{title:'日志 · 系统'} },
-    { path:'/host/logs', name:'host-logs', component:()=>import('../views/HostView.vue'), meta:{title:'日志'} },
-    { path:'/host/scenes/learning', name:'host-scene-learning', component:()=>import('../views/HostLearningView.vue'), meta:{title:'群聊 · 学习'} },
+    { path:'/host/logs/system', name:'host-system-logs', redirect:to=>({name:'host-logs',query:{...to.query,tab:'system'}}) },
+    { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志'} },
+    { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊'} },
+    { path:'/host/scenes/learning', name:'host-scene-learning', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'learning'}}) },
     {
       path:'/host/tasks',
       name:'host-tasks',
@@ -41,12 +42,7 @@ const router = createRouter({
       component:()=>import('../views/HostMemoryView.vue'),
       meta:{title:'宿主认识与记忆'}
     },
-    {
-      path:'/host/learning',
-      name:'host-learning',
-      component:()=>import('../views/HostLearningView.vue'),
-      meta:{title:'群聊表达学习'}
-    },
+    { path:'/host/learning', name:'host-learning', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'learning'}}) },
     {
       path:'/host/overview',
       name:'host-overview',
@@ -65,12 +61,7 @@ const router = createRouter({
       component:()=>import('../views/HostModelsView.vue'),
       meta:{title:'模型'}
     },
-    {
-      path:'/host/history',
-      name:'host-history',
-      component:()=>import('../views/HostHistoryView.vue'),
-      meta:{title:'群聊 · 大脑'}
-    },
+    { path:'/host/history', name:'host-history', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'brain'}}) },
     {
       path:'/host/system',
       name:'host-system',
@@ -83,18 +74,8 @@ const router = createRouter({
       component:()=>import('../views/HostPersonaView.vue'),
       meta:{title:'角色'}
     },
-    {
-      path:'/host/settings',
-      name:'host-settings',
-      component:()=>import('../views/HostSettingsView.vue'),
-      meta:{title:'群聊 · 设置'}
-    },
-    {
-      path:'/host',
-      name:'host',
-      component:()=>import('../views/HostView.vue'),
-      meta:{title:'群聊 · 消息'}
-    },
+    { path:'/host/settings', name:'host-settings', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'settings'}}) },
+    { path:'/host', name:'host', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'messages'}}) },
     {
       path:'/login',
       name:'login',

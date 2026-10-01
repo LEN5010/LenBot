@@ -17,7 +17,7 @@ const drawer = ref(!mobile.value), leaving = ref(false), logoutError = ref(null)
 const icons = { home: mdiViewDashboardOutline, trial: mdiChatProcessingOutline, scenes: mdiForumOutline, persona: mdiAccountOutline,
   memory: mdiBookOpenPageVariantOutline, tasks: mdiBriefcaseOutline, capabilities: mdiToolboxOutline, models: mdiChip,
   logs: mdiTimelineTextOutline, settings: mdiCogOutline }
-const area = computed(() => hostAreas.find(item => item.pages.some(([, name]) => name === route.name)))
+const area = computed(() => hostAreas.find(item => item.pages.includes(route.name)))
 const status = computed(() => {
   const state = host.state
   if (!state) return { text: host.stateError ? '状态读取失败' : '读取中', ok: false }
@@ -80,8 +80,8 @@ async function exit() {
         这些修改已保存，重启 LenBot 后生效：{{ restartItems.join('、') }}
       </v-alert>
       <ErrorNote v-if="host.restart?.error" title="无法确认哪些修改需要重启" :error="host.restart.error" class="mb-4" />
-      <nav v-if="area && area.pages.length > 1" class="host-subnav" aria-label="当前区域">
-        <v-btn v-for="[label, name] in area.pages" :key="name" :to="hostTarget(name, route)" size="small"
+      <nav v-if="area?.subnav" class="host-subnav" aria-label="当前区域">
+        <v-btn v-for="[label, name] in area.subnav" :key="name" :to="hostTarget(name, route)" size="small"
           :variant="route.name === name ? 'tonal' : 'text'" :aria-current="route.name === name ? 'page' : undefined">{{ label }}</v-btn>
       </nav>
       <slot />

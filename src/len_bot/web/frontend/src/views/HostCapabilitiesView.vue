@@ -8,6 +8,8 @@ import HostSkillSettings from '../components/HostSkillSettings.vue'
 import HostPluginsPanel from '../components/HostPluginsPanel.vue'
 import HostBrowserPanel from '../components/HostBrowserPanel.vue'
 import HostMcpPanel from '../components/HostMcpPanel.vue'
+import HostWorkerSettings from '../components/HostWorkerSettings.vue'
+import WebServicesSection from '../host/pages/capabilities/WebServicesSection.vue'
 
 const route = useRoute(), router = useRouter()
 const host = ref(null), snapshot = ref(null)
@@ -15,7 +17,7 @@ const loading = ref(false), hostLoading = ref(false), saving = ref(false)
 const readError = ref(''), saveError = ref(''), savedNotice = ref('')
 const skillDirty = ref(false), pluginDirty = ref(false), pluginBusy = ref(false)
 const mcpDirty = ref(false), mcpBusy = ref(false)
-const browserDirty = ref(false)
+const browserDirty = ref(false), workerDirty = ref(false), webDirty = ref(false)
 const draftMode = ref('selected'), draftNames = ref([])
 const scene = computed(() => route.query.scene)
 const options = computed(() => host.value?.scenes.map(item => ({
@@ -29,7 +31,7 @@ const toolDirty = computed(() => {
   if (draftMode.value === 'all') return saved !== 'all'
   return saved === 'all' || JSON.stringify([...draftNames.value].sort()) !== JSON.stringify([...saved].sort())
 })
-const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value || mcpDirty.value || browserDirty.value)
+const dirty = computed(() => toolDirty.value || skillDirty.value || pluginDirty.value || mcpDirty.value || browserDirty.value || workerDirty.value || webDirty.value)
 useUnsavedChanges(dirty)
 onBeforeRouteUpdate(() => !pluginBusy.value && !mcpBusy.value && (!dirty.value || window.confirm('有尚未保存的能力配置草稿。放弃并切换场景？')))
 
@@ -216,6 +218,8 @@ onMounted(readHost)
       <HostPluginsPanel :key="scene" :scene="scene" @dirty="pluginDirty=$event" @busy="pluginBusy=$event" />
       <HostBrowserPanel @dirty="browserDirty=$event" />
       <HostMcpPanel :key="`mcp-${scene}`" :scene="scene" @dirty="mcpDirty=$event" @busy="mcpBusy=$event" />
+      <WebServicesSection @dirty="webDirty=$event" />
+      <HostWorkerSettings @dirty="workerDirty=$event" />
     </template>
   </div>
 </template>

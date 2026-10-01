@@ -152,6 +152,20 @@ def test_host_panel_only_reads_authenticated_configured_scenes(tmp_path: Path) -
                     pending = (await client.get('/api/host/pending-restart')).json()
                     assert {'permissions', 'account_browser'} <= set(pending['sections'])
                     assert pending['scenes'] == ['group:80001'] and pending['personas'] == []
+                    scene_saved = (await client.get('/api/host/settings')).json()['saved']['scenes']['group:80001']
+                    scene_body = {'timezone': None, 'voice_mode': 'direct', 'attention': scene_saved['attention'],
+                                  'schedules': {'enabled': True, 'max_pending': 9, 'autonomous': False},
+                                  'proactive': None, 'transcribe_audio': False, 'persona_aliases': [],
+                                  'relationships': {}, 'behavior_addendum': None}
+                    assert (await client.put('/api/host/settings/scenes/group:80001', json=scene_body)).status_code == 200
+                    task_body = {'enabled': False, 'max_running': 1, 'max_daily_tasks': 3, 'egress_max_task_bytes': None,
+                                 'egress_max_daily_bytes': None, 'egress_bytes_per_second': None}
+                    assert (await client.put('/api/host/settings/scenes/group:80001/tasks', json={'tasks': task_body})).status_code == 200
+                    kept = load_host_config(root).scenes['group:80001']
+                    assert (kept.schedules.max_pending, kept.schedules.manage) == (9, change['matrix']['reminder_manage'])
+                    assert (kept.tasks.max_running, kept.tasks.owner) == (1, '70006')
+                    with_roles = {**scene_body, 'schedules': {**scene_body['schedules'], 'own': ['owner']}}
+                    assert (await client.put('/api/host/settings/scenes/group:80001', json=with_roles)).status_code == 422
                     bad_scoped = {**change, 'schedule_identities': {'owner':'0', 'admins':[], 'whitelist':[]}}
                     assert (await client.put('/api/host/permissions?scene=group:80001', json=bad_scoped)).status_code == 422
                     assert load_host_config(root).scene_config('group:80002').permissions.whitelist == []

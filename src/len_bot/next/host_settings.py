@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .chat import build_tools
 from .config import (
-    STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona, ScheduleSettings,
+    STRICT, Compaction, ImageSettings, Attention, HostConfig, LearningSettings, Proactive, Roles, ScenePersona,
     TextDelivery, WebReadSettings, _load_host_source, _read_root,
 )
 from .persona import Persona, load_persona
@@ -30,7 +30,6 @@ from .web_search import WebSearchSettings
 from .memory import RecallSettings, LocalMemoryConfig, OpenVikingMemoryConfig
 from .memory_openviking import NativeMemoryPolicy
 from .memory_embeddings import EmbeddingBinding
-from .tasks_config import TaskSettings
 from len_bot.web.auth import hash_password
 
 
@@ -68,11 +67,19 @@ class SceneBindingChange(BaseModel):
     persona: str = Field(min_length=1)
 
 
+class ScheduleSwitches(BaseModel):
+    """Reminder switches edited with the scene; who may use them is edited on the permissions page."""
+    model_config = STRICT
+    enabled: bool
+    max_pending: int
+    autonomous: bool
+
+
 class SceneChange(ScenePersona):
     timezone: str | None
     voice_mode: Literal["voice", "direct"]
     attention: Attention
-    schedules: ScheduleSettings
+    schedules: ScheduleSwitches
     proactive: Proactive | None
     transcribe_audio: bool
 
@@ -139,9 +146,20 @@ class WorkerChange(BaseModel):
     worker: dict | None
 
 
+class TaskSwitches(BaseModel):
+    """Task switches and limits edited with the scene; roles and lists live on the permissions page."""
+    model_config = STRICT
+    enabled: bool
+    max_running: int
+    max_daily_tasks: int
+    egress_max_task_bytes: int | None
+    egress_max_daily_bytes: int | None
+    egress_bytes_per_second: int | None
+
+
 class TaskSceneChange(BaseModel):
     model_config = STRICT
-    tasks: TaskSettings
+    tasks: TaskSwitches
 
 
 class LearningSceneChange(BaseModel):
@@ -521,7 +539,10 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         def edit(source: dict, saved: HostConfig) -> None:
             if scene not in saved.scenes:
                 raise ValueError(f"根配置已不包含场景 {scene!r}")
-            source["scenes"][scene].update(change.model_dump(mode="json"))
+            values = change.model_dump(mode="json")
+            local = source["scenes"][scene]
+            local.setdefault("schedules", {}).update(values.pop("schedules"))
+            local.update(values)
 
         return await save(edit)
 
@@ -546,7 +567,7 @@ def register_host_settings(app: FastAPI, *, root: Path, running: HostConfig,
         def edit(source: dict, saved: HostConfig) -> None:
             if scene not in saved.scenes:
                 raise ValueError(f"根配置已不包含场景 {scene!r}")
-            source["scenes"][scene]["tasks"] = change.tasks.model_dump(mode="json")
+            source["scenes"][scene].setdefault("tasks", {}).update(change.tasks.model_dump(mode="json"))
 
         return await save(edit)
 

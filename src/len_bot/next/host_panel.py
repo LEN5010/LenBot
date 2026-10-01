@@ -110,9 +110,11 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             "scenes": [
                 {"scene": scene, "persona": {"id": runtime.chats[scene].persona.id,
                                               "name": runtime.chats[scene].persona.name},
+                 "persona_path": str(settings.persona),
                  "voice_mode": settings.voice_mode, "timezone": config.scene_timezone(scene)}
                 for scene, settings in config.scenes.items()
             ],
+            "memory_backend": None if config.memory is None else config.memory.backend,
             # Only what needs attention on the home page; details live on the capabilities page.
             "plugins": None if runtime.plugins is None else [
                 {"name": item["name"], "status": item["status"], "error": item["error"],
@@ -155,7 +157,7 @@ def create_app(config: HostConfig, runtime: NetworkRuntime, *, root: Path) -> Fa
             "models": {"mind": config.models.roles.mind.model,
                        "voice": config.models.roles.voice.model},
             "messages": [
-                {"seq": seq, "rendered": chat.render(message), **asdict(message),
+                {"seq": seq, "rendered": chat.render(message), "text": chat.render_text(message), **asdict(message),
                  "images": runtime.store.message_media(scene, seq)}
                 for seq, message in runtime.store.recent_records(scene)
             ],
