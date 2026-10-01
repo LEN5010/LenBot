@@ -169,14 +169,14 @@ export function messageProgress(event, relations) {
     unknown: '送达未知',
     shadow: 'Shadow',
     simulated: '模拟',
-    pending: '待回执',
+    pending: '等待发送结果',
     unrecorded: '未记录结局'
   }
   const delivery = actions.length
-    ? step('发送与回执', counts.failed ? 'failed' : counts.unknown || counts.unrecorded ? 'unknown' : counts.pending ? 'waiting' : counts.sent ? 'recorded' : 'skipped',
+    ? step('发送', counts.failed ? 'failed' : counts.unknown || counts.unrecorded ? 'unknown' : counts.pending ? 'waiting' : counts.sent ? 'recorded' : 'skipped',
       `本页 ${actions.length} 条明确归属的行动`, Object.entries(counts).filter(([, count]) => count).map(([key, count]) => `${deliveryLabels[key]} ${count}`).join(' · '))
     : outcome?.status === 'silent' && !facts.limited
-      ? step('发送与回执', 'skipped', '已选择旁听，未关联表达', '旁听是正常处理结局，不是发送失败。')
-      : step('发送与回执', 'unknown', '未找到归属本条的表达行动', '未记录不等于发送失败，工作结果与实际送达也不是同一阶段。')
+      ? step('发送', 'skipped', '选择了只听不说', '这是正常结果。')
+      : step('发送', 'unknown', '没找到这条消息的回复', '可能还在处理，或者没有回复。')
   return { ...facts, steps: [entry, read, handled, materials, commit, delivery] }
 }

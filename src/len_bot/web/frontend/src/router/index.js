@@ -20,24 +20,20 @@ const router = createRouter({
   routes:[
     {path:'/',redirect:{name:'overview'}},
     { path:'/host/chat-test', name:'host-trials', component:()=>import('../host/pages/trial/TrialPage.vue'), meta:{title:'对话测试'} },
-    { path:'/host/logs/system', name:'host-system-logs', redirect:to=>({name:'host-logs',query:{...to.query,tab:'system'}}) },
     { path:'/host/logs', name:'host-logs', component:()=>import('../host/pages/logs/LogsPage.vue'), meta:{title:'日志'} },
     { path:'/host/scenes', name:'host-scenes', component:()=>import('../host/pages/scenes/ScenesPage.vue'), meta:{title:'群聊'} },
-    { path:'/host/scenes/learning', name:'host-scene-learning', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'learning'}}) },
     {
       path:'/host/tasks',
       name:'host-tasks',
       component:()=>import('../host/pages/tasks/TasksPage.vue'),
       meta:{title:'任务'}
     },
-    { path:'/host/schedules', name:'host-schedules', redirect:to=>({name:'host-tasks',query:{...to.query,tab:'schedules'}}) },
     {
       path:'/host/memory',
       name:'host-memory',
       component:()=>import('../host/pages/memory/MemoryPage.vue'),
       meta:{title:'记忆'}
     },
-    { path:'/host/learning', name:'host-learning', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'learning'}}) },
     {
       path:'/host/overview',
       name:'host-overview',
@@ -56,7 +52,6 @@ const router = createRouter({
       component:()=>import('../host/pages/models/ModelsPage.vue'),
       meta:{title:'模型'}
     },
-    { path:'/host/history', name:'host-history', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'brain'}}) },
     {
       path:'/host/system',
       name:'host-system',
@@ -69,8 +64,6 @@ const router = createRouter({
       component:()=>import('../host/pages/persona/PersonaPage.vue'),
       meta:{title:'角色'}
     },
-    { path:'/host/settings', name:'host-settings', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'settings'}}) },
-    { path:'/host', name:'host', redirect:to=>({name:'host-scenes',query:{...to.query,tab:'messages'}}) },
     {
       path:'/login',
       name:'login',
